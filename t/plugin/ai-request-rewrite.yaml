@@ -1,0 +1,541 @@
+cases:
+  - name: minimal-openai-configuration
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [1]}
+    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+    config:
+      routes:
+        - id: ai-request-rewrite-minimal-openai
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: provider-proxy
+        kind: http
+        expect:
+          - method: CONNECT
+            host: {equals: 'api.openai.com:443'}
+        respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: default-openai-endpoint-is-resolved
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 500, body: {matches: 'failed to request LLM'}}
+
+  - name: missing-prompt-is-rejected
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [2]}
+    config:
+      routes:
+        - id: ai-request-rewrite-missing-prompt
+          uri: /missing-prompt
+          plugins:
+            ai-request-rewrite:
+              provider: openai
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /missing-prompt, body: '{}'}
+        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-prompt fail:.*ai-request-rewrite.*prompt'}}
+
+  - name: missing-auth-is-rejected
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [3]}
+    config:
+      routes:
+        - id: ai-request-rewrite-missing-auth
+          uri: /missing-auth
+          plugins:
+            ai-request-rewrite: {prompt: some prompt, provider: openai}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /missing-auth, body: '{}'}
+        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-auth fail:.*ai-request-rewrite.*auth'}}
+
+  - name: missing-provider-is-rejected
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [4]}
+    config:
+      routes:
+        - id: ai-request-rewrite-missing-provider
+          uri: /missing-provider
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /missing-provider, body: '{}'}
+        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-provider fail:.*ai-request-rewrite.*provider'}}
+
+  - name: invalid-provider-is-rejected
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [5]}
+    config:
+      routes:
+        - id: ai-request-rewrite-invalid-provider
+          uri: /invalid-provider
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: invalid-provider
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /invalid-provider, body: '{}'}
+        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-invalid-provider fail:.*ai-request-rewrite.*provider'}}
+
+  - name: default-deepseek-provider-configuration
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [6]}
+    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+    config:
+      routes:
+        - id: ai-request-rewrite-deepseek
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: deepseek
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: provider-proxy
+        kind: http
+        expect:
+          - method: CONNECT
+            host: {equals: 'api.deepseek.com:443'}
+        respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: default-deepseek-endpoint-is-resolved
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 500, body: {matches: 'failed to request LLM'}}
+
+  - name: openai-compatible-provider-rewrites-through-override
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [7]}
+    config:
+      routes:
+        - id: ai-request-rewrite-compatible
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai-compatible
+              auth: {header: {Authorization: Bearer token}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    fixtures:
+      - {name: llm, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: valid-compatible-provider-route-is-installed
+        input: {method: POST, path: /anything}
+        output: {status: 400, body: {json_equals: '{"message":"missing request body"}'}}
+
+  - name: override-endpoint-path-is-used
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [8]}
+    config:
+      routes:
+        - id: ai-request-rewrite-override-path
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai
+              auth: {header: {Authorization: Bearer token}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}/random'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /random}
+            headers: {Content-Type: {equals: application/json}, Authorization: {equals: Bearer token}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt"},{"role":"user","content":"some random content"}],"stream":false}'}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"content":"path override works"}}]}'}]
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /anything}
+            headers: {Content-Type: {equals: text/plain}}
+            body: {equals: path override works}
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+    steps:
+      - name: rewritten-response-is-replayed-upstream
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
+
+  - name: wrong-header-auth-is-mapped-to-server-error
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [9]}
+    config:
+      routes:
+        - id: ai-request-rewrite-wrong-header
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai
+              auth: {header: {Authorization: Bearer wrong-token}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v1/chat/completions}
+            headers: {Content-Type: {equals: application/json}, Authorization: {equals: Bearer wrong-token}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt"},{"role":"user","content":"some random content"}],"stream":false}'}
+        respond:
+          - status: 401
+            headers: {Content-Type: text/plain}
+            body: |
+              Unauthorized
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: provider-auth-failure-is-visible-to-client
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output:
+          status: 500
+          headers: {Content-Type: {equals: application/json}}
+          body: {json_equals: '{"message":"LLM service returned error status: 401"}'}
+          logs: {matches: 'LLM service returned error status: 401'}
+
+  - name: query-auth-is-propagated
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [10]}
+    config:
+      routes:
+        - id: ai-request-rewrite-query-auth
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai
+              auth: {query: {api_key: apikey}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/v1/chat/completions?api_key=apikey'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt"},{"role":"user","content":"some random content"}],"stream":false}'}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"content":"some prompt some random content"}}]}'}]
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /anything}
+            headers: {Content-Type: {equals: text/plain}}
+            body: {equals: some prompt some random content}
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+    steps:
+      - name: query-authenticated-prompt-is-rewritten
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
+
+  - name: prompt-is-sent-to-the-llm
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [12]}
+    config:
+      routes:
+        - id: ai-request-rewrite-prompt
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt to test
+              provider: openai
+              auth: {query: {api_key: apikey}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/v1/chat/completions?api_key=apikey'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt to test"},{"role":"user","content":"some random content"}],"stream":false}'}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"content":"some prompt to test some random content"}}]}'}]
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /anything}
+            headers: {Content-Type: {equals: text/plain}}
+            body: {equals: some prompt to test some random content}
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+    steps:
+      - name: prompt-and-rewritten-request-reach-their-targets
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
+
+  - name: wrong-query-auth-is-mapped-to-server-error
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [11]}
+    config:
+      routes:
+        - id: ai-request-rewrite-wrong-query
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai
+              auth: {query: {api_key: wrong_key}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/v1/chat/completions?api_key=wrong_key'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt"},{"role":"user","content":"some random content"}],"stream":false}'}
+        respond:
+          - status: 401
+            headers: {Content-Type: text/plain}
+            body: |
+              Unauthorized
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: provider-query-auth-failure-is-visible-to-client
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output:
+          status: 500
+          headers: {Content-Type: {equals: application/json}}
+          body: {json_equals: '{"message":"LLM service returned error status: 401"}'}
+          logs: {matches: 'LLM service returned error status: 401'}
+
+  - name: provider-errors-preserve-options
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [13, 14]}
+    variants:
+      - name: bad-request
+        config:
+          routes:
+            - id: ai-request-rewrite-provider-400
+              uri: /anything
+              plugins:
+                ai-request-rewrite:
+                  prompt: some prompt to test
+                  provider: openai
+                  auth: {query: {api_key: apikey}}
+                  override: {endpoint: '{{FIXTURE.llm.URL}}/bad_request'}
+                  ssl_verify: false
+                  options: {model: check_options_model, temperature: 0.5, max_tokens: 100, top_p: 1, frequency_penalty: 0, presence_penalty: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: llm
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: '/bad_request?api_key=apikey'}
+                headers: {Content-Type: {equals: application/json}}
+                body: {json_equals: '{"messages":[{"role":"system","content":"some prompt to test"},{"role":"user","content":"some random content"}],"stream":false,"model":"check_options_model","temperature":0.5,"max_tokens":100,"top_p":1,"frequency_penalty":0,"presence_penalty":0}'}
+            respond:
+              - status: 400
+                headers: {Content-Type: text/plain}
+                body: |
+                  Bad Request
+          - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+        steps:
+          - name: provider-400-is-mapped-to-server-error
+            input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+            output:
+              status: 500
+              headers: {Content-Type: {equals: application/json}}
+              body: {json_equals: '{"message":"LLM service returned error status: 400"}'}
+              logs: {matches: 'LLM service returned error status: 400'}
+      - name: internal-server-error
+        config:
+          routes:
+            - id: ai-request-rewrite-provider-500
+              uri: /anything
+              plugins:
+                ai-request-rewrite:
+                  prompt: some prompt to test
+                  provider: openai
+                  auth: {query: {api_key: apikey}}
+                  override: {endpoint: '{{FIXTURE.llm.URL}}/internalservererror'}
+                  ssl_verify: false
+                  options: {model: check_options_model, temperature: 0.5, max_tokens: 100, top_p: 1, frequency_penalty: 0, presence_penalty: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: llm
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: '/internalservererror?api_key=apikey'}
+                headers: {Content-Type: {equals: application/json}}
+                body: {json_equals: '{"messages":[{"role":"system","content":"some prompt to test"},{"role":"user","content":"some random content"}],"stream":false,"model":"check_options_model","temperature":0.5,"max_tokens":100,"top_p":1,"frequency_penalty":0,"presence_penalty":0}'}
+            respond:
+              - status: 500
+                headers: {Content-Type: text/plain}
+                body: |
+                  Internal Server Error
+          - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+        steps:
+          - name: provider-500-is-mapped-to-server-error
+            input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+            output:
+              status: 500
+              headers: {Content-Type: {equals: application/json}}
+              body: {json_equals: '{"message":"LLM service returned error status: 500"}'}
+              logs: {matches: 'LLM service returned error status: 500'}
+
+  - name: default-aimlapi-provider-configuration
+    source: {file: t/plugin/ai-request-rewrite.t, tests: [15]}
+    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+    config:
+      routes:
+        - id: ai-request-rewrite-aimlapi
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: aimlapi
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: provider-proxy
+        kind: http
+        expect:
+          - method: CONNECT
+            host: {equals: 'api.aimlapi.com:443'}
+        respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: default-aimlapi-endpoint-is-resolved
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 500, body: {matches: 'failed to request LLM'}}
+
+  - name: options-are-sent-to-the-llm
+    source: {file: t/plugin/ai-request-rewrite2.t, tests: [1]}
+    config:
+      routes:
+        - id: ai-request-rewrite-options
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt to test
+              provider: openai
+              auth: {query: {api_key: apikey}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}/check_extra_options'}
+              ssl_verify: false
+              options: {model: check_options_model, extra_option: extra option}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/check_extra_options?api_key=apikey'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt to test"},{"role":"user","content":"some random content"}],"stream":false,"model":"check_options_model","extra_option":"extra option"}'}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"content":"ok"}}]}'}]
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /anything}
+            headers: {Content-Type: {equals: text/plain}}
+            body: {equals: ok}
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+    steps:
+      - name: options-and-rewritten-body-reach-their-targets
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 200, headers: {Content-Type: {equals: text/plain}}, body: {equals: passed}}
+
+  - name: compatible-provider-requires-override-endpoint
+    source: {file: t/plugin/ai-request-rewrite2.t, tests: [2]}
+    config:
+      routes:
+        - id: ai-request-rewrite-compatible-no-override
+          uri: /compatible-no-override
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt
+              provider: openai-compatible
+              auth: {header: {Authorization: Bearer token}}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /compatible-no-override, body: '{}'}
+        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-compatible-no-override fail:.*ai-request-rewrite.*override.endpoint'}}
+
+  - name: override-endpoint-query-is-preserved
+    source: {file: t/plugin/ai-request-rewrite2.t, tests: [3]}
+    config:
+      routes:
+        - id: ai-request-rewrite-override-query
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt to test
+              provider: openai
+              auth: {query: {api_key: apikey}}
+              options: {model: gpt-35-turbo-instruct}
+              override: {endpoint: '{{FIXTURE.llm.URL}}/test/params/in/overridden/endpoint?some_query=yes'}
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: llm
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/test/params/in/overridden/endpoint?api_key=apikey&some_query=yes'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"system","content":"some prompt to test"},{"role":"user","content":"some random content"}],"stream":false,"model":"gpt-35-turbo-instruct"}'}
+        respond: [{status: 200, headers: {Content-Type: text/plain}, body: passed}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: endpoint-and-auth-query-parameters-reach-llm
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
+        output: {status: 500, body: {matches: 'failed to decode LLM response'}}
+
+  - name: missing-request-body-is-rejected
+    source: {file: t/plugin/ai-request-rewrite2.t, tests: [4]}
+    config:
+      routes:
+        - id: ai-request-rewrite-missing-body
+          uri: /anything
+          plugins:
+            ai-request-rewrite:
+              prompt: some prompt to test
+              provider: openai
+              auth: {query: {api_key: apikey}}
+              override: {endpoint: '{{FIXTURE.llm.URL}}/check_extra_options'}
+              ssl_verify: false
+              options: {model: check_options_model, extra_option: extra option}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: llm, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: empty-client-request-does-not-call-llm-or-upstream
+        input: {method: POST, path: /anything, headers: {Content-Type: text/plain}}
+        output:
+          status: 400
+          headers: {Content-Type: {equals: application/json}}
+          body: {json_equals: '{"message":"missing request body"}'}
+          logs: {matches: 'missing request body'}
+
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-request-rewrite.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-request-rewrite2.t
+    tests: 4

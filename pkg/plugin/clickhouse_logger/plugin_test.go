@@ -60,6 +60,64 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "$ENV://CLICK_HOUSE_USER",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	})
+
+	if p.config.User != "fixture-user" {
+		t.Fatalf("user = %q, want resolved environment value", p.config.User)
+	}
+}
+
+func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		user string
+	}{
+		{name: "missing-name", user: "$ENV://"},
+		{name: "missing-value", user: "$ENV://CLICK_HOUSE_USER_MISSING"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				EndpointAddrs: []string{"http://127.0.0.1:8123"},
+				User:          test.user,
+				Password:      "secret",
+				Database:      "default",
+				LogTable:      "apisix_logs",
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatalf("PostInit() error = nil, want invalid environment reference rejection")
+			}
+		})
+	}
+}
+
+func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER_EMPTY", "")
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "$ENV://CLICK_HOUSE_USER_EMPTY",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	})
+
+	if p.config.User != "" {
+		t.Fatalf("user = %q, want preserved empty environment value", p.config.User)
+	}
+}
+
 func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
@@ -143,11 +201,14 @@ func TestEndpointURLPrefersDeprecatedEndpointAddr(t *testing.T) {
 
 func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 	oldRandomEndpointIndex := randomEndpointIndex
+	next := 0
 	randomEndpointIndex = func(n int) int {
 		if n != 2 {
 			t.Fatalf("random endpoint count = %d, want 2", n)
 		}
-		return 1
+		index := next
+		next = (next + 1) % n
+		return index
 	}
 	t.Cleanup(func() {
 		randomEndpointIndex = oldRandomEndpointIndex
@@ -161,8 +222,67 @@ func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
+	if got := p.endpointURL(); got != "http://127.0.0.1:8123" {
+		t.Fatalf("first endpointURL() = %q, want first endpoint_addrs entry", got)
+	}
 	if got := p.endpointURL(); got != "http://127.0.0.2:8123" {
-		t.Fatalf("endpointURL() = %q, want selected endpoint_addrs entry", got)
+		t.Fatalf("second endpointURL() = %q, want second endpoint_addrs entry", got)
+	}
+}
+
+func TestSendBatchDeliversToEachConfiguredEndpoint(t *testing.T) {
+	seen := make(chan int, 2)
+	servers := make([]*httptest.Server, 2)
+	for index := range servers {
+		servers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.ReadAll(r.Body); err != nil {
+				t.Errorf("read endpoint %d request body: %v", index, err)
+			}
+			seen <- index
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(servers[index].Close)
+	}
+
+	oldRandomEndpointIndex := randomEndpointIndex
+	next := 0
+	randomEndpointIndex = func(n int) int {
+		if n != len(servers) {
+			t.Fatalf("random endpoint count = %d, want %d", n, len(servers))
+		}
+		index := next
+		next = (next + 1) % n
+		return index
+	}
+	t.Cleanup(func() { randomEndpointIndex = oldRandomEndpointIndex })
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{servers[0].URL, servers[1].URL},
+		User:          "default",
+		Password:      "secret",
+		Database:      "analytics",
+		LogTable:      "apisix_logs",
+		Timeout:       1,
+		SSLVerify:     &sslVerify,
+	})
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+
+	for range servers {
+		if _, err := p.SendBatch([]map[string]any{{"path": "/orders"}}, 1); err != nil {
+			t.Fatalf("SendBatch() error = %v", err)
+		}
+	}
+
+	for want := range servers {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("delivery %d reached endpoint %d, want endpoint %d", want, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for delivery %d", want)
+		}
 	}
 }
 

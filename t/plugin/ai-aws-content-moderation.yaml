@@ -1,0 +1,691 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation-secrets.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation.t
+    tests: 16
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation2.t
+    tests: 2
+
+cases:
+  - name: vault-secret-resource-is-used
+    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [1]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      routes:
+        - id: aws-moderation-vault-resource
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: &ai_proxy
+              provider: openai-compatible
+              auth: {header: {Authorization: Bearer provider-token}}
+              override: {endpoint: '{{FIXTURE.provider.URL}}'}
+            ai-aws-content-moderation:
+              comprehend: &vault_comprehend
+                access_key_id: '$secret://vault/test1/foo/access_key_id'
+                secret_access_key: '$secret://vault/test1/foo/secret_access_key'
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+    fixtures:
+      - &vault_fixture
+        name: vault
+        kind: http
+        expect:
+          - &vault_expect
+            method: GET
+            path: {equals: /v1/kv/apisix/foo}
+            headers: {X-Vault-Token: {equals: root}, X-Vault-Namespace: {absent: true}}
+          - *vault_expect
+        respond:
+          - &vault_response
+            status: 200
+            body: '{"data":{"access_key_id":"vault-access","secret_access_key":"vault-secret"}}'
+          - *vault_response
+      - &clean_comprehend_vault
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /}
+            headers:
+              Content-Type: {equals: application/x-amz-json-1.1}
+              X-Amz-Target: {equals: Comprehend_20171127.DetectToxicContent}
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=vault-access/[0-9]{8}/us-east-1/comprehend/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=[0-9a-f]{64}$'
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"good_request"}]}'}
+        respond:
+          - &clean_response
+            status: 200
+            body: '{"ResultList":[{"Toxicity":0.02150000333786,"Labels":[{"Name":"PROFANITY","Score":0.00589999556541}]}]}'
+      - &provider_good
+        name: provider
+        kind: http
+        expect:
+          - method: POST
+            headers: {Authorization: {equals: Bearer provider-token}}
+            body: {json_equals: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"good_request"}]}'}
+        respond:
+          - status: 200
+            headers: {Content-Type: application/json}
+            body: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'
+    steps:
+      - name: vault-secret-resource-is-used-request
+        input: &good_input
+          method: POST
+          path: /v1/chat/completions
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"good_request"}]}'
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'vault-secret|vault-access'}
+
+  - name: vault-access-and-secret-references-configure-route
+    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [2]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      routes:
+        - id: aws-moderation-vault-references
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation: {comprehend: *vault_comprehend}
+    fixtures:
+      - *vault_fixture
+      - *clean_comprehend_vault
+      - *provider_good
+    steps:
+      - name: vault-access-and-secret-references-configure-route-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'vault-secret|vault-access'}
+
+  - name: vault-credentials-sign-clean-request
+    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [3]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      routes:
+        - id: aws-moderation-vault-request
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation: {comprehend: *vault_comprehend}
+    fixtures:
+      - *vault_fixture
+      - *clean_comprehend_vault
+      - *provider_good
+    steps:
+      - name: vault-credentials-sign-clean-request-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'vault-secret|vault-access'}
+
+  - name: environment-credential-references-configure-route
+    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [4]}
+    environment: &aws_environment
+      AWS_MODERATION_ACCESS_KEY: environment-access
+      AWS_MODERATION_SECRET_KEY: environment-secret
+    config:
+      routes:
+        - id: aws-moderation-environment-references
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend: &environment_comprehend
+                access_key_id: '$ENV://AWS_MODERATION_ACCESS_KEY'
+                secret_access_key: '$ENV://AWS_MODERATION_SECRET_KEY'
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+    fixtures:
+      - &clean_comprehend_environment
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            headers:
+              Content-Type: {equals: application/x-amz-json-1.1}
+              X-Amz-Target: {equals: Comprehend_20171127.DetectToxicContent}
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=environment-access/[0-9]{8}/us-east-1/comprehend/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=[0-9a-f]{64}$'
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"good_request"}]}'}
+        respond: [*clean_response]
+      - *provider_good
+    steps:
+      - name: environment-credential-references-configure-route-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'environment-secret|environment-access'}
+
+  - name: environment-credentials-sign-clean-request
+    source: {file: t/plugin/ai-aws-content-moderation-secrets.t, tests: [5]}
+    environment: *aws_environment
+    config:
+      routes:
+        - id: aws-moderation-environment-request
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation: {comprehend: *environment_comprehend}
+    fixtures:
+      - *clean_comprehend_environment
+      - *provider_good
+    steps:
+      - name: environment-credentials-sign-clean-request-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'environment-secret|environment-access'}
+
+  - name: ai-proxy-moderation-route-and-session-signature
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [1]}
+    config:
+      routes:
+        - id: aws-moderation-sanity
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend: &literal_comprehend
+                access_key_id: access
+                secret_access_key: ea+secret
+                session_token: temporary-token
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              deny_code: 400
+    fixtures:
+      - name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            headers:
+              Content-Type: {equals: application/x-amz-json-1.1}
+              X-Amz-Target: {equals: Comprehend_20171127.DetectToxicContent}
+              X-Amz-Security-Token: {equals: temporary-token}
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=access/[0-9]{8}/us-east-1/comprehend/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token;x-amz-target, Signature=[0-9a-f]{64}$'
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"good_request"}]}'}
+        respond: [*clean_response]
+      - *provider_good
+    steps:
+      - name: ai-proxy-moderation-route-and-session-signature-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+          logs: {not_matches: 'ea\+secret|temporary-token'}
+
+  - name: toxic-request-fails-overall-threshold
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [2]}
+    config:
+      routes:
+        - &toxic_route
+          id: aws-moderation-toxic
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              deny_code: 400
+    fixtures:
+      - &toxic_comprehend
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            headers:
+              X-Amz-Target: {equals: Comprehend_20171127.DetectToxicContent}
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=access/[0-9]{8}/us-east-1/comprehend/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=[0-9a-f]{64}$'
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"toxic"}]}'}
+        respond:
+          - status: 200
+            body: '{"ResultList":[{"Toxicity":0.72150000333786,"Labels":[{"Name":"PROFANITY","Score":0.25589999556541}]}]}'
+      - &provider_never
+        name: provider
+        kind: http
+        expect_requests: 0
+        expect: []
+        respond: [{status: 500, body: unexpected provider request}]
+    steps:
+      - name: toxic-request-fails-overall-threshold-request
+        input: &toxic_input
+          method: POST
+          path: /v1/chat/completions
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"toxic"}]}'
+        output:
+          status: 400
+          headers: {Content-Type: {equals: application/json}}
+          body: {matches: '"content":"request body exceeds toxicity threshold"'}
+          logs: {not_matches: 'ea\+secret'}
+
+  - name: good-request-reaches-provider
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [3]}
+    config:
+      routes:
+        - id: aws-moderation-good
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              deny_code: 400
+    fixtures:
+      - &clean_comprehend_literal
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            headers:
+              X-Amz-Target: {equals: Comprehend_20171127.DetectToxicContent}
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=access/[0-9]{8}/us-east-1/comprehend/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=[0-9a-f]{64}$'
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"good_request"}]}'}
+        respond: [*clean_response]
+      - *provider_good
+    steps:
+      - name: good-request-reaches-provider-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+
+  - name: profanity-filter-route
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [4]}
+    config:
+      routes:
+        - &profanity_half_route
+          id: aws-moderation-profanity-half-setup
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              moderation_categories: {PROFANITY: 0.5}
+              deny_code: 400
+    fixtures:
+      - *clean_comprehend_literal
+      - *provider_good
+    steps:
+      - name: profanity-filter-route-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+
+  - name: profane-request-fails-category-threshold
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [5]}
+    config:
+      routes:
+        - <<: *profanity_half_route
+          id: aws-moderation-profane-half
+    fixtures:
+      - &profane_comprehend
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"profane"}]}'}
+        respond:
+          - status: 200
+            body: '{"ResultList":[{"Toxicity":0.62150000333786,"Labels":[{"Name":"PROFANITY","Score":0.55589999556541}]}]}'
+      - *provider_never
+    steps:
+      - name: profane-request-fails-category-threshold-request
+        input: &profane_input
+          method: POST
+          path: /v1/chat/completions
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"profane"}]}'
+        output:
+          status: 400
+          body: {matches: '"content":"request body exceeds PROFANITY threshold"'}
+
+  - name: very-profane-request-also-fails-category-threshold
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [6]}
+    config:
+      routes:
+        - <<: *profanity_half_route
+          id: aws-moderation-very-profane-half
+    fixtures:
+      - &very_profane_comprehend
+        name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            body: {equals: '{"LanguageCode":"en","TextSegments":[{"Text":"very_profane"}]}'}
+        respond:
+          - status: 200
+            body: '{"ResultList":[{"Toxicity":0.72150000333786,"Labels":[{"Name":"PROFANITY","Score":0.85589999556541}]}]}'
+      - *provider_never
+    steps:
+      - name: very-profane-request-also-fails-category-threshold-request
+        input: &very_profane_input
+          method: POST
+          path: /v1/chat/completions
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"very_profane"}]}'
+        output:
+          status: 400
+          body: {matches: '"content":"request body exceeds PROFANITY threshold"'}
+
+  - name: good-request-passes-profanity-filter
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [7]}
+    config:
+      routes:
+        - <<: *profanity_half_route
+          id: aws-moderation-good-half
+    fixtures:
+      - *clean_comprehend_literal
+      - *provider_good
+    steps:
+      - name: good-request-passes-profanity-filter-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+
+  - name: profanity-threshold-point-seven-route
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [8]}
+    config:
+      routes:
+        - &profanity_seven_route
+          id: aws-moderation-profanity-seven-setup
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              moderation_categories: {PROFANITY: 0.7}
+              deny_code: 400
+    fixtures:
+      - *clean_comprehend_literal
+      - *provider_good
+    steps:
+      - name: profanity-threshold-point-seven-route-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+
+  - name: profane-request-falls-through-to-overall-toxicity
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [9]}
+    config:
+      routes:
+        - <<: *profanity_seven_route
+          id: aws-moderation-profane-seven
+    fixtures:
+      - *profane_comprehend
+      - *provider_never
+    steps:
+      - name: profane-request-falls-through-to-overall-toxicity-request
+        input: *profane_input
+        output:
+          status: 400
+          body: {matches: '"content":"request body exceeds toxicity threshold"'}
+
+  - name: profane-but-not-toxic-request-passes
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [10]}
+    config:
+      routes:
+        - <<: *profanity_seven_route
+          id: aws-moderation-profane-not-toxic
+    fixtures:
+      - name: comprehend
+        kind: http
+        expect:
+          - method: POST
+            body:
+              equals: '{"LanguageCode":"en","TextSegments":[{"Text":"profane_but_not_toxic"}]}'
+        respond:
+          - status: 200
+            body: '{"ResultList":[{"Toxicity":0.12150000333786,"Labels":[{"Name":"PROFANITY","Score":0.55589999556541}]}]}'
+      - name: provider
+        kind: http
+        expect:
+          - method: POST
+            body: {json_equals: '{"messages":[{"role":"user","content":"profane_but_not_toxic"}]}'}
+        respond:
+          - status: 200
+            headers: {Content-Type: application/json}
+            body: '{"choices":[{"message":{"role":"assistant","content":"profane_but_not_toxic"}}]}'
+    steps:
+      - name: profane-but-not-toxic-request-passes-request
+        input:
+          method: POST
+          path: /v1/chat/completions
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"profane_but_not_toxic"}]}'
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"profane_but_not_toxic"}}]}'}
+
+  - name: very-profane-category-precedes-overall-toxicity
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [11]}
+    config:
+      routes:
+        - <<: *profanity_seven_route
+          id: aws-moderation-very-profane-seven
+    fixtures:
+      - *very_profane_comprehend
+      - *provider_never
+    steps:
+      - name: very-profane-category-precedes-overall-toxicity-request
+        input: *very_profane_input
+        output:
+          status: 400
+          body: {matches: '"content":"request body exceeds PROFANITY threshold"'}
+
+  - name: good-request-passes-raised-profanity-threshold
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [12]}
+    config:
+      routes:
+        - <<: *profanity_seven_route
+          id: aws-moderation-good-seven
+    fixtures:
+      - *clean_comprehend_literal
+      - *provider_good
+    steps:
+      - name: good-request-passes-raised-profanity-threshold-request
+        input: *good_input
+        output:
+          status: 200
+          body: {equals: '{"choices":[{"message":{"role":"assistant","content":"good_request"}}]}'}
+
+  - name: route-without-ai-proxy-defaults-to-skip
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [13]}
+    config:
+      routes:
+        - &skip_route
+          id: aws-moderation-skip-setup
+          uri: /echo
+          plugins:
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.upstream.ADDR}}': 1}}
+    fixtures:
+      - &comprehend_never
+        name: comprehend
+        kind: http
+        expect_requests: 0
+        expect: []
+        respond: [{status: 500, body: unexpected moderation request}]
+      - &skip_upstream
+        name: upstream
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            body: {equals: '{"messages":[{"role":"user","content":"toxic"}]}'}
+        respond: [{status: 200, body: '{"messages":[{"role":"user","content":"toxic"}]}'}]
+    steps:
+      - name: route-without-ai-proxy-defaults-to-skip-request
+        input: &skip_input
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"toxic"}]}'
+        output:
+          status: 200
+          body: {equals: '{"messages":[{"role":"user","content":"toxic"}]}'}
+          logs: {matches: 'ai-aws-content-moderation skipped: no ai instance picked'}
+
+  - name: request-without-ai-proxy-passes-unchecked
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [14]}
+    config:
+      routes:
+        - <<: *skip_route
+          id: aws-moderation-skip-request
+    fixtures:
+      - *comprehend_never
+      - *skip_upstream
+    steps:
+      - name: request-without-ai-proxy-passes-unchecked-request
+        input: *skip_input
+        output:
+          status: 200
+          body: {equals: '{"messages":[{"role":"user","content":"toxic"}]}'}
+          logs: {matches: 'ai-aws-content-moderation skipped: no ai instance picked'}
+
+  - name: route-without-ai-proxy-can-fail-closed
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [15]}
+    config:
+      routes:
+        - &error_route
+          id: aws-moderation-error-setup
+          uri: /echo
+          plugins:
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: '{{FIXTURE.comprehend.URL}}'
+              fail_mode: error
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.upstream.ADDR}}': 1}}
+    fixtures:
+      - *comprehend_never
+      - name: upstream
+        kind: http
+        expect_requests: 0
+        expect: []
+        respond: [{status: 500, body: unexpected upstream request}]
+    steps:
+      - name: route-without-ai-proxy-can-fail-closed-request
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"good_request"}]}'
+        output: &missing_ai_error
+          status: 500
+          headers: {Content-Type: {equals: text/plain}}
+          body:
+            equals: 'no ai instance picked, ai-aws-content-moderation plugin must be used with ai-proxy or ai-proxy-multi plugin'
+
+  - name: request-without-ai-proxy-is-rejected-in-error-mode
+    source: {file: t/plugin/ai-aws-content-moderation.t, tests: [16]}
+    config:
+      routes:
+        - <<: *error_route
+          id: aws-moderation-error-request
+    fixtures:
+      - *comprehend_never
+      - name: upstream
+        kind: http
+        expect_requests: 0
+        expect: []
+        respond: [{status: 500, body: unexpected upstream request}]
+    steps:
+      - name: request-without-ai-proxy-is-rejected-in-error-mode-request
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"good_request"}]}'
+        output: *missing_ai_error
+
+  - name: route-with-unreachable-comprehend-fails-closed
+    source: {file: t/plugin/ai-aws-content-moderation2.t, tests: [1]}
+    config:
+      routes:
+        - &unreachable_route
+          id: aws-moderation-unreachable-setup
+          uri: /v1/chat/completions
+          plugins:
+            ai-proxy: *ai_proxy
+            ai-aws-content-moderation:
+              comprehend:
+                access_key_id: access
+                secret_access_key: ea+secret
+                region: us-east-1
+                endpoint: http://127.0.0.1:1
+    fixtures:
+      - *provider_never
+    steps:
+      - name: route-with-unreachable-comprehend-fails-closed-request
+        input: *toxic_input
+        output: &unreachable_error
+          status: 500
+          headers: {Content-Type: {equals: text/plain}}
+          body: {matches: '^failed to send request to http://127\.0\.0\.1:1: .*connection refused$'}
+          logs:
+            matches: 'failed to send request to http://127\.0\.0\.1:1: .*connection refused'
+
+  - name: unreachable-comprehend-request-reports-service-error
+    source: {file: t/plugin/ai-aws-content-moderation2.t, tests: [2]}
+    config:
+      routes:
+        - <<: *unreachable_route
+          id: aws-moderation-unreachable-request
+    fixtures:
+      - *provider_never
+    steps:
+      - name: unreachable-comprehend-request-reports-service-error-request
+        input: *toxic_input
+        output: *unreachable_error

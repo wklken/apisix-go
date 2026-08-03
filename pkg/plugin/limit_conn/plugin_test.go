@@ -1,12 +1,19 @@
 package limit_conn
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -210,12 +217,53 @@ func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
-	wantKey := "route:route-1:192.0.2.70"
-	if redisLimiter.key != wantKey || redisLimiter.leavingKey != wantKey {
-		t.Fatalf("admission/release keys = %q/%q, want %q", redisLimiter.key, redisLimiter.leavingKey, wantKey)
+	wantPrefix := "route:route-1:192.0.2.70:config:"
+	if redisLimiter.key != redisLimiter.leavingKey || !strings.HasPrefix(redisLimiter.key, wantPrefix) {
+		t.Fatalf(
+			"admission/release keys = %q/%q, want matching keys with prefix %q",
+			redisLimiter.key,
+			redisLimiter.leavingKey,
+			wantPrefix,
+		)
 	}
 	if redisLimiter.left != 1 {
 		t.Fatalf("redis leaving calls = %d, want 1", redisLimiter.left)
+	}
+}
+
+func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
+	routeLimiter := &fakeRedisConnLimiter{allowed: true}
+	routePlugin := newTestPlugin(t, Config{
+		Conn:             4,
+		Burst:            1,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	routePlugin.redisLimiter = routeLimiter
+	routePlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	globalLimiter := &fakeRedisConnLimiter{allowed: true}
+	globalPlugin := newTestPlugin(t, Config{
+		Conn:             2,
+		Burst:            1,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	globalPlugin.redisLimiter = globalLimiter
+	globalPlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	if _, _, err := routePlugin.increase("192.0.2.70", 4, 1); err != nil {
+		t.Fatalf("route increase error = %v", err)
+	}
+	if _, _, err := globalPlugin.increase("192.0.2.70", 2, 1); err != nil {
+		t.Fatalf("global increase error = %v", err)
+	}
+	if routeLimiter.key == globalLimiter.key {
+		t.Fatalf("route/global redis keys both = %q, want distinct config scopes", routeLimiter.key)
 	}
 }
 
@@ -318,8 +366,8 @@ func TestHandlerUsesRedisLimiter(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
 	}
-	if redisLimiter.key != "192.0.2.70" {
-		t.Fatalf("redis key = %q, want 192.0.2.70", redisLimiter.key)
+	if !strings.HasPrefix(redisLimiter.key, "192.0.2.70:config:") {
+		t.Fatalf("redis key = %q, want config-scoped 192.0.2.70 key", redisLimiter.key)
 	}
 	if redisLimiter.left != 1 {
 		t.Fatalf("redis leaving calls = %d, want 1", redisLimiter.left)
@@ -347,6 +395,72 @@ func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
 	}
 	if got := res.Body.String(); got != `{"error_msg":"too many connections"}` {
 		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"too many connections"}`)
+	}
+}
+
+func TestHandlerLogsRedisLimiterError(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = &fakeRedisConnLimiter{
+		err: errors.New("WRONGPASS invalid username-password pair or user is disabled"),
+	}
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("limit-conn-redis-error-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "WRONGPASS") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})), "192.0.2.81:12345")
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
+	}
+
+	select {
+	case entry := <-entries:
+		want := "failed to limit conn: WRONGPASS invalid username-password pair or user is disabled"
+		if entry.Message != want {
+			t.Fatalf("log message = %q, want %q", entry.Message, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Redis limiter error was not logged")
+	}
+}
+
+func TestLogRedisConnectionReuseReportsPoolHits(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver("limit-conn-redis-reuse-test", func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "redis connection reused times:") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	logRedisConnectionReuse(fakeRedisPoolStatsProvider{hits: 0})
+	logRedisConnectionReuse(fakeRedisPoolStatsProvider{hits: 1})
+
+	for _, want := range []string{
+		"redis connection reused times: 0",
+		"redis connection reused times: 1",
+	} {
+		select {
+		case entry := <-entries:
+			if entry.Message != want {
+				t.Fatalf("log message = %q, want %q", entry.Message, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("did not observe %q", want)
+		}
 	}
 }
 
@@ -693,6 +807,263 @@ func TestHandlerResolvesStringRuleConnAndBurst(t *testing.T) {
 	wg.Wait()
 }
 
+func TestResolveLimitValueSupportsDefaultExpressions(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+
+	conn, err := resolveLimitValue(req, "${http_conn ?? 5}", "conn", false)
+	if err != nil {
+		t.Fatalf("resolve default conn: %v", err)
+	}
+	if conn != 5 {
+		t.Fatalf("default conn = %d, want 5", conn)
+	}
+
+	burst, err := resolveLimitValue(req, "${http_burst ?? 2}", "burst", true)
+	if err != nil {
+		t.Fatalf("resolve default burst: %v", err)
+	}
+	if burst != 2 {
+		t.Fatalf("default burst = %d, want 2", burst)
+	}
+
+	req.Header.Set("Conn", "3")
+	req.Header.Set("Burst", "4")
+	conn, err = resolveLimitValue(req, "${http_conn ?? 5}", "conn", false)
+	if err != nil {
+		t.Fatalf("resolve header conn: %v", err)
+	}
+	if conn != 3 {
+		t.Fatalf("header conn = %d, want 3", conn)
+	}
+	burst, err = resolveLimitValue(req, "${http_burst ?? 2}", "burst", true)
+	if err != nil {
+		t.Fatalf("resolve header burst: %v", err)
+	}
+	if burst != 4 {
+		t.Fatalf("header burst = %d, want 4", burst)
+	}
+}
+
+func TestResolveRuleKeySkipsMissingVariable(t *testing.T) {
+	p := &Plugin{}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	rule := Rule{Key: "${http_project}"}
+
+	if key, ok := p.resolveRuleKey(req, 1, rule); ok {
+		t.Fatalf("resolveRuleKey() = %q, true; want missing variable to skip the rule", key)
+	}
+
+	req.Header.Set("Project", "apisix")
+	key, ok := p.resolveRuleKey(req, 1, rule)
+	if !ok {
+		t.Fatal("resolveRuleKey() skipped a present project variable")
+	}
+	if key != "rule:1:apisix" {
+		t.Fatalf("resolveRuleKey() = %q, want rule:1:apisix", key)
+	}
+}
+
+func TestResolveLimitValueRejectsInvalidDynamicValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		value      string
+		expression string
+		allowZero  bool
+		wantError  string
+	}{
+		{
+			name:       "zero conn",
+			header:     "Conn",
+			value:      "0",
+			expression: "${http_conn ?? 5}",
+			wantError:  "resolved value must be a positive number",
+		},
+		{
+			name:       "negative conn",
+			header:     "Conn",
+			value:      "-1",
+			expression: "${http_conn ?? 5}",
+			wantError:  "resolved value must be a positive number",
+		},
+		{
+			name:       "fractional conn",
+			header:     "Conn",
+			value:      "1.5",
+			expression: "${http_conn ?? 5}",
+			wantError:  "resolved value must be an integer",
+		},
+		{
+			name:       "conn above safe integer range",
+			header:     "Conn",
+			value:      "99007199254740993",
+			expression: "${http_conn ?? 5}",
+			wantError:  "resolved value exceeds safe integer range",
+		},
+		{
+			name:       "negative burst",
+			header:     "Burst",
+			value:      "-1",
+			expression: "${http_burst ?? 2}",
+			allowZero:  true,
+			wantError:  "resolved value must be a non-negative number",
+		},
+		{
+			name:       "fractional burst",
+			header:     "Burst",
+			value:      "1.5",
+			expression: "${http_burst ?? 2}",
+			allowZero:  true,
+			wantError:  "resolved value must be an integer",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			req.Header.Set(test.header, test.value)
+
+			_, err := resolveLimitValue(req, test.expression, strings.ToLower(test.header), test.allowZero)
+			if err == nil {
+				t.Fatal("resolveLimitValue() error = nil")
+			}
+			if !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("resolveLimitValue() error = %q, want substring %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestResolveLimitValueAcceptsZeroDynamicBurst(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Burst", "0")
+
+	burst, err := resolveLimitValue(req, "${http_burst ?? 2}", "burst", true)
+	if err != nil {
+		t.Fatalf("resolveLimitValue() error = %v", err)
+	}
+	if burst != 0 {
+		t.Fatalf("resolveLimitValue() = %d, want 0", burst)
+	}
+}
+
+func TestResolveKeyUsesConsumerName(t *testing.T) {
+	p := &Plugin{config: Config{Key: "consumer_name"}}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{"$consumer_name": "consumer_jack"})
+
+	if key := p.resolveKey(req); key != "consumer_jack" {
+		t.Fatalf("resolveKey() = %q, want consumer_jack", key)
+	}
+}
+
+func TestResolveKeyUsesServerAddr(t *testing.T) {
+	p := &Plugin{config: Config{Key: "server_addr"}}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = req.WithContext(context.WithValue(
+		req.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: 8080},
+	))
+
+	if key := p.resolveKey(req); key != "127.0.0.2" {
+		t.Fatalf("resolveKey() = %q, want 127.0.0.2", key)
+	}
+}
+
+func TestRequestLimitKeyPreservesNginxVariables(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?a=1", nil)
+	req.Header.Set("Content-Length", "12")
+
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{key: "query_string", want: "a=1"},
+		{key: "content_length", want: "12"},
+		{key: "request_line", want: "GET /get?a=1 HTTP/1.1"},
+	}
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			if got := requestLimitKey(req, test.key); got != test.want {
+				t.Fatalf("requestLimitKey(%q) = %q, want %q", test.key, got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveKeyLogsFallbackToClientIP(t *testing.T) {
+	p := &Plugin{config: Config{
+		Key:     "$http_a $http_b",
+		KeyType: "var_combination",
+	}}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.RemoteAddr = "192.0.2.90:12345"
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("limit-conn-fallback-key-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "configured key is empty") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	if key := p.resolveKey(req); key != "192.0.2.90" {
+		t.Fatalf("resolveKey() = %q, want 192.0.2.90", key)
+	}
+	select {
+	case entry := <-entries:
+		want := "The value of the configured key is empty, use client IP instead"
+		if entry.Message != want {
+			t.Fatalf("log message = %q, want %q", entry.Message, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fallback to client IP was not logged")
+	}
+}
+
+func TestDecreaseLogsMeasuredAndDefaultRequestLatency(t *testing.T) {
+	tests := []struct {
+		name                string
+		onlyUseDefaultDelay bool
+		want                string
+	}{
+		{name: "measured latency", want: "request latency is 0.1"},
+		{name: "default latency", onlyUseDefaultDelay: true, want: "request latency is nil"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				Conn:                1,
+				Burst:               0,
+				DefaultConnDelay:    0.3,
+				Key:                 "remote_addr",
+				OnlyUseDefaultDelay: test.onlyUseDefaultDelay,
+			})
+			p.conns["client"] = 1
+
+			entries := make(chan logger.Entry, 1)
+			stop := logger.ReplaceObserver("limit-conn-latency-test", func(entry logger.Entry) {
+				if strings.HasPrefix(entry.Message, "request latency is") {
+					entries <- entry
+				}
+			})
+			defer stop()
+
+			latency := 100 * time.Millisecond
+			p.decrease("client", &latency)
+			select {
+			case entry := <-entries:
+				if entry.Message != test.want {
+					t.Fatalf("log message = %q, want %q", entry.Message, test.want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("request latency was not logged")
+			}
+		})
+	}
+}
+
 func performRequest(handler http.Handler, remoteAddr string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.RemoteAddr = remoteAddr
@@ -725,6 +1096,14 @@ type fakeRedisConnLimiter struct {
 	allowed    bool
 	err        error
 	left       int
+}
+
+type fakeRedisPoolStatsProvider struct {
+	hits uint32
+}
+
+func (f fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
+	return &redis.PoolStats{Hits: f.hits}
 }
 
 func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {

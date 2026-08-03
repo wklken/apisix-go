@@ -13,7 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +26,7 @@ import (
 	"github.com/justinas/alice"
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -39,6 +42,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -50,22 +54,26 @@ const (
 	upstreamLatencyVar        = "$upstream_latency"
 )
 
-var parameterInPathRegexp = regexp.MustCompile(`:(\w+)`)
+var parameterInPathRegexp = regexp.MustCompile(`^:[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ConvertURI convert the apisix uri to chi compatible uri
 // NOTE:
 // 1. full path match: /blog/bar   same
 // 2. prefix match: /blog/bar*     same
 // 3. parameters in path: /blog/:name => /blog/{name} ok
+// 4. embedded wildcard: /articles/*/comments => chi prefix wildcard plus an exact suffix guard
 // FIXME:
 //
 //	https://github.com/api7/lua-resty-radixtree/#parameters-in-path
-//	4. not supported yet:
+//	5. not supported yet:
 //	   - /user/:user/*action
 //	   this will match `/user/john/` and also `/user/john/send`
 //	   - /user/*action
 func convertURI(uri string) (string, error) {
-	// if Asterisk in the uri, and endswith it, just return
+	if uri == "" || !strings.HasPrefix(uri, "/") || strings.ContainsAny(uri, "{}") {
+		return "", fmt.Errorf("not supported uri: %s", uri)
+	}
+
 	withColon := strings.ContainsRune(uri, ':')
 	withAsterisk := strings.ContainsRune(uri, '*')
 
@@ -74,19 +82,30 @@ func convertURI(uri string) (string, error) {
 	}
 
 	if withColon && !withAsterisk {
-		// replace :name with {name} in url, use regex
-		uri = parameterInPathRegexp.ReplaceAllString(uri, `{$1}`)
-		return uri, nil
+		segments := strings.Split(uri, "/")
+		for i, segment := range segments {
+			if !strings.ContainsRune(segment, ':') {
+				continue
+			}
+			if !parameterInPathRegexp.MatchString(segment) {
+				return "", fmt.Errorf("not supported uri: %s", uri)
+			}
+			segments[i] = "{" + strings.TrimPrefix(segment, ":") + "}"
+		}
+		return strings.Join(segments, "/"), nil
 	}
 
 	if !withColon && withAsterisk {
-		// prefix match
+		if strings.Count(uri, "*") != 1 {
+			return "", fmt.Errorf("not supported uri: %s", uri)
+		}
 		if strings.HasSuffix(uri, "*") {
 			return uri, nil
 		}
-		// not supported yet
-
-		return "", fmt.Errorf("not supported uri: %s", uri)
+		if !strings.Contains(uri, "/*/") {
+			return "", fmt.Errorf("not supported uri: %s", uri)
+		}
+		return uri[:strings.IndexByte(uri, '*')+1], nil
 	}
 
 	if withColon && withAsterisk {
@@ -97,10 +116,202 @@ func convertURI(uri string) (string, error) {
 	return "", fmt.Errorf("not supported uri: %s", uri)
 }
 
+func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Handler) error {
+	return registerRouteWithHosts(mux, methods, uri, nil, handler)
+}
+
+func registerRouteWithHosts(
+	mux *chi.Mux,
+	methods []string,
+	uri string,
+	hosts []string,
+	handler http.Handler,
+) error {
+	converted, err := convertURI(uri)
+	if err != nil {
+		return err
+	}
+	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
+		registerWildcardRoute(mux, methods, converted, uri, hosts, handler)
+		return nil
+	}
+	if len(methods) == 0 {
+		mux.Handle(converted, handler)
+		return nil
+	}
+	for _, method := range methods {
+		if method == "PURGE" {
+			logger.Warnf("http method: %s is not supported", method)
+			continue
+		}
+		logger.Debugf("add route: %s %s", method, converted)
+		mux.Method(method, converted, handler)
+	}
+	return nil
+}
+
+type wildcardRoute struct {
+	method   string
+	pattern  string
+	embedded bool
+	hosts    []string
+	handler  http.Handler
+}
+
+type wildcardDispatcher struct {
+	routes []wildcardRoute
+}
+
+func registerWildcardRoute(
+	mux *chi.Mux,
+	methods []string,
+	converted string,
+	pattern string,
+	hosts []string,
+	handler http.Handler,
+) {
+	dispatcher := existingWildcardDispatcher(mux, converted)
+	if dispatcher == nil {
+		dispatcher = &wildcardDispatcher{}
+		mux.Handle(converted, dispatcher)
+	}
+
+	embedded := strings.Contains(pattern, "/*/")
+	if len(methods) == 0 {
+		dispatcher.routes = append(dispatcher.routes, wildcardRoute{
+			method:   "*",
+			pattern:  pattern,
+			embedded: embedded,
+			hosts:    hosts,
+			handler:  handler,
+		})
+		return
+	}
+	for _, method := range methods {
+		if method == "PURGE" {
+			logger.Warnf("http method: %s is not supported", method)
+			continue
+		}
+		logger.Debugf("add route: %s %s", method, converted)
+		dispatcher.routes = append(dispatcher.routes, wildcardRoute{
+			method:   strings.ToUpper(method),
+			pattern:  pattern,
+			embedded: embedded,
+			hosts:    hosts,
+			handler:  handler,
+		})
+	}
+}
+
+func existingWildcardDispatcher(mux *chi.Mux, pattern string) *wildcardDispatcher {
+	for _, route := range mux.Routes() {
+		if route.Pattern != pattern {
+			continue
+		}
+		for _, handler := range route.Handlers {
+			if dispatcher, ok := handler.(*wildcardDispatcher); ok {
+				return dispatcher
+			}
+		}
+	}
+	return nil
+}
+
+func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	pathMatched := false
+	hostMatched := false
+	for _, embedded := range []bool{true, false} {
+		for _, hostRank := range []int{2, 1, 0} {
+			for _, exactMethod := range []bool{true, false} {
+				for _, route := range slices.Backward(d.routes) {
+					if route.embedded != embedded || !matchesRoutePath(route.pattern, request.URL.Path) {
+						continue
+					}
+					pathMatched = true
+					if routeHostRank(route.hosts, request.Host) != hostRank {
+						continue
+					}
+					hostMatched = true
+					if (exactMethod && route.method != request.Method) ||
+						(!exactMethod && route.method != "*") {
+						continue
+					}
+					route.handler.ServeHTTP(writer, request)
+					return
+				}
+			}
+		}
+	}
+	if pathMatched && hostMatched {
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	http.NotFound(writer, request)
+}
+
+func matchesRoutePath(pattern string, requestPath string) bool {
+	if !strings.ContainsRune(pattern, '*') {
+		return pattern == requestPath
+	}
+	return matchesWildcardRoute(pattern, requestPath)
+}
+
+func routeHostRank(patterns []string, requestHost string) int {
+	if len(patterns) == 0 {
+		return 0
+	}
+	host := requestHost
+	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = parsedHost
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	best := -1
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
+		if pattern == host {
+			return 2
+		}
+		if strings.ContainsAny(pattern, "*?[") {
+			if matched, _ := path.Match(pattern, host); matched {
+				best = 1
+			}
+		}
+	}
+	return best
+}
+
+func matchesWildcardRoute(pattern string, path string) bool {
+	wildcard := strings.IndexByte(pattern, '*')
+	prefix := pattern[:wildcard]
+	suffix := pattern[wildcard+1:]
+	if suffix == "" {
+		return strings.HasPrefix(path, prefix)
+	}
+	return strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix) &&
+		len(path) > len(prefix)+len(suffix)
+}
+
 type Builder struct {
-	serverAddr string
-	stoppers   []pluginStopper
-	stopOnce   sync.Once
+	serverAddr            string
+	stoppers              []pluginStopper
+	stopperMu             sync.Mutex
+	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
+	consumerPluginChainMu sync.Mutex
+	servicePlugins        map[servicePluginKey]plugin.Plugin
+	servicePluginMu       sync.Mutex
+	stopOnce              sync.Once
+}
+
+type consumerPluginChainKey struct {
+	plugins   string
+	routeID   string
+	serviceID string
+}
+
+type servicePluginKey struct {
+	serviceID string
+	name      string
+	config    string
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -108,12 +319,19 @@ func NewBuilder(storage *store.Store) *Builder {
 }
 
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
-	return &Builder{serverAddr: normalizeServerAddr(serverAddr)}
+	return &Builder{
+		serverAddr:           normalizeServerAddr(serverAddr),
+		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
+		servicePlugins:       make(map[servicePluginKey]plugin.Plugin),
+	}
 }
 
 func (b *Builder) Stop() {
 	b.stopOnce.Do(func() {
-		for _, stopper := range b.stoppers {
+		b.stopperMu.Lock()
+		stoppers := append([]pluginStopper(nil), b.stoppers...)
+		b.stopperMu.Unlock()
+		for _, stopper := range stoppers {
 			stopper.Stop()
 		}
 	})
@@ -130,9 +348,8 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Errorf("list routes fail: %s", err)
 		return nil
 	}
-	fmt.Printf("routes: %+v\n", routes)
-
 	mux := chi.NewRouter()
+	mux.Use(pinDecodedRoutePath)
 
 	for _, r := range routes {
 		// parse route
@@ -157,40 +374,62 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
-			if len(methods) == 0 {
-				mux.Handle(uri, handler)
+			if err = registerRouteWithHosts(mux, methods, uri, r.Hosts, handler); err != nil {
+				logger.Warnf("convert uri fail: %v", err)
 				continue
-			}
-
-			uri, err = convertURI(uri)
-			if err != nil {
-				logger.Warnf("convert uri fail: %w", err)
-				continue
-			}
-
-			for _, method := range methods {
-				if method == "PURGE" {
-					logger.Warnf("http method: %s is not supported", method)
-					continue
-				}
-				logger.Debugf("add route: %s %s", method, uri)
-
-				mux.Method(method, uri, handler)
 			}
 		}
 		fmt.Println("===============================")
 	}
+	globalRules, err := store.ListGlobalRules()
+	if err != nil {
+		logger.Errorf("list global rules for not found handler fail: %s", err)
+		return nil
+	}
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(globalRules)
+	if err != nil {
+		logger.Errorf("build global not found handler fail: %s", err)
+		return nil
+	}
+	mux.NotFound(notFoundHandler.ServeHTTP)
 
 	// add extra route
 	registerExtraRoutes(mux)
+	b.configureGlobalErrorLogObserver()
 
 	return mux
+}
+
+func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, pluginRouteContext{})
+	if err != nil {
+		return nil, err
+	}
+	chain := assembleRoutePluginChain(nil, globalPlugins)
+	return withAIExecutionTerminal(chain, http.NotFoundHandler()), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
 	cloned := make(map[string]resource.PluginConfig, len(source))
 	maps.Copy(cloned, source)
 	return cloned
+}
+
+func normalizePluginResourceContext(
+	context pluginRouteContext,
+	name string,
+	config resource.PluginConfig,
+) pluginRouteContext {
+	if _, ok := context.route.Plugins[name]; ok {
+		context.route.Plugins = clonePluginConfigs(context.route.Plugins)
+		context.route.Plugins[name] = config
+		return context
+	}
+	if _, ok := context.service.Plugins[name]; ok {
+		context.service.Plugins = clonePluginConfigs(context.service.Plugins)
+		context.service.Plugins[name] = config
+	}
+	return context
 }
 
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
@@ -224,20 +463,25 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		}
 	}
 
-	// add the plugins from service
+	servicePluginConfigs := make(map[string]resource.PluginConfig)
 	if len(service.Plugins) > 0 {
 		for name, config := range service.Plugins {
-			// if not in r.Plugins, add
-			if _, ok := resourcePlugins[name]; !ok {
+			if _, ok := resourcePlugins[name]; ok {
+				continue
+			}
+			if name == "kafka-logger" && service.ID != "" {
+				servicePluginConfigs[name] = config
+			} else {
 				resourcePlugins[name] = config
 			}
 		}
 	}
 
+	effectivePluginConfigs := clonePluginConfigs(resourcePlugins)
+	maps.Copy(effectivePluginConfigs, servicePluginConfigs)
+
 	// add a context plugin, set the default vars
-	systemPlugins := map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
-	}
+	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
 
 	var chain alice.Chain
 
@@ -248,14 +492,21 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	localPlugins = append(localPlugins, initialized...)
+	for _, initializedPlugin := range initialized {
+		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+	}
+	initialized, err = b.initServicePluginsStrict(servicePluginConfigs, routeContext)
+	if err != nil {
+		return nil, err
+	}
+	for _, initializedPlugin := range initialized {
+		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+	}
 	initialized, err = b.initPluginsStrict(systemPlugins, routeContext)
 	if err != nil {
 		return nil, err
 	}
 	localPlugins = append(localPlugins, initialized...)
-	localChain := plugin.BuildPluginChain(localPlugins...)
-
 	globalRules, err := store.ListGlobalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
@@ -265,13 +516,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(globalPlugins) > 0 {
-		globalChain := plugin.BuildPluginChain(globalPlugins...)
-
-		chain = globalChain.Extend(localChain)
-	} else {
-		chain = localChain
-	}
+	chain = assembleRoutePluginChain(localPlugins, globalPlugins)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -279,11 +524,159 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	return withAIExecutionTerminal(chain, handler), nil
+	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext), nil
+}
+
+func (b *Builder) withConsumerPluginRunner(
+	handler http.Handler,
+	routeContext pluginRouteContext,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			b.runConsumerPlugins(w, r, next, routeContext)
+		})
+		handler.ServeHTTP(w, r)
+	})
+}
+
+type routeConsumerOverridePlugin struct {
+	plugin.Plugin
+}
+
+func (p routeConsumerOverridePlugin) Handler(next http.Handler) http.Handler {
+	handler := p.Plugin.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (b *Builder) runConsumerPlugins(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	routeContext pluginRouteContext,
+) {
+	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
+	if !ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	pluginConfigs := consumerPluginConfigs(consumer)
+	if len(pluginConfigs) == 0 {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	chain, err := b.consumerPluginChain(pluginConfigs, routeContext)
+	if err != nil {
+		logger.Errorf("initialize consumer plugins for %s: %s", consumer.Username, err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	overrides := make(map[string]struct{}, len(pluginConfigs))
+	for name := range pluginConfigs {
+		overrides[name] = struct{}{}
+	}
+	r = ctx.WithConsumerPluginOverrides(r, overrides)
+	chain.Then(next).ServeHTTP(w, r)
+}
+
+func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.PluginConfig {
+	pluginConfigs := make(map[string]resource.PluginConfig)
+	if consumer.GroupID != "" {
+		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
+			maps.Copy(pluginConfigs, group.Plugins)
+		}
+	}
+	maps.Copy(pluginConfigs, consumer.Plugins)
+
+	for name := range pluginConfigs {
+		if isConsumerAuthenticationPlugin(name) {
+			delete(pluginConfigs, name)
+		}
+	}
+	return pluginConfigs
+}
+
+func isConsumerAuthenticationPlugin(name string) bool {
+	switch name {
+	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *Builder) consumerPluginChain(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) (alice.Chain, error) {
+	encoded, err := stdjson.Marshal(pluginConfigs)
+	if err != nil {
+		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
+	}
+	key := consumerPluginChainKey{
+		plugins:   string(encoded),
+		routeID:   routeContext.routeID,
+		serviceID: routeContext.service.ID,
+	}
+
+	b.consumerPluginChainMu.Lock()
+	defer b.consumerPluginChainMu.Unlock()
+	if chain, ok := b.consumerPluginChains[key]; ok {
+		return chain, nil
+	}
+	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
+	if err != nil {
+		return alice.New(), err
+	}
+	chain := plugin.BuildPluginChain(plugins...)
+	b.consumerPluginChains[key] = chain
+	return chain, nil
+}
+
+func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice.Chain {
+	plugins := make([]plugin.Plugin, 0, len(localPlugins)+len(globalPlugins))
+	plugins = append(plugins, localPlugins...)
+	plugins = append(plugins, globalPlugins...)
+	return plugin.BuildPluginChain(plugins...)
+}
+
+func buildSystemPluginConfigs(
+	r resource.Route,
+	service resource.Service,
+	resourcePlugins map[string]resource.PluginConfig,
+) map[string]resource.PluginConfig {
+	plugins := map[string]resource.PluginConfig{
+		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
+	}
+	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
+		return plugins
+	}
+	if _, configured := resourcePlugins["client-control"]; configured {
+		return plugins
+	}
+	plugins["client-control"] = map[string]any{
+		"max_body_size": appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize,
+	}
+	return plugins
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
-	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(fallback)))
+	return ai_runtime.EnableTerminal(chain.Then(withBeforeProxyHooks(ai_runtime.TerminalHandler(fallback))))
+}
+
+func withBeforeProxyHooks(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.FinalizeProxyRewrite(r)
+		ctx.RunBeforeProxyHooks(r)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func buildRequestContextConfig(
@@ -564,6 +957,58 @@ type pluginStopper interface {
 	Stop()
 }
 
+type pluginObserverStarter interface {
+	StartObserving()
+}
+
+func (b *Builder) configureGlobalErrorLogObserver() {
+	const pluginName = "error-log-logger"
+	if appconfig.GlobalConfig == nil || !slices.Contains(appconfig.GlobalConfig.Plugins, pluginName) {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		return
+	}
+
+	var metadata map[string]any
+	if err := store.GetPluginMetadata(pluginName, &metadata); err != nil || len(metadata) == 0 {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		logger.Errorf("please set the correct plugin_metadata for error-log-logger")
+		return
+	}
+	if err := b.startGlobalErrorLogObserver(metadata); err != nil {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		logger.Errorf("please set the correct plugin_metadata for error-log-logger: %s", err)
+	}
+}
+
+func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) error {
+	const pluginName = "error-log-logger"
+	p := plugin.New(pluginName)
+	if p == nil {
+		return fmt.Errorf("plugin %s is not supported", pluginName)
+	}
+	starter, ok := p.(pluginObserverStarter)
+	if !ok {
+		return fmt.Errorf("plugin %s does not support global observation", pluginName)
+	}
+	if err := p.Init(); err != nil {
+		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		return fmt.Errorf("parse plugin %s metadata: %w", pluginName, err)
+	}
+	if err := p.PostInit(); err != nil {
+		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
+	}
+	starter.StartObserving()
+	if stopper, ok := p.(pluginStopper); ok {
+		b.addStopper(stopper)
+	}
+	return nil
+}
+
 func (b *Builder) initPlugins(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
@@ -575,11 +1020,65 @@ func (b *Builder) initPlugins(
 	return plugins
 }
 
+func (b *Builder) initServicePluginsStrict(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) ([]plugin.Plugin, error) {
+	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	for name, config := range pluginConfigs {
+		if name != "kafka-logger" || routeContext.service.ID == "" {
+			initialized, err := b.initPluginsStrict(
+				map[string]resource.PluginConfig{name: config},
+				routeContext,
+			)
+			if err != nil {
+				return nil, err
+			}
+			plugins = append(plugins, initialized...)
+			continue
+		}
+
+		encoded, err := stdjson.Marshal(config)
+		if err != nil {
+			return nil, fmt.Errorf("marshal service plugin %s config: %w", name, err)
+		}
+		key := servicePluginKey{
+			serviceID: routeContext.service.ID,
+			name:      name,
+			config:    string(encoded),
+		}
+
+		b.servicePluginMu.Lock()
+		initialized := b.servicePlugins[key]
+		if initialized == nil {
+			servicePlugins, initErr := b.initPluginsStrict(
+				map[string]resource.PluginConfig{name: config},
+				routeContext,
+			)
+			if initErr != nil {
+				b.servicePluginMu.Unlock()
+				return nil, initErr
+			}
+			if len(servicePlugins) == 1 {
+				initialized = servicePlugins[0]
+				b.servicePlugins[key] = initialized
+			}
+		}
+		b.servicePluginMu.Unlock()
+		if initialized != nil {
+			plugins = append(plugins, initialized)
+		}
+	}
+	return plugins, nil
+}
+
 func (b *Builder) initPluginsStrict(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	normalizedRouteContext := routeContext
+	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
 		if p == nil {
@@ -595,6 +1094,14 @@ func (b *Builder) initPluginsStrict(
 
 		if err := p.Init(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
+		}
+		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
+			var metadata map[string]any
+			if err := store.GetPluginMetadata(name, &metadata); err == nil {
+				if err := util.Validate(metadata, metadataSchema); err != nil {
+					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
+				}
+			}
 		}
 
 		err = util.Validate(config, p.GetSchema())
@@ -612,6 +1119,7 @@ func (b *Builder) initPluginsStrict(
 		}
 		if setter, ok := p.(pluginResourceContextSetter); ok {
 			setter.SetResourceContext(routeContext.route, routeContext.service)
+			resourceContextSetters = append(resourceContextSetters, setter)
 		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
@@ -624,8 +1132,9 @@ func (b *Builder) initPluginsStrict(
 		if err := p.PostInit(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
+		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
-			b.stoppers = append(b.stoppers, stopper)
+			b.addStopper(stopper)
 		}
 
 		initialized := plugin.Plugin(p)
@@ -638,7 +1147,16 @@ func (b *Builder) initPluginsStrict(
 		}
 		plugins = append(plugins, initialized)
 	}
+	for _, setter := range resourceContextSetters {
+		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
+	}
 	return plugins, nil
+}
+
+func (b *Builder) addStopper(stopper pluginStopper) {
+	b.stopperMu.Lock()
+	b.stoppers = append(b.stoppers, stopper)
+	b.stopperMu.Unlock()
 }
 
 func (b *Builder) initGlobalPlugins(
@@ -684,16 +1202,34 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	if err != nil {
 		return nil, fmt.Errorf("get upstream fail: %s", err)
 	}
+	switch upstream.PassHost {
+	case "", "pass", "node":
+	case "rewrite":
+		if upstream.UpstreamHost == "" {
+			return nil, fmt.Errorf("`upstream_host` can't be empty when `pass_host` is `rewrite`")
+		}
+	default:
+		return nil, fmt.Errorf("pass_host must be one of pass, node, or rewrite")
+	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
 	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
 	scheme := upstream.Scheme
+	targetScheme := scheme
+	if strings.EqualFold(targetScheme, "grpc") {
+		targetScheme = "http"
+	} else if strings.EqualFold(targetScheme, "grpcs") {
+		targetScheme = "https"
+	}
 	for _, node := range upstream.Nodes {
 		host := node.Host
 		port := node.Port
 		weight := node.Weight
 
-		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		}
+		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
 	}
 
@@ -718,51 +1254,16 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
 
-		requestCtx := req.Context()
-		rewriteValue := requestCtx.Value(ctx.ProxyRewriteKey)
-		uri := ""
-		method := ""
-		host := ""
-		scheme := ""
-		// FIXME: how to read the headers?
-		if rewriteValue != nil {
-			rewrite := rewriteValue.(map[string]any)
-			uri = rewrite["uri"].(string)
-			method = rewrite["method"].(string)
-			host = rewrite["host"].(string)
-			scheme = rewrite["scheme"].(string)
-		}
-		if uri != "" {
-			fmt.Println("rewrite uri:", uri)
-			applyProxyRewriteURI(req, uri)
-		}
-		if method != "" {
-			req.Method = method
-		}
+		originalHost := req.Host
 
-		if host != "" {
-			req.URL.Host = host
-			req.Host = host
-		} else if applyTrafficSplitOverride(req) {
+		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
 		} else {
-			target := lb.Next()
-			pxy.SetSelectedTarget(req, target)
-			u, err := url.Parse(target)
-			if err != nil {
-				// log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
-				// 	Error("parse host fail, invalid target")
-				// ! invalid host, just return error for the request
+			if err := applyUpstreamTarget(req, lb, upstream, originalHost); err != nil {
 				panic("parse host fail, invalid target")
 			}
-			req.URL.Scheme = u.Scheme
-			req.URL.Host = u.Host
-			req.Host = u.Host
 		}
-
-		if scheme != "" {
-			req.URL.Scheme = scheme
-		}
+		applyFinalProxyRewrite(req)
 
 		// if u.Scheme == "" || u.Host == "" {
 		// 	log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
@@ -808,7 +1309,16 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 	// responseHeaderTimeout := time.Duration(timeout) * time.Second
 
-	transport := pxy.NewTransport(opt.Build())
+	var transport http.RoundTripper = pxy.NewTransport(opt.Build())
+	if strings.EqualFold(scheme, "grpc") {
+		transport = &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, address)
+			},
+		}
+	}
+	transport = pxy.NewRetryTransport(transport)
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
@@ -832,8 +1342,29 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			_ = render.New().JSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		r = attachHTTPRetries(r, upstream, lb)
 		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
 	}), nil
+}
+
+func upstreamNodeHost(scheme, host, port string) string {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	standardPort := false
+	switch strings.ToLower(scheme) {
+	case "http", "grpc":
+		standardPort = port == "80"
+	case "https", "grpcs":
+		standardPort = port == "443"
+	}
+	if standardPort {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func buildKafkaPubSubProxyHandler(upstream resource.Upstream, factory kafka_proxy.KafkaConsumerFactory) http.Handler {
@@ -1118,24 +1649,90 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 	return nil
 }
 
-func applyProxyRewriteURI(req *http.Request, uri string) {
-	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
-		req.URL.Path = parsed.Path
-		req.URL.RawPath = parsed.RawPath
-		req.URL.RawQuery = parsed.RawQuery
-		return
+func httpRetryCount(upstream resource.Upstream) int {
+	if upstream.RetriesConfigured() {
+		return max(upstream.Retries, 0)
 	}
+	return max(len(upstream.Nodes)-1, 0)
+}
 
-	path, rawQuery, hasQuery := strings.Cut(uri, "?")
-	req.URL.Path = path
-	req.URL.RawPath = ""
-	if hasQuery {
-		req.URL.RawQuery = rawQuery
+func attachHTTPRetries(
+	request *http.Request,
+	upstream resource.Upstream,
+	loadBalancer pxy.LoadBalancer,
+) *http.Request {
+	originalHost := request.Host
+	if override := traffic_split.GetOverride(request); override != nil {
+		return pxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
+			if override.NextRetry == nil {
+				return false
+			}
+			next := override.NextRetry()
+			if !applyTrafficSplitTarget(retry, next, originalHost) {
+				return false
+			}
+			applyFinalProxyRewrite(retry)
+			return true
+		})
+	}
+	return pxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
+		if err := applyUpstreamTarget(retry, loadBalancer, upstream, originalHost); err != nil {
+			return false
+		}
+		applyFinalProxyRewrite(retry)
+		return true
+	})
+}
+
+func applyUpstreamTarget(
+	request *http.Request,
+	loadBalancer pxy.LoadBalancer,
+	upstream resource.Upstream,
+	originalHost string,
+) error {
+	target := loadBalancer.Next()
+	pxy.SetSelectedTarget(request, target)
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("parse upstream target %q: %w", target, err)
+	}
+	request.URL.Scheme = parsed.Scheme
+	request.URL.Host = parsed.Host
+	nodeHost := upstreamNodeHost(parsed.Scheme, parsed.Hostname(), parsed.Port())
+	switch upstream.PassHost {
+	case "", "pass":
+		request.Host = originalHost
+		if request.Host == "" {
+			request.Host = nodeHost
+		}
+	case "rewrite":
+		request.Host = upstream.UpstreamHost
+	case "node":
+		request.Host = nodeHost
+	}
+	return nil
+}
+
+func applyFinalProxyRewrite(request *http.Request) {
+	if ctx.GetApisixVars(request) != nil {
+		ctx.RegisterApisixVar(request, "$balancer_ip", request.URL.Hostname())
+		ctx.RegisterApisixVar(request, "$balancer_port", request.URL.Port())
+	}
+	rewrite := ctx.FinalizeProxyRewrite(request)
+	if rewrite.Host != "" {
+		request.Host = rewrite.Host
+	}
+	if rewrite.Scheme != "" {
+		request.URL.Scheme = rewrite.Scheme
 	}
 }
 
 func applyTrafficSplitOverride(req *http.Request) bool {
 	override := traffic_split.GetOverride(req)
+	return applyTrafficSplitTarget(req, override, req.Host)
+}
+
+func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {
 	if override == nil {
 		return false
 	}
@@ -1143,7 +1740,6 @@ func applyTrafficSplitOverride(req *http.Request) bool {
 		req = pxy.WithHealthReporter(req, override.HealthReporter)
 		pxy.SetSelectedTarget(req, override.HealthTarget)
 	}
-	originalHost := req.Host
 	req.URL.Scheme = override.Scheme
 	req.URL.Host = override.Host
 	switch override.PassHost {
@@ -1306,4 +1902,16 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! here, not clean the body first, what will happen?
 		_ = render.New().JSON(w, status, err.Error())
 	}
+}
+
+func pinDecodedRoutePath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// APISIX matches the decoded $uri; chi prefers the encoded RawPath.
+		if r.URL.RawPath != "" {
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				rctx.RoutePath = r.URL.Path
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

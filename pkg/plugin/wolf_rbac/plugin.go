@@ -11,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	projectjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -110,6 +111,9 @@ func (p *Plugin) PostInit() error {
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
+	if strings.HasPrefix(strings.ToLower(p.config.Server), "http://") {
+		logger.Warn("Using wolf-rbac server with no TLS is a security risk")
+	}
 	public_api.Register(http.MethodPost, WolfLoginURI, http.HandlerFunc(p.handleLogin))
 	public_api.Register(http.MethodPut, WolfChangePasswordURI, http.HandlerFunc(p.handleChangePassword))
 	public_api.Register(http.MethodGet, WolfUserInfoURI, http.HandlerFunc(p.handleUserInfo))
@@ -137,6 +141,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		consumer, cfg, err := p.consumerByAppID(token.AppID)
 		if err != nil {
+			logger.Errorf("consumer [%s] not found", token.AppID)
 			writeJSONError(w, http.StatusUnauthorized, "Invalid appid in rbac token")
 			return
 		}
@@ -151,12 +156,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if reason == "" {
 				reason = http.StatusText(status)
 			}
+			logger.Errorf("wolf-rbac permission denied, status:%d, reason:%s", status, reason)
 			writeJSONError(w, status, reason)
 			return
 		}
 
 		ctx.AttachConsumer(r, consumer)
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	})
 }
 
@@ -211,7 +217,7 @@ func (p *Plugin) checkPermission(
 	values.Set("appID", token.AppID)
 	values.Set("resName", r.URL.Path)
 	values.Set("action", r.Method)
-	values.Set("clientIP", base.RemoteIP(r.RemoteAddr))
+	values.Set("clientIP", remoteClientIP(r))
 
 	req, err := http.NewRequestWithContext(
 		r.Context(),
@@ -253,6 +259,13 @@ func (p *Plugin) checkPermission(
 		return resp.StatusCode, "check permission failed! parse response json failed!", nil, nil
 	}
 	return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
+}
+
+func remoteClientIP(r *http.Request) string {
+	if remoteAddr := ctx.GetString(r.Context(), "remote_addr"); remoteAddr != "" {
+		return base.RemoteIP(remoteAddr)
+	}
+	return base.RemoteIP(r.RemoteAddr)
 }
 
 func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
@@ -365,8 +378,7 @@ func (p *Plugin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := p.requestWolf(r, cfg, http.MethodPost, "/wolf/rbac/login.rest", "", args)
-	if err != nil || !response.OK {
-		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -386,8 +398,7 @@ func (p *Plugin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := p.requestWolf(r, cfg, http.MethodPost, "/wolf/rbac/change_pwd", token.WolfToken, args)
-	if err != nil || !response.OK {
-		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "success to change password"})
@@ -399,8 +410,7 @@ func (p *Plugin) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := p.requestWolf(r, cfg, http.MethodGet, "/wolf/rbac/user_info", token.WolfToken, map[string]any{})
-	if err != nil || !response.OK {
-		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user_info": response.Data.UserInfo})
@@ -429,11 +439,26 @@ func (p *Plugin) publicAPIToken(
 }
 
 type wolfPublicResponse struct {
-	OK   bool `json:"ok"`
-	Data struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason"`
+	Data   struct {
 		Token    string         `json:"token"`
 		UserInfo map[string]any `json:"userInfo"`
 	} `json:"data"`
+}
+
+func writeWolfPublicFailure(w http.ResponseWriter, response wolfPublicResponse, err error) bool {
+	if err != nil {
+		logger.Errorf("request to wolf-server failed: %s", err)
+		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+		return false
+	}
+	if !response.OK {
+		logger.Errorf("request to wolf-server failed! reason: %s", response.Reason)
+		writeJSONError(w, http.StatusOK, "request to wolf-server failed!")
+		return false
+	}
+	return true
 }
 
 func (p *Plugin) requestWolf(
@@ -483,11 +508,16 @@ func requestArguments(r *http.Request) (map[string]any, error) {
 		}
 		return args, nil
 	}
-	if err := r.ParseForm(); err != nil {
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
 		return nil, err
 	}
-	args := make(map[string]any, len(r.PostForm))
-	for key, values := range r.PostForm {
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil, err
+	}
+	args := make(map[string]any, len(values))
+	for key, values := range values {
 		if len(values) > 0 {
 			args[key] = values[0]
 		}

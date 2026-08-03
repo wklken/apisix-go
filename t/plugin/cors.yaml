@@ -1,0 +1,764 @@
+sources:
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors.t, tests: 37}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors2.t, tests: 5}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors3.t, tests: 15}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/cors4.t, tests: 29}
+cases:
+  - name: default-wildcard
+    source: {file: t/plugin/cors.t, tests: [6, 7]}
+    config:
+      routes:
+        - id: cors-default
+          uri: /hello
+          methods: [GET]
+          plugins: {cors: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: no-origin, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}}}}
+
+  - name: base-schema
+    source: {file: t/plugin/cors.t, tests: [1, 2]}
+    variants:
+      - name: accepted-explicit-config
+        config:
+          routes:
+            - id: cors-base-schema-valid
+              uri: /hello
+              plugins: {cors: {allow_origins: http://test.com, allow_methods: '', allow_headers: '', expose_headers: '', max_age: 600, allow_credential: true}}
+              upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: reject-string-max-age
+        config: {routes: [{id: cors-base-schema-invalid, uri: /hello, plugins: {cors: {allow_origins: http://test.com, allow_methods: '', allow_headers: '', expose_headers: '', max_age: '600', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'max_age.*expected integer'}}
+
+  - name: add-default-plugin
+    source: {file: t/plugin/cors.t, tests: [3]}
+    config:
+      routes:
+        - id: cors-added-plugin
+          uri: /hello
+          plugins: {cors: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: plugin-is-active, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}}}}
+
+  - name: update-plugin-accepts-unknown-field
+    source: {file: t/plugin/cors.t, tests: [4]}
+    config:
+      routes:
+        - id: cors-updated-plugin
+          uri: /hello
+          plugins: {cors: {allow_origins: '**', allow_methods: '**', allow_headers: request-h, expose_headers: expose-h, madx_age: 5, allow_credential: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: updated-config-is-active, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {equals: 'true'}}}}
+
+  - name: disable-plugin
+    source: {file: t/plugin/cors.t, tests: [5]}
+    config:
+      routes:
+        - id: cors-disabled-plugin
+          uri: /hello
+          plugins: {cors: {_meta: {disable: true}}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: disabled-plugin-does-not-add-cors-headers, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: overwrite-upstream-cors-headers
+    source: {file: t/plugin/cors.t, tests: [17, 18, 19, 20, 21, 22, 23]}
+    config:
+      routes:
+        - id: cors-overwrite-upstream
+          uri: /headers
+          plugins:
+            cors:
+              allow_origins: "**"
+              allow_methods: "**"
+              allow_headers: request-h
+              expose_headers: expose-h
+              allow_credential: true
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, headers: {Access-Control-Allow-Origin: https://wrong.example}, body: /headers}
+          - {status: 200, headers: {Access-Control-Allow-Methods: methods}, body: /headers}
+          - {status: 200, headers: {Access-Control-Allow-Headers: a-headers}, body: /headers}
+          - {status: 200, headers: {Access-Control-Expose-Headers: e-headers}, body: /headers}
+          - {status: 200, headers: {Access-Control-Max-Age: "10"}, body: /headers}
+          - {status: 200, headers: {Access-Control-Allow-Credentials: "false"}, body: /headers}
+    steps:
+      - {name: origin, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}}}}
+      - {name: methods, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}}}}
+      - {name: request-headers, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Allow-Headers: {equals: request-h}}}}
+      - {name: expose-headers, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Expose-Headers: {equals: expose-h}}}}
+      - {name: max-age, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Max-Age: {equals: "5"}}}}
+      - {name: credentials, input: {method: GET, path: /headers, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: /headers}, headers: {Access-Control-Allow-Credentials: {equals: "true"}}}}
+
+  - name: force-wildcard-and-options
+    source: {file: t/plugin/cors.t, tests: [11, 12, 13, 14]}
+    config:
+      routes:
+        - id: cors-force-wildcard
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: "**"
+              allow_methods: "**"
+              allow_headers: "**"
+              expose_headers: "*"
+              allow_private_network: true
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - {name: origin-and-request-headers, input: {method: GET, path: /hello, headers: {Origin: https://sub.domain.com, Access-Control-Request-Headers: "req-header1,req-header2"}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {equals: "req-header1,req-header2"}, Access-Control-Expose-Headers: {equals: '*'}, Access-Control-Max-Age: {equals: '5'}}}}
+      - {name: no-origin, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {equals: '*'}, Access-Control-Max-Age: {equals: '5'}}}}
+      - {name: options-without-origin, input: {method: OPTIONS, path: /hello}, output: {status: 200, body: {equals: ''}}}
+      - {name: private-network-preflight, input: {method: OPTIONS, path: /hello, headers: {Origin: https://sub.domain.com, Access-Control-Request-Method: GET, Access-Control-Request-Headers: "req-header1,req-header2", Access-Control-Request-Private-Network: 'true'}}, output: {status: 200, body: {equals: ''}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {equals: "req-header1,req-header2"}, Access-Control-Allow-Private-Network: {equals: 'true'}, Access-Control-Max-Age: {equals: '5'}}}}
+  - name: explicit-credentials
+    source: {file: t/plugin/cors.t, tests: [8, 9, 10]}
+    config:
+      routes:
+        - id: cors-credentials
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: http://sub.domain.com,http://sub2.domain.com
+              allow_methods: GET,POST
+              allow_headers: headr1,headr2
+              expose_headers: ex-headr1,ex-headr2
+              max_age: 50
+              allow_credential: true
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, headers: {Vary: Via}, body: hello world}]
+    steps:
+      - {name: allowed, input: {method: GET, path: /hello, headers: {Origin: http://sub2.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://sub2.domain.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: "GET,POST"}, Access-Control-Allow-Headers: {equals: "headr1,headr2"}, Access-Control-Expose-Headers: {equals: "ex-headr1,ex-headr2"}, Access-Control-Max-Age: {equals: '50'}, Access-Control-Allow-Credentials: {equals: 'true'}}}}
+      - {name: disallowed, input: {method: GET, path: /hello, headers: {Origin: http://sub3.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: cors-headers-on-key-auth-failure
+    source: {file: t/plugin/cors.t, tests: [15, 16]}
+    config:
+      routes:
+        - id: cors-before-key-auth
+          uri: /hello
+          plugins:
+            key-auth: {}
+            cors:
+              allow_origins: "**"
+              allow_methods: "**"
+              allow_headers: "*"
+              expose_headers: "*"
+          upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}
+    steps:
+      - {name: missing-key-retains-cors-response, input: {method: GET, path: /hello, headers: {Origin: https://sub.domain.com, ExternalHeader1: val, ExternalHeader2: val, ExternalHeader3: val}}, output: {status: 401, body: {equals: '{"message":"Missing API key in request"}'}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {equals: '*'}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: credential-wildcard-rejection
+    source: {file: t/plugin/cors.t, tests: [24, 25, 26, 27]}
+    variants:
+      - name: origins
+        config: {routes: [{id: cors-invalid, uri: /hello, plugins: {cors: {allow_origins: '*', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: "you can not set '\\*'"}}
+      - name: methods
+        config: {routes: [{id: cors-invalid, uri: /hello, plugins: {cors: {allow_methods: '*', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: "you can not set '\\*'"}}
+      - name: headers
+        config: {routes: [{id: cors-invalid, uri: /hello, plugins: {cors: {allow_headers: '*', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: "you can not set '\\*'"}}
+      - name: exposed-headers
+        config: {routes: [{id: cors-invalid, uri: /hello, plugins: {cors: {expose_headers: '*', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: "you can not set '\\*'"}}
+
+  - name: regex-origins
+    source: {file: t/plugin/cors.t, tests: [28, 29, 30]}
+    config:
+      routes:
+        - id: cors-regex
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: http://sub.domain.com,http://sub2.domain.com
+              allow_methods: GET,POST
+              allow_headers: headr1,headr2
+              expose_headers: ex-headr1,ex-headr2
+              max_age: 50
+              allow_credential: true
+              allow_origins_by_regex: ['.*\.test.com$']
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, headers: {Vary: Via}, body: hello world}]
+    steps:
+      - {name: regex-match, input: {method: GET, path: /hello, headers: {Origin: http://a.test.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://a.test.com}, Access-Control-Allow-Methods: {equals: "GET,POST"}, Access-Control-Allow-Headers: {equals: "headr1,headr2"}, Access-Control-Expose-Headers: {equals: "ex-headr1,ex-headr2"}, Access-Control-Max-Age: {equals: '50'}, Access-Control-Allow-Credentials: {equals: 'true'}, Vary: {equals: "Via, Origin"}}}}
+      - {name: regex-miss, input: {method: GET, path: /hello, headers: {Origin: http://a.test2.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: multiple-regex-origins
+    source: {file: t/plugin/cors.t, tests: [31, 32, 33]}
+    config:
+      routes:
+        - id: cors-multiple-regex
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: http://sub.domain.com,http://sub2.domain.com
+              allow_methods: GET,POST
+              allow_headers: headr1,headr2
+              expose_headers: ex-headr1,ex-headr2
+              max_age: 50
+              allow_credential: true
+              allow_origins_by_regex: ['.*\.test.com$', '.*\.example.org$']
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, headers: {Vary: Via}, body: hello world}]
+    steps:
+      - {name: second-regex-match, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.org}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://foo.example.org}, Access-Control-Allow-Methods: {equals: "GET,POST"}, Access-Control-Allow-Headers: {equals: "headr1,headr2"}, Access-Control-Expose-Headers: {equals: "ex-headr1,ex-headr2"}, Access-Control-Max-Age: {equals: '50'}, Access-Control-Allow-Credentials: {equals: 'true'}, Vary: {equals: "Via, Origin"}}}}
+      - {name: no-regex-match, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: proxy-rewrite-does-not-change-cors-origin
+    source: {file: t/plugin/cors.t, tests: [34, 35]}
+    config:
+      routes:
+        - id: cors-before-proxy-rewrite
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: http://sub.domain.com
+              allow_methods: GET,POST
+              allow_headers: headr1,headr2
+              expose_headers: ex-headr1,ex-headr2
+              max_age: 50
+              allow_credential: true
+            proxy-rewrite:
+              headers: {Origin: http://example.com}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}, headers: {Origin: {equals: http://example.com}}}]
+        respond: [{status: 200, headers: {Vary: Via}, body: hello world}]
+    steps:
+      - {name: cors-uses-original-origin, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: "GET,POST"}, Access-Control-Allow-Headers: {equals: "headr1,headr2"}, Access-Control-Expose-Headers: {equals: "ex-headr1,ex-headr2"}, Access-Control-Max-Age: {equals: '50'}, Access-Control-Allow-Credentials: {equals: 'true'}}}}
+
+  - name: regex-no-origin
+    source: {file: t/plugin/cors.t, tests: [36, 37]}
+    config:
+      routes:
+        - id: cors-regex-no-origin
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: http://sub.domain.com
+              allow_methods: GET,POST
+              allow_headers: headr1,headr2
+              expose_headers: ex-headr1,ex-headr2
+              allow_credential: true
+              allow_origins_by_regex: ['.*\.test.com$']
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: no-origin-does-not-error, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}}}}
+
+  - name: allow-origins-schema
+    source: {file: t/plugin/cors2.t, tests: [1]}
+    variants:
+      - name: accept-wildcard
+        config: {routes: [{id: origins-schema-wildcard, uri: /hello, plugins: {cors: {allow_origins: '*'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-force-wildcard
+        config: {routes: [{id: origins-schema-force-wildcard, uri: /hello, plugins: {cors: {allow_origins: '**'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-null
+        config: {routes: [{id: origins-schema-null, uri: /hello, plugins: {cors: {allow_origins: 'null'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-http-origin
+        config: {routes: [{id: origins-schema-http, uri: /hello, plugins: {cors: {allow_origins: http://y.com.uk}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-https-origin
+        config: {routes: [{id: origins-schema-https, uri: /hello, plugins: {cors: {allow_origins: https://x.com}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-two-origins
+        config: {routes: [{id: origins-schema-two, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,http://y.com.uk'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-three-origins
+        config: {routes: [{id: origins-schema-three, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,http://y.com.uk,http://c.tv'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: accept-origin-with-port
+        config: {routes: [{id: origins-schema-port, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,http://y.com.uk:12000,http://c.tv'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: reject-empty
+        config: {routes: [{id: origins-schema-empty, uri: /hello, plugins: {cors: {allow_origins: ''}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-star-suffix
+        config: {routes: [{id: origins-schema-star-suffix, uri: /hello, plugins: {cors: {allow_origins: '*a'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-wildcard-list
+        config: {routes: [{id: origins-schema-wildcard-list, uri: /hello, plugins: {cors: {allow_origins: '*,http://y.com'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-nulll
+        config: {routes: [{id: origins-schema-nulll, uri: /hello, plugins: {cors: {allow_origins: nulll}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-missing-scheme-separator
+        config: {routes: [{id: origins-schema-missing-scheme, uri: /hello, plugins: {cors: {allow_origins: http//y.com.uk}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-bare-host
+        config: {routes: [{id: origins-schema-bare-host, uri: /hello, plugins: {cors: {allow_origins: x.com}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-list-with-bare-host
+        config: {routes: [{id: origins-schema-list-bare-host, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,y.com.uk'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-wildcard-inside-list
+        config: {routes: [{id: origins-schema-wildcard-inner, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,*,https://y.com.uk'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-malformed-third-origin
+        config: {routes: [{id: origins-schema-malformed-third, uri: /hello, plugins: {cors: {allow_origins: 'https://x.com,http://y.com.uk,http:c.tv'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+
+  - name: cors2-regex
+    source: {file: t/plugin/cors2.t, tests: [2, 3, 4, 5]}
+    config:
+      routes:
+        - id: cors2-regex
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: "*"
+              allow_methods: GET,POST
+              allow_headers: request-h
+              expose_headers: expose-h
+              max_age: 10
+              allow_origins_by_regex: ['.*\.domain\.com$']
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: regex-miss, input: {method: GET, path: /hello, headers: {Origin: http://sub.test.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}}}}
+      - {name: no-origin, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}}}}
+      - {name: regex-match, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST"}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: "10"}}}}
+  - name: metadata-allow-origins-schema
+    source: {file: t/plugin/cors3.t, tests: [1]}
+    variants:
+      - name: accepted-values
+        config:
+          plugin_metadata:
+            - id: cors
+              allow_origins:
+                key_1: "*"
+                key_2: "**"
+                key_3: "null"
+                key_4: http://y.com.uk
+                key_5: https://x.com
+                key_6: https://x.com,http://y.com.uk
+                key_7: https://x.com,http://y.com.uk,http://c.tv
+                key_8: https://x.com,http://y.com.uk:12000,http://c.tv
+          routes:
+            - id: cors-metadata-schema-valid
+              uri: /hello
+              plugins: {cors: {allow_origins_by_metadata: [key_5]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures:
+          - name: primary
+            kind: http
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - {name: accepted-metadata-values, input: {method: GET, path: /hello, headers: {Origin: https://x.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://x.com}}}}
+      - name: reject-empty
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: ""}}], routes: [{id: cors-metadata-schema-empty, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-star-suffix
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: "*a"}}], routes: [{id: cors-metadata-schema-star-suffix, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-wildcard-list
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: "*,http://y.com"}}], routes: [{id: cors-metadata-schema-wildcard-list, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-nulll
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: nulll}}], routes: [{id: cors-metadata-schema-nulll, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-missing-scheme-separator
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: http//y.com.uk}}], routes: [{id: cors-metadata-schema-missing-scheme-separator, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-bare-host
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: x.com}}], routes: [{id: cors-metadata-schema-bare-host, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-list-with-bare-host
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: "https://x.com,y.com.uk"}}], routes: [{id: cors-metadata-schema-list-with-bare-host, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-wildcard-inside-list
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: "https://x.com,*,https://y.com.uk"}}], routes: [{id: cors-metadata-schema-wildcard-inside-list, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+      - name: reject-malformed-third-origin
+        config: {plugin_metadata: [{id: cors, allow_origins: {key: "https://x.com,http://y.com.uk,http:c.tv"}}], routes: [{id: cors-metadata-schema-malformed-third-origin, uri: /hello, plugins: {cors: {allow_origins_by_metadata: [key]}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors metadata'}}
+
+  - name: metadata-single-origin
+    source: {file: t/plugin/cors3.t, tests: [2, 3, 4, 5, 6]}
+    config:
+      plugin_metadata:
+        - id: cors
+          allow_origins:
+            key_1: https://domain.com
+            key_2: https://sub.domain.com,https://sub2.domain.com
+            key_3: "*"
+          inactive_timeout: 1
+      routes:
+        - id: cors-metadata-single
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: https://test.com
+              allow_origins_by_metadata: [key_1]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, headers: {Vary: Via}, body: hello world}
+          - {status: 200, headers: {Vary: Via}, body: hello world}
+    steps:
+      - {name: origin-not-matched, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.org}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Vary: {equals: Origin}}}}
+      - {name: origin-matches-allow-origins, input: {method: GET, path: /hello, headers: {Origin: https://test.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://test.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+      - {name: origin-matches-metadata, input: {method: GET, path: /hello, headers: {Origin: https://domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://domain.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: metadata-multiple-origins
+    source: {file: t/plugin/cors3.t, tests: [7, 8, 9, 10]}
+    config:
+      plugin_metadata:
+        - id: cors
+          allow_origins:
+            key_1: https://domain.com
+            key_2: https://sub.domain.com,https://sub2.domain.com
+            key_3: "*"
+          inactive_timeout: 1
+      routes:
+        - id: cors-metadata-multiple
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: https://test.com
+              allow_origins_by_metadata: [key_1, key_2]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, headers: {Vary: Via}, body: hello world}
+          - {status: 200, headers: {Vary: Via}, body: hello world}
+    steps:
+      - {name: origin-not-matched, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.org}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Vary: {equals: Origin}}}}
+      - {name: origin-matches-first-metadata-key, input: {method: GET, path: /hello, headers: {Origin: https://domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://domain.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+      - {name: origin-matches-second-metadata-key, input: {method: GET, path: /hello, headers: {Origin: https://sub.domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Vary: {equals: "Via, Origin"}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: metadata-wildcard-origin
+    source: {file: t/plugin/cors3.t, tests: [11, 12]}
+    config:
+      plugin_metadata:
+        - id: cors
+          allow_origins:
+            key_1: https://domain.com
+            key_2: https://sub.domain.com,https://sub2.domain.com
+            key_3: "*"
+          inactive_timeout: 1
+      routes:
+        - id: cors-metadata-wildcard
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: https://test.com
+              allow_origins_by_metadata: [key_3]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: origin-matches-metadata-wildcard, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.org}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: http://foo.example.org}, Vary: {equals: Origin}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+
+  - name: metadata-overrides-default-wildcard
+    source: {file: t/plugin/cors3.t, tests: [13, 14, 15]}
+    config:
+      plugin_metadata:
+        - id: cors
+          allow_origins:
+            key_1: https://domain.com
+            key_2: https://sub.domain.com,https://sub2.domain.com
+            key_3: "*"
+          inactive_timeout: 1
+      routes:
+        - id: cors-metadata-overrides-default
+          uri: /hello
+          plugins:
+            cors:
+              allow_origins: "*"
+              allow_origins_by_metadata: [key_1]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - {name: origin-not-matched-by-metadata, input: {method: GET, path: /hello, headers: {Origin: http://foo.example.org}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Vary: {equals: Origin}}}}
+      - {name: origin-matches-metadata, input: {method: GET, path: /hello, headers: {Origin: https://domain.com}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://domain.com}, Access-Control-Allow-Methods: {equals: '*'}, Access-Control-Allow-Headers: {equals: '*'}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '5'}, Access-Control-Allow-Credentials: {absent: true}}}}
+  - name: timing-allow-origins-schema
+    source: {file: t/plugin/cors4.t, tests: [1]}
+    variants:
+      - name: accept-wildcard
+        config: {routes: [{id: timing-schema-wildcard, uri: /hello, plugins: {cors: {timing_allow_origins: '*'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-force-wildcard
+        config: {routes: [{id: timing-schema-force-wildcard, uri: /hello, plugins: {cors: {timing_allow_origins: '**'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-null
+        config: {routes: [{id: timing-schema-null, uri: /hello, plugins: {cors: {timing_allow_origins: 'null'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-http-origin
+        config: {routes: [{id: timing-schema-http, uri: /hello, plugins: {cors: {timing_allow_origins: http://y.com.uk}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-https-origin
+        config: {routes: [{id: timing-schema-https, uri: /hello, plugins: {cors: {timing_allow_origins: https://x.com}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-two-origins
+        config: {routes: [{id: timing-schema-two, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,http://y.com.uk'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-three-origins
+        config: {routes: [{id: timing-schema-three, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,http://y.com.uk,http://c.tv'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: accept-origin-with-port
+        config: {routes: [{id: timing-schema-port, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,http://y.com.uk:12000,http://c.tv'}}, upstream: {type: roundrobin, nodes: {"{{UPSTREAM_ADDR}}": 1}}}]}
+        upstream: {respond: {status: 200, body: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}}}
+      - name: reject-empty
+        config: {routes: [{id: timing-schema-empty, uri: /hello, plugins: {cors: {timing_allow_origins: ''}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-star-suffix
+        config: {routes: [{id: timing-schema-star-suffix, uri: /hello, plugins: {cors: {timing_allow_origins: '*a'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-wildcard-list
+        config: {routes: [{id: timing-schema-wildcard-list, uri: /hello, plugins: {cors: {timing_allow_origins: '*,http://y.com'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-nulll
+        config: {routes: [{id: timing-schema-nulll, uri: /hello, plugins: {cors: {timing_allow_origins: nulll}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-missing-scheme-separator
+        config: {routes: [{id: timing-schema-missing-scheme, uri: /hello, plugins: {cors: {timing_allow_origins: http//y.com.uk}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-bare-host
+        config: {routes: [{id: timing-schema-bare-host, uri: /hello, plugins: {cors: {timing_allow_origins: x.com}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-list-with-bare-host
+        config: {routes: [{id: timing-schema-list-bare-host, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,y.com.uk'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-wildcard-inside-list
+        config: {routes: [{id: timing-schema-wildcard-inner, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,*,https://y.com.uk'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+      - name: reject-malformed-third-origin
+        config: {routes: [{id: timing-schema-malformed-third, uri: /hello, plugins: {cors: {timing_allow_origins: 'https://x.com,http://y.com.uk,http:c.tv'}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+
+  - name: timing-default-allow-origins
+    source: {file: t/plugin/cors4.t, tests: [2, 3, 4]}
+    config:
+      routes:
+        - id: cors-timing-default
+          uri: /hello
+          plugins: {cors: {allow_origins: '*', allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins: http://sub.domain.com}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: timing-origin-matches, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://sub.domain.com}}}}
+      - {name: timing-origin-does-not-match, input: {method: GET, path: /hello, headers: {Origin: http://other.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-same-origin
+    source: {file: t/plugin/cors4.t, tests: [5, 6, 7]}
+    config:
+      routes:
+        - id: cors-timing-same
+          uri: /hello
+          plugins: {cors: {allow_origins: http://sub.domain.com, allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins: http://sub.domain.com}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: both-origins-match, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://sub.domain.com}}}}
+      - {name: neither-origin-matches, input: {method: GET, path: /hello, headers: {Origin: http://other.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-different-origins
+    source: {file: t/plugin/cors4.t, tests: [8, 9, 10, 11]}
+    config:
+      routes:
+        - id: cors-timing-different
+          uri: /hello
+          plugins: {cors: {allow_origins: http://one.domain.com, allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins: http://another.domain.com}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: cors-only, input: {method: GET, path: /hello, headers: {Origin: http://one.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://one.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+      - {name: timing-only, input: {method: GET, path: /hello, headers: {Origin: http://another.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://another.domain.com}}}}
+      - {name: neither, input: {method: GET, path: /hello, headers: {Origin: http://notexistent.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-allow-origin-superset
+    source: {file: t/plugin/cors4.t, tests: [12, 13, 14, 15]}
+    config:
+      routes:
+        - id: cors-timing-superset
+          uri: /hello
+          plugins: {cors: {allow_origins: 'http://one.domain.com,http://two.domain.com', allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins: http://one.domain.com}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: both-origins-match, input: {method: GET, path: /hello, headers: {Origin: http://one.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://one.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://one.domain.com}}}}
+      - {name: cors-only, input: {method: GET, path: /hello, headers: {Origin: http://two.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://two.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+      - {name: neither, input: {method: GET, path: /hello, headers: {Origin: http://notexistent.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-origin-intersection
+    source: {file: t/plugin/cors4.t, tests: [16, 17, 18, 19, 20]}
+    config:
+      routes:
+        - id: cors-timing-intersection
+          uri: /hello
+          plugins: {cors: {allow_origins: 'http://one.domain.com,http://two.domain.com', allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins: 'http://one.domain.com,http://three.domain.com'}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: both-origins-match, input: {method: GET, path: /hello, headers: {Origin: http://one.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://one.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://one.domain.com}}}}
+      - {name: cors-only, input: {method: GET, path: /hello, headers: {Origin: http://two.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://two.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+      - {name: timing-only, input: {method: GET, path: /hello, headers: {Origin: http://three.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {equals: http://three.domain.com}}}}
+      - {name: neither, input: {method: GET, path: /hello, headers: {Origin: http://notexistent.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Access-Control-Allow-Credentials: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-shared-regex
+    source: {file: t/plugin/cors4.t, tests: [21, 22, 23]}
+    config:
+      routes:
+        - id: cors-timing-shared-regex
+          uri: /hello
+          plugins: {cors: {allow_origins_by_regex: ['http://.*?\.domain\.com'], allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins_by_regex: ['http://.*?\.domain\.com']}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: regex-match, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Timing-Allow-Origin: {equals: http://sub.domain.com}}}}
+      - {name: regex-miss, input: {method: GET, path: /hello, headers: {Origin: http://other.newdomain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {absent: true}, Access-Control-Allow-Methods: {absent: true}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {absent: true}, Timing-Allow-Origin: {absent: true}}}}
+
+  - name: timing-prioritizes-regex
+    source: {file: t/plugin/cors4.t, tests: [24, 25]}
+    config:
+      routes:
+        - id: cors-timing-prioritizes-regex
+          uri: /hello
+          plugins: {cors: {allow_origins_by_regex: ['http://.*?\.domain\.com'], allow_methods: 'GET,POST', allow_headers: request-h, expose_headers: expose-h, max_age: 10, timing_allow_origins_by_regex: ['http://test.*?\.domain\.com'], timing_allow_origins: http://nonexistent.newdomain.com}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: regex-overrides-timing-list, input: {method: GET, path: /hello, headers: {Origin: http://testurl.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://testurl.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST'}, Access-Control-Allow-Headers: {equals: request-h}, Access-Control-Expose-Headers: {equals: expose-h}, Access-Control-Max-Age: {equals: '10'}, Timing-Allow-Origin: {equals: http://testurl.domain.com}}}}
+
+  - name: timing-expose-headers-absent
+    source: {file: t/plugin/cors4.t, tests: [26, 27]}
+    config:
+      routes:
+        - id: cors-timing-expose-absent
+          uri: /hello
+          plugins: {cors: {allow_credential: true, allow_headers: '**', allow_methods: '**', allow_origins: '**', expose_headers: '', max_age: 3500}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: no-exposed-headers, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE'}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {absent: true}, Access-Control-Max-Age: {equals: '3500'}, Access-Control-Allow-Credentials: {equals: 'true'}}}}
+
+  - name: timing-expose-headers-value
+    source: {file: t/plugin/cors4.t, tests: [28, 29]}
+    config:
+      routes:
+        - id: cors-timing-expose-value
+          uri: /hello
+          plugins: {cors: {allow_credential: true, allow_headers: '**', allow_methods: '**', allow_origins: '**', expose_headers: 'ex-headr1,ex-headr2', max_age: 3500}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: configured-exposed-headers, input: {method: GET, path: /hello, headers: {Origin: http://sub.domain.com}}, output: {status: 200, headers: {Access-Control-Allow-Origin: {equals: http://sub.domain.com}, Access-Control-Allow-Methods: {equals: 'GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE'}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {equals: 'ex-headr1,ex-headr2'}, Access-Control-Max-Age: {equals: '3500'}, Access-Control-Allow-Credentials: {equals: 'true'}}}}

@@ -3,6 +3,7 @@ package traffic_split
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,6 +162,105 @@ func TestHandlerUsesWeightedRoundRobin(t *testing.T) {
 	}
 	if first.Host == second.Host {
 		t.Fatalf("weighted round-robin returned same host twice: %s", first.Host)
+	}
+}
+
+func TestParsedInlineUpstreamDefaultsRetriesToOtherNodes(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{
+				"upstream": map[string]any{
+					"nodes": []any{
+						map[string]any{"host": "one.example.com", "port": 80, "weight": 1},
+						map[string]any{"host": "two.example.com", "port": 80, "weight": 1},
+						map[string]any{"host": "three.example.com", "port": 80, "weight": 1},
+					},
+				},
+			}},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("override = nil")
+	}
+	if override.Retries != 2 {
+		t.Fatalf("override retries = %d, want two other nodes", override.Retries)
+	}
+}
+
+func TestParsedInlineUpstreamPreservesExplicitZeroRetries(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{
+				"upstream": map[string]any{
+					"retries": 0,
+					"nodes": []any{
+						map[string]any{"host": "one.example.com", "port": 80, "weight": 1},
+						map[string]any{"host": "two.example.com", "port": 80, "weight": 1},
+					},
+				},
+			}},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("override = nil")
+	}
+	if override.Retries != 0 {
+		t.Fatalf("override retries = %d, want explicit zero", override.Retries)
+	}
+}
+
+func TestRetryOverrideSelectsAnotherNodeFromSameTarget(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Nodes: []Node{
+					{Host: "one.example.com", Port: 80, Weight: 1},
+					{Host: "two.example.com", Port: 80, Weight: 1},
+					{Host: "three.example.com", Port: 80, Weight: 1},
+				},
+			},
+		}},
+	}}})
+
+	first := performRequest(t, p)
+	if first == nil || first.NextRetry == nil {
+		t.Fatalf("first override = %#v, want retry selector", first)
+	}
+	second := first.NextRetry()
+	if second == nil || second.NextRetry == nil {
+		t.Fatalf("second override = %#v, want chained retry selector", second)
+	}
+	if second.Host == first.Host {
+		t.Fatalf("retry host = %q, want a node other than first host %q", second.Host, first.Host)
+	}
+	third := second.NextRetry()
+	if third == nil {
+		t.Fatal("third override = nil")
+	}
+	if third.Host == second.Host {
+		t.Fatalf("second retry host = %q, want a node other than previous host", third.Host)
 	}
 }
 
@@ -334,6 +434,39 @@ func TestHandlerSkipsWhenNoMatchVarsPass(t *testing.T) {
 
 	if override != nil {
 		t.Fatalf("override = %#v, want route-upstream fallback", override)
+	}
+}
+
+func TestHandlerMatchesFormPostArgumentWithoutConsumingBody(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}},
+			},
+		}},
+	}}})
+
+	const form = "id=1&name=jack"
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	var override *Override
+	var body string
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		override = GetOverride(r)
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read downstream request body: %v", err)
+		}
+		body = string(data)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	if override == nil || override.Host != "form.example.com:80" {
+		t.Fatalf("override = %#v, want form.example.com:80", override)
+	}
+	if body != form {
+		t.Fatalf("downstream request body = %q, want %q", body, form)
 	}
 }
 

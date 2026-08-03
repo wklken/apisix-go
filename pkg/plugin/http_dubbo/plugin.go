@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
@@ -130,6 +131,9 @@ func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Confi
 	result := serveDubboAttempt(r, target, cfg)
 	reportDubboOutcome(r, result)
 	if result.err != nil {
+		if result.logConnectFailure && r.Context().Err() == nil {
+			logger.Errorf("%s", result.err)
+		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -153,7 +157,7 @@ func ServeDubboWithRetries(
 	for attempt := 0; attempt < attempts; attempt++ {
 		target, err := nextTarget()
 		if err != nil {
-			result.err = fmt.Errorf("failed to select upstream target: %w", err)
+			result = dubboAttemptResult{err: fmt.Errorf("failed to select upstream target: %w", err)}
 			break
 		}
 		result = serveDubboAttempt(r, target, cfg)
@@ -167,6 +171,9 @@ func ServeDubboWithRetries(
 	}
 
 	if result.err != nil {
+		if result.logConnectFailure && r.Context().Err() == nil {
+			logger.Errorf("%s", result.err)
+		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -174,10 +181,11 @@ func ServeDubboWithRetries(
 }
 
 type dubboAttemptResult struct {
-	status    int
-	body      string
-	err       error
-	retryable bool
+	status            int
+	body              string
+	err               error
+	retryable         bool
+	logConnectFailure bool
 }
 
 func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
@@ -206,9 +214,15 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptR
 		target,
 	)
 	if err != nil {
+		logConnectFailure := r.Context().Err() == nil
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			logConnectFailure = false
+		}
 		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to connect to upstream: %w", err),
-			retryable: true,
+			err:               fmt.Errorf("failed to connect to upstream: %w", err),
+			retryable:         true,
+			logConnectFailure: logConnectFailure,
 		}
 	}
 	defer func() { _ = conn.Close() }()
@@ -437,7 +451,7 @@ func readDubboResponse(conn net.Conn) (int, string, error) {
 		}
 		return http.StatusOK, strings.TrimSuffix(strings.TrimSuffix(body, "\n"), "\r"), nil
 	default:
-		return 0, "", fmt.Errorf("unexpected Dubbo body status %q", bodyStatus)
+		return http.StatusInternalServerError, "", nil
 	}
 }
 

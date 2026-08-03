@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -56,6 +57,18 @@ type preparedInstanceRequest struct {
 	toolNameMap         map[string]string
 	anthropicConversion bool
 	cancel              context.CancelFunc
+	upstreamStarted     time.Time
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (r *countingReadCloser) Read(body []byte) (int, error) {
+	read, err := r.ReadCloser.Read(body)
+	r.bytesRead += int64(read)
+	return read, err
 }
 
 const (
@@ -194,7 +207,33 @@ const schema = `
               },
               "request_body": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "openai-chat": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "openai-responses": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "openai-embeddings": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "anthropic-messages": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "bedrock-converse": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "passthrough": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "additionalProperties": false
               },
               "request_body_force_override": {
                 "type": "boolean",
@@ -651,6 +690,11 @@ func (p *Plugin) executeInstanceRequest(
 	for {
 		tried[index] = true
 		instance := p.config.Instances[index]
+		if err := validateBedrockInstanceRequest(instance, body, protocol); err != nil {
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			p.registerLogging(r, protocol, body)
+			return
+		}
 		p.registerRequestIdentity(r, body, protocol, instance)
 		started := ai_runtime.StartLLMRequest(r)
 		doneMetric := metrics.BeginLLMRequest(r)
@@ -700,7 +744,15 @@ func (p *Plugin) executeInstanceRequest(
 		}
 
 		defer func() { _ = resp.Body.Close() }()
+		responseBody := &countingReadCloser{ReadCloser: resp.Body}
+		resp.Body = responseBody
 		p.writeProviderResponse(w, r, prepared, instanceModel(instance, body), instance, started, resp)
+		registerUpstreamResponseVars(
+			r,
+			resp.StatusCode,
+			time.Since(prepared.upstreamStarted),
+			responseBody.bytesRead,
+		)
 		doneMetric()
 		if prepared.cancel != nil {
 			prepared.cancel()
@@ -709,6 +761,19 @@ func (p *Plugin) executeInstanceRequest(
 		p.registerLogging(r, protocol, body)
 		return
 	}
+}
+
+func validateBedrockInstanceRequest(instance Instance, body []byte, protocol ai_protocols.Protocol) error {
+	if instance.Provider != "bedrock" {
+		return nil
+	}
+	if protocol != ai_protocols.BedrockConverse {
+		return fmt.Errorf("bedrock provider does not support %s protocol", protocol.OverrideKey)
+	}
+	if instanceModel(instance, body) == "" {
+		return fmt.Errorf("could not resolve upstream path: bedrock requires options.model or request body model")
+	}
+	return nil
 }
 
 func (p *Plugin) registerRequestIdentity(
@@ -787,12 +852,7 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	if err != nil {
 		return nil, ai_protocols.Protocol{}, err
 	}
-
-	rewritten, err := json.Marshal(bodyTab)
-	if err != nil {
-		return nil, ai_protocols.Protocol{}, fmt.Errorf("failed to encode provider request body: %w", err)
-	}
-	return rewritten, protocol, nil
+	return body, protocol, nil
 }
 
 func (p *Plugin) requestInstance(
@@ -812,12 +872,11 @@ func (p *Plugin) requestInstance(
 		return nil, prepared, err
 	}
 
-	req, err := http.NewRequestWithContext(
-		r.Context(),
-		http.MethodPost,
-		endpoint,
-		bytes.NewReader(prepared.providerBody),
-	)
+	method := http.MethodPost
+	if protocol == ai_protocols.Passthrough {
+		method = r.Method
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, endpoint, bytes.NewReader(prepared.providerBody))
 	if err != nil {
 		return nil, prepared, fmt.Errorf("failed to create LLM request: %w", err)
 	}
@@ -827,10 +886,23 @@ func (p *Plugin) requestInstance(
 		req.Header.Set(header, value)
 	}
 	query := req.URL.Query()
+	if protocol == ai_protocols.Passthrough {
+		if req.URL.Path == "" || req.URL.Path == "/" {
+			req.URL.Path = r.URL.Path
+			req.URL.RawPath = r.URL.RawPath
+		}
+		for key, values := range r.URL.Query() {
+			query.Del(key)
+			for _, value := range values {
+				query.Add(key, value)
+			}
+		}
+	}
 	for key, value := range instance.Auth.Query {
 		query.Set(key, value)
 	}
 	req.URL.RawQuery = query.Encode()
+	registerUpstreamTargetVars(r, req)
 	if instance.Auth.GCP != nil {
 		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *instance.Auth.GCP); err != nil {
 			return nil, prepared, fmt.Errorf("authenticate GCP request: %w", err)
@@ -861,8 +933,37 @@ func (p *Plugin) requestInstance(
 		req = req.WithContext(deadlineContext)
 	}
 
+	prepared.upstreamStarted = time.Now()
 	resp, err := p.client.Do(req)
+	if err != nil {
+		registerUpstreamResponseTime(r, time.Since(prepared.upstreamStarted))
+	}
 	return resp, prepared, err
+}
+
+func registerUpstreamTargetVars(r *http.Request, upstream *http.Request) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_addr", upstream.URL.Host)
+	apisixctx.RegisterRequestVar(r, "$upstream_uri", upstream.URL.RequestURI())
+	apisixctx.RegisterRequestVar(r, "$upstream_host", upstream.URL.Hostname())
+}
+
+func registerUpstreamResponseVars(r *http.Request, status int, elapsed time.Duration, responseLength int64) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_status", fmt.Sprintf("%d", status))
+	registerUpstreamResponseTime(r, elapsed)
+	apisixctx.RegisterRequestVar(r, "$upstream_response_length", responseLength)
+}
+
+func registerUpstreamResponseTime(r *http.Request, elapsed time.Duration) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_response_time", fmt.Sprintf("%.3f", elapsed.Seconds()))
 }
 
 func (p *Plugin) prepareInstanceRequest(
@@ -927,6 +1028,7 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
+	originalBody := cloneJSONValue(bodyTab).(map[string]any)
 	maps.Copy(bodyTab, instance.Options)
 	p.applyLLMOptions(bodyTab, protocol, instance)
 	p.applyRequestBodyOverride(bodyTab, protocol, instance)
@@ -935,11 +1037,15 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 		bodyTab["stream_options"] = map[string]any{"include_usage": true}
 	}
 
+	vertexEmbeddings := instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings
+	if reflect.DeepEqual(originalBody, bodyTab) && !vertexEmbeddings {
+		return body, nil
+	}
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode provider request body: %w", err)
 	}
-	if instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings {
+	if vertexEmbeddings {
 		return ai_protocols.ConvertOpenAIEmbeddingsToVertex(rewritten)
 	}
 	return rewritten, nil
@@ -1292,7 +1398,10 @@ func (p *Plugin) endpoint(
 	originalBody []byte,
 ) (string, error) {
 	if instance.Override.Endpoint != "" {
-		if instance.Provider == "openai-compatible" {
+		if protocol == ai_protocols.Passthrough {
+			return instance.Override.Endpoint, nil
+		}
+		if instance.Provider == "openai-compatible" || instance.Provider == "openai" {
 			return appendProtocolEndpoint(instance.Override.Endpoint, protocol)
 		}
 		if instance.Provider == "bedrock" {
@@ -1379,6 +1488,7 @@ func appendBedrockEndpoint(endpoint string, model string, streaming bool) (strin
 		suffix = "/converse-stream"
 	}
 	parsed.Path = "/model/" + model + suffix
+	parsed.RawPath = "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + suffix
 	return parsed.String(), nil
 }
 

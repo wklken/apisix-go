@@ -17,6 +17,8 @@ type Usage struct {
 	Raw              map[string]any
 	PromptTokens     int64
 	CompletionTokens int64
+	ToolCalls        int64
+	HasToolCalls     bool
 }
 
 func ForwardSSE(
@@ -37,7 +39,7 @@ func ForwardSSE(
 			}
 			mergeSSEUsage(&usage, protocol, line)
 			if _, writeErr := io.WriteString(w, line); writeErr != nil {
-				return usage, writeErr
+				return usage, fmt.Errorf("%w: %v", ErrClientDisconnected, writeErr)
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
@@ -82,6 +84,24 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 		if model, ok := response["model"].(string); ok {
 			usage.Model = model
 		}
+		if output, ok := response["output"].([]any); ok {
+			for _, rawItem := range output {
+				item, _ := rawItem.(map[string]any)
+				switch item["type"] {
+				case "function_call":
+					usage.HasToolCalls = true
+				case "message":
+					if content, ok := item["content"].([]any); ok {
+						for _, rawPart := range content {
+							part, _ := rawPart.(map[string]any)
+							if part["type"] == "function_call" {
+								usage.HasToolCalls = true
+							}
+						}
+					}
+				}
+			}
+		}
 		mergeOpenAIUsage(usage, response["usage"], true)
 	case ai_protocols.AnthropicMessages:
 		if message, ok := event["message"].(map[string]any); ok {
@@ -91,7 +111,20 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 			mergeAnthropicUsage(usage, message["usage"])
 		}
 		mergeAnthropicUsage(usage, event["usage"])
+		if contentBlocks, ok := event["content_block"].(map[string]any); ok &&
+			contentBlocks["type"] == "tool_use" {
+			usage.HasToolCalls = true
+		}
 	default:
+		if choices, ok := event["choices"].([]any); ok {
+			for _, rawChoice := range choices {
+				choice, _ := rawChoice.(map[string]any)
+				delta, _ := choice["delta"].(map[string]any)
+				if toolCalls, ok := delta["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+					usage.HasToolCalls = true
+				}
+			}
+		}
 		mergeOpenAIUsage(usage, event["usage"], false)
 	}
 }
@@ -102,6 +135,11 @@ func mergeOpenAIUsage(usage *Usage, value any, responses bool) {
 		return
 	}
 	mergeRaw(usage.Raw, raw)
+	for _, key := range []string{"prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details"} {
+		if details, ok := raw[key].(map[string]any); ok {
+			usage.Raw[key] = details
+		}
+	}
 	if responses {
 		usage.PromptTokens = numericUsage(raw["input_tokens"])
 		usage.CompletionTokens = numericUsage(raw["output_tokens"])

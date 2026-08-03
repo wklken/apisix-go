@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -119,35 +120,38 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
+			writePlainResponse(w, http.StatusBadRequest, "failed to get request body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
+			writePlainResponse(w, http.StatusBadRequest, "failed to get request body: request body is empty")
 			return
 		}
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
+			writePlainResponse(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
 			return
 		}
 
-		embeddingsReq, fields, ok := parseAIRAG(bodyTab)
-		if !ok {
-			base.WriteJSONMessage(w, http.StatusBadRequest, `request body must have "ai_rag" field`)
+		embeddingsReq, fields, diagnostic := parseAIRAG(bodyTab)
+		if diagnostic != "" {
+			logger.Error(diagnostic)
+			writePlainResponse(w, http.StatusBadRequest, diagnostic)
 			return
 		}
 
 		embedding, status, message := p.requestEmbeddings(r, embeddingsReq)
 		if status != http.StatusOK {
-			base.WriteJSONMessage(w, status, message)
+			logger.Error("could not get embeddings: " + message)
+			writePlainResponse(w, status, message)
 			return
 		}
 
 		searchResult, status, message := p.requestVectorSearch(r, fields, embedding)
 		if status != http.StatusOK {
-			base.WriteJSONMessage(w, status, message)
+			logger.Error("could not get vector_search result: " + message)
+			writePlainResponse(w, status, message)
 			return
 		}
 
@@ -176,30 +180,30 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func parseAIRAG(body map[string]any) (map[string]any, string, bool) {
+func parseAIRAG(body map[string]any) (map[string]any, string, string) {
 	aiRAG, ok := body["ai_rag"].(map[string]any)
 	if !ok {
-		return nil, "", false
-	}
-
-	embeddings, ok := aiRAG["embeddings"].(map[string]any)
-	if !ok {
-		return nil, "", false
-	}
-	if _, ok := embeddings["input"]; !ok {
-		return nil, "", false
+		return nil, "", `request body must have "ai-rag" field`
 	}
 
 	vectorSearch, ok := aiRAG["vector_search"].(map[string]any)
 	if !ok {
-		return nil, "", false
+		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "vector_search" is required`
 	}
 	fields, ok := vectorSearch["fields"].(string)
 	if !ok || fields == "" {
-		return nil, "", false
+		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "vector_search" validation failed: property "fields" is required`
 	}
 
-	return embeddings, fields, true
+	embeddings, ok := aiRAG["embeddings"].(map[string]any)
+	if !ok {
+		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "embeddings" is required`
+	}
+	if _, ok := embeddings["input"]; !ok {
+		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "embeddings" validation failed: property "input" is required`
+	}
+
+	return embeddings, fields, ""
 }
 
 func (p *Plugin) requestEmbeddings(r *http.Request, embeddingsReq map[string]any) (any, int, string) {
@@ -288,9 +292,14 @@ func (p *Plugin) postAzureJSON(
 func appendSearchResult(r *http.Request, body map[string]any, searchResult string) {
 	protocol, err := ai_protocols.Detect(r.URL.Path, body)
 	if err != nil {
-		return
+		protocol = ai_protocols.OpenAIChat
 	}
 	ai_protocols.AppendMessages(protocol, body, []ai_protocols.Message{{Role: "user", Content: searchResult}})
+}
+
+func writePlainResponse(w http.ResponseWriter, status int, body string) {
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
 }
 
 func (p *Plugin) transport() http.RoundTripper {

@@ -231,6 +231,42 @@ func TestProcessorRetriesFailedBatches(t *testing.T) {
 	}
 }
 
+func TestProcessorPreservesExplicitZeroRetryDelay(t *testing.T) {
+	attempts := make(chan time.Time, 3)
+	p := New(Config{
+		Name:            "test logger",
+		BatchMaxSize:    1,
+		MaxRetryCount:   2,
+		RetryDelay:      0,
+		RetryDelaySet:   true,
+		InactiveTimeout: time.Hour,
+		BufferDuration:  time.Hour,
+	}, func(_ []map[string]any, _ int) (int, error) {
+		attempts <- time.Now()
+		return 0, fmt.Errorf("deterministic failure")
+	})
+	t.Cleanup(p.Stop)
+
+	if !p.Push(map[string]any{"id": "zero-delay"}) {
+		t.Fatal("push was rejected")
+	}
+
+	var first time.Time
+	for attempt := 1; attempt <= 3; attempt++ {
+		select {
+		case at := <-attempts:
+			if attempt == 1 {
+				first = at
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("attempts = %d, want 3 without the default one-second retry delay", attempt-1)
+		}
+	}
+	if elapsed := time.Since(first); elapsed >= 250*time.Millisecond {
+		t.Fatalf("three attempts took %s, want explicit zero retry delay", elapsed)
+	}
+}
+
 func TestProcessorPushDoesNotWaitForDelivery(t *testing.T) {
 	block := make(chan struct{})
 	p := New(Config{

@@ -106,6 +106,9 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
+		if contentType := r.Header.Get("Content-Type"); contentType != "application/x-ndjson" {
+			t.Fatalf("Content-Type = %q, want application/x-ndjson", contentType)
+		}
 		if r.Header.Get("X-Cluster") != "logs" {
 			t.Fatalf("X-Cluster = %q, want logs", r.Header.Get("X-Cluster"))
 		}
@@ -289,6 +292,63 @@ func TestSendDiscoversOlderElasticsearchVersion(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestBulkBodyIgnoresUnsupportedConfiguredType(t *testing.T) {
+	configuredType := "collector"
+	for _, test := range []struct {
+		version  string
+		wantType string
+	}{
+		{version: "9"},
+		{version: "8"},
+		{version: "7"},
+		{version: "6", wantType: "_doc"},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			p := &Plugin{
+				config: Config{
+					Field: FieldConfig{Index: "services", Type: &configuredType},
+				},
+				esVersion: test.version,
+			}
+
+			body, err := p.bulkBodyEntry(map[string]any{"test": "test"})
+			if err != nil {
+				t.Fatalf("bulkBodyEntry() error = %v", err)
+			}
+			action := strings.SplitN(string(body), "\n", 2)[0]
+			if strings.Contains(action, configuredType) {
+				t.Fatalf("bulk action = %s, want unsupported configured type omitted", action)
+			}
+			if test.wantType == "" {
+				if strings.Contains(action, `"_type"`) {
+					t.Fatalf("bulk action = %s, want no _type for Elasticsearch %s", action, test.version)
+				}
+				return
+			}
+			if !strings.Contains(action, `"_type":"`+test.wantType+`"`) {
+				t.Fatalf("bulk action = %s, want _type %q", action, test.wantType)
+			}
+		})
+	}
+}
+
+func TestElasticsearchLogFieldsPreservesNginxHostAndRemoteAddress(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://unused.example/orders", nil)
+	req.Host = "logs.example"
+	req.RemoteAddr = "127.0.0.1:54321"
+
+	fields := elasticsearchLogFields(req, map[string]string{
+		"custom_host":      "$host",
+		"custom_client_ip": "$remote_addr",
+	})
+	if fields["custom_host"] != "logs.example" {
+		t.Fatalf("custom_host = %#v, want logs.example", fields["custom_host"])
+	}
+	if fields["custom_client_ip"] != "127.0.0.1" {
+		t.Fatalf("custom_client_ip = %#v, want 127.0.0.1", fields["custom_client_ip"])
 	}
 }
 
@@ -615,4 +675,63 @@ func extractBulkDocument(t *testing.T, body string) map[string]any {
 		t.Fatalf("unmarshal bulk document: %v", err)
 	}
 	return document
+}
+
+func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "services-${arg_id}-{%Y.%m.%d}"},
+		LogFormat:     map[string]string{"path": "$uri"},
+		Timeout:       10,
+		BatchMaxSize:  1,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello?id=myservice", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-received:
+		wantIndex := `"services-myservice-` + time.Now().Format("2006.01.02") + `"`
+		if !strings.Contains(body, `"_index":`+wantIndex) {
+			t.Fatalf("bulk body = %q, want resolved brace-form index containing %s", body, wantIndex)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestResolveIndexVariableReferencesMatchesAPISIXTemplateContract(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/orders?id=", nil)
+	req.Host = "logs.example"
+
+	got := resolveIndexVariableReferences(
+		`plain-$host-${ arg_id }-${arg_missing ?? fallback}-${arg_id ?? fallback}-${consumer_name ?? anonymous}-$foo.bar-\$host-${}`,
+		req,
+	)
+	const want = `plain-logs.example--fallback--anonymous--\$host-${}`
+	if got != want {
+		t.Fatalf("resolved index = %q, want %q", got, want)
+	}
 }

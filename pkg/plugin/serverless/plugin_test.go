@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, p *Plugin, cfg Config) *Plugin {
@@ -65,6 +67,33 @@ func TestPreFunctionCanSetRequestHeaderAndContinue(t *testing.T) {
 	}
 	if gotHeader != "/anything" {
 		t.Fatalf("X-Serverless-Path = %q, want /anything", gotHeader)
+	}
+}
+
+func TestPreFunctionPersistsExternalUserOnRequestContext(t *testing.T) {
+	p := newTestPlugin(t, NewPreFunction(), Config{
+		Functions: []string{
+			`return function(conf, ctx) ctx.external_user = {team = {"cloud", "infra"}} end`,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		externalUser, ok := apisixctx.GetApisixVar(r, "$external_user").(map[string]any)
+		if !ok {
+			t.Fatalf("$external_user = %#v, want object", apisixctx.GetApisixVar(r, "$external_user"))
+		}
+		team, ok := externalUser["team"].([]any)
+		if !ok || len(team) != 2 || team[0] != "cloud" || team[1] != "infra" {
+			t.Fatalf("$external_user.team = %#v, want [cloud infra]", externalUser["team"])
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 }
 

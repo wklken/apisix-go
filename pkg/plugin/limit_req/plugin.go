@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -200,11 +202,18 @@ type bucket struct {
 	last   time.Time
 }
 
+type bucketStore struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+}
+
 type reqLimiter interface {
 	incoming(key string, rate float64, burst float64) (time.Duration, bool, error)
 }
 
 var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
+
+var consumerBucketStores sync.Map
 
 const redisLimitReqScript = `
 local state = redis.call("HMGET", KEYS[1], "excess", "last")
@@ -215,7 +224,7 @@ local rate = tonumber(ARGV[2])
 local burst = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
 
-local elapsed = (now - last) / 1000
+local elapsed = math.max(0, (now - last) / 1000)
 excess = math.max(0, excess - elapsed * rate) + 1
 local max_excess = burst + 1
 local allowed = 1
@@ -366,12 +375,17 @@ func (p *Plugin) scopedKey(key string) string {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		key := p.resolveKey(r)
-		delay, allowed, err := p.incoming(key)
+		consumerName := ""
+		if apisixctx.ConsumerPluginOverrides(r, name) {
+			consumerName, _ = apisixctx.GetApisixVar(r, "$consumer_name").(string)
+		}
+		delay, allowed, err := p.incomingWithConsumer(key, consumerName)
 		if err != nil {
 			if *p.config.AllowDegradation {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Errorf("failed to limit req: %v", err)
 			http.Error(w, "failed to limit req", http.StatusInternalServerError)
 			return
 		}
@@ -395,20 +409,31 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
-	key = p.scopedKey(key)
+func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Duration, bool, error) {
+	if consumerName == "" {
+		key = p.scopedKey(key)
+	} else {
+		key = "consumer:" + consumerName + ":" + key
+	}
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(key, p.config.Rate, p.config.Burst)
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	mu := &p.mu
+	buckets := p.buckets
+	if consumerName != "" {
+		store := p.consumerBucketStore()
+		mu = &store.mu
+		buckets = store.buckets
+	}
+	mu.Lock()
+	defer mu.Unlock()
 
 	now := p.now()
-	b, ok := p.buckets[key]
+	b, ok := buckets[key]
 	if !ok {
 		b = &bucket{last: now}
-		p.buckets[key] = b
+		buckets[key] = b
 	}
 
 	elapsed := now.Sub(b.last).Seconds()
@@ -429,9 +454,25 @@ func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
 	return time.Duration(delaySeconds * float64(time.Second)), true, nil
 }
 
+func (p *Plugin) consumerBucketStore() *bucketStore {
+	uid := shared.NewConfigUID()
+	uid.Add(p.config.Rate, p.config.Burst, p.config.Key, p.config.KeyType)
+	created := &bucketStore{buckets: make(map[string]*bucket)}
+	actual, _ := consumerBucketStores.LoadOrStore(uid.String(), created)
+	return actual.(*bucketStore)
+}
+
 type redisReqLimiter struct {
 	client redis.UniversalClient
 	now    func() time.Time
+}
+
+type redisPoolStatsProvider interface {
+	PoolStats() *redis.PoolStats
+}
+
+func logRedisConnectionReuse(client redisPoolStatsProvider) {
+	logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
 }
 
 func (p *Plugin) newRedisLimiter() reqLimiter {
@@ -526,6 +567,7 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 		burst,
 		ttl.Milliseconds(),
 	).Result()
+	logRedisConnectionReuse(l.client)
 	if err != nil {
 		return 0, false, err
 	}
@@ -583,6 +625,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 	}
 
 	if key == "" {
+		logger.Warn("The value of the configured key is empty, use client IP instead")
 		key = base.RequestVarFromNginx(r, "remote_addr")
 	}
 	return key

@@ -63,16 +63,23 @@ func TestStreamProxyModeEnabled(t *testing.T) {
 
 func TestIsStreamRouteEvent(t *testing.T) {
 	for _, test := range []struct {
-		key     string
-		refresh bool
+		key        string
+		httpReload bool
+		stream     bool
 	}{
-		{key: "/apisix/stream_routes/mqtt", refresh: true},
-		{key: "/apisix/upstreams/mqtt", refresh: true},
-		{key: "/apisix/routes/http", refresh: false},
-		{key: "/apisix/stream_routes", refresh: false},
+		{key: "/apisix/stream_routes/mqtt", stream: true},
+		{key: "/apisix/upstreams/mqtt", httpReload: true, stream: true},
+		{key: "/apisix/routes/http", httpReload: true},
+		{key: "/apisix/global_rules/1", httpReload: true},
+		{key: "/apisix/plugin_configs/1", httpReload: true},
+		{key: "/apisix/stream_routes"},
 	} {
-		if got := isStreamRouteEvent(&store.Event{Key: []byte(test.key)}); got != test.refresh {
-			t.Fatalf("isStreamRouteEvent(%q) = %v, want %v", test.key, got, test.refresh)
+		event := &store.Event{Key: []byte(test.key)}
+		if got := isHTTPRouteEvent(event); got != test.httpReload {
+			t.Errorf("isHTTPRouteEvent(%q) = %v, want %v", test.key, got, test.httpReload)
+		}
+		if got := isStreamRouteEvent(event); got != test.stream {
+			t.Errorf("isStreamRouteEvent(%q) = %v, want %v", test.key, got, test.stream)
 		}
 	}
 }

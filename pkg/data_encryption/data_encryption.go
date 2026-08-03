@@ -4,11 +4,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
 )
+
+const encryptedValuePrefix = "$encrypted://"
 
 var runtimeConfig struct {
 	sync.RWMutex
@@ -47,6 +50,7 @@ var pluginFields = map[string][]string{
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
 	},
+	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
 	"authz-keycloak":       {"client_secret"},
 	"authz-casdoor":        {"client_secret"},
 	"aws-lambda":           {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
@@ -54,7 +58,7 @@ var pluginFields = map[string][]string{
 	"basic-auth":           {"password"},
 	"cas-auth":             {"cookie.secret"},
 	"dingtalk-auth":        {"app_secret", "secret"},
-	"feishu-auth":          {"app_secret", "secret"},
+	"feishu-auth":          {"app_secret", "secret", "secret_fallbacks"},
 	"hmac-auth":            {"secret"},
 	"http-logger":          {"auth_header"},
 	"jwe-decrypt":          {"key", "secret"},
@@ -68,7 +72,7 @@ var pluginFields = map[string][]string{
 	"openwhisk":            {"service_token"},
 	"clickhouse-logger":    {"password"},
 	"csrf":                 {"key"},
-	"elasticsearch-logger": {"auth.password"},
+	"elasticsearch-logger": {"auth.password", "headers.Authorization"},
 	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
 	"google-cloud-logging": {"auth_config.private_key"},
 	"lago":                 {"token"},
@@ -82,6 +86,7 @@ var pluginFields = map[string][]string{
 }
 
 var strictPluginFields = map[string][]string{
+	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
 	"clickhouse-logger":    {"password"},
 	"csrf":                 {"key"},
 	"elasticsearch-logger": {"auth.password"},
@@ -100,15 +105,137 @@ var strictPluginFields = map[string][]string{
 }
 
 var pluginMetadataFields = map[string][]string{
-	"azure-functions": {"master_apikey"},
+	"azure-functions":  {"master_apikey"},
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+}
+
+var strictPluginMetadataFields = map[string][]string{
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
 }
 
 func HasEncryptedPluginMetadata(name string) bool {
 	return len(pluginMetadataFields[name]) != 0
 }
 
+func EncryptPluginMetadata(name string, metadata map[string]any, keyring []string) error {
+	if len(keyring) == 0 {
+		return ErrKeyUnavailable
+	}
+	for _, field := range pluginMetadataFields[name] {
+		if err := encryptField(metadata, field, keyring); err != nil {
+			return fmt.Errorf("%s.%s: %w", name, field, err)
+		}
+	}
+	return nil
+}
+
 func IsStrictPluginField(pluginName string, field string) bool {
 	return slices.Contains(strictPluginFields[pluginName], field)
+}
+
+func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
+	if len(keyring) == 0 {
+		return ErrKeyUnavailable
+	}
+	for name, fields := range pluginFields {
+		config, ok := configs[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			if err := encryptField(config, field, keyring); err != nil {
+				return fmt.Errorf("%s.%s: %w", name, field, err)
+			}
+		}
+	}
+	return nil
+}
+
+func encryptField(config map[string]any, path string, keyring []string) error {
+	return encryptPath(config, strings.Split(path, "."), keyring)
+}
+
+func encryptPath(current any, segments []string, keyring []string) error {
+	if len(segments) == 0 {
+		return nil
+	}
+	segment := segments[0]
+	switch value := current.(type) {
+	case map[string]any:
+		if segment == "*" {
+			for _, child := range value {
+				if err := encryptPath(child, segments[1:], keyring); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		keys := matchingMapKeys(value, segment)
+		if len(keys) == 0 {
+			return nil
+		}
+		for _, key := range keys {
+			child := value[key]
+			if len(segments) == 1 {
+				encrypted, err := encryptValue(child, keyring)
+				if err != nil {
+					return err
+				}
+				value[key] = encrypted
+				continue
+			}
+			if err := encryptPath(child, segments[1:], keyring); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		if segment != "*" {
+			return nil
+		}
+		for _, child := range value {
+			if err := encryptPath(child, segments[1:], keyring); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func encryptValue(value any, keyring []string) (any, error) {
+	switch typed := value.(type) {
+	case string:
+		if typed == "" {
+			return typed, nil
+		}
+		if ciphertext, ok := strings.CutPrefix(typed, encryptedValuePrefix); ok {
+			if ciphertext == "" {
+				return nil, ErrInvalidCiphertext
+			}
+			if _, err := Decrypt(ciphertext, keyring); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
+			}
+			return ciphertext, nil
+		}
+		return Encrypt(typed, keyring[0])
+	case map[string]any:
+		for key, child := range typed {
+			encrypted, err := encryptValue(child, keyring)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = encrypted
+		}
+	case []any:
+		for i, child := range typed {
+			encrypted, err := encryptValue(child, keyring)
+			if err != nil {
+				return nil, err
+			}
+			typed[i] = encrypted
+		}
+	}
+	return value, nil
 }
 
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {
@@ -136,6 +263,9 @@ func DecryptPluginMetadata(name string, metadata map[string]any, keyring []strin
 	}
 	resolver := NewResolver(true, keyring)
 	for _, field := range pluginMetadataFields[name] {
+		if slices.Contains(strictPluginMetadataFields[name], field) {
+			continue
+		}
 		decryptField(metadata, field, resolver)
 	}
 }
@@ -157,15 +287,18 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 			}
 			return
 		}
-		child, ok := value[segment]
-		if !ok {
+		keys := matchingMapKeys(value, segment)
+		if len(keys) == 0 {
 			return
 		}
-		if len(segments) == 1 {
-			value[segment] = decryptValue(child, resolver)
-			return
+		for _, key := range keys {
+			child := value[key]
+			if len(segments) == 1 {
+				value[key] = decryptValue(child, resolver)
+				continue
+			}
+			decryptPath(child, segments[1:], resolver)
 		}
-		decryptPath(child, segments[1:], resolver)
 	case []any:
 		if segment != "*" {
 			return
@@ -174,6 +307,16 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 			decryptPath(child, segments[1:], resolver)
 		}
 	}
+}
+
+func matchingMapKeys(value map[string]any, segment string) []string {
+	keys := make([]string, 0, 1)
+	for key := range value {
+		if strings.EqualFold(key, segment) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func decryptValue(value any, resolver Resolver) any {
@@ -213,6 +356,25 @@ func Decrypt(encoded string, keyring []string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("decrypt data encryption field")
+}
+
+func Encrypt(plaintext string, key string) (string, error) {
+	if len(key) != aes.BlockSize {
+		return "", errors.New("data encryption key must be 16 bytes")
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		return "", err
+	}
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := make([]byte, len(plaintext)+padding)
+	copy(padded, plaintext)
+	for i := len(plaintext); i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
 func unpad(value []byte) ([]byte, error) {

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -21,12 +24,15 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 
-	client *resty.Client
+	client         *resty.Client
+	logFormatExtra map[string]string
 }
 
 const (
-	priority = 414
-	name     = "loki-logger"
+	priority               = 414
+	name                   = "loki-logger"
+	lokiEntryEnvelopeField = "loki_entry_envelope"
+	serverVersion          = "apisix-go"
 )
 
 var randomEndpointIndex = rand.Intn
@@ -154,8 +160,27 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "log_format_extra": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
+	LogFormatExtra    map[string]string `json:"log_format_extra"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
@@ -197,6 +222,12 @@ type lokiStream struct {
 	Values [][2]string       `json:"values"`
 }
 
+type lokiEntryEnvelope struct {
+	Fields    map[string]any
+	Timestamp string
+	Labels    map[string]string
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -205,6 +236,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -270,6 +302,7 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		p.logFormatExtra = metadata.LogFormatExtra
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -291,11 +324,8 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		requestStart := time.Now()
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -311,23 +341,162 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		status := metrics.Code
 
-		logFields := apisixlog.GetFields(r, p.LogFormat)
+		logFields := p.logFields(r, w.Header(), status, metrics.Written, requestStart)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
 		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
+		labels := p.resolveRequestLabels(r, status)
 
-		_ = p.Fire(logFields)
+		_ = p.Fire(wrapLokiEntry(logFields, requestStart, labels))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) logFields(
+	r *http.Request,
+	responseHeaders http.Header,
+	status int,
+	responseSize int64,
+	requestStart time.Time,
+) map[string]any {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = apisixlog.GetFields(r, p.LogFormat)
+	} else {
+		fields = p.defaultLogFields(r, responseHeaders, status, responseSize, requestStart)
+	}
+	for key, value := range p.logFormatExtra {
+		if _, exists := fields[key]; !exists {
+			fields[key] = p.resolveLogFormatValue(r, value)
+		}
+	}
+	return fields
+}
+
+func (p *Plugin) defaultLogFields(
+	r *http.Request,
+	responseHeaders http.Header,
+	status int,
+	responseSize int64,
+	requestStart time.Time,
+) map[string]any {
+	latency := float64(time.Since(requestStart).Microseconds()) / 1000
+	upstreamLatency := numericRequestVar(r, "$upstream_latency")
+	apisixLatency := latency - upstreamLatency
+	if apisixLatency < 0 {
+		apisixLatency = 0
+	}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown"
+	}
+	requestSize := max(r.ContentLength, 0)
+	fields := map[string]any{
+		"request": map[string]any{
+			"url":         fullRequestURL(r),
+			"uri":         r.URL.RequestURI(),
+			"method":      r.Method,
+			"headers":     logValues(r.Header),
+			"querystring": logValues(http.Header(r.URL.Query())),
+			"size":        requestSize,
+		},
+		"response": map[string]any{
+			"status":  status,
+			"headers": logValues(responseHeaders),
+			"size":    responseSize,
+		},
+		"server": map[string]any{
+			"hostname": hostname,
+			"version":  serverVersion,
+		},
+		"service_id":       base.RequestVar(r, "$service_id", status),
+		"route_id":         base.RequestVar(r, "$route_id", status),
+		"client_ip":        base.RequestVar(r, "$remote_addr", status),
+		"start_time":       float64(requestStart.UnixNano()) / float64(time.Millisecond),
+		"latency":          latency,
+		"upstream_latency": upstreamLatency,
+		"apisix_latency":   apisixLatency,
+	}
+	if fields["route_id"] == "" {
+		fields["route_id"] = "no-matched"
+	}
+	if upstream := selectedUpstream(r, status); upstream != "" {
+		fields["upstream"] = upstream
+	}
+	if consumerName := base.RequestVar(r, "$consumer_name", status); consumerName != "" {
+		fields["consumer"] = map[string]any{"username": consumerName}
+	}
+	return fields
+}
+
+func fullRequestURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
+		scheme = forwarded
+	}
+	return scheme + "://" + r.Host + r.URL.RequestURI()
+}
+
+func logValues(values http.Header) map[string]any {
+	result := make(map[string]any, len(values))
+	for key, entries := range values {
+		name := strings.ToLower(key)
+		if len(entries) == 1 {
+			result[name] = entries[0]
+			continue
+		}
+		result[name] = append([]string(nil), entries...)
+	}
+	return result
+}
+
+func numericRequestVar(r *http.Request, name string) float64 {
+	value := base.RequestVar(r, name, 0)
+	result, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return result
+}
+
+func selectedUpstream(r *http.Request, status int) string {
+	host := base.RequestVar(r, "$balancer_ip", status)
+	port := base.RequestVar(r, "$balancer_port", status)
+	if host == "" {
+		return ""
+	}
+	if port == "" {
+		return host
+	}
+	return host + ":" + port
+}
+
+func (p *Plugin) resolveLogFormatValue(r *http.Request, value string) any {
+	if value == "$upstream_unresolved_host" {
+		return base.RequestVar(r, "$balancer_ip", 0)
+	}
+	return apisixlog.GetField(r, value)
+}
+
+func (p *Plugin) resolveRequestLabels(r *http.Request, status int) map[string]string {
+	labels := make(map[string]string, len(p.config.LogLabels))
+	for key, value := range p.config.LogLabels {
+		if strings.HasPrefix(value, "$") {
+			labels[key] = base.RequestVar(r, value, status)
+			continue
+		}
+		labels[key] = value
+	}
+	return labels
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -369,42 +538,53 @@ func (p *Plugin) buildPayload(log map[string]any) lokiPayload {
 }
 
 func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
-	values := make([][2]string, 0, len(entries))
-	for _, logEntry := range entries {
+	streams := make([]lokiStream, 0, len(entries))
+	streamIndex := make(map[string]int, len(entries))
+	for _, queuedEntry := range entries {
+		logEntry := queuedEntry
 		logTime := fmt.Sprintf("%d", time.Now().UnixNano())
-		if value, ok := logEntry["loki_log_time"]; ok {
-			logTime = fmt.Sprint(value)
+		var labels map[string]string
+		if envelope, ok := unwrapLokiEntry(queuedEntry); ok {
+			logEntry = envelope.Fields
+			logTime = envelope.Timestamp
+			labels = envelope.Labels
 		}
 
-		entry := logEntry
-		if _, ok := logEntry["loki_log_time"]; ok {
-			entry = make(map[string]any, len(logEntry)-1)
-			for key, value := range logEntry {
-				if key != "loki_log_time" {
-					entry[key] = value
-				}
-			}
-		}
-
-		body, err := json.Marshal(entry)
+		body, err := json.Marshal(logEntry)
 		if err != nil {
 			body = []byte(`{}`)
 		}
-		values = append(values, [2]string{logTime, string(body)})
+		if labels == nil {
+			labels = p.resolveLabels(logEntry)
+		}
+		labelKey, err := json.Marshal(labels)
+		if err != nil {
+			labelKey = []byte{}
+		}
+		index, ok := streamIndex[string(labelKey)]
+		if !ok {
+			index = len(streams)
+			streamIndex[string(labelKey)] = index
+			streams = append(streams, lokiStream{Stream: labels})
+		}
+		streams[index].Values = append(streams[index].Values, [2]string{logTime, string(body)})
 	}
+	return lokiPayload{Streams: streams}
+}
 
-	labels := map[string]string{}
-	if len(entries) > 0 {
-		labels = p.resolveLabels(entries[0])
-	}
-	return lokiPayload{
-		Streams: []lokiStream{
-			{
-				Stream: labels,
-				Values: values,
-			},
+func wrapLokiEntry(fields map[string]any, requestStart time.Time, labels map[string]string) map[string]any {
+	return map[string]any{
+		lokiEntryEnvelopeField: lokiEntryEnvelope{
+			Fields:    fields,
+			Timestamp: strconv.FormatInt(requestStart.UnixNano(), 10),
+			Labels:    labels,
 		},
 	}
+}
+
+func unwrapLokiEntry(entry map[string]any) (lokiEntryEnvelope, bool) {
+	envelope, ok := entry[lokiEntryEnvelopeField].(lokiEntryEnvelope)
+	return envelope, ok
 }
 
 func (p *Plugin) resolveLabels(log map[string]any) map[string]string {
@@ -413,8 +593,11 @@ func (p *Plugin) resolveLabels(log map[string]any) map[string]string {
 		if after, ok := strings.CutPrefix(value, "$"); ok {
 			if resolved, ok := log[after]; ok {
 				labels[key] = fmt.Sprint(resolved)
-				continue
 			}
+			if _, ok := labels[key]; !ok {
+				labels[key] = ""
+			}
+			continue
 		}
 		labels[key] = value
 	}

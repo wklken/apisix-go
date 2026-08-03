@@ -188,7 +188,18 @@ func parseIPPrefix(value string) (netip.Prefix, error) {
 
 func (e *Expression) Eval(resolve Resolver) bool {
 	if e.condition != nil {
-		matched := e.condition.eval(resolve)
+		actual := resolve(e.condition.variable)
+		if e.condition.reverse && isNumericOperator(e.condition.operator) {
+			if _, err := strconv.ParseFloat(stringValue(actual), 64); err != nil {
+				return false
+			}
+		}
+		matched := e.condition.eval(func(name string) any {
+			if name == e.condition.variable {
+				return actual
+			}
+			return resolve(name)
+		})
 		if e.condition.reverse {
 			return !matched
 		}
@@ -216,6 +227,15 @@ func (e *Expression) Eval(resolve Resolver) bool {
 		return !matched
 	}
 	return matched
+}
+
+func isNumericOperator(operator string) bool {
+	switch operator {
+	case ">", ">=", "<", "<=":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *condition) eval(resolve Resolver) bool {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -15,6 +16,7 @@ type mirrorRequest struct {
 	Method string
 	Path   string
 	Query  string
+	Host   string
 	Header http.Header
 	Body   string
 }
@@ -46,6 +48,7 @@ func newMirrorServer(t *testing.T) (*httptest.Server, <-chan mirrorRequest) {
 			Method: r.Method,
 			Path:   r.URL.Path,
 			Query:  r.URL.RawQuery,
+			Host:   r.Host,
 			Header: r.Header.Clone(),
 			Body:   string(body),
 		}
@@ -65,9 +68,11 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/original?x=1", strings.NewReader("payload"))
 	req.Header.Set("X-Test", "yes")
+	req.Host = "original.example"
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RunBeforeProxyHooks(r)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read upstream body: %v", err)
@@ -94,6 +99,29 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	}
 	if got := mirrored.Header.Get("X-Test"); got != "yes" {
 		t.Fatalf("mirror X-Test = %q, want yes", got)
+	}
+	if mirrored.Host != "original.example" {
+		t.Fatalf("mirror Host = %q, want original.example", mirrored.Host)
+	}
+}
+
+func TestHandlerMirrorsFinalizedRequestAfterLowerPriorityPlugins(t *testing.T) {
+	mirror, seen := newMirrorServer(t)
+	defer mirror.Close()
+
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", strings.NewReader("before"))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/final"
+		r.Body = io.NopCloser(strings.NewReader("after"))
+		apisixctx.RunBeforeProxyHooks(r)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	mirrored := waitForMirror(t, seen)
+	if mirrored.Path != "/final" || mirrored.Body != "after" {
+		t.Fatalf("mirrored finalized request = %s %q, want /final after", mirrored.Path, mirrored.Body)
 	}
 }
 
@@ -143,6 +171,7 @@ func TestHandlerMirrorsUnaryGRPCOverHTTP2(t *testing.T) {
 	req.Header.Set("Content-Type", "application/grpc")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RunBeforeProxyHooks(r)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read main gRPC body: %v", err)
@@ -236,6 +265,8 @@ func TestSchemaAcceptsOfficialHTTPAndHTTPSHosts(t *testing.T) {
 		"https://mirror.example.com:9443",
 		"http://127.0.0.1:9080",
 		"http://[2001:db8::1]:9080",
+		"grpc://mirror.example.com:9080",
+		"grpcs://mirror.example.com:9443",
 	} {
 		t.Run(host, func(t *testing.T) {
 			err := util.Validate(map[string]any{
@@ -254,6 +285,7 @@ func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RunBeforeProxyHooks(r)
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 	return rr

@@ -59,7 +59,7 @@ func ForwardAWSEventStream(w http.ResponseWriter, body io.Reader, maxBytes int64
 		payload := frame[12+headersLength : len(frame)-4]
 		terminal := mergeBedrockEventStreamUsage(&usage, headers, payload)
 		if _, err := w.Write(frame); err != nil {
-			return usage, err
+			return usage, fmt.Errorf("%w: %v", ErrClientDisconnected, err)
 		}
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()

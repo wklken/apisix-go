@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/samber/lo"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -48,6 +50,11 @@ const schema = `
         "type": "string"
       },
       "default": []
+    },
+    "fail_mode": {
+      "type": "string",
+      "enum": ["skip", "warn", "error"],
+      "default": "skip"
     }
   }
 }
@@ -58,6 +65,7 @@ type Config struct {
 	MatchAllConversationHistory bool     `json:"match_all_conversation_history,omitempty"`
 	AllowPatterns               []string `json:"allow_patterns,omitempty"`
 	DenyPatterns                []string `json:"deny_patterns,omitempty"`
+	FailMode                    string   `json:"fail_mode,omitempty"`
 
 	allowPatterns []*regexp.Regexp
 	denyPatterns  []*regexp.Regexp
@@ -75,6 +83,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.FailMode == "" {
+		p.config.FailMode = "skip"
+	}
+	if p.config.FailMode != "skip" && p.config.FailMode != "warn" && p.config.FailMode != "error" {
+		return fmt.Errorf("invalid fail_mode: %s", p.config.FailMode)
+	}
+
 	var err error
 	p.config.allowPatterns, err = compilePatterns("allow_pattern", p.config.AllowPatterns)
 	if err != nil {
@@ -101,17 +116,29 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			p.handleUnsupported(
+				w,
+				r,
+				next,
+				"request body is not valid JSON: "+err.Error(),
+				err.Error(),
+			)
 			return
 		}
 
 		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
-		if err != nil {
-			next.ServeHTTP(w, r)
+		if err != nil || protocol == ai_protocols.Passthrough {
+			p.handleUnsupported(
+				w,
+				r,
+				next,
+				"request body does not match any supported AI protocol",
+				"Request format not recognized by ai-prompt-guard",
+			)
 			return
 		}
 
-		messages := ai_protocols.ExtractMessages(protocol, bodyTab)
+		messages := extractMessages(protocol, bodyTab)
 		if protocol != ai_protocols.OpenAIResponses && !p.config.MatchAllConversationHistory {
 			messages = lastMessage(messages)
 		}
@@ -136,6 +163,91 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) handleUnsupported(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	reason string,
+	errorMessage string,
+) {
+	if p.config.FailMode == "error" {
+		base.WriteJSONMessage(w, http.StatusBadRequest, errorMessage)
+		return
+	}
+
+	message := name + " skipped: " + sanitizeUnsupportedReason(reason)
+	if p.config.FailMode == "warn" {
+		logger.Warn(message)
+	} else {
+		logger.Info(message)
+	}
+	next.ServeHTTP(w, r)
+}
+
+func sanitizeUnsupportedReason(reason string) string {
+	const maxReasonLength = 256
+	safe := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, reason)
+	if len(safe) > maxReasonLength {
+		safe = safe[:maxReasonLength]
+	}
+	return safe
+}
+
+func extractMessages(protocol ai_protocols.Protocol, body map[string]any) []ai_protocols.Message {
+	messages := ai_protocols.ExtractMessages(protocol, body)
+	if protocol != ai_protocols.OpenAIResponses {
+		return messages
+	}
+
+	for _, item := range responseInputItems(body["input"]) {
+		content, ok := item["content"].([]any)
+		if !ok {
+			continue
+		}
+		parts := make([]string, 0, len(content))
+		for _, rawPart := range content {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if part["type"] != "input_text" && part["type"] != "text" {
+				continue
+			}
+			if text, ok := part["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		role, _ := item["role"].(string)
+		if role == "" {
+			role = "user"
+		}
+		messages = append(messages, ai_protocols.Message{Role: role, Content: strings.Join(parts, " ")})
+	}
+	return messages
+}
+
+func responseInputItems(input any) []map[string]any {
+	values, ok := input.([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		if item, ok := value.(map[string]any); ok {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func compilePatterns(kind string, patterns []string) ([]*regexp.Regexp, error) {

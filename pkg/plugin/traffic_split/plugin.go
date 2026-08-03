@@ -1,12 +1,16 @@
 package traffic_split
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -142,8 +146,9 @@ type Upstream struct {
 	Key          string           `json:"key,omitempty"`
 	Timeout      resource.Timeout `json:"timeout"`
 	Retries      int              `json:"retries,omitempty"`
-	Checks       map[string]any   `json:"checks,omitempty"`
-	Nodes        []Node           `json:"nodes,omitempty"`
+	retriesSet   bool
+	Checks       map[string]any `json:"checks,omitempty"`
+	Nodes        []Node         `json:"nodes,omitempty"`
 }
 
 type Node struct {
@@ -160,6 +165,7 @@ type Override struct {
 	UpstreamHost   string
 	Timeout        resource.Timeout
 	Retries        int
+	NextRetry      func() *Override
 	HealthReporter pxy.HealthReporter
 	HealthTarget   string
 }
@@ -207,12 +213,17 @@ func (u *Upstream) UnmarshalJSON(data []byte) error {
 	type upstreamAlias Upstream
 	var raw struct {
 		upstreamAlias
-		Nodes json.RawMessage `json:"nodes"`
+		Retries *int            `json:"retries"`
+		Nodes   json.RawMessage `json:"nodes"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*u = Upstream(raw.upstreamAlias)
+	if raw.Retries != nil {
+		u.Retries = *raw.Retries
+		u.retriesSet = true
+	}
 
 	if len(raw.Nodes) == 0 {
 		return nil
@@ -443,9 +454,47 @@ func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 		if target.hashOn != "" {
 			nodeID = target.selectHashedNode(r)
 		}
-		return target.overrides[nodeID], nil
+		return target.requestOverride(nodeID), nil
 	}
 	return nil, nil
+}
+
+func (target compiledTarget) requestOverride(nodeID string) *Override {
+	base := target.overrides[nodeID]
+	if base == nil {
+		return nil
+	}
+	override := *base
+	override.NextRetry = func() *Override {
+		nextID := target.nextRetryNode(nodeID)
+		if nextID == "" {
+			return nil
+		}
+		return target.requestOverride(nextID)
+	}
+	return &override
+}
+
+func (target compiledTarget) nextRetryNode(previous string) string {
+	if target.balancer == nil || len(target.overrides) < 2 {
+		return ""
+	}
+	scanLimit := 0
+	for _, node := range target.hashNodes {
+		if node.weight > 0 {
+			scanLimit += node.weight
+		}
+	}
+	if scanLimit < len(target.overrides) {
+		scanLimit = len(target.overrides)
+	}
+	for range scanLimit + 1 {
+		nodeID := target.balancer.Next()
+		if nodeID != "" && nodeID != previous {
+			return nodeID
+		}
+	}
+	return ""
 }
 
 func configuredWeight(weight int, configured bool) int {
@@ -598,8 +647,18 @@ func overrideFromNode(upstream *Upstream, node Node) *Override {
 		PassHost:     passHost,
 		UpstreamHost: upstream.UpstreamHost,
 		Timeout:      upstream.Timeout,
-		Retries:      upstream.Retries,
+		Retries:      configuredRetries(upstream),
 	}
+}
+
+func configuredRetries(upstream *Upstream) int {
+	if upstream.retriesSet || upstream.Retries != 0 {
+		return upstream.Retries
+	}
+	if len(upstream.Nodes) < 2 {
+		return 0
+	}
+	return len(upstream.Nodes) - 1
 }
 
 func upstreamTimeout(timeout resource.Timeout) time.Duration {
@@ -681,6 +740,7 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 		Key:          stored.Key,
 		Timeout:      stored.Timeout,
 		Retries:      stored.Retries,
+		retriesSet:   stored.RetriesConfigured(),
 		Checks:       stored.Checks,
 		Nodes:        make([]Node, 0, len(stored.Nodes)),
 	}
@@ -699,12 +759,42 @@ func matchRule(r *http.Request, exprs []*pluginexpr.Expression) bool {
 	if len(exprs) == 0 {
 		return true
 	}
+	var postArgs url.Values
+	postArgsLoaded := false
 	for _, expr := range exprs {
 		if expr.Eval(func(name string) any {
+			name = strings.TrimPrefix(name, "$")
+			if strings.HasPrefix(name, "post_arg_") {
+				if !postArgsLoaded {
+					postArgs = requestPostArgs(r)
+					postArgsLoaded = true
+				}
+				return postArgs.Get(strings.TrimPrefix(name, "post_arg_"))
+			}
 			return pluginexpr.RequestValue(r, name)
 		}) {
 			return true
 		}
 	}
 	return false
+}
+
+func requestPostArgs(r *http.Request) url.Values {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/x-www-form-urlencoded" {
+		return nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		return nil
+	}
+	return values
 }

@@ -2,6 +2,7 @@ package ai_request_rewrite
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +306,10 @@ func TestHandlerRejectsMissingRequestBody(t *testing.T) {
 		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
 		Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
 	})
+	var logMessage string
+	p.warn = func(message string) {
+		logMessage = message
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", nil)
 	rr := httptest.NewRecorder()
@@ -319,33 +324,52 @@ func TestHandlerRejectsMissingRequestBody(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "missing request body") {
 		t.Fatalf("response body = %q, want missing request body message", rr.Body.String())
 	}
+	if logMessage != "missing request body" {
+		t.Fatalf("warning log = %q, want missing request body", logMessage)
+	}
 }
 
-func TestHandlerRejectsLLMNonOKStatus(t *testing.T) {
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "provider down", http.StatusBadGateway)
-	}))
-	defer llm.Close()
+func TestHandlerLogsAndRejectsLLMNonOKStatus(t *testing.T) {
+	for _, status := range []int{
+		http.StatusUnauthorized,
+		http.StatusBadRequest,
+		http.StatusInternalServerError,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, http.StatusText(status), status)
+			}))
+			defer llm.Close()
 
-	p := newTestPlugin(t, Config{
-		Prompt:   "rewrite",
-		Provider: "openai-compatible",
-		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
-		Override: Override{Endpoint: llm.URL + "/v1/chat/completions"},
-	})
+			p := newTestPlugin(t, Config{
+				Prompt:   "rewrite",
+				Provider: "openai-compatible",
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+				Override: Override{Endpoint: llm.URL + "/v1/chat/completions"},
+			})
+			var logMessage string
+			p.logError = func(message string) {
+				logMessage = message
+			}
 
-	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"content":"hello"}`))
-	rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader("some random content"))
+			rr := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler was called after LLM non-200 response")
-	})).ServeHTTP(rr, req)
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler was called after LLM non-200 response")
+			})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("response code = %d, want 500", rr.Code)
-	}
-	if !strings.Contains(rr.Body.String(), "LLM service returned error status: 502") {
-		t.Fatalf("response body = %q, want LLM status message", rr.Body.String())
+			wantMessage := fmt.Sprintf("LLM service returned error status: %d", status)
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("response code = %d, want 500", rr.Code)
+			}
+			if !strings.Contains(rr.Body.String(), wantMessage) {
+				t.Fatalf("response body = %q, want %q", rr.Body.String(), wantMessage)
+			}
+			if logMessage != wantMessage {
+				t.Fatalf("error log = %q, want %q", logMessage, wantMessage)
+			}
+		})
 	}
 }
 
@@ -361,6 +385,29 @@ func TestPostInitRejectsOpenAICompatibleWithoutEndpoint(t *testing.T) {
 
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "override.endpoint is required") {
 		t.Fatalf("PostInit() error = %v, want override endpoint error", err)
+	}
+}
+
+func TestDefaultProviderEndpoints(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{provider: "openai", want: "https://api.openai.com/v1/chat/completions"},
+		{provider: "deepseek", want: "https://api.deepseek.com/chat/completions"},
+		{provider: "aimlapi", want: "https://api.aimlapi.com/chat/completions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			p := &Plugin{config: Config{Provider: tt.provider}}
+			got, err := p.endpoint(preferredProtocol(tt.provider))
+			if err != nil {
+				t.Fatalf("endpoint() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("endpoint() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

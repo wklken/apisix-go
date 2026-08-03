@@ -1,0 +1,575 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/forward-auth.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/forward-auth2.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/forward-auth3.t
+    tests: 2
+
+cases:
+  - name: schema-sanity
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [1]
+    variants:
+      - name: uri-only-is-valid
+        config:
+          routes:
+            - id: forward-auth-schema-uri
+              uri: /schema-uri
+              plugins:
+                forward-auth: {uri: '{{FIXTURE.auth.URL}}/check'}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: auth
+            kind: http
+            expect: [{method: GET, path: {equals: /check}}]
+            respond: [{status: 200}]
+          - name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /schema-uri}}]
+            respond: [{status: 200, body: done}]
+        steps:
+          - name: accepted-route-runs
+            input: {path: /schema-uri}
+            output: {status: 200, body: {equals: done}}
+      - name: uri-is-required
+        config:
+          routes:
+            - id: forward-auth-schema-missing-uri
+              uri: /schema-missing-uri
+              plugins:
+                forward-auth: {request_headers: [test]}
+        input: {path: /schema-missing-uri}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin forward-auth config:.*uri.*required'}
+      - name: uri-must-be-string
+        config:
+          routes:
+            - id: forward-auth-schema-number-uri
+              uri: /schema-number-uri
+              plugins:
+                forward-auth: {uri: 3233}
+        input: {path: /schema-number-uri}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin forward-auth config:.*uri.*expected string.*got number'}
+      - name: request-headers-must-be-array
+        config:
+          routes:
+            - id: forward-auth-schema-request-headers
+              uri: /schema-request-headers
+              plugins:
+                forward-auth: {uri: 'http://127.0.0.1:8199', request_headers: test}
+        input: {path: /schema-request-headers}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin forward-auth config:.*request_headers.*expected array.*got string'}
+      - name: post-method-is-valid
+        config:
+          routes:
+            - id: forward-auth-schema-post
+              uri: /schema-post
+              plugins:
+                forward-auth: {uri: '{{FIXTURE.auth.URL}}/check', request_method: POST}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: auth
+            kind: http
+            expect: [{method: POST, path: {equals: /check}, body: {equals: ''}}]
+            respond: [{status: 200}]
+          - name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /schema-post}}]
+            respond: [{status: 200, body: done}]
+        steps:
+          - name: accepted-post-auth-runs
+            input: {path: /schema-post}
+            output: {status: 200, body: {equals: done}}
+      - name: put-method-is-rejected
+        config:
+          routes:
+            - id: forward-auth-schema-put
+              uri: /schema-put
+              plugins:
+                forward-auth: {uri: 'http://127.0.0.1:8199', request_method: PUT}
+        input: {path: /schema-put}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin forward-auth config:.*request_method.*enum'}
+
+  - name: get-auth-header-contract
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [2, 3, 4, 5, 6, 7, 8]
+    config:
+      routes:
+        - id: forward-auth-hello
+          uri: /hello
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_headers: [Authorization, X-Forwarded-Host]
+              upstream_headers: [X-User-ID]
+              client_headers: [Location]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: forward-auth-empty
+          uri: /empty
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_headers: [Authorization]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '111'}}}
+          - {method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '222'}}}
+          - {method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '333'}}}
+          - method: GET
+            path: {equals: /auth}
+            headers:
+              Authorization: {equals: '444'}
+              X-Forwarded-Proto: {equals: http}
+              X-Forwarded-Method: {equals: GET}
+              X-Forwarded-Host: {equals: localhost}
+              X-Forwarded-Uri: {equals: /hello}
+              X-Forwarded-For: {equals: 127.0.0.1}
+          - {method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '222'}}}
+          - {method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '333'}}}
+        respond:
+          - {status: 200}
+          - {status: 200, headers: {X-User-ID: i-am-an-user}}
+          - {status: 403, headers: {Location: 'http://example.com/auth'}}
+          - {status: 403, body: '{"x-forwarded-proto":"http","x-forwarded-method":"GET","x-forwarded-host":"localhost","x-forwarded-uri":"/hello","x-forwarded-for":"127.0.0.1"}'}
+          - {status: 200, headers: {X-User-ID: i-am-an-user}}
+          - {status: 403, headers: {Location: 'http://example.com/auth'}}
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}, headers: {Authorization: {equals: '111'}}}
+          - {method: GET, path: {equals: /hello}, headers: {X-User-ID: {equals: i-am-an-user}}}
+          - {method: GET, path: {equals: /empty}, headers: {X-User-ID: {absent: true}}}
+        respond:
+          - {status: 200, body: '{"authorization":"111"}'}
+          - {status: 200, body: '{"x-user-id":"i-am-an-user"}'}
+          - {status: 200, body: '{}'}
+    steps:
+      - name: request-header-reaches-auth-and-upstream
+        input: {path: /hello, headers: {Authorization: '111'}}
+        output: {status: 200, body: {json_equals: '{"authorization":"111"}'}}
+      - name: auth-response-header-reaches-upstream
+        input: {path: /hello, headers: {Authorization: '222'}}
+        output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
+      - name: deny-status-and-client-header-reach-client
+        input: {path: /hello, headers: {Authorization: '333'}}
+        output:
+          status: 403
+          headers: {Location: {equals: 'http://example.com/auth'}}
+      - name: generated-forwarded-headers-resist-client-spoofing
+        input:
+          path: /hello
+          headers: {Host: localhost, Authorization: '444', X-Forwarded-Host: apisix.apache.org}
+        output:
+          status: 403
+          body: {json_equals: '{"x-forwarded-proto":"http","x-forwarded-method":"GET","x-forwarded-host":"localhost","x-forwarded-uri":"/hello","x-forwarded-for":"127.0.0.1"}'}
+      - name: omitted-upstream-headers-are-not-copied
+        input: {path: /empty, headers: {Authorization: '222'}}
+        output: {status: 200, body: {json_equals: '{}'}}
+      - name: omitted-client-headers-are-not-copied
+        input: {path: /empty, headers: {Authorization: '333'}}
+        output:
+          status: 403
+          headers: {Location: {absent: true}}
+
+  - name: post-auth-allow-and-deny
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [9, 10]
+    config:
+      routes:
+        - id: forward-auth-post
+          uri: /ping
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_method: POST
+              upstream_headers: [X-User-ID]
+              client_headers: [Location]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /auth}, body: {json_equals: '{"authorization":"555"}'}}
+          - {method: POST, path: {equals: /auth}, body: {json_equals: '{"authorization":"666"}'}}
+        respond:
+          - {status: 200, headers: {X-User-ID: i-am-an-user}}
+          - {status: 403, headers: {Location: 'http://example.com/auth'}}
+      - name: primary
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /ping}, headers: {X-User-ID: {equals: i-am-an-user}}, body: {json_equals: '{"authorization":"555"}'}}
+        respond: [{status: 200, body: '{"x-user-id":"i-am-an-user"}'}]
+    steps:
+      - name: post-body-authorizes-and-upstream-header-is-copied
+        input: {method: POST, path: /ping, body: '{"authorization": "555"}'}
+        output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
+      - name: post-body-denial-copies-client-header
+        input: {method: POST, path: /ping, body: '{"authorization": "666"}'}
+        output:
+          status: 403
+          headers: {Location: {equals: 'http://example.com/auth'}}
+
+  - name: unavailable-auth-fails-closed
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [11]
+    config:
+      routes:
+        - id: forward-auth-closed
+          uri: /nodegr
+          plugins:
+            forward-auth: {uri: 'http://{{FIXTURE.auth.ADDR}}/auth', request_headers: [Authorization]}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: tcp
+        network_expect: [{payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n.*\r\n\r\n$'}}]
+        network_respond: [{close: true}]
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: closed-auth-transport-returns-default-error
+        input: {path: /nodegr, headers: {Authorization: '111'}}
+        output:
+          status: 403
+          logs: {matches: 'failed to process forward auth, err:.*EOF'}
+
+  - name: unavailable-auth-allows-degradation
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [12]
+    config:
+      routes:
+        - id: forward-auth-degradation
+          uri: /hello
+          plugins:
+            forward-auth: {uri: 'http://{{FIXTURE.auth.ADDR}}/auth', allow_degradation: true}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: tcp
+        network_expect: [{payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n.*\r\n\r\n$'}}]
+        network_respond: [{close: true}]
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: closed-auth-transport-degrades-to-upstream
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: custom-error-status
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [13]
+    config:
+      routes:
+        - id: forward-auth-custom-error
+          uri: /onerror
+          plugins:
+            forward-auth: {uri: 'http://127.0.0.1:1/auth', status_on_error: 503, timeout: 20}
+    input: {path: /onerror, headers: {Authorization: '333'}}
+    output:
+      status: 503
+      logs: {matches: 'failed to process forward auth, err:.*connect'}
+
+  - name: json-post-argument-extra-header
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [14]
+    config:
+      routes:
+        - id: forward-auth-post-arg
+          uri: /ping2
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_headers: [Authorization]
+              upstream_headers: [X-User-ID]
+              extra_headers: {tenant_id: '$post_arg.tenant_id'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /auth}
+            headers: {Authorization: {equals: '777'}, tenant_id: {equals: '123'}}
+            body: {equals: ''}
+        respond: [{status: 200, headers: {X-User-ID: i-am-an-user}}]
+      - name: primary
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /ping2}, headers: {X-User-ID: {equals: i-am-an-user}}, body: {json_equals: '{"tenant_id":123}'}}
+        respond: [{status: 200, body: '{"x-user-id":"i-am-an-user"}'}]
+    steps:
+      - name: body-argument-is-resolved-and-body-is-preserved
+        input:
+          method: POST
+          path: /ping2
+          headers: {Authorization: '777', Content-Type: application/json}
+          body: '{"tenant_id": 123}'
+        output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
+
+  - name: fixed-extra-header
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [15]
+    config:
+      routes:
+        - id: forward-auth-fixed-extra-header
+          uri: /ping3
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_headers: [Authorization]
+              upstream_headers: [X-User-ID]
+              extra_headers: {tenant_id: abcd}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect: [{method: GET, path: {equals: /auth}, headers: {Authorization: {equals: '888'}, tenant_id: {equals: abcd}}}]
+        respond: [{status: 200, headers: {X-User-ID: i-am-an-user}}]
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /ping3}, headers: {X-User-ID: {equals: i-am-an-user}}}]
+        respond: [{status: 200, body: '{"x-user-id":"i-am-an-user"}'}]
+    steps:
+      - name: fixed-value-is-forwarded
+        input: {path: /ping3, headers: {Authorization: '888'}}
+        output: {status: 200, body: {json_equals: '{"x-user-id":"i-am-an-user"}'}}
+
+  - name: crlf-extra-header-is-rejected
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [16]
+    config:
+      routes:
+        - id: forward-auth-crlf
+          uri: /crlf
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_headers: [Authorization]
+              extra_headers: {X-User: '$arg_user'}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200}]
+    steps:
+      - name: decoded-crlf-never-reaches-auth-service
+        input: {path: '/crlf?user=guest%0d%0ax-user1:%20admin', headers: {Authorization: '111'}}
+        output:
+          status: 403
+          logs: {matches: 'failed to process forward auth, err:.*invalid header field value'}
+
+  - name: oversized-post-is-rejected-before-auth
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [17, 18]
+    config:
+      routes:
+        - id: forward-auth-body-limit
+          uri: /toolarge
+          plugins:
+            forward-auth: {uri: '{{FIXTURE.auth.URL}}/auth', request_method: POST, max_req_body_size: 10}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200}]
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200}]
+    steps:
+      - name: body-over-limit-returns-413-with-no-auth-request
+        input: {method: POST, path: /toolarge, body: '{"authorization":"555"}'}
+        output:
+          status: 413
+          logs: {matches: 'failed to read request body: request body too large'}
+
+  - name: post-within-body-limit
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [19]
+    config:
+      routes:
+        - id: forward-auth-within-limit
+          uri: /withinlimit
+          plugins:
+            forward-auth:
+              uri: '{{FIXTURE.auth.URL}}/auth'
+              request_method: POST
+              max_req_body_size: 1024
+              upstream_headers: [X-User-ID]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect: [{method: POST, path: {equals: /auth}, body: {json_equals: '{"authorization":"555"}'}}]
+        respond: [{status: 200, headers: {X-User-ID: i-am-an-user}}]
+      - name: primary
+        kind: http
+        expect: [{method: POST, path: {equals: /withinlimit}, headers: {X-User-ID: {equals: i-am-an-user}}}]
+        respond: [{status: 200, body: i-am-an-user}]
+    steps:
+      - name: body-within-limit-is-authorized
+        input: {method: POST, path: /withinlimit, body: '{"authorization":"555"}'}
+        output: {status: 200, body: {equals: i-am-an-user}}
+
+  - name: chunked-post-is-buffered-and-reframed
+    source:
+      file: t/plugin/forward-auth.t
+      tests: [20, 21]
+    config:
+      routes:
+        - id: forward-auth-chunked
+          uri: /pingframe
+          plugins:
+            forward-auth:
+              uri: 'http://{{FIXTURE.auth.ADDR}}/auth-frame'
+              request_method: POST
+              upstream_headers: [X-Auth-Saw-Te]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: tcp
+        network_expect:
+          - payload: {matches: '(?s)^POST /auth-frame HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 5\r\n(?:[^\r\n]*\r\n)*\r\nhello$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
+        network_respond:
+          - payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            close: true
+      - name: primary
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /pingframe}, headers: {X-Auth-Saw-Te: {absent: true}}, body: {equals: hello}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: chunked-client-body-becomes-content-length-auth-body
+        input: {method: POST, path: /pingframe, body: hello, chunked: true}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: request-method-framing-matrix
+    source:
+      file: t/plugin/forward-auth2.t
+      tests: [1, 2, 3, 4, 5]
+    config:
+      routes:
+        - id: forward-auth-method-get
+          uri: /verify-auth-get
+          plugins:
+            forward-auth: {uri: 'http://{{FIXTURE.auth.ADDR}}/auth', request_headers: [Authorization], request_method: GET}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: forward-auth-method-post
+          uri: /verify-auth-post
+          plugins:
+            forward-auth: {uri: 'http://{{FIXTURE.auth.ADDR}}/auth', request_headers: [Authorization], request_method: POST}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: tcp
+        network_expect:
+          - payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches: &get_auth_forbidden_framing
+              - '(?im)^Content-Length:'
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Content-Encoding:'
+          - payload: {matches: '(?s)^POST /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 0\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
+          - payload: {matches: '(?s)^POST /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 39\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n\{"authorization": "token-headers-test"\}$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
+          - payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches: *get_auth_forbidden_framing
+        network_respond:
+          - &auth_ok {payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", close: true}
+          - *auth_ok
+          - *auth_ok
+          - *auth_ok
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /verify-auth-get}}
+          - {method: GET, path: {equals: /verify-auth-post}}
+          - {method: POST, path: {equals: /verify-auth-post}, body: {json_equals: '{"authorization":"token-headers-test"}'}}
+          - {method: POST, path: {equals: /verify-auth-get}, body: {json_equals: '{"authorization":"token-headers-test"}'}}
+        respond: [{status: 200, body: ok}, {status: 200, body: ok}, {status: 200, body: ok}, {status: 200, body: ok}]
+    steps:
+      - name: get-auth-for-get-upstream-has-no-body-framing
+        input: {path: /verify-auth-get, headers: {Authorization: token-headers-test}}
+        output: {status: 200, body: {equals: ok}}
+      - name: post-auth-for-get-upstream-sends-empty-buffered-body
+        input: {path: /verify-auth-post, headers: {Authorization: token-headers-test}}
+        output: {status: 200, body: {equals: ok}}
+      - name: post-auth-for-post-upstream-sends-body
+        input:
+          method: POST
+          path: /verify-auth-post
+          headers: {Authorization: token-headers-test}
+          body: '{"authorization": "token-headers-test"}'
+        output: {status: 200, body: {equals: ok}}
+      - name: get-auth-for-post-upstream-omits-body-and-framing
+        input:
+          method: POST
+          path: /verify-auth-get
+          headers: {Authorization: token-headers-test}
+          body: '{"authorization": "token-headers-test"}'
+        output: {status: 200, body: {equals: ok}}
+
+  - name: missing-auth-response-header-clears-client-value
+    source:
+      file: t/plugin/forward-auth3.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: forward-auth-clear-injected
+          uri: /hello
+          plugins:
+            forward-auth: {uri: '{{FIXTURE.auth.URL}}/auth', upstream_headers: [X-User-ID]}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect: [{method: GET, path: {equals: /auth}}]
+        respond: [{status: 200}]
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}, headers: {X-User-ID: {absent: true}}}]
+        respond: [{status: 200, body: '{}'}]
+    steps:
+      - name: client-injected-upstream-header-is-removed
+        input: {path: /hello, headers: {X-User-ID: injected-value}}
+        output: {status: 200, body: {json_equals: '{}'}}

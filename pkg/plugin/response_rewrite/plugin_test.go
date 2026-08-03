@@ -197,6 +197,63 @@ func TestHandlerSupportsOldHeaderSetForm(t *testing.T) {
 	}
 }
 
+func TestHandlerDeletesLegacyHeadersWithEmptyValues(t *testing.T) {
+	p := newTestPlugin(t, Config{Headers: Headers{LegacySet: map[string]string{
+		"Content-Type": "",
+	}}})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	if values := res.Header().Values("Content-Type"); len(values) != 0 {
+		t.Fatalf("Content-Type = %q, want header deleted", res.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandlerSuppressesDeletedContentTypeOverHTTP(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Body: new("rewritten"),
+		Headers: Headers{LegacySet: map[string]string{
+			"Content-Type": "",
+		}},
+	})
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("upstream"))
+	})))
+	defer server.Close()
+
+	response, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("GET rewritten response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if values := response.Header.Values("Content-Type"); len(values) != 0 {
+		t.Fatalf("Content-Type values = %v, want header suppressed", values)
+	}
+}
+
+func TestHandlerBodyRewriteRemovesInvalidatedEntityHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Body: new("rewritten")})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+		w.Header().Set("ETag", `"upstream"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	for _, name := range []string{"Content-Length", "Content-Encoding", "Last-Modified", "ETag"} {
+		if values := res.Header().Values(name); len(values) != 0 {
+			t.Errorf("%s values = %v, want header removed", name, values)
+		}
+	}
+}
+
 func TestHandlerResolvesHeaderValueVariables(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		StatusCode: 201,
@@ -348,10 +405,28 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			if got := res.Body.String(); got != "secret token" {
 				t.Fatalf("body = %q, want encoded body left unfiltered", got)
 			}
-			if got := res.Header().Get("Content-Encoding"); got != tt.encoding {
-				t.Fatalf("Content-Encoding = %q, want %q", got, tt.encoding)
+			// The upstream clears Content-Encoding whenever filters are
+			// configured (clear_header_as_body_modified in header_filter),
+			// even when the decoder cannot run.
+			if got := res.Header().Get("Content-Encoding"); got != "" {
+				t.Fatalf("Content-Encoding = %q, want cleared after body-modified filters", got)
 			}
 		})
+	}
+}
+
+func TestHandlerWarnsWhenFiltersSeeUnsupportedEncoding(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Filters: []Filter{{Regex: `secret`, Replace: "redacted", Scope: "global"}},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "deflate")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("secret token"))
+	})
+	if got := res.Body.String(); got != "secret token" {
+		t.Fatalf("body = %q, want encoded body left unfiltered", got)
 	}
 }
 
@@ -537,4 +612,53 @@ func brotliBody(t *testing.T, value string) []byte {
 		t.Fatalf("close brotli body: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want unknown flag rejection")
+	}
+	if !strings.Contains(err.Error(), `unknown flag "h"`) {
+		t.Fatalf("PostInit() error = %v, want unknown flag message", err)
+	}
+}
+
+func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Headers: Headers{
+				Add:    []string{"Set-Cookie: <cookie-name>=<cookie-value>; Max-Age=<number>"},
+				Set:    map[string]string{"Cache-Control": "max-age=0, must-revalidate"},
+				Remove: []string{"Set-Cookie", "Cache-Control"},
+			},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	rr := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Set-Cookie", "session=1")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	})
+	if got := rr.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("Set-Cookie = %q, want removed after add", got)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "" {
+		t.Fatalf("Cache-Control = %q, want removed after set", got)
+	}
 }

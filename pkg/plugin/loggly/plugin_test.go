@@ -129,6 +129,127 @@ func TestBuildMessageUsesSeverityMap(t *testing.T) {
 	}
 }
 
+func TestHandlerBuildsDefaultAccessLogAndAddsRouteIDToCustomFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		logFormat map[string]string
+		assert    func(*testing.T, map[string]any)
+	}{
+		{
+			name: "default access log",
+			assert: func(t *testing.T, payload map[string]any) {
+				t.Helper()
+				request, ok := payload["request"].(map[string]any)
+				if !ok || request["method"] != http.MethodGet || request["uri"] != "/orders?item=1" {
+					t.Fatalf("request = %#v, want captured GET request", payload["request"])
+				}
+				response, ok := payload["response"].(map[string]any)
+				if !ok || response["status"] != float64(http.StatusCreated) {
+					t.Fatalf("response = %#v, want status 201", payload["response"])
+				}
+				if payload["route_id"] != "route-1" {
+					t.Fatalf("route_id = %#v, want route-1", payload["route_id"])
+				}
+				if payload["client_ip"] == "" || payload["server"] == nil {
+					t.Fatalf("payload = %#v, want client and server fields", payload)
+				}
+			},
+		},
+		{
+			name:      "custom format",
+			logFormat: map[string]string{"method": "$request_method"},
+			assert: func(t *testing.T, payload map[string]any) {
+				t.Helper()
+				if payload["method"] != http.MethodGet {
+					t.Fatalf("method = %#v, want GET", payload["method"])
+				}
+				if payload["route_id"] != "route-1" {
+					t.Fatalf("route_id = %#v, want route-1", payload["route_id"])
+				}
+				if _, ok := payload["request"]; ok {
+					t.Fatalf("payload = %#v, custom format must replace default fields", payload)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			received := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				received <- body
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+
+			p := newTestPlugin(t, Config{
+				CustomerToken: "token",
+				Host:          server.URL,
+				Protocol:      "http",
+				Timeout:       1000,
+				BatchMaxSize:  1,
+				LogFormat:     tt.logFormat,
+			})
+			p.RouteID = "route-1"
+			p.ServerAddr = "127.0.0.1:8080"
+
+			req := httptest.NewRequest(http.MethodGet, "http://localhost/orders?item=1", nil)
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte("created"))
+			})).ServeHTTP(rr, req)
+
+			select {
+			case payload := <-received:
+				tt.assert(t, payload)
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for Loggly payload")
+			}
+		})
+	}
+}
+
+func TestHandlerUsesRequestHostInRFC5424Envelope(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+		BatchMaxSize:  1,
+		LogFormat:     map[string]string{"marker": "request-host"},
+	})
+	p.RouteID = "route-1"
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/orders", nil)
+	req.Host = "127.0.0.1"
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	select {
+	case message := <-received:
+		if !strings.Contains(message, " 127.0.0.1 apisix ") {
+			t.Fatalf("message = %q, want request host in RFC5424 envelope", message)
+		}
+		if !strings.HasSuffix(message, ` {"marker":"request-host","route_id":"route-1"}`) {
+			t.Fatalf("message = %q, want internal host field omitted from payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UDP log message")
+	}
+}
+
 func TestSendWritesUDPMessage(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
@@ -447,11 +568,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 
 	select {
 	case payload := <-received:
-		if _, ok := payload["request"]; ok {
-			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want default request fields", payload["request"])
 		}
-		if _, ok := payload["response"]; ok {
-			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		if _, ok := request["body"]; ok {
+			t.Fatalf("payload request = %#v, want no request body", request)
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want default response fields", payload["response"])
+		}
+		if _, ok := response["body"]; ok {
+			t.Fatalf("payload response = %#v, want no response body", response)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for HTTP bulk log message")

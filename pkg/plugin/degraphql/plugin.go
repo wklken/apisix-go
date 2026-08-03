@@ -172,12 +172,17 @@ func validateGraphQLQuery(query string, operationName string) error {
 					i++
 				}
 				if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
-					switch query[start:i] {
+					definitionName := query[start:i]
+					switch definitionName {
 					case "query", "mutation", "subscription":
 						operationCount++
 						pendingDefinition = "operation"
 					case "fragment", "schema", "directive":
 						pendingDefinition = "non-operation"
+					default:
+						if operationCount == 0 && pendingDefinition == "" {
+							return fmt.Errorf("invalid GraphQL query: unexpected top-level name %q", definitionName)
+						}
 					}
 				}
 				continue

@@ -1,0 +1,629 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/tencent-cloud-cls.t
+  tests: 22
+
+cases:
+  - name: schema-valid-configuration
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [1]}
+    config:
+      routes:
+        - id: cls-schema-valid
+          uri: /schema-valid
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: schema-valid
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: schema-valid}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /schema-valid}}], respond: [{status: 200, body: done}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/structuredlog?topic_id=schema-valid'}
+            headers:
+              Content-Type: {equals: application/x-protobuf}
+              Authorization: {matches: 'q-sign-algorithm=sha1&q-ak=secret-id&.*q-signature=[0-9a-f]{40}'}
+            body: {matches: 'schema-valid'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: valid-schema-installs-and-delivers, input: {path: /schema-valid}, output: {status: 200, body: {equals: done}}, wait: 1s}
+
+  - name: schema-requires-secret-key
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [2]}
+    config:
+      routes:
+        - id: cls-schema-missing-secret
+          uri: /schema-missing-secret
+          plugins:
+            tencent-cloud-cls:
+              cls_host: 127.0.0.1:10420
+              cls_topic: schema-missing-secret
+              scheme: http
+              secret_id: secret-id
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1980': 1}}
+    input: {path: /schema-missing-secret}
+    output:
+      status: 404
+      logs: {matches: 'validate plugin tencent-cloud-cls config:.*missing properties:.*secret_key'}
+
+  - name: incorrect-server-route-configuration
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [3]}
+    config:
+      routes:
+        - id: cls-incorrect-server-setup
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: incorrect-server-setup
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              max_retry_count: 0
+              inactive_timeout: 1
+              log_format: {case: incorrect-server-setup}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        expect: [{method: POST, path: {equals: '/structuredlog?topic_id=incorrect-server-setup'}, body: {matches: 'incorrect-server-setup'}}]
+        respond: [{status: 500, body: rejected}]
+    steps:
+      - name: configured-route-observes-cls-rejection
+        input: {path: /opentracing}
+        output:
+          status: 200
+          body: {equals: opentracing}
+          logs: {matches: 'logger batch processor \[tencent-cloud-cls\].*status code \[500\]'}
+        wait: 1s
+
+  - name: incorrect-server-request
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [4]}
+    config:
+      routes:
+        - id: cls-incorrect-server-request
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: incorrect-server-request
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              max_retry_count: 0
+              inactive_timeout: 1
+              log_format: {case: incorrect-server-request}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        expect: [{method: POST, path: {equals: '/structuredlog?topic_id=incorrect-server-request'}, body: {matches: 'incorrect-server-request'}}]
+        respond: [{status: 500, body: rejected}]
+    steps:
+      - name: proxy-response-survives-async-cls-failure
+        input: {path: /opentracing}
+        output:
+          status: 200
+          body: {equals: opentracing}
+          logs: {matches: 'logger batch processor \[tencent-cloud-cls\].*dropping 1 entries'}
+        wait: 1s
+
+  - name: add-plugin-route-configuration
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [5]}
+    config:
+      routes:
+        - id: cls-add-plugin
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: add-plugin
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: add-plugin}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=add-plugin'}, body: {matches: 'add-plugin'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: standalone-resource-enables-plugin, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: access-local-cls-server
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [6]}
+    config:
+      routes:
+        - id: cls-local-server
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: local-server
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: local-server}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=local-server'}, body: {matches: 'local-server'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: request-is-proxied-and-log-is-delivered, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: verify-single-log-request
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [7]}
+    config:
+      routes:
+        - id: cls-single-log
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: single-log
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: single-log}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        count: {at_least: 1, at_most: 1, timeout: 2s}
+        expect:
+          - {method: POST, path: {equals: '/structuredlog?topic_id=single-log'}, body: {matches: 'single-log'}}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: one-request-produces-one-cls-batch, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: verify-cls-api-request
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [8]}
+    config:
+      routes:
+        - id: cls-api-request
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: cls-api-request
+              scheme: http
+              secret_id: cls-api-id
+              secret_key: cls-api-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              global_tag: {environment: integration}
+              log_format: {method: $request_method, route: $route_id}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/structuredlog?topic_id=cls-api-request'}
+            headers:
+              Content-Type: {equals: application/x-protobuf}
+              Authorization: {matches: 'q-sign-algorithm=sha1&q-ak=cls-api-id&.*q-signature=[0-9a-f]{40}'}
+            body: {matches: '(?s)(method.*GET.*route.*cls-api-request.*environment.*integration|method.*GET.*environment.*integration.*route.*cls-api-request|route.*cls-api-request.*method.*GET.*environment.*integration|route.*cls-api-request.*environment.*integration.*method.*GET|environment.*integration.*method.*GET.*route.*cls-api-request|environment.*integration.*route.*cls-api-request.*method.*GET)'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: cls-api-receives-protobuf-log-group, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: plugin-metadata-log-format
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [9]}
+    config:
+      plugin_metadata:
+        - id: tencent-cloud-cls
+          log_format: {host: $host, '@timestamp': $time_iso8601, client_ip: $remote_addr}
+      routes:
+        - id: cls-metadata
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: metadata
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=metadata'}, body: {matches: '(?s)(host.*@timestamp.*client_ip|host.*client_ip.*@timestamp|@timestamp.*host.*client_ip|@timestamp.*client_ip.*host|client_ip.*host.*@timestamp|client_ip.*@timestamp.*host)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: standalone-metadata-is-consumed, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: log-uses-metadata-format
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [10]}
+    config:
+      plugin_metadata:
+        - id: tencent-cloud-cls
+          log_format: {host: $host, '@timestamp': $time_iso8601, client_ip: $remote_addr}
+      routes:
+        - id: cls-metadata-format
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: metadata-format
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=metadata-format'}, body: {matches: '(?s)(host.*127\.0\.0\.1.*@timestamp.*client_ip.*127\.0\.0\.1|host.*127\.0\.0\.1.*client_ip.*127\.0\.0\.1.*@timestamp|@timestamp.*host.*127\.0\.0\.1.*client_ip.*127\.0\.0\.1|@timestamp.*client_ip.*127\.0\.0\.1.*host.*127\.0\.0\.1|client_ip.*127\.0\.0\.1.*host.*127\.0\.0\.1.*@timestamp|client_ip.*127\.0\.0\.1.*@timestamp.*host.*127\.0\.0\.1)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: metadata-fields-are-serialized, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: delete-existing-route
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [11]}
+    config:
+      routes:
+        - id: cls-delete-route
+          uri: /removed
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: delete-route
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: before-delete}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 1, at_most: 1, timeout: 2s}
+        expect: [{path: {equals: /removed}}]
+        respond: [{status: 200, body: before-delete}]
+      - name: sink
+        kind: http
+        count: {at_least: 1, at_most: 1, timeout: 2s}
+        expect: [{method: POST, path: {equals: '/structuredlog?topic_id=delete-route'}, body: {matches: 'before-delete'}}]
+        respond: [{status: 200, body: ok}]
+      - name: ready
+        kind: http
+        expect: [{method: GET, path: {equals: /ready}}]
+        respond: [{status: 200, body: ready}]
+    steps:
+      - {name: existing-route-produces-log, input: {path: /removed}, output: {status: 200, body: {equals: before-delete}}, wait: 1s}
+      - name: standalone-update-removes-route
+        config:
+          routes:
+            - id: cls-delete-ready
+              uri: /ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}
+        config_probe:
+          input: {path: /ready}
+          output: {status: 200, body: {equals: ready}}
+        input: {path: /removed}
+        output: {status: 404}
+
+  - name: secret-key-is-encrypted-at-rest
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [12]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: '1'
+          uri: /encrypted
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: encrypted
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret_key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: encrypted-secret}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /encrypted}}], respond: [{status: 200, body: encrypted-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/structuredlog?topic_id=encrypted'}
+            headers: {Authorization: {matches: 'q-sign-algorithm=sha1&q-ak=secret-id&.*q-signature=[0-9a-f]{40}'}}
+            body: {matches: 'encrypted-secret'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: encrypted-secret-is-decrypted-at-plugin-boundary, input: {path: /encrypted}, output: {status: 200, body: {equals: encrypted-ok}}, wait: 1s}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: '1'
+          fields:
+            /plugins/tencent-cloud-cls/secret_key: oshn8tcqE8cJArmEILVNPQ==
+          forbidden_matches: ['"secret_key":"secret_key"']
+
+  - name: route-level-log-format
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [13]}
+    config:
+      routes:
+        - id: cls-route-format
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: route-format
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {host: $host, '@timestamp': $time_iso8601, vip: $remote_addr}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=route-format'}, body: {matches: '(?s)(host.*@timestamp.*vip|host.*vip.*@timestamp|@timestamp.*host.*vip|@timestamp.*vip.*host|vip.*host.*@timestamp|vip.*@timestamp.*host)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: route-log-format-is-accepted, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: log-uses-route-format
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [14]}
+    config:
+      routes:
+        - id: cls-route-format-values
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: route-format-values
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {host: $host, '@timestamp': $time_iso8601, vip: $remote_addr}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=route-format-values'}, body: {matches: '(?s)(host.*127\.0\.0\.1.*@timestamp.*vip.*127\.0\.0\.1|host.*127\.0\.0\.1.*vip.*127\.0\.0\.1.*@timestamp|@timestamp.*host.*127\.0\.0\.1.*vip.*127\.0\.0\.1|@timestamp.*vip.*127\.0\.0\.1.*host.*127\.0\.0\.1|vip.*127\.0\.0\.1.*host.*127\.0\.0\.1.*@timestamp|vip.*127\.0\.0\.1.*@timestamp.*host.*127\.0\.0\.1)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: route-format-values-are-serialized, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: resolver-failure-route-configuration
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [15]}
+    config:
+      routes:
+        - id: cls-resolver-setup
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: unresolvable.invalid:10420
+              cls_topic: resolver-setup
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              max_retry_count: 0
+              inactive_timeout: 1
+              log_format: {case: resolver-setup}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    environment_unset: [HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, http_proxy, https_proxy, all_proxy]
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+    steps:
+      - name: unresolved-cls-host-is-reported
+        input: {path: /opentracing}
+        output:
+          status: 200
+          body: {equals: opentracing}
+          logs: {matches: 'failed to send log to Tencent Cloud CLS endpoint.*unresolvable\.invalid.*(no such host|nodename nor servname)'}
+        wait: 1s
+
+  - name: resolver-failure-request
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [16]}
+    config:
+      routes:
+        - id: cls-resolver-request
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: unresolvable.invalid:10420
+              cls_topic: resolver-request
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              max_retry_count: 0
+              inactive_timeout: 1
+              log_format: {case: resolver-request}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    environment_unset: [HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, http_proxy, https_proxy, all_proxy]
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+    steps:
+      - name: proxy-response-survives-dns-failure
+        input: {path: /opentracing}
+        output:
+          status: 200
+          body: {equals: opentracing}
+          logs: {matches: 'logger batch processor \[tencent-cloud-cls\].*unresolvable\.invalid'}
+        wait: 1s
+
+  - name: include-request-body-expression-match
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [17]}
+    config:
+      routes:
+        - id: cls-request-body-match
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: request-body-match
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              include_req_body: true
+              include_req_body_expr: [[arg_bar, '==', bar]]
+              log_format: {case: request-body-match}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?bar=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=request-body-match'}, body: {matches: '(?s)(request-body-match.*request.*body.*body-data|request.*body.*body-data.*request-body-match)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: matching-expression-includes-request-body, input: {method: POST, path: '/opentracing?bar=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: include-request-body-expression-mismatch
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [18]}
+    config:
+      routes:
+        - id: cls-request-body-mismatch
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: request-body-mismatch
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              include_req_body: true
+              include_req_body_expr: [[arg_bar, '==', bar]]
+              log_format: {case: request-body-mismatch}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?foo=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=request-body-mismatch'}, body: {not_matches: 'body-data'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: mismatching-expression-omits-request-body, input: {method: POST, path: '/opentracing?foo=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: include-response-body-expression-match
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [19]}
+    config:
+      routes:
+        - id: cls-response-body-match
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: response-body-match
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              include_resp_body: true
+              include_resp_body_expr: [[arg_bar, '==', bar]]
+              log_format: {case: response-body-match}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/opentracing?bar=bar'}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=response-body-match'}, body: {matches: '(?s)(response-body-match.*response.*body.*opentracing|response.*body.*opentracing.*response-body-match)'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: matching-expression-includes-response-body, input: {path: '/opentracing?bar=bar'}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: include-response-body-expression-mismatch
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [20]}
+    config:
+      routes:
+        - id: cls-response-body-mismatch
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: response-body-mismatch
+              scheme: http
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              include_resp_body: true
+              include_resp_body_expr: [[arg_bar, '==', bar]]
+              log_format: {case: response-body-mismatch}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/opentracing?foo=bar'}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=response-body-mismatch'}, body: {not_matches: '"body":"opentracing"'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: mismatching-expression-omits-response-body, input: {path: '/opentracing?foo=bar'}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: https-cls-route-configuration
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [21]}
+    config:
+      routes:
+        - id: cls-https-setup
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: https-setup
+              scheme: https
+              ssl_verify: false
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: https-setup}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - {name: sink, kind: https, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=https-setup'}, body: {matches: 'https-setup'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: https-configuration-delivers-over-tls, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: access-https-cls-endpoint
+    source: {file: t/plugin/tencent-cloud-cls.t, tests: [22]}
+    config:
+      routes:
+        - id: cls-https-request
+          uri: /opentracing
+          plugins:
+            tencent-cloud-cls:
+              cls_host: '{{FIXTURE.sink.ADDR}}'
+              cls_topic: https-request
+              scheme: https
+              ssl_verify: false
+              secret_id: secret-id
+              secret_key: secret-key
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: https-request}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: https
+        expect:
+          - method: POST
+            path: {equals: '/structuredlog?topic_id=https-request'}
+            headers: {Content-Type: {equals: application/x-protobuf}}
+            body: {matches: 'https-request'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: request-is-proxied-and-log-is-sent-over-https, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}

@@ -1,13 +1,24 @@
 package authz_keycloak
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -127,6 +138,36 @@ func TestHandlerRedirectsWhenAccessDeniedRedirectURIConfigured(t *testing.T) {
 	}
 	if rr.Header().Get("Location") != "/login" {
 		t.Fatalf("Location = %q, want /login", rr.Header().Get("Location"))
+	}
+}
+
+func TestHandlerReturnsTLSVerificationDiagnosticWithoutCallingUpstream(t *testing.T) {
+	keycloak := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("untrusted TLS provider handler should not be called")
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL + "/token",
+		ClientID:      "apisix",
+		Permissions:   []string{"orders#view"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+	req.Header.Set("Authorization", "Bearer jwt")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "certificate") {
+		t.Fatalf("body = %q, want certificate verification diagnostic", body)
+	}
+	if body := rr.Body.String(); strings.Contains(body, "Bearer jwt") {
+		t.Fatalf("body exposed bearer token: %q", body)
 	}
 }
 
@@ -374,6 +415,95 @@ func TestServiceAccountTokenIsSharedByEndpointAndClientID(t *testing.T) {
 	}
 }
 
+func TestServiceAccountTokenIsIsolatedByClientSecret(t *testing.T) {
+	var clientCredentialsRequests int
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if grantType := r.PostForm.Get("grant_type"); grantType != "client_credentials" {
+			t.Fatalf("grant_type = %q, want client_credentials", grantType)
+		}
+		clientCredentialsRequests++
+		switch r.PostForm.Get("client_secret") {
+		case "secret-a":
+			_, _ = w.Write([]byte(`{"access_token":"sa-token-a","expires_in":300}`))
+		case "secret-b":
+			_, _ = w.Write([]byte(`{"access_token":"sa-token-b","expires_in":300}`))
+		default:
+			t.Fatalf("client_secret = %q, want secret-a or secret-b", r.PostForm.Get("client_secret"))
+		}
+	}))
+	t.Cleanup(keycloak.Close)
+
+	first := newTestPlugin(t, Config{
+		TokenEndpoint:   keycloak.URL + "/token",
+		ClientID:        "apisix",
+		ClientSecret:    "secret-a",
+		CacheTTLSeconds: 60,
+	})
+	second := newTestPlugin(t, Config{
+		TokenEndpoint:   keycloak.URL + "/token",
+		ClientID:        "apisix",
+		ClientSecret:    "secret-b",
+		CacheTTLSeconds: 60,
+	})
+	firstCacheKey := first.serviceAccountCacheKey(keycloak.URL + "/token")
+	secondCacheKey := second.serviceAccountCacheKey(keycloak.URL + "/token")
+	if firstCacheKey == secondCacheKey {
+		t.Fatal("service account cache keys are equal for different client secrets")
+	}
+	if strings.Contains(firstCacheKey, "secret-a") || strings.Contains(secondCacheKey, "secret-b") {
+		t.Fatalf("service account cache key exposes client secret: %q / %q", firstCacheKey, secondCacheKey)
+	}
+
+	if token, err := first.serviceAccountAccessToken(); err != nil || token != "sa-token-a" {
+		t.Fatalf("first serviceAccountAccessToken() = %q, %v; want sa-token-a, nil", token, err)
+	}
+	if token, err := second.serviceAccountAccessToken(); err != nil || token != "sa-token-b" {
+		t.Fatalf("second serviceAccountAccessToken() = %q, %v; want sa-token-b, nil", token, err)
+	}
+	if clientCredentialsRequests != 2 {
+		t.Fatalf("client credentials requests = %d, want 2", clientCredentialsRequests)
+	}
+}
+
+func TestServiceAccountTokenCacheIsIsolatedByTLSMode(t *testing.T) {
+	var requests int
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		token := "sa-token-1"
+		if requests == 2 {
+			token = "sa-token-2"
+		}
+		_, _ = w.Write([]byte(`{"access_token":"` + token + `","expires_in":300}`))
+	}))
+	t.Cleanup(keycloak.Close)
+
+	insecure := false
+	first := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL + "/token",
+		ClientID:      "apisix",
+		ClientSecret:  "secret-a",
+		SSLVerify:     &insecure,
+	})
+	second := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL + "/token",
+		ClientID:      "apisix",
+		ClientSecret:  "secret-a",
+	})
+
+	if token, err := first.serviceAccountAccessToken(); err != nil || token != "sa-token-1" {
+		t.Fatalf("insecure serviceAccountAccessToken() = %q, %v; want sa-token-1, nil", token, err)
+	}
+	if token, err := second.serviceAccountAccessToken(); err != nil || token != "sa-token-2" {
+		t.Fatalf("verified serviceAccountAccessToken() = %q, %v; want sa-token-2, nil", token, err)
+	}
+	if requests != 2 {
+		t.Fatalf("client credentials requests = %d, want 2 TLS-isolated requests", requests)
+	}
+}
+
 func TestDiscoveryIsSharedUntilCacheTTLExpires(t *testing.T) {
 	var discoveryRequests int
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +531,161 @@ func TestDiscoveryIsSharedUntilCacheTTLExpires(t *testing.T) {
 	}
 	if discoveryRequests != 1 {
 		t.Fatalf("discovery requests = %d, want 1", discoveryRequests)
+	}
+}
+
+func TestDiscoveryResolvesRelativeEndpointsAgainstDiscoveryOrigin(t *testing.T) {
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token_endpoint":                 "/token",
+			"resource_registration_endpoint": "/resources",
+		})
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		Discovery: keycloak.URL + "/realms/test/.well-known/uma2-configuration",
+		ClientID:  "apisix",
+	})
+	discovery, err := p.discover()
+	if err != nil {
+		t.Fatalf("discover() error = %v", err)
+	}
+	if discovery.TokenEndpoint != keycloak.URL+"/token" {
+		t.Fatalf("token_endpoint = %q, want fixture origin", discovery.TokenEndpoint)
+	}
+	if discovery.ResourceRegistrationEndpoint != keycloak.URL+"/resources" {
+		t.Fatalf(
+			"resource_registration_endpoint = %q, want fixture origin",
+			discovery.ResourceRegistrationEndpoint,
+		)
+	}
+}
+
+func TestVerifiedDiscoveryDoesNotConsumeInsecureCachedEndpoints(t *testing.T) {
+	var clientCredentialRequests int
+	var exposedSecret string
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientCredentialRequests++
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		exposedSecret = r.PostForm.Get("client_secret")
+		_, _ = w.Write([]byte(`{"access_token":"attacker-token","expires_in":300}`))
+	}))
+	t.Cleanup(tokenEndpoint.Close)
+
+	discovery := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token_endpoint": tokenEndpoint.URL})
+	}))
+	t.Cleanup(discovery.Close)
+
+	insecure := false
+	insecurePlugin := newTestPlugin(t, Config{
+		Discovery:    discovery.URL,
+		ClientID:     "apisix",
+		ClientSecret: "verified-client-secret",
+		SSLVerify:    &insecure,
+	})
+	if _, err := insecurePlugin.discover(); err != nil {
+		t.Fatalf("insecure discover() error = %v", err)
+	}
+
+	verifiedPlugin := newTestPlugin(t, Config{
+		Discovery:    discovery.URL,
+		ClientID:     "apisix",
+		ClientSecret: "verified-client-secret",
+	})
+	if _, err := verifiedPlugin.serviceAccountAccessToken(); err == nil {
+		t.Fatal("verified serviceAccountAccessToken() error = nil, want certificate verification failure")
+	}
+	if clientCredentialRequests != 0 {
+		t.Fatalf("attacker token endpoint requests = %d, want 0", clientCredentialRequests)
+	}
+	if exposedSecret != "" {
+		t.Fatalf("verified client secret was exposed to insecure-discovered endpoint: %q", exposedSecret)
+	}
+}
+
+func TestVerifiedDiscoveryCacheIsIsolatedByCAContents(t *testing.T) {
+	var clientCredentialRequests int
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientCredentialRequests++
+		_, _ = w.Write([]byte(`{"access_token":"attacker-token","expires_in":300}`))
+	}))
+	t.Cleanup(tokenEndpoint.Close)
+
+	discovery := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"token_endpoint": tokenEndpoint.URL})
+	}))
+	t.Cleanup(discovery.Close)
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	writeServerCertificate(t, caFile, discovery)
+	t.Setenv("SSL_CERT_FILE", caFile)
+	trustedPlugin := newTestPlugin(t, Config{
+		Discovery:    discovery.URL,
+		ClientID:     "apisix",
+		ClientSecret: "verified-client-secret",
+	})
+	if _, err := trustedPlugin.discover(); err != nil {
+		t.Fatalf("trusted discover() error = %v", err)
+	}
+
+	writeDistinctCertificate(t, caFile)
+	differentCAPlugin := newTestPlugin(t, Config{
+		Discovery:    discovery.URL,
+		ClientID:     "apisix",
+		ClientSecret: "verified-client-secret",
+	})
+	if trustedPlugin.tlsTrustIdentity == differentCAPlugin.tlsTrustIdentity {
+		t.Fatal("TLS trust identities are equal after CA file contents changed")
+	}
+	if trustedPlugin.discoveryCacheKey() == differentCAPlugin.discoveryCacheKey() {
+		t.Fatal("discovery cache keys are equal after CA file contents changed")
+	}
+	if trustedPlugin.serviceAccountCacheKey(tokenEndpoint.URL) ==
+		differentCAPlugin.serviceAccountCacheKey(tokenEndpoint.URL) {
+		t.Fatal("service account cache keys are equal after CA file contents changed")
+	}
+	if _, err := differentCAPlugin.serviceAccountAccessToken(); err == nil {
+		t.Fatal("different-CA serviceAccountAccessToken() error = nil, want certificate verification failure")
+	}
+	if clientCredentialRequests != 0 {
+		t.Fatalf("token endpoint requests = %d, want 0 after CA identity change", clientCredentialRequests)
+	}
+}
+
+func writeServerCertificate(t *testing.T, path string, server *httptest.Server) {
+	t.Helper()
+	certificate := server.Certificate()
+	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+}
+
+func writeDistinctCertificate(t *testing.T, path string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate certificate key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "other-root"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	certificate, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write certificate: %v", err)
 	}
 }
 
@@ -454,5 +739,92 @@ func TestPostInitAppliesKeepaliveAndTLSOptions(t *testing.T) {
 	}
 	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("TLSClientConfig = %#v, want InsecureSkipVerify", transport.TLSClientConfig)
+	}
+}
+
+func TestPostInitResolvesEnvironmentClientSecret(t *testing.T) {
+	t.Setenv("AUTHZ_KEYCLOAK_CLIENT_SECRET", "environment-secret")
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		ClientSecret:  "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET",
+	})
+
+	if p.config.ClientSecret != "environment-secret" {
+		t.Fatalf("client_secret = %q, want resolved environment value", p.config.ClientSecret)
+	}
+}
+
+func TestPostInitRequiresDiscoveryOrRegistrationForLazyPaths(t *testing.T) {
+	p := &Plugin{config: Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		LazyLoadPaths: true,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want lazy endpoint validation failure")
+	}
+	const want = "authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint"
+	if err.Error() != want {
+		t.Fatalf("PostInit() error = %q, want %q", err, want)
+	}
+}
+
+func TestSchemaRequiresDiscoveryOrRegistrationForLazyPaths(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"client_id":       "apisix",
+		"token_endpoint":  "https://keycloak.example.com/token",
+		"lazy_load_paths": true,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want pinned lazy endpoint schema rejection")
+	}
+	config["resource_registration_endpoint"] = "https://keycloak.example.com/resources"
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("Validate() with explicit resource registration endpoint error = %v", err)
+	}
+}
+
+func TestPostInitRedactsClientSecretResolutionError(t *testing.T) {
+	const secretReference = "$ENV://AUTHZ_KEYCLOAK_MISSING_SECRET"
+	old, existed := os.LookupEnv("AUTHZ_KEYCLOAK_MISSING_SECRET")
+	if err := os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET"); err != nil {
+		t.Fatalf("Unsetenv() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv("AUTHZ_KEYCLOAK_MISSING_SECRET", old)
+		} else {
+			_ = os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET")
+		}
+	})
+
+	p := &Plugin{config: Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		ClientSecret:  secretReference,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want secret resolution failure")
+	}
+	if got := err.Error(); got != "resolve authz-keycloak client_secret reference: credential unavailable" {
+		t.Fatalf("PostInit() error = %q, want redacted deterministic diagnostic", got)
+	}
+	if strings.Contains(err.Error(), secretReference) {
+		t.Fatalf("PostInit() error exposed secret reference: %v", err)
 	}
 }

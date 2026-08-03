@@ -1,0 +1,317 @@
+cases:
+  - name: minimal-viable-configuration
+    source: {file: t/plugin/ai-rag.t, tests: [1]}
+    config:
+      routes:
+        - id: ai-rag-minimal
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: sdfjasdfh}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: iuhsdf}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: sdfjasdfh}}
+            body: {json_equals: '{"input":"test"}'}
+          - method: POST
+            path: {equals: /search}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: iuhsdf}}
+            body: {json_equals: '{"vectorQueries":[{"kind":"vector","vector":[123456789],"fields":"something"}]}'}
+        respond:
+          - {status: 200, body: '{"data":[{"embedding":[123456789]}]}'}
+          - {status: 200, body: passed}
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            host: {matches: '^127\.0\.0\.1:[0-9]+$'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}' }
+        respond: [{status: 200, body: minimal-rag-ok}]
+    steps:
+      - name: valid-provider-configuration-builds-a-real-route
+        input: {method: POST, path: /echo, headers: {Host: minimal.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
+        output: {status: 200, body: {equals: minimal-rag-ok}}
+
+  - name: missing-vector-search-provider-is-rejected
+    source: {file: t/plugin/ai-rag.t, tests: [2]}
+    config:
+      routes:
+        - id: ai-rag-missing-vector-search
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: 'http://a.b.com', api_key: sdfjasdfh}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /echo, body: '{"ai_rag":{}}'}
+        output: {status: 404, logs: {matches: 'build route ai-rag-missing-vector-search fail:.*ai-rag.*vector_search_provider'}}
+
+  - name: missing-embeddings-provider-is-rejected
+    source: {file: t/plugin/ai-rag.t, tests: [3]}
+    config:
+      routes:
+        - id: ai-rag-missing-embeddings
+          uri: /echo
+          plugins:
+            ai-rag:
+              vector_search_provider:
+                azure_ai_search: {endpoint: 'http://a.b.com', api_key: iuhsdf}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'127.0.0.1:1': 1}}
+    steps:
+      - name: rejected-route-is-not-installed
+        input: {method: POST, path: /echo, body: '{"ai_rag":{}}'}
+        output: {status: 404, logs: {matches: 'build route ai-rag-missing-embeddings fail:.*ai-rag.*embeddings_provider'}}
+
+  - name: embedding-provider-auth-failure
+    source: {file: t/plugin/ai-rag.t, tests: [4, 5]}
+    config:
+      routes:
+        - id: ai-rag-wrong-embedding-key
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: wrongkey}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: wrongkey}}
+            body: {json_equals: '{"input":"which service is good for devops","dimensions":1024}'}
+        respond: [{status: 401, body: Unauthorized}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: embedding-auth-is-propagated
+        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"contentVector"},"embeddings":{"input":"which service is good for devops","dimensions":1024}}}'}
+        output: {status: 401, body: {equals: Unauthorized}, logs: {matches: 'could not get embeddings: Unauthorized'}}
+
+  - name: vector-search-provider-auth-failure
+    source: {file: t/plugin/ai-rag.t, tests: [6, 7]}
+    config:
+      routes:
+        - id: ai-rag-wrong-search-key
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: wrongkey}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"input":"which service is good for devops","dimensions":1024}'}
+          - method: POST
+            path: {equals: /search}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: wrongkey}}
+            body: {json_equals: '{"vectorQueries":[{"kind":"vector","vector":[123456789],"fields":"contentVector"}]}'}
+        respond:
+          - {status: 200, body: '{"data":[{"embedding":[123456789]}]}'}
+          - {status: 401, body: Unauthorized}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: vector-search-auth-is-propagated
+        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"contentVector"},"embeddings":{"input":"which service is good for devops","dimensions":1024}}}'}
+        output: {status: 401, body: {equals: Unauthorized}, logs: {matches: 'could not get vector_search result: Unauthorized'}}
+
+  - name: request-body-validation-errors
+    source: {file: t/plugin/ai-rag.t, tests: [8, 9, 10]}
+    config:
+      routes:
+        - id: ai-rag-request-validation
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: providers, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: empty-body-is-rejected
+        input: {method: POST, path: /echo}
+        output: {status: 400, body: {equals: 'failed to get request body: request body is empty'}}
+      - name: missing-vector-fields-is-rejected
+        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"missing-fields":"something"},"embeddings":{"input":"which service is good for devops","dimensions":1024}}}'}
+        output: {status: 400, body: {matches: 'property "vector_search" validation failed'}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"vector_search\\" validation failed: property \\"fields\\" is required'}}
+      - name: missing-embedding-input-is-rejected
+        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"missinginput":"which service is good for devops"}}}'}
+        output: {status: 400, body: {matches: 'property "embeddings" validation failed'}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"embeddings\\" validation failed: property \\"input\\" is required'}}
+
+  - name: chat-completions-rag-injection
+    source: {file: t/plugin/ai-rag.t, tests: [11, 12]}
+    config:
+      routes:
+        - id: ai-rag-chat-completions
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"input":"which service is good for devops"}'}
+          - method: POST
+            path: {equals: /search}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"vectorQueries":[{"kind":"vector","vector":[123456789],"fields":"something"}]}'}
+        respond:
+          - {status: 200, body: '{"data":[{"embedding":[123456789]}]}'}
+          - {status: 200, body: passed}
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            host: {matches: '^127\.0\.0\.1:[0-9]+$'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}'}
+        respond: [{status: 200, body: '{"messages":[{"role":"user","content":"passed"}]}'}]
+    steps:
+      - name: rag-result-is-appended-as-a-chat-message
+        input: {method: POST, path: /echo, headers: {Host: chat.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
+        output: {status: 200, body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}'}}
+
+  - name: responses-api-rag-injection
+    source: {file: t/plugin/ai-rag.t, tests: [13, 14]}
+    config:
+      routes:
+        - id: ai-rag-responses
+          uris: [/echo, /v1/responses]
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"input":"which service is good for devops"}'}
+          - method: POST
+            path: {equals: /search}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"vectorQueries":[{"kind":"vector","vector":[123456789],"fields":"something"}]}'}
+        respond:
+          - {status: 200, body: '{"data":[{"embedding":[123456789]}]}'}
+          - {status: 200, body: passed}
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            host: {matches: '^127\.0\.0\.1:[0-9]+$'}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"input":"which service is good for devops\npassed"}'}
+        respond: [{status: 200, body: '{"input":"which service is good for devops\npassed"}'}]
+    steps:
+      - name: rag-result-is-appended-to-responses-input
+        input: {method: POST, path: /v1/responses, headers: {Host: responses.client.example, Content-Type: application/json}, body: '{"input":"which service is good for devops","ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
+        output: {status: 200, body: {json_equals: '{"input":"which service is good for devops\npassed"}'}}
+
+  - name: ssl-verify-defaults-to-true
+    source: {file: t/plugin/ai-rag.t, tests: [15]}
+    config:
+      routes:
+        - id: ai-rag-default-tls-verification
+          uri: /echo
+          plugins:
+            ai-rag:
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: providers, kind: https, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: self-signed-provider-is-rejected-by-default
+        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
+        output: {status: 500, body: {matches: 'failed to request embeddings'}}
+
+  - name: ssl-verify-false-reaches-https-providers
+    source: {file: t/plugin/ai-rag.t, tests: [16, 17]}
+    config:
+      routes:
+        - id: ai-rag-insecure-tls
+          uri: /echo
+          plugins:
+            ai-rag:
+              ssl_verify: false
+              embeddings_provider:
+                azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
+              vector_search_provider:
+                azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: providers
+        kind: https
+        expect:
+          - method: POST
+            path: {equals: /embeddings}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"input":"test"}'}
+          - method: POST
+            path: {equals: /search}
+            headers: {Content-Type: {equals: application/json}, api-key: {equals: key}}
+            body: {json_equals: '{"vectorQueries":[{"kind":"vector","vector":[123456789],"fields":"something"}]}'}
+        respond:
+          - {status: 200, body: '{"data":[{"embedding":[123456789]}]}'}
+          - {status: 200, body: passed}
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            host: {equals: tls.client.example}
+            headers: {Content-Type: {equals: application/json}}
+            body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}'}
+        respond: [{status: 200, body: tls-rag-ok}]
+    steps:
+      - name: ssl-verify-false-is-used-for-both-provider-requests
+        input: {method: POST, path: /echo, headers: {Host: tls.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
+        output: {status: 200, body: {equals: tls-rag-ok}}
+
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-rag.t
+    tests: 17

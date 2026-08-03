@@ -1,12 +1,19 @@
 package http_logger
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	brotli "github.com/andybalholm/brotli"
+	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -14,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -116,30 +124,46 @@ const schema = `
 	"required": ["uri"]
 }`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}`
+
 type pluginMetadata struct {
-	LogFormat         map[string]string `json:"log_format"`
-	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
+	LogFormat         map[string]any `json:"log_format"`
+	MaxPendingEntries int            `json:"max_pending_entries,omitempty"`
 }
 
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 
-	client *resty.Client
+	client      *resty.Client
+	logFormat   map[string]any
+	routeLabels map[string]any
 }
 
 type Config struct {
-	URI                 string            `json:"uri"`
-	AuthHeader          *string           `json:"auth_header,omitempty"`
-	Timeout             int               `json:"timeout"`
-	LogFormat           map[string]string `json:"log_format,omitempty"`
-	SslVerify           bool              `json:"ssl_verify"`
-	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
-	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
-	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
-	IncludeReqBodyExpr  []any             `json:"include_req_body_expr,omitempty"`
-	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
-	IncludeRespBodyExpr []any             `json:"include_resp_body_expr,omitempty"`
+	URI                 string         `json:"uri"`
+	AuthHeader          *string        `json:"auth_header,omitempty"`
+	Timeout             int            `json:"timeout"`
+	LogFormat           map[string]any `json:"log_format,omitempty"`
+	SslVerify           bool           `json:"ssl_verify"`
+	MaxReqBodyBytes     int            `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int            `json:"max_resp_body_bytes,omitempty"`
+	IncludeReqBody      bool           `json:"include_req_body,omitempty"`
+	IncludeReqBodyExpr  []any          `json:"include_req_body_expr,omitempty"`
+	IncludeRespBody     bool           `json:"include_resp_body,omitempty"`
+	IncludeRespBodyExpr []any          `json:"include_resp_body_expr,omitempty"`
 
 	// NOTE: not needed
 	ConcatMethod string `json:"concat_method"`
@@ -150,16 +174,39 @@ type Config struct {
 	BufferDuration    int `json:"buffer_duration,omitempty"`
 	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
+
+	retryDelaySet bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+
+	var parsed config
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Config(parsed)
+	_, c.retryDelaySet = fields["retry_delay"]
+	return nil
 }
 
 func (p *Plugin) Config() any {
 	return &p.config
 }
 
+func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
+	p.routeLabels = maps.Clone(route.Labels)
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -170,6 +217,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
+	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
+	if err := validateBodyExpression("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
+		return err
+	}
+	if err := validateBodyExpression("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
+		return err
+	}
 	if p.config.AuthHeader != nil {
 		keyring, enabled := data_encryption.Keyring()
 		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(*p.config.AuthHeader)
@@ -193,7 +248,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -230,9 +285,16 @@ func (p *Plugin) PostInit() error {
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
-		p.LogFormat = metadata.LogFormat
+		p.logFormat = metadata.LogFormat
 	} else {
-		p.LogFormat = p.config.LogFormat
+		p.logFormat = p.config.LogFormat
+	}
+	if p.logFormat != nil {
+		var truncated bool
+		p.logFormat, truncated = truncateLogFormat(p.logFormat, 0)
+		if truncated {
+			logger.Warn("log_format nesting exceeds max depth 5, truncating")
+		}
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -243,6 +305,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:      p.config.BatchMaxSize,
 		MaxRetryCount:     p.config.MaxRetryCount,
 		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		RetryDelaySet:     p.config.retryDelaySet,
 		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
 		MaxPendingEntries: p.config.MaxPendingEntries,
@@ -253,14 +316,59 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
+func normalizeBodyExpression(expression []any) []any {
+	normalized := make([]any, len(expression))
+	for index, item := range expression {
+		condition, ok := item.([]any)
+		if !ok || len(condition) != 3 || fmt.Sprint(condition[1]) != "in" {
+			normalized[index] = item
+			continue
+		}
+		values, ok := condition[2].([]any)
+		if !ok {
+			normalized[index] = item
+			continue
+		}
+		alternatives := make([]string, len(values))
+		for valueIndex, value := range values {
+			alternatives[valueIndex] = regexp.QuoteMeta(fmt.Sprint(value))
+		}
+		normalized[index] = []any{
+			condition[0],
+			"~",
+			"^(" + strings.Join(alternatives, "|") + ")$",
+		}
 	}
+	return normalized
+}
 
+func validateBodyExpression(name string, expression []any) error {
+	for _, item := range expression {
+		if logical, ok := item.(string); ok {
+			if strings.EqualFold(logical, "AND") || strings.EqualFold(logical, "OR") {
+				continue
+			}
+			return fmt.Errorf("%s has unsupported logical operator %q", name, logical)
+		}
+		condition, ok := item.([]any)
+		if !ok || len(condition) != 3 {
+			return fmt.Errorf("%s condition must contain variable, operator, and value", name)
+		}
+		operator := fmt.Sprint(condition[1])
+		switch operator {
+		case "==", "!=", ">", ">=", "<", "<=", "~", "!~":
+		default:
+			return fmt.Errorf("%s has unsupported operator %q", name, operator)
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
+		captureRequestBody := p.config.IncludeReqBody || logFormatContains(p.logFormat, "$request_body")
+		if captureRequestBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
@@ -269,31 +377,173 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		writer := w
 		var recorder *base.ResponseRecorder
-		if p.config.IncludeRespBody {
+		captureResponseBody := p.config.IncludeRespBody ||
+			logFormatContains(p.logFormat, "$resp_body") ||
+			len(p.logFormat) == 0
+		if captureResponseBody {
 			recorder = base.NewResponseRecorder(w, p.config.MaxRespBodyBytes)
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		status := metrics.Code
+
+		var responseBody string
+		if recorder != nil && recorder.HasBody() &&
+			base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
+			responseBody = decodeResponseBody(recorder.Body(), w.Header().Get("Content-Encoding"))
 		}
 
-		logFields := make(map[string]any)
-		if len(p.LogFormat) > 0 {
-			logFields = apisixlog.GetFields(r, p.LogFormat)
+		var logFields map[string]any
+		if len(p.logFormat) > 0 {
+			logFields = resolveLogFormat(p.logFormat, r, requestBody, responseBody, status, p.routeLabels)
+		} else {
+			logFields = p.defaultLogFields(r, status)
 		}
-		if requestBody != "" {
+		if p.config.IncludeReqBody && requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
+		if p.config.IncludeRespBody && responseBody != "" {
+			base.NestedLogMap(logFields, "response")["body"] = responseBody
 		}
 
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) defaultLogFields(r *http.Request, status int) map[string]any {
+	routeID := base.RequestVar(r, "$route_id", status)
+	if routeID == "" {
+		routeID = p.RouteID
+	}
+	if routeID == "" {
+		routeID = "no-matched"
+	}
+	fields := map[string]any{
+		"route_id": routeID,
+		"request": map[string]any{
+			"method": r.Method,
+			"uri":    r.URL.RequestURI(),
+		},
+		"response": map[string]any{"status": status},
+	}
+	if serviceID := base.RequestVar(r, "$service_id", status); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	if consumerName := base.RequestVar(r, "$consumer_name", status); consumerName != "" {
+		fields["consumer"] = map[string]any{"username": consumerName}
+	}
+	return fields
+}
+
+func resolveLogFormat(
+	format map[string]any,
+	r *http.Request,
+	requestBody string,
+	responseBody string,
+	status int,
+	routeLabels map[string]any,
+) map[string]any {
+	fields := make(map[string]any, len(format))
+	for key, value := range format {
+		fields[key] = resolveLogFormatNode(value, r, requestBody, responseBody, status, routeLabels)
+	}
+	return fields
+}
+
+func resolveLogFormatNode(
+	value any,
+	r *http.Request,
+	requestBody string,
+	responseBody string,
+	status int,
+	routeLabels map[string]any,
+) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return resolveLogFormat(typed, r, requestBody, responseBody, status, routeLabels)
+	case string:
+		switch typed {
+		case "$request_body":
+			return requestBody
+		case "$resp_body":
+			return responseBody
+		case "$status":
+			return status
+		case "$a6_route_labels":
+			return routeLabels
+		case "$host":
+			return r.Host
+		case "$remote_addr":
+			return base.RemoteIP(r.RemoteAddr)
+		default:
+			return apisixlog.GetField(r, typed)
+		}
+	default:
+		return typed
+	}
+}
+
+func logFormatContains(format map[string]any, variable string) bool {
+	for _, value := range format {
+		switch typed := value.(type) {
+		case map[string]any:
+			if logFormatContains(typed, variable) {
+				return true
+			}
+		case string:
+			if typed == variable {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func truncateLogFormat(format map[string]any, depth int) (map[string]any, bool) {
+	const maxDepth = 5
+
+	result := make(map[string]any, len(format))
+	truncated := false
+	for key, value := range format {
+		nested, ok := value.(map[string]any)
+		if !ok {
+			result[key] = value
+			continue
+		}
+		if depth+1 >= maxDepth {
+			result[key] = map[string]any{}
+			truncated = truncated || len(nested) > 0
+			continue
+		}
+		resolved, childTruncated := truncateLogFormat(nested, depth+1)
+		result[key] = resolved
+		truncated = truncated || childTruncated
+	}
+	return result, truncated
+}
+
+func decodeResponseBody(body string, encoding string) string {
+	var reader io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(bytes.NewBufferString(body))
+		if err != nil {
+			return body
+		}
+		defer func() { _ = gzipReader.Close() }()
+		reader = gzipReader
+	case "br":
+		reader = brotli.NewReader(bytes.NewBufferString(body))
+	default:
+		return body
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return body
+	}
+	return string(decoded)
 }
 
 func (p *Plugin) Send(log map[string]any) {

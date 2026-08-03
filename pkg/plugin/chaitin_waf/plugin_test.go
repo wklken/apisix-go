@@ -240,6 +240,23 @@ func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
 	}
 }
 
+func TestValidateMetadataRejectsInvalidNodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{name: "empty nodes", metadata: map[string]any{"nodes": []any{}}},
+		{name: "missing host", metadata: map[string]any{"nodes": []any{map[string]any{"port": 8000}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateMetadata(test.metadata); err == nil {
+				t.Fatal("validateMetadata() error = nil, want invalid nodes rejected")
+			}
+		})
+	}
+}
+
 func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 	healthyCalls := 0
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

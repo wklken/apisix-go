@@ -194,30 +194,94 @@ func TestAppendSearchResultUsesNativeMessageProtocol(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsMissingAIRag(t *testing.T) {
+func TestAppendSearchResultCreatesChatMessagesForSourceCompatibleRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/echo", nil)
+	body := map[string]any{}
+
+	appendSearchResult(req, body, "search result")
+
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one RAG message", body["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok || message["role"] != "user" || message["content"] != "search result" {
+		t.Fatalf("message = %#v, want RAG user message", messages[0])
+	}
+}
+
+func TestAppendSearchResultLeavesDetectedPassthroughBodyUnchanged(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/echo", nil)
+	body := map[string]any{"model": "custom"}
+
+	appendSearchResult(req, body, "search result")
+
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("messages = %#v, want passthrough body unchanged", body["messages"])
+	}
+}
+
+func TestHandlerRejectsInvalidRAGRequestsWithSourceDiagnostics(t *testing.T) {
+	providerCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		t.Errorf("unexpected provider request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer provider.Close()
+
 	p := newTestPlugin(t, Config{
-		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://127.0.0.1", APIKey: "k"}},
+		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: provider.URL, APIKey: "k"}},
 		VectorSearchProvider: VectorSearchProvider{
-			AzureAISearch: AzureProvider{Endpoint: "http://127.0.0.1", APIKey: "k"},
+			AzureAISearch: AzureProvider{Endpoint: provider.URL, APIKey: "k"},
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called without ai_rag")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400", rr.Code)
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty body",
+			want: "failed to get request body: request body is empty",
+		},
+		{
+			name: "missing ai_rag",
+			body: `{"messages":[]}`,
+			want: `request body must have "ai-rag" field`,
+		},
+		{
+			name: "missing vector search fields",
+			body: `{"ai_rag":{"vector_search":{"missing-fields":"something"},"embeddings":{"input":"which service is good for devops","dimensions":1024}}}`,
+			want: `request body fails schema check: property "ai_rag" validation failed: property "vector_search" validation failed: property "fields" is required`,
+		},
+		{
+			name: "missing embeddings input",
+			body: `{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"missinginput":"which service is good for devops"}}}`,
+			want: `request body fails schema check: property "ai_rag" validation failed: property "embeddings" validation failed: property "input" is required`,
+		},
 	}
-	var got map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode response body: %v", err)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(test.body))
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called for invalid RAG request")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("response code = %d, want 400", rr.Code)
+			}
+			if got := rr.Body.String(); got != test.want {
+				t.Fatalf("response body = %q, want %q", got, test.want)
+			}
+		})
 	}
-	if got["message"] != `request body must have "ai_rag" field` {
-		t.Fatalf("response message = %q, want missing ai_rag message", got["message"])
+	if providerCalls != 0 {
+		t.Fatalf("provider calls = %d, want 0", providerCalls)
 	}
 }
 
@@ -250,8 +314,46 @@ func TestHandlerPropagatesEmbeddingProviderStatus(t *testing.T) {
 	if rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("response code = %d, want 429", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "rate limited") {
-		t.Fatalf("response body = %q, want provider body", rr.Body.String())
+	if got := rr.Body.String(); got != "rate limited" {
+		t.Fatalf("response body = %q, want plain provider body", got)
+	}
+}
+
+func TestHandlerPropagatesVectorSearchProviderStatusAsPlainBody(t *testing.T) {
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[123456789]}]}`))
+	}))
+	defer embeddings.Close()
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("Unauthorized"))
+	}))
+	defer search.Close()
+
+	p := newTestPlugin(t, Config{
+		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: embeddings.URL, APIKey: "k"}},
+		VectorSearchProvider: VectorSearchProvider{
+			AzureAISearch: AzureProvider{Endpoint: search.URL, APIKey: "k"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{
+	  "ai_rag": {
+	    "embeddings": {"input":"hello"},
+	    "vector_search": {"fields":"contentVector"}
+	  }
+	}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called when vector search provider fails")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if got := rr.Body.String(); got != "Unauthorized" {
+		t.Fatalf("response body = %q, want plain provider body", got)
 	}
 }
 

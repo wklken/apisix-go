@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 )
 
@@ -32,7 +33,7 @@ func TestHandlerTransformsJSONRequestBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: &Transform{
 			InputFormat: "json",
-			Template:    `{"full_name":"{{name}}","raw":{{_escape_json(_body)}}}`,
+			Template:    `{"full_name":"{{name}}","raw":{*_escape_json(_body)*}}`,
 		},
 	})
 
@@ -50,6 +51,36 @@ func TestHandlerTransformsJSONRequestBody(t *testing.T) {
 		}
 		if r.ContentLength != int64(len(body)) {
 			t.Fatalf("ContentLength = %d, want %d", r.ContentLength, len(body))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerTransformsYAMLRequestBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "yaml",
+			Template:    `{"foobar":"{{foobar.foo .. " " .. foobar.bar}}"}`,
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader("foobar:\n  foo: hello\n  bar: world\n"),
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		if string(body) != `{"foobar":"hello world"}` {
+			t.Fatalf("transformed body = %q, want YAML values", body)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -193,6 +224,73 @@ func TestHandlerEvaluatesRawTemplateExpression(t *testing.T) {
 	}
 }
 
+func TestHandlerEvaluatesRawExpressionNextToJSONClosingBrace(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "json",
+			Template:    `{"foobar":{*_escape_json(name)*}}`,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"name":"safe"}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		if string(body) != `{"foobar":"safe"}` {
+			t.Fatalf("transformed body = %q, want raw JSON expression", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerDistinguishesEscapedAndRawTemplateExpressions(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{
+			name:     "escaped",
+			template: `{"agent":"{{_ctx.var.http_user_agent}}"}`,
+			want:     `{"agent":"agent&#47;1.0"}`,
+		},
+		{
+			name:     "raw",
+			template: `{"agent":"{*_ctx.var.http_user_agent*}"}`,
+			want:     `{"agent":"agent/1.0"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Request: &Transform{InputFormat: "plain", Template: test.template}})
+			req := httptest.NewRequest(http.MethodPost, "/anything", nil)
+			req.Header.Set("User-Agent", "agent/1.0")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read transformed body: %v", err)
+				}
+				if string(body) != test.want {
+					t.Fatalf("transformed body = %q, want %q", body, test.want)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", rr.Code)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsUnsupportedTemplateDirective(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: &Transform{
@@ -215,6 +313,28 @@ func TestHandlerRejectsUnsupportedTemplateDirective(t *testing.T) {
 	}
 }
 
+func TestHandlerReturnsServiceUnavailableForUnsupportedTemplateFunction(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "json",
+			Template:    `{"foo":"{{name() .. " world"}}"}`,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"name":"hello"}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for an unsupported template function")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "attempt to call global 'name'") {
+		t.Fatalf("body = %q, want unsupported function error", rr.Body.String())
+	}
+}
+
 func TestResolveBoundedExpressions(t *testing.T) {
 	ctx := templateContext{values: map[string]string{"name": "hello", "age": "20"}}
 	if got := resolveExpression(`name .. " world"`, ctx); got != "hello world" {
@@ -225,6 +345,32 @@ func TestResolveBoundedExpressions(t *testing.T) {
 	}
 	if got := resolveExpression("age+10", ctx); got != "30" {
 		t.Fatalf("numeric expression = %q, want 30", got)
+	}
+}
+
+func TestHandlerSupportsBoundedStringGsub(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "plain",
+			Template:    `{"message":"{* string.gsub(_body, 'not ', '') *}"}`,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader("not actually json"))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		if string(body) != `{"message":"actually json"}` {
+			t.Fatalf("transformed body = %q, want bounded string.gsub result", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
 
@@ -335,6 +481,28 @@ func TestHandlerTransformsXMLRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsBodyWithoutXMLElementWhenXMLIsRequired(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "xml",
+			Template:    `{"name":"{{name}}"}`,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"name":"alice"}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for non-XML input")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "request body decode") {
+		t.Fatalf("body = %q, want XML decode error", rr.Body.String())
+	}
+}
+
 func TestHandlerTransformsRepeatedXMLValuesWithIndexes(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: &Transform{
@@ -363,6 +531,45 @@ func TestHandlerTransformsRepeatedXMLValuesWithIndexes(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerSerializesNamespacedXMLSubtreeAsJSON(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			InputFormat: "xml",
+			Template:    `{*_escape_json(Envelope.Body)*}`,
+		},
+	})
+
+	xmlBody := `<env:Envelope xmlns:env="urn:env" xmlns:ns="urn:test"><env:Body><ns:Resp>` +
+		`<ns:orderId>v1</ns:orderId><ns:items><ns:item><ns:sku>first</ns:sku></ns:item>` +
+		`<ns:item><ns:sku>second</ns:sku></ns:item></ns:items></ns:Resp></env:Body></env:Envelope>`
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(xmlBody))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		var transformed map[string]any
+		if err := json.Unmarshal(body, &transformed); err != nil {
+			t.Fatalf("unmarshal transformed body %q: %v", body, err)
+		}
+		response := transformed["Resp"].(map[string]any)
+		if response["orderId"] != "v1" {
+			t.Fatalf("orderId = %v, want v1", response["orderId"])
+		}
+		items := response["items"].(map[string]any)["item"].([]any)
+		if len(items) != 2 || items[0].(map[string]any)["sku"] != "first" ||
+			items[1].(map[string]any)["sku"] != "second" {
+			t.Fatalf("items = %#v, want first and second", items)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%q", rr.Code, rr.Body.String())
 	}
 }
 

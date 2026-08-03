@@ -273,7 +273,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status = recorder.StatusCode()
 		}
 
-		logFields := log.GetFields(r, p.LogFormat)
+		logFields := p.logFields(r, status)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -281,12 +281,36 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
 		logFields[internalSkyWalkingEndpoint] = r.URL.Path
-		if trace, ok := parseTraceContext(r.Header.Get("sw8")); ok {
-			logFields[internalSkyWalkingTraceContext] = trace
+		if sw8 := r.Header.Get("sw8"); sw8 != "" {
+			trace, err := parseTraceContext(sw8)
+			if err != nil {
+				logger.Warnf("failed to parse trace_context header: %s: %v", sw8, err)
+			} else {
+				logFields[internalSkyWalkingTraceContext] = trace
+			}
 		}
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) logFields(r *http.Request, status int) map[string]any {
+	fields := make(map[string]any, len(p.LogFormat)+2)
+	for key, value := range p.LogFormat {
+		switch value {
+		case "$host", "$remote_addr":
+			fields[key] = base.RequestVar(r, value, status)
+		default:
+			fields[key] = log.GetField(r, value)
+		}
+	}
+	if routeID := base.RequestVar(r, "$route_id", status); routeID != "" {
+		fields["route_id"] = routeID
+	}
+	if serviceID := base.RequestVar(r, "$service_id", status); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	return fields
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -376,33 +400,33 @@ func (p *Plugin) endpointURL() string {
 	return strings.TrimRight(p.config.EndpointAddr, "/") + "/v3/logs"
 }
 
-func parseTraceContext(header string) (*traceContext, bool) {
+func parseTraceContext(header string) (*traceContext, error) {
 	if header == "" {
-		return nil, false
+		return nil, fmt.Errorf("header is empty")
 	}
 	parts := strings.Split(header, "-")
 	if len(parts) != 8 {
-		return nil, false
+		return nil, fmt.Errorf("got %d parts, want 8", len(parts))
 	}
 
 	traceID, err := decodeBase64URL(parts[1])
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("decode trace ID: %w", err)
 	}
 	segmentID, err := decodeBase64URL(parts[2])
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("decode trace segment ID: %w", err)
 	}
 	spanID, err := strconv.Atoi(parts[3])
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("decode span ID: %w", err)
 	}
 
 	return &traceContext{
 		TraceID:        traceID,
 		TraceSegmentID: segmentID,
 		SpanID:         spanID,
-	}, true
+	}, nil
 }
 
 func decodeBase64URL(value string) (string, error) {

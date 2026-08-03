@@ -1,0 +1,1016 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-label.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-label2.t
+    tests: 18
+
+cases:
+  - name: reject-unsupported-action
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [1]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-invalid-action
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo]]
+                  actions:
+                    - add_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1980: 1
+    input:
+      method: GET
+      path: /echo
+    output:
+      status: 404
+      logs:
+        matches: add_headers
+
+  - name: reject-multiple-operators
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [2]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-invalid-operators
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [AND, OR, [uri, "==", /echo], [arg_foo, "==", bar]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1980: 1
+    input:
+      method: GET
+      path: /echo
+    output:
+      status: 404
+      logs:
+        matches: mixed logical operators
+
+  - name: override-request-header
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [3, 4, 5]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-override
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[arg_foo, "==", bar]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: mismatch
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: match
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: add-request-headers
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [6, 7]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-add-headers
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+                        resp-X-content-type: json
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "100"
+              resp-X-content-type:
+                equals: json
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+              X-content-type: json
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+            X-content-type:
+              equals: json
+
+  - name: and-match
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [8, 9, 10]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-and
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo], [arg_foo, "==", bar]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: mismatch
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: match
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: or-match
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [11, 12]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-or
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [OR, [arg_foo, "==", bar], [uri, "==", /echo]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: reject-fractional-weight
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [13]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-invalid-weight
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+                      weight: 0.2
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1980: 1
+    input:
+      method: GET
+      path: /echo
+    output:
+      status: 404
+      logs:
+        matches: weight.*integer
+
+  - name: ipmatch-mismatch
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [14, 15]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-ip-mismatch
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[remote_addr, ipmatch, 127.0.0.2]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+
+  - name: ipmatch-match
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [16, 17]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-ip-match
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[remote_addr, ipmatch, 127.0.0.1]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: nested-match
+    source:
+      file: t/plugin/traffic-label.t
+      tests: [18, 19, 20]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-nested
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [AND, [remote_addr, ipmatch, 127.0.0.1], [AND, [uri, "==", /echo], [arg_foo, "==", bar]]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: mismatch
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: match
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: proxy-rewrite-combination
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [1, 2, 3, 4, 5]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-proxy-rewrite
+          uri: /*
+          plugins:
+            proxy-rewrite:
+              uri: /echo
+            traffic-label:
+              rules:
+                - match: [[arg_foo, "==", bar]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /echo
+          - path:
+              equals: /echo?foo=bar
+          - path:
+              equals: /echo?foo=bar
+          - path:
+              equals: /echo
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+    steps:
+      - name: no-query
+        input:
+          method: GET
+          path: /echo_not_exist
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: query-match
+        input:
+          method: GET
+          path: /echo_not_exist?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: rewritten-match
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: rewritten-mismatch
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+
+  - name: default-match
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [6, 7]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-default
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - actions:
+                    - set_headers:
+                        X-server-id: 100
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "100"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+
+  - name: multiple-headers
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [8, 9]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-multiple-headers
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 100
+                        X-request-id: id2
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "100"
+              X-request-id:
+                equals: id2
+          - headers:
+              X-server-id:
+                equals: "100"
+              X-request-id:
+                equals: id2
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "100"
+              X-request-id: id2
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "100"
+              X-request-id: id2
+            body: hello world
+    steps:
+      - name: first-request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+            X-request-id: id1
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+            X-request-id:
+              equals: id2
+      - name: second-request
+        input:
+          method: GET
+          path: /echo
+          headers:
+            X-server-id: "200"
+            X-request-id: id1
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "100"
+            X-request-id:
+              equals: id2
+
+  - name: multiple-actions
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [10, 11]
+    variants:
+      - name: source-actions
+        runtime:
+          plugins: [traffic-label, proxy-rewrite]
+        config:
+          routes:
+            - id: traffic-label-multiple-actions
+              uri: /echo
+              plugins:
+                traffic-label:
+                  rules:
+                    - match: [[uri, "==", /echo]]
+                      actions:
+                        - set_headers:
+                            X-server-id: 100
+                        - set_headers:
+                            X-server-id: 200
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.primary.ADDR}}": 1
+        fixtures:
+          - name: primary
+            kind: http
+            expect:
+              - headers:
+                  X-server-id:
+                    equals: "100"
+              - headers:
+                  X-server-id:
+                    equals: "200"
+            respond:
+              - status: 200
+                headers:
+                  X-Server-id: "100"
+                body: hello world
+              - status: 200
+                headers:
+                  X-Server-id: "200"
+                body: hello world
+        steps:
+          - name: first-action
+            input:
+              method: GET
+              path: /echo
+            output:
+              status: 200
+              body:
+                equals: hello world
+              headers:
+                X-Server-id:
+                  equals: "100"
+          - name: second-action
+            input:
+              method: GET
+              path: /echo
+            output:
+              status: 200
+              body:
+                equals: hello world
+              headers:
+                X-Server-id:
+                  equals: "200"
+      - name: weighted-boundaries
+        runtime:
+          plugins: [traffic-label, proxy-rewrite]
+        config:
+          routes:
+            - id: traffic-label-weighted-boundaries
+              uri: /echo
+              plugins:
+                traffic-label:
+                  rules:
+                    - match: [[uri, "==", /echo]]
+                      actions:
+                        - set_headers:
+                            X-server-id: zero
+                          weight: 0
+                        - set_headers:
+                            X-server-id: hundred
+                          weight: 100
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.primary.ADDR}}": 1
+        fixtures:
+          - name: primary
+            kind: http
+            expect:
+              - headers:
+                  X-server-id:
+                    equals: hundred
+            respond:
+              - status: 200
+                headers:
+                  X-Server-id: hundred
+                body: hello world
+        steps:
+          - name: configured-action
+            input:
+              method: GET
+              path: /echo
+            output:
+              status: 200
+              body:
+                equals: hello world
+              headers:
+                X-Server-id:
+                  equals: hundred
+
+  - name: no-action
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [12, 13]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-no-action
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[uri, "==", /echo]]
+                  actions:
+                    - weight: 1
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+    steps:
+      - name: request
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+
+  - name: multiple-rules
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [14, 15, 16]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-multiple-rules
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules:
+                - match: [[arg_foo, "==", water]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 200
+                - match: [[arg_foo, "==", bar]]
+                  actions:
+                    - set_headers:
+                        X-server-id: 300
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - headers:
+              X-server-id:
+                equals: "200"
+          - headers:
+              X-server-id:
+                equals: "300"
+        respond:
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: hello world
+          - status: 200
+            headers:
+              X-Server-id: "300"
+            body: hello world
+    steps:
+      - name: water
+        input:
+          method: GET
+          path: /echo?foo=water
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: bar
+        input:
+          method: GET
+          path: /echo?foo=bar
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            X-Server-id:
+              equals: "300"
+
+  - name: reject-missing-rules
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [17]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-no-rules
+          uri: /echo
+          plugins:
+            traffic-label: {}
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1980: 1
+    input:
+      method: GET
+      path: /echo
+    output:
+      status: 404
+      logs:
+        matches: rules.*required
+
+  - name: reject-empty-rules
+    source:
+      file: t/plugin/traffic-label2.t
+      tests: [18]
+    runtime:
+      plugins: [traffic-label, proxy-rewrite]
+    config:
+      routes:
+        - id: traffic-label-empty-rules
+          uri: /echo
+          plugins:
+            traffic-label:
+              rules: []
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1980: 1
+    input:
+      method: GET
+      path: /echo
+    output:
+      status: 404
+      logs:
+        matches: minimum 1 items required

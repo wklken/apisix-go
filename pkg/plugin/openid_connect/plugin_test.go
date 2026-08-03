@@ -18,6 +18,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -173,9 +176,10 @@ func TestDiscoveryUsesConfiguredHTTPProxy(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	p := newTestPlugin(t, Config{
-		ClientID:   "apisix",
-		Discovery:  "http://idp.example.test/.well-known/openid-configuration",
-		BearerOnly: true,
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.test/.well-known/openid-configuration",
+		BearerOnly:   true,
 		ProxyOpts: &ProxyOptions{
 			HTTPProxy:              proxy.URL,
 			HTTPProxyAuthorization: "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-password")),
@@ -214,9 +218,10 @@ func TestDiscoveryNoProxyBypassesConfiguredHTTPProxy(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	p := newTestPlugin(t, Config{
-		ClientID:   "apisix",
-		Discovery:  idp.URL + "/.well-known/openid-configuration",
-		BearerOnly: true,
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    idp.URL + "/.well-known/openid-configuration",
+		BearerOnly:   true,
 		ProxyOpts: &ProxyOptions{
 			HTTPProxy: proxy.URL,
 			NoProxy:   "127.0.0.1",
@@ -637,12 +642,16 @@ func TestHandlerUnauthActionPassAllowsRequestWithoutToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
 	req.Header.Set("X-Userinfo", "spoofed")
+	req.Header.Set("X-Access-Token", "spoofed")
 	rr := httptest.NewRecorder()
 	called := false
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		if got := r.Header.Get("X-Userinfo"); got != "" {
 			t.Fatalf("X-Userinfo = %q, want cleared client-supplied output header", got)
+		}
+		if got := r.Header.Get("X-Access-Token"); got != "" {
+			t.Fatalf("X-Access-Token = %q, want cleared client-supplied output header", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -652,6 +661,283 @@ func TestHandlerUnauthActionPassAllowsRequestWithoutToken(t *testing.T) {
 	}
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestPostInitResolvesPublicKeyEnvironmentReference(t *testing.T) {
+	t.Setenv("OPENID_CONNECT_PUBLIC_KEY", "resolved-public-key")
+	p := &Plugin{config: Config{
+		ClientID:   "apisix",
+		Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+		BearerOnly: true,
+		PublicKey:  "$ENV://OPENID_CONNECT_PUBLIC_KEY",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.PublicKey != "resolved-public-key" {
+		t.Fatalf("PublicKey = %q, want resolved environment value", p.config.PublicKey)
+	}
+}
+
+func TestHandlerUnauthActionDenyRejectsWithoutDiscovery(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://127.0.0.1:1/.well-known/openid-configuration",
+		UnauthAction: "deny",
+		Session:      SessionConfig{Secret: "0123456789abcdef"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	rr := httptest.NewRecorder()
+	called := false
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if called {
+		t.Fatal("next handler was called")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPostInitRequiresClientSecretForSelectedFlow(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	privateKeyPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	}))
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+	}{
+		{
+			name: "bearer introspection",
+			config: Config{
+				ClientID:   "apisix",
+				Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+				BearerOnly: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "bearer public key",
+			config: Config{
+				ClientID:   "apisix",
+				Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+				BearerOnly: true,
+				PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+			},
+		},
+		{
+			name: "bearer jwks",
+			config: Config{
+				ClientID:   "apisix",
+				Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+				BearerOnly: true,
+				UseJWKS:    true,
+			},
+		},
+		{
+			name: "bearer private key jwt introspection",
+			config: Config{
+				ClientID:                        "apisix",
+				Discovery:                       "http://idp.example.test/.well-known/openid-configuration",
+				BearerOnly:                      true,
+				IntrospectionEndpointAuthMethod: "private_key_jwt",
+				ClientRSAPrivateKey:             privateKeyPEM,
+			},
+		},
+		{
+			name: "session client secret",
+			config: Config{
+				ClientID:  "apisix",
+				Discovery: "http://idp.example.test/.well-known/openid-configuration",
+				Session:   SessionConfig{Secret: "0123456789abcdef"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "session pkce",
+			config: Config{
+				ClientID:  "apisix",
+				Discovery: "http://idp.example.test/.well-known/openid-configuration",
+				UsePKCE:   true,
+				Session:   SessionConfig{Secret: "0123456789abcdef"},
+			},
+		},
+		{
+			name: "session private key jwt token",
+			config: Config{
+				ClientID:                "apisix",
+				Discovery:               "http://idp.example.test/.well-known/openid-configuration",
+				TokenEndpointAuthMethod: "private_key_jwt",
+				ClientRSAPrivateKey:     privateKeyPEM,
+				Session:                 SessionConfig{Secret: "0123456789abcdef"},
+			},
+		},
+		{
+			name: "session introspection private key does not waive token secret",
+			config: Config{
+				ClientID:                        "apisix",
+				Discovery:                       "http://idp.example.test/.well-known/openid-configuration",
+				IntrospectionEndpointAuthMethod: "private_key_jwt",
+				ClientRSAPrivateKey:             privateKeyPEM,
+				Session:                         SessionConfig{Secret: "0123456789abcdef"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: test.config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if test.wantErr && err == nil {
+				t.Fatal("PostInit() error = nil, want missing client_secret error")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestHandlerValidatesIssuerAgainstConfiguredIssuers(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  "http://127.0.0.1:1/.well-known/openid-configuration",
+		BearerOnly: true,
+		PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+		ClaimValidator: map[string]any{
+			"issuer": map[string]any{
+				"valid_issuers": []any{"https://issuer.example.test"},
+			},
+		},
+	})
+	token := signRS256(t, privateKey, map[string]any{
+		"iss": "https://other.example.test",
+		"exp": timeNowUnix() + 3600,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler was called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSchemaRejectsUnknownSessionFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"client_id":     "apisix",
+		"client_secret": "secret-a",
+		"discovery":     "http://idp.example.test/.well-known/openid-configuration",
+		"session": map[string]any{
+			"secret":  "0123456789abcdef",
+			"unknown": true,
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want unknown session field rejection")
+	}
+}
+
+func TestPostInitRejectsInvalidClaimSchema(t *testing.T) {
+	p := &Plugin{config: Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.test/.well-known/openid-configuration",
+		Session:      SessionConfig{Secret: "0123456789abcdef"},
+		ClaimSchema: map[string]any{
+			"type": "invalid_type",
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid claim_schema rejection")
+	}
+}
+
+func TestRedirectURIUsesForwardedHeadersOnlyFromTrustedProxy(t *testing.T) {
+	tests := []struct {
+		name    string
+		trusted bool
+		headers map[string]string
+		want    string
+	}{
+		{
+			name: "untrusted ignores forwarded headers",
+			headers: map[string]string{
+				"X-Forwarded-Host":  "evil.example.test",
+				"X-Forwarded-Proto": "https",
+				"Forwarded":         `host="other-evil.example.test";proto="https"`,
+			},
+			want: "http://internal.example.test:9080/orders/.apisix/redirect",
+		},
+		{
+			name:    "trusted uses x forwarded host and proto",
+			trusted: true,
+			headers: map[string]string{
+				"X-Forwarded-Host":  "public.example.test:8443",
+				"X-Forwarded-Proto": "https",
+			},
+			want: "https://public.example.test:8443/orders/.apisix/redirect",
+		},
+		{
+			name:    "rfc forwarded takes priority",
+			trusted: true,
+			headers: map[string]string{
+				"X-Forwarded-Host":  "ignored.example.test",
+				"X-Forwarded-Proto": "http",
+				"Forwarded":         `for=192.0.2.1;host="cdn.example.test:443";proto="https"`,
+			},
+			want: "https://cdn.example.test:443/orders/.apisix/redirect",
+		},
+	}
+
+	p := &Plugin{}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://internal.example.test:9080/orders", nil)
+			for name, value := range test.headers {
+				req.Header.Set(name, value)
+			}
+			if test.trusted {
+				req = apisixctx.WithTrustedProxy(req)
+			}
+			if got := p.redirectURI(req); got != test.want {
+				t.Fatalf("redirectURI() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -1470,8 +1756,9 @@ func TestSessionCookieHonorsConfiguredAttributesAndAbsoluteTimeout(t *testing.T)
 
 func TestPostInitMapsDeprecatedSessionLifetimeAndDefersRedis(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		ClientID:  "apisix",
-		Discovery: "http://idp.example.com/.well-known/openid-configuration",
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.com/.well-known/openid-configuration",
 		Session: SessionConfig{
 			Secret: "0123456789abcdef",
 			Cookie: &SessionCookieConfig{Lifetime: 60},
@@ -1493,8 +1780,9 @@ func TestPostInitMapsDeprecatedSessionLifetimeAndDefersRedis(t *testing.T) {
 
 func TestRedisSessionStoresEncryptedStateOutsideCookie(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		ClientID:  "apisix",
-		Discovery: "http://idp.example.com/.well-known/openid-configuration",
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.com/.well-known/openid-configuration",
 		Session: SessionConfig{
 			Secret:  "0123456789abcdef",
 			Storage: "redis",
@@ -1544,8 +1832,9 @@ func TestRedisSessionStoresEncryptedStateOutsideCookie(t *testing.T) {
 
 func TestClearRedisSessionDeletesStoredState(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		ClientID:  "apisix",
-		Discovery: "http://idp.example.com/.well-known/openid-configuration",
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.com/.well-known/openid-configuration",
 		Session: SessionConfig{
 			Secret:  "0123456789abcdef",
 			Storage: "redis",

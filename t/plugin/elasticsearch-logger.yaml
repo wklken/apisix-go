@@ -1,0 +1,988 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/elasticsearch-logger.t
+    tests: 27
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/elasticsearch-logger2.t
+    tests: 8
+    test_numbers: [1, 2, 3, 5, 6, 7, 8, 9]
+
+cases:
+  - name: schema-variants
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [1]}
+    config:
+      routes:
+        - id: schema-full
+          uri: /schema-full
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              auth: {username: elastic, password: '123456'}
+              ssl_verify: false
+              timeout: 60
+              max_retry_count: 0
+              retry_delay: 1
+              buffer_duration: 60
+              inactive_timeout: 2
+              batch_max_size: 1
+              log_format: {test: full}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: schema-minimal
+          uri: /schema-minimal
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              batch_max_size: 1
+              log_format: {test: minimal}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {matches: '^/schema-(full|minimal)$'}}
+        count: {at_least: 10, at_most: 10, timeout: 2s}
+        respond: [{status: 200, body: schema-ok}]
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"minimal"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=60000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"full"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: full-schema-delivers, input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
+      - {name: minimal-schema-delivers, input: {path: /schema-minimal}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
+      - name: missing-endpoint-reload-is-rejected
+        config:
+          routes:
+            - id: schema-missing-endpoint
+              uri: /schema-invalid
+              plugins: {elasticsearch-logger: {field: {index: services}}}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
+        config_timeout: 2s
+        input: {path: /schema-full}
+        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-endpoint fail:.*missing properties: ''endpoint_addr'''}}
+        wait: 300ms
+      - name: missing-field-reload-is-rejected
+        config:
+          routes:
+            - id: schema-missing-field
+              uri: /schema-invalid
+              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200'}}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
+        config_timeout: 2s
+        input: {path: /schema-full}
+        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-field fail:.*missing properties: ''field'''}}
+        wait: 300ms
+      - name: missing-index-reload-is-rejected
+        config:
+          routes:
+            - id: schema-missing-index
+              uri: /schema-invalid
+              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200', field: {}}}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
+        config_timeout: 2s
+        input: {path: /schema-full}
+        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-missing-index fail:.*missing properties: ''index'''}}
+        wait: 300ms
+      - name: trailing-slash-reload-is-rejected
+        config:
+          routes:
+            - id: schema-trailing-slash
+              uri: /schema-invalid
+              plugins: {elasticsearch-logger: {endpoint_addr: 'http://127.0.0.1:9200/', field: {index: services}}}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        config_probe: {input: {path: /schema-full}, output: {status: 200, body: {equals: schema-ok}}}
+        config_timeout: 2s
+        input: {path: /schema-full}
+        output: {status: 200, body: {equals: schema-ok}, logs: {matches: 'build route schema-trailing-slash fail:.*endpoint_addr.*does not match pattern'}}
+        wait: 300ms
+
+  - name: unauthenticated-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [2]}
+    config:
+      routes:
+        - id: unauthenticated-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: configured-route-writes-real-bulk-log, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: unauthenticated-successful-write
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [3]}
+    config:
+      routes:
+        - id: unauthenticated-success
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: proxy-response-and-bulk-write-succeed, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: basic-auth-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [4]}
+    config:
+      routes:
+        - id: auth-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: test}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: configured-auth-is-used-at-the-sink, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: basic-auth-success
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [5]}
+    config:
+      routes:
+        - id: auth-success
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: authenticated-write-succeeds, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: no-auth-rejection-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [6]}
+    config:
+      routes:
+        - id: no-auth-rejection-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
+    steps:
+      - name: proxy-succeeds-while-sink-rejects
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'failed to send log message: elasticsearch returned status 401 Unauthorized'}}
+        wait: 1s
+
+  - name: no-auth-rejection
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [7]}
+    config:
+      routes:
+        - id: no-auth-rejection
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
+    steps:
+      - name: proxy-remains-successful-on-logger-failure
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'failed to send log message: elasticsearch returned status 401 Unauthorized'}}
+        wait: 1s
+
+  - name: bad-auth-rejection-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [8]}
+    config:
+      routes:
+        - id: bad-auth-rejection-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '111111'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
+    steps:
+      - name: configured-bad-auth-is-rejected
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'failed to send log message: elasticsearch returned status 401 Unauthorized'}}
+        wait: 1s
+
+  - name: bad-auth-rejection
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [9]}
+    config:
+      routes:
+        - id: bad-auth-rejection
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '111111'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: test}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+        respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
+    steps:
+      - name: bad-auth-failure-is-logged
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'logger batch processor \[elasticsearch-logger\] exceeded max_retry_count \[0\], dropping 1 entries: failed to send log message: elasticsearch returned status 401 Unauthorized'}}
+        wait: 1s
+
+  - name: plugin-metadata-log-format-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [10]}
+    config:
+      plugin_metadata:
+        - id: elasticsearch-logger
+          log_format: {custom_host: '$host', custom_timestamp: '$time_iso8601', custom_client_ip: '$remote_addr'}
+      routes:
+        - id: metadata-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: metadata-format-is-live, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: plugin-metadata-log-format
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [11]}
+    config:
+      plugin_metadata:
+        - id: elasticsearch-logger
+          log_format: {custom_host: '$host', custom_timestamp: '$time_iso8601', custom_client_ip: '$remote_addr'}
+      routes:
+        - id: metadata-hit
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: custom-metadata-document-is-written, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: auth-password-encrypted-at-rest
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [12]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: '1'
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: encrypted-password}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"encrypted-password"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: runtime-uses-decrypted-password, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: '1'
+          fields:
+            /plugins/elasticsearch-logger/auth/password: PTQvJEaPcNOXcOHeErC0XQ==
+          forbidden_matches: ['123456']
+
+  - name: multi-endpoint-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [13]}
+    config:
+      routes:
+        - id: multi-endpoint-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addrs: ['{{FIXTURE.sink.URL}}', 'http://localhost:{{FIXTURE.sink.PORT}}']
+              field: {index: services}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: multi-setup}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-setup"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: one-configured-endpoint-receives-real-write, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: multi-endpoint-random-selection
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [14]}
+    environment: {GODEBUG: randautoseed=0}
+    config:
+      routes:
+        - id: multi-endpoint-selection
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addrs: ['{{FIXTURE.firstSink.URL}}', '{{FIXTURE.secondSink.URL}}']
+              field: {index: services}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: multi-selection}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+        count: {at_least: 12, at_most: 12, timeout: 2s}
+        respond: [{status: 200, body: hello world}]
+      - name: firstSink
+        kind: http
+        expect:
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+      - name: secondSink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: repeated-real-hits-use-configured-endpoint-list, repeat: 12, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: route-log-format-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [15]}
+    config:
+      plugin_metadata:
+        - id: elasticsearch-logger
+          log_format: {metadata_only: ignored}
+      routes:
+        - id: route-format-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, log_format: {custom_host: '$host'}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: route-format-overrides-metadata, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: route-log-format
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [16]}
+    config:
+      plugin_metadata:
+        - id: elasticsearch-logger
+          log_format: {metadata_only: ignored}
+      routes:
+        - id: route-format-hit
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, log_format: {custom_host: '$host'}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: route-format-document-is-written, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-8-ignores-type-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [17]}
+    config:
+      routes:
+        - id: es8-type-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services, type: collector}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es8}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es8"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: configured-type-is-not-emitted-for-es8, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-8-ignores-type
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [18]}
+    config:
+      routes:
+        - id: es8-type-hit
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services, type: collector}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es8}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es8"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: es8-write-has-no-type-metadata, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: request-body-capture
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [19]}
+    config:
+      routes:
+        - id: request-body
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {test: request-body}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {equals: '{"sample_payload":"hello"}'}}], respond: [{status: 200, body: "hello world\n"}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"test":"request-body"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: request-body-is-preserved-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
+
+  - name: response-body-capture
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [20]}
+    config:
+      routes:
+        - id: response-body
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_resp_body: true, log_format: {test: response-body}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {equals: '{"sample_payload":"hello"}'}}], respond: [{status: 200, body: "hello world\n"}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"response":\{"body":"hello world\\n"\},"test":"response-body"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: response-body-is-returned-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
+
+  - name: elasticsearch-9-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [21]}
+    config:
+      routes:
+        - id: es9-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es9}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es9"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"9.0.0"}}'}]
+    steps:
+      - {name: es9-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-9-success
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [22]}
+    config:
+      routes:
+        - id: es9-success
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es9}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es9"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"9.0.0"}}'}]
+    steps:
+      - {name: es9-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-7-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [23]}
+    config:
+      routes:
+        - id: es7-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es7}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es7"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"7.17.22"}}'}]
+    steps:
+      - {name: es7-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-7-success
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [24]}
+    config:
+      routes:
+        - id: es7-success
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es7}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es7"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"7.17.22"}}'}]
+    steps:
+      - {name: es7-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-6-route-setup
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [25]}
+    config:
+      routes:
+        - id: es6-setup
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es6}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"test":"es6"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"6.8.23"}}'}]
+    steps:
+      - {name: es6-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: elasticsearch-6-success
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [26]}
+    config:
+      routes:
+        - id: es6-success
+          uri: /hello
+          plugins:
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, log_format: {test: es6}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"test":"es6"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"6.8.23"}}'}]
+    steps:
+      - {name: es6-write-emits-required-doc-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+
+  - name: authorization-header-encrypted-at-rest
+    source: {file: t/plugin/elasticsearch-logger.t, tests: [27]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: '1'
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              headers: {Authorization: 'Basic ZWxhc3RpYzoxMjM0NTY='}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: encrypted-header}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"encrypted-header"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+    steps:
+      - {name: runtime-uses-decrypted-authorization-header, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: '1'
+          fields:
+            /plugins/elasticsearch-logger/headers/Authorization: 8xFrqM3Y8W1eaQ5b6vIPlyOS+HvOyI4agcFeoe47abo=
+          forbidden_matches: ['Basic ZWxhc3RpYzoxMjM0NTY=']
+
+  - name: max-pending-entries-drop
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [1]}
+    config:
+      routes:
+        - id: es-logger-pending
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              batch_max_size: 1
+              timeout: 1
+              max_retry_count: 10
+              log_format: {host: '$host', client_ip: '$remote_addr'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      plugin_metadata:
+        - id: elasticsearch-logger
+          log_format: {host: '$host', client_ip: '$remote_addr'}
+          max_pending_entries: 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}}
+          - {method: POST, path: {matches: '^/_bulk'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}', delay: 500ms}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}', delay: 500ms}
+    steps:
+      - name: first
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: third
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'max pending entries limit exceeded'}}
+        wait: 2s
+
+  - name: header-auth-sent
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [2, 3]}
+    config:
+      routes:
+        - id: es-logger-header-auth
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: services}
+              headers:
+                Authorization: 'Basic ZWxhc3RpYzoxMjM0NTY='
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: header-auth}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+          - {method: POST, path: {matches: '^/_bulk'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: auth-success
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: date-variable-index
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [5]}
+    config:
+      routes:
+        - id: es-logger-date-index
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: 'services-{%Y.%m.%d}'}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: date-index}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services-\d{4}\.\d{2}\.\d{2}"\}\}'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: date-index
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: apisix-variable-index
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [6]}
+    config:
+      routes:
+        - id: es-logger-host-index
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: 'services-$host'}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: host-index}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services-127\.0\.0\.1"\}\}'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: host-index
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: combined-variable-index
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [7]}
+    config:
+      routes:
+        - id: es-logger-combined-index
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: 'services-$host-{%Y.%m.%d}'}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: combined-index}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services-127\.0\.0\.1-\d{4}\.\d{2}\.\d{2}"\}\}'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: combined-index
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: template-not-mutated-across-requests
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [8]}
+    config:
+      routes:
+        - id: es-logger-no-mutation
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: 'services-$arg_id-{%Y.%m.%d}'}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: no-mutation}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect_unordered: true
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}, body: {matches: '^\{"index":\{"_index":"services-first-\d{4}\.\d{2}\.\d{2}"\}\}'}}
+          - {method: POST, path: {matches: '^/_bulk'}, body: {matches: '^\{"index":\{"_index":"services-second-\d{4}\.\d{2}\.\d{2}"\}\}'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: first-id
+        input: {path: '/hello?id=first'}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-id
+        input: {path: '/hello?id=second'}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: dollar-brace-variable-no-time-replacement
+    source: {file: t/plugin/elasticsearch-logger2.t, tests: [9]}
+    config:
+      routes:
+        - id: es-logger-dollar-brace
+          uri: /hello
+          plugins:
+            elasticsearch-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              field: {index: 'services-${arg_id}-{%Y.%m.%d}'}
+              auth: {username: elastic, password: '123456'}
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {test: dollar-brace}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+      - name: sink
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /}}
+          - {method: POST, path: {matches: '^/_bulk'}, body: {matches: '^\{"index":\{"_index":"services-myservice-\d{4}\.\d{2}\.\d{2}"\}\}'}}
+        respond:
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}
+          - {status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"errors":false}'}
+    steps:
+      - name: dollar-brace
+        input: {path: '/hello?id=myservice'}
+        output: {status: 200, body: {equals: hello world}}

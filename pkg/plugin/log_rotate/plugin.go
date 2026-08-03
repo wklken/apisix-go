@@ -3,6 +3,9 @@ package log_rotate
 import (
 	"archive/tar"
 	"compress/gzip"
+	stdjson "encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 )
 
 type Plugin struct {
@@ -53,6 +57,23 @@ type Config struct {
 	AccessLog         string `json:"access_log,omitempty"`
 	ErrorLog          string `json:"error_log,omitempty"`
 	EnableAccessLog   *bool  `json:"enable_access_log,omitempty"`
+
+	maxKeptConfigured bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	var decoded configAlias
+	if err := stdjson.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]stdjson.RawMessage
+	if err := stdjson.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Config(decoded)
+	_, c.maxKeptConfigured = fields["max_kept"]
+	return nil
 }
 
 type logFile struct {
@@ -110,6 +131,9 @@ func (p *Plugin) Rotate(now time.Time) error {
 		if rotated == "" {
 			continue
 		}
+		if err := p.reopenLogFiles(); err != nil {
+			return err
+		}
 		if p.config.EnableCompression {
 			if err := compressFile(rotated); err != nil {
 				return err
@@ -123,6 +147,16 @@ func (p *Plugin) Rotate(now time.Time) error {
 	return nil
 }
 
+func (p *Plugin) reopenLogFiles() error {
+	var errs []error
+	for _, file := range p.logFiles() {
+		if err := file_logger.FlushAndReopen(file.path); err != nil {
+			errs = append(errs, fmt.Errorf("reopen %s: %w", file.path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (p *Plugin) loadPluginAttr() {
 	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
 		return
@@ -134,7 +168,8 @@ func (p *Plugin) loadPluginAttr() {
 	if p.config.Interval == 0 {
 		p.config.Interval = intFromAttr(attr, "interval")
 	}
-	if p.config.MaxKept == 0 {
+	if p.config.MaxKept == 0 && !p.config.maxKeptConfigured {
+		_, p.config.maxKeptConfigured = attr["max_kept"]
 		p.config.MaxKept = intFromAttr(attr, "max_kept")
 	}
 	if p.config.MaxSize == 0 {
@@ -152,7 +187,7 @@ func (p *Plugin) applyDefaults() {
 	if p.config.Interval == 0 {
 		p.config.Interval = defaultInterval
 	}
-	if p.config.MaxKept == 0 {
+	if p.config.MaxKept == 0 && !p.config.maxKeptConfigured {
 		p.config.MaxKept = defaultMaxKept
 	}
 	if p.config.MaxSize == 0 {

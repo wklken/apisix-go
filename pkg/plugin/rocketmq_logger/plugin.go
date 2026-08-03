@@ -1,16 +1,24 @@
 package rocketmq_logger
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	brotli "github.com/andybalholm/brotli"
 	rocketmq "github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 	"github.com/apache/rocketmq-client-go/v2/producer"
+	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -31,6 +39,8 @@ const (
 
 	originLogKey = "__origin"
 )
+
+var producerInstanceSequence atomic.Uint64
 
 const schema = `
 {
@@ -190,6 +200,25 @@ type rocketmqClientSender struct {
 	producer rocketmq.Producer
 }
 
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+	if sender, ok := p.sender.(interface{ Shutdown() error }); ok {
+		done := make(chan struct{})
+		go func() {
+			_ = sender.Shutdown()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (s *rocketmqClientSender) Shutdown() error {
+	return s.producer.Shutdown()
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -209,6 +238,12 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	if p.config.UseTLS {
 		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
+	}
+	if err := validateBodyExpressions("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
+		return err
+	}
+	if err := validateBodyExpressions("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
+		return err
 	}
 
 	keyring, enabled := data_encryption.Keyring()
@@ -253,10 +288,6 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if p.config.MetaFormat != "origin" && !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
@@ -273,7 +304,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		if p.config.MetaFormat == "origin" {
 			_ = p.Fire(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
@@ -281,22 +312,97 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
+		status := metrics.Code
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = apisixlog.GetFields(r, p.LogFormat)
+		} else {
+			logFields = p.defaultLogFields(r, metrics)
 		}
-
-		logFields := apisixlog.GetFields(r, p.LogFormat)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
 		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
+			base.NestedLogMap(logFields, "response")["body"] = decodeResponseBody(
+				recorder.Body(),
+				w.Header().Get("Content-Encoding"),
+			)
 		}
 
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) defaultLogFields(r *http.Request, metrics httpsnoop.Metrics) map[string]any {
+	upstreamHost := base.RequestVar(r, "$balancer_ip", metrics.Code)
+	upstreamPort := base.RequestVar(r, "$balancer_port", metrics.Code)
+	upstream := upstreamHost
+	if upstreamHost != "" && upstreamPort != "" {
+		upstream = net.JoinHostPort(upstreamHost, upstreamPort)
+	}
+	return map[string]any{
+		"route_id":   p.RouteID,
+		"service_id": base.RequestVar(r, "$service_id", metrics.Code),
+		"client_ip":  base.RemoteIP(r.RemoteAddr),
+		"upstream":   upstream,
+		"request": map[string]any{
+			"method": r.Method,
+			"uri":    r.URL.RequestURI(),
+		},
+		"response": map[string]any{
+			"status": metrics.Code,
+			"size":   metrics.Written,
+		},
+	}
+}
+
+func validateBodyExpressions(field string, expressions [][]any) error {
+	for _, condition := range expressions {
+		if len(condition) != 3 {
+			return fmt.Errorf("failed to validate the %q expression: each condition must contain 3 items", field)
+		}
+		operator, ok := condition[1].(string)
+		if !ok {
+			return fmt.Errorf("failed to validate the %q expression: operator must be a string", field)
+		}
+		switch operator {
+		case "==", "!=", ">", ">=", "<", "<=", "in":
+		case "~", "!~":
+			pattern, ok := condition[2].(string)
+			if !ok {
+				return fmt.Errorf("failed to validate the %q expression: regex pattern must be a string", field)
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("failed to validate the %q expression: invalid regex: %w", field, err)
+			}
+		default:
+			return fmt.Errorf("failed to validate the %q expression: invalid operator %q", field, operator)
+		}
+	}
+	return nil
+}
+
+func decodeResponseBody(body string, encoding string) string {
+	var reader io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(bytes.NewBufferString(body))
+		if err != nil {
+			return body
+		}
+		defer func() { _ = gzipReader.Close() }()
+		reader = gzipReader
+	case "br":
+		reader = brotli.NewReader(bytes.NewBufferString(body))
+	default:
+		return body
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return body
+	}
+	return string(decoded)
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -411,6 +517,10 @@ func (p *Plugin) newSender() (rocketmqSender, error) {
 	options := []producer.Option{
 		producer.WithNameServer(p.config.NameServerList),
 		producer.WithSendMsgTimeout(time.Duration(p.config.Timeout) * time.Second),
+		producer.WithInstanceName(fmt.Sprintf(
+			"apisix-go-rocketmq-%d",
+			producerInstanceSequence.Add(1),
+		)),
 	}
 	if p.config.AccessKey != "" {
 		options = append(options, producer.WithCredentials(primitive.Credentials{
@@ -439,6 +549,15 @@ func (s *rocketmqClientSender) Send(ctx context.Context, message rocketmqMessage
 		msg.WithKeys([]string{message.Key})
 	}
 
-	_, err := s.producer.SendSync(ctx, msg)
-	return err
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.producer.SendSync(ctx, msg)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

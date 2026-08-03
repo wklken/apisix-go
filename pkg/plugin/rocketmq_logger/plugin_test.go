@@ -2,6 +2,7 @@ package rocketmq_logger
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -15,12 +16,23 @@ import (
 	"testing"
 	"time"
 
+	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 type captureSender struct {
 	mu       sync.Mutex
 	messages []rocketmqMessage
+}
+
+type shutdownSender struct {
+	captureSender
+	shutdown bool
+}
+
+func (s *shutdownSender) Shutdown() error {
+	s.shutdown = true
+	return nil
 }
 
 func (s *captureSender) Send(ctx context.Context, message rocketmqMessage) error {
@@ -121,6 +133,15 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	}
 }
 
+func TestStopShutsDownRocketMQSender(t *testing.T) {
+	sender := &shutdownSender{}
+	p := newTestPlugin(t, Config{}, sender)
+	p.Stop()
+	if !sender.shutdown {
+		t.Fatal("Stop() did not shut down the sender")
+	}
+}
+
 func TestPostInitAppliesDefaults(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
@@ -186,6 +207,75 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want strict encrypted secret_key rejection")
 	}
+}
+
+func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		field  string
+	}{
+		{
+			name: "request",
+			config: Config{
+				IncludeReqBody:     true,
+				IncludeReqBodyExpr: [][]any{{"bar", "<>", "foo"}},
+			},
+			field: "include_req_body_expr",
+		},
+		{
+			name: "response",
+			config: Config{
+				IncludeRespBody:     true,
+				IncludeRespBodyExpr: [][]any{{"bar", "<!>", "foo"}},
+			},
+			field: "include_resp_body_expr",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.config.NameServerList = []string{"127.0.0.1:9876"}
+			test.config.Topic = "apisix-logs"
+			p := &Plugin{config: test.config, sender: &captureSender{}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if err == nil {
+				t.Fatalf("PostInit() error = nil, want invalid %s rejection", test.field)
+			}
+			if !strings.Contains(err.Error(), test.field) || !strings.Contains(err.Error(), "invalid operator") {
+				t.Fatalf("PostInit() error = %q, want %s invalid operator error", err, test.field)
+			}
+		})
+	}
+}
+
+func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+			IncludeReqBody: true,
+			IncludeReqBodyExpr: [][]any{
+				{"request_length", "<", 1024},
+				{"http_content_type", "in", []any{"application/json", "text/plain"}},
+			},
+			IncludeRespBody: true,
+			IncludeRespBodyExpr: [][]any{
+				{"http_content_length", "<", 1024},
+				{"http_content_type", "in", []any{"application/json", "text/plain"}},
+			},
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
 }
 
 func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
@@ -288,6 +378,36 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "rocketmq-logger" {
 		t.Fatalf("plugin = %v, want rocketmq-logger", payload["plugin"])
+	}
+}
+
+func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		NameServerList: []string{"127.0.0.1:9876"},
+		Topic:          "apisix-logs",
+		BatchMaxSize:   1,
+	}, sender)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?debug=true", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
+	})).ServeHTTP(rr, req)
+
+	message := sender.waitForMessage(t)
+	var payload map[string]any
+	if err := json.Unmarshal(message.Body, &payload); err != nil {
+		t.Fatalf("unmarshal rocketmq payload: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok || response["status"] != float64(http.StatusAccepted) {
+		t.Fatalf("payload response = %#v, want status 202", payload["response"])
+	}
+	request, ok := payload["request"].(map[string]any)
+	if !ok || request["uri"] != "/orders?debug=true" {
+		t.Fatalf("payload request = %#v, want request URI", payload["request"])
 	}
 }
 
@@ -470,11 +590,95 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	if err := json.Unmarshal(message.Body, &payload); err != nil {
 		t.Fatalf("unmarshal rocketmq payload: %v", err)
 	}
-	if _, ok := payload["request"]; ok {
-		t.Fatalf("payload request = %#v, want no request body", payload["request"])
+	request, ok := payload["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload request = %#v, want default request object", payload["request"])
 	}
-	if _, ok := payload["response"]; ok {
-		t.Fatalf("payload response = %#v, want no response body", payload["response"])
+	if _, ok := request["body"]; ok {
+		t.Fatalf("payload request body = %#v, want omitted", request["body"])
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload response = %#v, want default response object", payload["response"])
+	}
+	if _, ok := response["body"]; ok {
+		t.Fatalf("payload response body = %#v, want omitted", response["body"])
+	}
+}
+
+func TestHandlerLogsDecodedCompressedResponseBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		encoding string
+		compress func(*testing.T, string) []byte
+	}{
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			compress: func(t *testing.T, body string) []byte {
+				t.Helper()
+				var compressed bytes.Buffer
+				writer := gzip.NewWriter(&compressed)
+				if _, err := writer.Write([]byte(body)); err != nil {
+					t.Fatalf("gzip write: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("gzip close: %v", err)
+				}
+				return compressed.Bytes()
+			},
+		},
+		{
+			name:     "brotli",
+			encoding: "br",
+			compress: func(t *testing.T, body string) []byte {
+				t.Helper()
+				var compressed bytes.Buffer
+				writer := brotli.NewWriter(&compressed)
+				if _, err := writer.Write([]byte(body)); err != nil {
+					t.Fatalf("brotli write: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("brotli close: %v", err)
+				}
+				return compressed.Bytes()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sender := &captureSender{}
+			p := newTestPlugin(t, Config{
+				NameServerList:   []string{"127.0.0.1:9876"},
+				Topic:            "apisix-logs",
+				IncludeRespBody:  true,
+				MaxRespBodyBytes: 1024,
+				BatchMaxSize:     1,
+			}, sender)
+			t.Cleanup(func() { p.BatchProcessor.Stop() })
+
+			const body = "compressed hello world\n"
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/compressed", nil)
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Encoding", test.encoding)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(test.compress(t, body))
+			})).ServeHTTP(rr, req)
+
+			message := sender.waitForMessage(t)
+			var payload map[string]any
+			if err := json.Unmarshal(message.Body, &payload); err != nil {
+				t.Fatalf("unmarshal rocketmq payload: %v", err)
+			}
+			response, ok := payload["response"].(map[string]any)
+			if !ok {
+				t.Fatalf("payload response = %#v, want object", payload["response"])
+			}
+			if response["body"] != body {
+				t.Fatalf("payload response body = %#v, want decoded %q", response["body"], body)
+			}
+		})
 	}
 }
 

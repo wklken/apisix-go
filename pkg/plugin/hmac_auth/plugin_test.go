@@ -137,6 +137,70 @@ func TestHandlerAcceptsSignedDateAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsProbeAndMissingAnonymousDiagnostics(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-probe-anonymous"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing HMAC authorization reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 2 || !strings.Contains(diagnostics[0], "missing Authorization header") ||
+		!strings.Contains(diagnostics[1], "failed to get anonymous consumer missing-probe-anonymous") {
+		t.Fatalf("probe diagnostics = %v, want ordered auth and anonymous failures", diagnostics)
+	}
+}
+
+func TestHandlerRunsConsumerPluginsAfterAuthentication(t *testing.T) {
+	addHMACConsumer(t, "consumer-plugin-hmac-user", "consumer-plugin-hmac-key", "hmac-secret")
+	p := newTestPlugin(t, Config{})
+	date := time.Now().UTC().Format(http.TimeFormat)
+	auth := signatureHeader(
+		t,
+		"consumer-plugin-hmac-key",
+		"hmac-secret",
+		"hmac-sha256",
+		[]string{"date"},
+		map[string]string{
+			"date": date,
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "consumer-plugin-hmac-user" {
+			t.Fatalf("consumer_name = %v, want consumer-plugin-hmac-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req.Header.Set("Date", date)
+	req.Header.Set("Authorization", auth)
+	response := httptest.NewRecorder()
+	nextCalled := false
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, req)
+
+	if nextCalled {
+		t.Fatal("next handler was called instead of the consumer plugin runner")
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
 func TestHandlerRejectsStaleDate(t *testing.T) {
 	addHMACConsumer(t, "stale-user", "stale-key", "hmac-secret")
 	p := newTestPlugin(t, Config{})
@@ -151,6 +215,49 @@ func TestHandlerRejectsStaleDate(t *testing.T) {
 	}
 	if got := res.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
 		t.Fatalf("WWW-Authenticate = %q, want hmac realm", got)
+	}
+}
+
+func TestHandlerWritesExactMissingAuthorizationResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Body.String(); got != `{"message":"client request can't be validated: missing Authorization header"}` {
+		t.Fatalf("response body = %q", got)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
+	}
+}
+
+func TestHandlerWritesExactMissingAnonymousConsumerResponse(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-consumer"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Body.String(); got != `{"message":"Invalid user authorization"}` {
+		t.Fatalf("response body = %q", got)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
 	}
 }
 
@@ -237,6 +344,37 @@ func TestHandlerValidatesRequestBodyDigestAndRestoresBody(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerValidatesRequestTargetOnlySignature(t *testing.T) {
+	addHMACConsumer(t, "target-user", "my-access-key", "my-secret-key")
+	p := newTestPlugin(t, Config{SignedHeaders: []string{}, ClockSkew: 1_000_000_000})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", "Thu, 24 Sep 2020 06:39:52 GMT")
+	params := signatureParams{
+		KeyID:     "my-access-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"@request-target"},
+		Signature: "",
+	}
+	generated, err := generateSignature(req, "my-secret-key", params)
+	if err != nil {
+		t.Fatalf("generateSignature() error = %v", err)
+	}
+	req.Header.Set(
+		"Authorization",
+		`Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target",signature="`+base64.StdEncoding.EncodeToString(
+			generated,
+		)+`"`,
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}

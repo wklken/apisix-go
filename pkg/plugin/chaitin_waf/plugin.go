@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -345,8 +347,23 @@ func (p *Plugin) loadMetadata() (metadata Metadata) {
 			metadata = Metadata{}
 		}
 	}()
-	_ = store.GetPluginMetadata(name, &metadata)
+	var raw map[string]any
+	if err := store.GetPluginMetadata(name, &raw); err != nil {
+		return Metadata{}
+	}
+	if err := validateMetadata(raw); err != nil {
+		logger.Errorf("validate plugin_metadata %s: %s", name, err)
+		return Metadata{}
+	}
+	if err := util.Parse(raw, &metadata); err != nil {
+		logger.Errorf("parse plugin_metadata %s: %s", name, err)
+		return Metadata{}
+	}
 	return metadata
+}
+
+func validateMetadata(metadata map[string]any) error {
+	return util.Validate(metadata, metadataSchema)
 }
 
 func mergeWAFConfig(baseConfig, override WAFConfig) WAFConfig {

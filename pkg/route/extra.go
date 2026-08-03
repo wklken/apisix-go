@@ -15,6 +15,7 @@ import (
 
 func registerExtraRoutes(mux *chi.Mux) {
 	if pluginEnabled("node-status") {
+		mux.Handle("/apisix/status", http.NotFoundHandler())
 		mux.Get("/apisix/status", node_status.StatusHandler)
 		public_api.Register("GET", "/apisix/status", http.HandlerFunc(node_status.StatusHandler))
 	}

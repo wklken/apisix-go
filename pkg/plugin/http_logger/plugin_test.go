@@ -1,6 +1,8 @@
 package http_logger
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -12,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -52,6 +56,45 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 	if p.config.MaxRetryCount != 0 {
 		t.Fatalf("max_retry_count = %d, want 0", p.config.MaxRetryCount)
+	}
+}
+
+func TestConfigPreservesExplicitZeroRetryDelay(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"uri":"http://127.0.0.1/logs","retry_delay":0}`), &cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	p := newTestPlugin(t, cfg)
+	t.Cleanup(p.BatchProcessor.Stop)
+	if p.config.RetryDelay != 0 {
+		t.Fatalf("retry_delay = %d, want explicit zero", p.config.RetryDelay)
+	}
+	if !p.config.retryDelaySet {
+		t.Fatal("config lost explicit retry_delay presence")
+	}
+}
+
+func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		URI: "http://127.0.0.1/logs",
+		IncludeRespBodyExpr: []any{
+			[]any{"http_content_length", "<", float64(1024)},
+			[]any{
+				"http_content_type",
+				"in",
+				[]any{"application/xml", "application/json", "text/plain", "text/xml"},
+			},
+		},
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+
+	second := p.config.IncludeRespBodyExpr[1].([]any)
+	if second[1] != "~" {
+		t.Fatalf("normalized operator = %#v, want regex match", second[1])
+	}
+	if second[2] != `^(application/xml|application/json|text/plain|text/xml)$` {
+		t.Fatalf("normalized expression = %#v", second[2])
 	}
 }
 
@@ -279,12 +322,89 @@ func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
 	}
 }
 
+func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) {
+	t.Run("completed delivery worker is removed while processor remains usable", func(t *testing.T) {
+		received := make(chan struct{}, 2)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			received <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		t.Cleanup(server.Close)
+
+		p := newTestPlugin(t, Config{URI: server.URL, BatchMaxSize: 1})
+		t.Cleanup(p.BatchProcessor.Stop)
+		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for first delivery")
+		}
+		deadline := time.Now().Add(time.Second)
+		for {
+			stats := p.BatchProcessor.Stats()
+			if stats.Pending == 0 && stats.Processing == 0 && stats.Buffered == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("completed worker state = %+v, want no pending, processing, or buffered entries", stats)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("processor was not usable after completed worker cleanup")
+		}
+	})
+
+	t.Run("buffered processor remains in use past stale window", func(t *testing.T) {
+		received := make(chan struct{}, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			received <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		t.Cleanup(server.Close)
+
+		p := newTestPlugin(t, Config{
+			URI:             server.URL,
+			BatchMaxSize:    2,
+			InactiveTimeout: 5,
+		})
+		t.Cleanup(p.BatchProcessor.Stop)
+		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		time.Sleep(1500 * time.Millisecond)
+		stats := p.BatchProcessor.Stats()
+		if stats.Pending != 1 || stats.Buffered != 1 || stats.Processing != 0 {
+			t.Fatalf("buffered state = %+v, want one pending buffered entry and no delivery worker", stats)
+		}
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for preserved two-entry batch")
+		}
+	})
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 		received <- body
 		w.WriteHeader(http.StatusAccepted)
@@ -445,14 +565,194 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	}
 	select {
 	case body := <-received:
-		if _, ok := body["request"]; ok {
-			t.Fatalf("request = %#v, want no logged request body", body["request"])
+		request, ok := body["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("request = %#v, want default request object", body["request"])
 		}
-		if _, ok := body["response"]; ok {
-			t.Fatalf("response = %#v, want no logged response body", body["response"])
+		if _, ok := request["body"]; ok {
+			t.Fatalf("request = %#v, want no logged request body", request)
+		}
+		response, ok := body["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("response = %#v, want default response object", body["response"])
+		}
+		if _, ok := response["body"]; ok {
+			t.Fatalf("response = %#v, want no logged response body", response)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for http log request")
+	}
+}
+
+func TestHandlerResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:          server.URL,
+		BatchMaxSize: 1,
+		LogFormat: map[string]any{
+			"nested": map[string]any{"method": "$request_method"},
+			"a": map[string]any{
+				"b": map[string]any{
+					"c": map[string]any{
+						"d": map[string]any{
+							"e": map[string]any{"f": "too-deep"},
+						},
+					},
+				},
+			},
+		},
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://example.com/nested", nil))
+
+	select {
+	case body := <-received:
+		nested, ok := body["nested"].(map[string]any)
+		if !ok || nested["method"] != http.MethodPost {
+			t.Fatalf("nested = %#v, want resolved request method", body["nested"])
+		}
+		a := body["a"].(map[string]any)
+		b := a["b"].(map[string]any)
+		c := b["c"].(map[string]any)
+		d := c["d"].(map[string]any)
+		e := d["e"].(map[string]any)
+		if len(e) != 0 {
+			t.Fatalf("depth-five object = %#v, want nested f truncated", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for nested http log")
+	}
+}
+
+func TestHandlerResolvesFinalStatusWithoutCapturingResponseBody(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:          server.URL,
+		BatchMaxSize: 1,
+		LogFormat: map[string]any{
+			"response": map[string]any{"status": "$status"},
+		},
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, capturingBody := w.(*base.ResponseRecorder); capturingBody {
+			t.Error("handler received a response-body recorder without a body logging requirement")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, "created")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/status", nil))
+
+	select {
+	case body := <-received:
+		response, ok := body["response"].(map[string]any)
+		if !ok || response["status"] != float64(http.StatusCreated) {
+			t.Fatalf("response = %#v, want final status %d", body["response"], http.StatusCreated)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for status log")
+	}
+}
+
+func TestHandlerDecodesCompressedResponseBodies(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		encoding string
+		encode   func(*testing.T, string) string
+	}{
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			encode: func(t *testing.T, value string) string {
+				t.Helper()
+				var buf bytes.Buffer
+				writer := gzip.NewWriter(&buf)
+				if _, err := writer.Write([]byte(value)); err != nil {
+					t.Fatalf("gzip write: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("gzip close: %v", err)
+				}
+				return buf.String()
+			},
+		},
+		{
+			name:     "brotli",
+			encoding: "br",
+			encode: func(t *testing.T, value string) string {
+				t.Helper()
+				var buf bytes.Buffer
+				writer := brotli.NewWriter(&buf)
+				if _, err := writer.Write([]byte(value)); err != nil {
+					t.Fatalf("brotli write: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("brotli close: %v", err)
+				}
+				return buf.String()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			received := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode body: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				received <- body
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(server.Close)
+
+			p := newTestPlugin(t, Config{
+				URI:             server.URL,
+				BatchMaxSize:    1,
+				IncludeRespBody: true,
+			})
+			t.Cleanup(p.BatchProcessor.Stop)
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Encoding", test.encoding)
+				_, _ = io.WriteString(w, test.encode(t, "hello world"))
+			})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/compressed", nil))
+
+			select {
+			case body := <-received:
+				response := body["response"].(map[string]any)
+				if response["body"] != "hello world" {
+					t.Fatalf("response body = %#v, want decoded body", response["body"])
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for compressed response log")
+			}
+		})
 	}
 }
 

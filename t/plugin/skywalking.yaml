@@ -1,0 +1,643 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/skywalking.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/skywalking2.t
+    tests: 2
+
+cases:
+  - name: route-plugin-defaults-inject-sw8
+    source: {file: t/plugin/skywalking.t, tests: [1]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-defaults
+          uri: /defaults
+          plugins: {skywalking: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /defaults}
+            headers: {sw8: {matches: '^1-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-0-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+$'}}
+        respond: [{status: 200, body: defaults-ok}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            headers: {Content-Type: {matches: '^application/json'}}
+            body: {matches: '(?s)"service":"APISIX".*"serviceInstance":"APISIX Instance Name".*"operationName":"GET /defaults"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: configured-route-traces-request
+        input: {path: /defaults}
+        output: {status: 200, body: {equals: defaults-ok}}
+        wait: 1100ms
+
+  - name: request-emits-entry-segment
+    source: {file: t/plugin/skywalking.t, tests: [2]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: trace-service
+          service_instance_name: trace-instance
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-entry-segment
+          uri: /opentracing
+          plugins: {skywalking: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /opentracing}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"service":"trace-service".*"operationName":"GET /opentracing".*"spanType":"Entry".*"spanLayer":"Http".*"componentId":6002'}
+        respond: [{status: 202, body: queued}]
+    steps:
+      - name: trigger-skywalking
+        input: {path: /opentracing}
+        output: {status: 200, body: {equals: opentracing}}
+        wait: 1100ms
+
+  - name: tiny-sample-ratio-configures-route
+    source: {file: t/plugin/skywalking.t, tests: [3]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-tiny-sample-config
+          uri: /tiny-sample-config
+          plugins: {skywalking: {sample_ratio: 0.00001}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /tiny-sample-config}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: sample-configured}]
+      - name: sink
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+    steps:
+      - name: low-ratio-route-serves-request
+        input: {path: /tiny-sample-config}
+        output: {status: 200, body: {equals: sample-configured}}
+        wait: 1100ms
+
+  - name: tiny-sample-ratio-skips-trace
+    source: {file: t/plugin/skywalking.t, tests: [4]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-tiny-sample-skip
+          uri: /tiny-sample-skip
+          plugins: {skywalking: {sample_ratio: 0.00001}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /tiny-sample-skip}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+    steps:
+      - name: unsampled-request-does-not-report
+        input: {path: /tiny-sample-skip}
+        output: {status: 200, body: {equals: opentracing}}
+        wait: 1100ms
+
+  - name: disabled-route-configuration-is-accepted
+    source: {file: t/plugin/skywalking.t, tests: [5]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-disabled-config
+          uri: /disabled-config
+          plugins:
+            skywalking: {_meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /disabled-config}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: disabled}]
+      - name: sink
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+    steps:
+      - name: disabled-route-still-proxies
+        input: {path: /disabled-config}
+        output: {status: 200, body: {equals: disabled}}
+        wait: 1100ms
+
+  - name: disabled-route-does-not-trace
+    source: {file: t/plugin/skywalking.t, tests: [6]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-disabled-request
+          uri: /disabled-request
+          plugins:
+            skywalking: {_meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /disabled-request}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+    steps:
+      - name: disabled-request-has-no-trace-side-effect
+        input: {path: /disabled-request}
+        output:
+          status: 200
+          body: {equals: opentracing}
+          logs: {not_matches: 'failed to report SkyWalking segment'}
+        wait: 1100ms
+
+  - name: full-sampling-enables-tracing
+    source: {file: t/plugin/skywalking.t, tests: [7]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: full-sample-service
+          service_instance_name: full-sample-instance
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-full-sampling
+          uri: /full-sampling
+          plugins: {skywalking: {sample_ratio: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /full-sampling}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: enabled}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"service":"full-sample-service".*"serviceInstance":"full-sample-instance".*"operationName":"GET /full-sampling"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: sample-ratio-one-always-reports
+        input: {path: /full-sampling}
+        output: {status: 200, body: {equals: enabled}}
+        wait: 1100ms
+
+  - name: segment-report-includes-http-tags
+    source: {file: t/plugin/skywalking.t, tests: [8]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-http-tags
+          uri: /orders
+          plugins: {skywalking: {sample_ratio: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/orders?state=open'}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 201, body: created}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"operationName":"POST /orders".*"key":"http.method","value":"POST".*"key":"http.url","value":"/orders\?state=open".*"key":"http.status_code","value":"201"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: report-segment-with-request-and-response-tags
+        input: {method: POST, path: '/orders?state=open'}
+        output: {status: 201, body: {equals: created}}
+        wait: 1100ms
+
+  - name: route-overrides-global-with-single-trace
+    source: {file: t/plugin/skywalking.t, tests: [9]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: deduplicated-service
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-route-and-global
+          uri: /route-and-global
+          plugins: {skywalking: {sample_ratio: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      global_rules:
+        - id: skywalking-global-one
+          plugins: {skywalking: {sample_ratio: 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /route-and-global}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: configured}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)^\[\{.*"service":"deduplicated-service".*"operationName":"GET /route-and-global".*\}\]$'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: both-levels-produce-one-segment
+        input: {path: /route-and-global}
+        output: {status: 200, body: {equals: configured}}
+        wait: 1100ms
+
+  - name: both-levels-run-tracer-once
+    source: {file: t/plugin/skywalking.t, tests: [10]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-run-once
+          uri: /run-once
+          plugins: {skywalking: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      global_rules:
+        - id: skywalking-global-run-once
+          plugins: {skywalking: {}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /run-once}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)^\[\{.*"operationName":"GET /run-once".*\}\]$'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: nested-skywalking-handlers-report-once
+        input: {path: /run-once}
+        output: {status: 200, body: {equals: opentracing}}
+        wait: 1100ms
+
+  - name: disabled-route-falls-back-to-global-rule
+    source: {file: t/plugin/skywalking.t, tests: [11]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: global-only-service
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-route-disabled-global-enabled
+          uri: /global-fallback
+          plugins:
+            skywalking: {_meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      global_rules:
+        - id: skywalking-global-fallback
+          plugins: {skywalking: {sample_ratio: 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /global-fallback}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: configured}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"service":"global-only-service".*"operationName":"GET /global-fallback"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: global-rule-traces-when-route-copy-disabled
+        input: {path: /global-fallback}
+        output: {status: 200, body: {equals: configured}}
+        wait: 1100ms
+
+  - name: global-fallback-runs-once
+    source: {file: t/plugin/skywalking.t, tests: [12]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-global-fallback-once
+          uri: /global-once
+          plugins:
+            skywalking: {_meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      global_rules:
+        - id: skywalking-global-once
+          plugins: {skywalking: {}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /global-once}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: opentracing}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)^\[\{.*"operationName":"GET /global-once".*\}\]$'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: only-global-handler-reports
+        input: {path: /global-once}
+        output: {status: 200, body: {equals: opentracing}}
+        wait: 1100ms
+
+  - name: deleted-global-rule-leaves-route-disabled
+    source: {file: t/plugin/skywalking.t, tests: [13]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-no-global-rule
+          uri: /no-global-rule
+          plugins:
+            skywalking: {_meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /no-global-rule}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: passed}]
+      - name: sink
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+    steps:
+      - name: absent-global-rule-does-not-trace
+        input: {path: /no-global-rule}
+        output: {status: 200, body: {equals: passed}}
+        wait: 1100ms
+
+  - name: authenticated-request-traces-through-key-auth
+    source: {file: t/plugin/skywalking.t, tests: [14]}
+    runtime:
+      plugins: [skywalking, key-auth]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: skywalking-key-auth-configured
+          uri: /protected
+          plugins:
+            key-auth: {}
+            skywalking: {sample_ratio: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /protected}
+            headers:
+              sw8: {matches: '^1-.+'}
+              X-Consumer-Username: {equals: jack}
+        respond: [{status: 200, body: authorized}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"operationName":"GET /protected".*"key":"http.status_code","value":"200"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: valid-consumer-request-is-traced
+        input: {path: /protected, headers: {apikey: auth-one}}
+        output: {status: 200, body: {equals: authorized}}
+        wait: 1100ms
+
+  - name: rejected-auth-request-is-traced
+    source: {file: t/plugin/skywalking.t, tests: [15]}
+    runtime:
+      plugins: [skywalking, key-auth]
+      plugin_attr:
+        skywalking:
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: skywalking-key-auth-rejected
+          uri: /protected-rejected
+          plugins:
+            key-auth: {}
+            skywalking: {sample_ratio: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 500, body: unexpected}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)"operationName":"GET /protected-rejected".*"key":"http.status_code","value":"401"'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: missing-api-key-still-produces-trace
+        input: {path: /protected-rejected}
+        output:
+          status: 401
+          body: {equals: '{"message":"Missing API key in request"}'}
+        wait: 1100ms
+
+  - name: single-runtime-instance-starts-one-reporter
+    source: {file: t/plugin/skywalking2.t, tests: [1]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: single-reporter-service
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-single-reporter
+          uri: /single-reporter
+          plugins: {skywalking: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /single-reporter}
+            headers: {sw8: {matches: '^1-.+'}}
+        respond: [{status: 200, body: passed}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)^\[\{.*"service":"single-reporter-service".*"operationName":"GET /single-reporter".*\}\]$'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: reporter-starts-and-flushes-one-request
+        input: {path: /single-reporter}
+        output: {status: 200, body: {equals: passed}}
+        wait: 1100ms
+
+  - name: concurrent-requests-share-one-batch-timer
+    source: {file: t/plugin/skywalking2.t, tests: [2]}
+    runtime:
+      plugins: [skywalking]
+      plugin_attr:
+        skywalking:
+          service_name: batch-timer-service
+          endpoint_addr: '{{FIXTURE.sink.URL}}'
+          report_interval: 1
+    config:
+      routes:
+        - id: skywalking-batch-timer
+          uri: /batch-timer
+          plugins: {skywalking: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: skywalking-batch-wait
+          uri: /batch-wait
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.waiter.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /batch-timer}
+            headers: {sw8: {matches: '^1-.+'}}
+        count: {at_least: 50, at_most: 50}
+        respond: [{status: 200, body: traced}]
+      - name: waiter
+        kind: http
+        expect_requests: 1
+        expect:
+          - path: {equals: /batch-wait}
+            headers: {sw8: {absent: true}}
+        respond: [{status: 200, body: waited}]
+      - name: sink
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /v3/segments}
+            body: {matches: '(?s)^\[\{.*"service":"batch-timer-service".*"operationName":"GET /batch-timer".*\}\]$'}
+        respond: [{status: 200, body: accepted}]
+    steps:
+      - name: fifty-concurrent-traces-use-one-timer
+        repeat: 50
+        concurrency: 10
+        input: {path: /batch-timer}
+        output: {status: 200, body: {equals: traced}}
+      - name: wait-for-single-batch-report
+        actions: [{wait: 1100ms}]
+        input: {path: /batch-wait}
+        output: {status: 200, body: {equals: waited}}

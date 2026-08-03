@@ -9,6 +9,13 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 )
 
+const (
+	// reloadQuietInterval coalesces a short burst of etcd route events.
+	reloadQuietInterval = 50 * time.Millisecond
+	// reloadMaximumWait prevents a continuous etcd event stream from starving publication.
+	reloadMaximumWait = 500 * time.Millisecond
+)
+
 func (s *Server) SendReloadEvent() {
 	select {
 	case s.reloadEventChan <- struct{}{}:
@@ -18,26 +25,102 @@ func (s *Server) SendReloadEvent() {
 	}
 }
 
-func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Duration) {
+func (s *Server) listenReloadEvent(ctx context.Context) {
 	logger.Info("listen to the reload event")
+	runReloadScheduler(ctx, s.reloadEventChan, reloadQuietInterval, reloadMaximumWait, func() {
+		s.reload(ctx)
+	})
+}
 
-	t := time.NewTicker(checkInterval)
+func reconcileInitialReloadEvent(events chan struct{}, builtGeneration uint64, currentGeneration func() uint64) {
+	select {
+	case <-events:
+	default:
+	}
+	if currentGeneration() == builtGeneration {
+		return
+	}
+	select {
+	case events <- struct{}{}:
+	default:
+	}
+}
+
+func runReloadScheduler(
+	ctx context.Context,
+	events <-chan struct{},
+	quietInterval time.Duration,
+	maximumWait time.Duration,
+	reload func(),
+) {
+	var quietTimer *time.Timer
+	var quietTimerC <-chan time.Time
+	var maximumTimer *time.Timer
+	var maximumTimerC <-chan time.Time
+	var maximumDeadline time.Time
+	defer func() {
+		if quietTimer != nil {
+			stopAndDrainReloadTimer(quietTimer)
+		}
+		if maximumTimer != nil {
+			stopAndDrainReloadTimer(maximumTimer)
+		}
+	}()
+	finishBatch := func() {
+		if quietTimer != nil {
+			stopAndDrainReloadTimer(quietTimer)
+			quietTimer = nil
+			quietTimerC = nil
+		}
+		if maximumTimer != nil {
+			stopAndDrainReloadTimer(maximumTimer)
+			maximumTimer = nil
+			maximumTimerC = nil
+		}
+		maximumDeadline = time.Time{}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			logger.Debug("reload event check after 30s")
-
-			// check the chan without block here
-			select {
-			case reloadEvent := <-s.reloadEventChan:
-				logger.Infof("receive reload event: %+v", reloadEvent)
-				// do reload
-				s.reload(ctx)
-			default:
-				logger.Debug("get nothing, will not do reload")
+		case _, ok := <-events:
+			if !ok {
+				return
 			}
+			if !maximumDeadline.IsZero() && !time.Now().Before(maximumDeadline) {
+				finishBatch()
+				logger.Info("receive reload event")
+				reload()
+				continue
+			}
+			if quietTimer == nil {
+				quietTimer = time.NewTimer(quietInterval)
+				quietTimerC = quietTimer.C
+				maximumTimer = time.NewTimer(maximumWait)
+				maximumTimerC = maximumTimer.C
+				maximumDeadline = time.Now().Add(maximumWait)
+			} else {
+				stopAndDrainReloadTimer(quietTimer)
+				quietTimer.Reset(quietInterval)
+			}
+		case <-quietTimerC:
+			finishBatch()
+			logger.Info("receive reload event")
+			reload()
+		case <-maximumTimerC:
+			finishBatch()
+			logger.Info("receive reload event")
+			reload()
+		}
+	}
+}
+
+func stopAndDrainReloadTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
 		}
 	}
 }

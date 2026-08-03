@@ -1,0 +1,619 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/loggly.t
+  tests: 22
+
+cases:
+  - name: schema-full-minimal-required-enum-and-lowercase
+    source: {file: t/plugin/loggly.t, tests: [1]}
+    variants:
+      - name: full-config-delivers-over-https
+        config:
+          routes:
+            - id: loggly-schema-full
+              uri: /schema-full
+              plugins:
+                loggly:
+                  customer_token: TEST-Token-Must-Be-Passed
+                  severity: INFO
+                  tags: [special-route, highpriority-route]
+                  host: '{{FIXTURE.sink.URL}}'
+                  protocol: https
+                  ssl_verify: false
+                  timeout: 3000
+                  max_retry_count: 0
+                  retry_delay: 1
+                  buffer_duration: 60
+                  inactive_timeout: 2
+                  batch_max_size: 1
+                  log_format: {case: schema-full}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{path: {equals: /schema-full}}], respond: [{status: 200, body: passed}]}
+          - name: sink
+            kind: https
+            expect:
+              - method: POST
+                path: {equals: /bulk/TEST-Token-Must-Be-Passed/tag/bulk}
+                headers: {X-LOGGLY-TAG: {equals: 'special-route,highpriority-route'}}
+                body: {json_equals: '{"case":"schema-full","route_id":"loggly-schema-full"}'}
+            respond: [{status: 200, body: ok}]
+        steps:
+          - {name: full-schema-is-live, input: {path: /schema-full}, output: {status: 200, body: {equals: passed}}, wait: 1s}
+      - name: minimized-config-uses-metadata-transport
+        config:
+          plugin_metadata:
+            - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+          routes:
+            - id: loggly-schema-minimal
+              uri: /schema-minimal
+              plugins: {loggly: {customer_token: minimized-config, batch_max_size: 1}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{path: {equals: /schema-minimal}}], respond: [{status: 200, body: passed}]}
+          - name: sink
+            kind: udp
+            network_expect:
+              - payload: {matches: '(?s)^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[minimized-config@41058 tag="apisix"\] \{.*"route_id":"loggly-schema-minimal".*\}$'}
+            network_respond: [{payload: ''}]
+        steps:
+          - {name: minimal-schema-is-live, input: {path: /schema-minimal}, output: {status: 200, body: {equals: passed}}, wait: 1s}
+      - name: missing-customer-token-is-rejected
+        config:
+          routes:
+            - id: loggly-schema-missing-token
+              uri: /schema-missing-token
+              plugins: {loggly: {severity: DEBUG}}
+        input: {path: /schema-missing-token}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin loggly config:.*missing properties:.*customer_token'}
+      - name: unknown-severity-is-rejected
+        config:
+          routes:
+            - id: loggly-schema-unknown-severity
+              uri: /schema-unknown-severity
+              plugins: {loggly: {customer_token: test, severity: UNKNOWN}}
+        input: {path: /schema-unknown-severity}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin loggly config:.*severity.*value must be one of'}
+      - name: lowercase-severity-is-accepted
+        config:
+          plugin_metadata:
+            - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+          routes:
+            - id: loggly-schema-lowercase
+              uri: /schema-lowercase
+              plugins: {loggly: {customer_token: test, severity: crit, batch_max_size: 1}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{path: {equals: /schema-lowercase}}], respond: [{status: 200, body: passed}]}
+          - name: sink
+            kind: udp
+            network_expect:
+              - payload: {matches: '(?s)^<10>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[test@41058 tag="apisix"\] \{.*"route_id":"loggly-schema-lowercase".*\}$'}
+            network_respond: [{payload: ''}]
+        steps:
+          - {name: lowercase-enum-is-normalized, input: {path: /schema-lowercase}, output: {status: 200, body: {equals: passed}}, wait: 1s}
+
+  - name: route-resource-enables-loggly
+    source: {file: t/plugin/loggly.t, tests: [2]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: '1'
+          name: loggly-enabled-route
+          uri: /opentracing
+          plugins: {loggly: {customer_token: test-token, batch_max_size: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[test-token@41058 tag="apisix"\] \{.*"route_id":"1".*\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: standalone-route-proxies-and-logs, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: metadata-host-and-port-drive-real-udp-delivery
+    source: {file: t/plugin/loggly.t, tests: [3]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-metadata-transport
+          uri: /metadata
+          plugins: {loggly: {customer_token: metadata-token, batch_max_size: 1, log_format: {case: metadata-transport}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /metadata}}], respond: [{status: 200, body: passed}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[metadata-token@41058 tag="apisix"\] \{"case":"metadata-transport","route_id":"loggly-metadata-transport"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: metadata-transport-is-used, input: {path: /metadata}, output: {status: 200, body: {equals: passed}}, wait: 1s}
+
+  - name: two-requests-emit-two-complete-rfc5424-datagrams
+    source: {file: t/plugin/loggly.t, tests: [4]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins: {loggly: {customer_token: test-token, batch_max_size: 1, log_format: {path: '$uri'}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /opentracing}}, {path: {equals: /opentracing}}]
+        respond: [{status: 200, body: opentracing}, {status: 200, body: opentracing}]
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: &two_exact_messages {matches: '^<14>1 [0-9T:.+-]+Z 127\.0\.0\.1 apisix [0-9]+ - \[test-token@41058 tag="apisix"\] \{"path":"/opentracing","route_id":"1"\}$'}
+          - payload: *two_exact_messages
+        network_respond: [{payload: ''}, {payload: ''}]
+    steps:
+      - {name: first-request, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}}
+      - {name: second-request, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: tags-are-encoded-in-rfc5424-structured-data
+    source: {file: t/plugin/loggly.t, tests: [5]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-tags
+          uri: /opentracing
+          plugins: {loggly: {customer_token: token-1, batch_max_size: 1, tags: [abc, def], log_format: {case: tags}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="abc" tag="def"\] \{"case":"tags","route_id":"loggly-tags"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: exact-tags, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: crit-severity-produces-prival-ten
+    source: {file: t/plugin/loggly.t, tests: [6]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-crit
+          uri: /opentracing
+          plugins: {loggly: {customer_token: token-1, severity: CRIT, batch_max_size: 1, log_format: {case: severity}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"case":"severity","route_id":"loggly-crit"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: exact-prival, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: default-full-access-log-payload
+    source: {file: t/plugin/loggly.t, tests: [7]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins: {loggly: {customer_token: token-1, severity: CRIT, batch_max_size: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing, headers: {X-Upstream: loggly}}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload:
+              matches: '(?s)^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"apisix_latency":[0-9.]+,"client_ip":"127\.0\.0\.1","latency":[0-9.]+,"request":\{.*"method":"GET".*"uri":"/opentracing".*\},"response":\{.*"status":200.*\},"route_id":"1","server":\{.*"version":"apisix-go".*\},"service_id":"","start_time":[0-9.]+,"upstream":"127\.0\.0\.1:[0-9]+","upstream_latency":[0-9.]+\}$'
+            forbidden_matches: ['"body":']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: full-default-log, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: response-body-is-included
+    source: {file: t/plugin/loggly.t, tests: [8]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-response-body
+          uri: /opentracing
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1, include_resp_body: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: "opentracing\n"}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"response":\{"body":"opentracing\\n".*"status":200.*\}.*"route_id":"loggly-response-body".*\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: response-and-log-preserve-body, input: {path: /opentracing}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
+
+  - name: response-body-expression-hit
+    source: {file: t/plugin/loggly.t, tests: [9]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-response-expression-hit
+          uri: /opentracing
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              include_resp_body: true
+              include_resp_body_expr: [[arg_bar, '==', bar]]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: '/opentracing?bar=bar'}}], respond: [{status: 200, body: "opentracing\n"}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"request":\{.*"querystring":\{"bar":"bar"\}.*\},"response":\{"body":"opentracing\\n".*"status":200.*\}.*\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: matching-query-includes-response-body, input: {path: '/opentracing?bar=bar'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
+
+  - name: response-body-expression-miss
+    source: {file: t/plugin/loggly.t, tests: [10]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-response-expression-miss
+          uri: /opentracing
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              include_resp_body: true
+              include_resp_body_expr: [[arg_bar, '==', bar]]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: '/opentracing?foo=bar'}}], respond: [{status: 200, body: "opentracing\n"}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"querystring":\{"foo":"bar"\}.*"response":\{.*"status":200.*\}.*\}$'}
+            forbidden_matches: ['"body":"opentracing']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: nonmatching-query-omits-response-body, input: {path: '/opentracing?foo=bar'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
+
+  - name: request-body-is-included-and-preserved-upstream
+    source: {file: t/plugin/loggly.t, tests: [11]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-request-body
+          uri: /opentracing
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1, include_req_body: true}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: /opentracing}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"request":\{"body":"body-data".*"method":"POST".*\}.*\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: request-body-reaches-both-upstream-and-log, input: {method: POST, path: /opentracing, body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: request-body-expression-hit
+    source: {file: t/plugin/loggly.t, tests: [12]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-request-expression-hit
+          uri: /opentracing
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              include_req_body: true
+              include_req_body_expr: [[arg_bar, '==', bar]]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?bar=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"request":\{"body":"body-data".*"querystring":\{"bar":"bar"\}.*\}.*\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: matching-query-includes-request-body, input: {method: POST, path: '/opentracing?bar=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: request-body-expression-miss
+    source: {file: t/plugin/loggly.t, tests: [13]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
+      routes:
+        - id: loggly-request-expression-miss
+          uri: /opentracing
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              include_req_body: true
+              include_req_body_expr: [[arg_bar, '==', bar]]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?foo=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"querystring":\{"foo":"bar"\}.*\}$'}
+            forbidden_matches: ['"body":"body-data"']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: nonmatching-query-omits-request-body, input: {method: POST, path: '/opentracing?foo=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: metadata-log-format-replaces-default-payload
+    source: {file: t/plugin/loggly.t, tests: [14]}
+    config:
+      plugin_metadata:
+        - id: loggly
+          host: '{{FIXTURE.sink.HOST}}'
+          port: '{{FIXTURE.sink.PORT}}'
+          log_format: {host: '$host', client: '$remote_addr'}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: '/opentracing?foo=bar'}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"127\.0\.0\.1","route_id":"1"\}$'}
+            forbidden_matches: ['"request":', '"response":']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: metadata-format-is-used, input: {path: '/opentracing?foo=bar', headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: http-bulk-endpoint-body-and-tags
+    source: {file: t/plugin/loggly.t, tests: [15]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.URL}}/loggly', protocol: http, log_format: {route_id: '$route_id'}}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loggly/bulk/tok/tag/bulk}
+            headers: {Content-Type: {equals: application/json}, X-LOGGLY-TAG: {equals: apisix}}
+            body: {json_equals: '{"route_id":"1"}'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: exact-http-bulk-request, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: severity-map-and-metadata-setup-is-live
+    source: {file: t/plugin/loggly.t, tests: [16]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
+      routes:
+        - id: '1'
+          uri: /loggly/setup
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              severity_map: {'503': ERR, '410': ALERT}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /loggly/setup}}], respond: [{status: 200, body: setup}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: setup-resource-proxies-and-logs, input: {path: /loggly/setup}, output: {status: 200, body: {equals: setup}}, wait: 1s}
+
+  - name: status-410-maps-to-alert-prival-nine
+    source: {file: t/plugin/loggly.t, tests: [17]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
+      routes:
+        - id: '1'
+          uri: /loggly/410
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1, severity_map: {'503': ERR, '410': ALERT}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /loggly/410}}], respond: [{status: 410, body: "expired link\n"}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<9>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: alert-prival, input: {path: /loggly/410}, output: {status: 410, body: {equals: "expired link\n"}}, wait: 1s}
+
+  - name: status-503-maps-to-err-prival-eleven
+    source: {file: t/plugin/loggly.t, tests: [18]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {route_id: '$route_id'}}
+      routes:
+        - id: '1'
+          uri: /loggly/503
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1, severity_map: {'503': ERR, '410': ALERT}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /loggly/503}}], respond: [{status: 503, body: "service temporarily unavailable\n"}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<11>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: err-prival, input: {path: /loggly/503}, output: {status: 503, body: {equals: "service temporarily unavailable\n"}}, wait: 1s}
+
+  - name: route-log-format-is-accepted-and-overrides-metadata
+    source: {file: t/plugin/loggly.t, tests: [19]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {metadata_only: hidden}}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins:
+            loggly:
+              customer_token: tok
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {host: '$host', client: '$remote_addr'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"127\.0\.0\.1","route_id":"1"\}$'}
+            forbidden_matches: ['metadata_only']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: route-format-is-live, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: route-log-format-hit
+    source: {file: t/plugin/loggly.t, tests: [20]}
+    config:
+      plugin_metadata:
+        - {id: loggly, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', log_format: {client: metadata-client}}
+      routes:
+        - id: '1'
+          uri: /opentracing
+          plugins: {loggly: {customer_token: tok, batch_max_size: 1, log_format: {host: '$host', client: '$remote_addr'}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: '/opentracing?foo=bar'}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: udp
+        network_expect:
+          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"localhost","route_id":"1"\}$'}
+            forbidden_matches: ['metadata-client', '"request":', '"response":']
+        network_respond: [{payload: ''}]
+    steps:
+      - {name: request-uses-route-format, input: {path: '/opentracing?foo=bar', headers: {Host: localhost}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: plaintext-input-is-encrypted-at-rest-and-decrypted-for-runtime
+    source: {file: t/plugin/loggly.t, tests: [21]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: '1'
+          uri: /hello
+          plugins:
+            loggly:
+              customer_token: super-secret-loggly-token
+              host: '{{FIXTURE.sink.URL}}'
+              protocol: http
+              batch_max_size: 1
+              log_format: {case: encrypted-at-rest}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /hello}}], respond: [{status: 200, body: "hello world\n"}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /bulk/super-secret-loggly-token/tag/bulk}
+            body: {json_equals: '{"case":"encrypted-at-rest","route_id":"1"}'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: runtime-receives-plaintext-token, input: {path: /hello}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: '1'
+          fields:
+            /plugins/loggly/customer_token: '5ADNYoZ1zBLn2eR0w2SV/hqCJ8/ExrqBr4oo8GFTb2E='
+          forbidden_matches: ['super-secret-loggly-token']
+
+  - name: buffered-http-configs-retain-own-token-and-tags
+    source: {file: t/plugin/loggly.t, tests: [22]}
+    config:
+      routes:
+        - id: '1'
+          host: 127.0.0.1
+          uri: /route_a
+          plugins:
+            loggly:
+              customer_token: token-a
+              tags: [aaa]
+              host: '{{FIXTURE.firstSink.URL}}/loggly'
+              protocol: http
+              inactive_timeout: 1
+              log_format: {route: a}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: '2'
+          host: 127.0.0.1
+          uri: /route_b
+          plugins:
+            loggly:
+              customer_token: token-b
+              tags: [bbb]
+              host: '{{FIXTURE.secondSink.URL}}/loggly'
+              protocol: http
+              inactive_timeout: 1
+              log_format: {route: b}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /route_a}}, {path: {equals: /route_b}}]
+        respond: [{status: 200, body: a}, {status: 200, body: b}]
+      - name: firstSink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loggly/bulk/token-a/tag/bulk}
+            headers: {X-LOGGLY-TAG: {equals: aaa}}
+            body: {json_equals: '{"route":"a","route_id":"1"}'}
+        respond: [{status: 200, body: ok}]
+      - name: secondSink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loggly/bulk/token-b/tag/bulk}
+            headers: {X-LOGGLY-TAG: {equals: bbb}}
+            body: {json_equals: '{"route":"b","route_id":"2"}'}
+        respond: [{status: 200, body: ok}]
+    steps:
+      - {name: buffer-route-a, input: {path: /route_a, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: a}}}
+      - {name: buffer-route-b, input: {path: /route_b, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: b}}, wait: 2s}

@@ -56,7 +56,8 @@ type Upstream struct {
 	Timeout Timeout      `json:"timeout"`
 	TLS     *UpstreamTLS `json:"tls,omitempty"`
 
-	Retries      int            `json:"retries,omitempty"`
+	Retries      int `json:"retries,omitempty"`
+	retriesSet   bool
 	Checks       map[string]any `json:"checks,omitempty"`
 	HashOn       string         `json:"hash_on,omitempty"`
 	Key          string         `json:"key,omitempty"`
@@ -68,6 +69,7 @@ type Upstream struct {
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
 	// FIXME: refactor it
+	s.Scheme = "http"
 	var upstreamData map[string]json.RawMessage
 	if err := json.Unmarshal(data, &upstreamData); err != nil {
 		return fmt.Errorf("unmarshal to json.RawMessage fail, %w", err)
@@ -127,6 +129,7 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(upstreamData["retries"], &s.Retries); err != nil {
 			return fmt.Errorf("unmarshal field `retries` fail, %w", err)
 		}
+		s.retriesSet = true
 	}
 
 	if upstreamData["checks"] != nil {
@@ -174,20 +177,26 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// RetriesConfigured reports whether retries was explicitly present, including zero.
+func (s Upstream) RetriesConfigured() bool {
+	return s.retriesSet || s.Retries != 0
+}
+
 func parseNodeAddress(address string) (string, int) {
 	const defaultPort = 80
 	if _, portText, err := net.SplitHostPort(address); err == nil {
 		if port, parseErr := strconv.Atoi(portText); parseErr == nil {
-			return address, port
+			host, _, _ := net.SplitHostPort(address)
+			return host, port
 		}
 	}
 	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
 		return address, defaultPort
 	}
 	if strings.Count(address, ":") == 1 {
-		_, portText, _ := strings.Cut(address, ":")
+		host, portText, _ := strings.Cut(address, ":")
 		if port, err := strconv.Atoi(portText); err == nil {
-			return address, port
+			return host, port
 		}
 	}
 	return address, defaultPort
@@ -254,6 +263,7 @@ type Route struct {
 	Priority    int                     `json:"priority,omitempty"`
 	Name        string                  `json:"name,omitempty"`
 	Desc        string                  `json:"desc,omitempty"`
+	Labels      map[string]any          `json:"labels,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
@@ -300,10 +310,10 @@ type Service struct {
 
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
 type Consumer struct {
-	Username string `json:"username"`
-	GroupID  string `json:"group_id,omitempty"`
-	Plugins  map[string]PluginConfig
-	Labels   map[string]any `json:"labels,omitempty"`
+	Username string                  `json:"username"`
+	GroupID  string                  `json:"group_id,omitempty"`
+	Plugins  map[string]PluginConfig `json:"plugins" yaml:"plugins"`
+	Labels   map[string]any          `json:"labels,omitempty"`
 }
 
 type ConsumerGroup struct {

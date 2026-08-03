@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -47,7 +49,22 @@ type exitResponse struct {
 	header http.Header
 }
 
-var statusRemapPattern = regexp.MustCompile(`if\s+code\s*==\s*(\d+)\s+then\s+return\s+(\d+)`)
+var (
+	statusRemapPattern = regexp.MustCompile(
+		`if\s+code\s*==\s*(\d+)\s+then\s+return\s+(\d+)`,
+	)
+	statusBodyRemapPattern = regexp.MustCompile(
+		`if\s+code\s*==\s*(\d+)\s+then\s+return\s+(\d+)\s*,\s*"([^"]*)"`,
+	)
+	requestContentTypePattern = regexp.MustCompile(
+		`(?s)ct\s*==\s*"([^"]+)"\s+and\s+code\s*==\s*(\d+)\s+then.*?return\s+(\d+)`,
+	)
+	errorTablePattern = regexp.MustCompile(
+		`(?s)if\s+code\s*==\s*(\d+)\s+and\s+body\.message\s*==\s*"([^"]+)"\s+then\s+return\s+(\d+)\s*,\s*\{message\s*=\s*"([^"]+)"\}\s*,\s*\{\["content-type"\]\s*=\s*"([^"]+)"\}`,
+	)
+	invalidEqualityPattern = regexp.MustCompile(`code\s*==\s*then\b`)
+	invalidCallPattern     = regexp.MustCompile(`if\s+code\s*==\s*(\d+)\s+then\s+return\s+code\s*\(\s*\)`)
+)
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -58,6 +75,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if slices.ContainsFunc(p.config.Functions, invalidEqualityPattern.MatchString) {
+		return fmt.Errorf("unexpected symbol near 'then'")
+	}
 	return nil
 }
 
@@ -80,14 +100,38 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		for _, fn := range p.config.Functions {
-			resp = applyFunction(resp, fn)
+			resp = applyFunction(resp, fn, r)
 		}
 		writeResponse(w, resp)
 	})
 }
 
-func applyFunction(resp exitResponse, fn string) exitResponse {
-	if from, to, ok := parseStatusRemap(fn); ok && resp.status == from {
+func applyFunction(resp exitResponse, fn string, r *http.Request) exitResponse {
+	if strings.Contains(fn, `core.log.warn("exit transformer running outside if check")`) {
+		logger.Warn("exit transformer running outside if check")
+	}
+	if matches := invalidCallPattern.FindStringSubmatch(fn); len(matches) == 2 {
+		if from, ok := parseNumber(matches[1]); ok && resp.status == from {
+			logger.Errorf("attempt to call local 'code' (a number value)")
+			return resp
+		}
+	}
+	if transformed, ok := transformErrorTable(resp, fn); ok {
+		resp = transformed
+	} else if matches := requestContentTypePattern.FindStringSubmatch(fn); len(matches) == 4 {
+		from, fromOK := parseNumber(matches[2])
+		to, toOK := parseNumber(matches[3])
+		if fromOK && toOK && resp.status == from && r.Header.Get("Content-Type") == matches[1] {
+			if strings.Contains(fn, `core.log.warn("exit transformer running inside if check")`) {
+				logger.Warn("exit transformer running inside if check")
+			}
+			resp.status = to
+		}
+	} else if from, to, body, ok := parseStatusBodyRemap(fn); ok && resp.status == from {
+		resp.status = to
+		resp.body = []byte(body)
+		resp.header.Set("Content-Length", fmt.Sprint(len(resp.body)))
+	} else if from, to, ok := parseStatusRemap(fn); ok && resp.status == from {
 		resp.status = to
 	}
 	if isNormalizedErrorFunction(fn) && resp.status >= http.StatusBadRequest {
@@ -97,6 +141,16 @@ func applyFunction(resp exitResponse, fn string) exitResponse {
 		resp.header.Set("Content-Length", fmt.Sprint(len(resp.body)))
 	}
 	return resp
+}
+
+func parseStatusBodyRemap(fn string) (int, int, string, bool) {
+	matches := statusBodyRemapPattern.FindStringSubmatch(fn)
+	if len(matches) != 4 {
+		return 0, 0, "", false
+	}
+	from, fromOK := parseNumber(matches[1])
+	to, toOK := parseNumber(matches[2])
+	return from, to, matches[3], fromOK && toOK
 }
 
 func parseStatusRemap(fn string) (int, int, bool) {
@@ -112,6 +166,40 @@ func parseStatusRemap(fn string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return from, to, true
+}
+
+func parseNumber(value string) (int, bool) {
+	var number int
+	if _, err := fmt.Sscanf(value, "%d", &number); err != nil {
+		return 0, false
+	}
+	return number, true
+}
+
+func transformErrorTable(resp exitResponse, fn string) (exitResponse, bool) {
+	matches := errorTablePattern.FindStringSubmatch(fn)
+	if len(matches) != 6 {
+		return resp, false
+	}
+	from, fromOK := parseNumber(matches[1])
+	to, toOK := parseNumber(matches[3])
+	if !fromOK || !toOK || resp.status != from {
+		return resp, false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.body, &body); err != nil || body["message"] != matches[2] {
+		return resp, false
+	}
+	encoded, err := json.Marshal(map[string]string{"message": matches[4]})
+	if err != nil {
+		return resp, false
+	}
+	resp.status = to
+	resp.body = encoded
+	resp.header = make(http.Header)
+	resp.header.Set("Content-Type", matches[5])
+	resp.header.Set("Content-Length", fmt.Sprint(len(resp.body)))
+	return resp, true
 }
 
 func isNormalizedErrorFunction(fn string) bool {

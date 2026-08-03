@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,6 +52,75 @@ func TestSchemaValidatesActiveHealthCheckFields(t *testing.T) {
 	config["instances"].([]any)[0].(map[string]any)["checks"].(map[string]any)["active"].(map[string]any)["type"] = "grpc"
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("unsupported active health check type was accepted")
+	}
+}
+
+func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"instances": []any{map[string]any{
+			"name": "one", "provider": "openai", "weight": 1,
+			"auth": map[string]any{"header": map[string]any{"Authorization": "Bearer t"}},
+			"override": map[string]any{
+				"request_body": map[string]any{"not-a-protocol": map[string]any{"x": 1}},
+			},
+		}},
+	}
+
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("unknown request_body protocol key was accepted")
+	}
+}
+
+func TestHandlerPreservesPassthroughRouting(t *testing.T) {
+	type capturedRequest struct {
+		method string
+		uri    string
+	}
+	captured := make(chan capturedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- capturedRequest{method: r.Method, uri: r.URL.RequestURI()}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "openai",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth: Auth{
+				Header: map[string]string{"Authorization": "Bearer token"},
+				Query:  map[string]string{"akey": "secret"},
+			},
+			Override: Override{
+				Endpoint: upstream.URL + "?name=fromendpoint&ekey=eval",
+			},
+		}},
+	})
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/v1/images/generations?name=fromclient&ckey=cval&akey=attacker",
+		strings.NewReader(`{"prompt":"x"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	got := <-captured
+	if got.method != http.MethodPut {
+		t.Fatalf("provider method = %q, want PUT", got.method)
+	}
+	wantURI := "/v1/images/generations?akey=secret&ckey=cval&ekey=eval&name=fromclient"
+	if got.uri != wantURI {
+		t.Fatalf("provider URI = %q, want %q", got.uri, wantURI)
 	}
 }
 
@@ -690,6 +760,35 @@ func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesRawBodyWhenProviderRequestIsUnchanged(t *testing.T) {
+	const raw = `{ "messages" : [ { "role" : "user", "content" : "hello" } ], "top_p" : 0.9 }`
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+
+	serveChatWithBody(t, p, raw)
+
+	if upstreamBody != raw {
+		t.Fatalf("upstream body = %q, want exact raw body %q", upstreamBody, raw)
+	}
+}
+
 func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
 	var upstreamBody map[string]any
 	upstream := newBodyCaptureLLMServer(t, "Bearer token", &upstreamBody)
@@ -778,14 +877,15 @@ func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
 
 func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	var calls atomic.Int64
+	const upstreamResponse = `{
+		  "model": "gpt-4-0613",
+		  "usage": {"prompt_tokens": 23, "completion_tokens": 8, "total_tokens": 31}
+		}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
-		  "model": "gpt-4-0613",
-		  "usage": {"prompt_tokens": 23, "completion_tokens": 8, "total_tokens": 31}
-		}`))
+		_, _ = w.Write([]byte(upstreamResponse))
 	}))
 	defer upstream.Close()
 
@@ -824,6 +924,111 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	assertUsageRequestVars(t, req, float64(23), int64(31))
 	if calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+	upstreamAddress := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := strings.Cut(upstreamAddress, ":")
+	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
+	assertLLMRequestVar(t, req, "$upstream_status", "200")
+	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
+	assertLLMRequestVar(t, req, "$upstream_host", upstreamHost)
+	assertLLMRequestVar(t, req, "$upstream_response_length", int64(len(upstreamResponse)))
+	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
+		t.Fatal("$upstream_response_time is empty")
+	}
+}
+
+func TestHandlerUpstreamResponseTimeExcludesAuthenticationAndIncludesResponseBody(t *testing.T) {
+	const (
+		authenticationDelay = 180 * time.Millisecond
+		responseBodyDelay   = 80 * time.Millisecond
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(responseBodyDelay)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "vertex-ai",
+			Weight:   1,
+			Auth:     Auth{GCP: &ai_auth.GCPConfig{ServiceAccountJSON: "test"}},
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	p.gcpTokens = delayedGCPTokenApplier{delay: authenticationDelay}
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"ping"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	got, ok := apisixctx.GetRequestVar(req, "$upstream_response_time").(string)
+	if !ok {
+		t.Fatalf("$upstream_response_time = %#v, want seconds string", got)
+	}
+	elapsed, err := time.ParseDuration(got + "s")
+	if err != nil {
+		t.Fatalf("parse $upstream_response_time %q: %v", got, err)
+	}
+	if elapsed < responseBodyDelay-20*time.Millisecond {
+		t.Fatalf("$upstream_response_time = %v, want response body delay included", elapsed)
+	}
+	if elapsed >= authenticationDelay {
+		t.Fatalf("$upstream_response_time = %v, want authentication delay excluded", elapsed)
+	}
+}
+
+func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	upstreamAddress := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := strings.Cut(upstreamAddress, ":")
+	upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+			Options:  map[string]any{"model": "gpt-4"},
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"ping"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want 503", rr.Code)
+	}
+	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
+	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
+	assertLLMRequestVar(t, req, "$upstream_host", upstreamHost)
+	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
+		t.Fatal("$upstream_response_time is empty")
+	}
+	for _, key := range []string{"$upstream_status", "$upstream_response_length"} {
+		if got := apisixctx.GetRequestVar(req, key); got != nil {
+			t.Fatalf("%s = %#v, want unset", key, got)
+		}
 	}
 }
 
@@ -924,6 +1129,84 @@ func TestHandlerBuildsAndSignsBedrockConverseInstance(t *testing.T) {
 	}
 }
 
+func TestAppendBedrockEndpointEscapesARNModelAsOnePathSegment(t *testing.T) {
+	const model = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123"
+	got, err := appendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
+	if err != nil {
+		t.Fatalf("appendBedrockEndpoint() error = %v", err)
+	}
+	const want = "https://bedrock-runtime.us-east-1.amazonaws.com/model/" +
+		"arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse"
+	if got != want {
+		t.Fatalf("appendBedrockEndpoint() = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerRejectsInvalidBedrockInstanceRequestBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name       string
+		options    map[string]any
+		path       string
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "missing model",
+			path:       "/ai/body-model-only/converse",
+			body:       `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "could not resolve upstream path",
+		},
+		{
+			name:       "non Converse protocol",
+			options:    map[string]any{"model": "claude"},
+			path:       "/ai/bedrock-chat",
+			body:       `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "does not support openai-chat protocol",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstreamCalls atomic.Int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(upstream.Close)
+			p := newTestPlugin(t, Config{Instances: []Instance{{
+				Name:         "bedrock",
+				Provider:     "bedrock",
+				ProviderConf: map[string]any{"region": "us-east-1"},
+				Weight:       1,
+				Auth: Auth{AWS: &ai_auth.AWSConfig{
+					AccessKeyID: "key", SecretAccessKey: "secret",
+				}},
+				Options:  test.options,
+				Override: Override{Endpoint: upstream.URL},
+			}}})
+			req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for invalid Bedrock request")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.wantStatus {
+				t.Fatalf("response code = %d, want %d; body = %q", rr.Code, test.wantStatus, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), test.wantBody) {
+				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.wantBody)
+			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestHandlerForwardsSelectedBedrockEventStreamInstance(t *testing.T) {
 	metadata := testAWSEventStreamFrame(map[string]string{
 		":message-type": "event", ":event-type": "metadata",
@@ -1005,6 +1288,20 @@ func (fakeGCPTokenApplier) Apply(
 	_ ai_auth.GCPConfig,
 ) error {
 	req.Header.Set("Authorization", "Bearer gcp-token")
+	return nil
+}
+
+type delayedGCPTokenApplier struct {
+	delay time.Duration
+}
+
+func (a delayedGCPTokenApplier) Apply(
+	_ context.Context,
+	_ *http.Client,
+	_ *http.Request,
+	_ ai_auth.GCPConfig,
+) error {
+	time.Sleep(a.delay)
 	return nil
 }
 

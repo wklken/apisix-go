@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -32,6 +33,16 @@ type Plugin struct {
 const (
 	priority = 2530
 	name     = "hmac-auth"
+)
+
+var (
+	errInvalidKeyID      = errors.New("Invalid key_id")          //nolint:staticcheck // APISIX-compatible diagnostic.
+	errInvalidAlgorithm  = errors.New("Invalid algorithm")       //nolint:staticcheck // APISIX-compatible diagnostic.
+	errInvalidDigest     = errors.New("Invalid digest")          //nolint:staticcheck // APISIX-compatible diagnostic.
+	errDateHeaderMissing = errors.New("Date header missing")     //nolint:staticcheck // APISIX-compatible diagnostic.
+	errInvalidGMTTime    = errors.New("Invalid GMT format time") //nolint:staticcheck // APISIX-compatible diagnostic.
+	errClockSkewExceeded = errors.New("Clock skew exceeded")     //nolint:staticcheck // APISIX-compatible diagnostic.
+	errInvalidSignature  = errors.New("Invalid signature")       //nolint:staticcheck // APISIX-compatible diagnostic.
 )
 
 const schema = `
@@ -79,7 +90,8 @@ const schema = `
       "default": "hmac"
     },
     "anonymous_consumer": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     }
   }
 }
@@ -150,11 +162,22 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		consumer, statusCode, err := p.authenticate(r)
 		if err != nil {
+			logMessage := err.Error()
+			if !strings.HasPrefix(logMessage, "client request can't be validated:") {
+				logMessage = "client request can't be validated: " + logMessage
+			}
+			if !ctx.RecordAuthProbeDiagnostic(r, logMessage) {
+				logger.Warn(logMessage)
+			}
 			if statusCode == http.StatusUnauthorized && p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
-			http.Error(w, util.BuildMessageResponse(err.Error()), statusCode)
+			message := "client request can't be validated"
+			if strings.HasPrefix(err.Error(), "client request can't be validated:") ||
+				statusCode != http.StatusUnauthorized {
+				message = err.Error()
+			}
+			p.writeAuthError(w, statusCode, message)
 			return
 		}
 
@@ -163,7 +186,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		ctx.AttachConsumer(r, consumer)
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -175,8 +198,11 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
-		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
+		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
+		if !ctx.RecordAuthProbeDiagnostic(r, message) {
+			logger.Error(message)
+		}
+		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
 		return true
 	}
 
@@ -184,8 +210,17 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 		r.Header.Del("Authorization")
 	}
 	ctx.AttachConsumer(r, consumer)
-	next.ServeHTTP(w, r)
+	ctx.RunConsumerPlugins(w, r, next)
 	return true
+}
+
+func (p *Plugin) writeAuthError(w http.ResponseWriter, statusCode int, message string) {
+	if statusCode == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_, _ = w.Write([]byte(util.BuildMessageResponse(message)))
 }
 
 func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
@@ -195,45 +230,45 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 	}
 
 	if params.KeyID == "" || params.Signature == "" {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, errors.New("keyId or signature missing")
 	}
 	if params.Algorithm == "" {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
-	}
-	if !p.algorithmAllowed(params.Algorithm) {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, errors.New("algorithm missing")
 	}
 
 	consumer, err := store.GetConsumerByPluginKey(name, params.KeyID)
 	if err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
+	}
+	if !p.algorithmAllowed(params.Algorithm) {
+		return resource.Consumer{}, http.StatusUnauthorized, errInvalidAlgorithm
 	}
 
 	consumerPluginConfig, exists := consumer.Plugins[name]
 	if !exists {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
 	}
 
 	var cfg consumerConfig
 	if err := util.Parse(consumerPluginConfig, &cfg); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
 	}
 
 	if err := p.validateClockSkew(params.Date); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, err
 	}
 	if err := p.validateSignedHeaders(params.Headers); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, err
 	}
 	if err := validateSignature(r, cfg.SecretKey, params); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+		return resource.Consumer{}, http.StatusUnauthorized, err
 	}
 	if p.config.ValidateRequestBody {
 		if err := p.validateBodyDigest(r, params.BodyDigest); err != nil {
 			if errors.Is(err, errBodyTooLarge) {
 				return resource.Consumer{}, http.StatusRequestEntityTooLarge, err
 			}
-			return resource.Consumer{}, http.StatusUnauthorized, errors.New("client request can't be validated")
+			return resource.Consumer{}, http.StatusUnauthorized, errInvalidDigest
 		}
 	}
 
@@ -284,15 +319,15 @@ func (p *Plugin) validateClockSkew(date string) error {
 		return nil
 	}
 	if date == "" {
-		return errors.New("date header missing")
+		return errDateHeaderMissing
 	}
 
 	parsed, err := http.ParseTime(date)
 	if err != nil {
-		return err
+		return errInvalidGMTTime
 	}
 	if time.Since(parsed).Abs() > time.Duration(p.config.ClockSkew)*time.Second {
-		return errors.New("clock skew exceeded")
+		return errClockSkewExceeded
 	}
 	return nil
 }
@@ -314,15 +349,15 @@ func (p *Plugin) validateSignedHeaders(headers []string) error {
 func validateSignature(r *http.Request, secretKey string, params signatureParams) error {
 	requestSignature, err := base64.StdEncoding.DecodeString(params.Signature)
 	if err != nil {
-		return err
+		return errInvalidSignature
 	}
 
 	generatedSignature, err := generateSignature(r, secretKey, params)
 	if err != nil {
-		return err
+		return errInvalidSignature
 	}
 	if subtle.ConstantTimeCompare(requestSignature, generatedSignature) != 1 {
-		return errors.New("invalid signature")
+		return errInvalidSignature
 	}
 	return nil
 }
@@ -373,7 +408,7 @@ var errBodyTooLarge = errors.New("request body too large")
 
 func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error {
 	if digestHeader == "" {
-		return errors.New("invalid digest")
+		return errInvalidDigest
 	}
 
 	body, err := readAndRestoreBody(r, p.config.MaxReqBodySize)
@@ -383,7 +418,7 @@ func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error 
 	sum := sha256.Sum256(body)
 	expected := "SHA-256=" + base64.StdEncoding.EncodeToString(sum[:])
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(digestHeader)) != 1 {
-		return errors.New("invalid digest")
+		return errInvalidDigest
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package referer_restriction
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Shopify/goreferrer"
@@ -120,9 +121,13 @@ func (p *Plugin) inWhiteList(host string) bool {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// get the referer
-		referer := goreferrer.DefaultRules.Parse(r.Header.Get("Referer"))
-
-		host := referer.Host()
+		rawReferer := r.Header.Get("Referer")
+		parsed, err := url.Parse(rawReferer)
+		host := ""
+		if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			referer := goreferrer.DefaultRules.Parse(rawReferer)
+			host = referer.Host()
+		}
 		if host == "" {
 			if !*p.config.BypassMissing {
 				writeJSON(w, p.message)

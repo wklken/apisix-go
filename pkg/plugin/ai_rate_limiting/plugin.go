@@ -2,6 +2,8 @@ package ai_rate_limiting
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -13,11 +15,14 @@ import (
 	"time"
 
 	"github.com/casbin/govaluate"
+	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -28,6 +33,10 @@ type Plugin struct {
 	counters map[string]*counter
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
+	redis    *redis.Client
+
+	resourceScope  string
+	configIdentity string
 }
 
 const (
@@ -35,9 +44,22 @@ const (
 	name     = "ai-rate-limiting"
 )
 
-var variablePattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+var (
+	variablePattern      = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+	quotaVariablePattern = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)(?:\s*\?\?\s*([^}]+))?\}|\$([A-Za-z0-9_]+)`)
+)
 
 var errNoUsableRules = errors.New("no usable rate limit rules")
+
+const redisChargeScript = `
+local current = redis.call("INCRBY", KEYS[1], ARGV[1])
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl < 0 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[2])
+  ttl = tonumber(ARGV[2])
+end
+return {current, ttl}
+`
 
 const schema = `
 {
@@ -130,6 +152,18 @@ const schema = `
         },
         "required": ["count", "time_window", "key"]
       }
+    },
+    "policy": {"type": "string", "enum": ["local", "redis", "redis-sentinel"], "default": "local"},
+    "redis_host": {"type": "string", "minLength": 1},
+    "redis_port": {"type": "integer", "minimum": 1, "default": 6379},
+    "redis_username": {"type": "string"},
+    "redis_password": {"type": "string"},
+    "redis_database": {"type": "integer", "minimum": 0, "default": 0},
+    "redis_timeout": {"type": "integer", "minimum": 1, "default": 1000},
+    "redis_sentinels": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"host": {"type": "string", "minLength": 1}, "port": {"type": "integer", "minimum": 1}}, "required": ["host", "port"]}},
+    "redis_master_name": {"type": "string", "minLength": 1},
+    "sentinel_username": {"type": "string"},
+    "sentinel_password": {"type": "string"}
     }
   },
   "dependencies": {
@@ -150,6 +184,10 @@ const schema = `
     {
       "required": ["rules"]
     }
+  ],
+  "allOf": [
+    {"if": {"properties": {"policy": {"const": "redis"}}, "required": ["policy"]}, "then": {"required": ["redis_host"]}},
+    {"if": {"properties": {"policy": {"const": "redis-sentinel"}}, "required": ["policy"]}, "then": {"required": ["redis_sentinels", "redis_master_name"]}}
   ]
 }
 `
@@ -164,6 +202,22 @@ type Config struct {
 	RejectedCode         int             `json:"rejected_code,omitempty"`
 	RejectedMsg          string          `json:"rejected_msg,omitempty"`
 	Rules                []Rule          `json:"rules,omitempty"`
+	Policy               string          `json:"policy,omitempty"`
+	RedisHost            string          `json:"redis_host,omitempty"`
+	RedisPort            int             `json:"redis_port,omitempty"`
+	RedisUsername        string          `json:"redis_username,omitempty"`
+	RedisPassword        string          `json:"redis_password,omitempty"`
+	RedisDatabase        int             `json:"redis_database,omitempty"`
+	RedisTimeout         int             `json:"redis_timeout,omitempty"`
+	RedisSentinels       []RedisSentinel `json:"redis_sentinels,omitempty"`
+	RedisMasterName      string          `json:"redis_master_name,omitempty"`
+	SentinelUsername     string          `json:"sentinel_username,omitempty"`
+	SentinelPassword     string          `json:"sentinel_password,omitempty"`
+}
+
+type RedisSentinel struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 type InstanceLimit struct {
@@ -199,6 +253,13 @@ type responseRecorder struct {
 	wroteHeader bool
 }
 
+type quotaResponseWriter struct {
+	http.ResponseWriter
+	plugin      *Plugin
+	request     *http.Request
+	wroteHeader bool
+}
+
 func WithPickedAIInstanceName(r *http.Request, name string) *http.Request {
 	return ai_runtime.WithSelectedInstanceName(r, name)
 }
@@ -219,12 +280,74 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if len(p.config.Rules) > 0 && (len(p.config.Instances) > 0 || p.config.Limit != nil || p.config.TimeWindow != nil) {
+		return errors.New("rules cannot be configured with limit, time_window, or instances")
+	}
+	if len(p.config.Instances) > 0 && ((p.config.Limit == nil) != (p.config.TimeWindow == nil)) {
+		return errors.New("limit and time_window must be configured together")
+	}
 	if p.config.ShowLimitQuotaHeader == nil {
 		show := true
 		p.config.ShowLimitQuotaHeader = &show
 	}
 	if p.config.LimitStrategy == "" {
 		p.config.LimitStrategy = "total_tokens"
+	}
+	if p.config.Policy == "" {
+		p.config.Policy = "local"
+	}
+	if p.config.RedisTimeout == 0 {
+		p.config.RedisTimeout = 1000
+	}
+	if p.config.Policy == "redis" {
+		if p.config.RedisHost == "" {
+			return errors.New("redis_host is required when policy is redis")
+		}
+		if p.config.RedisPort == 0 {
+			p.config.RedisPort = 6379
+		}
+		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
+		if err != nil {
+			return err
+		}
+		p.redis = redis.NewClient(&redis.Options{
+			Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+			Username:     p.config.RedisUsername,
+			Password:     password,
+			DB:           p.config.RedisDatabase,
+			DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		})
+	}
+	if p.config.Policy == "redis-sentinel" {
+		if len(p.config.RedisSentinels) == 0 || p.config.RedisMasterName == "" {
+			return errors.New("redis_sentinels and redis_master_name are required when policy is redis-sentinel")
+		}
+		addresses := make([]string, 0, len(p.config.RedisSentinels))
+		for _, sentinel := range p.config.RedisSentinels {
+			addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
+		}
+		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
+		if err != nil {
+			return err
+		}
+		sentinelPassword, err := p.resolveSecret("sentinel_password", p.config.SentinelPassword)
+		if err != nil {
+			return err
+		}
+		p.redis = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       p.config.RedisMasterName,
+			SentinelAddrs:    addresses,
+			Username:         p.config.RedisUsername,
+			Password:         password,
+			SentinelUsername: p.config.SentinelUsername,
+			SentinelPassword: sentinelPassword,
+			DB:               p.config.RedisDatabase,
+			DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		})
 	}
 	if p.config.LimitStrategy == "expression" {
 		if p.config.CostExpr == "" {
@@ -282,7 +405,59 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.refreshConfigIdentity()
 	return nil
+}
+
+func (p *Plugin) resolveSecret(field, value string) (string, error) {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(value)
+	if err != nil {
+		return "", fmt.Errorf("ai-rate-limiting %s: %w", field, err)
+	}
+	return resolved, nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
+	p.resourceScope = fmt.Sprintf(
+		"resource:%d:%s:%d:%s",
+		len(route.ID),
+		route.ID,
+		len(service.ID),
+		service.ID,
+	)
+}
+
+func (p *Plugin) refreshConfigIdentity() {
+	identity := struct {
+		Limit         any             `json:"limit,omitempty"`
+		TimeWindow    any             `json:"time_window,omitempty"`
+		LimitStrategy string          `json:"limit_strategy"`
+		CostExpr      string          `json:"cost_expr,omitempty"`
+		Instances     []InstanceLimit `json:"instances,omitempty"`
+		Rules         []Rule          `json:"rules,omitempty"`
+		Policy        string          `json:"policy"`
+	}{
+		Limit:         p.config.Limit,
+		TimeWindow:    p.config.TimeWindow,
+		LimitStrategy: p.config.LimitStrategy,
+		CostExpr:      p.config.CostExpr,
+		Instances:     p.config.Instances,
+		Rules:         p.config.Rules,
+		Policy:        p.config.Policy,
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		p.configIdentity = ""
+		return
+	}
+	p.configIdentity = fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func (p *Plugin) Stop() {
+	if p.redis != nil {
+		_ = p.redis.Close()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -317,10 +492,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
-			for _, q := range quotas {
-				p.writeQuotaHeaders(w.Header(), q)
-			}
-			next.ServeHTTP(w, r)
+			writer := &quotaResponseWriter{ResponseWriter: w, plugin: p, request: r}
+			next.ServeHTTP(writer, r)
+			writer.writeQuotaHeaders()
 			if len(p.config.Rules) == 0 {
 				if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
 					quotas = finalQuotas
@@ -345,18 +519,53 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				quotas = nil
 			}
 		}
+		for _, q := range quotas {
+			p.writeQuotaHeaders(recorder.header, q)
+		}
 		usedTokens := p.responseTokenCostForRequest(r, recorder.body.Bytes())
 		if usedTokens > 0 {
 			for _, q := range quotas {
 				p.charge(q, usedTokens)
 			}
 		}
-		for _, q := range quotas {
-			p.writeQuotaHeaders(recorder.header, q)
-		}
 		recorder.writeTo(w)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (w *quotaResponseWriter) WriteHeader(statusCode int) {
+	w.writeQuotaHeaders()
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *quotaResponseWriter) Write(body []byte) (int, error) {
+	w.writeQuotaHeaders()
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *quotaResponseWriter) Flush() {
+	w.writeQuotaHeaders()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *quotaResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *quotaResponseWriter) writeQuotaHeaders() {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	quotas, ok, err := w.plugin.quotasForRequest(w.request)
+	if err != nil || !ok {
+		return
+	}
+	for _, q := range quotas {
+		w.plugin.writeQuotaHeaders(w.Header(), q)
+	}
 }
 
 func (p *Plugin) firstRejectedQuota(quotas []quota) int {
@@ -409,6 +618,9 @@ func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
 	if err != nil || !ok {
 		return nil, ok, err
 	}
+	if consumerName := fmt.Sprint(apisixctx.GetApisixVar(r, "$consumer_name")); consumerName != "" {
+		q.key = "consumer:" + consumerName + ":" + q.key
+	}
 	return []quota{q}, true, nil
 }
 
@@ -450,7 +662,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 				}, true, nil
 			}
 		}
-		if len(p.config.Instances) > 0 {
+		if len(p.config.Instances) > 0 && (p.config.Limit == nil || p.config.TimeWindow == nil) {
 			return quota{}, false, nil
 		}
 		limit, err := resolveQuotaValue(r, p.config.Limit, "limit")
@@ -466,7 +678,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 			return quota{}, false, err
 		}
 		return quota{
-			key:        "global",
+			key:        "instance:" + instanceName,
 			headerName: instanceName,
 			limit:      limit,
 			window:     windowDuration,
@@ -513,9 +725,16 @@ func staticQuotaValue(value any, name string) (int64, error) {
 
 func resolveQuotaValue(r *http.Request, value any, name string) (int64, error) {
 	if text, ok := value.(string); ok {
-		value = variablePattern.ReplaceAllStringFunc(text, func(match string) string {
-			variableName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$"), "}")
-			return requestVariable(r, variableName)
+		value = quotaVariablePattern.ReplaceAllStringFunc(text, func(match string) string {
+			parts := quotaVariablePattern.FindStringSubmatch(match)
+			variableName := parts[1]
+			if variableName == "" {
+				variableName = parts[3]
+			}
+			if resolved := requestVariable(r, variableName); resolved != "" {
+				return resolved
+			}
+			return strings.TrimSpace(parts[2])
 		})
 	}
 	return numericQuotaValue(value, name)
@@ -567,6 +786,10 @@ func requestVariable(r *http.Request, key string) string {
 }
 
 func (p *Plugin) allowed(q quota) bool {
+	if p.redis != nil {
+		value, err := p.redis.Get(context.Background(), p.redisKey(q)).Int64()
+		return err == redis.Nil || (err == nil && value < q.limit)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -575,6 +798,16 @@ func (p *Plugin) allowed(q quota) bool {
 }
 
 func (p *Plugin) charge(q quota, tokens int64) {
+	if p.redis != nil {
+		_ = p.redis.Eval(
+			context.Background(),
+			redisChargeScript,
+			[]string{p.redisKey(q)},
+			tokens,
+			q.window.Milliseconds(),
+		).Err()
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -781,20 +1014,40 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	if q.headerPrefix != "" {
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
-		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Reset", strconv.FormatInt(reset, 10))
 		return
 	}
 	header.Set("X-AI-RateLimit-Limit-"+q.headerName, strconv.FormatInt(q.limit, 10))
 	header.Set("X-AI-RateLimit-Remaining-"+q.headerName, strconv.FormatInt(remaining, 10))
-	header.Set("X-AI-RateLimit-Reset-"+q.headerName, strconv.FormatInt(reset.Unix(), 10))
+	header.Set("X-AI-RateLimit-Reset-"+q.headerName, strconv.FormatInt(reset, 10))
 }
 
-func (p *Plugin) snapshot(q quota) (int64, time.Time) {
+func (p *Plugin) snapshot(q quota) (int64, int64) {
+	if p.redis != nil {
+		ctx := context.Background()
+		used, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
+		if err != nil && err != redis.Nil {
+			used = 0
+		}
+		ttl, err := p.redis.PTTL(ctx, p.redisKey(q)).Result()
+		if err != nil || ttl < 0 {
+			ttl = q.window
+		}
+		return used, max(int64(math.Ceil(ttl.Seconds())), 0)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	state := p.state(q)
-	return state.used, state.reset
+	return state.used, max(int64(math.Ceil(state.reset.Sub(p.now()).Seconds())), 0)
+}
+
+func (p *Plugin) redisKey(q quota) string {
+	scope := p.resourceScope
+	if scope == "" {
+		scope = "resource:0::0:"
+	}
+	return "apisix-go:ai-rate-limiting:" + scope + ":config:" + p.configIdentity + ":" + q.key
 }
 
 func (p *Plugin) reject(w http.ResponseWriter) {

@@ -8,12 +8,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -322,7 +322,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status = recorder.StatusCode()
 		}
 
-		logFields := apisixlog.GetFields(r, p.LogFormat)
+		logFields := elasticsearchLogFields(r, p.LogFormat)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -333,6 +333,22 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func elasticsearchLogFields(r *http.Request, logFormat map[string]string) map[string]any {
+	fields := apisixlog.GetFields(r, logFormat)
+	for key, value := range logFormat {
+		switch value {
+		case "$host":
+			fields[key] = r.Host
+		case "$remote_addr":
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err == nil {
+				fields[key] = host
+			}
+		}
+	}
+	return fields
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -359,6 +375,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 
 	resp, err := client.Bulk(
 		bytes.NewReader(body),
+		client.Bulk.WithHeader(map[string]string{"Content-Type": "application/x-ndjson"}),
 		client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
 	)
 	if err != nil {
@@ -433,9 +450,7 @@ func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 			"_index": index,
 		},
 	}
-	if p.config.Field.Type != nil && *p.config.Field.Type != "" {
-		action["index"].(map[string]any)["_type"] = *p.config.Field.Type
-	} else if version := p.elasticsearchVersion(); version == "6" || version == "5" {
+	if version := p.elasticsearchVersion(); version == "6" || version == "5" {
 		action["index"].(map[string]any)["_type"] = "_doc"
 	}
 
@@ -543,11 +558,108 @@ func elasticsearchDocument(log map[string]any) map[string]any {
 
 func resolveIndexVars(index string, r *http.Request) string {
 	index = replaceIndexTimeVars(index)
-	for _, key := range sortedVariableKeys() {
-		value := apisixlog.GetField(r, key)
-		index = strings.ReplaceAll(index, key, stringifyIndexValue(value))
-	}
+	index = resolveIndexVariableReferences(index, r)
 	return index
+}
+
+func resolveIndexVariableReferences(index string, r *http.Request) string {
+	var out strings.Builder
+	for i := 0; i < len(index); {
+		if index[i] == '\\' && i+1 < len(index) && index[i+1] == '$' {
+			out.WriteString(index[i : i+2])
+			i += 2
+			continue
+		}
+		if index[i] != '$' {
+			out.WriteByte(index[i])
+			i++
+			continue
+		}
+
+		name, end, ok := indexVariableReference(index, i)
+		if !ok {
+			out.WriteByte(index[i])
+			i++
+			continue
+		}
+		if value, found := indexVariableValue(strings.TrimSpace(name), r); found {
+			out.WriteString(value)
+		} else if _, fallback, hasFallback := strings.Cut(name, "??"); hasFallback {
+			out.WriteString(strings.TrimSpace(fallback))
+		}
+		i = end
+	}
+	return out.String()
+}
+
+func indexVariableReference(index string, start int) (name string, end int, ok bool) {
+	if start+1 >= len(index) {
+		return "", start, false
+	}
+	if index[start+1] == '{' {
+		close := strings.IndexByte(index[start+2:], '}')
+		if close < 0 {
+			return "", start, false
+		}
+		end = start + 3 + close
+		name = index[start+2 : end-1]
+		if name == "" {
+			return "", start, false
+		}
+		return name, end, true
+	}
+	end = start + 1
+	for end < len(index) && (index[end] == '_' || index[end] == '.' ||
+		index[end] >= 'a' && index[end] <= 'z' ||
+		index[end] >= 'A' && index[end] <= 'Z' ||
+		index[end] >= '0' && index[end] <= '9') {
+		end++
+	}
+	if end == start+1 {
+		return "", start, false
+	}
+	return index[start+1 : end], end, true
+}
+
+func indexVariableValue(name string, r *http.Request) (string, bool) {
+	variableName, _, _ := strings.Cut(name, "??")
+	variableName = strings.TrimSpace(variableName)
+	if argument, ok := strings.CutPrefix(variableName, "arg_"); ok {
+		values, found := r.URL.Query()[argument]
+		if !found || len(values) == 0 {
+			return "", false
+		}
+		return values[0], true
+	}
+	key := "$" + variableName
+	if _, ok := variable.NginxVars[key]; ok {
+		return stringifyIndexValue(apisixlog.GetField(r, key)), true
+	}
+	if _, ok := variable.ApisixVars[key]; ok {
+		if key != "$matched_uri" {
+			value, found := apisixctx.GetApisixVars(r)[key]
+			if !found {
+				return "", false
+			}
+			return resolvedIndexVariableValue(value)
+		}
+		return resolvedIndexVariableValue(apisixlog.GetField(r, key))
+	}
+	if _, ok := variable.RequestVars[key]; ok {
+		value, found := apisixctx.GetRequestVars(r)[key]
+		if !found {
+			return "", false
+		}
+		return resolvedIndexVariableValue(value)
+	}
+	return "", false
+}
+
+func resolvedIndexVariableValue(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	return stringifyIndexValue(value), true
 }
 
 func replaceIndexTimeVars(index string) string {
@@ -591,23 +703,6 @@ func strftimeToGo(format string) string {
 		"%A", "Monday",
 	)
 	return replacer.Replace(format)
-}
-
-func sortedVariableKeys() []string {
-	keys := make([]string, 0, len(variable.NginxVars)+len(variable.ApisixVars)+len(variable.RequestVars))
-	for key := range variable.NginxVars {
-		keys = append(keys, key)
-	}
-	for key := range variable.ApisixVars {
-		keys = append(keys, key)
-	}
-	for key := range variable.RequestVars {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return len(keys[i]) > len(keys[j])
-	})
-	return keys
 }
 
 func stringifyIndexValue(value any) string {

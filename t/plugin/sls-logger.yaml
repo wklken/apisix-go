@@ -1,0 +1,700 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/sls-logger.t
+    tests: 17
+
+cases:
+  - name: official-schema-is-accepted-and-delivers
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [1]
+    config:
+      routes:
+        - id: sls-schema-valid
+          uri: /schema-valid
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: your-project
+              logstore: your-logstore
+              access_key_id: your_access_key
+              access_key_secret: your_access_secret
+              batch_max_size: 1
+              log_format: {case: schema-valid}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /schema-valid}}]
+        respond: [{status: 200, body: done}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '^\<46\>1 .* \[logservice project="your-project" logstore="your-logstore" access-key-id="your_access_key" access-key-secret="your_access_secret"\] \{"case":"schema-valid","route_id":"sls-schema-valid"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: accepted-schema-emits-rfc5424
+        input: {method: GET, path: /schema-valid}
+        output: {status: 200, body: {equals: done}}
+        wait: 1s
+
+  - name: missing-access-key-secret-is-rejected
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [2]
+    config:
+      routes:
+        - id: sls-missing-secret
+          uri: /missing-secret
+          plugins:
+            sls-logger:
+              host: 127.0.0.1
+              port: 10009
+              project: your-project
+              logstore: your-logstore
+              access_key_id: your_access_key
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: unexpected}]
+    steps:
+      - name: invalid-route-is-not-installed
+        input: {method: GET, path: /missing-secret}
+        output:
+          status: 404
+          body: {equals: "404 page not found\n"}
+          logs: {matches: "validate plugin sls-logger config:.*missing properties: 'access_key_secret'"}
+
+  - name: string-timeout-is-rejected
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [3]
+    config:
+      routes:
+        - id: sls-string-timeout
+          uri: /string-timeout
+          plugins:
+            sls-logger:
+              host: 127.0.0.1
+              port: 10009
+              project: your-project
+              logstore: your-logstore
+              access_key_id: your_access_key
+              access_key_secret: your_access_secret
+              timeout: '10'
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: unexpected}]
+    steps:
+      - name: invalid-route-is-not-installed
+        input: {method: GET, path: /string-timeout}
+        output:
+          status: 404
+          body: {equals: "404 page not found\n"}
+          logs: {matches: 'validate plugin sls-logger config:.*timeout.*expected integer.*got string'}
+
+  - name: route-plugin-configuration-is-live
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [4]
+    config:
+      routes:
+        - id: sls-route-setup
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: your_project
+              logstore: your_logstore
+              access_key_id: your_access_key_id
+              access_key_secret: your_access_key_secret
+              timeout: 30000
+              batch_max_size: 1
+              log_format: {case: route-setup}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"case":"route-setup","route_id":"sls-route-setup"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: configured-route-proxies-and-logs
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: access-request-produces-default-log
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [5]
+    config:
+      routes:
+        - id: sls-access
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: your_project
+              logstore: your_logstore
+              access_key_id: your_access_key_id
+              access_key_secret: your_access_key_secret
+              batch_max_size: 1
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, headers: {X-Upstream: sls}, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '"client_ip":"127\.0\.0\.1".*"method":"GET".*"uri":"/hello".*"x-upstream":"sls".*"status":200.*"route_id":"sls-access"'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: access-is-proxied-and-recorded
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: batch-combines-rfc5424-frames-in-order
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [6]
+    config:
+      routes:
+        - id: sls-combine
+          uri: /combine/*
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 3
+              log_format: {sequence: '$uri'}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /combine/1}}
+          - {method: GET, path: {equals: /combine/2}}
+          - {method: GET, path: {equals: /combine/3}}
+        respond:
+          - {status: 200, body: '1'}
+          - {status: 200, body: '2'}
+          - {status: 200, body: '3'}
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '(?s)^<46>1 .*"sequence":"/combine/1".*\n<46>1 .*"sequence":"/combine/2".*\n<46>1 .*"sequence":"/combine/3".*\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: buffer-first-frame
+        input: {method: GET, path: /combine/1}
+        output: {status: 200, body: {equals: '1'}}
+      - name: buffer-second-frame
+        input: {method: GET, path: /combine/2}
+        output: {status: 200, body: {equals: '2'}}
+      - name: third-frame-flushes-combined-payload
+        input: {method: GET, path: /combine/3}
+        output: {status: 200, body: {equals: '3'}}
+        wait: 1s
+
+  - name: rfc5424-log-carries-subsecond-timestamp
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [7]
+    config:
+      routes:
+        - id: sls-millisecond
+          uri: /millisecond
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+              log_format: {case: millisecond}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /millisecond}}]
+        respond: [{status: 200, body: passed}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '^<46>1 [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3,9}Z .* \{"case":"millisecond","route_id":"sls-millisecond"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: real-log-has-subsecond-rfc3339-time
+        input: {method: GET, path: /millisecond}
+        output: {status: 200, body: {equals: passed}}
+        wait: 1s
+
+  - name: metadata-log-format-setup-is-effective
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [8]
+    config:
+      plugin_metadata:
+        - id: sls-logger
+          log_format: {host: '$host', client_ip: '$remote_addr'}
+      routes:
+        - id: sls-metadata-setup
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"client_ip":"127\.0\.0\.1","host":"localhost","route_id":"sls-metadata-setup"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: metadata-format-is-installed
+        input: {method: GET, path: /hello, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: metadata-log-format-is-used-on-access
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [9]
+    config:
+      plugin_metadata:
+        - id: sls-logger
+          log_format: {host: '$host', client_ip: '$remote_addr'}
+      routes:
+        - id: sls-metadata-access
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"client_ip":"127\.0\.0\.1","host":"localhost","route_id":"sls-metadata-access"\}\n$'}
+            forbidden_matches: ['"request":', '"response":']
+        network_respond: [{payload: ''}]
+    steps:
+      - name: access-uses-metadata-format
+        input: {method: GET, path: /hello, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: deleting-route-removes-live-plugin-chain
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [10]
+    config:
+      routes:
+        - id: sls-route-delete
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+              log_format: {case: before-delete}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: /replacement}}
+        respond:
+          - {status: 200, body: before-delete}
+          - {status: 200, body: replacement}
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"case":"before-delete","route_id":"sls-route-delete"\}\n$'}
+          - payload: {matches: '\{"case":"replacement-route","route_id":"sls-replacement"\}\n$'}
+        network_respond:
+          - {close: true}
+          - {close: true}
+    steps:
+      - name: route-is-live-before-removal
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: before-delete}}
+        wait: 1s
+      - name: standalone-reload-removes-old-route
+        config:
+          routes:
+            - id: sls-replacement
+              uri: /replacement
+              plugins:
+                sls-logger:
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+                  project: integration
+                  logstore: integration
+                  access_key_id: integration
+                  access_key_secret: integration
+                  batch_max_size: 1
+                  log_format: {case: replacement-route}
+              upstream:
+                type: roundrobin
+                nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+        config_probe:
+          input: {method: GET, path: /replacement}
+          output: {status: 200, body: {equals: replacement}}
+        config_timeout: 2s
+        input: {method: GET, path: /hello}
+        output: {status: 404, body: {equals: "404 page not found\n"}}
+        wait: 1s
+
+  - name: access-key-secret-is-encrypted-at-rest
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [11]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: '1'
+          uri: /encrypted
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: your_project
+              logstore: your_logstore
+              access_key_id: your_access_key_id
+              access_key_secret: your_access_key_secret
+              batch_max_size: 1
+              log_format: {case: encrypted-secret}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /encrypted}}]
+        respond: [{status: 200, body: encrypted}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\[logservice project="your_project" logstore="your_logstore" access-key-id="your_access_key_id" access-key-secret="your_access_key_secret"\] \{"case":"encrypted-secret","route_id":"1"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: runtime-decrypts-secret-for-delivery
+        input: {method: GET, path: /encrypted}
+        output: {status: 200, body: {equals: encrypted}}
+        wait: 1s
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: '1'
+          fields:
+            /plugins/sls-logger/access_key_secret: 1T6nR0fz4yhz/zTuRTvt7Xu3c9ASelDXG2//e/A5OiA=
+          forbidden_matches: [your_access_key_secret]
+
+  - name: route-log-format-configuration-is-effective
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [12]
+    config:
+      routes:
+        - id: sls-route-format-setup
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+              log_format: {vip: '$remote_addr'}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"route_id":"sls-route-format-setup","vip":"127\.0\.0\.1"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: route-format-is-installed
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: route-log-format-is-used-on-access
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [13]
+    config:
+      routes:
+        - id: sls-route-format-access
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+              log_format: {vip: '$remote_addr'}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"route_id":"sls-route-format-access","vip":"127\.0\.0\.1"\}\n$'}
+            forbidden_matches: ['"request":', '"response":']
+        network_respond: [{payload: ''}]
+    steps:
+      - name: access-uses-route-format
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+
+  - name: request-body-is-collected
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [14]
+    config:
+      routes:
+        - id: sls-request-body
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              include_req_body: true
+              batch_max_size: 1
+              log_format: {case: request-body}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {equals: '{"sample_payload":"hello"}'}
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '"case":"request-body".*"body":"\{\\"sample_payload\\":\\"hello\\"\}".*"route_id":"sls-request-body"'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: request-body-reaches-upstream-and-log
+        input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 1s
+
+  - name: response-body-is-collected
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [15]
+    config:
+      routes:
+        - id: sls-response-body
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              include_resp_body: true
+              batch_max_size: 1
+              log_format: {case: response-body}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {equals: '{"sample_payload":"hello"}'}
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '"case":"response-body".*"body":"hello world\\n".*"route_id":"sls-response-body"'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: response-body-reaches-client-and-log
+        input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 1s
+
+  - name: invalid-plugin-metadata-is-rejected
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [16]
+    config:
+      plugin_metadata:
+        - id: sls-logger
+          log_format: bad plugin metadata
+      routes:
+        - id: sls-invalid-metadata
+          uri: /hello
+          plugins:
+            sls-logger:
+              host: 127.0.0.1
+              port: 10009
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: unexpected}]
+    steps:
+      - name: invalid-metadata-prevents-route-installation
+        input: {method: GET, path: /hello}
+        output:
+          status: 404
+          body: {equals: "404 page not found\n"}
+          logs: {matches: 'validate plugin sls-logger metadata:.*log_format.*expected object'}
+
+  - name: correct-plugin-metadata-is-accepted
+    source:
+      file: t/plugin/sls-logger.t
+      tests: [17]
+    config:
+      plugin_metadata:
+        - id: sls-logger
+          log_format: {host: '$host', client_ip: '$remote_addr'}
+      routes:
+        - id: sls-correct-metadata
+          uri: /metadata
+          plugins:
+            sls-logger:
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+              project: integration
+              logstore: integration
+              access_key_id: integration
+              access_key_secret: integration
+              batch_max_size: 1
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /metadata}}]
+        respond: [{status: 200, body: done}]
+      - name: sink
+        kind: tls-tcp
+        network_expect:
+          - payload: {matches: '\{"client_ip":"127\.0\.0\.1","host":"localhost","route_id":"sls-correct-metadata"\}\n$'}
+        network_respond: [{payload: ''}]
+    steps:
+      - name: valid-metadata-produces-log-without-validation-error
+        input: {method: GET, path: /metadata, headers: {Host: localhost}}
+        output:
+          status: 200
+          body: {equals: done}
+          logs: {not_matches: 'validate plugin sls-logger metadata|failed to check'}
+        wait: 1s

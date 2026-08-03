@@ -1,11 +1,13 @@
 package uri_blocker
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -102,7 +104,18 @@ func (p *Plugin) PostInit() error {
 		p.config.rejectBody = util.BytesToString(body)
 	}
 
-	p.config.RegexRule = regexp.MustCompile(blockRulesConcat)
+	regexRule, err := regexp.Compile(blockRulesConcat)
+	if err != nil {
+		return fmt.Errorf("compile block_rules: %w", err)
+	}
+	p.config.RegexRule = regexRule
+	if blockRulesConcat != "" {
+		logValue := blockRulesConcat
+		if len(blockRules) > 1 {
+			logValue += ","
+		}
+		logger.Info("concat block_rules: " + logValue)
+	}
 	return nil
 }
 
@@ -112,7 +125,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.RegexRule.MatchString(r.RequestURI) {
+		requestURI := r.URL.EscapedPath()
+		if r.URL.RawQuery != "" {
+			requestURI += "?" + r.URL.RawQuery
+		}
+		if p.config.RegexRule.MatchString(requestURI) {
 			if p.config.RejectedMsg != "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(p.config.RejectedCode)

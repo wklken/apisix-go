@@ -1,0 +1,168 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/client-control.t
+  tests: 12
+
+cases:
+  - name: route-body-limit
+    source:
+      tests: [1, 2, 3, 4]
+    config:
+      routes:
+        - id: client-control-five-bytes
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 5
+          upstream: &named_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            body:
+              equals: '12345'
+        respond:
+          - &done_response
+            status: 200
+            body: done
+    steps:
+      - name: content-length-too-large
+        input:
+          method: POST
+          path: /hello
+          body: '123456'
+        output: &too_large
+          status: 413
+      - name: chunked-body-too-large
+        input:
+          method: POST
+          path: /hello
+          body: 'Hello '
+          chunked: true
+        output: *too_large
+      - name: exact-limit
+        input:
+          method: POST
+          path: /hello
+          body: '12345'
+        output: &done_output
+          status: 200
+          body:
+            equals: done
+
+  - name: reject-negative-limit
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: client-control-negative-limit
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: -1
+    input:
+      path: /hello
+    output:
+      status: 404
+      logs:
+        matches: 'build route client-control-negative-limit fail:.*max_body_size.*must be >= 0'
+
+  - name: zero-disables-limit
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: client-control-unlimited
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 0
+          upstream: &single_upstream
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /hello
+      body: '1'
+    upstream: &single_fixture
+      expect:
+        body:
+          equals: '1'
+      respond: *done_response
+    output: *done_output
+
+  - name: route-limit-overrides-global-body-reader-limit
+    source:
+      tests: [8, 9]
+    runtime: &thirty_megabyte_runtime
+      nginx_config:
+        http:
+          client_max_body_size: 31457280
+    config:
+      routes:
+        - id: client-control-fifty-megabytes
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 52428800
+          upstream: *single_upstream
+    input:
+      method: POST
+      path: /hello
+      body_repeat:
+        value: A
+        count: 32505856
+    upstream:
+      respond: *done_response
+    output: *done_output
+
+  - name: global-body-limit-without-route-override
+    source:
+      tests: [10, 11]
+    runtime: *thirty_megabyte_runtime
+    config:
+      routes:
+        - id: client-control-global-limit
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 31457280
+          upstream: *single_upstream
+    input:
+      method: POST
+      path: /hello
+      body_repeat:
+        value: A
+        count: 32505856
+    upstream:
+      respond: *done_response
+    output: *too_large
+
+  - name: global-rule-cleanup-state
+    source:
+      tests: [12]
+    runtime: *thirty_megabyte_runtime
+    config:
+      routes:
+        - id: client-control-cleaned-global-rule
+          uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 0
+          upstream: *single_upstream
+    input:
+      method: POST
+      path: /hello
+      body: cleanup
+    upstream:
+      expect:
+        body:
+          equals: cleanup
+      respond: *done_response
+    output: *done_output

@@ -1,6 +1,7 @@
 package skywalking
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -63,6 +64,8 @@ type Config struct {
 	EndpointAddr        string  `json:"endpoint_addr,omitempty"`
 	ReportInterval      int     `json:"report_interval,omitempty"`
 }
+
+type tracingContextKey struct{}
 
 type sw8Context struct {
 	TraceID              string
@@ -144,6 +147,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if r.Context().Value(tracingContextKey{}) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), tracingContextKey{}, struct{}{}))
 		if !p.shouldSample() {
 			next.ServeHTTP(w, r)
 			return

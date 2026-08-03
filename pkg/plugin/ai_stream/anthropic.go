@@ -2,6 +2,7 @@ package ai_stream
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -9,7 +10,13 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
+
+var ErrNoStreamOutput = errors.New("streaming response completed without producing any output")
+
+// ErrClientDisconnected reports a client that aborted the streaming response.
+var ErrClientDisconnected = errors.New("client disconnected during AI streaming")
 
 type anthropicStreamState struct {
 	started          bool
@@ -42,6 +49,7 @@ func ForwardOpenAIAsAnthropicSSE(
 	}
 	reader := bufio.NewReader(body)
 	var total int64
+	producedOutput := false
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
@@ -57,6 +65,7 @@ func ForwardOpenAIAsAnthropicSSE(
 				if writeErr := writeAnthropicSSEEvent(w, event); writeErr != nil {
 					return state.usage, writeErr
 				}
+				producedOutput = true
 			}
 		}
 		if err != nil {
@@ -71,7 +80,11 @@ func ForwardOpenAIAsAnthropicSSE(
 			if err := writeAnthropicSSEEvent(w, event); err != nil {
 				return state.usage, err
 			}
+			producedOutput = true
 		}
+	}
+	if !producedOutput {
+		return state.usage, ErrNoStreamOutput
 	}
 	return state.usage, nil
 }
@@ -102,8 +115,25 @@ func (s *anthropicStreamState) convertChunk(
 	if usage, ok := chunk["usage"].(map[string]any); ok {
 		s.mergeUsage(usage)
 	}
+	if streamError, ok := chunk["error"].(map[string]any); ok {
+		errorType := stringValue(streamError["type"])
+		message := stringValue(streamError["message"])
+		logger.Warnf("Anthropic SSE error: type=%s, message=%s", errorType, message)
+		s.done = true
+		return []anthropicSSEEvent{newAnthropicSSEEvent("error", map[string]any{
+			"type": "error", "error": streamError,
+		})}
+	}
 	if s.done {
 		return s.flushPendingStop()
+	}
+	choices, _ := chunk["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		return nil
 	}
 	events := make([]anthropicSSEEvent, 0)
 	if !s.started {
@@ -117,11 +147,6 @@ func (s *anthropicStreamState) convertChunk(
 			},
 		}))
 	}
-	choices, _ := chunk["choices"].([]any)
-	if len(choices) == 0 {
-		return events
-	}
-	choice, _ := choices[0].(map[string]any)
 	delta, _ := choice["delta"].(map[string]any)
 	if reasoning := stringValue(firstValue(delta["reasoning_content"], delta["reasoning"])); reasoning != "" {
 		events = append(events, s.ensureBlock("thinking", map[string]any{
@@ -146,6 +171,7 @@ func (s *anthropicStreamState) convertChunk(
 		contentIndex, exists := s.toolCallIndices[index]
 		function, _ := toolCall["function"].(map[string]any)
 		if !exists {
+			s.usage.HasToolCalls = true
 			events = append(events, s.closeCurrentBlock()...)
 			contentIndex = s.nextContentIndex
 			s.nextContentIndex++
@@ -273,7 +299,7 @@ func writeAnthropicSSEEvent(w http.ResponseWriter, event anthropicSSEEvent) erro
 		return fmt.Errorf("encode Anthropic SSE event: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.typeName, encoded); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrClientDisconnected, err)
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()

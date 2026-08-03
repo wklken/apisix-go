@@ -242,6 +242,13 @@ func RequestVar(r *http.Request, name string, status int) string {
 		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
 		return r.Header.Get(header)
 	default:
+		key := "$" + name
+		if value, ok := apisixctx.GetApisixVars(r)[key]; ok {
+			return fmt.Sprint(value)
+		}
+		if value, ok := apisixctx.GetRequestVars(r)[key]; ok {
+			return fmt.Sprint(value)
+		}
 		return ""
 	}
 }

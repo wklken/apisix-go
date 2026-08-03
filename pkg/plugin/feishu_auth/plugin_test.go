@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -23,6 +24,56 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitAppliesOfficialDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          "12345678",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	})
+
+	if p.config.CodeHeader != "X-Feishu-Code" || p.config.CodeQuery != "code" {
+		t.Fatalf("code locations = (%q, %q), want official defaults", p.config.CodeHeader, p.config.CodeQuery)
+	}
+	if p.config.AccessTokenURL != defaultAccessTokenURL || p.config.UserInfoURL != defaultUserInfoURL {
+		t.Fatalf("provider URLs = (%q, %q), want official defaults", p.config.AccessTokenURL, p.config.UserInfoURL)
+	}
+	if p.config.Timeout != 6000 || p.client.Timeout != 6*time.Second {
+		t.Fatalf("timeout = (%d, %s), want 6000ms", p.config.Timeout, p.client.Timeout)
+	}
+	if p.config.CookieExpiresIn != 86400 {
+		t.Fatalf("cookie_expires_in = %d, want 86400", p.config.CookieExpiresIn)
+	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("ssl_verify = %v, want true", p.config.SSLVerify)
+	}
+	if p.config.SetUserInfoHeader == nil || !*p.config.SetUserInfoHeader {
+		t.Fatalf("set_userinfo_header = %v, want true", p.config.SetUserInfoHeader)
+	}
+}
+
+func TestPostInitUsesConfiguredTimeoutAndSSLVerify(t *testing.T) {
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          "12345678",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+		Timeout:         1250,
+		SSLVerify:       &sslVerify,
+	})
+
+	if p.client.Timeout != 1250*time.Millisecond {
+		t.Fatalf("client timeout = %s, want 1.25s", p.client.Timeout)
+	}
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("transport TLS config = %#v, want certificate verification disabled", p.client.Transport)
+	}
 }
 
 func TestHandlerRedirectsWhenNoSessionAndNoCode(t *testing.T) {

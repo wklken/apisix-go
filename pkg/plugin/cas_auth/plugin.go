@@ -10,12 +10,16 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/wklken/apisix-go/pkg/cache/memory"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -24,9 +28,7 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client   *http.Client
-	sessions map[string]sessionEntry
-	mu       sync.Mutex
+	client *http.Client
 }
 
 const (
@@ -36,6 +38,7 @@ const (
 	requestURICookie = "CAS_REQUEST_URI"
 	sessionPrefix    = "CAS_SESSION_"
 	sessionLifetime  = time.Hour
+	sessionCapacity  = 10_000
 )
 
 const schema = `
@@ -71,7 +74,23 @@ const schema = `
       "required": ["secret"]
     }
   },
-  "required": ["idp_uri", "cas_callback_uri", "logout_uri", "cookie"]
+  "required": ["idp_uri", "cas_callback_uri", "logout_uri", "cookie"],
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "cookie": {
+            "properties": {
+              "samesite": {"const": "None"},
+              "secure": {"const": false}
+            },
+            "required": ["samesite", "secure"]
+          }
+        },
+        "required": ["cookie"]
+      }
+    }
+  ]
 }
 `
 
@@ -91,12 +110,64 @@ type CookieConfig struct {
 type sessionEntry struct {
 	fingerprint string
 	user        string
-	expiresAt   time.Time
 }
 
 type sessionOptions struct {
 	cookieName  string
 	fingerprint string
+}
+
+type sessionStore struct {
+	mu    sync.Mutex
+	cache *expirable.LRU[string, sessionEntry]
+}
+
+var processSessions = mustNewSessionStore(sessionCapacity, sessionLifetime)
+
+func newSessionStore(capacity int, ttl time.Duration) (*sessionStore, error) {
+	if capacity <= 0 {
+		return nil, fmt.Errorf("session store capacity must be positive")
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("session store TTL must be positive")
+	}
+	cache, err := memory.NewLRU[string, sessionEntry](capacity, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("create session store: %w", err)
+	}
+	return &sessionStore{cache: cache}, nil
+}
+
+func mustNewSessionStore(capacity int, ttl time.Duration) *sessionStore {
+	store, err := newSessionStore(capacity, ttl)
+	if err != nil {
+		panic(err)
+	}
+	return store
+}
+
+func (s *sessionStore) put(key string, entry sessionEntry) {
+	s.mu.Lock()
+	s.cache.Add(key, entry)
+	s.mu.Unlock()
+}
+
+func (s *sessionStore) refresh(key string, fingerprint string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.cache.Get(key)
+	if !ok || entry.fingerprint != fingerprint {
+		s.cache.Remove(key)
+		return false
+	}
+	s.cache.Add(key, entry)
+	return true
+}
+
+func (s *sessionStore) remove(key string) {
+	s.mu.Lock()
+	s.cache.Remove(key)
+	s.mu.Unlock()
 }
 
 func (p *Plugin) Init() error {
@@ -118,8 +189,8 @@ func (p *Plugin) PostInit() error {
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
-	if p.sessions == nil {
-		p.sessions = make(map[string]sessionEntry)
+	if parsed, err := url.Parse(p.config.IDPURI); err == nil && parsed.Scheme == "http" {
+		logger.Warn("Using cas-auth idp_uri with no TLS is a security risk")
 	}
 
 	return nil
@@ -155,7 +226,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		if r.Method == http.MethodPost && r.URL.Path == callbackPath(p.config.CASCallbackURI) {
 			if p.handleIDPLogout(r) {
-				next.ServeHTTP(w, r)
+				w.WriteHeader(http.StatusOK)
 				return
 			}
 			http.Error(
@@ -192,9 +263,7 @@ func (p *Plugin) handleIDPLogout(r *http.Request) bool {
 		if err := decoder.DecodeElement(&sessionID, &start); err != nil || sessionID == "" {
 			return false
 		}
-		p.mu.Lock()
-		delete(p.sessions, p.sessionKey(sessionID))
-		p.mu.Unlock()
+		p.deleteSession(sessionID)
 		return true
 	}
 }
@@ -203,12 +272,12 @@ func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {
 	originalURI := r.URL.RequestURI()
 	signed, err := p.signValue(originalURI)
 	if err == nil {
-		p.setCookie(w, requestURICookie, signed, sessionLifetime)
+		p.setCookie(w, requestURICookie, signed)
 	}
 
 	values := url.Values{}
 	values.Set("service", p.serviceURL(r))
-	http.Redirect(w, r, strings.TrimRight(p.config.IDPURI, "/")+"/login?"+values.Encode(), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, strings.TrimRight(p.config.IDPURI, "/")+"/login?"+values.Encode(), http.StatusFound)
 }
 
 func (p *Plugin) validateWithCAS(w http.ResponseWriter, r *http.Request, ticket string) {
@@ -225,9 +294,9 @@ func (p *Plugin) validateWithCAS(w http.ResponseWriter, r *http.Request, ticket 
 	}
 
 	p.storeSession(ticket, user)
-	p.setCookie(w, p.sessionOptions().cookieName, ticket, sessionLifetime)
+	p.setCookie(w, p.sessionOptions().cookieName, ticket)
 	p.deleteCookie(w, requestURICookie)
-	http.Redirect(w, r, requestURI, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, requestURI, http.StatusFound)
 }
 
 func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
@@ -238,12 +307,10 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.mu.Lock()
-	delete(p.sessions, p.sessionKey(sessionID))
-	p.mu.Unlock()
+	p.deleteSession(sessionID)
 
 	p.deleteCookie(w, opts.cookieName)
-	http.Redirect(w, r, strings.TrimRight(p.config.IDPURI, "/")+"/logout", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, strings.TrimRight(p.config.IDPURI, "/")+"/logout", http.StatusFound)
 }
 
 func (p *Plugin) validateTicket(r *http.Request, ticket string) (string, error) {
@@ -286,7 +353,21 @@ func (p *Plugin) serviceURL(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + p.config.CASCallbackURI
+	host, requestPort := splitRequestHost(r.Host)
+	port := requestPort
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if _, listenerPort, err := net.SplitHostPort(local.String()); err == nil {
+			port = listenerPort
+		}
+	}
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + p.config.CASCallbackURI
 }
 
 func (p *Plugin) sessionOptions() sessionOptions {
@@ -298,36 +379,25 @@ func (p *Plugin) sessionOptions() sessionOptions {
 }
 
 func (p *Plugin) storeSession(sessionID string, user string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.sessions[p.sessionKey(sessionID)] = sessionEntry{
+	processSessions.put(p.sessionKey(sessionID), sessionEntry{
 		fingerprint: p.sessionOptions().fingerprint,
 		user:        user,
-		expiresAt:   time.Now().Add(sessionLifetime),
-	}
+	})
 }
 
 func (p *Plugin) refreshSession(sessionID string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	return processSessions.refresh(p.sessionKey(sessionID), p.sessionOptions().fingerprint)
+}
 
-	key := p.sessionKey(sessionID)
-	entry, ok := p.sessions[key]
-	if !ok || entry.fingerprint != p.sessionOptions().fingerprint || time.Now().After(entry.expiresAt) {
-		delete(p.sessions, key)
-		return false
-	}
-	entry.expiresAt = time.Now().Add(sessionLifetime)
-	p.sessions[key] = entry
-	return true
+func (p *Plugin) deleteSession(sessionID string) {
+	processSessions.remove(p.sessionKey(sessionID))
 }
 
 func (p *Plugin) sessionKey(sessionID string) string {
 	return p.sessionOptions().fingerprint + ":" + sessionID
 }
 
-func (p *Plugin) setCookie(w http.ResponseWriter, name string, value string, maxAge time.Duration) {
+func (p *Plugin) setCookie(w http.ResponseWriter, name string, value string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    value,
@@ -335,7 +405,6 @@ func (p *Plugin) setCookie(w http.ResponseWriter, name string, value string, max
 		HttpOnly: true,
 		Secure:   p.config.Cookie.Secure == nil || *p.config.Cookie.Secure,
 		SameSite: sameSiteMode(p.config.Cookie.SameSite),
-		MaxAge:   int(maxAge.Seconds()),
 	})
 }
 
@@ -442,6 +511,14 @@ func cookieValue(r *http.Request, name string) string {
 		return ""
 	}
 	return cookie.Value
+}
+
+func splitRequestHost(hostport string) (string, string) {
+	host, port, err := net.SplitHostPort(hostport)
+	if err == nil {
+		return host, port
+	}
+	return strings.Trim(hostport, "[]"), ""
 }
 
 func sameSiteMode(value string) http.SameSite {

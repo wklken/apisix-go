@@ -1,0 +1,1031 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-cache/disk.t
+    tests: 29
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-cache/memory.t
+    tests: 47
+
+cases:
+  - name: disk-missing-zone-uses-default-disk-cache-one-test-1
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [1]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-default-zone
+          uri: /disk-default
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_key: [disk-default], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-default-origin}]}
+    steps:
+      - name: cache-with-default-disk-zone
+        input: {method: GET, path: /disk-default}
+        output: {status: 200, body: {equals: disk-default-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+        file_assertions:
+          - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/a00b2b48881878372504bb8d35ba3cc6664ced1446eb16e28c8459351baec6db.entry'}, body: {matches: '"status":200'}}
+
+  - name: disk-cache-method-rejects-scalar-test-2
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [2]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-cache-method-type
+          uri: /disk-invalid-method-type
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: GET}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-scalar-cache-method
+        input: {method: GET, path: /disk-invalid-method-type}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-cache-method-type fail:.*proxy-cache'}}
+
+  - name: disk-cache-key-rejects-scalar-test-3
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [3]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-cache-key-type
+          uri: /disk-invalid-key-type
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: '${uri}-cache-key'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-scalar-cache-key
+        input: {method: GET, path: /disk-invalid-key-type}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-cache-key-type fail:.*proxy-cache'}}
+
+  - name: disk-cache-bypass-rejects-scalar-test-4
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [4]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-cache-bypass-type
+          uri: /disk-invalid-bypass-type
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_bypass: '$arg_bypass'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-scalar-cache-bypass
+        input: {method: GET, path: /disk-invalid-bypass-type}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-cache-bypass-type fail:.*proxy-cache'}}
+
+  - name: disk-no-cache-rejects-scalar-test-5
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [5]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-no-cache-type
+          uri: /disk-invalid-no-cache-type
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, no_cache: '$arg_no_cache'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-scalar-no-cache
+        input: {method: GET, path: /disk-invalid-no-cache-type}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-no-cache-type fail:.*proxy-cache'}}
+
+  - name: disk-cache-key-rejects-illegal-dollar-expression-test-6
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [6]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-cache-key-expression
+          uri: /disk-invalid-key-expression
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: ['${uri}-cache-key']}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-illegal-cache-key-expression
+        input: {method: GET, path: /disk-invalid-key-expression}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-cache-key-expression fail:.*proxy-cache'}}
+
+  - name: disk-valid-configuration-serves-origin-test-7
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [7]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-valid-configuration
+          uri: /disk-valid
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: ['$host', '$uri'], cache_bypass: ['$arg_bypass'], cache_method: [GET], cache_http_status: [200], hide_cache_headers: true, no_cache: ['$arg_no_cache'], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-valid-origin}]}
+    steps:
+      - name: serve-valid-disk-cache-route
+        input: {method: GET, path: /disk-valid}
+        output: {status: 200, body: {equals: disk-valid-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-first-request-is-cache-miss-test-8
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [8]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-first-miss
+          uri: /disk-miss
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-miss], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-miss-origin}]}
+    steps:
+      - name: record-first-disk-miss
+        input: {method: GET, path: /disk-miss}
+        output: {status: 200, body: {equals: disk-miss-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+        file_assertions:
+          - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/a51964323207516ca0e95a915305ff6593e9c4b0e8c47b11b251ad08b4fd93db.entry'}, body: {matches: '"body":"ZGlzay1taXNzLW9yaWdpbg=="'}}
+
+  - name: disk-second-request-is-cache-hit-test-9
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [9]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-hit-after-prime
+          uri: /disk-hit
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-hit], cache_method: [GET], cache_http_status: [200], hide_cache_headers: true, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, headers: {Expires: 'Wed, 21 Oct 2099 07:28:00 GMT'}, body: disk-hit-origin}]}
+    steps:
+      - name: prime-disk-hit-entry
+        input: {method: GET, path: /disk-hit}
+        output: {status: 200, body: {equals: disk-hit-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-disk-entry-without-origin
+        input: {method: GET, path: /disk-hit}
+        output: {status: 200, body: {equals: disk-hit-origin}, headers: {Apisix-Cache-Status: {equals: HIT}, Expires: {absent: true}}}
+        file_assertions:
+          - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/f145689b438382d4058a9b7ec268642c04ef8b4f3a071991562c3605bf45115c.entry'}, body: {matches: '"body":"ZGlzay1oaXQtb3JpZ2lu"'}}
+
+  - name: disk-bypass-query-skips-cache-test-10
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [10]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-bypass-query
+          uri: /disk-bypass
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-bypass], cache_bypass: ['$arg_bypass'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-bypass-origin}]}
+    steps:
+      - name: bypass-disk-cache-with-query
+        input: {method: GET, path: '/disk-bypass?bypass=1'}
+        output: {status: 200, body: {equals: disk-bypass-origin}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}
+
+  - name: disk-purge-removes-existing-entry-test-11
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [11]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-purge-existing
+          uri: /disk-purge
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-purge], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-purge-origin}]}
+    steps:
+      - name: prime-entry-before-disk-purge
+        input: {method: GET, path: /disk-purge}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: purge-existing-disk-entry
+        input: {method: PURGE, path: /disk-purge}
+        output: {status: 200}
+        file_assertions:
+          - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/1720be12996a1b81b2f6842e2c221f442cde7e61fe1e1b2f2479e28072f4344f.entry'}, absent: true}
+
+  - name: disk-no-cache-query-refuses-storage-test-12
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [12]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-no-cache-query
+          uri: /disk-no-cache
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-no-cache], no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-no-cache-origin}]}
+    steps:
+      - name: refuse-disk-storage-for-no-cache-query
+        input: {method: GET, path: '/disk-no-cache?no_cache=1'}
+        output: {status: 200, body: {equals: disk-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}
+        file_assertions:
+          - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/8944ecb65f5615d59bd20a8b9f93fe30e84d628df3cd6ad656a411031a14e743.entry'}, absent: true}
+
+  - name: disk-request-after-no-cache-is-still-miss-test-13
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [13]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-miss-after-no-cache
+          uri: /disk-no-cache-followup
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-no-cache-followup], no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '.*'}}, {path: {matches: '.*'}}], respond: [{status: 200, body: refused-origin}, {status: 200, body: stored-origin}]}
+    steps:
+      - name: issue-no-cache-request-first
+        input: {method: GET, path: '/disk-no-cache-followup?no_cache=1'}
+        output: {status: 200, body: {equals: refused-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}
+      - name: observe-miss-after-refused-storage
+        input: {method: GET, path: /disk-no-cache-followup}
+        output: {status: 200, body: {equals: stored-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-cache-hit-after-miss-test-14
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [14]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-cache-after-miss
+          uri: /disk-cache-after-miss
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-cache-after-miss], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-cacheable-origin}]}
+    steps:
+      - name: create-disk-entry
+        input: {method: GET, path: /disk-cache-after-miss}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: hit-created-disk-entry
+        input: {method: GET, path: /disk-cache-after-miss}
+        output: {status: 200, body: {equals: disk-cacheable-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-uncacheable-not-found-is-miss-test-15
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [15]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-not-found-first-miss
+          uri: /disk-not-found
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-not-found], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 404, body: disk-not-found-origin}]}
+    steps:
+      - name: return-uncacheable-not-found-miss
+        input: {method: GET, path: /disk-not-found}
+        output: {status: 404, body: {equals: disk-not-found-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-second-uncacheable-not-found-remains-miss-test-16
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [16]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-not-found-never-stored
+          uri: /disk-not-found-twice
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-not-found-twice], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '.*'}}, {path: {matches: '.*'}}], respond: [{status: 404, body: disk-not-found-one}, {status: 404, body: disk-not-found-two}]}
+    steps:
+      - name: first-not-found-remains-uncached
+        input: {method: GET, path: /disk-not-found-twice}
+        output: {status: 404, body: {equals: disk-not-found-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: second-not-found-reaches-origin
+        input: {method: GET, path: /disk-not-found-twice}
+        output: {status: 404, body: {equals: disk-not-found-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-cacheable-success-becomes-hit-test-17
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [17]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-cacheable-success
+          uri: /disk-cacheable-success
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: [disk-cacheable-success], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-cacheable-success-origin}]}
+    steps:
+      - name: prime-cacheable-success
+        input: {method: GET, path: /disk-cacheable-success}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: hit-cacheable-success
+        input: {method: GET, path: /disk-cacheable-success}
+        output: {status: 200, body: {equals: disk-cacheable-success-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-head-method-mismatch-is-bypass-test-18
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [18]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-head-method-mismatch
+          uri: /disk-head-mismatch
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, headers: {X-Origin: disk-head}}]}
+    steps:
+      - name: bypass-disk-cache-for-head-mismatch
+        input: {method: HEAD, path: /disk-head-mismatch}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: BYPASS}, X-Origin: {equals: disk-head}}}
+
+  - name: disk-visible-origin-cache-headers-test-19
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [19]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-visible-cache-headers
+          uri: /disk-visible-headers
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], hide_cache_headers: false, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60', Expires: 'Wed, 21 Oct 2099 07:28:00 GMT'}, body: disk-visible-headers-origin}]}
+    steps:
+      - name: retain-origin-cache-headers-on-miss
+        input: {method: GET, path: /disk-visible-headers}
+        output: {status: 200, body: {equals: disk-visible-headers-origin}, headers: {Apisix-Cache-Status: {equals: MISS}, Cache-Control: {equals: 'max-age=60'}}}
+
+  - name: disk-hit-retains-cache-control-header-test-20
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [20]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-hit-visible-cache-control
+          uri: /disk-hit-visible
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], hide_cache_headers: false, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: disk-visible-hit-origin}]}
+    steps:
+      - name: prime-visible-header-entry
+        input: {method: GET, path: /disk-hit-visible}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: retain-cache-control-on-hit
+        input: {method: GET, path: /disk-hit-visible}
+        output: {status: 200, body: {equals: disk-visible-hit-origin}, headers: {Apisix-Cache-Status: {equals: HIT}, Cache-Control: {equals: 'max-age=60'}}}
+
+  - name: disk-purge-after-visible-hit-succeeds-test-21
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [21]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-purge-visible-entry
+          uri: /disk-purge-visible
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], hide_cache_headers: false, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: disk-purge-visible-origin}]}
+    steps:
+      - name: prime-visible-entry-for-purge
+        input: {method: GET, path: /disk-purge-visible}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: purge-visible-entry
+        input: {method: PURGE, path: /disk-purge-visible}
+        output: {status: 200}
+
+  - name: disk-purge-missing-key-returns-not-found-test-22
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [22]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-purge-missing-key
+          uri: /disk-purge-missing
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: purge-unknown-disk-key
+        input: {method: PURGE, path: /disk-purge-missing}
+        output: {status: 404}
+
+  - name: disk-undeclared-zone-is-rejected-test-23
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [23]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-undeclared-zone
+          uri: /disk-invalid-zone
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: invalid_disk_cache}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-undeclared-disk-zone
+        input: {method: GET, path: /disk-invalid-zone}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-undeclared-zone fail:.*cache_zone.*invalid_disk_cache'}}
+
+  - name: disk-cache-key-rejects-request-method-variable-test-24
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [24]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-request-method-key
+          uri: /disk-invalid-request-method-key
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: ['$uri', '$request_method']}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-request-method-cache-key
+        input: {method: GET, path: /disk-invalid-request-method-key}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-request-method-key fail:.*request_method.*unsupported'}}
+
+  - name: disk-pass-through-preserves-upstream-cache-headers-test-25
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [25]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-pass-through-control
+          uri: /disk-pass-through-control
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+        - id: disk-pass-through-cache-headers
+          uri: /disk-pass-through
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /disk-pass-through-control}}
+          - {method: GET, path: {equals: /disk-pass-through}}
+        respond:
+          - {status: 200, body: disk-pass-through-control-origin}
+          - {status: 200, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}, body: pass-through-origin}
+    steps:
+      - name: exercise-disk-cache-before-pass-through-check
+        input: {method: GET, path: /disk-pass-through-control}
+        output: {status: 200, body: {equals: disk-pass-through-control-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: preserve-upstream-cache-relative-headers
+        input: {method: GET, path: /disk-pass-through}
+        output: {status: 200, body: {equals: pass-through-origin}, headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}}
+
+  - name: disk-request-cache-headers-reach-origin-unchanged-test-26
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [26]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-forward-cache-headers-control
+          uri: /disk-forward-headers-control
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+        - id: disk-forward-cache-headers
+          uri: /disk-forward-headers
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /disk-forward-headers-control}}
+          - method: GET
+            path: {equals: /disk-forward-headers}
+            headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}
+        respond:
+          - {status: 200, body: disk-forward-headers-control-origin}
+          - {status: 200, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}, body: forwarded-cache-headers}
+    steps:
+      - name: exercise-disk-cache-before-forwarding-check
+        input: {method: GET, path: /disk-forward-headers-control}
+        output: {status: 200, body: {equals: disk-forward-headers-control-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: forward-and-return-cache-relative-headers
+        input: {method: GET, path: /disk-forward-headers, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}}
+        output: {status: 200, body: {equals: forwarded-cache-headers}, headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}}
+
+  - name: disk-cache-method-rejects-put-test-27
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [27]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-invalid-put-cache-method
+          uri: /disk-invalid-put-method
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_method: [GET, PUT]}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}
+    steps:
+      - name: reject-put-cache-method
+        input: {method: GET, path: /disk-invalid-put-method}
+        output: {status: 404, logs: {matches: 'build route disk-invalid-put-cache-method fail:.*cache_method'}}
+
+  - name: disk-nil-query-variables-form-stable-key-test-28
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [28]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-nil-query-key
+          uri: /disk-nil-query-key
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: ['$arg_foo', '$arg_bar', '$arg_baz'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-nil-key-origin}]}
+    steps:
+      - name: accept-cache-key-with-missing-query-parts
+        input: {method: GET, path: '/disk-nil-query-key?bar=a'}
+        output: {status: 200, body: {equals: disk-nil-key-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-nil-query-variable-key-hits-cache-test-29
+    source: {file: t/plugin/proxy-cache/disk.t, tests: [29]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk_cache_one', disk_size: 10m}]}}}
+    config:
+      routes:
+        - id: disk-nil-query-key-hit
+          uri: /disk-nil-query-hit
+          plugins:
+            proxy-cache: {cache_strategy: disk, cache_zone: disk_cache_one, cache_key: ['$arg_foo', '$arg_bar', '$arg_baz'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '.*'}}], respond: [{status: 200, body: disk-nil-key-hit-origin}]}
+    steps:
+      - name: prime-nil-query-variable-key
+        input: {method: GET, path: '/disk-nil-query-hit?bar=a'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: hit-same-nil-query-variable-key
+        input: {method: GET, path: '/disk-nil-query-hit?bar=a'}
+        output: {status: 200, body: {equals: disk-nil-key-hit-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-invalid-cache-strategy-is-rejected-test-1
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [1]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-invalid-strategy, uri: /memory-invalid-strategy, plugins: {proxy-cache: {cache_strategy: network, cache_zone: memory_cache}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}]
+    steps: [{name: reject-invalid-memory-cache-strategy, input: {method: GET, path: /memory-invalid-strategy}, output: {status: 404, logs: {matches: 'build route memory-invalid-strategy fail:.*proxy-cache'}}}]
+
+  - name: memory-undeclared-zone-is-rejected-test-2
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [2]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-invalid-zone, uri: /memory-invalid-zone, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: invalid_cache_zone}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}]
+    steps: [{name: reject-undeclared-memory-zone, input: {method: GET, path: /memory-invalid-zone}, output: {status: 404, logs: {matches: 'build route memory-invalid-zone fail:.*cache_zone'}}}]
+
+  - name: memory-valid-configuration-serves-origin-test-3
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [3]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-valid-config, uri: /memory-valid-config, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-valid-config}}], respond: [{status: 200, body: memory-valid-origin}]}]
+    steps: [{name: serve-valid-memory-cache-route, input: {method: GET, path: /memory-valid-config}, output: {status: 200, body: {equals: memory-valid-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-first-request-is-cache-miss-test-4
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [4]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-first-miss, uri: /memory-first-miss, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-first-miss}}], respond: [{status: 200, body: memory-first-origin}]}]
+    steps: [{name: record-first-memory-miss, input: {method: GET, path: /memory-first-miss}, output: {status: 200, body: {equals: memory-first-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-second-request-is-cache-hit-test-5
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [5]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-hit-after-prime, uri: /memory-hit, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-hit}}], respond: [{status: 200, body: memory-hit-origin}]}]
+    steps:
+      - {name: prime-memory-hit-entry, input: {method: GET, path: /memory-hit}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: reuse-memory-hit-entry, input: {method: GET, path: /memory-hit}, output: {status: 200, body: {equals: memory-hit-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+
+  - name: memory-bypass-query-skips-cache-test-6
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [6]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-bypass-query, uri: /memory-bypass, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_bypass: ['$arg_bypass'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: '/memory-bypass?bypass=1'}}], respond: [{status: 200, body: memory-bypass-origin}]}]
+    steps: [{name: bypass-memory-cache-with-query, input: {method: GET, path: '/memory-bypass?bypass=1'}, output: {status: 200, body: {equals: memory-bypass-origin}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}}]
+
+  - name: memory-purge-removes-existing-entry-test-7
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [7]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-existing, uri: /memory-purge, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-purge}}], respond: [{status: 200, body: memory-purge-origin}]}]
+    steps:
+      - {name: prime-memory-entry-for-purge, input: {method: GET, path: /memory-purge}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: purge-existing-memory-entry, input: {method: PURGE, path: /memory-purge}, output: {status: 200}}
+
+  - name: memory-no-cache-query-refuses-storage-test-8
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [8]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-no-cache-query, uri: /memory-no-cache, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: '/memory-no-cache?no_cache=1'}}], respond: [{status: 200, body: memory-no-cache-origin}]}]
+    steps: [{name: refuse-memory-storage-for-no-cache-query, input: {method: GET, path: '/memory-no-cache?no_cache=1'}, output: {status: 200, body: {equals: memory-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}}]
+
+  - name: memory-request-after-no-cache-is-still-miss-test-9
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [9]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-miss-after-no-cache, uri: /memory-no-cache-followup, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '^/memory-no-cache-followup'}}, {path: {matches: '^/memory-no-cache-followup'}}], respond: [{status: 200, body: memory-refused-origin}, {status: 200, body: memory-stored-origin}]}]
+    steps:
+      - {name: issue-memory-no-cache-request, input: {method: GET, path: '/memory-no-cache-followup?no_cache=1'}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}}
+      - {name: observe-memory-miss-after-refusal, input: {method: GET, path: /memory-no-cache-followup}, output: {status: 200, body: {equals: memory-stored-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-cacheable-success-becomes-hit-test-10
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [10]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-cacheable-success, uri: /memory-cacheable-success, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-cacheable-success}}], respond: [{status: 200, body: memory-cacheable-origin}]}]
+    steps:
+      - {name: prime-memory-cacheable-success, input: {method: GET, path: /memory-cacheable-success}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: hit-memory-cacheable-success, input: {method: GET, path: /memory-cacheable-success}, output: {status: 200, body: {equals: memory-cacheable-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+
+  - name: memory-uncacheable-not-found-is-miss-test-11
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [11]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-not-found-first, uri: /memory-not-found, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-not-found}}], respond: [{status: 404, body: memory-not-found-origin}]}]
+    steps: [{name: return-memory-not-found-miss, input: {method: GET, path: /memory-not-found}, output: {status: 404, body: {equals: memory-not-found-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-second-uncacheable-not-found-remains-miss-test-12
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [12]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-not-found-twice, uri: /memory-not-found-twice, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-not-found-twice}}, {path: {equals: /memory-not-found-twice}}], respond: [{status: 404, body: memory-not-found-one}, {status: 404, body: memory-not-found-two}]}]
+    steps:
+      - {name: first-memory-not-found-miss, input: {method: GET, path: /memory-not-found-twice}, output: {status: 404, body: {equals: memory-not-found-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-memory-not-found-miss, input: {method: GET, path: /memory-not-found-twice}, output: {status: 404, body: {equals: memory-not-found-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-head-request-is-first-miss-test-13
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [13]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-head-first, uri: /memory-head-first, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{method: HEAD, path: {equals: /memory-head-first}}], respond: [{status: 200, headers: {X-Origin: memory-head-first}}]}]
+    steps: [{name: report-memory-head-method-miss, input: {method: HEAD, path: /memory-head-first}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}, X-Origin: {equals: memory-head-first}}}}]
+
+  - name: memory-repeated-head-request-remains-miss-test-14
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [14]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-head-twice, uri: /memory-head-twice, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{method: HEAD, path: {equals: /memory-head-twice}}, {method: HEAD, path: {equals: /memory-head-twice}}], respond: [{status: 200}, {status: 200}]}]
+    steps:
+      - {name: first-uncacheable-memory-head-miss, input: {method: HEAD, path: /memory-head-twice}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-uncacheable-memory-head-miss, input: {method: HEAD, path: /memory-head-twice}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-purge-after-hit-succeeds-test-15
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [15]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-after-hit, uri: /memory-purge-after-hit, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-purge-after-hit}}], respond: [{status: 200, body: memory-purge-hit-origin}]}]
+    steps:
+      - {name: prime-memory-entry-before-purge, input: {method: GET, path: /memory-purge-after-hit}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: verify-memory-entry-hit, input: {method: GET, path: /memory-purge-after-hit}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: purge-hit-memory-entry, input: {method: PURGE, path: /memory-purge-after-hit}, output: {status: 200}}
+
+  - name: memory-purge-missing-key-returns-not-found-test-16
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [16]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-missing, uri: /memory-purge-missing, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}]
+    steps: [{name: purge-unknown-memory-key, input: {method: PURGE, path: /memory-purge-missing}, output: {status: 404}}]
+
+  - name: memory-visible-cache-headers-configuration-test-17
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [17]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-visible-cache-headers, uri: /memory-visible-headers, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], hide_cache_headers: false, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-visible-headers}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-visible-origin}]}]
+    steps: [{name: retain-visible-memory-cache-headers, input: {method: GET, path: /memory-visible-headers}, output: {status: 200, body: {equals: memory-visible-origin}, headers: {Apisix-Cache-Status: {equals: MISS}, Cache-Control: {equals: 'max-age=60'}}}}]
+
+  - name: memory-miss-retains-cache-control-header-test-18
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [18]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-miss-cache-control, uri: /memory-miss-cache-control, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], hide_cache_headers: false, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-miss-cache-control}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-cache-control-origin}]}]
+    steps: [{name: preserve-cache-control-on-memory-miss, input: {method: GET, path: /memory-miss-cache-control}, output: {status: 200, body: {equals: memory-cache-control-origin}, headers: {Apisix-Cache-Status: {equals: MISS}, Cache-Control: {equals: 'max-age=60'}}}}]
+
+  - name: memory-pass-through-preserves-cache-headers-test-19
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [19]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: memory-pass-through-control, uri: /memory-pass-through-control, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+        - {id: memory-pass-through-cache-headers, uri: /memory-pass-through, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-pass-through-control}}, {path: {equals: /memory-pass-through}}], respond: [{status: 200, body: memory-pass-through-control-origin}, {status: 200, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}, body: memory-pass-through-origin}]}]
+    steps:
+      - {name: exercise-memory-cache-before-pass-through-check, input: {method: GET, path: /memory-pass-through-control}, output: {status: 200, body: {equals: memory-pass-through-control-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: preserve-memory-pass-through-headers, input: {method: GET, path: /memory-pass-through}, output: {status: 200, body: {equals: memory-pass-through-origin}, headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}}}
+
+  - name: memory-request-cache-headers-reach-origin-test-20
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [20]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: memory-forward-cache-headers-control, uri: /memory-forward-headers-control, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+        - {id: memory-forward-cache-headers, uri: /memory-forward-headers, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /memory-forward-headers-control}}
+          - {method: GET, path: {equals: /memory-forward-headers}, headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}}
+        respond:
+          - {status: 200, body: memory-forward-headers-control-origin}
+          - {status: 200, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}, body: memory-forwarded-origin}
+    steps:
+      - {name: exercise-memory-cache-before-forwarding-check, input: {method: GET, path: /memory-forward-headers-control}, output: {status: 200, body: {equals: memory-forward-headers-control-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: forward-memory-cache-relative-headers, input: {method: GET, path: /memory-forward-headers, headers: {Apisix-Cache-Status: Foo, Cache-Control: bar, Expires: any}}, output: {status: 200, body: {equals: memory-forwarded-origin}, headers: {Apisix-Cache-Status: {equals: Foo}, Cache-Control: {equals: bar}, Expires: {equals: any}}}}
+
+  - name: memory-short-cache-ttl-configuration-test-21
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [21]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-short-ttl-config, uri: /memory-short-ttl-config, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 2}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-short-ttl-config}}], respond: [{status: 200, body: memory-short-ttl-config-origin}]}]
+    steps: [{name: accept-short-memory-cache-ttl, input: {method: GET, path: /memory-short-ttl-config}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-short-ttl-first-request-is-miss-test-22
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [22]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-short-ttl-first-miss, uri: /memory-short-ttl-first, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 2}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-short-ttl-first}}], respond: [{status: 200, body: memory-short-ttl-first-origin}]}]
+    steps: [{name: miss-before-short-ttl-entry-exists, input: {method: GET, path: /memory-short-ttl-first}, output: {status: 200, body: {equals: memory-short-ttl-first-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-short-ttl-hits-before-expiry-test-23
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [23]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-short-ttl-hit, uri: /memory-short-ttl-hit, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 2}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-short-ttl-hit}}], respond: [{status: 200, body: memory-short-ttl-hit-origin}]}]
+    steps:
+      - {name: prime-short-ttl-memory-entry, input: {method: GET, path: /memory-short-ttl-hit}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: hit-short-ttl-entry-before-expiry, input: {method: GET, path: /memory-short-ttl-hit}, output: {status: 200, body: {equals: memory-short-ttl-hit-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}, wait: 2s}
+
+  - name: memory-expired-entry-refreshes-from-origin-test-24
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [24]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-expired-refresh, uri: /memory-expired-refresh, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-expired-refresh}}, {path: {equals: /memory-expired-refresh}}], respond: [{status: 200, body: memory-before-expiry}, {status: 200, body: memory-after-expiry}]}]
+    steps:
+      - {name: prime-expiring-memory-entry, input: {method: GET, path: /memory-expired-refresh}, output: {status: 200, body: {equals: memory-before-expiry}, headers: {Apisix-Cache-Status: {equals: MISS}}}, wait: 1100ms}
+      - {name: refresh-expired-memory-entry, input: {method: GET, path: /memory-expired-refresh}, output: {status: 200, body: {equals: memory-after-expiry}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}}
+
+  - name: memory-cache-control-option-is-accepted-test-25
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [25]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-cache-control-enabled, uri: /memory-cache-control-enabled, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200], cache_ttl: 10}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-cache-control-enabled}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-cache-control-enabled-origin}]}]
+    steps: [{name: accept-memory-cache-control-option, input: {method: GET, path: /memory-cache-control-enabled}, output: {status: 200, body: {equals: memory-cache-control-enabled-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-cache-control-max-age-populates-entry-test-26
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [26]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-cache-control-populate, uri: /memory-cache-control-populate, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200], cache_ttl: 10}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-cache-control-populate}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-cache-control-populated-origin}]}]
+    steps: [{name: populate-entry-from-upstream-max-age, input: {method: GET, path: /memory-cache-control-populate, headers: {Cache-Control: 'max-age=60'}}, output: {status: 200, body: {equals: memory-cache-control-populated-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-request-max-age-forces-stale-refresh-test-27
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [27]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-request-max-age-stale, uri: /memory-request-max-age, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-request-max-age}}, {path: {equals: /memory-request-max-age}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-max-age-first}, {status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-max-age-refreshed}]}]
+    steps:
+      - {name: prime-entry-before-request-max-age, input: {method: GET, path: /memory-request-max-age}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}, wait: 1100ms}
+      - {name: refresh-entry-stale-by-request-max-age, input: {method: GET, path: /memory-request-max-age, headers: {Cache-Control: 'max-age=1'}}, output: {status: 200, body: {equals: memory-max-age-refreshed}, headers: {Apisix-Cache-Status: {equals: STALE}}}}
+
+  - name: memory-request-min-fresh-forces-stale-refresh-test-28
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [28]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-request-min-fresh-stale, uri: /memory-request-min-fresh, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-request-min-fresh}}, {path: {equals: /memory-request-min-fresh}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-min-fresh-first}, {status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-min-fresh-refreshed}]}]
+    steps:
+      - {name: prime-entry-before-request-min-fresh, input: {method: GET, path: /memory-request-min-fresh}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: refresh-entry-stale-by-request-min-fresh, input: {method: GET, path: /memory-request-min-fresh, headers: {Cache-Control: 'min-fresh=300'}}, output: {status: 200, body: {equals: memory-min-fresh-refreshed}, headers: {Apisix-Cache-Status: {equals: STALE}}}}
+
+  - name: memory-purge-removes-cache-control-entry-test-29
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [29]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-cache-control, uri: /memory-purge-cache-control, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-purge-cache-control}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-purge-cache-control-origin}]}]
+    steps:
+      - {name: prime-cache-control-entry-for-purge, input: {method: GET, path: /memory-purge-cache-control}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: purge-cache-control-entry, input: {method: PURGE, path: /memory-purge-cache-control}, output: {status: 200}}
+
+  - name: memory-request-no-store-bypasses-cache-test-30
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [30]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-request-no-store, uri: /memory-request-no-store, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-request-no-store}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-request-no-store-origin}]}]
+    steps: [{name: bypass-memory-cache-for-request-no-store, input: {method: GET, path: /memory-request-no-store, headers: {Cache-Control: no-store}}, output: {status: 200, body: {equals: memory-request-no-store-origin}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}}]
+
+  - name: memory-request-no-cache-bypasses-cache-test-31
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [31]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-request-no-cache, uri: /memory-request-no-cache, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-request-no-cache}}], respond: [{status: 200, headers: {Cache-Control: 'max-age=60'}, body: memory-request-no-cache-origin}]}]
+    steps: [{name: bypass-memory-cache-for-request-no-cache, input: {method: GET, path: /memory-request-no-cache, headers: {Cache-Control: no-cache}}, output: {status: 200, body: {equals: memory-request-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}}]
+
+  - name: memory-private-response-is-never-stored-test-32
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [32]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-response-private, uri: /memory-response-private, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-response-private}}, {path: {equals: /memory-response-private}}], respond: [{status: 200, headers: {Cache-Control: private}, body: private-one}, {status: 200, headers: {Cache-Control: private}, body: private-two}]}]
+    steps:
+      - {name: first-private-response-is-miss, input: {method: GET, path: /memory-response-private}, output: {status: 200, body: {equals: private-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-private-response-reaches-origin, input: {method: GET, path: /memory-response-private}, output: {status: 200, body: {equals: private-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-no-store-response-is-never-stored-test-33
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [33]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-response-no-store, uri: /memory-response-no-store, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-response-no-store}}, {path: {equals: /memory-response-no-store}}], respond: [{status: 200, headers: {Cache-Control: no-store}, body: no-store-one}, {status: 200, headers: {Cache-Control: no-store}, body: no-store-two}]}]
+    steps:
+      - {name: first-no-store-response-is-miss, input: {method: GET, path: /memory-response-no-store}, output: {status: 200, body: {equals: no-store-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-no-store-response-reaches-origin, input: {method: GET, path: /memory-response-no-store}, output: {status: 200, body: {equals: no-store-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-no-cache-response-is-never-stored-test-34
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [34]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-response-no-cache, uri: /memory-response-no-cache, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-response-no-cache}}, {path: {equals: /memory-response-no-cache}}], respond: [{status: 200, headers: {Cache-Control: no-cache}, body: no-cache-one}, {status: 200, headers: {Cache-Control: no-cache}, body: no-cache-two}]}]
+    steps:
+      - {name: first-no-cache-response-is-miss, input: {method: GET, path: /memory-response-no-cache}, output: {status: 200, body: {equals: no-cache-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-no-cache-response-reaches-origin, input: {method: GET, path: /memory-response-no-cache}, output: {status: 200, body: {equals: no-cache-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-only-if-cached-miss-returns-gateway-timeout-test-35
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [35]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-only-if-cached-miss, uri: /memory-only-if-cached, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_control: true, cache_method: [GET], cache_http_status: [200]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}]
+    steps: [{name: reject-only-if-cached-miss-without-origin, input: {method: GET, path: /memory-only-if-cached, headers: {Cache-Control: only-if-cached}}, output: {status: 504, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
+
+  - name: memory-missing-zone-is-rejected-test-36
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [36]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-missing-zone, uri: /memory-missing-zone, plugins: {proxy-cache: {cache_strategy: memory, cache_method: [GET], cache_http_status: [200], cache_control: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: should-not-run}]}]
+    steps: [{name: reject-memory-strategy-without-zone, input: {method: GET, path: /memory-missing-zone}, output: {status: 404, logs: {matches: 'build route memory-missing-zone fail:.*cache_zone'}}}]
+
+  - name: memory-authenticated-set-cookie-responses-are-not-stored-test-37
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [37]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config:
+      consumers:
+        - {username: cache_alice, plugins: {key-auth: {key: alice-cache-key}}}
+        - {username: cache_bob, plugins: {key-auth: {key: bob-cache-key}}}
+      routes:
+        - id: memory-authenticated-set-cookie
+          uri: /memory-auth-profile
+          plugins: {key-auth: {}, proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 2
+        expect: [{path: {equals: /memory-auth-profile}}, {path: {equals: /memory-auth-profile}}]
+        respond:
+          - {status: 200, headers: {Set-Cookie: 'session=alice-refreshed; Path=/'}, body: user=alice}
+          - {status: 200, headers: {Set-Cookie: 'session=bob-refreshed; Path=/'}, body: user=bob}
+    steps:
+      - {name: authenticated-alice-set-cookie-is-miss, input: {method: GET, path: /memory-auth-profile, headers: {apikey: alice-cache-key, Cookie: session=alice}}, output: {status: 200, body: {equals: user=alice}, headers: {Apisix-Cache-Status: {equals: MISS}, Set-Cookie: {equals: 'session=alice-refreshed; Path=/'}}}}
+      - {name: authenticated-bob-set-cookie-is-miss, input: {method: GET, path: /memory-auth-profile, headers: {apikey: bob-cache-key, Cookie: session=bob}}, output: {status: 200, body: {equals: user=bob}, headers: {Apisix-Cache-Status: {equals: MISS}, Set-Cookie: {equals: 'session=bob-refreshed; Path=/'}}}}
+
+  - name: memory-upstream-set-cookie-responses-are-not-stored-test-38
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [38]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-set-cookie-default, uri: /memory-set-cookie-profile, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 2
+        expect: [{path: {equals: /memory-set-cookie-profile}}, {path: {equals: /memory-set-cookie-profile}}]
+        respond:
+          - {status: 200, headers: {Set-Cookie: 'session=alice-refreshed; Path=/'}, body: user=alice}
+          - {status: 200, headers: {Set-Cookie: 'session=bob-refreshed; Path=/'}, body: user=bob}
+    steps:
+      - {name: first-upstream-set-cookie-response-is-miss, input: {method: GET, path: /memory-set-cookie-profile, headers: {Cookie: session=alice}}, output: {status: 200, body: {equals: user=alice}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-upstream-set-cookie-response-is-miss, input: {method: GET, path: /memory-set-cookie-profile, headers: {Cookie: session=bob}}, output: {status: 200, body: {equals: user=bob}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-private-response-is-honored-without-cache-control-flag-test-39
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [39]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-private-without-flag, uri: /memory-private-without-flag, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri', '$arg_cc'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: '/memory-private-without-flag?cc=private'}}, {path: {equals: '/memory-private-without-flag?cc=private'}}], respond: [{status: 200, headers: {Cache-Control: private}, body: private-without-flag-one}, {status: 200, headers: {Cache-Control: private}, body: private-without-flag-two}]}]
+    steps:
+      - {name: first-private-response-without-flag-is-miss, input: {method: GET, path: '/memory-private-without-flag?cc=private'}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-private-response-without-flag-is-miss, input: {method: GET, path: '/memory-private-without-flag?cc=private'}, output: {status: 200, body: {equals: private-without-flag-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-consumer-isolation-partitions-cache-key-test-40
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [40]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config:
+      consumers:
+        - {username: cache_alice, plugins: {key-auth: {key: alice-cache-key}}}
+        - {username: cache_bob, plugins: {key-auth: {key: bob-cache-key}}}
+      routes:
+        - id: memory-consumer-isolation
+          uri: /memory-consumer-cache
+          plugins: {key-auth: {}, proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-consumer-cache}}, {path: {equals: /memory-consumer-cache}}], respond: [{status: 200, body: consumer-alice-origin}, {status: 200, body: consumer-bob-origin}]}
+    steps:
+      - {name: alice-consumer-first-miss, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: alice-cache-key}}, output: {status: 200, body: {equals: consumer-alice-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: alice-consumer-second-hit, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: alice-cache-key}}, output: {status: 200, body: {equals: consumer-alice-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: bob-consumer-first-miss, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: bob-cache-key}}, output: {status: 200, body: {equals: consumer-bob-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: bob-consumer-second-hit, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: bob-cache-key}}, output: {status: 200, body: {equals: consumer-bob-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+
+  - name: memory-vary-accept-encoding-partitions-cache-test-41
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [41]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-vary-encoding, uri: /memory-vary-encoding, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-vary-encoding}}, {path: {equals: /memory-vary-encoding}}], respond: [{status: 200, headers: {Vary: Accept-Encoding}, body: encoding=gzip}, {status: 200, headers: {Vary: Accept-Encoding}, body: encoding=identity}]}]
+    steps:
+      - {name: gzip-variant-first-miss, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: encoding=gzip}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: gzip-variant-second-hit, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: encoding=gzip}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: identity-variant-first-miss, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: identity}}, output: {status: 200, body: {equals: encoding=identity}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: identity-variant-second-hit, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: identity}}, output: {status: 200, body: {equals: encoding=identity}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+
+  - name: memory-vary-star-refuses-cache-storage-test-42
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [42]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-vary-star, uri: /memory-vary-star, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-vary-star}}, {path: {equals: /memory-vary-star}}], respond: [{status: 200, headers: {Vary: '*'}, body: vary-star-one}, {status: 200, headers: {Vary: '*'}, body: vary-star-two}]}]
+    steps:
+      - {name: first-vary-star-response-is-miss, input: {method: GET, path: /memory-vary-star}, output: {status: 200, body: {equals: vary-star-one}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: second-vary-star-response-is-new-miss, input: {method: GET, path: /memory-vary-star}, output: {status: 200, body: {equals: vary-star-two}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-vary-multiple-headers-use-order-independent-signature-test-43
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [43]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-vary-multiple, uri: /memory-vary-multiple, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 3, expect: [{path: {equals: /memory-vary-multiple}}, {path: {equals: /memory-vary-multiple}}, {path: {equals: /memory-vary-multiple}}], respond: [{status: 200, headers: {Vary: 'Accept-Encoding, Accept-Language'}, body: 'enc=gzip;lang=en'}, {status: 200, headers: {Vary: 'Accept-Language, Accept-Encoding'}, body: 'enc=gzip;lang=fr'}, {status: 200, headers: {Vary: 'Accept-Encoding, Accept-Language'}, body: 'enc=br;lang=en'}]}]
+    steps:
+      - {name: gzip-english-variant-miss, input: {method: GET, path: /memory-vary-multiple, headers: {Accept-Encoding: gzip, Accept-Language: en}}, output: {status: 200, body: {equals: 'enc=gzip;lang=en'}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: gzip-english-variant-hit, input: {method: GET, path: /memory-vary-multiple, headers: {Accept-Language: en, Accept-Encoding: gzip}}, output: {status: 200, body: {equals: 'enc=gzip;lang=en'}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: gzip-french-variant-miss, input: {method: GET, path: /memory-vary-multiple, headers: {Accept-Encoding: gzip, Accept-Language: fr}}, output: {status: 200, body: {equals: 'enc=gzip;lang=fr'}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: brotli-english-variant-miss, input: {method: GET, path: /memory-vary-multiple, headers: {Accept-Encoding: br, Accept-Language: en}}, output: {status: 200, body: {equals: 'enc=br;lang=en'}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-purge-clears-every-vary-variant-test-44
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [44]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-vary-variants, uri: /memory-purge-vary, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 4, expect: [{path: {equals: /memory-purge-vary}}, {path: {equals: /memory-purge-vary}}, {path: {equals: /memory-purge-vary}}, {path: {equals: /memory-purge-vary}}], respond: [{status: 200, headers: {Vary: Accept-Encoding}, body: purge-gzip-before}, {status: 200, headers: {Vary: Accept-Encoding}, body: purge-identity-before}, {status: 200, headers: {Vary: Accept-Encoding}, body: purge-gzip-after}, {status: 200, headers: {Vary: Accept-Encoding}, body: purge-identity-after}]}]
+    steps:
+      - {name: prime-gzip-variant-before-purge, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: gzip}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: prime-identity-variant-before-purge, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: identity}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: confirm-gzip-variant-hot, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: gzip}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: confirm-identity-variant-hot, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: identity}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - {name: purge-all-vary-variants, input: {method: PURGE, path: /memory-purge-vary}, output: {status: 200}}
+      - {name: gzip-variant-is-cold-after-purge, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: purge-gzip-after}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: identity-variant-is-cold-after-purge, input: {method: GET, path: /memory-purge-vary, headers: {Accept-Encoding: identity}}, output: {status: 200, body: {equals: purge-identity-after}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-purge-expired-entry-returns-success-test-45
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [45]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-purge-expired, uri: /memory-purge-expired, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-purge-expired}}, {path: {equals: /memory-purge-expired}}], respond: [{status: 200, body: expired-before-purge}, {status: 200, body: expired-after-purge}]}]
+    steps:
+      - {name: prime-entry-that-will-expire, input: {method: GET, path: /memory-purge-expired}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: hit-entry-before-expiry, input: {method: GET, path: /memory-purge-expired}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}, wait: 1100ms}
+      - {name: purge-expired-entry-successfully, input: {method: PURGE, path: /memory-purge-expired}, output: {status: 200}}
+      - {name: miss-after-expired-entry-purge, input: {method: GET, path: /memory-purge-expired}, output: {status: 200, body: {equals: expired-after-purge}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+
+  - name: memory-plugin-generated-set-cookie-response-is-not-stored-test-46
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [46]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config:
+      routes:
+        - id: memory-breaker-set-cookie
+          uri: /memory-breaker-cookie
+          plugins:
+            proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+            api-breaker:
+              break_response_code: 200
+              break_response_body: breaker-open
+              break_response_headers: [{key: Set-Cookie, value: 'poisoned=attacker; Path=/'}]
+              max_breaker_sec: 60
+              unhealthy: {http_statuses: [500], failures: 1}
+              healthy: {http_statuses: [200], successes: 3}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /memory-breaker-cookie}}], respond: [{status: 500, body: origin-server-error}]}]
+    steps:
+      - {name: trip-breaker-with-origin-error, input: {method: GET, path: /memory-breaker-cookie}, output: {status: 500, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: plugin-cookie-break-response-is-miss, input: {method: GET, path: /memory-breaker-cookie}, output: {status: 200, body: {equals: breaker-open}, headers: {Apisix-Cache-Status: {equals: MISS}, Set-Cookie: {equals: 'poisoned=attacker; Path=/'}}}}
+      - {name: repeated-plugin-cookie-break-response-is-miss, input: {method: GET, path: /memory-breaker-cookie}, output: {status: 200, body: {equals: breaker-open}, headers: {Apisix-Cache-Status: {equals: MISS}, Set-Cookie: {equals: 'poisoned=attacker; Path=/'}}}}
+
+  - name: memory-purge-removes-live-variant-after-index-expiry-test-47
+    source: {file: t/plugin/proxy-cache/memory.t, tests: [47]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
+    config: {routes: [{id: memory-vary-expired-index, uri: /memory-vary-expired, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_control: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
+    fixtures: [{name: origin, kind: http, expect_requests: 3, expect: [{path: {matches: '^/memory-vary-expired'}}, {path: {matches: '^/memory-vary-expired'}}, {path: {matches: '^/memory-vary-expired'}}], respond: [{status: 200, headers: {Vary: Accept-Encoding, Cache-Control: 'max-age=100'}, body: long-lived-gzip-variant}, {status: 200, headers: {Vary: Accept-Encoding, Cache-Control: 'max-age=1'}, body: short-lived-identity-variant}, {status: 200, headers: {Vary: Accept-Encoding, Cache-Control: 'max-age=100'}, body: gzip-after-purge}]}]
+    steps:
+      - {name: prime-long-lived-gzip-variant, input: {method: GET, path: '/memory-vary-expired?maxage=100', headers: {Accept-Encoding: gzip}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
+      - {name: prime-short-lived-identity-variant, input: {method: GET, path: '/memory-vary-expired?maxage=1', headers: {Accept-Encoding: identity}}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}, wait: 1100ms}
+      - {name: purge-after-vary-index-expiry, input: {method: PURGE, path: /memory-vary-expired}, output: {status: 200}}
+      - {name: long-lived-gzip-variant-is-cold-after-purge, input: {method: GET, path: /memory-vary-expired, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: gzip-after-purge}, headers: {Apisix-Cache-Status: {equals: MISS}}}}

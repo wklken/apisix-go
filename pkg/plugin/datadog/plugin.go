@@ -29,8 +29,9 @@ type Plugin struct {
 }
 
 const (
-	priority = 495
-	name     = "datadog"
+	priority        = 495
+	name            = "datadog"
+	maxDatagramSize = 8192
 )
 
 const schema = `
@@ -54,13 +55,22 @@ const schema = `
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 200
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
       },
       "default": []
     },
     "name": {
       "type": "string",
       "default": "datadog"
+    },
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
     },
     "batch_max_size": {
       "type": "integer",
@@ -91,11 +101,44 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 8125
+    },
+    "namespace": {
+      "type": "string",
+      "default": "apisix"
+    },
+    "constant_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
+      },
+      "default": ["source:apisix"]
+    }
+  }
+}
+`
+
 type Config struct {
 	PreferName      bool     `json:"prefer_name,omitempty"`
 	IncludePath     bool     `json:"include_path,omitempty"`
 	IncludeMethod   bool     `json:"include_method,omitempty"`
 	ConstantTags    []string `json:"constant_tags,omitempty"`
+	Host            string   `json:"host,omitempty"`
+	Port            int      `json:"port,omitempty"`
 	BatchName       string   `json:"name,omitempty"`
 	BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 	MaxRetryCount   int      `json:"max_retry_count,omitempty"`
@@ -103,6 +146,7 @@ type Config struct {
 	BufferDuration  int      `json:"buffer_duration,omitempty"`
 	InactiveTimeout int      `json:"inactive_timeout,omitempty"`
 	preferNameSet   bool
+	retryDelaySet   bool
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -111,10 +155,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		IncludePath     bool     `json:"include_path,omitempty"`
 		IncludeMethod   bool     `json:"include_method,omitempty"`
 		ConstantTags    []string `json:"constant_tags,omitempty"`
+		Host            string   `json:"host,omitempty"`
+		Port            int      `json:"port,omitempty"`
 		BatchName       string   `json:"name,omitempty"`
 		BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 		MaxRetryCount   int      `json:"max_retry_count,omitempty"`
-		RetryDelay      int      `json:"retry_delay,omitempty"`
+		RetryDelay      *int     `json:"retry_delay,omitempty"`
 		BufferDuration  int      `json:"buffer_duration,omitempty"`
 		InactiveTimeout int      `json:"inactive_timeout,omitempty"`
 	}
@@ -131,10 +177,15 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.IncludePath = decoded.IncludePath
 	c.IncludeMethod = decoded.IncludeMethod
 	c.ConstantTags = decoded.ConstantTags
+	c.Host = decoded.Host
+	c.Port = decoded.Port
 	c.BatchName = decoded.BatchName
 	c.BatchMaxSize = decoded.BatchMaxSize
 	c.MaxRetryCount = decoded.MaxRetryCount
-	c.RetryDelay = decoded.RetryDelay
+	if decoded.RetryDelay != nil {
+		c.RetryDelay = *decoded.RetryDelay
+		c.retryDelaySet = true
+	}
 	c.BufferDuration = decoded.BufferDuration
 	c.InactiveTimeout = decoded.InactiveTimeout
 	return nil
@@ -148,21 +199,22 @@ type Metadata struct {
 }
 
 type metricEntry struct {
-	LatencyMS       int64
-	UpstreamLatency int64
-	ApisixLatency   int64
-	IngressSize     int64
-	EgressSize      int64
-	Status          int
-	RouteID         string
-	RouteName       string
-	ServiceID       string
-	ServiceName     string
-	ConsumerName    string
-	BalancerIP      string
-	Path            string
-	Method          string
-	Scheme          string
+	LatencyMS          int64
+	UpstreamLatency    int64
+	HasUpstreamLatency bool
+	ApisixLatency      int64
+	IngressSize        int64
+	EgressSize         int64
+	Status             int
+	RouteID            string
+	RouteName          string
+	ServiceID          string
+	ServiceName        string
+	ConsumerName       string
+	BalancerIP         string
+	Path               string
+	Method             string
+	Scheme             string
 }
 
 func (p *Plugin) Config() any {
@@ -173,6 +225,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -186,7 +239,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -196,11 +249,18 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 	p.metadata = loadMetadata()
+	if p.config.Host != "" {
+		p.metadata.Host = p.config.Host
+	}
+	if p.config.Port != 0 {
+		p.metadata.Port = p.config.Port
+	}
 	p.BatchProcessor = logger_batch.New(logger_batch.Config{
 		Name:            p.config.BatchName,
 		BatchMaxSize:    p.config.BatchMaxSize,
 		MaxRetryCount:   p.config.MaxRetryCount,
 		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		RetryDelaySet:   p.config.retryDelaySet,
 		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
 		RouteID:         p.RouteID,
@@ -223,23 +283,24 @@ func (p *Plugin) Stop() {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		captured := httpsnoop.CaptureMetrics(next, w, r)
-		upstreamLatency := requestInt64Var(r, "$upstream_latency")
+		upstreamLatency, hasUpstreamLatency := requestInt64Var(r, "$upstream_latency")
 		entry := metricEntry{
-			LatencyMS:       captured.Duration.Milliseconds(),
-			UpstreamLatency: upstreamLatency,
-			ApisixLatency:   apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
-			IngressSize:     requestSize(r),
-			EgressSize:      captured.Written,
-			Status:          captured.Code,
-			RouteID:         apisixStringVar(r, "$route_id"),
-			RouteName:       apisixStringVar(r, "$route_name"),
-			ServiceID:       apisixStringVar(r, "$service_id"),
-			ServiceName:     apisixStringVar(r, "$service_name"),
-			ConsumerName:    consumerName(r),
-			BalancerIP:      apisixStringVar(r, "$balancer_ip"),
-			Path:            matchedPath(r),
-			Method:          r.Method,
-			Scheme:          requestScheme(r),
+			LatencyMS:          captured.Duration.Milliseconds(),
+			UpstreamLatency:    upstreamLatency,
+			HasUpstreamLatency: hasUpstreamLatency,
+			ApisixLatency:      apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
+			IngressSize:        requestSize(r),
+			EgressSize:         captured.Written,
+			Status:             captured.Code,
+			RouteID:            apisixStringVar(r, "$route_id"),
+			RouteName:          apisixStringVar(r, "$route_name"),
+			ServiceID:          apisixStringVar(r, "$service_id"),
+			ServiceName:        apisixStringVar(r, "$service_name"),
+			ConsumerName:       consumerName(r),
+			BalancerIP:         apisixStringVar(r, "$balancer_ip"),
+			Path:               matchedPath(r),
+			Method:             r.Method,
+			Scheme:             requestScheme(r),
 		}
 		p.BatchProcessor.Push(map[string]any{"entry": entry})
 	}
@@ -260,7 +321,16 @@ func (p *Plugin) send(entry metricEntry) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	for _, line := range p.metricLines(entry) {
+	lines := p.metricLines(entry)
+	payload := strings.Join(lines, "\n")
+	if len(payload) <= maxDatagramSize {
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			return fmt.Errorf("send DogStatsD metrics: %w", err)
+		}
+		return nil
+	}
+
+	for _, line := range lines {
 		if _, err := conn.Write([]byte(line)); err != nil {
 			return fmt.Errorf("send DogStatsD metric %q: %w", line, err)
 		}
@@ -286,13 +356,18 @@ func (p *Plugin) metricLines(entry metricEntry) []string {
 	lines := []string{
 		p.metricLine("request.counter", "1", "c", tags),
 		p.metricLine("request.latency", strconv.FormatInt(entry.LatencyMS, 10), "h", tags),
+	}
+	if entry.HasUpstreamLatency {
+		lines = append(
+			lines,
+			p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags),
+		)
+	}
+	lines = append(lines,
 		p.metricLine("apisix.latency", strconv.FormatInt(entry.ApisixLatency, 10), "h", tags),
 		p.metricLine("ingress.size", strconv.FormatInt(entry.IngressSize, 10), "ms", tags),
 		p.metricLine("egress.size", strconv.FormatInt(entry.EgressSize, 10), "ms", tags),
-	}
-	if entry.UpstreamLatency > 0 {
-		lines = append(lines, p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags))
-	}
+	)
 	return lines
 }
 
@@ -312,14 +387,14 @@ func (p *Plugin) generateTags(entry metricEntry) []string {
 	tags := make([]string, 0, len(p.metadata.ConstantTags)+len(p.config.ConstantTags)+6)
 	tags = append(tags, p.metadata.ConstantTags...)
 	tags = append(tags, p.config.ConstantTags...)
+	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
+		tags = append(tags, "route_name:"+route)
+	}
 	if p.config.IncludePath && entry.Path != "" {
 		tags = append(tags, "path:"+entry.Path)
 	}
 	if p.config.IncludeMethod && entry.Method != "" {
 		tags = append(tags, "method:"+entry.Method)
-	}
-	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
-		tags = append(tags, "route_name:"+route)
 	}
 	if service := resourceTag(entry.ServiceID, entry.ServiceName, p.config.PreferName); service != "" {
 		tags = append(tags, "service_name:"+service)
@@ -377,16 +452,16 @@ func matchedPath(r *http.Request) string {
 	return r.URL.Path
 }
 
-func requestInt64Var(r *http.Request, key string) int64 {
+func requestInt64Var(r *http.Request, key string) (int64, bool) {
 	switch value := ctx.GetRequestVar(r, key).(type) {
 	case int64:
-		return value
+		return value, true
 	case int:
-		return int64(value)
+		return int64(value), true
 	case float64:
-		return int64(value)
+		return int64(value), true
 	default:
-		return 0
+		return 0, false
 	}
 }
 

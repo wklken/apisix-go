@@ -1,0 +1,44 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/node-status.t
+  tests: 5
+
+cases:
+  - name: default-node-status
+    source:
+      tests: [1, 2, 3, 4]
+    runtime:
+      plugins: [node-status]
+    config:
+      routes: []
+    steps:
+      - name: status
+        input:
+          path: /apisix/status
+        output:
+          status: 200
+          body:
+            matches: '"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}".*"accepted":"[0-9]+"'
+      - name: unsupported-method
+        input:
+          method: PATCH
+          path: /apisix/status
+        output:
+          status: 404
+
+  - name: configured-node-id
+    source:
+      tests: [5]
+    runtime:
+      apisix:
+        id: user-set-apisix-instance-id-A
+      plugins: [node-status]
+    config:
+      routes: []
+    input:
+      path: /apisix/status
+    output:
+      status: 200
+      body:
+        matches: '"id":"user-set-apisix-instance-id-A"'

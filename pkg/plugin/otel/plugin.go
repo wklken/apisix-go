@@ -3,15 +3,16 @@ package otel
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/riandyrn/otelchi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -187,11 +188,22 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	wrappedNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attrs := append(p.resourceSpanAttributes(), p.additionalSpanAttributes(r)...)
+		if apisixctx.GetApisixVars(r) == nil {
+			r = apisixctx.WithApisixVars(r, nil)
+		}
+		if apisixctx.GetRequestVars(r) == nil {
+			r = apisixctx.WithRequestVars(r)
+		}
+		requestAttributes := captureHTTPSpanAttributes(r)
+		started := time.Now()
+		metrics := httpsnoop.CaptureMetrics(next, w, r)
+		apisixctx.RegisterRequestVar(r, "$request_time", time.Since(started).Seconds())
+		apisixctx.RegisterRequestVar(r, "$bytes_sent", metrics.Written)
+		attrs := append(p.resourceSpanAttributes(), requestAttributes...)
+		attrs = append(attrs, p.additionalSpanAttributes(r)...)
 		if len(attrs) > 0 {
 			trace.SpanFromContext(r.Context()).SetAttributes(attrs...)
 		}
-		next.ServeHTTP(w, r)
 	})
 	opts := []otelchi.Option{
 		otelchi.WithFilter(func(r *http.Request) bool {
@@ -209,6 +221,24 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		handler.ServeHTTP(w, r)
 	})
+}
+
+func captureHTTPSpanAttributes(r *http.Request) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("http.target", r.URL.RequestURI()),
+		attribute.String("net.host.name", requestHost(r.Host)),
+	}
+	if userAgent := r.UserAgent(); userAgent != "" {
+		attrs = append(attrs, attribute.String("http.user_agent", userAgent))
+	}
+	return attrs
+}
+
+func requestHost(hostPort string) string {
+	if host, _, err := net.SplitHostPort(hostPort); err == nil {
+		return host
+	}
+	return hostPort
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
@@ -359,6 +389,7 @@ func batchSpanProcessorOptions(config BatchSpanProcessorConfig) []sdktrace.Batch
 }
 
 func otelResource(configured map[string]any) *sdkresource.Resource {
+	configured = flattenResourceAttributes(configured)
 	hostname, _ := os.Hostname()
 	attributes := []attribute.KeyValue{attribute.String("hostname", hostname)}
 	if _, ok := configured["service.name"]; !ok {
@@ -377,6 +408,37 @@ func otelResource(configured map[string]any) *sdkresource.Resource {
 		}
 	}
 	return sdkresource.NewWithAttributes("", attributes...)
+}
+
+func flattenResourceAttributes(configured map[string]any) map[string]any {
+	flattened := make(map[string]any)
+	var add func(string, any)
+	add = func(key string, value any) {
+		switch nested := value.(type) {
+		case map[string]any:
+			for childKey, childValue := range nested {
+				fullKey := childKey
+				if key != "" {
+					fullKey = key + "." + childKey
+				}
+				add(fullKey, childValue)
+			}
+		case map[string]string:
+			for childKey, childValue := range nested {
+				fullKey := childKey
+				if key != "" {
+					fullKey = key + "." + childKey
+				}
+				add(fullKey, childValue)
+			}
+		default:
+			flattened[key] = value
+		}
+	}
+	for key, value := range configured {
+		add(key, value)
+	}
+	return flattened
 }
 
 func stringHeaders(headers map[string]any) map[string]string {
@@ -421,6 +483,9 @@ func (p *Plugin) additionalSpanAttributes(r *http.Request) []attribute.KeyValue 
 
 func (p *Plugin) requestVariable(r *http.Request, name string) (string, bool) {
 	key := "$" + strings.TrimPrefix(name, "$")
+	if value, ok := requestArgumentOrCookie(r, strings.TrimPrefix(key, "$")); ok {
+		return value, true
+	}
 	if value := v.GetNginxVar(r, key); value != "" {
 		return value, true
 	}
@@ -441,6 +506,20 @@ func (p *Plugin) requestVariable(r *http.Request, name string) (string, bool) {
 		return nonEmptyValue(p.route.ServiceID)
 	case "$service_name":
 		return nonEmptyValue(p.service.Name)
+	}
+	return "", false
+}
+
+func requestArgumentOrCookie(r *http.Request, name string) (string, bool) {
+	if argument, ok := strings.CutPrefix(name, "arg_"); ok {
+		return nonEmptyValue(r.URL.Query().Get(argument))
+	}
+	if cookieName, ok := strings.CutPrefix(name, "cookie_"); ok {
+		cookie, err := r.Cookie(cookieName)
+		if err != nil {
+			return "", false
+		}
+		return nonEmptyValue(cookie.Value)
 	}
 	return "", false
 }
@@ -531,10 +610,7 @@ func traceIDFromRequestID(value any) trace.TraceID {
 		}
 	}
 
-	sum := sha256.Sum256([]byte(requestID))
-	var traceID trace.TraceID
-	copy(traceID[:], sum[:len(traceID)])
-	return traceID
+	return trace.TraceID{}
 }
 
 func randomTraceID() trace.TraceID {

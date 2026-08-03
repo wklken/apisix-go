@@ -31,9 +31,12 @@ import (
 	_ "crypto/sha512"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/santhosh-tekuri/jsonschema/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -113,6 +116,7 @@ const schema = `
     },
     "session": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "secret": {"type": "string", "minLength": 16},
         "cookie_name": {"type": "string"},
@@ -124,10 +128,15 @@ const schema = `
         "idling_timeout": {"type": "integer"},
         "rolling_timeout": {"type": "integer"},
         "absolute_timeout": {"type": "integer"},
-        "cookie": {"type": "object", "properties": {"lifetime": {"type": "integer"}}},
+        "cookie": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"lifetime": {"type": "integer"}}
+        },
         "storage": {"type": "string", "enum": ["cookie", "redis"]},
         "redis": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "host": {"type": "string", "minLength": 2},
             "port": {"type": "integer", "minimum": 1},
@@ -248,7 +257,26 @@ const schema = `
       }
     },
     "claim_validator": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": "object",
+          "properties": {
+            "claim": {"type": "string"},
+            "required": {"type": "boolean"},
+            "match_with_client_id": {"type": "boolean"}
+          }
+        },
+        "issuer": {
+          "type": "object",
+          "properties": {
+            "valid_issuers": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        }
+      }
     },
     "claim_schema": {
       "type": "object"
@@ -423,6 +451,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	resolvedPublicKey, err := store.ResolveSecretReference(p.config.PublicKey)
+	if err != nil {
+		return errors.New("resolve openid-connect public_key reference: credential unavailable")
+	}
+	p.config.PublicKey = resolvedPublicKey
+
 	if p.config.Scope == "" {
 		p.config.Scope = "openid"
 	}
@@ -459,6 +493,28 @@ func (p *Plugin) PostInit() error {
 	if (p.config.TokenEndpointAuthMethod == "client_secret_jwt" ||
 		p.config.IntrospectionEndpointAuthMethod == "client_secret_jwt") && p.config.ClientSecret == "" {
 		return errors.New("client_secret is required for client_secret_jwt")
+	}
+	if p.config.ClientSecret == "" {
+		if p.config.BearerOnly {
+			if p.config.PublicKey == "" && !p.config.UseJWKS &&
+				p.config.IntrospectionEndpointAuthMethod != "private_key_jwt" {
+				return errors.New("client_secret is required for bearer introspection")
+			}
+		} else if !p.config.UsePKCE && p.config.TokenEndpointAuthMethod != "private_key_jwt" {
+			return errors.New("client_secret is required for code flow")
+		}
+	}
+	if _, err := p.configuredIssuers(); err != nil {
+		return err
+	}
+	if len(p.config.ClaimSchema) > 0 {
+		encoded, err := json.Marshal(p.config.ClaimSchema)
+		if err != nil {
+			return errors.New("failed to encode claim_schema")
+		}
+		if _, err := jsonschema.CompileString(name+"-claim-schema.json", string(encoded)); err != nil {
+			return fmt.Errorf("check claim_schema failed: %w", err)
+		}
 	}
 	if p.config.Realm == "" {
 		p.config.Realm = "apisix"
@@ -613,7 +669,10 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		clientXAccessToken := r.Header.Get("X-Access-Token")
+		clientXAccessToken := ""
+		if p.config.BearerOnly {
+			clientXAccessToken = r.Header.Get("X-Access-Token")
+		}
 		clearOutputHeaders(r)
 		if !p.config.BearerOnly && r.URL.Path == p.config.LogoutPath {
 			p.handleLogout(w, r)
@@ -632,6 +691,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			if p.config.UnauthAction == "pass" {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if p.config.UnauthAction == "deny" {
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 			p.handleCodeFlow(w, r, next)
@@ -1126,9 +1189,23 @@ func (p *Plugin) redirectURI(r *http.Request) string {
 	if !strings.HasSuffix(path, suffix) {
 		path = strings.TrimSuffix(path, "/") + suffix
 	}
-	scheme := r.URL.Scheme
+	host := r.Host
+	scheme := ""
+	if apisixctx.IsTrustedProxy(r) {
+		forwardedHost, forwardedProto := forwardedAuthority(r.Header.Get("Forwarded"))
+		if forwardedHost != "" {
+			host = forwardedHost
+		} else if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+			host = forwardedHost
+		}
+		if forwardedProto != "" {
+			scheme = forwardedProto
+		} else {
+			scheme = firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))
+		}
+	}
 	if scheme == "" {
-		scheme = r.Header.Get("X-Forwarded-Proto")
+		scheme = r.URL.Scheme
 	}
 	if scheme == "" {
 		if r.TLS != nil {
@@ -1137,7 +1214,38 @@ func (p *Plugin) redirectURI(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	return scheme + "://" + r.Host + path
+	return scheme + "://" + host + path
+}
+
+func forwardedAuthority(header string) (string, string) {
+	first := firstForwardedValue(header)
+	if first == "" {
+		return "", ""
+	}
+	var host string
+	var proto string
+	for parameter := range strings.SplitSeq(first, ";") {
+		key, value, ok := strings.Cut(parameter, "=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+		switch {
+		case strings.EqualFold(strings.TrimSpace(key), "host"):
+			host = value
+		case strings.EqualFold(strings.TrimSpace(key), "proto"):
+			proto = value
+		}
+	}
+	return host, proto
+}
+
+func firstForwardedValue(value string) string {
+	first, _, _ := strings.Cut(value, ",")
+	return strings.TrimSpace(first)
 }
 
 func (p *Plugin) isRedirectCallback(r *http.Request, redirectURI string) bool {
@@ -1716,12 +1824,46 @@ func (p *Plugin) validateIssuer(payload map[string]any) {
 	if issuer == "" {
 		return
 	}
+	configured, _ := p.configuredIssuers()
+	if len(configured) > 0 {
+		if !slices.Contains(configured, issuer) {
+			payload["active"] = false
+		}
+		return
+	}
 	discovery, err := p.discoveryDoc()
 	if err != nil || discovery.Issuer == "" {
 		return
 	}
 	if issuer != discovery.Issuer {
 		payload["active"] = false
+	}
+}
+
+func (p *Plugin) configuredIssuers() ([]string, error) {
+	issuer, ok := p.config.ClaimValidator["issuer"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	raw, exists := issuer["valid_issuers"]
+	if !exists {
+		return nil, nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		return append([]string(nil), values...), nil
+	case []any:
+		issuers := make([]string, 0, len(values))
+		for _, value := range values {
+			issuer, ok := value.(string)
+			if !ok {
+				return nil, errors.New("claim_validator.issuer.valid_issuers must contain strings")
+			}
+			issuers = append(issuers, issuer)
+		}
+		return issuers, nil
+	default:
+		return nil, errors.New("claim_validator.issuer.valid_issuers must be an array")
 	}
 }
 

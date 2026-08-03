@@ -1,18 +1,40 @@
 package otel
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type otelMinimalWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (w *otelMinimalWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *otelMinimalWriter) Write(body []byte) (int, error) {
+	return w.body.Write(body)
+}
+
+func (w *otelMinimalWriter) WriteHeader(status int) {
+	w.status = status
+}
 
 func TestPostInitSetsSamplerDefaults(t *testing.T) {
 	p := &Plugin{}
@@ -37,7 +59,13 @@ func TestPostInitSetsSamplerDefaults(t *testing.T) {
 func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 	p := &Plugin{
 		config: Config{
-			AdditionalAttributes:             []string{"request_method", "uri", "missing_var"},
+			AdditionalAttributes: []string{
+				"request_method",
+				"uri",
+				"arg_debug",
+				"cookie_token",
+				"missing_var",
+			},
 			AdditionalHeaderPrefixAttributes: []string{"x-tenant", "x-extra-*", "x-missing"},
 		},
 	}
@@ -46,6 +74,7 @@ func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 	req.Header.Set("X-Tenant", "blue")
 	req.Header.Set("X-Extra-A", "1")
 	req.Header.Set("X-Extra-B", "2")
+	req.AddCookie(&http.Cookie{Name: "token", Value: "auth-token"})
 
 	attrs := p.additionalSpanAttributes(req)
 	got := map[string]string{}
@@ -56,6 +85,8 @@ func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 	want := map[string]string{
 		"request_method": "POST",
 		"uri":            "/orders",
+		"arg_debug":      "1",
+		"cookie_token":   "auth-token",
 		"x-tenant":       "blue",
 		"x-extra-a":      "1",
 		"x-extra-b":      "2",
@@ -69,6 +100,87 @@ func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 		if _, ok := got[key]; ok {
 			t.Fatalf("attribute %q present, want skipped; attrs=%v", key, got)
 		}
+	}
+}
+
+func TestHandlerAddsDownstreamAndNumericAttributesBeforeSpanEnds(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{
+		config: Config{
+			Sampler:              SamplerConfig{Name: "always_on"},
+			AdditionalAttributes: []string{"consumer_name", "request_time", "bytes_sent"},
+		},
+		tracerProvider: provider,
+	}
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$consumer_name", "john")
+		r.URL.Path = "/rewritten"
+		_, _ = io.WriteString(w, "hello")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/orders", nil)
+	req.URL.RawQuery = "state=open"
+	req.Header.Set("User-Agent", "otel-client")
+	req = apisixctx.WithApisixVars(req, nil)
+	req = apisixctx.WithRequestVars(req)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, req)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	got := make(map[string]string)
+	for _, attr := range spans[0].Attributes() {
+		got[string(attr.Key)] = attr.Value.String()
+	}
+	if got["consumer_name"] != "john" {
+		t.Fatalf("consumer_name = %q, want john; attrs=%#v", got["consumer_name"], got)
+	}
+	if got["bytes_sent"] != "5" {
+		t.Fatalf("bytes_sent = %q, want 5; attrs=%#v", got["bytes_sent"], got)
+	}
+	if got["request_time"] == "" || strings.HasPrefix(got["request_time"], "-") {
+		t.Fatalf("request_time = %q, want non-negative duration; attrs=%#v", got["request_time"], got)
+	}
+	for key, want := range map[string]string{
+		"http.target":     "/orders?state=open",
+		"http.user_agent": "otel-client",
+		"net.host.name":   "api.example.com",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s = %q, want %q; attrs=%#v", key, got[key], want, got)
+		}
+	}
+}
+
+func TestOTelHandlerPreservesResponseWriterCapabilities(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{tracerProvider: provider}
+	delegate := &otelMinimalWriter{header: make(http.Header)}
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, ok := w.(http.Flusher); ok {
+			t.Error("handler advertised unsupported http.Flusher")
+		}
+		if _, ok := w.(http.Hijacker); ok {
+			t.Error("handler advertised unsupported http.Hijacker")
+		}
+		if _, ok := w.(http.Pusher); ok {
+			t.Error("handler advertised unsupported http.Pusher")
+		}
+		if _, ok := w.(io.ReaderFrom); ok {
+			t.Error("handler advertised unsupported io.ReaderFrom")
+		}
+		_, _ = w.Write([]byte("streamed"))
+	}))
+
+	handler.ServeHTTP(delegate, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if delegate.body.String() != "streamed" {
+		t.Fatalf("body = %q, want streamed", delegate.body.String())
 	}
 }
 
@@ -210,14 +322,14 @@ func TestRequestIDGeneratorUsesXRequestIDAsTraceID(t *testing.T) {
 		t.Fatalf("span ID = %s, want valid ID", spanID)
 	}
 
-	hashedA, _ := (requestIDGenerator{}).NewIDs(
+	fallbackA, _ := (requestIDGenerator{}).NewIDs(
 		context.WithValue(context.Background(), requestIDContextKey{}, "request-id"),
 	)
-	hashedB, _ := (requestIDGenerator{}).NewIDs(
+	fallbackB, _ := (requestIDGenerator{}).NewIDs(
 		context.WithValue(context.Background(), requestIDContextKey{}, "request-id"),
 	)
-	if hashedA != hashedB || !hashedA.IsValid() {
-		t.Fatalf("hashed trace IDs = %s and %s, want equal valid IDs", hashedA, hashedB)
+	if fallbackA == fallbackB || !fallbackA.IsValid() || !fallbackB.IsValid() {
+		t.Fatalf("fallback trace IDs = %s and %s, want distinct valid random IDs", fallbackA, fallbackB)
 	}
 }
 
@@ -246,6 +358,26 @@ func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
 	if metadata.TraceIDSource != "x-request-id" || metadata.Collector.Address != "collector.example.com:4318" ||
 		metadata.Collector.RequestTimeout != 7 || metadata.Resource["service.name"] != "gateway" {
 		t.Fatalf("metadata = %#v, want configured trace source, collector, and resource", metadata)
+	}
+}
+
+func TestOTelResourceRestoresDottedKeysNestedByRuntimeConfigLoader(t *testing.T) {
+	resource := otelResource(map[string]any{
+		"service": map[string]any{"name": "gateway"},
+		"deployment": map[string]any{
+			"environment": "integration",
+		},
+	})
+
+	got := make(map[string]string)
+	for _, attr := range resource.Attributes() {
+		got[string(attr.Key)] = attr.Value.String()
+	}
+	if got["service.name"] != "gateway" {
+		t.Fatalf("service.name = %q, want gateway; attrs=%#v", got["service.name"], got)
+	}
+	if got["deployment.environment"] != "integration" {
+		t.Fatalf("deployment.environment = %q, want integration; attrs=%#v", got["deployment.environment"], got)
 	}
 }
 

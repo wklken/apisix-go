@@ -2,10 +2,10 @@ package store
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -78,6 +78,12 @@ func GetService(id string) (resource.Service, error) {
 }
 
 func GetConsumer(id string) (resource.Consumer, error) {
+	s.consumerMu.RLock()
+	consumer, ok := s.consumerValues[id]
+	s.consumerMu.RUnlock()
+	if ok {
+		return consumer, nil
+	}
 	config := s.GetFromBucket("consumers", util.StringToBytes(id))
 	if config == nil {
 		return resource.Consumer{}, ErrNotFound
@@ -119,15 +125,21 @@ func ListRoutes() ([]resource.Route, error) {
 	for _, d := range data {
 		r, err := ParseRoute(d)
 		if err != nil {
-			logger.Errorf("parse route error: %s, skip", err)
-			continue
-			// FIXME: do skip, process
-			// FIXME: append d and error
-			// return nil, err
+			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
 		}
 		routes = append(routes, r)
 	}
 	return routes, nil
+}
+
+func routeIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
 }
 
 func ListStreamRoutes() ([]resource.StreamRoute, error) {
@@ -143,17 +155,40 @@ func ListStreamRoutes() ([]resource.StreamRoute, error) {
 	return routes, nil
 }
 
+func ListSSLs() ([]resource.SSL, error) {
+	data := s.GetBucketData("ssls")
+	ssls := make([]resource.SSL, 0, len(data))
+	for _, value := range data {
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse SSL resource: %w", err)
+		}
+		ssls = append(ssls, ssl)
+	}
+	return ssls, nil
+}
+
 func ListGlobalRules() ([]resource.GlobalRule, error) {
 	var rules []resource.GlobalRule
 	data := s.GetBucketData("global_rules")
 	for _, d := range data {
 		r, err := ParseGlobalRule(d)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse global rule %q: %w", globalRuleIDForDecodeError(d), err)
 		}
 		rules = append(rules, r)
 	}
 	return rules, nil
+}
+
+func globalRuleIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
 }
 
 func ParseRoute(config []byte) (resource.Route, error) {
@@ -264,10 +299,64 @@ func ParseProto(config []byte) (resource.Proto, error) {
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {
-	id, err := s.GetConsumerNameByPluginKey(pluginName, key)
+	return s.getConsumerByPluginKey(pluginName, key)
+}
+
+func (s *Store) getConsumerByPluginKey(pluginName, key string) (resource.Consumer, error) {
+	directKey := fmt.Sprintf("%s:%s", pluginName, key)
+	s.consumerMu.RLock()
+	directID := append([]byte(nil), s.consumerKV[directKey]...)
+	candidateIDs := make([]string, 0, len(s.consumerReferenceKV[pluginName]))
+	for id := range s.consumerReferenceKV[pluginName] {
+		candidateIDs = append(candidateIDs, id)
+	}
+	s.consumerMu.RUnlock()
+
+	if len(directID) > 0 {
+		consumer, err := s.resolveConsumerForPluginKey(string(directID), pluginName, key)
+		if err != nil {
+			return resource.Consumer{}, consumerCredentialLookupError(pluginName, err)
+		}
+		return consumer, nil
+	}
+
+	sort.Strings(candidateIDs)
+	var resolveErr error
+	for _, id := range candidateIDs {
+		consumer, err := s.resolveConsumerForPluginKey(id, pluginName, key)
+		if err != nil {
+			resolveErr = err
+			continue
+		}
+		return consumer, nil
+	}
+	if resolveErr != nil {
+		return resource.Consumer{}, consumerCredentialLookupError(pluginName, resolveErr)
+	}
+	return resource.Consumer{}, ErrNotFound
+}
+
+func (s *Store) resolveConsumerForPluginKey(id, pluginName, key string) (resource.Consumer, error) {
+	s.consumerMu.RLock()
+	raw, ok := s.consumerValues[id]
+	s.consumerMu.RUnlock()
+	if !ok {
+		return resource.Consumer{}, ErrNotFound
+	}
+	resolved, err := s.resolveConsumerPlugin(raw, pluginName)
 	if err != nil {
 		return resource.Consumer{}, err
 	}
+	resolvedKey, err := consumerPluginLookupKey(pluginName, resolved.Plugins[pluginName])
+	if err != nil {
+		return resource.Consumer{}, err
+	}
+	if resolvedKey != key {
+		return resource.Consumer{}, ErrNotFound
+	}
+	return resolved, nil
+}
 
-	return GetConsumer(util.BytesToString(id))
+func consumerCredentialLookupError(pluginName string, err error) error {
+	return fmt.Errorf("%w: resolve %s consumer credentials: %v", ErrNotFound, pluginName, err)
 }

@@ -1,0 +1,426 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/gzip.t
+  tests: 19
+
+cases:
+  - name: default-compression
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: gzip-default
+          uri: /echo
+          plugins:
+            gzip: {}
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /echo
+      headers:
+        Accept-Encoding: gzip
+        Content-Type: text/html
+      body: &short_body "0123456789\n012345678"
+    upstream:
+      expect:
+        method: POST
+        body:
+          equals: *short_body
+      respond: &html_response
+        status: 200
+        headers:
+          Content-Type: text/html
+        body: *short_body
+    output: &compressed_short_body
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: gzip
+        Vary:
+          absent: true
+      gzip_body:
+        equals: *short_body
+
+  - name: buffer-schema-variants
+    source:
+      tests: [3]
+    variants:
+      - name: defaults
+        config:
+          routes:
+            - id: gzip-buffers-defaults
+              uri: /echo
+              plugins:
+                gzip: {}
+              upstream: *fixture_route
+        input: &gzip_input
+          path: /echo
+          headers:
+            Accept-Encoding: gzip
+        upstream:
+          respond: *html_response
+        output: *compressed_short_body
+      - name: empty-buffers
+        config:
+          routes:
+            - id: gzip-buffers-empty
+              uri: /echo
+              plugins:
+                gzip:
+                  buffers: {}
+              upstream: *fixture_route
+        input: *gzip_input
+        upstream:
+          respond: *html_response
+        output: *compressed_short_body
+      - name: buffer-number
+        config:
+          routes:
+            - id: gzip-buffer-number
+              uri: /echo
+              plugins:
+                gzip:
+                  buffers:
+                    number: 1
+              upstream: *fixture_route
+        input: *gzip_input
+        upstream:
+          respond: *html_response
+        output: *compressed_short_body
+      - name: buffer-size
+        config:
+          routes:
+            - id: gzip-buffer-size
+              uri: /echo
+              plugins:
+                gzip:
+                  buffers:
+                    size: 1
+              upstream: *fixture_route
+        input: *gzip_input
+        upstream:
+          respond: *html_response
+        output: *compressed_short_body
+
+  - name: compression-levels
+    source:
+      tests: [4, 5]
+    config:
+      routes:
+        - id: gzip-level-1
+          uri: /gzip-level-1
+          plugins:
+            gzip:
+              comp_level: 1
+              min_length: 1
+              types: [text/plain]
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+        - id: gzip-level-9
+          uri: /gzip-level-9
+          plugins:
+            gzip:
+              comp_level: 9
+              min_length: 1
+              types: [text/plain]
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - &plain_repeated_response
+            status: 200
+            headers:
+              Content-Type: text/plain
+            body: &repeated_body "01230123012301230123012301230123012301230123012301230123012301230123012301230123012301230123012301230123012301230123012301230123"
+          - *plain_repeated_response
+    steps:
+      - name: level-1
+        input:
+          path: /gzip-level-1
+          headers:
+            Accept-Encoding: gzip
+        output:
+          status: 200
+          save_body_length: level-1
+          headers:
+            Content-Encoding:
+              equals: gzip
+          gzip_body:
+            equals: *repeated_body
+      - name: level-9
+        input:
+          path: /gzip-level-9
+          headers:
+            Accept-Encoding: gzip
+        output:
+          status: 200
+          body_length_less_than: level-1
+          headers:
+            Content-Encoding:
+              equals: gzip
+          gzip_body:
+            equals: *repeated_body
+
+  - name: minimum-length
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: gzip-minimum-length
+          uri: /echo
+          plugins:
+            gzip:
+              min_length: 21
+          upstream: *fixture_route
+    input: *gzip_input
+    upstream:
+      respond: *html_response
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: *short_body
+
+  - name: http-version
+    source:
+      tests: [8, 9, 10]
+    config:
+      routes:
+        - id: gzip-http-version
+          uri: /echo
+          plugins:
+            gzip:
+              http_version: 1.1
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *html_response
+          - *html_response
+    steps:
+      - name: http-1.0-not-compressed
+        input:
+          method: POST
+          version: "1.0"
+          path: /echo
+          headers:
+            Accept-Encoding: gzip
+            Content-Type: text/html
+          body: *short_body
+        output:
+          status: 200
+          headers:
+            Content-Encoding:
+              absent: true
+          body:
+            equals: *short_body
+      - name: http-1.1-compressed
+        input:
+          method: POST
+          version: "1.1"
+          path: /echo
+          headers:
+            Accept-Encoding: gzip
+            Content-Type: text/html
+          body: *short_body
+        output: *compressed_short_body
+
+  - name: configured-types
+    source:
+      tests: [11, 12, 13, 14]
+    config:
+      routes:
+        - id: gzip-configured-types
+          uri: /echo
+          plugins:
+            gzip:
+              types: [text/plain, text/xml]
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/html
+            body: *short_body
+          - status: 200
+            headers:
+              Content-Type: text/xml
+            body: *short_body
+          - status: 200
+            headers:
+              Content-Type: text/plain; charset=UTF-8
+            body: *short_body
+    steps:
+      - name: html-not-compressed
+        input:
+          path: /echo
+          headers:
+            Accept-Encoding: gzip
+        output:
+          status: 200
+          headers:
+            Content-Encoding:
+              absent: true
+          body:
+            equals: *short_body
+      - name: xml-compressed
+        input: *gzip_input
+        output: *compressed_short_body
+      - name: plain-with-charset-compressed
+        input: *gzip_input
+        output: *compressed_short_body
+
+  - name: wildcard-types
+    source:
+      tests: [15, 16]
+    config:
+      routes:
+        - id: gzip-wildcard-types
+          uri: /echo
+          plugins:
+            gzip:
+              types: "*"
+          upstream: *fixture_route
+    input: *gzip_input
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Type: video/3gpp
+        body: *short_body
+    output: *compressed_short_body
+
+  - name: vary-header
+    source:
+      tests: [17, 18]
+    config:
+      routes:
+        - id: gzip-vary
+          uri: /echo
+          plugins:
+            gzip:
+              vary: true
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        Accept-Encoding: gzip
+        Vary: upstream
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Type: text/html
+          Vary: upstream
+        body: *short_body
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: gzip
+        Vary:
+          values: [Accept-Encoding, upstream]
+      gzip_body:
+        equals: *short_body
+
+  - name: invalid-schema-variants
+    source:
+      tests: [19]
+    variants:
+      - name: empty-types
+        config:
+          routes:
+            - id: gzip-invalid-empty-types
+              uri: /invalid
+              plugins:
+                gzip:
+                  types: []
+        input: &invalid_input
+          path: /invalid
+        output: &invalid_output
+          status: 404
+          logs:
+            matches: 'build route gzip-invalid-.* fail:.*gzip'
+      - name: zero-minimum-length
+        config:
+          routes:
+            - id: gzip-invalid-minimum-length
+              uri: /invalid
+              plugins:
+                gzip:
+                  min_length: 0
+        input: *invalid_input
+        output: *invalid_output
+      - name: excessive-compression-level
+        config:
+          routes:
+            - id: gzip-invalid-compression-level
+              uri: /invalid
+              plugins:
+                gzip:
+                  comp_level: 10
+        input: *invalid_input
+        output: *invalid_output
+      - name: unsupported-http-version
+        config:
+          routes:
+            - id: gzip-invalid-http-version
+              uri: /invalid
+              plugins:
+                gzip:
+                  http_version: 2
+        input: *invalid_input
+        output: *invalid_output
+      - name: zero-buffer-number
+        config:
+          routes:
+            - id: gzip-invalid-buffer-number
+              uri: /invalid
+              plugins:
+                gzip:
+                  buffers:
+                    number: 0
+        input: *invalid_input
+        output: *invalid_output
+      - name: zero-buffer-size
+        config:
+          routes:
+            - id: gzip-invalid-buffer-size
+              uri: /invalid
+              plugins:
+                gzip:
+                  buffers:
+                    size: 0
+        input: *invalid_input
+        output: *invalid_output
+      - name: numeric-vary
+        config:
+          routes:
+            - id: gzip-invalid-vary
+              uri: /invalid
+              plugins:
+                gzip:
+                  vary: 0
+        input: *invalid_input
+        output: *invalid_output

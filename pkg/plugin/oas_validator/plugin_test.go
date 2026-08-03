@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -73,6 +75,74 @@ func TestHandlerPassesAndRestoresValidRequestBody(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerMatchesOpenAPIServerURLPrefix(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: `{
+  "openapi": "3.0.2",
+  "servers": [{"url": "/api/v3"}],
+  "paths": {
+    "/pets": {
+      "get": {"responses": {"204": {"description": "no content"}}}
+    }
+  }
+}`})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/pets", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerPrefersLiteralPathOverPathParameter(t *testing.T) {
+	spec := &compiledSpec{operations: []compiledOperation{
+		{
+			method:   http.MethodGet,
+			template: "/api/v31/pet/{petId}",
+			segments: splitPath("/api/v31/pet/{petId}"),
+		},
+		{
+			method:   http.MethodGet,
+			template: "/api/v31/pet/findByStatus",
+			segments: splitPath("/api/v31/pet/findByStatus"),
+		},
+	}}
+
+	operation, _ := spec.match(http.MethodGet, "/api/v31/pet/findByStatus")
+	if operation == nil || operation.template != "/api/v31/pet/findByStatus" {
+		t.Fatalf("matched operation = %#v, want literal path", operation)
+	}
+}
+
+func TestMetadataSchemaRejectsNonpositiveSpecURLTTL(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: testSpec()})
+	metadataSchema := p.GetMetadataSchema()
+	if err := util.Validate(map[string]any{"spec_url_ttl": 1}, metadataSchema); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"spec_url_ttl": 0}, metadataSchema); err == nil {
+		t.Fatal("zero spec_url_ttl accepted")
+	}
+}
+
+func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
+	p := &Plugin{config: Config{Spec: "invalid json string"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() accepted invalid inline OpenAPI spec")
+	}
+	if !strings.Contains(err.Error(), "failed to parse inline openapi spec") {
+		t.Fatalf("PostInit() error = %q, want inline spec parsing context", err)
 	}
 }
 
@@ -1158,8 +1228,10 @@ func TestHandlerResolvesRelativeExternalSchemaRefFromSpecURL(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
+func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
+	var fetches atomic.Int32
 	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/a.json":
@@ -1188,11 +1260,21 @@ func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
     }
   }
 }`
-	p := newTestPlugin(t, Config{Spec: spec})
+	p := &Plugin{config: Config{Spec: spec}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)
+	}
+	if fetches.Load() != 0 {
+		t.Fatalf("external ref fetches after PostInit() = %d, want 0", fetches.Load())
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler was called for cyclic external ref")
 	})).ServeHTTP(rr, req)
 
@@ -1202,10 +1284,17 @@ func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
 		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
 	}
+	if fetches.Load() == 0 {
+		t.Fatal("external refs were not resolved lazily during the request")
+	}
 }
 
-func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
-	externalServer := httptest.NewServer(http.NotFoundHandler())
+func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
+	var fetches atomic.Int32
+	externalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		http.NotFound(w, r)
+	}))
 	defer externalServer.Close()
 
 	spec := strings.Replace(
@@ -1214,11 +1303,21 @@ func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
 		externalServer.URL+"/missing.json#/components/schemas/Pet",
 		1,
 	)
-	p := newTestPlugin(t, Config{Spec: spec})
+	p := &Plugin{config: Config{Spec: spec}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)
+	}
+	if fetches.Load() != 0 {
+		t.Fatalf("external ref fetches after PostInit() = %d, want 0", fetches.Load())
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler was called for missing external ref")
 	})).ServeHTTP(rr, req)
 
@@ -1227,6 +1326,9 @@ func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
 		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
+	}
+	if fetches.Load() == 0 {
+		t.Fatal("external ref was not resolved lazily during the request")
 	}
 }
 

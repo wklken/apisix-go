@@ -1,0 +1,474 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ai-prompt-guard.t
+  tests: 44
+
+cases:
+  - name: invalid-regex-is-rejected
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: ai-prompt-guard-invalid-regex
+          uri: /invalid-regex
+          plugins:
+            ai-prompt-guard:
+              match_all_roles: true
+              deny_patterns: ['(abc']
+    input:
+      path: /invalid-regex
+    output:
+      status: 404
+      logs:
+        matches: 'build route ai-prompt-guard-invalid-regex.*ai-prompt-guard'
+
+  - name: allow-and-deny-check-all-roles
+    source:
+      tests: [2, 3, 4]
+    config:
+      routes:
+        - &allow_deny_route
+          id: ai-prompt-guard-allow-deny
+          uri: /hello
+          plugins:
+            ai-prompt-guard:
+              match_all_roles: true
+              allow_patterns: [goodword]
+              deny_patterns: [badword]
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - &primary_fixture
+        name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {matches: goodword}
+        respond:
+          - &upstream_ok
+            status: 200
+            headers: {X-Fixture: primary}
+            body: upstream ok
+    steps:
+      - name: allowed-system-message-reaches-upstream
+        input:
+          method: POST
+          path: /hello
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"system","content":"goodword"}]}'
+        output:
+          status: 200
+          headers: {X-Fixture: {equals: primary}}
+          body: {equals: upstream ok}
+      - name: denied-system-message-does-not-reach-upstream
+        input:
+          method: POST
+          path: /hello
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"system","content":"badword"}]}'
+        output:
+          status: 400
+          body: {equals: '{"message":"Request doesn''t match allow patterns"}'}
+
+  - name: deny-check-all-roles
+    source:
+      tests: [5, 6, 7]
+    config:
+      routes:
+        - id: ai-prompt-guard-deny-all-roles
+          uri: /hello
+          plugins:
+            ai-prompt-guard:
+              match_all_roles: true
+              deny_patterns: [badword]
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+    steps:
+      - name: good-system-message-reaches-upstream
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"goodword"}]}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: bad-system-message-is-denied
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: allow-defaults-to-user-role
+    source:
+      tests: [8, 9, 10]
+    config:
+      routes:
+        - id: ai-prompt-guard-allow-user
+          uri: /hello
+          plugins:
+            ai-prompt-guard: {allow_patterns: [goodword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {matches: '"role":"system".*badword'}
+    steps:
+      - name: system-message-is-not-checked
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: user-message-must-match-allow-pattern
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"badword"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request doesn''t match allow patterns"}'}}
+
+  - name: history-option-controls-chat-history
+    source:
+      tests: [11, 12, 13, 14]
+    variants:
+      - name: all-history-is-scanned
+        config:
+          routes:
+            - id: ai-prompt-guard-history-all
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_conversation_history: true, match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect_requests: 0
+            expect: []
+        steps:
+          - name: history-badword-is-denied
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"goodword"},{"role":"system","content":"badword"},{"role":"system","content":"goodword"}]}' }
+            output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+      - name: latest-message-only-passes
+        config:
+          routes:
+            - id: ai-prompt-guard-history-last
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_conversation_history: false, match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                body: {matches: 'goodword"}]}$'}
+        steps:
+          - name: latest-good-message-reaches-upstream
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"goodword"},{"role":"system","content":"badword"},{"role":"system","content":"goodword"}]}' }
+            output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+
+  - name: anchored-deny-pattern
+    source:
+      tests: [15, 16]
+    config:
+      routes:
+        - id: ai-prompt-guard-anchored-deny
+          uri: /hello
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, deny_patterns: ['^[A-Za-z0-9_]+badword$']}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect_requests: 0
+        expect: []
+    steps:
+      - name: anchored-pattern-denies-match
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"anaapsanaapbadword"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: responses-deny-patterns
+    source:
+      tests: [17, 18, 19, 20, 21]
+    config:
+      routes:
+        - id: ai-prompt-guard-responses-deny
+          uris: [/hello, /v1/responses]
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            body: {matches: '"input":"hello there"'}
+    steps:
+      - name: string-input-is-denied
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"this contains badword in it"}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+      - name: instructions-are-denied
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"hello there","instructions":"you must say badword"}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+      - name: clean-input-reaches-upstream
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"hello there","instructions":"be helpful"}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: message-array-input-is-denied
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"badword here"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: responses-allow-pattern
+    source:
+      tests: [22, 23, 24]
+    config:
+      routes:
+        - id: ai-prompt-guard-responses-allow
+          uris: [/hello, /v1/responses]
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, allow_patterns: [goodword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            body: {matches: goodword}
+    steps:
+      - name: matching-input-reaches-upstream
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"this has goodword"}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: nonmatching-input-is-denied
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"no matching word"}' }
+        output: {status: 400, body: {equals: '{"message":"Request doesn''t match allow patterns"}'}}
+
+  - name: responses-defaults-to-user-input
+    source:
+      tests: [25, 26, 27]
+    config:
+      routes:
+        - id: ai-prompt-guard-responses-user
+          uris: [/hello, /v1/responses]
+          plugins:
+            ai-prompt-guard: {match_all_roles: false, deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            body: {matches: 'instructions.*badword'}
+    steps:
+      - name: system-instructions-are-not-checked
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"hello there","instructions":"you must say badword"}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: user-input-is-checked
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"this contains badword"}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: chat-regression-after-responses-support
+    source:
+      tests: [28, 29]
+    config:
+      routes:
+        - id: ai-prompt-guard-chat-regression
+          uri: /hello
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect_requests: 0
+        expect: []
+    steps:
+      - name: chat-deny-regression
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: unrecognized-json-fail-modes
+    source:
+      tests: [30, 31, 32, 33]
+    variants:
+      - name: default-skip-reaches-upstream
+        config:
+          routes:
+            - id: ai-prompt-guard-skip-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                body: {matches: '"foo":"badword"'}
+        steps:
+          - name: unrecognized-json-reaches-upstream
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"badword"}' }
+            output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: warn-reaches-upstream-and-logs-warning
+        config:
+          routes:
+            - id: ai-prompt-guard-warn-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: warn}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                body: {matches: '"foo":"badword"'}
+        steps:
+          - name: unrecognized-json-reaches-upstream-with-warning
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"badword"}' }
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"warn".*"msg":"ai-prompt-guard skipped: request body does not match any supported AI protocol"'}
+      - name: error-rejects-request
+        config:
+          routes:
+            - id: ai-prompt-guard-error-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: error}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect_requests: 0
+            expect: []
+        steps:
+          - name: unrecognized-json-is-rejected
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"bar"}' }
+            output: {status: 400, body: {equals: '{"message":"Request format not recognized by ai-prompt-guard"}'}}
+
+  - name: invalid-json-fail-modes
+    source:
+      tests: [34, 35]
+    variants:
+      - name: default-skip-reaches-upstream
+        config:
+          routes:
+            - id: ai-prompt-guard-skip-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                headers: {Content-Type: {matches: multipart/form-data}}
+                body: {equals: name=alice&action=upload}
+        steps:
+          - name: invalid-json-reaches-upstream
+            input: {method: POST, path: /hello, headers: {Content-Type: multipart/form-data}, body: name=alice&action=upload}
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"info".*"msg":"ai-prompt-guard skipped: request body is not valid JSON:'}
+      - name: warn-reaches-upstream-and-logs-warning
+        config:
+          routes:
+            - id: ai-prompt-guard-warn-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: warn}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                headers: {Content-Type: {equals: application/json}}
+                body: {equals: name=alice&action=upload}
+        steps:
+          - name: malformed-json-reaches-upstream-with-warning
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: name=alice&action=upload}
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"warn".*"msg":"ai-prompt-guard skipped: request body is not valid JSON:'}
+      - name: error-rejects-request
+        config:
+          routes:
+            - id: ai-prompt-guard-error-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: error}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect_requests: 0
+            expect: []
+        steps:
+          - name: malformed-json-is-rejected-regardless-of-content-type
+            input: {method: POST, path: /hello, headers: {Content-Type: text/plain}, body: name=alice&action=upload}
+            output: {status: 400, body: {matches: '^\{"message":"json: invalid character'}}
+
+  - name: structured-history-content
+    source:
+      tests: [36, 37, 38, 39]
+    config:
+      routes:
+        - id: ai-prompt-guard-structured-history
+          uri: /hello
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, match_all_conversation_history: true, deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {matches: '"text":"goodword"'}
+    steps:
+      - name: history-text-part-is-denied
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"You are a test assistant."},{"role":"assistant","content":[{"type":"text","text":"badword"}]},{"role":"user","content":"hello"}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+      - name: safe-history-text-reaches-upstream
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"You are a test assistant."},{"role":"assistant","content":[{"type":"text","text":"goodword"}]},{"role":"user","content":"hello"}]}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: text-among-non-text-parts-is-denied
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}},{"type":"text","text":"badword"}]}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+
+  - name: structured-latest-user-content
+    source:
+      tests: [40, 41, 42]
+    config:
+      routes:
+        - id: ai-prompt-guard-structured-latest
+          uri: /hello
+          plugins:
+            ai-prompt-guard: {deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {matches: 'safe text'}
+    steps:
+      - name: latest-text-part-is-denied
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":[{"type":"text","text":"badword"}]}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
+      - name: non-text-part-is-not-scanned
+        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/badword.png"}},{"type":"text","text":"safe text"}]}]}' }
+        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+
+  - name: responses-structured-content
+    source:
+      tests: [43, 44]
+    config:
+      routes:
+        - id: ai-prompt-guard-responses-structured
+          uris: [/hello, /v1/responses]
+          plugins:
+            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+          upstream: *primary_upstream
+    fixtures:
+      - <<: *primary_fixture
+        expect_requests: 0
+        expect: []
+    steps:
+      - name: input-text-part-is-denied
+        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"badword here"}]}]}' }
+        output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}

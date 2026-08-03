@@ -4,10 +4,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
+
+func TestPostInitRejectsMalformedEquality(t *testing.T) {
+	p := &Plugin{config: Config{Functions: []string{
+		"return (function(code, body, header) if code == then return 405 end return code, body, header end)(...)",
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "unexpected symbol") {
+		t.Fatalf("PostInit() error = %v, want unexpected symbol", err)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -40,6 +53,68 @@ func TestHandlerRemapsStatusWithDocumentedLuaPattern(t *testing.T) {
 	}
 	if got := res.Body.String(); got != `{"message":"Missing API key in request"}` {
 		t.Fatalf("body = %q, want original body", got)
+	}
+}
+
+func TestHandlerRemapsStatusAndBodyWithDocumentedLuaPattern(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{
+		`return (function(code, body, header) if code == 503 then return 502, "Modified 503 to 502", header end return code, body, header end)(...)`,
+	}})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	if res.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", res.Code)
+	}
+	if got := res.Body.String(); got != "Modified 503 to 502" {
+		t.Fatalf("body = %q, want transformed body", got)
+	}
+}
+
+func TestHandlerRemapsStatusForDocumentedRequestContentTypeCondition(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{`
+		return (function(code, body, header)
+			local core = require("apisix.core")
+			local ct = core.request.headers()["Content-Type"]
+			if ct == "application/json" and code == 404 then return 405 end
+			return code, body, header
+		end)(...)
+	`}})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/missing", nil)
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(res, req)
+
+	if res.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", res.Code)
+	}
+}
+
+func TestHandlerTransformsDocumentedErrorTable(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{`
+		return (function(code, body, header)
+			if code == 401 and body.message == "Missing API key in request" then
+				return 400, {message = "authentication Failed"}, {["content-type"] = "application/json"}
+			end
+			return code, body, header
+		end)(...)
+	`}})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Missing API key in request"}`))
+	})
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
+	}
+	if got := res.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := res.Body.String(); got != `{"message":"authentication Failed"}` {
+		t.Fatalf("body = %q, want transformed JSON body", got)
 	}
 }
 

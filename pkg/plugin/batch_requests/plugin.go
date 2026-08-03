@@ -3,8 +3,10 @@ package batch_requests
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,8 +14,10 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -33,6 +37,24 @@ const (
 
 const schema = `{"type":"object"}`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "max_body_size": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1048576
+    },
+    "max_pipeline_items": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1000
+    }
+  }
+}
+`
+
 type Config struct{}
 
 type Limits struct {
@@ -43,7 +65,7 @@ type Limits struct {
 type Request struct {
 	Query    map[string]string `json:"query,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
-	Timeout  int               `json:"timeout,omitempty"`
+	Timeout  *int              `json:"timeout,omitempty"`
 	Pipeline []PipelineRequest `json:"pipeline"`
 }
 
@@ -72,6 +94,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -90,19 +113,40 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
-	return NewHandlerWithLimits(dispatcher, loadLimits())
+	return newMetadataHandler(dispatcher, loadLimits)
 }
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	limits = applyLimitDefaults(limits)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
+		serveBatchRequest(dispatcher, limits, w, r)
+	})
+}
+
+func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
+	// Seed the Store-owned last-good snapshot before the public endpoint serves
+	// its first request. Later router generations repeat this validation against
+	// the same active Store.
+	_, _ = loader()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limits, err := loader()
 		if err != nil {
-			writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
+			})
 			return
 		}
-		writeJSON(w, http.StatusOK, responses)
+		serveBatchRequest(dispatcher, limits, w, r)
 	})
+}
+
+func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWriter, r *http.Request) {
+	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
+	if err != nil {
+		writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, responses)
 }
 
 func handleBatchRequest(
@@ -119,24 +163,87 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("no request body, you should give at least one pipeline setting")
 	}
 
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
+	}
+	pipelinePresent, err := validateDecodedRequestTypes(decoded)
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
+	}
+	if !pipelinePresent {
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: pipeline is required")
+	}
+
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 	if err := validateRequest(req, limits); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 
 	timeout := defaultTimeout
-	if req.Timeout > 0 {
-		timeout = time.Duration(req.Timeout) * time.Millisecond
+	if req.Timeout != nil {
+		timeout = time.Duration(*req.Timeout) * time.Millisecond
 	}
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
-		responses = append(responses, dispatchPipelineRequest(dispatcher, r, req, item, timeout))
+		response, timedOut := dispatchPipelineRequest(dispatcher, r, req, item, timeout)
+		responses = append(responses, response)
+		if timedOut {
+			break
+		}
 	}
 	return responses, http.StatusOK, nil
+}
+
+func validateDecodedRequestTypes(decoded any) (bool, error) {
+	request, ok := decoded.(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	if timeout, exists := request["timeout"]; exists {
+		number, ok := timeout.(float64)
+		if !ok || number != math.Trunc(number) {
+			return false, fmt.Errorf(`property "timeout" validation failed: expected integer`)
+		}
+	}
+	rawPipeline, present := request["pipeline"]
+	if !present {
+		return false, nil
+	}
+	pipeline, ok := rawPipeline.([]any)
+	if !ok {
+		return true, nil
+	}
+	for i, rawItem := range pipeline {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key := range item {
+			switch key {
+			case "version", "method", "path", "query", "headers", "body", "ssl_verify":
+			default:
+				return true, fmt.Errorf(
+					`property "pipeline" validation failed: item %d unknown field %q`,
+					i+1,
+					key,
+				)
+			}
+		}
+		if sslVerify, exists := item["ssl_verify"]; exists {
+			if _, ok := sslVerify.(bool); !ok {
+				return true, fmt.Errorf(
+					`property "pipeline" validation failed: item %d property "ssl_verify" expected boolean`,
+					i+1,
+				)
+			}
+		}
+	}
+	return true, nil
 }
 
 func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]byte, error) {
@@ -148,6 +255,9 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]b
 }
 
 func validateRequest(req Request, limits Limits) error {
+	if req.Timeout != nil && *req.Timeout < 1 {
+		return fmt.Errorf("timeout must be at least 1 millisecond")
+	}
 	if len(req.Pipeline) == 0 {
 		return fmt.Errorf("pipeline must contain at least one request")
 	}
@@ -179,21 +289,25 @@ func applyLimitDefaults(limits Limits) Limits {
 	return limits
 }
 
-func loadLimits() Limits {
+func loadLimits() (Limits, error) {
 	var limits Limits
-	if err := safeGetPluginMetadata(name, &limits); err != nil {
-		return applyLimitDefaults(Limits{})
+	usedLastGood, err := store.GetValidatedPluginMetadata(
+		name,
+		func(metadata map[string]any) error {
+			return util.Validate(metadata, metadataSchema)
+		},
+		&limits,
+	)
+	if errors.Is(err, store.ErrNotFound) {
+		return applyLimitDefaults(Limits{}), nil
 	}
-	return applyLimitDefaults(limits)
-}
-
-func safeGetPluginMetadata(id string, v any) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = store.ErrNotFound
+	if err != nil {
+		logger.Errorf("validate plugin_metadata %s: %s", name, err)
+		if !usedLastGood {
+			return Limits{}, err
 		}
-	}()
-	return store.GetPluginMetadata(id, v)
+	}
+	return applyLimitDefaults(limits), nil
 }
 
 func validMethod(method string) bool {
@@ -212,7 +326,7 @@ func dispatchPipelineRequest(
 	batch Request,
 	item PipelineRequest,
 	timeout time.Duration,
-) PipelineResponse {
+) (PipelineResponse, bool) {
 	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
 	var cancel func()
 	if timeout > 0 {
@@ -248,10 +362,10 @@ func dispatchPipelineRequest(
 
 	select {
 	case <-ctx.Done():
-		return timeoutResponse()
+		return timeoutResponse(), true
 	case <-done:
 		if ctx.Err() != nil {
-			return timeoutResponse()
+			return timeoutResponse(), true
 		}
 	}
 	result := recorder.Result()
@@ -266,7 +380,7 @@ func dispatchPipelineRequest(
 	if err == nil && len(body) > 0 {
 		resp.Body = string(body)
 	}
-	return resp
+	return resp, false
 }
 
 type contextWithoutValues struct {

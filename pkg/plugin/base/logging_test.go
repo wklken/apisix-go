@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestReadAndRestoreRequestBodyTruncatesOnlyReturnedValue(t *testing.T) {
@@ -81,6 +83,15 @@ func TestRequestVarFromNginxSupportsHeadersAndRemoteAddress(t *testing.T) {
 	}
 	if got := RequestVarFromNginx(r, "$http_x_request_id"); got != "request-123" {
 		t.Fatalf("http_x_request_id = %q, want request-123", got)
+	}
+}
+
+func TestRequestVarReadsApisixContext(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r = apisixctx.WithApisixVars(r, map[string]string{"$route_id": "route-1"})
+
+	if got := RequestVar(r, "$route_id", 0); got != "route-1" {
+		t.Fatalf("RequestVar() = %q, want route-1", got)
 	}
 }
 

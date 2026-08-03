@@ -28,6 +28,231 @@ func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext := encryptForTest(t, key, "redis-secret")
+	sentinelCiphertext := encryptForTest(t, key, "sentinel-secret")
+	configs := map[string]any{"ai-rate-limiting": map[string]any{
+		"redis_password":    ciphertext,
+		"sentinel_password": sentinelCiphertext,
+	}}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if got := configs["ai-rate-limiting"].(map[string]any)["redis_password"]; got != ciphertext {
+		t.Fatalf("ai-rate-limiting.redis_password = %v, want ciphertext retained for runtime resolution", got)
+	}
+	if got := configs["ai-rate-limiting"].(map[string]any)["sentinel_password"]; got != sentinelCiphertext {
+		t.Fatalf("ai-rate-limiting.sentinel_password = %v, want ciphertext retained for runtime resolution", got)
+	}
+	if !IsStrictPluginField("ai-rate-limiting", "redis_password") {
+		t.Fatal("ai-rate-limiting.redis_password must be strict to remain encrypted at rest")
+	}
+	if !IsStrictPluginField("ai-rate-limiting", "sentinel_password") {
+		t.Fatal("ai-rate-limiting.sentinel_password must be strict to remain encrypted at rest")
+	}
+}
+
+func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
+	key := "edd1c9f0985e76a2"
+	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="
+	configs := map[string]any{
+		"ai-rate-limiting": map[string]any{
+			"redis_password":    ciphertextShapedPlaintext,
+			"sentinel_password": "sentinel-secret",
+		},
+		"basic-auth": map[string]any{"password": "basic-secret"},
+		"loggly":     map[string]any{"customer_token": "loggly-secret"},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	config := configs["ai-rate-limiting"].(map[string]any)
+	for field, plaintext := range map[string]string{
+		"redis_password":    ciphertextShapedPlaintext,
+		"sentinel_password": "sentinel-secret",
+	} {
+		ciphertext, ok := config[field].(string)
+		if !ok || ciphertext == plaintext {
+			t.Fatalf("%s = %v, want ciphertext", field, config[field])
+		}
+		decrypted, err := Decrypt(ciphertext, []string{key})
+		if err != nil || decrypted != plaintext {
+			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
+		}
+	}
+	for pluginName, field := range map[string]string{
+		"basic-auth": "password",
+		"loggly":     "customer_token",
+	} {
+		ciphertext := configs[pluginName].(map[string]any)[field].(string)
+		if ciphertext == pluginName+"-secret" {
+			t.Fatalf("%s.%s remained plaintext", pluginName, field)
+		}
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if got := configs["basic-auth"].(map[string]any)["password"]; got != "basic-secret" {
+		t.Fatalf("basic-auth.password = %v, want runtime plaintext", got)
+	}
+	if got := configs["loggly"].(map[string]any)["customer_token"]; got == "loggly-secret" {
+		t.Fatalf("loggly.customer_token = %v, want strict ciphertext for plugin-local resolution", got)
+	}
+}
+
+func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.T) {
+	key := "edd1c9f0985e76a2"
+	alreadyEncrypted := encryptForTest(t, key, "already-encrypted")
+	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="
+	configs := map[string]any{
+		"ai-proxy": map[string]any{"auth": map[string]any{
+			"header": map[string]any{
+				"Authorization": ciphertextShapedPlaintext,
+				"X-Encrypted":   "$encrypted://" + alreadyEncrypted,
+			},
+		}},
+		"feishu-auth": map[string]any{
+			"secret_fallbacks": []any{"old-secret-1", "old-secret-2"},
+		},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	header := configs["ai-proxy"].(map[string]any)["auth"].(map[string]any)["header"].(map[string]any)
+	if header["Authorization"] == ciphertextShapedPlaintext {
+		t.Fatal("ai-proxy.auth.header.Authorization remained plaintext")
+	}
+	if header["X-Encrypted"] != alreadyEncrypted {
+		t.Fatal("already encrypted container leaf was encrypted again")
+	}
+	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
+	if fallbacks[0] == "old-secret-1" || fallbacks[1] == "old-secret-2" {
+		t.Fatalf("feishu-auth.secret_fallbacks remained plaintext: %#v", fallbacks)
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if header["Authorization"] != ciphertextShapedPlaintext || header["X-Encrypted"] != "already-encrypted" {
+		t.Fatalf("ai-proxy runtime header = %#v, want plaintext leaves", header)
+	}
+	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
+		t.Fatalf("feishu-auth runtime fallbacks = %#v, want plaintext leaves", fallbacks)
+	}
+}
+
+func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	for _, headerName := range []string{"Authorization", "authorization", "aUtHoRiZaTiOn"} {
+		t.Run(headerName, func(t *testing.T) {
+			configs := map[string]any{
+				"elasticsearch-logger": map[string]any{
+					"headers": map[string]any{
+						headerName:  "Basic ZWxhc3RpYzoxMjM0NTY=",
+						"X-Cluster": "logs",
+					},
+				},
+			}
+
+			if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+				t.Fatalf("EncryptPluginConfigs() error = %v", err)
+			}
+			headers := configs["elasticsearch-logger"].(map[string]any)["headers"].(map[string]any)
+			if headers[headerName] == "Basic ZWxhc3RpYzoxMjM0NTY=" {
+				t.Fatalf("elasticsearch-logger.headers.%s remained plaintext", headerName)
+			}
+			if headers["X-Cluster"] != "logs" {
+				t.Fatalf("elasticsearch-logger.headers.X-Cluster = %v, want unchanged", headers["X-Cluster"])
+			}
+
+			DecryptPluginConfigs(configs, []string{key})
+			if headers[headerName] != "Basic ZWxhc3RpYzoxMjM0NTY=" {
+				t.Fatalf("runtime %s = %v, want plaintext", headerName, headers[headerName])
+			}
+		})
+	}
+}
+
+func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"ai-rate-limiting": map[string]any{"redis_password": "$encrypted://not-base64"},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err == nil {
+		t.Fatal("EncryptPluginConfigs() accepted invalid explicit ciphertext")
+	}
+
+	metadata := map[string]any{"master_apikey": "$encrypted://not-base64"}
+	if err := EncryptPluginMetadata("azure-functions", metadata, []string{key}); err == nil {
+		t.Fatal("EncryptPluginMetadata() accepted invalid explicit ciphertext")
+	}
+}
+
+func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginResolution(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	metadata := map[string]any{
+		"clickhouse": map[string]any{
+			"password": "clickhouse-secret",
+			"user":     "default",
+		},
+		"kafka": map[string]any{
+			"brokers": []any{
+				map[string]any{
+					"host": "127.0.0.1",
+					"sasl_config": map[string]any{
+						"user":     "kafka-user",
+						"password": "kafka-secret",
+					},
+				},
+			},
+		},
+	}
+
+	if err := EncryptPluginMetadata("error-log-logger", metadata, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginMetadata() error = %v", err)
+	}
+	clickhouse := metadata["clickhouse"].(map[string]any)
+	broker := metadata["kafka"].(map[string]any)["brokers"].([]any)[0].(map[string]any)
+	sasl := broker["sasl_config"].(map[string]any)
+	if clickhouse["password"] == "clickhouse-secret" {
+		t.Fatal("clickhouse.password remained plaintext")
+	}
+	if sasl["password"] == "kafka-secret" {
+		t.Fatal("kafka.brokers[].sasl_config.password remained plaintext")
+	}
+	clickhouseCiphertext := clickhouse["password"]
+	kafkaCiphertext := sasl["password"]
+	if clickhouse["user"] != "default" || broker["host"] != "127.0.0.1" || sasl["user"] != "kafka-user" {
+		t.Fatalf("non-secret metadata changed: clickhouse=%#v broker=%#v", clickhouse, broker)
+	}
+
+	DecryptPluginMetadata("error-log-logger", metadata, []string{key})
+	if clickhouse["password"] != clickhouseCiphertext || sasl["password"] != kafkaCiphertext {
+		t.Fatalf(
+			"strict runtime passwords = %v/%v, want ciphertext retained for plugin resolution",
+			clickhouse["password"],
+			sasl["password"],
+		)
+	}
+}
+
+func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"feishu-auth": map[string]any{
+			"secret_fallbacks": []any{
+				encryptForTest(t, key, "old-secret-1"),
+				encryptForTest(t, key, "old-secret-2"),
+			},
+		},
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
+	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
+		t.Fatalf("feishu-auth secret_fallbacks = %#v, want plaintext values", fallbacks)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsAIMapsAndInstanceArrays(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

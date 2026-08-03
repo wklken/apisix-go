@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -121,6 +122,17 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat map[string]string `json:"log_format"`
 }
@@ -157,6 +169,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -217,10 +230,6 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
@@ -237,13 +246,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		status := metrics.Code
 
-		logFields := apisixlog.GetFields(r, p.LogFormat)
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = apisixlog.GetFields(r, p.LogFormat)
+		} else {
+			logFields = defaultAccessLogFields(r, status, w.Header())
+		}
+		logFields["route_id"] = p.RouteID
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -254,6 +266,58 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.Header) map[string]any {
+	requestHeaders := headerFields(r.Header)
+	requestHeaders["host"] = r.Host
+	return map[string]any{
+		"client_ip": requestClientIP(r),
+		"request": map[string]any{
+			"method":      r.Method,
+			"uri":         r.URL.RequestURI(),
+			"headers":     requestHeaders,
+			"querystring": queryFields(r),
+		},
+		"response": map[string]any{
+			"status":  status,
+			"headers": headerFields(responseHeaders),
+		},
+	}
+}
+
+func headerFields(header http.Header) map[string]any {
+	fields := make(map[string]any, len(header))
+	for name, values := range header {
+		key := strings.ToLower(name)
+		if len(values) == 1 {
+			fields[key] = values[0]
+		} else {
+			fields[key] = append([]string(nil), values...)
+		}
+	}
+	return fields
+}
+
+func queryFields(r *http.Request) map[string]any {
+	query := r.URL.Query()
+	fields := make(map[string]any, len(query))
+	for name, values := range query {
+		if len(values) == 1 {
+			fields[name] = values[0]
+		} else {
+			fields[name] = append([]string(nil), values...)
+		}
+	}
+	return fields
+}
+
+func requestClientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (p *Plugin) Send(log map[string]any) {

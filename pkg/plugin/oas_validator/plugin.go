@@ -17,6 +17,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"go.yaml.in/yaml/v3"
 )
@@ -106,6 +107,18 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "spec_url_ttl": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type Config struct {
 	Spec                        string            `json:"spec,omitempty"`
 	SpecURL                     string            `json:"spec_url,omitempty"`
@@ -128,8 +141,13 @@ type Metadata struct {
 }
 
 type openAPISpec struct {
+	Servers    []server            `json:"servers"`
 	Paths      map[string]pathItem `json:"paths"`
 	Components components          `json:"components"`
+}
+
+type server struct {
+	URL string `json:"url"`
 }
 
 type components struct {
@@ -200,6 +218,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -211,6 +230,12 @@ func (p *Plugin) PostInit() error {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
 	p.metadata = base.LoadPluginMetadata[Metadata](name)
+	if p.config.Spec != "" {
+		var raw any
+		if err := json.Unmarshal([]byte(p.config.Spec), &raw); err != nil {
+			return fmt.Errorf("failed to parse inline openapi spec: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -218,11 +243,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		validator, err := p.validator()
 		if err != nil {
+			logger.Error(err.Error())
 			base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
 			return
 		}
 
 		if err := p.validateRequest(validator, r); err != nil {
+			logger.Errorf("error occurred while validating request: %s", err)
 			if p.rejectIfNotMatch() {
 				msg := "failed to validate request. "
 				if p.config.VerboseErrors {
@@ -274,7 +301,10 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 	}
 	compiled, err := compileSpecWithResolver(spec, resolver, baseURL)
 	if err != nil {
-		return nil, err
+		if p.config.SpecURL != "" {
+			return nil, fmt.Errorf("failed to compile openapi spec fetched from URL: %w", err)
+		}
+		return nil, fmt.Errorf("failed to compile inline openapi spec: %w", err)
 	}
 	p.config.compiled = compiled
 	p.compiledAt = p.currentTime()
@@ -388,16 +418,45 @@ func compileSpecWithResolver(spec string, resolver *specResolver, baseURL *url.U
 	}
 
 	compiled := &compiledSpec{}
-	for path, item := range parsed.Paths {
-		compiled.addOperation(path, http.MethodGet, item.Get, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodPost, item.Post, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodPut, item.Put, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodDelete, item.Delete, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodPatch, item.Patch, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodHead, item.Head, item.Parameters, parsed.Components.Schemas)
-		compiled.addOperation(path, http.MethodOptions, item.Options, item.Parameters, parsed.Components.Schemas)
+	serverPaths := []string{""}
+	if len(parsed.Servers) > 0 {
+		serverPaths = make([]string, 0, len(parsed.Servers))
+		for _, server := range parsed.Servers {
+			serverPaths = append(serverPaths, serverBasePath(server.URL))
+		}
+	}
+	for _, serverPath := range serverPaths {
+		for path, item := range parsed.Paths {
+			path = joinServerPath(serverPath, path)
+			compiled.addOperation(path, http.MethodGet, item.Get, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodPost, item.Post, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodPut, item.Put, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodDelete, item.Delete, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodPatch, item.Patch, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodHead, item.Head, item.Parameters, parsed.Components.Schemas)
+			compiled.addOperation(path, http.MethodOptions, item.Options, item.Parameters, parsed.Components.Schemas)
+		}
 	}
 	return compiled, nil
+}
+
+func serverBasePath(serverURL string) string {
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return ""
+	}
+	path := strings.Trim(parsed.Path, "/")
+	if path == "" {
+		return ""
+	}
+	return "/" + path
+}
+
+func joinServerPath(serverPath, operationPath string) string {
+	if serverPath == "" {
+		return operationPath
+	}
+	return strings.TrimSuffix(serverPath, "/") + "/" + strings.TrimPrefix(operationPath, "/")
 }
 
 func (r *specResolver) resolve(
@@ -670,6 +729,11 @@ func resolveSchemaValue(value any, schemas map[string]map[string]any, seen map[s
 
 func (s *compiledSpec) match(method string, path string) (*compiledOperation, map[string]string) {
 	segments := splitPath(path)
+	var (
+		bestOperation   *compiledOperation
+		bestPathParams  map[string]string
+		bestSpecificity = -1
+	)
 	for i := range s.operations {
 		op := &s.operations[i]
 		if op.method != method || len(op.segments) != len(segments) {
@@ -678,6 +742,7 @@ func (s *compiledSpec) match(method string, path string) (*compiledOperation, ma
 
 		params := map[string]string{}
 		matched := true
+		specificity := 0
 		for idx, segment := range op.segments {
 			if isPathParam(segment) {
 				params[strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")] = segments[idx]
@@ -687,12 +752,15 @@ func (s *compiledSpec) match(method string, path string) (*compiledOperation, ma
 				matched = false
 				break
 			}
+			specificity++
 		}
-		if matched {
-			return op, params
+		if matched && specificity > bestSpecificity {
+			bestOperation = op
+			bestPathParams = params
+			bestSpecificity = specificity
 		}
 	}
-	return nil, nil
+	return bestOperation, bestPathParams
 }
 
 func splitPath(path string) []string {

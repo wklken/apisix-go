@@ -5,10 +5,15 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -20,7 +25,8 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 
-	client *resty.Client
+	client         *resty.Client
+	logFormatExtra map[string]string
 }
 
 const (
@@ -68,6 +74,9 @@ const schema = `
     "log_format": {
       "type": "object"
     },
+    "log_format_extra": {
+      "type": "object"
+    },
     "name": {
       "type": "string"
     },
@@ -105,8 +114,27 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "log_format_extra": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
+	LogFormatExtra    map[string]string `json:"log_format_extra"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
@@ -119,9 +147,10 @@ type Endpoint struct {
 }
 
 type Config struct {
-	Endpoint  Endpoint          `json:"endpoint"`
-	SSLVerify *bool             `json:"ssl_verify,omitempty"`
-	LogFormat map[string]string `json:"log_format,omitempty"`
+	Endpoint       Endpoint          `json:"endpoint"`
+	SSLVerify      *bool             `json:"ssl_verify,omitempty"`
+	LogFormat      map[string]string `json:"log_format,omitempty"`
+	LogFormatExtra map[string]string `json:"log_format_extra,omitempty"`
 
 	Name              string `json:"name,omitempty"`
 	BatchMaxSize      int    `json:"batch_max_size,omitempty"`
@@ -148,6 +177,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -202,10 +232,17 @@ func (p *Plugin) PostInit() error {
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
-	if len(p.config.LogFormat) > 0 {
+	switch {
+	case p.config.LogFormat != nil:
 		p.LogFormat = p.config.LogFormat
-	} else {
+	case metadata.LogFormat != nil:
 		p.LogFormat = metadata.LogFormat
+	default:
+		if p.config.LogFormatExtra != nil {
+			p.logFormatExtra = p.config.LogFormatExtra
+		} else {
+			p.logFormatExtra = metadata.LogFormatExtra
+		}
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -223,6 +260,111 @@ func (p *Plugin) PostInit() error {
 		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
 	return nil
+}
+
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := captureRequest(r)
+		metrics := httpsnoop.CaptureMetrics(next, w, r)
+
+		var logFields map[string]any
+		if p.LogFormat != nil {
+			logFields = make(map[string]any, len(p.LogFormat))
+			for key, value := range p.LogFormat {
+				logFields[key] = p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
+			}
+		} else {
+			logFields = buildDefaultEvent(request, w.Header(), r, metrics)
+			for key, value := range p.logFormatExtra {
+				if _, exists := logFields[key]; !exists {
+					logFields[key] = p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
+				}
+			}
+		}
+		_ = p.Fire(logFields)
+	})
+}
+
+type requestSnapshot struct {
+	url        string
+	method     string
+	headers    http.Header
+	query      map[string][]string
+	size       int64
+	host       string
+	remoteAddr string
+}
+
+func captureRequest(r *http.Request) requestSnapshot {
+	size := max(r.ContentLength, 0)
+	host := base.RemoteIP(r.Host)
+	return requestSnapshot{
+		url:        base.RequestVar(r, "$scheme", 0) + "://" + r.Host + r.URL.RequestURI(),
+		method:     r.Method,
+		headers:    r.Header.Clone(),
+		query:      map[string][]string(r.URL.Query()),
+		size:       size,
+		host:       host,
+		remoteAddr: base.RemoteIP(r.RemoteAddr),
+	}
+}
+
+func buildDefaultEvent(
+	request requestSnapshot,
+	responseHeaders http.Header,
+	r *http.Request,
+	metrics httpsnoop.Metrics,
+) map[string]any {
+	return map[string]any{
+		"request_url":      request.url,
+		"request_method":   request.method,
+		"request_headers":  request.headers,
+		"request_query":    request.query,
+		"request_size":     request.size,
+		"response_headers": responseHeaders.Clone(),
+		"response_status":  metrics.Code,
+		"response_size":    metrics.Written,
+		"latency":          metrics.Duration.Milliseconds(),
+		"upstream":         upstreamAddress(r),
+	}
+}
+
+func upstreamAddress(r *http.Request) string {
+	host := apisixVarString(r, "$balancer_ip")
+	if host == "" {
+		return ""
+	}
+	port := apisixVarString(r, "$balancer_port")
+	if port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func apisixVarString(r *http.Request, key string) string {
+	value := apisixctx.GetApisixVar(r, key)
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func (p *Plugin) resolveLogFormatValue(
+	r *http.Request,
+	value string,
+	originalHost string,
+	originalRemoteAddr string,
+) any {
+	switch value {
+	case "$host":
+		return originalHost
+	case "$remote_addr":
+		return originalRemoteAddr
+	case "$upstream_unresolved_host":
+		return apisixctx.GetApisixVar(r, "$balancer_ip")
+	default:
+		return apisixlog.GetField(r, value)
+	}
 }
 
 func (p *Plugin) Send(log map[string]any) {

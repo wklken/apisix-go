@@ -1,0 +1,591 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/opa.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/opa2.t
+    tests: 12
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/opa3.t
+    tests: 2
+
+cases:
+  - name: schema
+    source:
+      file: t/plugin/opa.t
+      tests: [1]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: opa-valid-schema
+              uri: /opa-schema
+              plugins:
+                opa:
+                  host: "{{FIXTURE.opa.URL}}"
+                  policy: example/allow
+              upstream: &primary_upstream
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.primary.ADDR}}": 1
+        fixtures:
+          - name: opa
+            kind: http
+            expect:
+              - method: POST
+                path:
+                  equals: /v1/data/example/allow
+            respond:
+              - status: 200
+                body: '{"result":{"allow":true}}'
+          - name: primary
+            kind: http
+            expect:
+              - method: GET
+                path:
+                  equals: /opa-schema
+            respond:
+              - status: 200
+                body: done
+        steps:
+          - name: request
+            input:
+              path: /opa-schema
+            output:
+              status: 200
+              body:
+                equals: done
+      - name: missing-policy
+        config:
+          routes:
+            - id: opa-missing-policy
+              uri: /opa-schema
+              plugins:
+                opa:
+                  host: http://127.0.0.1:8181
+        input: &schema_input
+          path: /opa-schema
+        output: &schema_error
+          status: 404
+          logs:
+            matches: 'build route opa-.*fail:.*opa'
+      - name: numeric-host
+        config:
+          routes:
+            - id: opa-numeric-host
+              uri: /opa-schema
+              plugins:
+                opa:
+                  host: 3233
+                  policy: example/allow
+        input: *schema_input
+        output: *schema_error
+
+  - name: policy-decisions
+    source:
+      file: t/plugin/opa.t
+      tests: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    config:
+      routes:
+        - id: opa-policy-decisions
+          uris: [/hello, /test]
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: example
+          upstream: *primary_upstream
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - &allowed_opa_request
+            method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"request":\{"scheme":"http","method":"GET","host":"127\.0\.0\.1","port":[0-9]+,"path":"/hello","headers":\{[^}]*"host":"127\.0\.0\.1:[0-9]+"[^}]*"test-header":"only-for-test"[^}]*\},"query":\{"test":"1234","user":"none"\}\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"method":"GET".*"path":"/hello".*"test-header":"not-for-test".*"query":\{"test":"1234","user":"none"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"method":"GET".*"path":"/hello".*"query":\{"test":"abcd","user":"none"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"method":"POST".*"path":"/hello".*"query":\{"test":"1234","user":"none"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"method":"GET".*"path":"/test".*"query":\{"test":"1234","user":"none"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"path":"/test".*"query":\{"test":"abcd","user":"alice"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"path":"/test".*"query":\{"test":"abcd","user":"bob"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"path":"/test".*"query":\{"test":"abcd","user":"carla"\}'
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"path":"/test".*"query":\{"test":"abcd","user":"dylon"\}'
+        respond:
+          - status: 200
+            body: '{"result":{"allow":true}}'
+          - &deny
+            status: 200
+            body: '{"result":{"allow":false}}'
+          - *deny
+          - *deny
+          - *deny
+          - status: 200
+            body: '{"result":{"allow":false,"status_code":302,"headers":{"Location":"http://example.com/auth"}}}'
+          - status: 200
+            body: '{"result":{"allow":false,"headers":{"test":"abcd","abcd":"test"}}}'
+          - status: 200
+            body: '{"result":{"allow":false,"reason":"Give you a string reason"}}'
+          - status: 200
+            body: '{"result":{"allow":false,"reason":{"code":40001,"desc":"Give you a object reason"}}}'
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path:
+              equals: /hello?test=1234&user=none
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: allow-correct-request
+        input: &allowed_input
+          path: /hello?test=1234&user=none
+          headers:
+            test-header: only-for-test
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: deny-wrong-header
+        input:
+          path: /hello?test=1234&user=none
+          headers:
+            test-header: not-for-test
+        output: &forbidden
+          status: 403
+      - name: deny-wrong-query
+        input:
+          path: /hello?test=abcd&user=none
+          headers:
+            test-header: only-for-test
+        output: *forbidden
+      - name: deny-wrong-method
+        input:
+          method: POST
+          path: /hello?test=1234&user=none
+          headers:
+            test-header: only-for-test
+        output: *forbidden
+      - name: deny-wrong-path
+        input:
+          path: /test?test=1234&user=none
+          headers:
+            test-header: only-for-test
+        output: *forbidden
+      - name: redirect-decision
+        input:
+          path: /test?test=abcd&user=alice
+          headers:
+            test-header: only-for-test
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: http://example.com/auth
+      - name: multiple-response-headers
+        input:
+          path: /test?test=abcd&user=bob
+          headers:
+            test-header: only-for-test
+        output:
+          status: 403
+          headers:
+            test:
+              equals: abcd
+            abcd:
+              equals: test
+      - name: string-reason
+        input:
+          path: /test?test=abcd&user=carla
+          headers:
+            test-header: only-for-test
+        output:
+          status: 403
+          body:
+            equals: Give you a string reason
+      - name: object-reason
+        input:
+          path: /test?test=abcd&user=dylon
+          headers:
+            test-header: only-for-test
+        output:
+          status: 403
+          body:
+            equals: '{"code":40001,"desc":"Give you a object reason"}'
+
+  - name: send-headers-upstream
+    source:
+      file: t/plugin/opa.t
+      tests: [12, 13]
+    config:
+      routes:
+        - id: opa-send-headers
+          uri: /echo
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: example
+              send_headers_upstream: [user]
+          upstream: *primary_upstream
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"path":"/echo".*"query":\{"test":"1234","user":"none"\}'
+        respond:
+          - status: 200
+            body: '{"result":{"allow":true,"headers":{"user":"none"}}}'
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            headers:
+              user:
+                equals: none
+        respond:
+          - status: 200
+            headers:
+              user: none
+            body: done
+    steps:
+      - name: request
+        input:
+          path: /echo?test=1234&user=none
+        output:
+          status: 200
+          headers:
+            user:
+              equals: none
+
+  - name: resource-context
+    source:
+      file: t/plugin/opa2.t
+      tests: [1, 2, 3, 4]
+    config:
+      upstreams:
+        - id: u1
+          type: roundrobin
+          nodes:
+            "{{FIXTURE.primary.ADDR}}": 1
+      consumers:
+        - username: test
+          plugins:
+            key-auth:
+              key: test-key
+      services:
+        - id: s1
+          name: s1
+          plugins:
+            key-auth: {}
+      routes:
+        - id: r1
+          uri: /hello
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: echo
+              with_route: true
+              with_consumer: true
+              with_service: true
+          upstream_id: u1
+          service_id: s1
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /v1/data/echo
+            body:
+              matches: '"route":\{[^}]*"id":"r1".*"plugins":\{.*"opa"'
+          - method: POST
+            path:
+              equals: /v1/data/echo
+            body:
+              matches: '"consumer":\{"username":"test".*"plugins":\{.*"key-auth":\{.*"key":"test-key"'
+          - method: POST
+            path:
+              equals: /v1/data/echo
+            body:
+              matches: '"service":\{[^}]*"id":"s1".*"plugins":\{.*"key-auth":\{[^}]*"header":"apikey".*"query":"apikey"'
+        respond:
+          - *deny
+          - *deny
+          - *deny
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: should-not-run
+    steps:
+      - &resource_request
+        name: route-data
+        input:
+          path: /hello
+          headers:
+            test-header: only-for-test
+            apikey: test-key
+        output: *forbidden
+      - name: consumer-data
+        input:
+          path: /hello
+          headers:
+            test-header: only-for-test
+            apikey: test-key
+        output: *forbidden
+      - name: service-data
+        input:
+          path: /hello
+          headers:
+            test-header: only-for-test
+            apikey: test-key
+        output: *forbidden
+
+  - name: missing-service-and-consumer-context
+    source:
+      file: t/plugin/opa2.t
+      tests: [5, 6]
+    config:
+      upstreams:
+        - id: u1
+          type: roundrobin
+          nodes:
+            "{{FIXTURE.primary.ADDR}}": 1
+      routes:
+        - id: opa-no-service
+          uri: /hello
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: echo
+              with_route: true
+              with_consumer: true
+              with_service: true
+          upstream_id: u1
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /v1/data/echo
+            body:
+              not_matches: '"service":|"consumer":'
+        respond:
+          - *deny
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: should-not-run
+    steps:
+      - name: request
+        input:
+          path: /hello
+          headers:
+            test-header: only-for-test
+            apikey: test-key
+        output: *forbidden
+
+  - name: object-reason-with-empty-array
+    source:
+      file: t/plugin/opa2.t
+      tests: [7, 8]
+    config:
+      routes:
+        - id: opa-empty-array
+          uri: /hello
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: example
+          upstream: *primary_upstream
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /v1/data/example
+            body:
+              matches: '"query":\{"user":"elisa"\}'
+        respond:
+          - status: 200
+            body: '{"result":{"allow":false,"reason":{"info":[]}}}'
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: should-not-run
+    steps:
+      - name: request
+        input:
+          path: /hello?user=elisa
+        output:
+          status: 403
+          body:
+            equals: '{"info":[]}'
+
+  - name: route-context-policy
+    source:
+      file: t/plugin/opa2.t
+      tests: [9, 10, 11, 12]
+    variants:
+      - name: valid-route-name
+        config:
+          routes:
+            - id: opa-valid-route-name
+              name: valid
+              uri: /hello
+              plugins:
+                opa:
+                  host: "{{FIXTURE.opa.URL}}"
+                  policy: with_route
+                  with_route: true
+              upstream: *primary_upstream
+        fixtures:
+          - name: opa
+            kind: http
+            expect:
+              - method: POST
+                path:
+                  equals: /v1/data/with_route
+                body:
+                  matches: '"route":\{[^}]*"id":"opa-valid-route-name".*"name":"valid"'
+            respond:
+              - status: 200
+                body: '{"result":{"allow":true}}'
+          - name: primary
+            kind: http
+            expect:
+              - method: GET
+                path:
+                  equals: /hello
+            respond:
+              - status: 200
+                body: done
+        steps:
+          - name: request
+            input:
+              path: /hello
+            output:
+              status: 200
+      - name: invalid-route-name
+        config:
+          routes:
+            - id: opa-invalid-route-name
+              name: not_valid
+              uri: /hello
+              plugins:
+                opa:
+                  host: "{{FIXTURE.opa.URL}}"
+                  policy: with_route
+                  with_route: true
+              upstream: *primary_upstream
+        fixtures:
+          - name: opa
+            kind: http
+            expect:
+              - method: POST
+                path:
+                  equals: /v1/data/with_route
+                body:
+                  matches: '"route":\{[^}]*"id":"opa-invalid-route-name".*"name":"not_valid"'
+            respond:
+              - *deny
+          - name: primary
+            kind: http
+            respond:
+              - status: 200
+                body: should-not-run
+        steps:
+          - name: request
+            input:
+              path: /hello
+            output: *forbidden
+
+  - name: clear-client-header-when-opa-omits-it
+    source:
+      file: t/plugin/opa3.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: opa-clear-client-header
+          uri: /echo
+          plugins:
+            opa:
+              host: "{{FIXTURE.opa.URL}}"
+              policy: example
+              send_headers_upstream: [X-Foo]
+          upstream: *primary_upstream
+    fixtures:
+      - name: opa
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /v1/data/example
+        respond:
+          - status: 200
+            body: '{"result":{"allow":true}}'
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            headers:
+              X-Foo:
+                absent: true
+        respond:
+          - status: 200
+            body: done
+    steps:
+      - name: request
+        input:
+          path: /echo
+          headers:
+            X-Foo: client-value
+        output:
+          status: 200
+          body:
+            equals: done

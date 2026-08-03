@@ -19,6 +19,8 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -334,6 +336,24 @@ func TestNewKafkaWriterUsesBrokerSASLConfig(t *testing.T) {
 	}
 }
 
+func TestNewKafkaWriterUsesMessageTopicOnly(t *testing.T) {
+	p := &Plugin{config: Config{
+		Kafka: &KafkaConfig{
+			Brokers:    []KafkaBroker{{Host: "127.0.0.1", Port: 9092}},
+			KafkaTopic: "apisix-error-logs",
+		},
+	}}
+	p.applyDefaults()
+
+	writer, err := p.newKafkaWriter()
+	if err != nil {
+		t.Fatalf("newKafkaWriter() error = %v", err)
+	}
+	if writer.Topic != "" {
+		t.Fatalf("writer.Topic = %q, want empty so kafkaMessage.Topic selects the destination", writer.Topic)
+	}
+}
+
 func TestSendUsesBatchProcessor(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -387,6 +407,113 @@ func TestSendUsesBatchProcessor(t *testing.T) {
 	}
 }
 
+func TestStartObservingForwardsApplicationLogsToCurrentOwner(t *testing.T) {
+	firstListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen first sink: %v", err)
+	}
+	t.Cleanup(func() { _ = firstListener.Close() })
+	firstHost, firstPortText, err := net.SplitHostPort(firstListener.Addr().String())
+	if err != nil {
+		t.Fatalf("split first sink: %v", err)
+	}
+	first := newTestPlugin(t, Config{
+		TCP:          &TCPConfig{Host: firstHost, Port: mustAtoi(t, firstPortText)},
+		Level:        "WARN",
+		BatchMaxSize: 1,
+	})
+	first.StartObserving()
+
+	secondListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen second sink: %v", err)
+	}
+	t.Cleanup(func() { _ = secondListener.Close() })
+	secondHost, secondPortText, err := net.SplitHostPort(secondListener.Addr().String())
+	if err != nil {
+		t.Fatalf("split second sink: %v", err)
+	}
+	second := newTestPlugin(t, Config{
+		TCP:          &TCPConfig{Host: secondHost, Port: mustAtoi(t, secondPortText)},
+		Level:        "WARN",
+		BatchMaxSize: 1,
+	})
+	second.StartObserving()
+
+	first.Stop()
+	received := make(chan string, 1)
+	go func() {
+		conn, acceptErr := secondListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		body, _ := io.ReadAll(conn)
+		received <- string(body)
+	}()
+
+	logger.Warn("standalone error-log observer marker")
+	select {
+	case payload := <-received:
+		if !strings.Contains(payload, "[warn] standalone error-log observer marker") {
+			t.Fatalf("payload = %q, want observed warning", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for current error-log observer")
+	}
+}
+
+func TestStartObservingFiltersBeforeBatching(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen sink: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split sink: %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		TCP:          &TCPConfig{Host: host, Port: mustAtoi(t, portText)},
+		Level:        "WARN",
+		BatchMaxSize: 2,
+	})
+	p.StartObserving()
+
+	received := make(chan string, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		body, _ := io.ReadAll(conn)
+		received <- string(body)
+	}()
+
+	logger.Info("filtered observer info")
+	logger.Warn("first eligible observer warning")
+	select {
+	case payload := <-received:
+		t.Fatalf("payload = %q before two eligible entries, low-level info counted toward batch size", payload)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	logger.Error("second eligible observer error")
+	select {
+	case payload := <-received:
+		if strings.Contains(payload, "filtered observer info") {
+			t.Fatalf("payload = %q, want info filtered out", payload)
+		}
+		if !strings.Contains(payload, "first eligible observer warning") ||
+			!strings.Contains(payload, "second eligible observer error") {
+			t.Fatalf("payload = %q, want warning and error in one batch", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for two eligible log entries")
+	}
+}
+
 func TestSendRetriesFailedBatch(t *testing.T) {
 	var attempts atomic.Int32
 	done := make(chan struct{})
@@ -433,6 +560,31 @@ func TestDefaultsMatchOfficialMetadata(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 || p.config.BufferDuration != 60 || p.config.InactiveTimeout != 3 {
 		t.Fatalf("batch defaults = %d/%d/%d", p.config.BatchMaxSize, p.config.BufferDuration, p.config.InactiveTimeout)
+	}
+}
+
+func TestMetadataSchemaRejectsTCPWithoutHost(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{
+		"tcp": map[string]any{"port": 1999},
+	}, p.GetSchema())
+	if err == nil || !strings.Contains(err.Error(), "host") {
+		t.Fatalf("Validate() error = %v, want missing tcp.host rejection", err)
+	}
+}
+
+func TestMetadataSchemaRejectsMissingSink(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{"level": "WARN"}, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want metadata without a sink rejected")
 	}
 }
 

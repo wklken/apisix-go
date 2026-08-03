@@ -1,0 +1,648 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests-grpc.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests.t
+    tests: 30
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests2.t
+    tests: 11
+
+cases:
+  - name: public-api-and-request-merging
+    source: {file: t/plugin/batch-requests.t, tests: [1, 2]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: batch-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: batch-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: batch-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+    fixtures:
+      - name: b
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: "/b?base=base_query&conflict=query_value"}
+            headers:
+              Base-Header: {equals: base}
+              ConflictHeader: {equals: b-header-value}
+              Header1: {equals: hello}
+              Header2: {equals: world}
+              OuterConflict: {equals: common_value}
+              X-Real-IP: {matches: '^127\.0\.0\.1$'}
+        respond: [{status: 200, headers: {X-Res: B}, body: B}]
+      - name: c
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: PUT
+            path: {equals: "/c?base=base_query&conflict=query_value"}
+            headers:
+              Base-Header: {equals: base}
+              X-Real-IP: {matches: '^127\.0\.0\.1$'}
+        respond: [{status: 201, headers: {X-Res: C}, body: C}]
+      - name: d
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: "/d?base=base_query&conflict=d_value&one=thing"}
+            headers: {Base-Header: {equals: base}}
+        respond: [{status: 202, headers: {X-Res: D}, body: D}]
+    steps:
+      - name: merge-common-and-item-values
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          headers:
+            Content-Type: application/json
+            ConflictHeader: outer-header
+            OuterConflict: outer-conflict
+          body: |
+            {
+              "query": {"base":"base_query","conflict":"query_value"},
+              "headers": {
+                "Base-Header":"base",
+                "ConflictHeader":"header_value",
+                "OuterConflict":"common_value"
+              },
+              "pipeline": [
+                {
+                  "path":"/b",
+                  "headers": {
+                    "Header1":"hello",
+                    "Header2":"world",
+                    "ConflictHeader":"b-header-value"
+                  }
+                },
+                {"path":"/c","method":"PUT"},
+                {"path":"/d","query":{"one":"thing","conflict":"d_value"}}
+              ]
+            }
+        output:
+          status: 200
+          headers: {Content-Type: {matches: '^application/json'}}
+          body:
+            matches: '"status":200.*"body":"B".*"status":201.*"body":"C".*"status":202.*"body":"D"'
+
+  - name: request-schema-validation
+    source: {file: t/plugin/batch-requests.t, tests: [3, 4, 8, 9, 10, 11, 12, 13, 14, 24, 26, 29]}
+    runtime: {plugins: [batch-requests]}
+    config: {routes: []}
+    steps:
+      - name: missing-pipeline
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline1":[{"path":"/b"}]}'}
+        output: {status: 400, body: {matches: 'pipeline is required'}}
+      - name: top-level-extension-is-allowed
+        input: {method: POST, path: /apisix/batch-requests, body: '{"extension":{"trace":true},"pipeline":[{"path":"/missing"}]}'}
+        output: {status: 200, body: {matches: '"status":404'}}
+      - name: timeout-is-not-number
+        input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":"200","pipeline":[{"path":"/b"}]}'}
+        output: {status: 400, body: {matches: 'bad request body:.*timeout'}}
+      - name: no-body
+        input: {method: POST, path: /apisix/batch-requests}
+        output: {status: 400, body: {matches: 'no request body.*at least one pipeline'}}
+      - name: malformed-json
+        input: {method: POST, path: /apisix/batch-requests, body: invalid json string}
+        output: {status: 400, body: {matches: 'invalid request body: invalid json string'}}
+      - name: empty-path
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":""}]}'}
+        output: {status: 400, body: {matches: 'pipeline\[0\]\.path is required'}}
+      - name: lowercase-method
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/c","method":"put"}]}'}
+        output: {status: 400, body: {matches: 'pipeline\[0\]\.method is invalid'}}
+      - name: invalid-version
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/d","version":1.2}]}'}
+        output: {status: 400, body: {matches: 'pipeline\[0\]\.version is invalid'}}
+      - name: ssl-verify-type
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/d","ssl_verify":1.2}]}'}
+        output: {status: 400, body: {matches: 'bad request body:.*ssl_verify'}}
+      - name: empty-pipeline
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[]}'}
+        output: {status: 400, body: {matches: 'pipeline must contain at least one request'}}
+      - name: unknown-pipeline-field
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/b","unknown_field":"x"}]}'}
+        output: {status: 400, body: {matches: 'bad request body:.*unknown_field'}}
+      - name: timeout-below-minimum
+        input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":0,"pipeline":[{"path":"/b"}]}'}
+        output: {status: 400, body: {matches: 'timeout must be at least 1 millisecond'}}
+      - name: missing-entry-path
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"method":"GET"}]}'}
+        output: {status: 400, body: {matches: 'pipeline\[0\]\.path is required'}}
+
+  - name: different-response-times
+    source: {file: t/plugin/batch-requests.t, tests: [5]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: timed-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: timed-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: timed-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+    fixtures:
+      - {name: b, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /b}}], respond: [{status: 200, delay: 20ms}]}
+      - {name: c, kind: http, expect_requests: 1, expect: [{method: PUT, path: {equals: /c}}], respond: [{status: 201, delay: 50ms}]}
+      - {name: d, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /d}}], respond: [{status: 202, delay: 200ms}]}
+    steps:
+      - name: preserve-order-across-different-response-times
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"timeout":2000,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output:
+          status: 200
+          body: {matches: '"status":200.*"status":201.*"status":202'}
+
+  - name: last-request-timeout
+    source: {file: t/plugin/batch-requests.t, tests: [6]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: last-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: last-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: last-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+        - {id: intentional-504, uri: /intentional-504, upstream: {type: roundrobin, nodes: {"{{FIXTURE.intentional.ADDR}}": 1}}}
+        - {id: after-intentional-504, uri: /after-504, upstream: {type: roundrobin, nodes: {"{{FIXTURE.after.ADDR}}": 1}}}
+    fixtures:
+      - {name: b, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /b}}], respond: [{status: 200}]}
+      - {name: c, kind: http, expect_requests: 1, expect: [{method: PUT, path: {equals: /c}}], respond: [{status: 201}]}
+      - {name: d, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /d}}], respond: [{status: 202, delay: 1s}]}
+      - {name: intentional, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /intentional-504}}], respond: [{status: 504, body: intentional}]}
+      - {name: after, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /after-504}}], respond: [{status: 204}]}
+    steps:
+      - name: aggregate-timeout-after-successes
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"timeout":100,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output:
+          status: 200
+          elapsed_at_least: 90ms
+          elapsed_less_than: 500ms
+          body: {matches: '"status":200.*"status":201.*"status":504,"reason":"upstream timeout"'}
+      - name: intentional-504-does-not-stop-pipeline
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"pipeline":[{"path":"/intentional-504"},{"path":"/after-504"}]}'
+        output:
+          status: 200
+          body: {matches: '^\[\{"status":504,"reason":"Gateway Timeout".*"body":"intentional"\},\{"status":204,"reason":"No Content".*\}\]\n?$'}
+
+  - name: first-request-timeout-stops-pipeline
+    source: {file: t/plugin/batch-requests.t, tests: [7]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: first-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: first-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: first-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+    fixtures:
+      - {name: b, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /b}}], respond: [{status: 200, delay: 1s}]}
+      - {name: c, kind: http, expect_requests: 0, respond: [{status: 201}]}
+      - {name: d, kind: http, expect_requests: 0, respond: [{status: 202}]}
+    steps:
+      - name: stop-after-first-timeout
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"timeout":100,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output:
+          status: 200
+          elapsed_at_least: 90ms
+          elapsed_less_than: 500ms
+          body: {matches: '^\[\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
+
+  - name: streamed-client-body-and-header-copy
+    source: {file: t/plugin/batch-requests.t, tests: [15, 16]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: copy-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: copy-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: copy-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+    fixtures:
+      - name: b
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /b}}
+          - &copied_b
+            method: GET
+            path: {equals: /b}
+            headers:
+              Cookie: {equals: request-cookies}
+              OuterHeader: {equals: request-header}
+              Content-Type: &absent {absent: true}
+              Content-Trace: *absent
+        respond: [{status: 200}, {status: 200, headers: {X-Cookie: request-cookies-b, X-HeaderB: request-header-b}}]
+      - name: c
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: PUT, path: {equals: /c}}
+          - method: PUT
+            path: {equals: /c}
+            headers: {Cookie: {equals: request-cookies}, OuterHeader: {equals: request-header}, Content-Type: *absent, Content-Trace: *absent}
+        respond: [{status: 201}, {status: 201, headers: {X-Cookie: request-cookies-c, X-HeaderC: request-header-c}}]
+      - name: d
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /d}}
+          - method: GET
+            path: {equals: /d}
+            headers: {Cookie: {equals: request-cookies}, OuterHeader: {equals: request-header}, Content-Type: *absent, Content-Trace: *absent}
+        respond: [{status: 202}, {status: 202, headers: {X-Cookie: request-cookies-d, X-HeaderD: request-header-d}}]
+    steps:
+      - name: chunked-valid-batch
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          chunked: true
+          body_repeat:
+            value: " "
+            count: 300000
+            suffix: '{"timeout":1000,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output: {status: 200, body: {matches: '"status":200.*"status":201.*"status":202'}}
+      - name: copy-non-content-outer-headers
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          headers:
+            Content-Type: application/json
+            Content-Trace: must-not-copy
+            Cookie: request-cookies
+            OuterHeader: request-header
+          body: '{"timeout":1000,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output:
+          status: 200
+          body: {matches: 'request-cookies-b.*request-header-b.*request-cookies-c.*request-header-c.*request-cookies-d.*request-header-d'}
+
+  - name: default-body-limit
+    source: {file: t/plugin/batch-requests.t, tests: [17, 18]}
+    runtime: {plugins: [batch-requests]}
+    config: {routes: []}
+    steps:
+      - name: content-length-above-one-megabyte
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body_repeat: {value: "1234", count: 262145}
+        output: &too_large
+          status: 413
+          body: {matches: 'request body too large'}
+      - name: chunked-body-above-one-megabyte
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          chunked: true
+          body_repeat: {value: "11111111", count: 131073}
+        output: *too_large
+
+  - name: metadata-body-limit
+    source: {file: t/plugin/batch-requests.t, tests: [19, 20, 21, 22]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      plugin_metadata: [{id: batch-requests, max_body_size: 2048}]
+      routes:
+        - {id: metadata-a, uri: /a, upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}}
+    fixtures:
+      - name: a
+        kind: http
+        expect_requests: 2
+        expect:
+          - {method: GET, path: {equals: /a}}
+          - method: GET
+            path: {equals: /a}
+            headers: {Base-Header: {equals: base}, Header1: {equals: hello}, Header2: {equals: world}}
+        respond:
+          - {status: 200, body: metadata-ready}
+          - {status: 200, headers: {X-Res: a, Base-Header: base, X-Header1: hello, X-Header2: world}, body: A}
+    steps:
+      - name: metadata-installed
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/a"}]}'}
+        output: {status: 200, body: {matches: '"status":200.*"body":"metadata-ready"'}}
+      - name: above-metadata-limit
+        input: {method: POST, path: /apisix/batch-requests, body_repeat: {value: "1234", count: 1024}}
+        output: &metadata_too_large {status: 413, body: {matches: 'request body too large'}}
+      - name: expect-continue-above-metadata-limit
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          headers: {Expect: 100-continue}
+          body_repeat: {value: "1234", count: 1024}
+        output: *metadata_too_large
+      - name: below-metadata-limit
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"headers":{"Base-Header":"base"},"pipeline":[{"path":"/a","headers":{"Header1":"hello","Header2":"world"}}]}'
+        output: {status: 200, body: {matches: '"status":200.*"Base-Header":"base".*"X-Header1":"hello".*"X-Header2":"world".*"body":"A"'}}
+
+  - name: invalid-metadata-body-size
+    source: {file: t/plugin/batch-requests.t, tests: [23]}
+    variants:
+      - name: reject-invalid-initial-global-metadata
+        runtime: {plugins: [batch-requests]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+          routes: []
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"}]}'}
+        output:
+          status: 400
+          body: {matches: 'invalid configuration:.*max_body_size'}
+          logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: invalid-reload-keeps-last-valid-global-metadata
+        runtime: {plugins: [batch-requests]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes: []
+        steps:
+          - name: install-invalid-limit
+            config:
+              plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+              routes: []
+            config_probe:
+              input:
+                method: POST
+                path: /apisix/batch-requests
+                body_repeat: &above_128 {value: " ", count: 128, suffix: '{"pipeline":[{"path":"/missing"}]}'}
+              output: &limited_413 {status: 413, body: {matches: 'request body too large'}}
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output: *limited_413
+            wait: 150ms
+          - name: invalid-limit-was-observed-and-last-good-survived
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output:
+              status: 413
+              body: {matches: 'request body too large'}
+              logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: invalid-reload-plus-route-change-keeps-store-snapshot
+        runtime: {plugins: [batch-requests, mocking]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes:
+            - {id: metadata-generation-one, uri: /generation-one, plugins: {mocking: {response_status: 204, response_example: ready}}}
+        steps:
+          - name: rebuild-router-with-invalid-metadata
+            config:
+              plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+              routes:
+                - {id: metadata-generation-two, uri: /generation-two, plugins: {mocking: {response_status: 204, response_example: ready}}}
+            config_probe:
+              input: {path: /generation-two}
+              output: {status: 204}
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output:
+              status: 413
+              body: {matches: 'request body too large'}
+              logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: metadata-deletion-clears-store-snapshot
+        runtime: {plugins: [batch-requests, mocking]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes:
+            - {id: metadata-delete-one, uri: /delete-one, plugins: {mocking: {response_status: 204, response_example: ready}}}
+        steps:
+          - name: delete-metadata-and-rebuild-router
+            config:
+              routes:
+                - {id: metadata-delete-two, uri: /delete-two, plugins: {mocking: {response_status: 204, response_example: ready}}}
+            config_probe:
+              input: {path: /delete-two}
+              output: {status: 204}
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output: {status: 200, body: {matches: '"status":404'}}
+
+  - name: pipeline-request-body
+    source: {file: t/plugin/batch-requests.t, tests: [25]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: batch-echo, uri: /echo, upstream: {type: roundrobin, nodes: {"{{FIXTURE.echo.ADDR}}": 1}}}
+    fixtures:
+      - name: echo
+        kind: http
+        expect_requests: 1
+        expect: [{method: POST, path: {equals: /echo}, body: {equals: hello}}]
+        respond: [{status: 200, echo_request_body: true}]
+    steps:
+      - name: forward-body
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"pipeline":[{"method":"POST","path":"/echo","body":"hello"}]}'
+        output: {status: 200, body: {matches: '"status":200.*"body":"hello"'}}
+
+  - name: metadata-pipeline-limit
+    source: {file: t/plugin/batch-requests.t, tests: [27, 28]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      plugin_metadata: [{id: batch-requests, max_pipeline_items: 2}]
+      routes: []
+    steps:
+      - name: configured-limit-allows-two
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"},{"path":"/missing"}]}'}
+        output: {status: 200, body: {matches: '"status":404.*"status":404'}}
+      - name: configured-limit-rejects-three
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/b"},{"path":"/b"},{"path":"/b"}]}'}
+        output: {status: 400, body: {matches: 'too many pipeline requests, 3 exceeds the maximum of 2'}}
+
+  - name: empty-metadata-restores-defaults
+    source: {file: t/plugin/batch-requests.t, tests: [30]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      plugin_metadata: [{id: batch-requests}]
+      routes: []
+    input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"}]}'}
+    output: {status: 200, body: {matches: '"status":404'}}
+
+  - name: custom-uri-replaces-default
+    source: {file: t/plugin/batch-requests2.t, tests: [1, 2]}
+    runtime:
+      plugins: [batch-requests]
+      plugin_attr: {batch-requests: {uri: /foo/bar}}
+    config: {routes: []}
+    input:
+      method: POST
+      path: /apisix/batch-requests
+      body: '{"timeout":100,"pipeline":[{"path":"/a"}]}'
+    output: {status: 404}
+
+  - name: custom-uri-serves-batches
+    source: {file: t/plugin/batch-requests2.t, tests: [3, 4]}
+    runtime:
+      plugins: [batch-requests]
+      plugin_attr: {batch-requests: {uri: /foo/bar}}
+    config:
+      routes:
+        - {id: custom-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
+        - {id: custom-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+        - {id: custom-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+    fixtures:
+      - {name: b, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /b}}], respond: [{status: 200}]}
+      - {name: c, kind: http, expect_requests: 1, expect: [{method: PUT, path: {equals: /c}}], respond: [{status: 201}]}
+      - {name: d, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /d}}], respond: [{status: 202}]}
+    steps:
+      - name: use-custom-uri
+        input:
+          method: POST
+          path: /foo/bar
+          body: '{"timeout":100,"pipeline":[{"path":"/b"},{"path":"/c","method":"PUT"},{"path":"/d"}]}'
+        output: {status: 200, body: {matches: '"status":200.*"status":201.*"status":202'}}
+
+  - name: unrelated-plugin-attr-keeps-default
+    source: {file: t/plugin/batch-requests2.t, tests: [5]}
+    runtime:
+      plugins: [batch-requests]
+      plugin_attr: {x: {uri: /foo/bar}}
+    config: {routes: []}
+    input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":100,"pipeline":[{"path":"/missing"}]}'}
+    output: {status: 200, body: {matches: '"status":404'}}
+
+  - name: missing-uri-attr-keeps-default
+    source: {file: t/plugin/batch-requests2.t, tests: [6]}
+    runtime:
+      plugins: [batch-requests]
+      plugin_attr: {batch-requests: {xyz: /foo/bar}}
+    config: {routes: []}
+    input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":100,"pipeline":[{"path":"/missing"}]}'}
+    output: {status: 200, body: {matches: '"status":404'}}
+
+  - name: real-ip-header-is-authoritative
+    source: {file: t/plugin/batch-requests2.t, tests: [7, 8, 9]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: real-ip, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
+    fixtures:
+      - name: c
+        kind: http
+        expect_requests: 3
+        expect:
+          - &real_ip_request
+            method: PUT
+            path: {equals: /c}
+            headers: {X-Real-IP: {matches: '^127\.0\.0\.1$'}}
+          - *real_ip_request
+          - *real_ip_request
+        respond:
+          - &real_ip_response {status: 201, headers: {Client-IP: 127.0.0.1, Client-IP-From-Hdr: 127.0.0.1}, body: C}
+          - *real_ip_response
+          - *real_ip_response
+    steps:
+      - name: common-real-ip-is-overridden
+        input: {method: POST, path: /apisix/batch-requests, body: '{"headers":{"x-real-ip":"127.0.0.2"},"pipeline":[{"path":"/c","method":"PUT"}]}'}
+        output: &real_ip_output {status: 200, body: {matches: '"status":201.*"Client-Ip":"127.0.0.1".*"Client-Ip-From-Hdr":"127.0.0.1".*"body":"C"'}}
+      - name: item-real-ip-is-overridden
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/c","method":"PUT","headers":{"x-real-ip":"127.0.0.2"}}]}'}
+        output: *real_ip_output
+      - name: underscore-header-does-not-override-real-ip
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/c","method":"PUT","headers":{"x_real-ip":"127.0.0.2"}}]}'}
+        output: *real_ip_output
+
+  - name: batch-response-content-type
+    source: {file: t/plugin/batch-requests2.t, tests: [10]}
+    runtime: {plugins: [batch-requests]}
+    config: {routes: []}
+    input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing","method":"PUT"}]}'}
+    output:
+      status: 200
+      headers: {Content-Type: {matches: '^application/json'}}
+      body: {matches: '"status":404'}
+
+  - name: timed-out-subresponse-count
+    source: {file: t/plugin/batch-requests2.t, tests: [11]}
+    runtime: {plugins: [batch-requests]}
+    config:
+      routes:
+        - {id: batch-ok, uri: /ok, upstream: {type: roundrobin, nodes: {"{{FIXTURE.ok.ADDR}}": 1}}}
+        - {id: batch-timeout, uri: /timeout, upstream: {type: roundrobin, nodes: {"{{FIXTURE.timeout.ADDR}}": 1}}}
+    fixtures:
+      - {name: ok, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /ok}}], respond: [{status: 200, body: ok}]}
+      - {name: timeout, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /timeout}}], respond: [{status: 200, delay: 1s, body: timeout}]}
+    steps:
+      - name: no-empty-subresponse-after-timeout
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"timeout":200,"pipeline":[{"path":"/ok","method":"GET"},{"path":"/timeout","method":"GET"}]}'
+        output:
+          status: 200
+          body: {matches: '^\[\{"status":200.*"body":"ok"\},\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
+
+  - name: grpc-transcode-direct-and-batch
+    source: {file: t/plugin/batch-requests-grpc.t, tests: [1, 2, 3, 4, 5]}
+    runtime: {plugins: [batch-requests, grpc-transcode]}
+    config:
+      protos:
+        - id: "1"
+          content: |
+            syntax = "proto3";
+            package helloworld;
+            service Greeter {
+              rpc SayHello (HelloRequest) returns (HelloReply) {}
+            }
+            message HelloRequest {
+              string name = 1;
+            }
+            message HelloReply {
+              string message = 1;
+            }
+      routes:
+        - id: batch-grpc
+          uri: /grpctest
+          methods: [GET, POST]
+          plugins:
+            grpc-transcode:
+              proto_id: "1"
+              service: helloworld.Greeter
+              method: SayHello
+          upstream:
+            scheme: grpc
+            type: roundrobin
+            nodes: {"{{FIXTURE.grpc.ADDR}}": 1}
+        - id: batch-http
+          uri: /get
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.http.ADDR}}": 1}}
+    fixtures:
+      - name: grpc
+        kind: h2c
+        expect_requests: 2
+        expect:
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {Content-Type: {equals: application/grpc}}
+            grpc: {message_base64: CgV3b3JsZA==}
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {Content-Type: {equals: application/grpc}}
+            grpc: {message_base64: ""}
+        respond:
+          - grpc: {message_base64: CgtIZWxsbyB3b3JsZA==, status: "0"}
+          - grpc: {message_base64: CgZIZWxsbyA=, status: "0"}
+      - name: http
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /get}}]
+        respond: [{status: 200, body: hello}]
+    steps:
+      - name: direct-grpc-transcode-route
+        input: {method: GET, path: "/grpctest?name=world"}
+        output: {status: 200, body: {json_equals: '{"message":"Hello world"}'}}
+      - name: mixed-grpc-and-http-batch
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          headers: {Content-Type: application/json}
+          body: '{"headers":{"Content-Type":"application/json"},"pipeline":[{"method":"GET","path":"/grpctest"},{"method":"GET","path":"/get"}]}'
+        output:
+          status: 200
+          body: {matches: '"status":200.*\\"message\\":\\"Hello \\".*"status":200.*"body":"hello"'}

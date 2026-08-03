@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,12 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	observabilitymetrics "github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -113,6 +116,131 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotForwardOrRegenerateAcceptEncoding(t *testing.T) {
+	var acceptEncoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+		Override: Override{Endpoint: upstream.URL},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called by ai-proxy")
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	if acceptEncoding != "" {
+		t.Fatalf("upstream Accept-Encoding = %q, want absent", acceptEncoding)
+	}
+}
+
+func TestBuildProviderRequestUsesOfficialOpenAIEndpointAndAuth(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "some-key"}},
+		Options: map[string]any{
+			"model":       "gpt-4",
+			"max_tokens":  float64(512),
+			"temperature": float64(1),
+		},
+	})
+	clientRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+	)
+	clientRequest.Header.Set("Content-Type", "application/json")
+
+	body, protocol, err := p.readJSONBody(clientRequest)
+	if err != nil {
+		t.Fatalf("readJSONBody() error = %v", err)
+	}
+	providerRequest, err := p.buildProviderRequest(clientRequest, body, protocol)
+	if err != nil {
+		t.Fatalf("buildProviderRequest() error = %v", err)
+	}
+	if got := providerRequest.URL.String(); got != "https://api.openai.com/v1/chat/completions" {
+		t.Fatalf("provider URL = %q, want official OpenAI chat endpoint", got)
+	}
+	if got := providerRequest.Header.Get("Authorization"); got != "some-key" {
+		t.Fatalf("provider Authorization = %q, want configured key", got)
+	}
+	var providerBody map[string]any
+	if err := json.NewDecoder(providerRequest.Body).Decode(&providerBody); err != nil {
+		t.Fatalf("decode provider body: %v", err)
+	}
+	if providerBody["model"] != "gpt-4" ||
+		providerBody["max_tokens"] != float64(512) ||
+		providerBody["temperature"] != float64(1) {
+		t.Fatalf("provider body = %#v, want configured model and options", providerBody)
+	}
+}
+
+func TestBuildProviderRequestPreservesPassthroughRouting(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth: Auth{
+			Header: map[string]string{"Authorization": "Bearer token"},
+			Query:  map[string]string{"akey": "secret"},
+		},
+		Override: Override{
+			Endpoint: "https://provider.example?name=fromendpoint&ekey=eval",
+		},
+	})
+	clientRequest := httptest.NewRequest(
+		http.MethodPut,
+		"/v1/images/generations?name=fromclient&ckey=cval&akey=attacker",
+		strings.NewReader(`{"prompt":"x"}`),
+	)
+	clientRequest.Header.Set("Content-Type", "application/json")
+
+	body, protocol, err := p.readJSONBody(clientRequest)
+	if err != nil {
+		t.Fatalf("readJSONBody() error = %v", err)
+	}
+	if protocol != ai_protocols.Passthrough {
+		t.Fatalf("protocol = %#v, want passthrough", protocol)
+	}
+	providerRequest, err := p.buildProviderRequest(clientRequest, body, protocol)
+	if err != nil {
+		t.Fatalf("buildProviderRequest() error = %v", err)
+	}
+	if providerRequest.Method != http.MethodPut {
+		t.Fatalf("provider method = %q, want PUT", providerRequest.Method)
+	}
+	wantURL := "https://provider.example/v1/images/generations?" +
+		"akey=secret&ckey=cval&ekey=eval&name=fromclient"
+	if got := providerRequest.URL.String(); got != wantURL {
+		t.Fatalf("provider URL = %q, want %q", got, wantURL)
+	}
+}
+
+func TestReadJSONBodyRejectsNullWithoutPanicking(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("null"))
+	req.Header.Set("Content-Type", "application/json")
+
+	if _, _, err := p.readJSONBody(req); err == nil {
+		t.Fatal("readJSONBody() error = nil, want unsupported null body")
+	}
+}
+
 func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	var upstreamBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +300,96 @@ func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	}
 	if got := metadata["gateway"]; got != "apisix-go" {
 		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
+func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"provider": "openai",
+		"auth":     map[string]any{"header": map[string]any{"Authorization": "Bearer t"}},
+		"override": map[string]any{
+			"request_body": map[string]any{"not-a-protocol": map[string]any{"x": 1}},
+		},
+	}
+
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("unknown request_body protocol key was accepted")
+	}
+}
+
+func TestHandlerPreservesRawBodyWhenProviderRequestIsUnchanged(t *testing.T) {
+	const raw = `{ "messages" : [ { "role" : "user", "content" : "hi" } ], "temperature" : 0.7 }`
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	if upstreamBody != raw {
+		t.Fatalf("upstream body = %q, want exact raw body %q", upstreamBody, raw)
+	}
+}
+
+func TestHandlerDeepMergesRequestBodyIntoGeneratedStreamOptions(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+		Override: Override{
+			Endpoint: upstream.URL + "/v1/chat/completions",
+			RequestBody: map[string]any{
+				"openai-chat": map[string]any{
+					"stream_options": map[string]any{"extra": float64(1)},
+				},
+			},
+		},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/chat",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	streamOptions, ok := upstreamBody["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %#v, want object", upstreamBody["stream_options"])
+	}
+	if streamOptions["include_usage"] != true || streamOptions["extra"] != float64(1) {
+		t.Fatalf("stream_options = %#v, want generated include_usage and configured extra", streamOptions)
 	}
 }
 
@@ -286,13 +504,14 @@ func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
 }
 
 func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
+	const upstreamResponse = `{
+		  "model": "gpt-4-0613",
+		  "usage": {"prompt_tokens": 23, "completion_tokens": 8, "total_tokens": 31}
+		}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
-		  "model": "gpt-4-0613",
-		  "usage": {"prompt_tokens": 23, "completion_tokens": 8, "total_tokens": 31}
-		}`))
+		_, _ = w.Write([]byte(upstreamResponse))
 	}))
 	defer upstream.Close()
 
@@ -325,6 +544,54 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	assertUsageRequestVars(t, req, float64(23), int64(31))
 	if got := apisixlog.GetField(req, "$llm_prompt_tokens"); got != int64(23) {
 		t.Fatalf("log $llm_prompt_tokens = %v, want 23", got)
+	}
+	upstreamAddress := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := strings.Cut(upstreamAddress, ":")
+	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
+	assertLLMRequestVar(t, req, "$upstream_status", "200")
+	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
+	assertLLMRequestVar(t, req, "$upstream_host", upstreamHost)
+	assertLLMRequestVar(t, req, "$upstream_response_length", int64(len(upstreamResponse)))
+	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
+		t.Fatal("$upstream_response_time is empty")
+	}
+}
+
+func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	upstreamAddress := strings.TrimPrefix(upstream.URL, "http://")
+	upstreamHost, _, _ := strings.Cut(upstreamAddress, ":")
+	upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+		Options:  map[string]any{"model": "gpt-4"},
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"ping"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want 503", rr.Code)
+	}
+	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
+	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
+	assertLLMRequestVar(t, req, "$upstream_host", upstreamHost)
+	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {
+		t.Fatal("$upstream_response_time is empty")
+	}
+	for _, key := range []string{"$upstream_status", "$upstream_response_length"} {
+		if got := apisixctx.GetRequestVar(req, key); got != nil {
+			t.Fatalf("%s = %#v, want unset", key, got)
+		}
 	}
 }
 
@@ -601,6 +868,51 @@ func TestHandlerConvertsAnthropicMessagesThroughOpenAIProvider(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsInvalidAnthropicMessagesBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing messages", body: `{"model":"claude-3-5-sonnet-20241022"}`},
+		{name: "non-array messages", body: `{"model":"claude-3-5-sonnet-20241022","messages":"hello"}`},
+		{name: "empty messages", body: `{"model":"claude-3-5-sonnet-20241022","messages":[]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstreamCalls int
+			p := newTestPlugin(t, Config{
+				Provider: "openai-compatible",
+				Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+			})
+			p.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				}, nil
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for invalid Anthropic request")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("response code = %d, want 400; body = %q", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "missing messages") {
+				t.Fatalf("response body = %q, want missing messages", rr.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+		})
+	}
+}
+
 func TestVertexEmbeddingsEndpoint(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Provider:     "vertex-ai",
@@ -705,6 +1017,85 @@ func TestHandlerBuildsAndSignsBedrockConverseRequest(t *testing.T) {
 	}
 	if got := upstreamBody["inferenceConfig"].(map[string]any)["maxTokens"]; got != float64(64) {
 		t.Fatalf("inferenceConfig.maxTokens = %#v, want 64", got)
+	}
+}
+
+func TestAppendBedrockEndpointEscapesARNModelAsOnePathSegment(t *testing.T) {
+	const model = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123"
+	got, err := appendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
+	if err != nil {
+		t.Fatalf("appendBedrockEndpoint() error = %v", err)
+	}
+	const want = "https://bedrock-runtime.us-east-1.amazonaws.com/model/" +
+		"arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse"
+	if got != want {
+		t.Fatalf("appendBedrockEndpoint() = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerRejectsInvalidBedrockRequestBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name       string
+		options    map[string]any
+		path       string
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "missing model",
+			path:       "/single-ai/body-model-only/converse",
+			body:       `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "could not resolve upstream path",
+		},
+		{
+			name:       "non Converse protocol",
+			options:    map[string]any{"model": "claude"},
+			path:       "/single-ai/bedrock-chat",
+			body:       `{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "does not support openai-chat protocol",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstreamCalls int
+			p := newTestPlugin(t, Config{
+				Provider:     "bedrock",
+				ProviderConf: map[string]any{"region": "us-east-1"},
+				Auth: Auth{AWS: &ai_auth.AWSConfig{
+					AccessKeyID: "key", SecretAccessKey: "secret",
+				}},
+				Options:  test.options,
+				Override: Override{Endpoint: "http://127.0.0.1:1"},
+			})
+			p.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				}, nil
+			})
+			req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for invalid Bedrock request")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.wantStatus {
+				t.Fatalf("response code = %d, want %d; body = %q", rr.Code, test.wantStatus, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), test.wantBody) {
+				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.wantBody)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+		})
 	}
 }
 
@@ -837,6 +1228,10 @@ func TestHandlerForwardsOpenAIChatSSEAndRegistersUsage(t *testing.T) {
 }
 
 func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
+	streamBody := "data: {\"id\":\"chat-1\",\"model\":\"gpt-stream\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer client-key" || r.Header.Get("X-Api-Key") != "" ||
 			r.Header.Get("Anthropic-Version") != "" {
@@ -850,12 +1245,8 @@ func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
 			t.Fatalf("converted stream request = %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(
-			"data: {\"id\":\"chat-1\",\"model\":\"gpt-stream\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
-				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
-				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
-				"data: [DONE]\n\n",
-		))
+		w.Header().Set("Content-Length", strconv.Itoa(len(streamBody)))
+		_, _ = w.Write([]byte(streamBody))
 	}))
 	defer upstream.Close()
 	p := newTestPlugin(t, Config{
@@ -891,11 +1282,160 @@ func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
 	if strings.Contains(output, `"choices"`) || strings.Contains(output, "data: [DONE]") {
 		t.Fatalf("OpenAI events leaked into Anthropic stream:\n%s", output)
 	}
+	if got := rr.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("converted Anthropic stream Content-Length = %q, want omitted", got)
+	}
 	assertLLMRequestVar(t, req, "$request_type", "ai_stream")
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-stream")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(4))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(2))
 	assertUsageRequestVars(t, req, float64(4), int64(6))
+}
+
+func TestHandlerPreservesUpstreamStatusForEmptySSE(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+	}{
+		{name: "no content", status: http.StatusNoContent},
+		{name: "service unavailable", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(test.status)
+			}))
+			defer upstream.Close()
+
+			p := newTestPlugin(t, Config{
+				Provider: "openai-compatible",
+				Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+			  "model":"test-model","stream":true,
+			  "messages":[{"role":"user","content":"Hi"}]
+			}`))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for empty stream")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.status {
+				t.Fatalf("response code = %d, want %d; body = %q", rr.Code, test.status, rr.Body.String())
+			}
+			if rr.Body.Len() != 0 {
+				t.Fatalf("response body = %q, want empty", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerReturnsBadGatewayWhenAnthropicStreamProducesNoOutput(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"type\":\"message\"}}\n\n" +
+				"event: content_block_delta\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+				"event: message_stop\n" +
+				"data: {}\n\n",
+		))
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-no-output-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "streaming response completed without producing any output") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/messages"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for mismatched stream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "streaming response completed without producing any output") {
+		t.Fatalf("response body = %q, want no-output message", rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if entry.Level != "ERROR" {
+			t.Fatalf("log level = %s, want ERROR", entry.Level)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mismatched stream error was not logged")
+	}
+}
+
+func TestHandlerWarnsWhenStreamingClientContextCancels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"},\"finish_reason\":null}]}\n\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-cancel-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "client disconnected during AI streaming") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	}))
+	go handler.ServeHTTP(rr, req)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case entry := <-entries:
+		if entry.Level != "WARN" {
+			t.Fatalf("log level = %s, want WARN", entry.Level)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client disconnect was not logged at warning level")
+	}
 }
 
 func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
@@ -942,6 +1482,236 @@ func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
 	if apisixctx.GetRequestVar(req, "$llm_request_done") != true {
 		t.Fatalf("$llm_request_done = %#v", apisixctx.GetRequestVar(req, "$llm_request_done"))
 	}
+}
+
+func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"},\"finish_reason\":null}]}\n\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-duration-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "max_stream_duration_ms exceeded") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	flushInterval := 0
+	p := newTestPlugin(t, Config{
+		Provider:                 "openai-compatible",
+		Override:                 Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		MaxStreamDurationMS:      50,
+		StreamingFlushIntervalMS: &flushInterval,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for bounded stream")
+	})).ServeHTTP(rr, req)
+
+	select {
+	case entry := <-entries:
+		if entry.Level != "ERROR" {
+			t.Fatalf("log level = %s, want ERROR", entry.Level)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream duration abort was not logged")
+	}
+}
+
+func TestHandlerRejectsNonStreamingOversizedContentLength(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100000")
+		_, _ = w.Write([]byte(strings.Repeat("x", 100000)))
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-cl-precheck-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "exceeds max_response_bytes") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider:         "openai-compatible",
+		Override:         Override{Endpoint: upstream.URL + "/v1/oversized"},
+		MaxResponseBytes: 1024,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model",
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for oversized response")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "Content-Length 100000 exceeds max_response_bytes 1024") {
+			t.Fatalf("log message = %q", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversized Content-Length was not logged")
+	}
+}
+
+func TestHandlerRejectsNonStreamingOversizedChunkedBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		flusher, _ := w.(http.Flusher)
+		for range 10 {
+			_, _ = w.Write([]byte(strings.Repeat("x", 10000)))
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-chunked-limit-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "exceeds max_response_bytes") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider:         "openai-compatible",
+		Override:         Override{Endpoint: upstream.URL + "/v1/oversized_chunked"},
+		MaxResponseBytes: 1024,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model",
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for oversized chunked response")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "exceeds max_response_bytes 1024") {
+			t.Fatalf("log message = %q", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversized chunked body was not logged")
+	}
+}
+
+func TestRegisterLLMTokenDetailVarsSupportsResponsesDetails(t *testing.T) {
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	registerLLMTokenDetailVars(req, map[string]any{
+		"input_tokens":  20,
+		"output_tokens": 5,
+		"input_tokens_details": map[string]any{
+			"cached_tokens": 10,
+		},
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": 3,
+		},
+	})
+	assertLLMRequestVar(t, req, "$llm_cache_read_input_tokens", int64(10))
+	assertLLMRequestVar(t, req, "$llm_reasoning_tokens", int64(3))
+}
+
+func TestRegisterLLMMetadataVarsCountsTopLevelResponsesToolCalls(t *testing.T) {
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	registerLLMMetadataVars(req, []byte(`{"input":"What is the weather?","model":"gpt-4o-mini"}`), []byte(`{
+	  "id":"r1","object":"response","model":"gpt-4o-mini",
+	  "output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{}"}],
+	  "usage":{"input_tokens":40,"output_tokens":20,"total_tokens":60}
+	}`), nil)
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", true)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 1)
+}
+
+func TestHandlerRegistersLLMMetadataVarsForToolCallsAndCache(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "model":"gpt-4o","choices":[{"message":{"content":"","tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"t2","type":"function","function":{"name":"g","arguments":"{}"}}]}}],
+		  "usage":{"prompt_tokens":30,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":10,"cache_creation_input_tokens":5},"completion_tokens_details":{"reasoning_tokens":7}}
+		}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"user":"alice"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called")
+	})).ServeHTTP(rr, req)
+
+	assertLLMRequestVar(t, req, "$llm_end_user_id", "alice")
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", true)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 2)
+	assertLLMRequestVar(t, req, "$llm_cache_read_input_tokens", int64(10))
+	assertLLMRequestVar(t, req, "$llm_cache_creation_input_tokens", int64(5))
+	assertLLMRequestVar(t, req, "$llm_reasoning_tokens", int64(7))
+}
+
+func TestHandlerRegistersLLMMetadataVarsForSafetyIdentifier(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(
+			[]byte(
+				`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			),
+		)
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"safety_identifier":"user-xyz"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called")
+	})).ServeHTTP(rr, req)
+
+	assertLLMRequestVar(t, req, "$llm_end_user_id", "user-xyz")
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", false)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 0)
 }
 
 func TestHandlerPublishesConfiguredLoggingSummaryAndPayloads(t *testing.T) {
@@ -1144,6 +1914,21 @@ func TestOpenAICompatibleEndpointUsesProtocolPathOnlyForHostOverride(t *testing.
 				t.Fatalf("appendProtocolEndpoint() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOpenAIOverrideHostUsesProtocolPath(t *testing.T) {
+	p := &Plugin{config: Config{
+		Provider: "openai",
+		Override: Override{Endpoint: "https://llm.example.test"},
+	}}
+
+	got, err := p.endpoint(ai_protocols.OpenAIResponses, []byte(`{"model":"gpt-4o"}`))
+	if err != nil {
+		t.Fatalf("endpoint() error = %v", err)
+	}
+	if got != "https://llm.example.test/v1/responses" {
+		t.Fatalf("endpoint() = %q, want OpenAI Responses protocol path", got)
 	}
 }
 

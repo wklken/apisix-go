@@ -1,0 +1,984 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth.t
+    tests: 40
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth2.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth3.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth4.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests: 6
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/hmac-auth-realm.t
+    tests: 6
+
+cases:
+  - name: valid-consumer-schema
+    source: {file: t/plugin/hmac-auth.t, tests: [1]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-valid-consumer
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: valid-consumer-authenticates
+        input:
+          path: /hello
+          hmac: &valid_hmac
+            key_id: my-access-key
+            secret: my-secret-key
+            algorithm: hmac-sha256
+            headers: ['@request-target', date]
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bmy-secret-key\b'}}
+
+  - name: invalid-consumer-snapshots-retain-last-good
+    source: {file: t/plugin/hmac-auth.t, tests: [2, 3, 4, 5, 26]}
+    config: &hmac_last_good
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-last-good
+          uri: /ready
+          plugins:
+            hmac-auth: {}
+            mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+    steps:
+      - name: last-good-consumer-is-active
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204}
+      - name: reject-missing-secret-key
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins: {hmac-auth: {key_id: my-access-key}}
+          routes:
+            - id: hmac-last-good
+              uri: /ready
+              plugins:
+                hmac-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: 'secret_key'"}}
+      - name: reject-missing-key-id
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins: {hmac-auth: {secret_key: my-secret-key}}
+          routes:
+            - id: hmac-last-good
+              uri: /ready
+              plugins:
+                hmac-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: 'key_id'"}}
+      - name: reject-key-id-over-256-bytes
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins:
+                hmac-auth:
+                  key_id: akeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakeyakey
+                  secret_key: skey
+          routes:
+            - id: hmac-last-good
+              uri: /ready
+              plugins:
+                hmac-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: 'hmac-auth consumer configuration:.*key_id.*length must be <= 256'}}
+      - name: reject-secret-key-over-256-bytes
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins:
+                hmac-auth:
+                  key_id: akey
+                  secret_key: skeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskeyskey
+          routes:
+            - id: hmac-last-good
+              uri: /ready
+              plugins:
+                hmac-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: 'hmac-auth consumer configuration:.*secret_key.*length must be <= 256'}}
+      - name: reject-empty-consumer-plugin
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins: {hmac-auth: {}}
+          routes:
+            - id: hmac-last-good
+              uri: /ready
+              plugins:
+                hmac-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: '(key_id|secret_key)'"}}
+
+  - name: authorization-parsing-and-lookup
+    source: {file: t/plugin/hmac-auth.t, tests: [6, 7, 8, 9, 10]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-authorization-validation
+          uri: /hello
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: missing-authorization
+        input: {path: /hello}
+        output:
+          status: 401
+          body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
+          logs: {matches: "client request can't be validated: missing Authorization header"}
+      - name: missing-algorithm
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",headers="@request-target date",signature="asdf"'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'algorithm missing'}}
+      - name: invalid-key-id
+        input:
+          path: /hello
+          hmac: {key_id: unknown, secret: irrelevant, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid key_id'}}
+      - name: invalid-algorithm
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="invalid",headers="@request-target date",signature="asdf"'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
+
+  - name: clock-and-date-validation
+    source: {file: t/plugin/hmac-auth.t, tests: [11, 12, 13]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-clock-validation
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: clock-skew-exceeded
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Clock skew exceeded'}}
+      - name: missing-date
+        input:
+          path: /hello
+          headers: {Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Date header missing'}}
+      - name: invalid-gmt-date
+        input:
+          path: /hello
+          headers: {Date: adfsdf, Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid GMT format time'}}
+
+  - name: valid-signature-with-custom-headers
+    source: {file: t/plugin/hmac-auth.t, tests: [14]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-valid-custom-headers
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers:
+              X-Custom-Header-A: {equals: 'asld$%dfasf'}
+              X-Custom-Header-B: {equals: 23879fmsldfk}
+        respond: [{status: 200, body: hello world}]
+        count: {at_least: 3, at_most: 3}
+    steps:
+      - name: sha1-custom-headers-authenticate
+        input:
+          path: /hello
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha1, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: hello world}}
+      - name: sha256-custom-headers-authenticate
+        input:
+          path: /hello
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bmy-secret-key\b'}}
+      - name: sha512-custom-headers-authenticate
+        input:
+          path: /hello
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha512, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: clock-skew-schema-rejection
+    source: {file: t/plugin/hmac-auth.t, tests: [15]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-clock-skew-zero
+          uri: /ready
+          plugins:
+            hmac-auth: {}
+            mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+    steps:
+      - name: valid-route-is-active
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204}
+      - name: zero-clock-skew-update-is-rejected
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+          routes:
+            - id: hmac-clock-skew-zero
+              uri: /ready
+              plugins:
+                hmac-auth: {clock_skew: 0}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: 'build route hmac-clock-skew-zero fail:.*hmac-auth.*clock_skew.*1'}}
+
+  - name: invalid-signature-with-large-clock-window
+    source: {file: t/plugin/hmac-auth.t, tests: [16, 17, 18]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-invalid-signature
+          uri: /hello
+          plugins: {hmac-auth: {clock_skew: 1000000000000}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: invalid-signature-repeated
+        repeat: 2
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+
+  - name: one-second-clock-skew
+    source: {file: t/plugin/hmac-auth.t, tests: [19, 20]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-one-second-clock
+          uri: /hello
+          plugins: {hmac-auth: {clock_skew: 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: stale-relative-date-is-rejected
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date], date_offset: -2s}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Clock skew exceeded'}}
+
+  - name: default-clock-skew-put
+    source: {file: t/plugin/hmac-auth.t, tests: [21, 22]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-put
+          uri: /hello
+          methods: [PUT]
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: PUT
+            path: {equals: /hello}
+            body: {equals: '{"cert":"ssl_cert","key":"ssl_key","sni":"test.com"}'}
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: signed-put-reaches-upstream
+        input:
+          method: PUT
+          path: /hello
+          body: '{"cert":"ssl_cert","key":"ssl_key","sni":"test.com"}'
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
+
+  - name: required-signed-headers
+    source: {file: t/plugin/hmac-auth.t, tests: [23, 24, 25]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-required-headers
+          uri: /hello
+          plugins: {hmac-auth: {signed_headers: [date, x-custom-header-a, x-custom-header-b]}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers:
+              X-Custom-Header-A: {equals: 'asld$%dfasf'}
+              X-Custom-Header-B: {equals: 'asld$%dfasf'}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: configured-header-missing-from-signing-list
+        input:
+          path: /hello
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-C: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-c]}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'x-custom-header-b.*missing in signing'}}
+      - name: all-configured-headers-are-signed
+        input:
+          path: /hello
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 'asld$%dfasf'}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: empty-allowed-algorithms-rejected
+    source: {file: t/plugin/hmac-auth.t, tests: [27]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-empty-algorithms
+          uri: /ready
+          plugins:
+            hmac-auth: {}
+            mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+    steps:
+      - name: valid-route-is-active
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204}
+      - name: empty-algorithm-update-is-rejected
+        wait: 100ms
+        config:
+          consumers:
+            - username: jack
+              plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+          routes:
+            - id: hmac-empty-algorithms
+              uri: /ready
+              plugins:
+                hmac-auth: {allowed_algorithms: []}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, hmac: *valid_hmac}
+          output: {status: 204}
+        input: {path: /ready, hmac: *valid_hmac}
+        output: {status: 204, logs: {matches: 'build route hmac-empty-algorithms fail:.*hmac-auth.*allowed_algorithms.*minimum 1 items required'}}
+
+  - name: hide-credentials
+    source: {file: t/plugin/hmac-auth.t, tests: [28, 29]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-hide-credentials
+          uri: /headers
+          plugins: {hmac-auth: {hide_credentials: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /headers}
+            headers: {Authorization: {absent: true}}
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: authorization-is-removed-before-upstream
+        input:
+          path: /headers
+          hmac: *valid_hmac
+        output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
+
+  - name: signed-header-cardinality
+    source: {file: t/plugin/hmac-auth.t, tests: [30, 31, 32]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-header-cardinality
+          uri: /hello
+          plugins:
+            hmac-auth:
+              clock_skew: 1000000000
+              signed_headers: [date, x-custom-header-a, x-custom-header-b]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: signature-binds-a-header-not-sent-by-client
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            X-Custom-Header-A: 'asld$%dfasf'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="pz9FBA5rcAQuXQMsTH1hmWF840BAIe79gHOTwL0yUkI="'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+      - name: client-sends-a-header-not-bound-by-signature
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            X-Custom-Header-A: 'asld$%dfasf'
+            X-Custom-Header-B: 'asld$%dfasf'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="Vfu/wid0QUmobexr/8xMJr6FjEnAWeE1lakghCi88c0="'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+
+  - name: restricted-algorithm
+    source: {file: t/plugin/hmac-auth.t, tests: [33, 34]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-restricted-algorithm
+          uri: /hello
+          plugins: {hmac-auth: {allowed_algorithms: [hmac-sha256]}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: sha1-is-rejected-when-only-sha256-is-allowed
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha1, headers: ['@request-target', date]}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
+
+  - name: default-date-signed-header
+    source: {file: t/plugin/hmac-auth.t, tests: [35, 36, 37]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-default-date
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: omitted-headers-clause-does-not-bind-date
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: [], date: now}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'date.*missing in signing'}}
+      - name: date-bound-into-default-signing-string
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: [date]}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: replay-date-substitution
+    source: {file: t/plugin/hmac-auth.t, tests: [38]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-replay-date
+          uri: /hello
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: original-date-and-signature-are-valid
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="date",signature="hbA3Tpvi6RtWrEfNaVzWWFBEWkCBniQZW0nc5SD5P2c="'
+        output: {status: 200, body: {equals: hello world}}
+      - name: changing-only-date-rejects-replayed-authorization
+        input:
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:40:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="date",signature="hbA3Tpvi6RtWrEfNaVzWWFBEWkCBniQZW0nc5SD5P2c="'
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+
+  - name: opt-out-default-signed-headers
+    source: {file: t/plugin/hmac-auth.t, tests: [39, 40]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-no-required-headers
+          uri: /hello
+          plugins: {hmac-auth: {signed_headers: []}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: request-target-only-signature-is-accepted
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target'], date: now}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: default-route-schema
+    source: {file: t/plugin/hmac-auth2.t, tests: [1, 2]}
+    config:
+      routes:
+        - id: hmac-default-route-schema
+          uri: /uri
+          plugins: {hmac-auth: {}}
+    input: {path: /uri}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
+      body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
+
+  - name: consumer-schema-selection
+    source: {file: t/plugin/hmac-auth2.t, tests: [3]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-consumer-schema
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: consumer-fields-authenticate
+        input: {path: /hello, hmac: *valid_hmac}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: unknown-schema-type-falls-back-to-route-schema
+    source: {file: t/plugin/hmac-auth2.t, tests: [4]}
+    config:
+      routes:
+        - id: hmac-unknown-schema-type
+          uri: /hello
+          plugins: {hmac-auth: {realm: hmac}}
+    input: {path: /hello}
+    output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}}
+
+  - name: route-schema-enables-plugin
+    source: {file: t/plugin/hmac-auth2.t, tests: [5]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-route-schema-enabled
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: enabled-route-authenticates
+        input: {path: /hello, hmac: *valid_hmac}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: request-body-digest
+    source: {file: t/plugin/hmac-auth3.t, tests: [1, 2, 3, 4, 5]}
+    config:
+      consumers:
+        - username: robin
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-body-digest
+          uri: /hello
+          methods: [POST]
+          plugins: {hmac-auth: {validate_request_body: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {equals: '{"name": "world"}'}
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: missing-digest
+        input:
+          method: POST
+          path: /hello
+          body: '{"name": "world"}'
+          headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid digest'}}
+      - name: invalid-digest
+        input:
+          method: POST
+          path: /hello
+          body: '{"name": "world"}'
+          headers: {Digest: hello, X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid digest'}}
+      - name: valid-digest
+        input:
+          method: POST
+          path: /hello
+          body: '{"name": "world"}'
+          headers: {Digest: 'SHA-256=78qzJuLwSpZ8HacsTdFCQJWxzPMOf8bYctRk2ySLpS8=', X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: request-body-size-limit
+    source: {file: t/plugin/hmac-auth3.t, tests: [6, 7]}
+    config:
+      consumers:
+        - username: robin
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-body-too-large
+          uri: /hello
+          methods: [POST]
+          plugins: {hmac-auth: {validate_request_body: true, max_req_body_size: 10}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: oversized-body-is-rejected-before-upstream
+        input:
+          method: POST
+          path: /hello
+          body: '{"name": "this body is well over ten bytes"}'
+          headers: {Digest: 'SHA-256=unused'}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 413, body: {equals: '{"message":"request body too large"}'}, logs: {matches: 'request body too large'}}
+
+  - name: request-body-within-limit
+    source: {file: t/plugin/hmac-auth3.t, tests: [8]}
+    config:
+      consumers:
+        - username: robin
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}}
+      routes:
+        - id: hmac-body-within-limit
+          uri: /hello
+          methods: [POST]
+          plugins: {hmac-auth: {validate_request_body: true, max_req_body_size: 1024}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: POST, path: {equals: /hello}, body: {equals: '{"name": "world"}'}}]
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: within-limit-body-is-restored-for-upstream
+        input:
+          method: POST
+          path: /hello
+          body: '{"name": "world"}'
+          headers: {Digest: 'SHA-256=78qzJuLwSpZ8HacsTdFCQJWxzPMOf8bYctRk2ySLpS8='}
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: vault-secret-reference-lazy-retry
+    source: {file: t/plugin/hmac-auth4.t, tests: [1, 2, 3]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: '$secret://vault/test1/jack/secret_key'}}
+      routes:
+        - id: hmac-vault-secret
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: vault
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/jack}
+            headers: {X-Vault-Token: {equals: root}, X-Vault-Namespace: {absent: true}}
+          - method: GET
+            path: {equals: /v1/kv/apisix/jack}
+            headers: {X-Vault-Token: {equals: root}, X-Vault-Namespace: {absent: true}}
+        respond:
+          - {status: 404, body: not provisioned}
+          - {status: 200, body: '{"data":{"secret_key":"my-secret-key"}}'}
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: unresolved-vault-secret-fails-closed
+        input: {path: /hello, hmac: *valid_hmac}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}}
+      - name: late-vault-secret-authenticates-without-reload
+        input: {path: /hello, hmac: *valid_hmac}
+        output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
+
+  - name: vault-token-environment-reference
+    source: {file: t/plugin/hmac-auth4.t, tests: [4, 5]}
+    environment: {VAULT_TOKEN: root}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: '$ENV://VAULT_TOKEN'
+      consumers:
+        - username: jack
+          plugins: {hmac-auth: {key_id: my-access-key, secret_key: '$secret://vault/test1/jack/secret_key'}}
+      routes:
+        - id: hmac-vault-env-token
+          uri: /hello
+          plugins: {hmac-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: vault
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/jack}
+            headers: {X-Vault-Token: {equals: root}, X-Vault-Namespace: {absent: true}}
+        respond: [{status: 200, body: '{"data":{"secret_key":"my-secret-key"}}'}]
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: passed}]
+    steps:
+      - name: environment-token-fetches-vault-secret
+        input: {path: /hello, hmac: *valid_hmac}
+        output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
+
+  - name: normal-consumer-limit-chain
+    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [1, 2]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: user-key, secret_key: my-secret-key}
+            limit-count: {count: 4, time_window: 60}
+        - username: anonymous
+          plugins: {limit-count: {count: 1, time_window: 60}}
+      routes:
+        - id: hmac-normal-limit
+          uri: /hello
+          plugins: {hmac-auth: {anonymous_consumer: anonymous}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+        count: {at_least: 4, at_most: 4}
+    steps:
+      - name: normal-consumer-first-four-pass
+        repeat: 4
+        input:
+          path: /hello
+          hmac: {key_id: user-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 200, body: {equals: hello world}}
+      - name: normal-consumer-fifth-is-limited
+        input:
+          path: /hello
+          hmac: {key_id: user-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 503}
+
+  - name: anonymous-consumer-limit-chain
+    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [3, 4]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: user-key, secret_key: my-secret-key}
+            limit-count: {count: 4, time_window: 60}
+        - username: anonymous
+          plugins: {limit-count: {count: 1, time_window: 60}}
+      routes:
+        - id: hmac-anonymous-limit
+          uri: /hello
+          plugins: {hmac-auth: {anonymous_consumer: anonymous}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-anonymous-request-passes
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: later-anonymous-requests-are-limited
+        repeat: 3
+        input: {path: /hello}
+        output: {status: 503}
+
+  - name: missing-anonymous-consumer
+    source: {file: t/plugin/hmac-auth-anonymous-consumer.t, tests: [5, 6]}
+    config:
+      routes:
+        - id: hmac-missing-anonymous
+          uri: /hello
+          plugins: {hmac-auth: {anonymous_consumer: not-found-anonymous}}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
+      body: {equals: '{"message":"Invalid user authorization"}'}
+      logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
+
+  - name: default-realm
+    source: {file: t/plugin/hmac-auth-realm.t, tests: [1, 2]}
+    config:
+      routes:
+        - id: hmac-default-realm
+          uri: /hello
+          plugins: {hmac-auth: {}}
+    input: {path: /hello}
+    output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}}
+
+  - name: custom-realm
+    source: {file: t/plugin/hmac-auth-realm.t, tests: [3, 4]}
+    config:
+      routes:
+        - id: hmac-custom-realm
+          uri: /hello
+          plugins: {hmac-auth: {realm: my-hmac-realm}}
+    input: {path: /hello}
+    output: {status: 401, headers: {WWW-Authenticate: {equals: 'hmac realm="my-hmac-realm"'}}}
+
+  - name: missing-anonymous-consumer-returns-default-realm
+    source: {file: t/plugin/hmac-auth-realm.t, tests: [5, 6]}
+    config:
+      routes:
+        - id: hmac-realm-missing-anonymous
+          uri: /hello
+          plugins: {hmac-auth: {anonymous_consumer: missing-consumer}}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
+      body: {equals: '{"message":"Invalid user authorization"}'}
+      logs: {matches: 'failed to get anonymous consumer missing-consumer'}

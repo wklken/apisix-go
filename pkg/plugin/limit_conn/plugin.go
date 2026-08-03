@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -30,6 +32,7 @@ type Plugin struct {
 
 	redisLimiter connLimiter
 	routeID      string
+	limitScope   string
 }
 
 const (
@@ -277,7 +280,12 @@ type connLimiter interface {
 	leaving(key string, latency *time.Duration) error
 }
 
-var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
+var (
+	varPattern        = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
+	defaultVarPattern = regexp.MustCompile(`^\$\{\s*([0-9A-Za-z_]+)\s*\?\?\s*([^{}]+?)\s*\}$`)
+)
+
+const maxSafeInteger = int64(1<<53 - 1)
 
 const redisLimitConnIncomingScript = `
 local current = redis.call("INCR", KEYS[1])
@@ -419,14 +427,26 @@ func (p *Plugin) PostInit() error {
 	p.unitDelay = p.config.DefaultConnDelay
 
 	if len(p.config.Rules) > 0 {
-		return validateRules(p.config.Rules)
+		if err := validateRules(p.config.Rules); err != nil {
+			return err
+		}
+	} else {
+		if _, _, err := staticLimitValue(p.config.Conn, "conn", false); err != nil {
+			return err
+		}
+		if _, _, err := staticLimitValue(p.config.Burst, "burst", true); err != nil {
+			return err
+		}
 	}
 
-	if _, _, err := staticLimitValue(p.config.Conn, "conn", false); err != nil {
-		return err
-	}
-	if _, _, err := staticLimitValue(p.config.Burst, "burst", true); err != nil {
-		return err
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		config, err := json.Marshal(p.config)
+		if err != nil {
+			return fmt.Errorf("marshal limit-conn config scope: %w", err)
+		}
+		configUID := shared.NewConfigUID()
+		configUID.Add(string(config))
+		p.limitScope = configUID.String()
 	}
 
 	return nil
@@ -447,6 +467,14 @@ func (p *Plugin) scopedKey(key string) string {
 	return "route:" + p.routeID + ":" + key
 }
 
+func (p *Plugin) scopedRedisKey(key string) string {
+	key = p.scopedKey(key)
+	if p.limitScope == "" {
+		return key
+	}
+	return key + ":config:" + p.limitScope
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if len(p.config.Rules) > 0 {
@@ -456,6 +484,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					next.ServeHTTP(w, r)
 					return
 				}
+				logger.Errorf("failed to limit conn: %v", err)
 				http.Error(w, "failed to limit conn", http.StatusInternalServerError)
 				return
 			}
@@ -468,6 +497,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					next.ServeHTTP(w, r)
 					return
 				}
+				logger.Error("failed to get limit conn rules")
 				http.Error(w, "failed to get limit conn rules", http.StatusInternalServerError)
 				return
 			}
@@ -491,6 +521,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Error(err.Error())
 			http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
 			return
 		}
@@ -500,6 +531,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Errorf("failed to limit conn: %v", err)
 			http.Error(w, "failed to limit conn", http.StatusInternalServerError)
 			return
 		}
@@ -585,6 +617,14 @@ func staticLimitValue(value any, name string, allowZero bool) (int, bool, error)
 
 func resolveLimitValue(r *http.Request, value any, name string, allowZero bool) (int, error) {
 	if expr, ok := value.(string); ok {
+		if match := defaultVarPattern.FindStringSubmatch(expr); match != nil {
+			resolved := base.RequestVarFromNginx(r, match[1])
+			if resolved == "" {
+				resolved = strings.TrimSpace(match[2])
+			}
+			return parseLimitInt(resolved, name, allowZero)
+		}
+
 		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
 			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			varName = strings.TrimSuffix(varName, "}")
@@ -616,7 +656,7 @@ func numericLimitValue(value any, name string, allowZero bool) (int, error) {
 		return parsed, nil
 	case float64:
 		if math.Trunc(v) != v {
-			return 0, fmt.Errorf("%s must resolve to an integer", name)
+			return 0, fmt.Errorf("%s resolved value must be an integer", name)
 		}
 		maxInt := float64(int(^uint(0) >> 1))
 		minInt := -maxInt - 1
@@ -636,7 +676,7 @@ func numericLimitValue(value any, name string, allowZero bool) (int, error) {
 func parseLimitInt(value string, name string, allowZero bool) (int, error) {
 	parsed, err := strconv.ParseInt(value, 10, 0)
 	if err != nil {
-		return 0, fmt.Errorf("%s must resolve to an integer: %w", name, err)
+		return 0, fmt.Errorf("%s resolved value must be an integer: %w", name, err)
 	}
 	result := int(parsed)
 	if err := validateLimitInt(result, name, allowZero); err != nil {
@@ -646,14 +686,17 @@ func parseLimitInt(value string, name string, allowZero bool) (int, error) {
 }
 
 func validateLimitInt(value int, name string, allowZero bool) error {
+	if int64(value) > maxSafeInteger || int64(value) < -maxSafeInteger {
+		return fmt.Errorf("%s resolved value exceeds safe integer range", name)
+	}
 	if allowZero {
 		if value < 0 {
-			return fmt.Errorf("%s must be greater than or equal to 0", name)
+			return fmt.Errorf("%s resolved value must be a non-negative number", name)
 		}
 		return nil
 	}
 	if value <= 0 {
-		return fmt.Errorf("%s must be greater than 0", name)
+		return fmt.Errorf("%s resolved value must be a positive number", name)
 	}
 	return nil
 }
@@ -705,10 +748,11 @@ func (p *Plugin) decreaseAdmissions(admissions []admission, latency *time.Durati
 }
 
 func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool, error) {
-	key = p.scopedKey(key)
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		key = p.scopedRedisKey(key)
 		return p.redisLimiter.incoming(key, conn, burst)
 	}
+	key = p.scopedKey(key)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -733,15 +777,19 @@ func connectionDelay(current int, conn int, unitDelay float64) time.Duration {
 }
 
 func (p *Plugin) decrease(key string, latency *time.Duration) {
-	key = p.scopedKey(key)
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		key = p.scopedRedisKey(key)
 		_ = p.redisLimiter.leaving(key, latency)
 		return
 	}
+	key = p.scopedKey(key)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if latency != nil && !p.config.OnlyUseDefaultDelay {
+	if p.config.OnlyUseDefaultDelay {
+		logger.Debug("request latency is nil")
+	} else if latency != nil {
+		logger.Debugf("request latency is %.1f", latency.Seconds())
 		p.unitDelay = (p.unitDelay + latency.Seconds()) / 2
 	}
 
@@ -759,6 +807,14 @@ type redisConnLimiter struct {
 	unitDelay           float64
 	keyTTL              time.Duration
 	onlyUseDefaultDelay bool
+}
+
+type redisPoolStatsProvider interface {
+	PoolStats() *redis.PoolStats
+}
+
+func logRedisConnectionReuse(client redisPoolStatsProvider) {
+	logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
 }
 
 func (p *Plugin) newRedisLimiter() connLimiter {
@@ -850,6 +906,7 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 	l.mu.Lock()
 	unitDelay := l.unitDelay
 	l.mu.Unlock()
+	logRedisConnectionReuse(l.client)
 	result, err := l.client.Eval(
 		context.Background(),
 		redisLimitConnIncomingScript,
@@ -880,6 +937,7 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 }
 
 func (l *redisConnLimiter) leaving(key string, latency *time.Duration) error {
+	logRedisConnectionReuse(l.client)
 	err := l.client.Eval(
 		context.Background(),
 		redisLimitConnLeavingScript,
@@ -917,7 +975,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
-			value := base.RequestVarFromNginx(r, name)
+			value := requestLimitKey(r, name)
 			if value != "" {
 				resolved++
 			}
@@ -927,13 +985,28 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 			key = ""
 		}
 	} else {
-		key = base.RequestVarFromNginx(r, p.config.Key)
+		key = requestLimitKey(r, p.config.Key)
 	}
 
 	if key == "" {
+		logger.Warn("The value of the configured key is empty, use client IP instead")
 		key = base.RequestVarFromNginx(r, "remote_addr")
 	}
 	return key
+}
+
+func requestLimitKey(r *http.Request, key string) string {
+	key = strings.TrimPrefix(key, "$")
+	if key == "server_addr" {
+		if address, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			return base.RemoteIP(address.String())
+		}
+		return ""
+	}
+	if value := base.RequestVarFromNginx(r, key); value != "" {
+		return value
+	}
+	return base.RequestVar(r, key, 0)
 }
 
 func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, bool) {
@@ -941,8 +1014,11 @@ func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, 
 	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 		name = strings.TrimSuffix(name, "}")
-		resolved++
-		return base.RequestVarFromNginx(r, name)
+		value := base.RequestVarFromNginx(r, name)
+		if value != "" {
+			resolved++
+		}
+		return value
 	})
 	if resolved == 0 {
 		return "", false

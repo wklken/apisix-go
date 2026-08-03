@@ -1,0 +1,565 @@
+cases:
+    - name: valid-route-emits-udp-log
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [1, 4, 5]
+      config:
+        routes:
+            - id: udp-logger-valid-route
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /opentracing
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: opentracing
+              headers:
+                X-Upstream: default
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - json_fields:
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing\?Upper=One$'}}
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: '/opentracing?Upper=One'}}
+                - {path: /request/headers/host, value: {equals: localhost}}
+                - {path: /request/headers/x-log-case, value: {equals: default}}
+                - {path: /request/querystring/Upper, value: {equals: One}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/headers/x-upstream, value: {equals: default}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
+                - {path: /server/hostname, value: {matches: '^.+$'}}
+                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /service_id, value: {equals: ''}}
+                - {path: /route_id, value: {equals: udp-logger-valid-route}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /start_time, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream_latency, value: {matches: '^[0-9]+$'}}
+                - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: request-reaches-upstream-and-logs
+          input:
+            headers:
+              Host: localhost
+              X-Log-Case: default
+            method: GET
+            path: '/opentracing?Upper=One'
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+
+    - name: missing-host-is-rejected
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [2]
+      config:
+        routes:
+            - id: udp-logger-missing-host
+              plugins:
+                udp-logger:
+                    port: 3000
+              uri: /missing-host
+      input:
+        method: GET
+        path: /missing-host
+      output:
+        logs:
+            matches: 'validate plugin udp-logger config:.*host.*required'
+        status: 404
+
+    - name: string-timeout-is-rejected
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [3]
+      config:
+        routes:
+            - id: udp-logger-string-timeout
+              plugins:
+                udp-logger:
+                    host: 127.0.0.1
+                    port: 3000
+                    timeout: '10'
+              uri: /string-timeout
+      input:
+        method: GET
+        path: /string-timeout
+      output:
+        logs:
+            matches: 'validate plugin udp-logger config:.*timeout.*expected integer.*got string'
+        status: 404
+
+    - name: failed-udp-send-keeps-proxy-response
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [6]
+      config:
+        routes:
+            - id: udp-logger-unreachable-sink
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: 312.0.0.1
+                    port: 2000
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /opentracing
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: opentracing
+              status: 200
+      steps:
+        - name: upstream-response-is-not-broken-by-logger-failure
+          input:
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            logs:
+                matches: 'failed to connect to udp server: host\[312\.0\.0\.1\] port\[2000\]'
+            status: 200
+          wait: 1s
+
+    - name: live-update-switches-udp-destination
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [7]
+      config:
+        routes:
+            - id: udp-logger-live-update
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.first.HOST}}'
+                    port: '{{FIXTURE.first.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /opentracing
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: opentracing
+              headers:
+                X-Upstream: reload
+              status: 200
+            - body: opentracing
+              headers:
+                X-Upstream: reload
+              status: 200
+        - kind: udp
+          name: first
+          network_expect:
+            - json_fields:
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing$'}}
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/headers/host, value: {equals: localhost}}
+                - {path: /request/headers/x-log-case, value: {equals: reload}}
+                - {path: /request/querystring, value: {equals: '{}'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/headers/x-upstream, value: {equals: reload}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
+                - {path: /server/hostname, value: {matches: '^.+$'}}
+                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /service_id, value: {equals: ''}}
+                - {path: /route_id, value: {equals: udp-logger-live-update}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /start_time, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream_latency, value: {matches: '^[0-9]+$'}}
+                - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+          network_respond:
+            - payload: ''
+        - kind: udp
+          name: second
+          network_expect:
+            - json_fields:
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing$'}}
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/headers/host, value: {equals: localhost}}
+                - {path: /request/headers/x-log-case, value: {equals: reload}}
+                - {path: /request/querystring, value: {equals: '{}'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/headers/x-upstream, value: {equals: reload}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
+                - {path: /server/hostname, value: {matches: '^.+$'}}
+                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /service_id, value: {equals: ''}}
+                - {path: /route_id, value: {equals: udp-logger-live-update}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /start_time, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream_latency, value: {matches: '^[0-9]+$'}}
+                - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: request-reaches-first-udp-sink
+          input:
+            headers:
+              Host: localhost
+              X-Log-Case: reload
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+        - name: reload-routes-and-send-to-second-udp-sink
+          config:
+            routes:
+                - id: udp-logger-live-update
+                  plugins:
+                    udp-logger:
+                        batch_max_size: 1
+                        host: '{{FIXTURE.second.HOST}}'
+                        port: '{{FIXTURE.second.PORT}}'
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /opentracing
+                - id: udp-logger-live-update-probe
+                  plugins:
+                    mocking:
+                        _meta:
+                            priority: -1000
+                        response_example: ready
+                        response_status: 204
+                  uri: /reload-probe
+          config_probe:
+            input:
+                path: /reload-probe
+            output:
+                status: 204
+          config_timeout: 2s
+          input:
+            headers:
+              Host: localhost
+              X-Log-Case: reload
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+
+    - name: metadata-string-log-format-is-rejected
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [8]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format: "'$host' '$time_iso8601'"
+        routes:
+            - id: udp-logger-invalid-metadata
+              plugins:
+                udp-logger:
+                    host: 127.0.0.1
+                    port: 3000
+              uri: /invalid-metadata
+      input:
+        method: GET
+        path: /invalid-metadata
+      output:
+        logs:
+            matches: 'validate plugin udp-logger metadata:.*log_format.*expected object.*got string'
+        status: 404
+
+    - name: metadata-custom-log-format-is-delivered
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [9, 10]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format:
+                '@timestamp': '$time_iso8601'
+                case name: plugin_metadata
+                client_ip: '$remote_addr'
+                host: '$host'
+        routes:
+            - id: udp-logger-plugin-metadata
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - json_fields:
+                - {path: /case name, value: {equals: plugin_metadata}}
+                - {path: /host, value: {equals: localhost}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /@timestamp, rfc3339: true}
+                - {path: /route_id, value: {equals: udp-logger-plugin-metadata}}
+                - {path: /service_id, value: {equals: ''}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: custom-metadata-format-reaches-sink
+          input:
+            headers:
+              Host: localhost
+            method: GET
+            path: /hello
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 1s
+
+    - name: changed-metadata-log-format-is-delivered
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [11, 12]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format:
+                '@timestamp': '$time_iso8601'
+                case name: logger format in plugin
+                client_ip: '$remote_addr'
+                host: '$host'
+        routes:
+            - id: udp-logger-changed-metadata
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - json_fields:
+                - {path: /case name, value: {equals: logger format in plugin}}
+                - {path: /host, value: {equals: localhost}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /@timestamp, rfc3339: true}
+                - {path: /route_id, value: {equals: udp-logger-changed-metadata}}
+                - {path: /service_id, value: {equals: ''}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: changed-metadata-format-reaches-sink
+          input:
+            headers:
+              Host: localhost
+            method: GET
+            path: /hello
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 1s
+
+    - name: include-request-body-is-logged-and-forwarded
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [13]
+      config:
+        routes:
+            - id: udp-logger-request-body
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    include_req_body: true
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          expect:
+            - body:
+                equals: '{"sample_payload":"hello"}'
+              method: POST
+              path:
+                equals: /hello
+          respond:
+            - body: "hello world\n"
+              headers:
+                X-Upstream: request-body
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - json_fields:
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/hello$'}}
+                - {path: /request/method, value: {equals: POST}}
+                - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/headers/host, value: {equals: localhost}}
+                - {path: /request/headers/x-log-case, value: {equals: request-body}}
+                - {path: /request/querystring, value: {equals: '{}'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
+                - {path: /request/body, value: {equals: '{"sample_payload":"hello"}'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/headers/x-upstream, value: {equals: request-body}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
+                - {path: /server/hostname, value: {matches: '^.+$'}}
+                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /service_id, value: {equals: ''}}
+                - {path: /route_id, value: {equals: udp-logger-request-body}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /start_time, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream_latency, value: {matches: '^[0-9]+$'}}
+                - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: request-body-reaches-upstream-and-udp-log
+          input:
+            method: POST
+            path: /hello
+            body: '{"sample_payload":"hello"}'
+            headers:
+              Host: localhost
+              X-Log-Case: request-body
+          output:
+            body:
+                equals: "hello world\n"
+            status: 200
+          wait: 1s
+
+    - name: include-response-body-is-logged-and-preserved
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [14]
+      config:
+        routes:
+            - id: udp-logger-response-body
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    include_resp_body: true
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          expect:
+            - body:
+                equals: '{"sample_payload":"hello"}'
+              method: POST
+              path:
+                equals: /hello
+          respond:
+            - body: "hello world\n"
+              headers:
+                X-Upstream: response-body
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - json_fields:
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/hello$'}}
+                - {path: /request/method, value: {equals: POST}}
+                - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/headers/host, value: {equals: localhost}}
+                - {path: /request/headers/x-log-case, value: {equals: response-body}}
+                - {path: /request/querystring, value: {equals: '{}'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/headers/x-upstream, value: {equals: response-body}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
+                - {path: /response/body, value: {equals: "hello world\n"}}
+                - {path: /server/hostname, value: {matches: '^.+$'}}
+                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /service_id, value: {equals: ''}}
+                - {path: /route_id, value: {equals: udp-logger-response-body}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /start_time, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream_latency, value: {matches: '^[0-9]+$'}}
+                - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+                - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+          network_respond:
+            - payload: ''
+      steps:
+        - name: response-body-reaches-client-and-udp-log
+          input:
+            method: POST
+            path: /hello
+            body: '{"sample_payload":"hello"}'
+            headers:
+              Host: localhost
+              X-Log-Case: response-body
+          output:
+            body:
+                equals: "hello world\n"
+            status: 200
+          wait: 1s
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/udp-logger.t
+      tests: 14

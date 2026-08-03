@@ -1,0 +1,2351 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis-cluster.t
+    tests: 10
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis.t
+    tests: 26
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-variable.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn.t
+    tests: 34
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn2.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn3.t
+    tests: 3
+cases:
+  - name: limit-conn-redis-cluster-01-valid-schema
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [1]}
+    runtime: &redis_cluster_runtime {plugins: [limit-conn]}
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-01
+          uri: /limit_conn
+          plugins:
+            limit-conn:
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_cluster_name: test
+          upstream: &redis_cluster_origin_upstream {type: roundrobin, nodes: {"{{FIXTURE.origin.ADDR}}": 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &redis_cluster_origin_expect [{path: {equals: /limit_conn}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [&redis_cluster_passed_response {status: 200, body: passed}]
+      - &redis_cluster_fixture
+        name: redis
+        kind: redis-cluster
+        redis: {allow_unasserted_commands: true}
+    steps:
+      - {name: valid-redis-cluster-schema-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-cluster-02-add-high-capacity-route
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [2]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-02
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_cluster_high_capacity
+              conn: 100
+              burst: 50
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_cluster_name: test
+          upstream: *redis_cluster_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_cluster_passed_response]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: configured-cluster-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-cluster-03-ten-within-capacity
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [3]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-cluster-03, uri: /limit_conn, plugins: {limit-conn: *redis_cluster_high_capacity}, upstream: *redis_cluster_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 10, at_most: 10}, respond: [{status: 200, body: passed, delay: 100ms}]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
+
+  - name: limit-conn-redis-cluster-04-update-to-three-capacity
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [4]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-04
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_cluster_three_capacity
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_cluster_name: redis-cluster-1
+          upstream: *redis_cluster_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_cluster_passed_response]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: updated-cluster-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-cluster-05-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [5]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-cluster-05, uri: /limit_conn, plugins: {limit-conn: *redis_cluster_three_capacity}, upstream: *redis_cluster_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 3, at_most: 3}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: cluster-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
+
+  - name: limit-conn-redis-cluster-06-update-to-six-capacity
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [6]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-06
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_cluster_six_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_cluster_name: redis-cluster-1
+          upstream: *redis_cluster_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_cluster_passed_response]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: updated-six-capacity-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-cluster-07-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [7]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-cluster-07, uri: /limit_conn, plugins: {limit-conn: *redis_cluster_six_capacity}, upstream: *redis_cluster_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_cluster_fixture
+    steps:
+      - {name: cluster-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-cluster-08-tls-with-verification-disabled
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [8]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-08
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_cluster_tls_six_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_cluster_name: redis-cluster-2
+              redis_cluster_ssl: true
+              redis_cluster_ssl_verify: false
+          upstream: *redis_cluster_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_cluster_passed_response]}
+      - &redis_cluster_tls_fixture
+        name: redis
+        kind: redis-cluster
+        redis: {tls: true, allow_unasserted_commands: true}
+    steps:
+      - {name: tls-cluster-route-proxies-with-verification-disabled, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-cluster-09-tls-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [9]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-cluster-09, uri: /limit_conn, plugins: {limit-conn: *redis_cluster_tls_six_capacity}, upstream: *redis_cluster_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_cluster_tls_fixture
+    steps:
+      - {name: tls-cluster-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-cluster-10-keepalive-diagnostic
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [10]}
+    runtime: *redis_cluster_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-10
+          uri: /limit_conn
+          plugins:
+            limit-conn:
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis-cluster
+              redis_cluster_nodes:
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+                - '{{FIXTURE.redis.ADDR}}'
+              redis_keepalive_timeout: 10000
+              redis_keepalive_pool: 100
+              redis_cluster_name: redis-cluster-2
+              redis_cluster_ssl: true
+              redis_cluster_ssl_verify: false
+          upstream: *redis_cluster_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_cluster_origin_expect, count: {at_least: 2, at_most: 2}, respond: [*redis_cluster_passed_response]}
+      - *redis_cluster_tls_fixture
+    steps:
+      - {name: first-request-opens-cluster-connection, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+      - name: second-request-reuses-cluster-connection
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+          logs: {matches: '(?s)redis connection reused times: 0.*redis connection reused times: 1'}
+  - name: limit-conn-redis-01-valid-schema
+    source: {file: t/plugin/limit-conn-redis.t, tests: [1]}
+    runtime: &redis_limit_runtime {plugins: [limit-conn]}
+    config:
+      routes:
+        - id: limit-conn-redis-01
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_one_capacity
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: &redis_origin_upstream {type: roundrobin, nodes: {"{{FIXTURE.origin.ADDR}}": 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &redis_origin_expect [{path: {equals: /limit_conn}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [&redis_passed_response {status: 200, body: passed}]
+      - &redis_fixture
+        name: redis
+        kind: redis
+        redis: {ignore_negotiation: true, allow_unasserted_commands: true}
+    steps:
+      - {name: valid-redis-schema-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-02-add-high-capacity-route
+    source: {file: t/plugin/limit-conn-redis.t, tests: [2]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-02
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_high_capacity
+              conn: 100
+              burst: 50
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: configured-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-03-ten-within-capacity
+    source: {file: t/plugin/limit-conn-redis.t, tests: [3]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-03, uri: /limit_conn, plugins: {limit-conn: *redis_high_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 10, at_most: 10}, respond: [{status: 200, body: passed, delay: 100ms}]}
+      - *redis_fixture
+    steps:
+      - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
+
+  - name: limit-conn-redis-04-update-to-three-capacity
+    source: {file: t/plugin/limit-conn-redis.t, tests: [4]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-04
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_three_capacity
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: updated-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-05-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [5]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-05, uri: /limit_conn, plugins: {limit-conn: *redis_three_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 3, at_most: 3}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: redis-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
+
+  - name: limit-conn-redis-06-update-to-six-capacity
+    source: {file: t/plugin/limit-conn-redis.t, tests: [6]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-06
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_six_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: updated-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-07-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [7]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-07, uri: /limit_conn, plugins: {limit-conn: *redis_six_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: redis-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-08-username-password
+    source: {file: t/plugin/limit-conn-redis.t, tests: [8]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-08
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_authenticated_six
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+              redis_username: alice
+              redis_password: somepassword
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - name: redis
+        kind: redis
+        redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: somepassword}]}
+    steps:
+      - {name: authenticated-redis-route-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-09-authenticated-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [9]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-09, uri: /limit_conn, plugins: {limit-conn: *redis_authenticated_six}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: somepassword}]}}
+    steps:
+      - {name: authenticated-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-10-wrong-password-config
+    source: {file: t/plugin/limit-conn-redis.t, tests: [10]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-10
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_wrong_password
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+              redis_username: alice
+              redis_password: someerrorpassword
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [*redis_passed_response]}
+      - &redis_wrongpass_fixture
+        name: redis
+        kind: redis
+        network_respond: [{payload: "-WRONGPASS invalid username-password pair or user is disabled.\r\n"}]
+        redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: someerrorpassword}]}
+    steps:
+      - name: wrong-password-config-is-runtime-checked
+        input: {method: GET, path: /limit_conn}
+        output: {status: 500, logs: {matches: 'failed to limit conn: .*WRONGPASS invalid username-password pair or user is disabled'}}
+
+  - name: limit-conn-redis-11-wrong-password-request
+    source: {file: t/plugin/limit-conn-redis.t, tests: [11]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-11, uri: /limit_conn, plugins: {limit-conn: *redis_wrong_password}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [*redis_passed_response]}
+      - *redis_wrongpass_fixture
+    steps:
+      - name: wrong-password-returns-500
+        input: {method: GET, path: /limit_conn}
+        output: {status: 500, logs: {matches: 'failed to limit conn: .*WRONGPASS invalid username-password pair or user is disabled'}}
+
+  - name: limit-conn-redis-12-missing-redis-host
+    source: {file: t/plugin/limit-conn-redis.t, tests: [12]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-12
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr, policy: redis}
+    input: {method: GET, path: /limit_conn}
+    output: {status: 404, logs: {matches: 'build route limit-conn-redis-12 fail:.*limit-conn.*(then|redis_host)'}}
+
+  - name: limit-conn-redis-13-plugin-disabled
+    source: {file: t/plugin/limit-conn-redis.t, tests: [13]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-13, uri: /limit_conn, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+    steps:
+      - {name: disabled-plugin-does-not-intercept, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-14-disabled-plugin-does-not-limit
+    source: {file: t/plugin/limit-conn-redis.t, tests: [14]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-14, uri: /limit_conn, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 10, at_most: 10}, respond: [{status: 200, body: passed, delay: 100ms}]}
+    steps:
+      - {name: all-ten-accepted, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 10}}}
+
+  - name: limit-conn-redis-15-server-address-key
+    source: {file: t/plugin/limit-conn-redis.t, tests: [15]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-15
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_server_addr
+              conn: 100
+              burst: 50
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: server_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: server-address-key-proxies, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-16-real-ip-header-key
+    source: {file: t/plugin/limit-conn-redis.t, tests: [16]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-16
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_real_ip_six
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: http_x_real_ip
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: real-ip-key-proxies, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-17-real-ip-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [17]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-17, uri: /limit_conn, plugins: {limit-conn: *redis_real_ip_six}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: real-ip-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-18-forwarded-for-header-key
+    source: {file: t/plugin/limit-conn-redis.t, tests: [18]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-18
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_forwarded_for_six
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: http_x_forwarded_for
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: forwarded-for-key-proxies, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-19-forwarded-for-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [19]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-19, uri: /limit_conn, plugins: {limit-conn: *redis_forwarded_for_six}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: forwarded-for-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status_counts: {200: 6, 503: 4}}}
+
+  - name: limit-conn-redis-20-default-rejected-code
+    source: {file: t/plugin/limit-conn-redis.t, tests: [20]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - id: limit-conn-redis-20
+          uri: /limit_conn
+          plugins:
+            limit-conn: &redis_five_capacity
+              conn: 4
+              burst: 1
+              default_conn_delay: 0.1
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+          upstream: *redis_origin_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: omitted-rejected-code-is-accepted, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-21-five-accepted-five-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [21]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-21, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 5, at_most: 5}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: default-rejection-is-503, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 5, 503: 5}}}
+
+  - name: limit-conn-redis-22-global-rule
+    source: {file: t/plugin/limit-conn-redis.t, tests: [22]}
+    runtime: *redis_limit_runtime
+    config:
+      global_rules:
+        - id: limit-conn-redis-global-22
+          plugins:
+            limit-conn: &redis_global_three
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              key: remote_addr
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+      routes:
+        - {id: limit-conn-redis-22, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: global-rule-and-route-accept-request, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-23-global-rule-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn-redis.t, tests: [23]}
+    runtime: *redis_limit_runtime
+    config:
+      global_rules:
+        - {id: limit-conn-redis-global-23, plugins: {limit-conn: *redis_global_three}}
+      routes:
+        - {id: limit-conn-redis-23, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 3, at_most: 3}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: global-rule-capacity-is-three, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 3, 503: 7}}}
+
+  - name: limit-conn-redis-24-global-rule-deleted
+    source: {file: t/plugin/limit-conn-redis.t, tests: [24]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-24, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 1, at_most: 1}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: route-remains-after-global-delete, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+
+  - name: limit-conn-redis-25-route-limit-after-global-delete
+    source: {file: t/plugin/limit-conn-redis.t, tests: [25]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-25, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 5, at_most: 5}, respond: [{status: 200, body: passed, delay: 500ms}]}
+      - *redis_fixture
+    steps:
+      - {name: route-capacity-is-five, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn}, output: {status_counts: {200: 5, 503: 5}}}
+
+  - name: limit-conn-redis-26-connection-reuse-diagnostic
+    source: {file: t/plugin/limit-conn-redis.t, tests: [26]}
+    runtime: *redis_limit_runtime
+    config:
+      routes:
+        - {id: limit-conn-redis-26, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 2, at_most: 2}, respond: [*redis_passed_response]}
+      - *redis_fixture
+    steps:
+      - {name: first-request-opens-connection, input: {method: GET, path: /limit_conn}, output: {status: 200, body: {equals: passed}}}
+      - name: second-request-reuses-connection
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+          logs: {matches: '(?s)redis connection reused times: 0.*redis connection reused times: 1'}
+  - name: limit-conn-variable-01-default-expression-route
+    source: {file: t/plugin/limit-conn-variable.t, tests: [1]}
+    runtime: &limit_conn_runtime
+      plugins: [limit-conn]
+    config:
+      routes:
+        - id: limit-conn-variable-01
+          uri: /limit_conn
+          plugins:
+            limit-conn: &dynamic_limit
+              conn: "${http_conn ?? 5}"
+              burst: "${http_burst ?? 2}"
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+          upstream: &limit_conn_upstream
+            type: roundrobin
+            nodes: {"{{FIXTURE.origin.ADDR}}": 1}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &limit_conn_expect
+          - {path: {equals: /limit_conn}}
+        count: {at_least: 1, at_most: 1}
+        respond:
+          - &passed_response {status: 200, body: passed}
+    steps:
+      - name: route-accepts-default-expression
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-02-default-conn-and-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [2]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-02
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 7, at_most: 7}
+        respond: [*passed_response]
+    steps:
+      - name: seven-accepted-three-rejected
+        repeat: 7
+        concurrency: 7
+        hold_upstream:
+          fixture: origin
+          requests: 7
+          probes:
+            - {input: {method: GET, path: /limit_conn}, output: {status: 503}}
+            - {input: {method: GET, path: /limit_conn}, output: {status: 503}}
+            - {input: {method: GET, path: /limit_conn}, output: {status: 503}}
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-03-header-conn-default-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [3]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-03
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 5, at_most: 5}
+        respond: [*passed_response]
+    steps:
+      - name: five-accepted-five-rejected
+        repeat: 5
+        concurrency: 5
+        hold_upstream:
+          fixture: origin
+          requests: 5
+          probes:
+            - {input: &conn_three_input {method: GET, path: /limit_conn, headers: {conn: "3"}}, output: {status: 503}}
+            - {input: *conn_three_input, output: {status: 503}}
+            - {input: *conn_three_input, output: {status: 503}}
+            - {input: *conn_three_input, output: {status: 503}}
+            - {input: *conn_three_input, output: {status: 503}}
+        input: *conn_three_input
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-04-header-conn-and-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [4]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-04
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 7, at_most: 7}
+        respond: [*passed_response]
+    steps:
+      - name: seven-accepted-three-rejected
+        repeat: 7
+        concurrency: 7
+        hold_upstream:
+          fixture: origin
+          requests: 7
+          probes:
+            - {input: &conn_three_burst_four_input {method: GET, path: /limit_conn, headers: {conn: "3", burst: "4"}}, output: {status: 503}}
+            - {input: *conn_three_burst_four_input, output: {status: 503}}
+            - {input: *conn_three_burst_four_input, output: {status: 503}}
+        input: *conn_three_burst_four_input
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-05-conn-burst-and-rules-are-exclusive
+    source: {file: t/plugin/limit-conn-variable.t, tests: [5]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-05
+          uri: /hello
+          plugins:
+            limit-conn:
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.01
+              rejected_code: 503
+              key: remote_addr
+              rules:
+                - {conn: 1, burst: 0, key: "${http_company}"}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: invalid-route-is-not-activated
+        input: {method: GET, path: /hello}
+        output:
+          status: 404
+          logs:
+            matches: 'build route limit-conn-variable-05 fail:.*limit-conn.*(value should match only one schema|valid against schemas at indexes 0 and 1)'
+
+  - name: limit-conn-variable-06-rules-route
+    source: {file: t/plugin/limit-conn-variable.t, tests: [6]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-06
+          uri: /limit_conn
+          plugins:
+            limit-conn: &rule_limits
+              default_conn_delay: 0.01
+              rejected_code: 503
+              rules:
+                - {conn: 4, burst: 3, key: "${http_user}"}
+                - {conn: "${http_project_conn ?? 3}", burst: "${http_project_burst ?? 2}", key: "${http_project}"}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: route-accepts-rules
+        input: {method: GET, path: /limit_conn, headers: {user: jack}}
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-07-user-rule
+    source: {file: t/plugin/limit-conn-variable.t, tests: [7]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-07
+          uri: /limit_conn
+          plugins:
+            limit-conn: *rule_limits
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 7, at_most: 7}
+        respond: [*passed_response]
+    steps:
+      - name: seven-accepted-three-rejected
+        repeat: 7
+        concurrency: 7
+        hold_upstream:
+          fixture: origin
+          requests: 7
+          probes:
+            - {input: &user_jack_input {method: GET, path: /limit_conn, headers: {user: jack}}, output: {status: 503}}
+            - {input: *user_jack_input, output: {status: 503}}
+            - {input: *user_jack_input, output: {status: 503}}
+        input: *user_jack_input
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-08-project-rule-defaults
+    source: {file: t/plugin/limit-conn-variable.t, tests: [8]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-08
+          uri: /limit_conn
+          plugins:
+            limit-conn: *rule_limits
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 5, at_most: 5}
+        respond: [*passed_response]
+    steps:
+      - name: five-accepted-five-rejected
+        repeat: 5
+        concurrency: 5
+        hold_upstream:
+          fixture: origin
+          requests: 5
+          probes:
+            - {input: &project_default_input {method: GET, path: /limit_conn, headers: {project: apisix}}, output: {status: 503}}
+            - {input: *project_default_input, output: {status: 503}}
+            - {input: *project_default_input, output: {status: 503}}
+            - {input: *project_default_input, output: {status: 503}}
+            - {input: *project_default_input, output: {status: 503}}
+        input: *project_default_input
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-09-project-rule-overrides
+    source: {file: t/plugin/limit-conn-variable.t, tests: [9]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-09
+          uri: /limit_conn
+          plugins:
+            limit-conn: *rule_limits
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 3, at_most: 3}
+        respond: [*passed_response]
+    steps:
+      - name: three-accepted-seven-rejected
+        repeat: 3
+        concurrency: 3
+        hold_upstream:
+          fixture: origin
+          requests: 3
+          probes:
+            - {input: &project_override_input {method: GET, path: /limit_conn, headers: {project: apisix, project-conn: "2", project-burst: "1"}}, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+            - {input: *project_override_input, output: {status: 503}}
+        input: *project_override_input
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-10-no-rule-matches
+    source: {file: t/plugin/limit-conn-variable.t, tests: [10]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-10
+          uri: /limit_conn
+          plugins:
+            limit-conn: *rule_limits
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: all-ten-fail-without-a-rule
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output:
+          status_counts: {500: 10}
+          logs: {matches: 'failed to get limit conn rules'}
+
+  - name: limit-conn-variable-11-restore-default-expression-route
+    source: {file: t/plugin/limit-conn-variable.t, tests: [11]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-11
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: route-accepts-restored-default-expression
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+
+  - name: limit-conn-variable-12-zero-conn
+    source: {file: t/plugin/limit-conn-variable.t, tests: [12]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-12
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-zero-conn
+        input: {method: GET, path: /limit_conn, headers: {conn: "0"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value must be a positive number'}
+
+  - name: limit-conn-variable-13-negative-conn
+    source: {file: t/plugin/limit-conn-variable.t, tests: [13]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-13
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-negative-conn
+        input: {method: GET, path: /limit_conn, headers: {conn: "-1"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value must be a positive number'}
+
+  - name: limit-conn-variable-14-fractional-conn
+    source: {file: t/plugin/limit-conn-variable.t, tests: [14]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-14
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-fractional-conn
+        input: {method: GET, path: /limit_conn, headers: {conn: "1.5"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value must be an integer'}
+
+  - name: limit-conn-variable-15-fractional-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [15]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-15
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-fractional-burst
+        input: {method: GET, path: /limit_conn, headers: {burst: "1.5"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value must be an integer'}
+
+  - name: limit-conn-variable-16-conn-above-safe-integer
+    source: {file: t/plugin/limit-conn-variable.t, tests: [16]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-16
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-unsafe-conn
+        input: {method: GET, path: /limit_conn, headers: {conn: "99007199254740993"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value exceeds safe integer range'}
+
+  - name: limit-conn-variable-17-zero-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [17]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-17
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: accept-zero-burst
+        input: {method: GET, path: /limit_conn, headers: {burst: "0"}}
+        output:
+          status: 200
+          body: {equals: passed}
+          logs: {not_matches: 'resolved value must be'}
+
+  - name: limit-conn-variable-18-negative-burst
+    source: {file: t/plugin/limit-conn-variable.t, tests: [18]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-variable-18
+          uri: /limit_conn
+          plugins:
+            limit-conn: *dynamic_limit
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 0
+        respond: [*passed_response]
+    steps:
+      - name: reject-negative-burst
+        input: {method: GET, path: /limit_conn, headers: {burst: "-1"}}
+        output:
+          status: 500
+          logs: {matches: 'resolved value must be a non-negative number'}
+  - name: limit-conn-01-valid-schema
+    source: {file: t/plugin/limit-conn.t, tests: [1]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-01
+          uri: /limit_conn
+          plugins:
+            limit-conn: &one_conn
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: valid-schema-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-02-missing-burst-schema-rejection
+    source: {file: t/plugin/limit-conn.t, tests: [2]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-02
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-02 fail:.*limit-conn.*oneOf'}
+
+  - name: limit-conn-03-add-high-capacity-route
+    source: {file: t/plugin/limit-conn.t, tests: [3]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-03
+          uri: /limit_conn
+          plugins:
+            limit-conn: &high_capacity
+              conn: 100
+              burst: 50
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: configured-route-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-04-ten-within-capacity
+    source: {file: t/plugin/limit-conn.t, tests: [4]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-04
+          uri: /limit_conn
+          plugins: {limit-conn: *high_capacity}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 10, at_most: 10}
+        respond: [{status: 200, body: passed, delay: 100ms}]
+    steps:
+      - name: all-ten-are-accepted
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 10}}
+
+  - name: limit-conn-05-update-to-three-capacity
+    source: {file: t/plugin/limit-conn.t, tests: [5]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-05
+          uri: /limit_conn
+          plugins:
+            limit-conn: &three_capacity
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: updated-route-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-06-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [6]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-06
+          uri: /limit_conn
+          plugins: {limit-conn: *three_capacity}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 3, at_most: 3}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: concurrent-capacity-is-three
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 3, 503: 7}}
+
+  - name: limit-conn-07-update-to-six-capacity
+    source: {file: t/plugin/limit-conn.t, tests: [7]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-07
+          uri: /limit_conn
+          plugins:
+            limit-conn: &six_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: remote_addr
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: updated-route-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-08-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [8]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-08
+          uri: /limit_conn
+          plugins: {limit-conn: *six_capacity}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 6, at_most: 6}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: concurrent-capacity-is-six
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 6, 503: 4}}
+
+  - name: limit-conn-09-route-missing-conn
+    source: {file: t/plugin/limit-conn.t, tests: [9]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-09
+          uri: /limit_conn
+          plugins:
+            limit-conn: {burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-09 fail:.*limit-conn.*oneOf'}
+
+  - name: limit-conn-10-route-negative-conn
+    source: {file: t/plugin/limit-conn.t, tests: [10]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-10
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: -1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-10 fail:.*limit-conn.*conn.*oneOf'}
+
+  - name: limit-conn-11-service-missing-conn
+    source: {file: t/plugin/limit-conn.t, tests: [11]}
+    runtime: *limit_conn_runtime
+    config:
+      services:
+        - id: limit-conn-service-11
+          plugins:
+            limit-conn: {burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+      routes:
+        - {id: limit-conn-11, uri: /limit_conn, service_id: limit-conn-service-11}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-11 fail:.*limit-conn.*oneOf'}
+
+  - name: limit-conn-12-service-negative-conn
+    source: {file: t/plugin/limit-conn.t, tests: [12]}
+    runtime: *limit_conn_runtime
+    config:
+      services:
+        - id: limit-conn-service-12
+          plugins:
+            limit-conn: {conn: -1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+      routes:
+        - {id: limit-conn-12, uri: /limit_conn, service_id: limit-conn-service-12}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-12 fail:.*limit-conn.*conn.*oneOf'}
+
+  - name: limit-conn-13-plugin-disabled
+    source: {file: t/plugin/limit-conn.t, tests: [13]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-13
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: disabled-plugin-does-not-intercept
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-14-disabled-plugin-does-not-limit
+    source: {file: t/plugin/limit-conn.t, tests: [14]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-14
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 10, at_most: 10}
+        respond: [{status: 200, body: passed, delay: 100ms}]
+    steps:
+      - name: all-ten-are-accepted
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 10}}
+
+  - name: limit-conn-15-server-address-key
+    source: {file: t/plugin/limit-conn.t, tests: [15]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-15
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 100, burst: 50, default_conn_delay: 0.1, rejected_code: 503, key: server_addr}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: server-address-key-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-16-real-ip-header-key
+    source: {file: t/plugin/limit-conn.t, tests: [16]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-16
+          uri: /limit_conn
+          plugins:
+            limit-conn: &real_ip_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: http_x_real_ip
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: real-ip-key-proxies
+        input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-17-real-ip-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [17]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-17
+          uri: /limit_conn
+          plugins: {limit-conn: *real_ip_capacity}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 6, at_most: 6}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: real-ip-key-capacity-is-six
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}
+        output: {status_counts: {200: 6, 503: 4}}
+
+  - name: limit-conn-18-forwarded-for-header-key
+    source: {file: t/plugin/limit-conn.t, tests: [18]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-18
+          uri: /limit_conn
+          plugins:
+            limit-conn: &forwarded_for_capacity
+              conn: 5
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: http_x_forwarded_for
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: forwarded-for-key-proxies
+        input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-19-forwarded-for-six-accepted-four-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [19]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-19
+          uri: /limit_conn
+          plugins: {limit-conn: *forwarded_for_capacity}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 6, at_most: 6}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: forwarded-for-key-capacity-is-six
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}
+        output: {status_counts: {200: 6, 503: 4}}
+
+  - name: limit-conn-20-default-rejected-code
+    source: {file: t/plugin/limit-conn.t, tests: [20]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-20
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 100, burst: 50, default_conn_delay: 0.1, key: remote_addr}
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: omitted-rejected-code-is-accepted
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-21-global-rule
+    source: {file: t/plugin/limit-conn.t, tests: [21]}
+    runtime: *limit_conn_runtime
+    config:
+      global_rules:
+        - id: limit-conn-global-21
+          plugins:
+            limit-conn: &global_three_capacity
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              key: remote_addr
+      routes:
+        - id: limit-conn-21
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: global-rule-proxies
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-22-global-rule-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [22]}
+    runtime: *limit_conn_runtime
+    config:
+      global_rules:
+        - id: limit-conn-global-22
+          plugins: {limit-conn: *global_three_capacity}
+      routes:
+        - id: limit-conn-22
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 3, at_most: 3}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: global-rule-capacity-is-three
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 3, 503: 7}}
+
+  - name: limit-conn-23-global-rule-deleted
+    source: {file: t/plugin/limit-conn.t, tests: [23]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-23
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: route-proxies-without-global-rule
+        input: {method: GET, path: /limit_conn}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-24-no-global-rule-does-not-limit
+    source: {file: t/plugin/limit-conn.t, tests: [24]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-24
+          uri: /limit_conn
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn_expect
+        count: {at_least: 10, at_most: 10}
+        respond: [{status: 200, body: passed, delay: 100ms}]
+    steps:
+      - name: all-ten-are-accepted
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn}
+        output: {status_counts: {200: 10}}
+
+  - name: limit-conn-25-invalid-schema-values
+    source: {file: t/plugin/limit-conn.t, tests: [25]}
+    variants:
+      - name: zero-conn-route-is-not-activated
+        runtime: *limit_conn_runtime
+        config:
+          routes:
+            - id: limit-conn-25-zero-conn
+              uri: /limit_conn_zero
+              plugins:
+                limit-conn: {conn: 0, burst: 0, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}
+        input: {method: GET, path: /limit_conn_zero}
+        output:
+          status: 404
+          logs: {matches: 'build route limit-conn-25-zero-conn fail:.*limit-conn.*conn.*oneOf'}
+      - name: zero-delay-route-is-not-activated
+        runtime: *limit_conn_runtime
+        config:
+          routes:
+            - id: limit-conn-25-zero-delay
+              uri: /limit_conn_delay
+              plugins:
+                limit-conn: {conn: 1, burst: 0, default_conn_delay: 0, rejected_code: 503, key: remote_addr}
+        input: {method: GET, path: /limit_conn_delay}
+        output:
+          status: 404
+          logs: {matches: 'build route limit-conn-25-zero-delay fail:.*limit-conn.*default_conn_delay.*exclusiveMinimum'}
+
+  - name: limit-conn-26-create-key-auth-consumer
+    source: {file: t/plugin/limit-conn.t, tests: [26]}
+    runtime: &limit_conn_key_auth_runtime
+      plugins: [key-auth, limit-conn]
+    config:
+      consumers: &consumer_jack
+        - username: consumer_jack
+          plugins: {key-auth: {key: auth-jack}}
+      routes:
+        - id: limit-conn-26
+          uri: /limit_conn
+          plugins:
+            key-auth: {}
+            limit-conn: &consumer_high_capacity
+              conn: 100
+              burst: 50
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: consumer_name
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &consumer_expect
+          - path: {equals: /limit_conn}
+            headers: {X-Consumer-Username: {equals: consumer_jack}}
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: created-consumer-authenticates
+        input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-27-key-auth-route
+    source: {file: t/plugin/limit-conn.t, tests: [27]}
+    runtime: *limit_conn_key_auth_runtime
+    config:
+      consumers: *consumer_jack
+      routes:
+        - id: limit-conn-27
+          uri: /limit_conn
+          plugins:
+            key-auth: {}
+            limit-conn: *consumer_high_capacity
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *consumer_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: key-auth-populates-consumer-name
+        input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-28-consumer-ten-within-capacity
+    source: {file: t/plugin/limit-conn.t, tests: [28]}
+    runtime: *limit_conn_key_auth_runtime
+    config:
+      consumers: *consumer_jack
+      routes:
+        - id: limit-conn-28
+          uri: /limit_conn
+          plugins:
+            key-auth: {}
+            limit-conn: *consumer_high_capacity
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *consumer_expect
+        count: {at_least: 10, at_most: 10}
+        respond: [{status: 200, body: passed, delay: 100ms}]
+    steps:
+      - name: authenticated-consumer-ten-accepted
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
+        output: {status_counts: {200: 10}}
+
+  - name: limit-conn-29-update-consumer-capacity
+    source: {file: t/plugin/limit-conn.t, tests: [29]}
+    runtime: *limit_conn_key_auth_runtime
+    config:
+      consumers: *consumer_jack
+      routes:
+        - id: limit-conn-29
+          uri: /limit_conn
+          plugins:
+            key-auth: {}
+            limit-conn: &consumer_three_capacity
+              conn: 2
+              burst: 1
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: consumer_name
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *consumer_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: updated-consumer-route-proxies
+        input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-30-consumer-three-accepted-seven-rejected
+    source: {file: t/plugin/limit-conn.t, tests: [30]}
+    runtime: *limit_conn_key_auth_runtime
+    config:
+      consumers: *consumer_jack
+      routes:
+        - id: limit-conn-30
+          uri: /limit_conn
+          plugins:
+            key-auth: {}
+            limit-conn: *consumer_three_capacity
+          upstream: *limit_conn_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *consumer_expect
+        count: {at_least: 3, at_most: 3}
+        respond: [{status: 200, body: passed, delay: 500ms}]
+    steps:
+      - name: authenticated-consumer-capacity-is-three
+        repeat: 10
+        concurrency: 10
+        input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
+        output: {status_counts: {200: 3, 503: 7}}
+
+  - name: limit-conn-31-consumer-key-missing-burst
+    source: {file: t/plugin/limit-conn.t, tests: [31]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-31
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, default_conn_delay: 0.1, rejected_code: 503, key: consumer_name}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-31 fail:.*limit-conn.*oneOf'}
+
+  - name: limit-conn-32-allow-degradation
+    source: {file: t/plugin/limit-conn.t, tests: [32]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-32
+          uri: /hello
+          plugins:
+            limit-conn: &degradation_enabled
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.3
+              rejected_code: 503
+              key: remote_addr
+              allow_degradation: true
+          upstream: &hello_upstream
+            type: roundrobin
+            nodes: {"{{FIXTURE.origin.ADDR}}": 1}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &hello_expect
+          - {path: {equals: /hello}}
+        count: {at_least: 1, at_most: 1}
+        respond: [*passed_response]
+    steps:
+      - name: degradation-configured-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-33-pipelined-requests-are-not-limited
+    source: {file: t/plugin/limit-conn.t, tests: [33]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-33
+          uri: /hello
+          plugins: {limit-conn: *degradation_enabled}
+          upstream: *hello_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *hello_expect
+        count: {at_least: 6, at_most: 6}
+        respond: [*passed_response]
+    steps:
+      - name: six-pipelined-equivalent-requests-pass
+        repeat: 6
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn-34-invalid-allow-degradation
+    source: {file: t/plugin/limit-conn.t, tests: [34]}
+    runtime: *limit_conn_runtime
+    config:
+      routes:
+        - id: limit-conn-34
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr, allow_degradation: "true1"}
+    input: {method: GET, path: /limit_conn}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-conn-34 fail:.*limit-conn.*allow_degradation.*boolean'}
+  - name: limit-conn2-01-route-uses-retrying-upstream-resource
+    source: {file: t/plugin/limit-conn2.t, tests: [1]}
+    runtime: &limit_conn2_runtime {plugins: [limit-conn]}
+    config:
+      upstreams:
+        - &limit_conn2_retry_upstream
+          id: limit-conn2-retry-01
+          type: roundrobin
+          retries: 2
+          nodes:
+            "127.0.0.1:1": 1
+            "{{FIXTURE.origin.ADDR}}": 1
+      routes:
+        - id: limit-conn2-01
+          uri: /mysleep
+          plugins:
+            limit-conn: &limit_conn2_basic
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.3
+              rejected_code: 503
+              key: remote_addr
+          upstream_id: limit-conn2-retry-01
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &limit_conn2_sleep_expect [{path: {matches: '^/mysleep\?seconds=0\.1$'}}]
+        count: {at_least: 2, at_most: 2}
+        respond: [{status: 200, body: retry passed}]
+    steps:
+      - name: retrying-upstream-route-serves-first-request
+        input: {method: GET, path: "/mysleep?seconds=0.1"}
+        output: {status: 200, body: {equals: retry passed}}
+      - name: retrying-upstream-route-serves-second-request
+        input: {method: GET, path: "/mysleep?seconds=0.1"}
+        output: {status: 200, body: {equals: retry passed}}
+
+  - name: limit-conn2-02-request-latency-is-recorded
+    source: {file: t/plugin/limit-conn2.t, tests: [2]}
+    runtime: *limit_conn2_runtime
+    config:
+      upstreams:
+        - id: limit-conn2-retry-02
+          type: roundrobin
+          retries: 2
+          nodes:
+            "127.0.0.1:1": 1
+            "{{FIXTURE.origin.ADDR}}": 1
+      routes:
+        - {id: limit-conn2-02, uri: /mysleep, plugins: {limit-conn: *limit_conn2_basic}, upstream_id: limit-conn2-retry-02}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: *limit_conn2_sleep_expect
+        count: {at_least: 1, at_most: 1}
+        respond: [{status: 200, body: "0.1", delay: 100ms}]
+    steps:
+      - name: delayed-upstream-latency-is-measured
+        input: {method: GET, path: "/mysleep?seconds=0.1"}
+        output:
+          status: 200
+          body: {equals: "0.1"}
+          elapsed_at_least: 90ms
+          logs: {matches: 'request latency is 0\.1'}
+
+  - name: limit-conn2-03-global-and-route-plugins-are-installed
+    source: {file: t/plugin/limit-conn2.t, tests: [3]}
+    runtime: *limit_conn2_runtime
+    config:
+      global_rules:
+        - id: limit-conn2-global-03
+          plugins: {limit-conn: *limit_conn2_basic}
+      routes:
+        - id: limit-conn2-03
+          uri: /hello
+          plugins: {limit-conn: *limit_conn2_basic}
+          upstream: &limit_conn2_hello_upstream {type: roundrobin, nodes: {"{{FIXTURE.origin.ADDR}}": 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &limit_conn2_hello_expect [{path: {equals: /hello}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [&limit_conn2_hello_response {status: 200, body: hello world}]
+    steps:
+      - name: global-and-route-plugin-chain-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-conn2-04-global-and-route-record-latency
+    source: {file: t/plugin/limit-conn2.t, tests: [4]}
+    runtime: *limit_conn2_runtime
+    config:
+      global_rules:
+        - id: limit-conn2-global-04
+          plugins: {limit-conn: *limit_conn2_basic}
+      routes:
+        - {id: limit-conn2-04, uri: /hello, plugins: {limit-conn: *limit_conn2_basic}, upstream: *limit_conn2_hello_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *limit_conn2_hello_expect, count: {at_least: 1, at_most: 1}, respond: [*limit_conn2_hello_response]}
+    steps:
+      - name: both-plugin-instances-record-request-latency
+        input: {method: GET, path: /hello}
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {matches: '(?s)request latency is .*request latency is '}
+
+  - name: limit-conn2-05-only-default-delay-is-configured
+    source: {file: t/plugin/limit-conn2.t, tests: [5]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - id: limit-conn2-05
+          uri: /hello1
+          plugins:
+            limit-conn: &limit_conn2_default_delay_only
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.3
+              only_use_default_delay: true
+              rejected_code: 503
+              key: remote_addr
+          upstream: *limit_conn2_hello_upstream
+    fixtures:
+      - name: origin
+        kind: http
+        expect: [{path: {equals: /hello1}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [*limit_conn2_hello_response]
+    steps:
+      - name: only-default-delay-route-proxies
+        input: {method: GET, path: /hello1}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-conn2-06-only-default-delay-omits-measured-latency
+    source: {file: t/plugin/limit-conn2.t, tests: [6]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - {id: limit-conn2-06, uri: /hello1, plugins: {limit-conn: *limit_conn2_default_delay_only}, upstream: *limit_conn2_hello_upstream}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: [{path: {equals: /hello1}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [*limit_conn2_hello_response]
+    steps:
+      - name: request-latency-is-nil
+        input: {method: GET, path: /hello1}
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {matches: 'request latency is nil'}
+
+  - name: limit-conn2-07-rejected-message-must-be-string
+    source: {file: t/plugin/limit-conn2.t, tests: [7]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - id: limit-conn2-07
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr, rejected_msg: true}
+          upstream: *limit_conn2_hello_upstream
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [*limit_conn2_hello_response]}
+    steps:
+      - name: boolean-rejected-message-route-is-rejected
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 404
+          logs: {matches: 'build route limit-conn2-07 fail:.*limit-conn.*rejected_msg.*string.*boolean'}
+
+  - name: limit-conn2-08-rejected-message-must-not-be-empty
+    source: {file: t/plugin/limit-conn2.t, tests: [8]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - id: limit-conn2-08
+          uri: /limit_conn
+          plugins:
+            limit-conn: {conn: 1, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr, rejected_msg: ""}
+          upstream: *limit_conn2_hello_upstream
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [*limit_conn2_hello_response]}
+    steps:
+      - name: empty-rejected-message-route-is-rejected
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 404
+          logs: {matches: 'build route limit-conn2-08 fail:.*limit-conn.*rejected_msg.*short|build route limit-conn2-08 fail:.*limit-conn.*rejected_msg.*length'}
+
+  - name: limit-conn2-09-var-combination-key-is-accepted
+    source: {file: t/plugin/limit-conn2.t, tests: [9]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - id: limit-conn2-09
+          uri: /limit_conn
+          plugins:
+            limit-conn: &limit_conn2_var_combination
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: "$http_a $http_b"
+              key_type: var_combination
+          upstream: &limit_conn2_limit_upstream {type: roundrobin, nodes: {"{{FIXTURE.origin.ADDR}}": 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect: &limit_conn2_limit_expect [{path: {equals: /limit_conn}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [&limit_conn2_limit_response {status: 200, body: passed}]
+    steps:
+      - name: combined-header-key-proxies
+        input: {method: GET, path: /limit_conn, headers: {A: one, B: two}}
+        output: {status: 200, body: {equals: passed}}
+
+  - name: limit-conn2-10-distinct-header-keys-do-not-share-capacity
+    source: {file: t/plugin/limit-conn2.t, tests: [10]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - {id: limit-conn2-10, uri: /limit_conn, plugins: {limit-conn: *limit_conn2_var_combination}, upstream: *limit_conn2_limit_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *limit_conn2_limit_expect, count: {at_least: 2, at_most: 2}, respond: [{status: 200, body: passed, delay: 500ms}]}
+    steps:
+      - name: two-distinct-a-header-values-are-both-admitted
+        repeat: 2
+        concurrency: 2
+        input: {method: GET, path: /limit_conn, headers: {A: "client-{{ITERATION}}"}}
+        output: {status_counts: {200: 2}}
+
+  - name: limit-conn2-11-missing-combination-key-falls-back-to-client-ip
+    source: {file: t/plugin/limit-conn2.t, tests: [11]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - {id: limit-conn2-11, uri: /limit_conn, plugins: {limit-conn: *limit_conn2_var_combination}, upstream: *limit_conn2_limit_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *limit_conn2_limit_expect, count: {at_least: 1, at_most: 1}, respond: [{status: 200, body: passed, delay: 500ms}]}
+    steps:
+      - name: missing-key-uses-one-client-ip-bucket
+        repeat: 5
+        concurrency: 5
+        input: {method: GET, path: /limit_conn}
+        output:
+          status_counts: {200: 1, 503: 4}
+          logs: {matches: 'The value of the configured key is empty, use client IP instead'}
+
+  - name: limit-conn2-12-literal-var-combination-key-is-accepted
+    source: {file: t/plugin/limit-conn2.t, tests: [12]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - id: limit-conn2-12
+          uri: /limit_conn
+          plugins:
+            limit-conn: &limit_conn2_literal_combination
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: abcdefgh
+              key_type: var_combination
+          upstream: *limit_conn2_limit_upstream
+    fixtures:
+      - {name: origin, kind: http, expect: *limit_conn2_limit_expect, count: {at_least: 1, at_most: 1}, respond: [*limit_conn2_limit_response]}
+    steps:
+      - name: literal-combination-falls-back-and-proxies
+        input: {method: GET, path: /limit_conn}
+        output:
+          status: 200
+          body: {equals: passed}
+          logs: {matches: 'The value of the configured key is empty, use client IP instead'}
+
+  - name: limit-conn2-13-invalid-combination-key-falls-back-to-client-ip
+    source: {file: t/plugin/limit-conn2.t, tests: [13]}
+    runtime: *limit_conn2_runtime
+    config:
+      routes:
+        - {id: limit-conn2-13, uri: /limit_conn, plugins: {limit-conn: *limit_conn2_literal_combination}, upstream: *limit_conn2_limit_upstream}
+    fixtures:
+      - {name: origin, kind: http, expect: *limit_conn2_limit_expect, count: {at_least: 1, at_most: 1}, respond: [{status: 200, body: passed, delay: 500ms}]}
+    steps:
+      - name: literal-key-uses-one-client-ip-bucket
+        repeat: 5
+        concurrency: 5
+        input: {method: GET, path: /limit_conn}
+        output:
+          status_counts: {200: 1, 503: 4}
+          logs: {matches: 'The value of the configured key is empty, use client IP instead'}
+  - name: limit-conn3-01-route-accepts-var-combination-key
+    source: {file: t/plugin/limit-conn3.t, tests: [1]}
+    config:
+      routes:
+        - id: limit-conn3-route
+          uri: /limit_conn
+          host: www.test.com
+          plugins:
+            limit-conn:
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /limit_conn}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: configured-route-serves-request
+        input: {method: GET, path: /limit_conn, headers: {Host: www.test.com}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-conn3-02-frontend-tls-sni-serves-route
+    source: {file: t/plugin/limit-conn3.t, tests: [2]}
+    frontend_tls: {sni: www.test.com}
+    config:
+      routes:
+        - id: limit-conn3-tls-route
+          uri: /limit_conn
+          host: www.test.com
+          plugins:
+            limit-conn:
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /limit_conn}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: generated-sni-certificate-terminates-tls
+        input: {method: GET, scheme: https, path: /limit_conn, headers: {Host: www.test.com}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-conn3-03-http2-parallel-streams-share-connection-limit
+    source: {file: t/plugin/limit-conn3.t, tests: [3]}
+    frontend_tls: {sni: www.test.com}
+    config:
+      routes:
+        - id: limit-conn3-http2-route
+          uri: /limit_conn
+          host: www.test.com
+          plugins:
+            limit-conn:
+              conn: 1
+              burst: 0
+              default_conn_delay: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /limit_conn}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world, delay: 500ms}]
+    steps:
+      - name: two-http2-streams-share-the-client-connection-limit
+        concurrency: 2
+        repeat: 2
+        input: {method: GET, scheme: https, version: "2", path: /limit_conn, headers: {Host: www.test.com}}
+        output: {status_counts: {200: 1, 503: 1}}

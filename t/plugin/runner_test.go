@@ -1,0 +1,5208 @@
+package pluginintegration
+
+import (
+	"bufio"
+	"bytes"
+	"compress/flate"
+	cgzip "compress/gzip"
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is part of the pinned APISIX compatibility contract.
+	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/pem"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"hash"
+	"hash/crc32"
+	"html"
+	"io"
+	"maps"
+	"math/big"
+	"net"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"testing/iotest"
+	"time"
+
+	brotlidec "github.com/andybalholm/brotli"
+	"github.com/beevik/etree"
+	"github.com/crewjam/saml"
+	dsig "github.com/russellhaering/goxmldsig"
+	apisixcmd "github.com/wklken/apisix-go/cmd"
+	"go.yaml.in/yaml/v3"
+	"golang.org/x/net/http2"
+)
+
+const helperProcessEnv = "APISIX_GO_INTEGRATION_HELPER"
+
+const environmentHelperProcessEnv = "APISIX_GO_CASE_ENVIRONMENT_HELPER"
+
+const fallbackRootsHelperProcessEnv = "APISIX_GO_FALLBACK_ROOTS_HELPER"
+
+const fallbackRootsProxyURLEnv = "APISIX_GO_FALLBACK_ROOTS_PROXY_URL"
+
+const integrationFallbackRootsEnv = "APISIX_GO_INTEGRATION_FALLBACK_ROOTS"
+
+const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+
+const maxParallelPluginCases = 6
+
+var integrationStartupMu sync.Mutex
+
+func TestPluginIntegration(t *testing.T) {
+	files, err := manifestYAMLFiles()
+	if err != nil {
+		t.Fatalf("discover plugin manifests: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no plugin manifests found")
+	}
+	caseSlots := make(chan struct{}, maxParallelPluginCases)
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		manifest, err := loadManifest(path, data)
+		if err != nil {
+			t.Fatalf("load %s: %v", path, err)
+		}
+		pluginName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		for _, spec := range manifest.Cases {
+			t.Run(pluginName+"/"+spec.Name, func(t *testing.T) {
+				if !spec.Serial {
+					t.Parallel()
+				}
+				caseSlots <- struct{}{}
+				defer func() { <-caseSlots }()
+
+				if len(spec.Variants) == 0 {
+					runCase(t, spec)
+					return
+				}
+				for i := range spec.Variants {
+					variant := &spec.Variants[i]
+					t.Run(variant.Name, func(t *testing.T) {
+						runCase(t, *variant.caseSpec())
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestApplyHMACSignatureUsesCurrentDateAndRequestValues(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/hello?name=jack", nil)
+	request.Header.Set("X-Custom", "value")
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	applyHMACSignature(request, HMACSignature{
+		KeyID:     "access-key",
+		Secret:    "secret-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"@request-target", "date", "x-custom"},
+	}, now)
+
+	if got := request.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:30:00 GMT" {
+		t.Fatalf("Date = %q, want current HTTP date", got)
+	}
+	const want = `Signature keyId="access-key",algorithm="hmac-sha256",headers="@request-target date x-custom",signature="qtdRZdczKRmNsdekplbaCwFp/0tpSwe8luHI+BmlBaY="`
+	if got := request.Header.Get("Authorization"); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestApplyHMACSignatureSupportsAllowedAlgorithms(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		algorithm string
+		signature string
+	}{
+		{algorithm: "hmac-sha1", signature: "FnXTLwY+O6iiAiO4l+5cOnuG0Ow="},
+		{algorithm: "hmac-sha256", signature: "crjfwqimorUuajKVJZDkOWJvkqyfaYn368lKs9xq0ok="},
+		{
+			algorithm: "hmac-sha512",
+			signature: "ZllVQnRVrqbwo6tD80SOHt3Ah4sQBUm6CcQE94MQPIbjgyQSerBc5JazJklJR1l1kUvI8bHQelRjS2+WrNCnOg==",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.algorithm, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+			applyHMACSignature(request, HMACSignature{
+				KeyID:     "access-key",
+				Secret:    "secret-key",
+				Algorithm: test.algorithm,
+				Headers:   []string{"@request-target", "date"},
+			}, now)
+
+			if got := request.Header.Get("Authorization"); !strings.HasSuffix(got, `signature="`+test.signature+`"`) {
+				t.Fatalf("Authorization = %q, want %s signature", got, test.algorithm)
+			}
+		})
+	}
+}
+
+func TestApplyHMACSignatureSupportsFixedAndRelativeDate(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	fixed := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(fixed, HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{"date"},
+		Date:    "Thu, 24 Sep 2020 06:39:52 GMT",
+	}, now)
+	if got := fixed.Header.Get("Date"); got != "Thu, 24 Sep 2020 06:39:52 GMT" {
+		t.Fatalf("fixed Date = %q", got)
+	}
+
+	relative := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(relative, HMACSignature{
+		KeyID:      "access-key",
+		Secret:     "secret-key",
+		Headers:    []string{"date"},
+		DateOffset: -2 * time.Second,
+	}, now)
+	if got := relative.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:29:58 GMT" {
+		t.Fatalf("relative Date = %q", got)
+	}
+}
+
+func TestApplyHMACSignatureOmitsEmptyHeadersClauseAndCanSendUnsignedDate(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(request, HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{},
+		Date:    "now",
+	}, now)
+
+	if got := request.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:30:00 GMT" {
+		t.Fatalf("Date = %q", got)
+	}
+	if got := request.Header.Get("Authorization"); strings.Contains(got, "headers=") {
+		t.Fatalf("Authorization = %q, want omitted headers clause", got)
+	}
+}
+
+func TestRenderRuntimeConfigForcesStandaloneIsolation(t *testing.T) {
+	rendered, err := renderRuntimeConfig(19080, map[string]any{
+		"apisix": map[string]any{
+			"node_listen": 9443,
+		},
+		"deployment": map[string]any{
+			"role": "traditional",
+		},
+		"plugin_attr": map[string]any{
+			"redirect": map[string]any{"https_port": 10443},
+		},
+	})
+	if err != nil {
+		t.Fatalf("renderRuntimeConfig() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := yaml.Unmarshal(rendered, &config); err != nil {
+		t.Fatalf("unmarshal runtime config: %v", err)
+	}
+	apisix := config["apisix"].(map[string]any)
+	listen := apisix["node_listen"].([]any)
+	address := listen[0].(map[string]any)
+	if address["ip"] != "127.0.0.1" || address["port"] != 19080 {
+		t.Fatalf("node_listen = %#v, want loopback:19080", listen)
+	}
+	deployment := config["deployment"].(map[string]any)
+	if got := deployment["role"]; got != "data_plane" {
+		t.Fatalf("deployment.role = %v, want data_plane", got)
+	}
+	roleDataPlane := deployment["role_data_plane"].(map[string]any)
+	if got := roleDataPlane["config_provider"]; got != "yaml" {
+		t.Fatalf("config_provider = %v, want yaml", got)
+	}
+	pluginAttr := config["plugin_attr"].(map[string]any)
+	redirect := pluginAttr["redirect"].(map[string]any)
+	if got := redirect["https_port"]; got != 10443 {
+		t.Fatalf("https_port = %v, want 10443", got)
+	}
+	plugins, ok := config["plugins"].([]any)
+	if !ok {
+		t.Fatalf("plugins = %#v, want [prometheus] for request metrics initialization", config["plugins"])
+	}
+	if len(plugins) != 1 || plugins[0] != "prometheus" {
+		t.Fatalf("plugins = %#v, want [prometheus] for request metrics initialization", plugins)
+	}
+	prometheus, ok := pluginAttr["prometheus"].(map[string]any)
+	if !ok {
+		t.Fatalf("plugin_attr.prometheus = %#v, want map", pluginAttr["prometheus"])
+	}
+	if got := prometheus["enable_export_server"]; got != false {
+		t.Fatalf("prometheus.enable_export_server = %v, want false", got)
+	}
+}
+
+func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	files := []ScenarioFile{{Path: "fixtures/model.conf", Body: "model text"}}
+
+	if err := writeScenarioFiles(workDir, files, nil); err != nil {
+		t.Fatalf("writeScenarioFiles() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "fixtures", "model.conf"))
+	if err != nil {
+		t.Fatalf("read scenario file: %v", err)
+	}
+	if got := string(data); got != "model text" {
+		t.Fatalf("scenario file body = %q, want model text", got)
+	}
+}
+
+func TestWriteScenarioFilesExpandsFixturePlaceholders(t *testing.T) {
+	workDir := t.TempDir()
+	files := []ScenarioFile{{
+		Path: "fixtures/auth.json",
+		Body: `{"token_uri":"{{FIXTURE.sink.URL}}/token"}`,
+	}}
+	replacements := map[string]string{
+		"{{FIXTURE.sink.URL}}": "https://127.0.0.1:8443",
+	}
+
+	if err := writeScenarioFiles(workDir, files, replacements); err != nil {
+		t.Fatalf("writeScenarioFiles() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "fixtures", "auth.json"))
+	if err != nil {
+		t.Fatalf("read scenario file: %v", err)
+	}
+	if got := string(data); got != `{"token_uri":"https://127.0.0.1:8443/token"}` {
+		t.Fatalf("scenario file body = %q, want expanded fixture URL", got)
+	}
+}
+
+func TestExecuteFileLifecycleActions(t *testing.T) {
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "access.log")
+	rotated := filepath.Join(workDir, "access.log.old")
+	if err := os.WriteFile(source, []byte("before"), 0o600); err != nil {
+		t.Fatalf("write source log: %v", err)
+	}
+	replacements := map[string]string{"{{WORK_DIR}}": workDir}
+
+	actions := []CaseAction{
+		{Rename: &FileRenameAction{
+			From: "{{WORK_DIR}}/access.log",
+			To:   "{{WORK_DIR}}/access.log.old",
+		}},
+		{Remove: "{{WORK_DIR}}/access.log.old"},
+	}
+	if err := executeCaseActions(actions, replacements, nil, nil); err != nil {
+		t.Fatalf("executeCaseActions() error = %v", err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source stat error = %v, want absent", err)
+	}
+	if _, err := os.Stat(rotated); !os.IsNotExist(err) {
+		t.Fatalf("rotated stat error = %v, want absent", err)
+	}
+}
+
+func TestExecuteFileLifecycleActionRejectsExpandedEscape(t *testing.T) {
+	workDir := t.TempDir()
+	replacements := map[string]string{"{{WORK_DIR}}": workDir}
+	err := executeCaseActions([]CaseAction{{
+		Remove: "{{WORK_DIR}}/../outside.log",
+	}}, replacements, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "escapes work directory") {
+		t.Fatalf("executeCaseActions() error = %v, want expanded escape rejection", err)
+	}
+}
+
+func TestTamperSAMLSignatureChangesOnlySignatureValue(t *testing.T) {
+	original := `<samlp:Response><ds:SignatureValue>ABC123</ds:SignatureValue><saml:Assertion>body</saml:Assertion></samlp:Response>`
+	tampered, err := tamperSAMLSignature(base64.StdEncoding.EncodeToString([]byte(original)))
+	if err != nil {
+		t.Fatalf("tamperSAMLSignature() error = %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(tampered)
+	if err != nil {
+		t.Fatalf("decode tampered response: %v", err)
+	}
+	if string(decoded) == original {
+		t.Fatal("tamperSAMLSignature() did not change the response")
+	}
+	if !bytes.Contains(decoded, []byte(`<saml:Assertion>body</saml:Assertion>`)) {
+		t.Fatalf("tampered response = %q, assertion changed", decoded)
+	}
+}
+
+func TestTamperSAMLSignatureRejectsUnsignedResponse(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:Response/>`))
+	if _, err := tamperSAMLSignature(encoded); err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("tamperSAMLSignature() error = %v, want missing signature", err)
+	}
+}
+
+func TestAPISIXDialAddressPreservesLogicalRequestAuthority(t *testing.T) {
+	httpAddress := "127.0.0.1:19080"
+	tlsAddress := "127.0.0.1:19443"
+	for _, test := range []struct {
+		requested string
+		want      string
+	}{
+		{requested: httpAddress, want: httpAddress},
+		{requested: tlsAddress, want: tlsAddress},
+		{requested: "sp1.local:80", want: httpAddress},
+		{requested: "sp2.local:443", want: tlsAddress},
+	} {
+		if got := apisixDialAddress(test.requested, httpAddress, tlsAddress); got != test.want {
+			t.Fatalf("apisixDialAddress(%q) = %q, want %q", test.requested, got, test.want)
+		}
+	}
+}
+
+func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	config := map[string]any{"routes": []any{}}
+	if err := os.WriteFile(path, []byte("old snapshot\n#END\n"), 0o400); err != nil {
+		t.Fatalf("write read-only prior snapshot: %v", err)
+	}
+
+	if err := writeStandaloneConfigUpdate(path, config, nil); err != nil {
+		t.Fatalf("writeStandaloneConfigUpdate() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read standalone config update: %v", err)
+	}
+	if !strings.HasSuffix(string(data), "#END\n") {
+		t.Fatalf("standalone config update = %q, want #END marker", data)
+	}
+}
+
+func apisixDialAddress(requestedAddress, httpAddress, tlsAddress string) string {
+	if requestedAddress == tlsAddress {
+		return tlsAddress
+	}
+	_, port, err := net.SplitHostPort(requestedAddress)
+	if err == nil && port == "443" && tlsAddress != "" {
+		return tlsAddress
+	}
+	return httpAddress
+}
+
+func TestWaitForAppliedStateRetriesUntilProbePasses(t *testing.T) {
+	attempts := 0
+	err := waitForAppliedState(200*time.Millisecond, time.Millisecond, func() error {
+		attempts++
+		if attempts < 3 {
+			return fmt.Errorf("snapshot not applied")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("waitForAppliedState() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("probe attempts = %d, want 3", attempts)
+	}
+}
+
+func TestWaitForAppliedStateReportsLastProbeErrorAtTimeout(t *testing.T) {
+	err := waitForAppliedState(5*time.Millisecond, time.Millisecond, func() error {
+		return fmt.Errorf("status = 403, want 200")
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "status = 403, want 200") {
+		t.Fatalf("waitForAppliedState() error = %v, want last probe mismatch", err)
+	}
+}
+
+func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
+	rendered, err := renderRuntimeConfig(19080, map[string]any{
+		"plugins": []any{"node-status"},
+	})
+	if err != nil {
+		t.Fatalf("renderRuntimeConfig() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := yaml.Unmarshal(rendered, &config); err != nil {
+		t.Fatalf("unmarshal runtime config: %v", err)
+	}
+	plugins := config["plugins"].([]any)
+	if got, want := fmt.Sprint(plugins), "[node-status prometheus]"; got != want {
+		t.Fatalf("plugins = %s, want %s", got, want)
+	}
+}
+
+func TestHarnessRunsStandaloneRoute(t *testing.T) {
+	body := "ok"
+	caseSpec := Case{
+		Name:   "smoke",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "smoke",
+					"uri": "/smoke",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{Method: "GET", Path: "/smoke"},
+		Upstream: &UpstreamSpec{
+			Respond: HTTPResponse{Status: 200, Body: body},
+		},
+		Output: HTTPOutput{
+			Status: 200,
+			Body:   &Matcher{Equals: &body},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessRunsRequestSequence(t *testing.T) {
+	firstBody := "first"
+	rejectedMessage := "too many requests"
+	rejectedBody := `{"error_msg":"too many requests"}`
+	caseSpec := Case{
+		Name:   "sequence",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "sequence",
+					"uri": "/sequence",
+					"plugins": map[string]any{
+						"limit-count": map[string]any{
+							"count":         1,
+							"time_window":   60,
+							"key":           "remote_addr",
+							"rejected_code": http.StatusTooManyRequests,
+							"rejected_msg":  rejectedMessage,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Body: firstBody},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "allowed",
+				Input:  HTTPInput{Method: http.MethodGet, Path: "/sequence"},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &firstBody}},
+			},
+			{
+				Name:   "rejected",
+				Input:  HTTPInput{Method: http.MethodGet, Path: "/sequence"},
+				Output: HTTPOutput{Status: http.StatusTooManyRequests, Body: &Matcher{Equals: &rejectedBody}},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessFixtureEchoesRequestBody(t *testing.T) {
+	body := "echo me"
+	caseSpec := Case{
+		Name:   "fixture-echo",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "fixture-echo",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Body: &Matcher{Equals: &body}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "echo",
+				Input: HTTPInput{Method: http.MethodPost, Path: "/echo", Body: body},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Body:   &Matcher{Equals: &body},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
+	bodyTemplate := "body-{{ITERATION}}"
+	firstBody := "body-1"
+	secondBody := "body-2"
+	firstPath := "/echo?iteration=1"
+	secondPath := "/echo?iteration=2"
+	firstIteration := "1"
+	secondIteration := "2"
+	caseSpec := Case{
+		Name:   "iteration-placeholders",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "iteration-placeholders",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{
+						Path: &Matcher{Equals: &firstPath},
+						Headers: map[string]Matcher{
+							"X-Iteration": {Equals: &firstIteration},
+						},
+						Body: &Matcher{Equals: &firstBody},
+					},
+					{
+						Path: &Matcher{Equals: &secondPath},
+						Headers: map[string]Matcher{
+							"X-Iteration": {Equals: &secondIteration},
+						},
+						Body: &Matcher{Equals: &secondBody},
+					},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "repeat",
+				Repeat: 2,
+				Input: HTTPInput{
+					Method: http.MethodPost,
+					Path:   "/echo?iteration={{ITERATION}}",
+					Headers: map[string]string{
+						"X-Iteration": "{{ITERATION}}",
+					},
+					Body: bodyTemplate,
+				},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Body:   &Matcher{Equals: &bodyTemplate},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
+	body := "body"
+	caseSpec := Case{
+		Name:   "unasserted-fixture-captures",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "unasserted-fixture-captures",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "repeat",
+				Repeat: 3,
+				Input:  HTTPInput{Method: http.MethodPost, Path: "/echo", Body: body},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
+	caseSpec := Case{
+		Name:   "repeat-generated-headers",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "repeat-generated-headers",
+					"uri": "/repeat",
+					"plugins": map[string]any{
+						"request-id": map[string]any{"algorithm": "uuidv7"},
+						"mocking": map[string]any{
+							"response_status":  http.StatusOK,
+							"response_example": "ok",
+						},
+					},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "generated-ids",
+				Repeat: 20,
+				Input:  HTTPInput{Path: "/repeat"},
+				Output: HTTPOutput{
+					Status:           http.StatusOK,
+					UniqueHeaders:    []string{"X-Request-Id"},
+					MonotonicHeaders: []string{"X-Request-Id"},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
+	cookiePattern := `apisix-csrf-token=[^;]+`
+	caseSpec := Case{
+		Name:   "response-cookie-sequence",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "response-cookie-sequence",
+					"uri": "/csrf",
+					"plugins": map[string]any{
+						"csrf": map[string]any{"key": "userkey", "expires": 3600},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Body: "ok"},
+					{Status: http.StatusOK, Body: "ok"},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "issue-cookie",
+				Input: HTTPInput{Path: "/csrf"},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Headers: map[string]Matcher{
+						"Set-Cookie": {Matches: &cookiePattern},
+					},
+				},
+			},
+			{
+				Name: "reuse-cookie",
+				Input: HTTPInput{
+					Method:  http.MethodPost,
+					Path:    "/csrf",
+					Headers: map[string]string{"apisix-csrf-token": "{{COOKIE.apisix-csrf-token}}"},
+				},
+				Output: HTTPOutput{Status: http.StatusOK},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessCanOmitStoredCookies(t *testing.T) {
+	firstPath := "/issue"
+	secondPath := "/reuse"
+	thirdPath := "/omit"
+	cookiePattern := `session=stored`
+	absent := true
+	caseSpec := Case{
+		Name:   "omit-response-cookie",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "omit-response-cookie",
+					"uri": "/*",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Path: &Matcher{Equals: &firstPath}},
+					{Path: &Matcher{Equals: &secondPath}, Headers: map[string]Matcher{
+						"Cookie": {Matches: &cookiePattern},
+					}},
+					{Path: &Matcher{Equals: &thirdPath}, Headers: map[string]Matcher{
+						"Cookie": {Absent: &absent},
+					}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Headers: map[string]string{"Set-Cookie": "session=stored; Path=/"}},
+					{Status: http.StatusOK},
+					{Status: http.StatusOK},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{Name: "issue", Input: HTTPInput{Path: "/issue"}, Output: HTTPOutput{Status: http.StatusOK}},
+			{Name: "reuse", Input: HTTPInput{Path: "/reuse"}, Output: HTTPOutput{Status: http.StatusOK}},
+			{
+				Name:   "omit",
+				Input:  HTTPInput{Path: "/omit", WithoutCookies: true},
+				Output: HTTPOutput{Status: http.StatusOK},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
+	statePattern := `state=([^&]+)`
+	firstPath := "/authorize"
+	secondPath := "/callback?state=dynamic-state"
+	done := "done"
+	caseSpec := Case{
+		Name:   "response-header-capture",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "response-header-capture",
+					"uri": "/*",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Path: &Matcher{Equals: &firstPath}},
+					{Path: &Matcher{Equals: &secondPath}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Headers: map[string]string{"X-State": "state=dynamic-state"}},
+					{Status: http.StatusOK, Body: done},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "capture",
+				Input: HTTPInput{Path: "/authorize"},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Captures: map[string]HeaderCapture{
+						"state": {Header: "X-State", Matches: statePattern},
+					},
+				},
+			},
+			{
+				Name:   "reuse",
+				Input:  HTTPInput{Path: "/callback?state={{CAPTURE.state}}"},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &done}},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
+	body := "ok"
+	caseSpec := Case{
+		Name:   "repeated-request-headers",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "repeated-request-headers",
+					"uri": "/headers",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{
+			Path: "/headers",
+			HeaderValues: map[string][]string{
+				"X-Repeated": {"first", "second"},
+			},
+		},
+		Upstream: &UpstreamSpec{
+			Expect: HTTPAssertion{Headers: map[string]Matcher{
+				"X-Repeated": {Values: []string{"first", "second"}},
+			}},
+			Respond: HTTPResponse{Status: http.StatusOK, Body: body},
+		},
+		Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
+	body := "headAAAAAAtail"
+	caseSpec := Case{
+		Name:   "repeated-chunked-body",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "repeated-chunked-body",
+					"uri": "/body",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{
+			Method:     http.MethodPost,
+			Path:       "/body",
+			Chunked:    true,
+			BodyRepeat: &RepeatedBody{Prefix: "head", Value: "A", Count: 6, Suffix: "tail"},
+		},
+		Upstream: &UpstreamSpec{
+			Expect:  HTTPAssertion{Body: &Matcher{Equals: &body}},
+			Respond: HTTPResponse{Status: http.StatusOK, Body: "ok"},
+		},
+		Output: HTTPOutput{Status: http.StatusOK},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessRunsNamedFixtures(t *testing.T) {
+	primaryBody := "primary"
+	auditBody := "audit"
+	caseSpec := Case{
+		Name:   "named-fixtures",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "primary",
+					"uri": "/primary",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+				map[string]any{
+					"id":  "audit",
+					"uri": "/audit",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.audit.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name:    "primary",
+				Kind:    "http",
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: primaryBody}},
+				Expect: []HTTPAssertion{
+					{Method: http.MethodGet},
+				},
+			},
+			{
+				Name:    "audit",
+				Kind:    "http",
+				Respond: []HTTPResponse{{Status: http.StatusCreated, Body: auditBody}},
+				Expect: []HTTPAssertion{
+					{Method: http.MethodPost},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "primary",
+				Input:  HTTPInput{Method: http.MethodGet, Path: "/primary"},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &primaryBody}},
+			},
+			{
+				Name:   "audit",
+				Input:  HTTPInput{Method: http.MethodPost, Path: "/audit"},
+				Output: HTTPOutput{Status: http.StatusCreated, Body: &Matcher{Equals: &auditBody}},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHTTPFixtureResponseDelay(t *testing.T) {
+	fixture, err := startNamedFixture(FixtureSpec{
+		Name: "delayed",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Delay:  100 * time.Millisecond,
+			Status: http.StatusOK,
+			Body:   "delayed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("startNamedFixture() error = %v", err)
+	}
+	defer fixture.close()
+
+	started := time.Now()
+	response, err := http.Get(fixture.url())
+	if err != nil {
+		t.Fatalf("GET delayed fixture: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if elapsed := time.Since(started); elapsed < 80*time.Millisecond {
+		t.Fatalf("fixture response elapsed = %s, want at least 80ms", elapsed)
+	}
+}
+
+func TestHTTPFixtureResponseDelayStopsOnRequestCancellation(t *testing.T) {
+	fixture, err := startNamedFixture(FixtureSpec{
+		Name: "cancellable",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Delay:  5 * time.Second,
+			Status: http.StatusOK,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("startNamedFixture() error = %v", err)
+	}
+	defer fixture.close()
+
+	context, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(context, http.MethodGet, fixture.url(), nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	cancelTimer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
+
+	started := time.Now()
+	_, err = http.DefaultClient.Do(request)
+	if err == nil {
+		t.Fatal("canceled GET error = nil")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("canceled fixture response elapsed = %s, want prompt cancellation", elapsed)
+	}
+}
+
+func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
+	const environmentVariable = "APISIX_GO_HARNESS_CLICKHOUSE_USER"
+	t.Setenv(environmentVariable, "ambient-user")
+
+	caseSpec := Case{
+		Name:        "case-environment",
+		Source:      CaseSource{Tests: []int{1}},
+		Environment: Environment{environmentVariable: "fixture-user"},
+		Config: map[string]any{
+			"routes": []any{map[string]any{
+				"id":  "case-environment",
+				"uri": "/probe",
+				"plugins": map[string]any{"clickhouse-logger": map[string]any{
+					"endpoint_addr":    "{{FIXTURE.sink.URL}}",
+					"user":             "$ENV://APISIX_GO_HARNESS_CLICKHOUSE_USER",
+					"password":         "",
+					"database":         "default",
+					"logtable":         "logs",
+					"batch_max_size":   1,
+					"inactive_timeout": 1,
+				}},
+				"upstream": map[string]any{
+					"type":  "roundrobin",
+					"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+				},
+			}},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name:    "primary",
+				Kind:    "http",
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "ok"}},
+			},
+			{
+				Name: "sink",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Method: http.MethodPost,
+					Headers: map[string]Matcher{
+						"X-ClickHouse-User": {Equals: new("fixture-user")},
+					},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusOK}},
+			},
+		},
+		Steps: []CaseStep{{
+			Name:   "deliver-log",
+			Input:  HTTPInput{Path: "/probe"},
+			Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: new("ok")}},
+			Wait:   time.Second,
+		}},
+	}
+
+	runCase(t, caseSpec)
+	if got := os.Getenv(environmentVariable); got != "ambient-user" {
+		t.Fatalf("parent %s = %q, want ambient value preserved", environmentVariable, got)
+	}
+}
+
+func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
+	const environmentName = "APISIX_GO_CASE_ENVIRONMENT_VALUE"
+	t.Setenv(environmentName, "ambient-user")
+
+	parent := append([]string(nil), os.Environ()...)
+	configured := Environment{
+		environmentHelperProcessEnv: "1",
+		environmentName:             "fixture-user",
+	}
+	first := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	first.Env = childEnvironment(parent, configured, nil)
+	firstOutput, err := first.CombinedOutput()
+	if err != nil {
+		t.Fatalf("configured child error = %v, output = %s", err, firstOutput)
+	}
+	if !strings.Contains(string(firstOutput), "fixture-user") {
+		t.Fatalf("configured child output = %q, want case environment value", firstOutput)
+	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s after configured child = %q, want ambient value preserved", environmentName, got)
+	}
+
+	second := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	second.Env = childEnvironment(os.Environ(), Environment{environmentHelperProcessEnv: "1"}, nil)
+	secondOutput, err := second.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unconfigured child error = %v, output = %s", err, secondOutput)
+	}
+	if strings.Contains(string(secondOutput), "fixture-user") {
+		t.Fatalf("unconfigured child output = %q, want no value leaked from configured child", secondOutput)
+	}
+	if !strings.Contains(string(secondOutput), "ambient-user") {
+		t.Fatalf("unconfigured child output = %q, want ambient value", secondOutput)
+	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s after unconfigured child = %q, want ambient value preserved", environmentName, got)
+	}
+}
+
+func TestChildEnvironmentRemovesInheritedValuesWithoutChangingParent(t *testing.T) {
+	const environmentName = "APISIX_GO_CASE_ENVIRONMENT_VALUE"
+	t.Setenv(environmentName, "ambient-user")
+
+	child := childEnvironment(
+		os.Environ(),
+		Environment{environmentHelperProcessEnv: "1"},
+		[]string{environmentName},
+	)
+	command := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	command.Env = child
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unset child error = %v, output = %s", err, output)
+	}
+	if strings.Contains(string(output), "ambient-user") {
+		t.Fatalf("unset child output = %q, want inherited value removed", output)
+	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s = %q, want ambient value preserved", environmentName, got)
+	}
+}
+
+func TestHarnessRunsChunkedFixture(t *testing.T) {
+	body := "hello world"
+	caseSpec := Case{
+		Name:   "chunked",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "chunked",
+					"uri": "/chunked",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{Path: "/chunked"},
+		Upstream: &UpstreamSpec{
+			Respond: HTTPResponse{Status: http.StatusOK, Chunks: []string{"hello ", "world"}},
+		},
+		Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessDisconnectsClient(t *testing.T) {
+	disconnected := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for range 1000 {
+			select {
+			case <-r.Context().Done():
+				close(disconnected)
+				return
+			default:
+			}
+			_, _ = io.WriteString(w, strings.Repeat("x", 64))
+			flusher.Flush()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	err := runHTTPInput(
+		t,
+		client,
+		strings.TrimPrefix(server.URL, "http://"),
+		"",
+		HTTPInput{Path: "/stream", DisconnectAfterBytes: 128},
+		HTTPOutput{Status: http.StatusOK},
+		map[string]int{},
+		map[string][]string{},
+		map[string]string{},
+		map[string]string{},
+	)
+	if err != nil {
+		t.Fatalf("run disconnect input: %v", err)
+	}
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("server did not observe the client disconnect")
+	}
+}
+
+func TestHarnessAssertsConcurrentStatusCounts(t *testing.T) {
+	path := "/concurrent-statuses"
+	caseSpec := Case{
+		Name:   "concurrent-status-counts",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "concurrent-status-counts",
+					"uri": path,
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.origin.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "origin",
+			Kind: "http",
+			Expect: []HTTPAssertion{{
+				Path: &Matcher{Equals: &path},
+			}},
+			Respond: []HTTPResponse{
+				{Status: http.StatusOK},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+			},
+			Count: &FixtureCountAssertion{AtLeast: 5, AtMost: 5},
+		}},
+		Steps: []CaseStep{{
+			Name:        "exact-mix",
+			Repeat:      5,
+			Concurrency: 5,
+			Input:       HTTPInput{Path: path},
+			Output: HTTPOutput{
+				StatusCounts: map[int]int{
+					http.StatusOK:                 1,
+					http.StatusServiceUnavailable: 4,
+				},
+			},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessHoldsInflightRequestsWhileRunningProbes(t *testing.T) {
+	path := "/held-limit-conn"
+	caseSpec := Case{
+		Name:   "held-limit-conn",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "held-limit-conn",
+					"uri": path,
+					"plugins": map[string]any{
+						"limit-conn": map[string]any{
+							"conn":               2,
+							"burst":              0,
+							"default_conn_delay": 0.1,
+							"key":                "remote_addr",
+							"rejected_code":      http.StatusServiceUnavailable,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.origin.ADDR}}": 1},
+					},
+				},
+				map[string]any{
+					"id":  "held-probe-observer",
+					"uri": "/held-probe-observer",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.probe.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "origin",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Path: &Matcher{Equals: &path},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "held"}},
+				Count:   &FixtureCountAssertion{AtLeast: 2, AtMost: 2},
+			},
+			{
+				Name: "probe",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Path: &Matcher{Equals: new("/held-probe-observer")},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusNoContent}},
+			},
+		},
+		Steps: []CaseStep{{
+			Name:        "two-held-one-rejected",
+			Repeat:      2,
+			Concurrency: 2,
+			HoldUpstream: &HeldUpstream{
+				Fixture:  "origin",
+				Requests: 2,
+				Probes: []ConfigProbe{{
+					Input:  HTTPInput{Path: path},
+					Output: HTTPOutput{Status: http.StatusServiceUnavailable},
+				}, {
+					Input:  HTTPInput{Path: "/held-probe-observer"},
+					Output: HTTPOutput{Status: http.StatusNoContent},
+				}},
+			},
+			Input:  HTTPInput{Path: path},
+			Output: HTTPOutput{Status: http.StatusOK},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessAssertsFlushedChunks(t *testing.T) {
+	first := "data: first\n\n"
+	second := "data: second\n\n"
+	done := "data: [DONE]\n\n"
+	caseSpec := Case{
+		Name:   "flushed-chunks",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "flushed-chunks",
+					"uri": "/flushed-chunks",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{Path: "/flushed-chunks"},
+		Upstream: &UpstreamSpec{
+			Respond: HTTPResponse{
+				Status:     http.StatusOK,
+				Headers:    map[string]string{"Content-Type": "text/event-stream"},
+				Chunks:     []string{first, second, done},
+				ChunkDelay: 300 * time.Millisecond,
+			},
+		},
+		Output: HTTPOutput{
+			Status: http.StatusOK,
+			Chunks: []Matcher{
+				{Equals: &first},
+				{Equals: &second},
+				{Equals: &done},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessRunsAWSEventStreamFixture(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "bedrock",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Status:  http.StatusOK,
+			Headers: map[string]string{"Content-Type": "application/vnd.amazon.eventstream"},
+			AWSEventStream: []AWSEventStreamMessage{
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "messageStart",
+						":content-type": "application/json",
+					},
+					Payload: `{"role":"assistant"}`,
+				},
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "contentBlockDelta",
+						":content-type": "application/json",
+					},
+					Payload: `{"delta":{"text":"Hello"}}`,
+				},
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "metadata",
+						":content-type": "application/json",
+					},
+					Payload: `{"usage":{"inputTokens":13,"outputTokens":5}}`,
+				},
+			},
+		}},
+	}
+	fixture, err := startNamedFixture(spec)
+	if err != nil {
+		t.Fatalf("start AWS EventStream fixture: %v", err)
+	}
+	t.Cleanup(fixture.close)
+
+	response, err := http.Get(fixture.url())
+	if err != nil {
+		t.Fatalf("request AWS EventStream fixture: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read AWS EventStream fixture: %v", readErr)
+	}
+	events, err := decodeHarnessAWSEventStream(body)
+	if err != nil {
+		t.Fatalf("decode AWS EventStream fixture: %v", err)
+	}
+	want := []string{
+		`messageStart:{"role":"assistant"}`,
+		`contentBlockDelta:{"delta":{"text":"Hello"}}`,
+		`metadata:{"usage":{"inputTokens":13,"outputTokens":5}}`,
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("AWS EventStream events = %#v, want %#v", events, want)
+	}
+}
+
+func decodeHarnessAWSEventStream(body []byte) ([]string, error) {
+	var events []string
+	for len(body) > 0 {
+		if len(body) < 16 {
+			return nil, errors.New("truncated AWS EventStream frame")
+		}
+		totalLength := int(binary.BigEndian.Uint32(body[:4]))
+		headersLength := int(binary.BigEndian.Uint32(body[4:8]))
+		if totalLength < 16 || totalLength > len(body) || headersLength > totalLength-16 {
+			return nil, errors.New("invalid AWS EventStream lengths")
+		}
+		frame := body[:totalLength]
+		if got, want := crc32.ChecksumIEEE(frame[:8]), binary.BigEndian.Uint32(frame[8:12]); got != want {
+			return nil, fmt.Errorf("AWS EventStream prelude CRC = %08x, want %08x", got, want)
+		}
+		if got, want := crc32.ChecksumIEEE(frame[:totalLength-4]),
+			binary.BigEndian.Uint32(frame[totalLength-4:]); got != want {
+			return nil, fmt.Errorf("AWS EventStream message CRC = %08x, want %08x", got, want)
+		}
+		headers := frame[12 : 12+headersLength]
+		eventType := ""
+		for len(headers) > 0 {
+			nameLength := int(headers[0])
+			if len(headers) < 1+nameLength+4 || headers[1+nameLength] != 7 {
+				return nil, errors.New("invalid AWS EventStream string header")
+			}
+			name := string(headers[1 : 1+nameLength])
+			valueLength := int(binary.BigEndian.Uint16(headers[2+nameLength : 4+nameLength]))
+			if len(headers) < 4+nameLength+valueLength {
+				return nil, errors.New("truncated AWS EventStream string header")
+			}
+			value := string(headers[4+nameLength : 4+nameLength+valueLength])
+			if name == ":event-type" {
+				eventType = value
+			}
+			headers = headers[4+nameLength+valueLength:]
+		}
+		payload := string(frame[12+headersLength : totalLength-4])
+		events = append(events, eventType+":"+payload)
+		body = body[totalLength:]
+	}
+	return events, nil
+}
+
+func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
+	body := "01234567890123456789"
+	caseSpec := Case{
+		Name:   "http-version-gzip",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "http-version-gzip",
+					"uri": "/gzip",
+					"plugins": map[string]any{
+						"gzip": map[string]any{
+							"types":        []any{"text/plain"},
+							"min_length":   1,
+							"http_version": 1.1,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Headers: map[string]string{"Content-Type": "text/plain"}, Body: body},
+					{Status: http.StatusOK, Headers: map[string]string{"Content-Type": "text/plain"}, Body: body},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name: "http-1.0-not-compressed",
+				Input: HTTPInput{
+					Method:  http.MethodGet,
+					Version: "1.0",
+					Path:    "/gzip",
+					Headers: map[string]string{"Accept-Encoding": "gzip"},
+				},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
+			},
+			{
+				Name: "http-1.1-compressed",
+				Input: HTTPInput{
+					Method:  http.MethodGet,
+					Version: "1.1",
+					Path:    "/gzip",
+					Headers: map[string]string{"Accept-Encoding": "gzip"},
+				},
+				Output: HTTPOutput{
+					Status:   http.StatusOK,
+					GzipBody: &Matcher{Equals: &body},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSupportsBrotliBody(t *testing.T) {
+	body := "01234567890123456789"
+	caseSpec := Case{
+		Name:   "brotli-body",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "brotli-body",
+					"uri": "/brotli",
+					"plugins": map[string]any{
+						"brotli": map[string]any{
+							"types":      []any{"text/plain"},
+							"min_length": 1,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "primary",
+			Kind: "http",
+			Respond: []HTTPResponse{{
+				Status:  http.StatusOK,
+				Headers: map[string]string{"Content-Type": "text/plain"},
+				Body:    body,
+			}},
+		}},
+		Steps: []CaseStep{{
+			Name: "compressed-response-preserves-body",
+			Input: HTTPInput{
+				Method:  http.MethodGet,
+				Path:    "/brotli",
+				Headers: map[string]string{"Accept-Encoding": "br"},
+			},
+			Output: HTTPOutput{
+				Status:     http.StatusOK,
+				BrotliBody: &Matcher{Equals: &body},
+				Headers:    map[string]Matcher{"Content-Encoding": {Equals: new("br")}},
+			},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSupportsElapsedAssertions(t *testing.T) {
+	caseSpec := Case{
+		Name:   "elapsed-assertions",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "elapsed-assertions",
+					"uri": "/delay",
+					"plugins": map[string]any{
+						"fault-injection": map[string]any{
+							"delay": map[string]any{"duration": 0.05},
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "primary",
+			Kind: "http",
+			Respond: []HTTPResponse{{
+				Status: http.StatusOK,
+				Body:   "ok",
+			}},
+		}},
+		Steps: []CaseStep{{
+			Name:  "delay-is-observable",
+			Input: HTTPInput{Method: http.MethodGet, Path: "/delay"},
+			Output: HTTPOutput{
+				Status:         http.StatusOK,
+				Body:           &Matcher{Equals: new("ok")},
+				ElapsedAtLeast: 40 * time.Millisecond,
+			},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestReplaceFixturePlaceholders(t *testing.T) {
+	data, err := replaceFixturePlaceholders(
+		[]byte("address={{FIXTURE.primary.ADDR}} url={{FIXTURE.primary.URL}}"),
+		map[string]string{
+			"{{FIXTURE.primary.ADDR}}": "127.0.0.1:1980",
+			"{{FIXTURE.primary.URL}}":  "http://127.0.0.1:1980",
+		},
+	)
+	if err != nil {
+		t.Fatalf("replaceFixturePlaceholders() error = %v", err)
+	}
+	if got, want := string(data), "address=127.0.0.1:1980 url=http://127.0.0.1:1980"; got != want {
+		t.Fatalf("replacement = %q, want %q", got, want)
+	}
+
+	data, err = replaceFixturePlaceholders(
+		[]byte("port: '{{FIXTURE.primary.PORT}}'"),
+		map[string]string{"{{FIXTURE.primary.PORT}}": "1980"},
+	)
+	if err != nil {
+		t.Fatalf("replace numeric fixture placeholder: %v", err)
+	}
+	if got, want := string(data), "port: 1980"; got != want {
+		t.Fatalf("numeric replacement = %q, want %q", got, want)
+	}
+
+	_, err = replaceFixturePlaceholders([]byte("{{FIXTURE.missing.URL}}"), nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown fixture placeholder") {
+		t.Fatalf("unknown replacement error = %v", err)
+	}
+}
+
+func TestResolveCapturedInputExpandsAllRequestPayloadForms(t *testing.T) {
+	input, err := resolveCapturedInput(HTTPInput{
+		Path: "/callback?state={{CAPTURE.state}}",
+		Headers: map[string]string{
+			"X-State": "{{CAPTURE.state}}",
+		},
+		HeaderValues: map[string][]string{
+			"X-Values": {"before", "{{CAPTURE.state}}"},
+		},
+		BodyRepeat: &RepeatedBody{
+			Prefix: "{{CAPTURE.state}}-",
+			Value:  "{{CAPTURE.state}}",
+			Count:  2,
+		},
+	}, map[string]string{"state": "captured"})
+	if err != nil {
+		t.Fatalf("resolveCapturedInput() error = %v", err)
+	}
+	if input.Path != "/callback?state=captured" || input.Headers["X-State"] != "captured" {
+		t.Fatalf("resolved path/headers = %q/%q", input.Path, input.Headers["X-State"])
+	}
+	if got := input.HeaderValues["X-Values"][1]; got != "captured" {
+		t.Fatalf("resolved header value = %q, want captured", got)
+	}
+	if got := input.BodyRepeat.Value; got != "captured" {
+		t.Fatalf("resolved repeated body = %q, want captured", got)
+	}
+	if got := input.BodyRepeat.Prefix; got != "captured-" {
+		t.Fatalf("resolved repeated body prefix = %q, want captured-", got)
+	}
+}
+
+func TestHTTPFixtureResponseSupportsRepeatedBodyWithPrefix(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeFixtureResponse(recorder, context.Background(), HTTPResponse{
+		BodyRepeat: &RepeatedBody{Prefix: "hello", Value: "l", Count: 3, Suffix: "!"},
+	}, "")
+
+	if got := recorder.Body.String(); got != "hellolll!" {
+		t.Fatalf("response body = %q, want hellolll!", got)
+	}
+}
+
+func TestSAMLRedirectFixtureSignatureRejectsRelayStateTampering(t *testing.T) {
+	certificatePEM, privateKeyPEM := generateSAMLRSACertificate(t)
+	pair, err := tls.X509KeyPair([]byte(certificatePEM), []byte(privateKeyPEM))
+	if err != nil {
+		t.Fatalf("parse signing pair: %v", err)
+	}
+	signer, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		t.Fatal("private key does not implement crypto.Signer")
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		"https://idp.example.test/slo",
+		"SAMLRequest",
+		[]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"/>`),
+		"original",
+		signer,
+	)
+	if err != nil {
+		t.Fatalf("sign Redirect request: %v", err)
+	}
+	if err := validateSAMLRedirectFixtureSignature(
+		redirect.RawQuery,
+		"SAMLRequest",
+		certificatePEM,
+	); err != nil {
+		t.Fatalf("validate Redirect signature: %v", err)
+	}
+	tampered := strings.Replace(redirect.RawQuery, "RelayState=original", "RelayState=tampered", 1)
+	if err := validateSAMLRedirectFixtureSignature(
+		tampered,
+		"SAMLRequest",
+		certificatePEM,
+	); err == nil {
+		t.Fatal("tampered RelayState passed Redirect signature validation")
+	}
+}
+
+func TestSAMLResponseActionRejectsUnexpectedSPIssuer(t *testing.T) {
+	certificatePEM, privateKeyPEM := generateSAMLRSACertificate(t)
+	sp, err := samlFixtureSigner("sp1", certificatePEM, privateKeyPEM)
+	if err != nil {
+		t.Fatalf("create SP signer: %v", err)
+	}
+	acsURL, _ := url.Parse("https://sp1.local/login/callback")
+	sp.AcsURL = *acsURL
+	request, err := sp.MakeAuthenticationRequest(
+		"https://idp.example.test/sso",
+		saml.HTTPRedirectBinding,
+		saml.HTTPPostBinding,
+	)
+	if err != nil {
+		t.Fatalf("make authentication request: %v", err)
+	}
+	redirect, err := request.Redirect("relay", sp)
+	if err != nil {
+		t.Fatalf("sign authentication request: %v", err)
+	}
+	err = executeSAMLResponseAction(SAMLResponseAction{
+		RedirectCapture:   "redirect",
+		ResponseCapture:   "response",
+		RelayStateCapture: "relay",
+		IDPCertificate:    certificatePEM,
+		IDPPrivateKey:     privateKeyPEM,
+		IDPEntityID:       "https://idp.example.test/realms/integration",
+		SPCertificate:     certificatePEM,
+		ExpectedSPIssuer:  "sp2",
+		NameID:            "alice@example.com",
+	}, map[string]string{"redirect": redirect.String()})
+	if err == nil || !strings.Contains(err.Error(), `issuer = "sp1", want "sp2"`) {
+		t.Fatalf("executeSAMLResponseAction() error = %v, want host-sensitive issuer rejection", err)
+	}
+}
+
+func generateSAMLRSACertificate(t *testing.T) (string, string) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "saml.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	certificateDER, err := x509.CreateCertificate(
+		rand.Reader,
+		&template,
+		&template,
+		&key.PublicKey,
+		key,
+	)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+}
+
+func TestAPISIXProcess(t *testing.T) {
+	if os.Getenv(helperProcessEnv) != "1" {
+		return
+	}
+	if err := installIntegrationFallbackRoots(); err != nil {
+		t.Fatalf("install integration fallback roots: %v", err)
+	}
+	os.Args = []string{"apisix", "-c", "conf/config.yaml"}
+	apisixcmd.Execute()
+}
+
+func installIntegrationFallbackRoots() error {
+	if os.Getenv(integrationFallbackRootsEnv) != "1" {
+		return nil
+	}
+	if !godebugFallbackRootsEnabled(os.Getenv("GODEBUG")) {
+		return errors.New("integration fallback roots require GODEBUG=x509usefallbackroots=1")
+	}
+	path := os.Getenv("SSL_CERT_FILE")
+	if path == "" {
+		return errors.New("integration fallback roots require SSL_CERT_FILE")
+	}
+	certificates, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read SSL_CERT_FILE: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificates) {
+		return errors.New("SSL_CERT_FILE contains no certificates")
+	}
+	x509.SetFallbackRoots(roots)
+	return nil
+}
+
+func godebugFallbackRootsEnabled(godebug string) bool {
+	useFallbackRoots := false
+	for setting := range strings.SplitSeq(godebug, ",") {
+		name, value, configured := strings.Cut(setting, "=")
+		if configured && name == "x509usefallbackroots" {
+			useFallbackRoots = value == "1"
+		}
+	}
+	return useFallbackRoots
+}
+
+func TestIntegrationFallbackRootsHelperProcess(t *testing.T) {
+	if os.Getenv(fallbackRootsHelperProcessEnv) != "1" {
+		return
+	}
+	if err := installIntegrationFallbackRoots(); err != nil {
+		t.Fatalf("install integration fallback roots: %v", err)
+	}
+	proxyURL, err := url.Parse(os.Getenv(fallbackRootsProxyURLEnv))
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	client := &http.Client{Transport: transport}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"https://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4"}`),
+	)
+	if err != nil {
+		t.Fatalf("create provider request: %v", err)
+	}
+	request.Header.Set("Authorization", "some-key")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("send provider request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("provider response status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestIntegrationFallbackRootsTrustsOnlyConfiguredCA(t *testing.T) {
+	fixtureSpec := func() FixtureSpec {
+		authority := "api.openai.com:443"
+		path := "/v1/chat/completions"
+		authorization := "some-key"
+		body := `{"model":"gpt-4"}`
+		return FixtureSpec{
+			Name: "provider-proxy",
+			Kind: "https-connect",
+			Expect: []HTTPAssertion{
+				{Method: http.MethodConnect, Host: &Matcher{Equals: &authority}},
+				{
+					Method:  http.MethodPost,
+					Path:    &Matcher{Equals: &path},
+					Headers: map[string]Matcher{"Authorization": {Equals: &authorization}},
+					Body:    &Matcher{JSONEquals: &body},
+				},
+			},
+			Respond: []HTTPResponse{
+				{Status: http.StatusOK},
+				{Status: http.StatusUnauthorized, Body: "Unauthorized"},
+			},
+		}
+	}
+	runHelper := func(t *testing.T, proxyURL string, caFile string) ([]byte, error) {
+		t.Helper()
+		command := exec.Command(
+			os.Args[0],
+			"-test.run=^TestIntegrationFallbackRootsHelperProcess$",
+			"-test.v",
+		)
+		command.Env = childEnvironment(os.Environ(), Environment{
+			fallbackRootsHelperProcessEnv: "1",
+			fallbackRootsProxyURLEnv:      proxyURL,
+			integrationFallbackRootsEnv:   "1",
+			"GODEBUG":                     "x509usefallbackroots=1",
+			"SSL_CERT_FILE":               caFile,
+		}, nil)
+		return command.CombinedOutput()
+	}
+
+	t.Run("trusted CA", func(t *testing.T) {
+		spec := fixtureSpec()
+		fixture, err := startHTTPSConnectFixture(spec)
+		if err != nil {
+			t.Fatalf("start HTTPS CONNECT fixture: %v", err)
+		}
+		defer fixture.close()
+
+		trusted := fixture.(interface{ caFile() string })
+		output, err := runHelper(t, fixture.url(), trusted.caFile())
+		if err != nil {
+			t.Fatalf("trusted CA helper failed: %v\n%s", err, output)
+		}
+		fixture.assert(t, spec)
+	})
+
+	t.Run("wrong CA", func(t *testing.T) {
+		spec := fixtureSpec()
+		fixture, err := startHTTPSConnectFixture(spec)
+		if err != nil {
+			t.Fatalf("start HTTPS CONNECT fixture: %v", err)
+		}
+		defer fixture.close()
+		wrongCA, err := startHTTPSConnectFixture(fixtureSpec())
+		if err != nil {
+			t.Fatalf("start wrong-CA fixture: %v", err)
+		}
+		defer wrongCA.close()
+
+		untrusted := wrongCA.(interface{ caFile() string })
+		output, err := runHelper(t, fixture.url(), untrusted.caFile())
+		if err == nil {
+			t.Fatalf("wrong CA helper unexpectedly succeeded:\n%s", output)
+		}
+		if !bytes.Contains(output, []byte("certificate signed by unknown authority")) {
+			t.Fatalf("wrong CA helper output = %q, want unknown authority", output)
+		}
+	})
+}
+
+func TestCaseEnvironmentHelperProcess(t *testing.T) {
+	if os.Getenv(environmentHelperProcessEnv) != "1" {
+		return
+	}
+	fmt.Print(os.Getenv("APISIX_GO_CASE_ENVIRONMENT_VALUE"))
+}
+
+type capturedRequest struct {
+	method   string
+	path     string
+	host     string
+	protocol string
+	headers  http.Header
+	body     string
+}
+
+type fixtureServer struct {
+	server   *httptest.Server
+	requests chan capturedRequest
+
+	holdMu sync.Mutex
+	hold   *fixtureResponseHold
+}
+
+type fixtureResponseHold struct {
+	mu       sync.Mutex
+	want     int
+	observed int
+	arrived  chan struct{}
+	release  chan struct{}
+}
+
+func newFixtureResponseHold(want int) *fixtureResponseHold {
+	return &fixtureResponseHold{
+		want:    want,
+		arrived: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (h *fixtureResponseHold) arriveAndWait(context context.Context) {
+	h.mu.Lock()
+	h.observed++
+	if h.observed == h.want {
+		close(h.arrived)
+	}
+	h.mu.Unlock()
+
+	select {
+	case <-h.release:
+	case <-context.Done():
+	}
+}
+
+func (h *fixtureResponseHold) wait(timeout time.Duration) error {
+	select {
+	case <-h.arrived:
+		return nil
+	case <-time.After(timeout):
+		h.mu.Lock()
+		observed := h.observed
+		h.mu.Unlock()
+		return fmt.Errorf("observed %d of %d held upstream requests", observed, h.want)
+	}
+}
+
+func (f *fixtureServer) beginResponseHold(requests int) (*fixtureResponseHold, error) {
+	f.holdMu.Lock()
+	defer f.holdMu.Unlock()
+	if f.hold != nil {
+		return nil, errors.New("fixture response hold is already active")
+	}
+	hold := newFixtureResponseHold(requests)
+	f.hold = hold
+	return hold, nil
+}
+
+func (f *fixtureServer) waitOnResponseHold(context context.Context) {
+	f.holdMu.Lock()
+	hold := f.hold
+	f.holdMu.Unlock()
+	if hold != nil {
+		hold.arriveAndWait(context)
+	}
+}
+
+func (f *fixtureServer) endResponseHold(hold *fixtureResponseHold) {
+	f.holdMu.Lock()
+	if f.hold == hold {
+		f.hold = nil
+		close(hold.release)
+	}
+	f.holdMu.Unlock()
+}
+
+func startFixture(spec *UpstreamSpec) *fixtureServer {
+	requests := make(chan capturedRequest, 1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		request := capturedRequest{
+			method:   r.Method,
+			path:     r.URL.RequestURI(),
+			host:     r.Host,
+			protocol: r.Proto,
+			headers:  r.Header.Clone(),
+			body:     string(body),
+		}
+		select {
+		case requests <- request:
+		default:
+		}
+
+		writeFixtureResponse(w, r.Context(), spec.Respond, string(body))
+	})
+
+	var server *httptest.Server
+	if spec.TLS {
+		server = httptest.NewTLSServer(handler)
+	} else {
+		server = httptest.NewServer(handler)
+	}
+	return &fixtureServer{server: server, requests: requests}
+}
+
+func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
+	if spec.Kind == "https-connect" {
+		return startHTTPSConnectFixture(spec)
+	}
+	if spec.Kind != "http" && spec.Kind != "https" && spec.Kind != "h2c" {
+		return startNetworkFixture(spec)
+	}
+	requestCapacity := len(spec.Respond) + len(spec.Expect) + 1
+	if spec.Count != nil && requestCapacity < spec.Count.AtMost+1 {
+		requestCapacity = spec.Count.AtMost + 1
+	}
+	requests := make(chan capturedRequest, requestCapacity)
+	var responseMu sync.Mutex
+	nextResponse := 0
+	var server *httptest.Server
+	fixture := &fixtureServer{requests: requests}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		request := capturedRequest{
+			method:   r.Method,
+			path:     r.URL.RequestURI(),
+			host:     r.Host,
+			protocol: r.Proto,
+			headers:  r.Header.Clone(),
+			body:     string(body),
+		}
+		select {
+		case requests <- request:
+		default:
+		}
+		fixture.waitOnResponseHold(r.Context())
+
+		responseMu.Lock()
+		responseIndex := nextResponse
+		if nextResponse < len(spec.Respond)-1 {
+			nextResponse++
+		}
+		responseMu.Unlock()
+		response := spec.Respond[responseIndex]
+		response = expandFixtureSelfResponse(response, server.URL)
+		writeFixtureResponse(w, r.Context(), response, string(body))
+	})
+
+	switch spec.Kind {
+	case "https":
+		server = httptest.NewTLSServer(handler)
+	case "h2c":
+		server = httptest.NewUnstartedServer(handler)
+		protocols := &http.Protocols{}
+		protocols.SetUnencryptedHTTP2(true)
+		server.Config.Protocols = protocols
+		server.Start()
+	default:
+		server = httptest.NewServer(handler)
+	}
+	fixture.server = server
+	return fixture, nil
+}
+
+func expandFixtureSelfResponse(response HTTPResponse, selfURL string) HTTPResponse {
+	response.Body = strings.ReplaceAll(response.Body, "{{SELF.URL}}", selfURL)
+	if len(response.Headers) > 0 {
+		headers := make(map[string]string, len(response.Headers))
+		for name, value := range response.Headers {
+			headers[name] = strings.ReplaceAll(value, "{{SELF.URL}}", selfURL)
+		}
+		response.Headers = headers
+	}
+	return response
+}
+
+func TestExpandFixtureSelfResponseExpandsBodyAndHeaders(t *testing.T) {
+	response := expandFixtureSelfResponse(HTTPResponse{
+		Body:    `{"token_endpoint":"{{SELF.URL}}/token"}`,
+		Headers: map[string]string{"Location": "{{SELF.URL}}/authorize"},
+	}, "http://127.0.0.1:1980")
+
+	if response.Body != `{"token_endpoint":"http://127.0.0.1:1980/token"}` {
+		t.Fatalf("body = %q", response.Body)
+	}
+	if response.Headers["Location"] != "http://127.0.0.1:1980/authorize" {
+		t.Fatalf("Location = %q", response.Headers["Location"])
+	}
+}
+
+func TestRedisFixtureAllowsProtocolOnlyObservationWithoutPredictableKeys(t *testing.T) {
+	fixture := FixtureSpec{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			IgnoreNegotiation:       true,
+			AllowUnassertedCommands: true,
+		},
+	}
+	if err := fixture.validate(); err != nil {
+		t.Fatalf("validate protocol-only Redis fixture: %v", err)
+	}
+}
+
+func writeFixtureResponse(w http.ResponseWriter, context context.Context, response HTTPResponse, requestBody string) {
+	if response.Delay > 0 {
+		timer := time.NewTimer(response.Delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-context.Done():
+			return
+		}
+	}
+	for name, value := range response.Headers {
+		w.Header().Set(name, value)
+	}
+	if len(response.AWSEventStream) > 0 && w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+	}
+	if response.GRPC != nil {
+		message, err := base64.StdEncoding.DecodeString(*response.GRPC.MessageBase64)
+		if err != nil {
+			http.Error(w, "invalid fixture gRPC message", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Trailer", "Grpc-Status")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buildUnaryGRPCFrame(message))
+		status := response.GRPC.Status
+		if status == "" {
+			status = "0"
+		}
+		w.Header().Set("Grpc-Status", status)
+		return
+	}
+	status := response.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	if response.EchoRequestBody {
+		_, _ = io.WriteString(w, requestBody)
+		return
+	}
+	if response.BodyRepeat != nil {
+		_, _ = io.WriteString(w, renderRepeatedBody(response.BodyRepeat))
+		return
+	}
+	if len(response.AWSEventStream) > 0 {
+		flusher, _ := w.(http.Flusher)
+		for _, message := range response.AWSEventStream {
+			_, _ = w.Write(encodeHarnessAWSEventStreamMessage(message))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		return
+	}
+	if len(response.Chunks) == 0 {
+		_, _ = io.WriteString(w, response.Body)
+		return
+	}
+	flusher, _ := w.(http.Flusher)
+	repeats := response.ChunkRepeat
+	if repeats == 0 {
+		repeats = 1
+	}
+	for range repeats {
+		for _, chunk := range response.Chunks {
+			select {
+			case <-context.Done():
+				return
+			default:
+			}
+			_, _ = io.WriteString(w, chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if response.ChunkDelay > 0 {
+				timer := time.NewTimer(response.ChunkDelay)
+				select {
+				case <-timer.C:
+					timer.Stop()
+				case <-context.Done():
+					timer.Stop()
+					return
+				}
+			}
+		}
+	}
+}
+
+func encodeHarnessAWSEventStreamMessage(message AWSEventStreamMessage) []byte {
+	names := make([]string, 0, len(message.Headers))
+	for name := range message.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var headers bytes.Buffer
+	for _, name := range names {
+		value := message.Headers[name]
+		headers.WriteByte(byte(len(name)))
+		headers.WriteString(name)
+		headers.WriteByte(7)
+		_ = binary.Write(&headers, binary.BigEndian, uint16(len(value)))
+		headers.WriteString(value)
+	}
+
+	totalLength := 16 + headers.Len() + len(message.Payload)
+	frame := make([]byte, 12, totalLength)
+	binary.BigEndian.PutUint32(frame[:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(headers.Len()))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	frame = append(frame, headers.Bytes()...)
+	frame = append(frame, message.Payload...)
+	messageCRC := make([]byte, 4)
+	binary.BigEndian.PutUint32(messageCRC, crc32.ChecksumIEEE(frame))
+	return append(frame, messageCRC...)
+}
+
+func (f *fixtureServer) address() string {
+	return strings.TrimPrefix(strings.TrimPrefix(f.server.URL, "http://"), "https://")
+}
+
+func (f *fixtureServer) url() string {
+	return f.server.URL
+}
+
+func (f *fixtureServer) close() {
+	f.server.Close()
+}
+
+func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	if spec.Count != nil {
+		f.assertCount(t, spec)
+		return
+	}
+	if spec.ExpectUnordered {
+		f.assertUnordered(t, spec)
+		return
+	}
+	for i, expected := range spec.Expect {
+		select {
+		case received := <-f.requests:
+			assertUpstreamRequest(t, expected, received)
+		case <-time.After(2 * time.Second):
+			t.Errorf("fixture %s did not receive expected request %d", spec.Name, i+1)
+		}
+	}
+	if len(spec.Expect) > 0 {
+		select {
+		case extra := <-f.requests:
+			t.Errorf(
+				"fixture %s received unexpected extra request %s %s",
+				spec.Name,
+				extra.method,
+				extra.path,
+			)
+		default:
+		}
+	}
+	if spec.ExpectRequests != nil && len(spec.Expect) == 0 {
+		select {
+		case extra := <-f.requests:
+			t.Errorf(
+				"fixture %s received unexpected request %s %s, want zero requests",
+				spec.Name,
+				extra.method,
+				extra.path,
+			)
+		default:
+		}
+	}
+}
+
+func (f *fixtureServer) assertUnordered(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	remaining := append([]HTTPAssertion(nil), spec.Expect...)
+	for range spec.Expect {
+		select {
+		case received := <-f.requests:
+			matched := -1
+			for i, expected := range remaining {
+				if err := matchUnorderedHTTPRequest(expected, received); err == nil {
+					matched = i
+					break
+				}
+			}
+			if matched < 0 {
+				t.Errorf(
+					"fixture %s request %s %s did not match any remaining unordered expectation",
+					spec.Name,
+					received.method,
+					received.path,
+				)
+				continue
+			}
+			remaining = append(remaining[:matched], remaining[matched+1:]...)
+		case <-time.After(2 * time.Second):
+			t.Errorf("fixture %s did not receive all unordered expected requests", spec.Name)
+			return
+		}
+	}
+	select {
+	case extra := <-f.requests:
+		t.Errorf("fixture %s received unexpected extra request %s %s", spec.Name, extra.method, extra.path)
+	default:
+	}
+}
+
+func matchUnorderedHTTPRequest(expected HTTPAssertion, received capturedRequest) error {
+	if expected.Method != "" && received.method != expected.Method {
+		return fmt.Errorf("method = %q, want %q", received.method, expected.Method)
+	}
+	if expected.Protocol != "" && received.protocol != expected.Protocol {
+		return fmt.Errorf("protocol = %q, want %q", received.protocol, expected.Protocol)
+	}
+	if expected.Path != nil {
+		if err := expected.Path.match(received.path, true); err != nil {
+			return fmt.Errorf("path: %w", err)
+		}
+	}
+	if expected.Host != nil {
+		if err := expected.Host.match(received.host, true); err != nil {
+			return fmt.Errorf("host: %w", err)
+		}
+	}
+	for name, matcher := range expected.Headers {
+		values := received.headers[http.CanonicalHeaderKey(name)]
+		if err := matcher.matchHeader(received.headers.Get(name), values); err != nil {
+			return fmt.Errorf("header %s: %w", name, err)
+		}
+	}
+	if expected.Body != nil {
+		if err := expected.Body.match(received.body, true); err != nil {
+			return fmt.Errorf("body: %w", err)
+		}
+	}
+	return nil
+}
+
+func (f *fixtureServer) assertCount(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	_, err := observeFixtureRequestCount(f.requests, *spec.Count, func(received capturedRequest) {
+		assertUpstreamRequest(t, spec.Expect[0], received)
+	})
+	if err != nil {
+		t.Errorf("fixture %s: %s", spec.Name, err)
+	}
+}
+
+func observeFixtureRequestCount(
+	requests <-chan capturedRequest,
+	assertion FixtureCountAssertion,
+	observe func(capturedRequest),
+) (int, error) {
+	timeout := assertion.Timeout
+	if timeout == 0 {
+		timeout = 2 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	count := 0
+	for {
+		select {
+		case received := <-requests:
+			count++
+			if observe != nil {
+				observe(received)
+			}
+			if count > assertion.AtMost {
+				return count, fmt.Errorf("request count exceeds %d", assertion.AtMost)
+			}
+		case <-timer.C:
+			if count < assertion.AtLeast || count > assertion.AtMost {
+				return count, fmt.Errorf(
+					"request count = %d after %s, want %d..%d",
+					count, timeout, assertion.AtLeast, assertion.AtMost,
+				)
+			}
+			return count, nil
+		}
+	}
+}
+
+func (f *fixtureServer) host() string {
+	host, _, err := net.SplitHostPort(f.address())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
+func (f *fixtureServer) port() string {
+	_, port, err := net.SplitHostPort(f.address())
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+type apisixProcess struct {
+	command *exec.Cmd
+	done    chan error
+	logFile *os.File
+	logPath string
+}
+
+func startAPISIX(workDir string, environment Environment, environmentUnset []string) (*apisixProcess, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate test executable: %w", err)
+	}
+	logPath := filepath.Join(workDir, "apisix.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("create child log: %w", err)
+	}
+	command := exec.Command(executable, "-test.run=^TestAPISIXProcess$")
+	command.Dir = workDir
+	childEnvironmentOverrides := make(Environment, len(environment)+1)
+	maps.Copy(childEnvironmentOverrides, environment)
+	childEnvironmentOverrides[helperProcessEnv] = "1"
+	childEnvironmentOverrides[integrationFallbackRootsEnv] = "0"
+	if godebugFallbackRootsEnabled(environment["GODEBUG"]) && environment["SSL_CERT_FILE"] != "" {
+		childEnvironmentOverrides[integrationFallbackRootsEnv] = "1"
+	}
+	command.Env = childEnvironment(os.Environ(), childEnvironmentOverrides, environmentUnset)
+	command.Stdout = logFile
+	command.Stderr = logFile
+	if err := command.Start(); err != nil {
+		_ = logFile.Close()
+		return nil, fmt.Errorf("start APISIX child: %w", err)
+	}
+	process := &apisixProcess{
+		command: command,
+		done:    make(chan error, 1),
+		logFile: logFile,
+		logPath: logPath,
+	}
+	go func() {
+		process.done <- command.Wait()
+		_ = logFile.Close()
+	}()
+	return process, nil
+}
+
+func childEnvironment(inherited []string, environment Environment, environmentUnset []string) []string {
+	removed := make(map[string]struct{}, len(environment)+len(environmentUnset))
+	for name := range environment {
+		removed[name] = struct{}{}
+	}
+	for _, name := range environmentUnset {
+		removed[name] = struct{}{}
+	}
+
+	result := make([]string, 0, len(inherited)+len(environment))
+	seen := make(map[string]struct{}, len(inherited)+len(environment))
+	for _, entry := range inherited {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			continue
+		}
+		if _, shouldRemove := removed[name]; shouldRemove {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, entry)
+	}
+
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		result = append(result, name+"="+environment[name])
+	}
+	return result
+}
+
+func (p *apisixProcess) waitReady(address string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-p.done:
+			return fmt.Errorf("APISIX child exited before readiness: %w", err)
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", address, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("APISIX child did not listen on %s within %s", address, timeout)
+}
+
+func (p *apisixProcess) stop() error {
+	if p.command.Process == nil {
+		return nil
+	}
+	if err := p.command.Process.Signal(os.Interrupt); err != nil {
+		select {
+		case waitErr := <-p.done:
+			return waitErr
+		default:
+			return fmt.Errorf("signal APISIX child: %w", err)
+		}
+	}
+	select {
+	case err := <-p.done:
+		return err
+	case <-time.After(5 * time.Second):
+		if err := p.command.Process.Kill(); err != nil {
+			return fmt.Errorf("kill APISIX child after shutdown timeout: %w", err)
+		}
+		<-p.done
+		return fmt.Errorf("APISIX child did not stop within 5s")
+	}
+}
+
+func (p *apisixProcess) signal(signal os.Signal) error {
+	if p.command.Process == nil {
+		return errors.New("APISIX child is not running")
+	}
+	if err := p.command.Process.Signal(signal); err != nil {
+		select {
+		case waitErr := <-p.done:
+			return fmt.Errorf("APISIX child exited before signal: %w", waitErr)
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *apisixProcess) logs() (string, error) {
+	data, err := os.ReadFile(p.logPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func reservePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = listener.Close() }()
+	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func prepareFrontendTLS(
+	runtimeConfig map[string]any,
+	standaloneConfig map[string]any,
+	sni string,
+	port int,
+	enableHTTP2 bool,
+) (map[string]any, map[string]any, error) {
+	runtimeConfig, err := cloneConfigMap(runtimeConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("clone runtime config: %w", err)
+	}
+	standaloneConfig, err = cloneConfigMap(standaloneConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("clone standalone config: %w", err)
+	}
+	certPEM, keyPEM, err := generateFrontendCertificate(sni)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	apisix := ensureMap(runtimeConfig, "apisix")
+	sslConfig := ensureMap(apisix, "ssl")
+	sslConfig["enable"] = true
+	sslConfig["listen"] = []any{map[string]any{
+		"ip":           "127.0.0.1",
+		"port":         port,
+		"enable_http2": enableHTTP2,
+	}}
+
+	ssls, _ := standaloneConfig["ssls"].([]any)
+	standaloneConfig["ssls"] = append(ssls, map[string]any{
+		"id":     "integration-frontend-tls",
+		"snis":   []any{sni},
+		"cert":   certPEM,
+		"key":    keyPEM,
+		"status": 1,
+	})
+	return runtimeConfig, standaloneConfig, nil
+}
+
+func cloneConfigMap(config map[string]any) (map[string]any, error) {
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var cloned map[string]any
+	if err := yaml.Unmarshal(data, &cloned); err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func caseUsesHTTP2(spec Case) bool {
+	if spec.Input.Version == "2" {
+		return true
+	}
+	for _, step := range spec.Steps {
+		if step.Input.Version == "2" {
+			return true
+		}
+	}
+	return false
+}
+
+func generateFrontendCertificate(sni string) (string, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("generate frontend TLS key: %w", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: sni},
+		DNSNames:     []string{sni},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", fmt.Errorf("create frontend TLS certificate: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal frontend TLS key: %w", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	return string(certPEM), string(keyPEM), nil
+}
+
+func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
+	config := map[string]any{
+		"apisix": map[string]any{
+			"enable_admin": false,
+			"proxy_mode":   "http",
+		},
+		"deployment": map[string]any{},
+	}
+	mergeMap(config, overrides)
+	apisix := ensureMap(config, "apisix")
+	apisix["enable_admin"] = false
+	apisix["node_listen"] = []any{
+		map[string]any{"ip": "127.0.0.1", "port": port},
+	}
+	deployment := ensureMap(config, "deployment")
+	deployment["role"] = "data_plane"
+	roleDataPlane := ensureMap(deployment, "role_data_plane")
+	roleDataPlane["config_provider"] = "yaml"
+	plugins := make([]any, 0)
+	switch configured := config["plugins"].(type) {
+	case []any:
+		plugins = append(plugins, configured...)
+	case []string:
+		for _, pluginName := range configured {
+			plugins = append(plugins, pluginName)
+		}
+	}
+	prometheusConfigured := false
+	for _, pluginName := range plugins {
+		if pluginName == "prometheus" {
+			prometheusConfigured = true
+			break
+		}
+	}
+	if !prometheusConfigured {
+		plugins = append(plugins, "prometheus")
+	}
+	config["plugins"] = plugins
+	pluginAttr := ensureMap(config, "plugin_attr")
+	prometheus := ensureMap(pluginAttr, "prometheus")
+	prometheus["enable_export_server"] = false
+	return yaml.Marshal(config)
+}
+
+func ensureMap(parent map[string]any, key string) map[string]any {
+	if value, ok := parent[key].(map[string]any); ok {
+		return value
+	}
+	value := make(map[string]any)
+	parent[key] = value
+	return value
+}
+
+func renderStandaloneConfig(config map[string]any, replacements map[string]string) ([]byte, error) {
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	data, err = replaceFixturePlaceholders(data, replacements)
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, []byte("#END\n")...)
+	return data, nil
+}
+
+func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]byte, error) {
+	for placeholder, value := range replacements {
+		if strings.HasSuffix(placeholder, ".PORT}}") {
+			data = bytes.ReplaceAll(data, []byte("'"+placeholder+"'"), []byte(value))
+			data = bytes.ReplaceAll(data, []byte(`"`+placeholder+`"`), []byte(value))
+		}
+		data = bytes.ReplaceAll(data, []byte(placeholder), []byte(value))
+	}
+	if bytes.Contains(data, []byte("{{FIXTURE.")) || bytes.Contains(data, []byte("{{UPSTREAM_")) ||
+		bytes.Contains(data, []byte("{{APISIX_")) || bytes.Contains(data, []byte("{{WORK_DIR}}")) {
+		return nil, fmt.Errorf("configuration contains an unknown fixture placeholder")
+	}
+	return data, nil
+}
+
+func runCase(t *testing.T, spec Case) {
+	t.Helper()
+	if err := spec.validate(); err != nil {
+		t.Fatalf("validate case: %v", err)
+	}
+
+	// Keep the reserve-close-bind window private to this case. Otherwise another
+	// parallel case can claim an APISIX port for one of its fixtures before the
+	// child process starts listening, and protocol traffic is sent to that fixture.
+	integrationStartupMu.Lock()
+	startupLocked := true
+	defer func() {
+		if startupLocked {
+			integrationStartupMu.Unlock()
+		}
+	}()
+
+	replacements := make(map[string]string, len(spec.Fixtures)*2+1)
+	var fixture *fixtureServer
+	if spec.Upstream != nil {
+		fixture = startFixture(spec.Upstream)
+		defer fixture.server.Close()
+		replacements["{{UPSTREAM_ADDR}}"] = fixture.address()
+		replacements["{{UPSTREAM_URL}}"] = fixture.server.URL
+		replacements["{{UPSTREAM_HOST}}"] = fixture.host()
+		replacements["{{UPSTREAM_PORT}}"] = fixture.port()
+	}
+	workDir := t.TempDir()
+	replacements["{{WORK_DIR}}"] = workDir
+	namedFixtures := make(map[string]namedFixture, len(spec.Fixtures))
+	for _, fixtureSpec := range spec.Fixtures {
+		namedFixture, err := startNamedFixture(fixtureSpec)
+		if err != nil {
+			t.Fatalf("start fixture %s: %v", fixtureSpec.Name, err)
+		}
+		defer namedFixture.close()
+		namedFixtures[fixtureSpec.Name] = namedFixture
+		prefix := "{{FIXTURE." + fixtureSpec.Name
+		replacements[prefix+".ADDR}}"] = namedFixture.address()
+		replacements[prefix+".URL}}"] = namedFixture.url()
+		replacements[prefix+".HOST}}"] = namedFixture.host()
+		replacements[prefix+".PORT}}"] = namedFixture.port()
+		if trustedFixture, ok := namedFixture.(interface{ caFile() string }); ok && trustedFixture.caFile() != "" {
+			replacements[prefix+".CA_FILE}}"] = trustedFixture.caFile()
+		}
+	}
+
+	port, err := reservePort()
+	if err != nil {
+		t.Fatalf("reserve APISIX port: %v", err)
+	}
+	apisixAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	replacements["{{APISIX_URL}}"] = "http://" + apisixAddress
+	if err := writeScenarioFiles(workDir, spec.Files, replacements); err != nil {
+		t.Fatalf("write scenario files: %v", err)
+	}
+	runtimeOverrides := spec.Runtime
+	standaloneResources := spec.Config
+	tlsPort := 0
+	enableHTTP2 := caseUsesHTTP2(spec)
+	if enableHTTP2 {
+		runtimeOverrides, err = cloneConfigMap(spec.Runtime)
+		if err != nil {
+			t.Fatalf("clone runtime config for HTTP/2: %v", err)
+		}
+		ensureMap(runtimeOverrides, "apisix")["enable_http2"] = true
+	}
+	if spec.TLS != nil {
+		tlsPort, err = reservePort()
+		if err != nil {
+			t.Fatalf("reserve APISIX TLS port: %v", err)
+		}
+		runtimeOverrides, standaloneResources, err = prepareFrontendTLS(
+			spec.Runtime,
+			spec.Config,
+			spec.TLS.SNI,
+			tlsPort,
+			enableHTTP2,
+		)
+		if err != nil {
+			t.Fatalf("prepare frontend TLS: %v", err)
+		}
+	}
+	confDir := filepath.Join(workDir, "conf")
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatalf("create conf directory: %v", err)
+	}
+	runtimeConfig, err := renderRuntimeConfig(port, runtimeOverrides)
+	if err != nil {
+		t.Fatalf("render runtime config: %v", err)
+	}
+	runtimeConfig, err = replaceFixturePlaceholders(runtimeConfig, replacements)
+	if err != nil {
+		t.Fatalf("replace runtime fixture placeholders: %v", err)
+	}
+	standaloneConfig, err := renderStandaloneConfig(standaloneResources, replacements)
+	if err != nil {
+		t.Fatalf("render standalone config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "config.yaml"), runtimeConfig, 0o600); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+	if err := writeStandaloneConfigSnapshot(filepath.Join(confDir, "apisix.yaml"), standaloneConfig); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	environment, err := expandEnvironment(spec.Environment, replacements)
+	if err != nil {
+		t.Fatalf("expand case environment: %v", err)
+	}
+	process, err := startAPISIX(workDir, environment, spec.EnvironmentUnset)
+	if err != nil {
+		t.Fatalf("start APISIX: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = process.stop()
+		}
+	}()
+	address := apisixAddress
+	if err := process.waitReady(address, 5*time.Second); err != nil {
+		_ = process.stop()
+		stopped = true
+		logs, _ := process.logs()
+		t.Fatalf(
+			"wait for APISIX: %v\nchild logs:\n%s\nruntime config:\n%s\nstandalone config:\n%s",
+			err,
+			logs,
+			runtimeConfig,
+			standaloneConfig,
+		)
+	}
+	tlsAddress := ""
+	if tlsPort != 0 {
+		tlsAddress = net.JoinHostPort("127.0.0.1", strconv.Itoa(tlsPort))
+		if err := process.waitReady(tlsAddress, 5*time.Second); err != nil {
+			_ = process.stop()
+			stopped = true
+			logs, _ := process.logs()
+			t.Fatalf("wait for APISIX TLS: %v\nchild logs:\n%s", err, logs)
+		}
+	}
+	integrationStartupMu.Unlock()
+	startupLocked = false
+
+	transport := &http.Transport{DisableCompression: true, ForceAttemptHTTP2: enableHTTP2}
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, requestedAddress string) (net.Conn, error) {
+		targetAddress := apisixDialAddress(requestedAddress, apisixAddress, tlsAddress)
+		return dialer.DialContext(ctx, network, targetAddress)
+	}
+	if spec.TLS != nil {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // integration certificate is generated per case
+			ServerName:         spec.TLS.SNI,
+		}
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	client.Jar, err = cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create client cookie jar: %v", err)
+	}
+	requestFailed := false
+	logMatchers := make([]Matcher, 0, len(spec.Steps)+1)
+	bodyLengths := make(map[string]int)
+	headerHistory := make(map[string][]string)
+	capturedCookies := make(map[string]string)
+	capturedValues := make(map[string]string)
+	if len(spec.Steps) > 0 {
+		for _, step := range spec.Steps {
+			t.Run(step.Name, func(t *testing.T) {
+				if len(step.Config) > 0 {
+					if err := writeStandaloneConfigUpdate(
+						filepath.Join(confDir, "apisix.yaml"), step.Config, replacements,
+					); err != nil {
+						t.Fatalf("write standalone config update: %v", err)
+					}
+					timeout := step.ConfigTimeout
+					if timeout == 0 {
+						timeout = 5 * time.Second
+					}
+					if err := waitForConfigApplied(
+						client, address, tlsAddress, *step.ConfigProbe, timeout, capturedCookies, capturedValues,
+					); err != nil {
+						logs, logErr := process.logs()
+						t.Fatalf(
+							"wait for standalone config update: %v\nread child logs: %v\nchild logs:\n%s",
+							err,
+							logErr,
+							logs,
+						)
+					}
+				}
+				if err := executeCaseActions(
+					nonSAMLResponseActions(step.Actions),
+					replacements,
+					process,
+					capturedValues,
+				); err != nil {
+					t.Fatalf("execute actions: %v", err)
+				}
+				repeat := step.Repeat
+				if repeat == 0 {
+					repeat = 1
+				}
+				if step.Concurrency > 0 {
+					var failed atomic.Bool
+					semaphore := make(chan struct{}, step.Concurrency)
+					var statusMu sync.Mutex
+					actualStatusCounts := make(map[int]int, len(step.Output.StatusCounts))
+					var responseHold *fixtureResponseHold
+					var heldFixture *fixtureServer
+					if step.HoldUpstream != nil {
+						var ok bool
+						heldFixture, ok = namedFixtures[step.HoldUpstream.Fixture].(*fixtureServer)
+						if !ok {
+							t.Fatalf("fixture %s does not support held responses", step.HoldUpstream.Fixture)
+						}
+						responseHold, err = heldFixture.beginResponseHold(step.HoldUpstream.Requests)
+						if err != nil {
+							t.Fatalf("hold fixture %s responses: %v", step.HoldUpstream.Fixture, err)
+						}
+					}
+					var group sync.WaitGroup
+					for iteration := 1; iteration <= repeat; iteration++ {
+						iteration := iteration
+						group.Go(func() {
+							semaphore <- struct{}{}
+							defer func() { <-semaphore }()
+							input := expandIterationInput(step.Input, iteration)
+							output := expandIterationOutput(step.Output, iteration)
+							if len(output.StatusCounts) > 0 {
+								output.recordStatus = func(status int) {
+									statusMu.Lock()
+									actualStatusCounts[status]++
+									statusMu.Unlock()
+								}
+							}
+							if err := runHTTPInput(
+								t, client, address, tlsAddress, input, output,
+								make(map[string]int), make(map[string][]string),
+								maps.Clone(capturedCookies), capturedValues,
+							); err != nil {
+								failed.Store(true)
+							}
+						})
+					}
+					if responseHold != nil {
+						if err := responseHold.wait(2 * time.Second); err != nil {
+							t.Errorf("wait for fixture %s held requests: %v", step.HoldUpstream.Fixture, err)
+							failed.Store(true)
+						} else {
+							for i, probe := range step.HoldUpstream.Probes {
+								if err := runHTTPInput(
+									t,
+									client,
+									address,
+									tlsAddress,
+									probe.Input,
+									probe.Output,
+									make(map[string]int),
+									make(map[string][]string),
+									maps.Clone(capturedCookies),
+									capturedValues,
+								); err != nil {
+									t.Errorf("held upstream probe %d: %v", i+1, err)
+									failed.Store(true)
+								}
+								if probe.Output.Logs != nil {
+									logMatchers = append(logMatchers, *probe.Output.Logs)
+								}
+							}
+						}
+						heldFixture.endResponseHold(responseHold)
+					}
+					group.Wait()
+					if len(step.Output.StatusCounts) > 0 &&
+						!maps.Equal(actualStatusCounts, step.Output.StatusCounts) {
+						t.Errorf(
+							"concurrent response status counts = %v, want %v",
+							actualStatusCounts,
+							step.Output.StatusCounts,
+						)
+					}
+					if failed.Load() {
+						requestFailed = true
+					}
+				} else {
+					for iteration := 1; iteration <= repeat; iteration++ {
+						run := func(t *testing.T) {
+							input := expandIterationInput(step.Input, iteration)
+							output := expandIterationOutput(step.Output, iteration)
+							if err := runHTTPInput(
+								t, client, address, tlsAddress, input, output, bodyLengths, headerHistory,
+								capturedCookies, capturedValues,
+							); err != nil {
+								requestFailed = true
+							}
+							if step.Wait > 0 {
+								time.Sleep(step.Wait)
+							}
+						}
+						if repeat == 1 {
+							run(t)
+						} else {
+							t.Run(strconv.Itoa(iteration), run)
+						}
+					}
+				}
+				if step.Output.Logs != nil {
+					logMatchers = append(logMatchers, *step.Output.Logs)
+				}
+				if err := executeCaseActions(
+					samlResponseActions(step.Actions),
+					replacements,
+					process,
+					capturedValues,
+				); err != nil {
+					t.Fatalf("execute SAML response actions: %v", err)
+				}
+				assertFiles(t, step.FileAssertions, replacements, "step file assertion")
+			})
+		}
+	} else if spec.Input.Path != "" {
+		if err := runHTTPInput(
+			t, client, address, tlsAddress, spec.Input, spec.Output, bodyLengths, headerHistory,
+			capturedCookies, capturedValues,
+		); err != nil {
+			requestFailed = true
+		}
+	}
+
+	if fixture != nil && fixtureAssertionsConfigured(spec.Upstream.Expect) {
+		select {
+		case received := <-fixture.requests:
+			assertUpstreamRequest(t, spec.Upstream.Expect, received)
+		case <-time.After(2 * time.Second):
+			t.Error("fixture upstream did not receive a request")
+		}
+	}
+	for _, fixtureSpec := range spec.Fixtures {
+		if fixtureAssertionAfterShutdown(fixtureSpec) {
+			continue
+		}
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
+	}
+
+	transport.CloseIdleConnections()
+	if err := process.stop(); err != nil {
+		logs, logErr := process.logs()
+		t.Errorf("stop APISIX: %v\nread child logs: %v\nchild logs:\n%s", err, logErr, logs)
+	}
+	stopped = true
+	for _, fixtureSpec := range spec.Fixtures {
+		if !fixtureAssertionAfterShutdown(fixtureSpec) {
+			continue
+		}
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
+	}
+	assertAfterShutdown(t, spec.AfterShutdown, replacements)
+	logs, err := process.logs()
+	if err != nil {
+		t.Errorf("read APISIX logs: %v", err)
+	} else {
+		if requestFailed {
+			t.Logf(
+				"child logs after request failure:\n%s\nruntime config:\n%s\nstandalone config:\n%s",
+				logs,
+				runtimeConfig,
+				standaloneConfig,
+			)
+		}
+		if len(spec.Steps) == 0 && spec.Output.Logs != nil {
+			logMatchers = append(logMatchers, *spec.Output.Logs)
+		}
+		for _, matcher := range logMatchers {
+			if err := matcher.match(logs, true); err != nil {
+				t.Errorf("child logs: %v\n%s", err, logs)
+			}
+		}
+	}
+}
+
+func nonSAMLResponseActions(actions []CaseAction) []CaseAction {
+	filtered := make([]CaseAction, 0, len(actions))
+	for _, action := range actions {
+		if action.SAMLResponse == nil && action.SAMLLogout == nil {
+			filtered = append(filtered, action)
+		}
+	}
+	return filtered
+}
+
+func samlResponseActions(actions []CaseAction) []CaseAction {
+	filtered := make([]CaseAction, 0, len(actions))
+	for _, action := range actions {
+		if action.SAMLResponse != nil || action.SAMLLogout != nil {
+			filtered = append(filtered, action)
+		}
+	}
+	return filtered
+}
+
+func fixtureAssertionAfterShutdown(spec FixtureSpec) bool {
+	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec)
+}
+
+func TestFixtureAssertionAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		spec FixtureSpec
+		want bool
+	}{
+		{
+			name: "exact-zero UDP waits for child shutdown",
+			spec: FixtureSpec{
+				Kind:  "udp",
+				Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0},
+			},
+			want: true,
+		},
+		{
+			name: "network expectation keeps existing post-shutdown assertion",
+			spec: FixtureSpec{
+				Kind: "udp",
+				NetworkExpect: []NetworkAssertion{{
+					Payload: &Matcher{Equals: new("metric")},
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "HTTP fixture remains asserted before child shutdown",
+			spec: FixtureSpec{
+				Kind: "http",
+			},
+			want: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := fixtureAssertionAfterShutdown(tt.spec); got != tt.want {
+				t.Fatalf("fixtureAssertionAfterShutdown() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func executeCaseActions(
+	actions []CaseAction,
+	replacements map[string]string,
+	process *apisixProcess,
+	capturedValues map[string]string,
+) error {
+	for i, action := range actions {
+		switch {
+		case action.Remove != "":
+			path, err := resolveWorkDirActionPath(action.Remove, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d remove: %w", i+1, err)
+			}
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("action %d remove %s: %w", i+1, path, err)
+			}
+		case action.Rename != nil:
+			from, err := resolveWorkDirActionPath(action.Rename.From, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d rename from: %w", i+1, err)
+			}
+			to, err := resolveWorkDirActionPath(action.Rename.To, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d rename to: %w", i+1, err)
+			}
+			if err := os.Rename(from, to); err != nil {
+				return fmt.Errorf("action %d rename %s to %s: %w", i+1, from, to, err)
+			}
+		case action.Signal != "":
+			if process == nil {
+				return fmt.Errorf("action %d signal requires a live APISIX child", i+1)
+			}
+			if err := process.signal(syscall.SIGUSR1); err != nil {
+				return fmt.Errorf("action %d signal: %w", i+1, err)
+			}
+		case action.Wait > 0:
+			time.Sleep(action.Wait)
+		case action.SAMLResponse != nil:
+			if err := executeSAMLResponseAction(*action.SAMLResponse, capturedValues); err != nil {
+				return fmt.Errorf("action %d saml_response: %w", i+1, err)
+			}
+		case action.SAMLLogout != nil:
+			if err := executeSAMLLogoutAction(*action.SAMLLogout, capturedValues); err != nil {
+				return fmt.Errorf("action %d saml_logout: %w", i+1, err)
+			}
+		default:
+			return fmt.Errorf("action %d is empty", i+1)
+		}
+	}
+	return nil
+}
+
+func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]string) error {
+	if captured == nil {
+		return errors.New("no captured response values are available")
+	}
+	redirect := captured[action.RedirectCapture]
+	postBinding := false
+	postForm := url.Values{}
+	if redirect == "" && action.RedirectCapture == "" {
+		requestValue := html.UnescapeString(captured[action.SAMLRequestCapture])
+		relayState := captured[action.RelayStateInputCapture]
+		if requestValue == "" || relayState == "" {
+			return errors.New("SAML POST form request or relay-state capture has not been recorded")
+		}
+		redirectURL, err := url.Parse(action.IDPURI)
+		if err != nil {
+			return fmt.Errorf("parse SAML IdP URI: %w", err)
+		}
+		postBinding = true
+		postForm.Set("SAMLRequest", requestValue)
+		postForm.Set("RelayState", relayState)
+		redirect = redirectURL.String()
+	}
+	if redirect == "" {
+		return fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
+	}
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return fmt.Errorf("parse SAML redirect: %w", err)
+	}
+	method := http.MethodGet
+	var body io.Reader
+	if postBinding {
+		method = http.MethodPost
+		body = strings.NewReader(postForm.Encode())
+	}
+	request, err := http.NewRequest(method, redirectURL.String(), body)
+	if err != nil {
+		return fmt.Errorf("create SAML authorization request: %w", err)
+	}
+	if postBinding {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	requestState, err := saml.NewIdpAuthnRequest(&saml.IdentityProvider{}, request)
+	if err != nil {
+		return fmt.Errorf("decode SAML authorization request: %w", err)
+	}
+	if err := xml.Unmarshal(requestState.RequestBuffer, &requestState.Request); err != nil {
+		return fmt.Errorf("unmarshal SAML authorization request: %w", err)
+	}
+	if requestState.Request.Issuer == nil || requestState.Request.Issuer.Value == "" ||
+		requestState.Request.AssertionConsumerServiceURL == "" {
+		return errors.New("SAML authorization request is missing issuer or assertion consumer URL")
+	}
+	if requestState.Request.Issuer.Value != action.ExpectedSPIssuer {
+		return fmt.Errorf(
+			"SAML authorization request issuer = %q, want %q",
+			requestState.Request.Issuer.Value,
+			action.ExpectedSPIssuer,
+		)
+	}
+	if err := validateSPAuthenticationRequest(request, requestState.RequestBuffer, action.SPCertificate); err != nil {
+		return fmt.Errorf("validate signed SP authentication request: %w", err)
+	}
+	if action.RequestIDOverride != "" {
+		requestState.Request.ID = action.RequestIDOverride
+	}
+
+	pair, err := tls.X509KeyPair([]byte(action.IDPCertificate), []byte(action.IDPPrivateKey))
+	if err != nil || len(pair.Certificate) == 0 {
+		return fmt.Errorf("parse IdP signing key pair: %w", err)
+	}
+	certificate, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("parse IdP certificate: %w", err)
+	}
+	key, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return errors.New("IdP private key does not implement crypto.Signer")
+	}
+	idpURL, err := url.Parse(action.IDPEntityID)
+	if err != nil {
+		return fmt.Errorf("parse IdP entity ID: %w", err)
+	}
+	requestState.IDP = &saml.IdentityProvider{
+		Key:         key,
+		Certificate: certificate,
+		MetadataURL: *idpURL,
+	}
+	requestState.Now = time.Now().UTC()
+	requestState.ServiceProviderMetadata = &saml.EntityDescriptor{EntityID: requestState.Request.Issuer.Value}
+	requestState.SPSSODescriptor = &saml.SPSSODescriptor{}
+	requestState.ACSEndpoint = &saml.IndexedEndpoint{
+		Binding:  saml.HTTPPostBinding,
+		Location: requestState.Request.AssertionConsumerServiceURL,
+	}
+	if err := (saml.DefaultAssertionMaker{}).MakeAssertion(requestState, &saml.Session{
+		NameID:   action.NameID,
+		UserName: action.UserName,
+	}); err != nil {
+		return fmt.Errorf("make SAML assertion: %w", err)
+	}
+	form, err := requestState.PostBinding()
+	if err != nil {
+		return fmt.Errorf("sign SAML response: %w", err)
+	}
+	if action.TamperSignature {
+		form.SAMLResponse, err = tamperSAMLSignature(form.SAMLResponse)
+		if err != nil {
+			return fmt.Errorf("tamper SAML response signature: %w", err)
+		}
+	}
+	captured[action.ResponseCapture] = url.QueryEscape(form.SAMLResponse)
+	captured[action.RelayStateCapture] = url.QueryEscape(form.RelayState)
+	return nil
+}
+
+func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string) error {
+	if captured == nil {
+		return errors.New("no captured response values are available")
+	}
+
+	field := "SAMLRequest"
+	if action.Kind == "response" {
+		field = "SAMLResponse"
+	}
+	rawXML, relayState, err := readSAMLLogoutInput(action, field, captured)
+	if err != nil {
+		return err
+	}
+	var issuer string
+	switch action.Kind {
+	case "request", "finish":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.Issuer != nil {
+			issuer = request.Issuer.Value
+		}
+	case "response":
+		var response saml.LogoutResponse
+		if err := xml.Unmarshal(rawXML, &response); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutResponse: %w", err)
+		}
+		if response.Issuer != nil {
+			issuer = response.Issuer.Value
+		}
+	}
+	if issuer != action.ExpectedSPIssuer {
+		return fmt.Errorf("SP logout issuer = %q, want %q", issuer, action.ExpectedSPIssuer)
+	}
+
+	idp, err := samlFixtureSigner(
+		action.IDPEntityID,
+		action.IDPCertificate,
+		action.IDPPrivateKey,
+	)
+	if err != nil {
+		return err
+	}
+	switch action.Kind {
+	case "request":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.ID == "" {
+			return errors.New("SP LogoutRequest has no ID")
+		}
+		captured[action.InputRequestIDCapture] = request.ID
+		output, rawOutput, redirect, err := makeFixtureLogoutRequest(
+			idp,
+			action.Destination,
+			action.NameID,
+			relayState,
+			action.OutputBinding,
+		)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutRequest: %w", err)
+		}
+		captured[action.OutputRequestIDCapture] = output.ID
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
+	case "finish":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.ID == "" {
+			return errors.New("SP LogoutRequest has no ID")
+		}
+		_, rawOutput, redirect, err := makeFixtureLogoutResponse(
+			idp,
+			action.Destination,
+			request.ID,
+			relayState,
+			action.OutputBinding,
+		)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutResponse: %w", err)
+		}
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
+	case "response":
+		var response saml.LogoutResponse
+		if err := xml.Unmarshal(rawXML, &response); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutResponse: %w", err)
+		}
+		expectedRequestID := captured[action.ExpectedRequestIDCapture]
+		if expectedRequestID == "" || response.InResponseTo != expectedRequestID {
+			return fmt.Errorf(
+				"SP LogoutResponse InResponseTo = %q, want captured request ID %q",
+				response.InResponseTo,
+				expectedRequestID,
+			)
+		}
+		responseTo := captured[action.ResponseToRequestIDCapture]
+		if responseTo == "" {
+			return fmt.Errorf(
+				"response-to request ID capture %q has not been recorded",
+				action.ResponseToRequestIDCapture,
+			)
+		}
+		_, rawOutput, redirect, err := makeFixtureLogoutResponse(
+			idp,
+			action.Destination,
+			responseTo,
+			relayState,
+			action.OutputBinding,
+		)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutResponse: %w", err)
+		}
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
+	default:
+		return fmt.Errorf("unsupported SAML logout action kind %q", action.Kind)
+	}
+	return nil
+}
+
+func readSAMLLogoutInput(
+	action SAMLLogoutAction,
+	field string,
+	captured map[string]string,
+) ([]byte, string, error) {
+	binding := action.InputBinding
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		message := html.UnescapeString(captured[action.SAMLMessageCapture])
+		relayState := html.UnescapeString(captured[action.RelayStateInputCapture])
+		if message == "" {
+			return nil, "", fmt.Errorf("SAML message capture %q has not been recorded", action.SAMLMessageCapture)
+		}
+		rawXML, err := base64.StdEncoding.DecodeString(message)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode POST %s: %w", field, err)
+		}
+		if err := validateSignedSAMLFixtureXML(rawXML, action.SPCertificate); err != nil {
+			return nil, "", fmt.Errorf("validate signed POST SP %s: %w", field, err)
+		}
+		return rawXML, relayState, nil
+	}
+
+	redirect := captured[action.RedirectCapture]
+	if redirect == "" {
+		return nil, "", fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
+	}
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse SAML logout redirect: %w", err)
+	}
+	if err := validateSAMLRedirectFixtureSignature(
+		redirectURL.RawQuery,
+		field,
+		action.SPCertificate,
+	); err != nil {
+		return nil, "", fmt.Errorf("validate signed Redirect SP %s: %w", field, err)
+	}
+	rawXML, err := decodeSAMLRedirectMessage(redirectURL.Query().Get(field))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode %s: %w", field, err)
+	}
+	return rawXML, redirectURL.Query().Get("RelayState"), nil
+}
+
+func makeFixtureLogoutRequest(
+	signer *saml.ServiceProvider,
+	destination string,
+	nameID string,
+	relayState string,
+	binding string,
+) (*saml.LogoutRequest, []byte, *url.URL, error) {
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		request, err := signer.MakeLogoutRequest(destination, nameID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rawXML, err := request.Bytes()
+		return request, rawXML, nil, err
+	}
+	unsigned := *signer
+	unsigned.SignatureMethod = ""
+	request, err := unsigned.MakeLogoutRequest(destination, nameID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rawXML, err := request.Bytes()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		destination,
+		"SAMLRequest",
+		rawXML,
+		relayState,
+		signer.Key,
+	)
+	return request, rawXML, redirect, err
+}
+
+func makeFixtureLogoutResponse(
+	signer *saml.ServiceProvider,
+	destination string,
+	requestID string,
+	relayState string,
+	binding string,
+) (*saml.LogoutResponse, []byte, *url.URL, error) {
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		response, err := signer.MakeLogoutResponse(destination, requestID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rawXML, err := samlFixtureElementBytes(response.Element())
+		return response, rawXML, nil, err
+	}
+	unsigned := *signer
+	unsigned.SignatureMethod = ""
+	response, err := unsigned.MakeLogoutResponse(destination, requestID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rawXML, err := samlFixtureElementBytes(response.Element())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		destination,
+		"SAMLResponse",
+		rawXML,
+		relayState,
+		signer.Key,
+	)
+	return response, rawXML, redirect, err
+}
+
+func captureSAMLLogoutOutput(
+	action SAMLLogoutAction,
+	rawXML []byte,
+	redirect *url.URL,
+	relayState string,
+	captured map[string]string,
+) {
+	binding := action.OutputBinding
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		captured[action.OutputCapture] = url.QueryEscape(base64.StdEncoding.EncodeToString(rawXML))
+		captured[action.RelayStateCapture] = url.QueryEscape(relayState)
+		return
+	}
+	captured[action.OutputCapture] = strings.TrimPrefix(redirect.RequestURI(), "/")
+}
+
+func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM string) (*saml.ServiceProvider, error) {
+	pair, err := tls.X509KeyPair([]byte(certificatePEM), []byte(privateKeyPEM))
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, fmt.Errorf("parse IdP signing key pair: %w", err)
+	}
+	certificate, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse IdP certificate: %w", err)
+	}
+	key, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("IdP private key does not implement crypto.Signer")
+	}
+	return &saml.ServiceProvider{
+		EntityID:        entityID,
+		Key:             key,
+		Certificate:     certificate,
+		SignatureMethod: samlRSASHA256Method,
+		IDPMetadata:     &saml.EntityDescriptor{EntityID: "fixture-peer"},
+	}, nil
+}
+
+func signedSAMLFixtureRedirectURL(
+	destination string,
+	field string,
+	rawXML []byte,
+	relayState string,
+	signer crypto.Signer,
+) (*url.URL, error) {
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, 9)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := writer.Write(rawXML); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	signedQuery := field + "=" + url.QueryEscape(base64.StdEncoding.EncodeToString(compressed.Bytes()))
+	if relayState != "" {
+		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
+	}
+	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA256Method)
+	digest := sha256.Sum256([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		return nil, err
+	}
+	redirect, err := url.Parse(destination)
+	if err != nil {
+		return nil, err
+	}
+	redirect.RawQuery = signedQuery + "&Signature=" +
+		url.QueryEscape(base64.StdEncoding.EncodeToString(signature))
+	return redirect, nil
+}
+
+func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certificatePEM string) error {
+	parameters := make(map[string]string)
+	for parameter := range strings.SplitSeq(rawQuery, "&") {
+		name, value, ok := strings.Cut(parameter, "=")
+		if !ok {
+			continue
+		}
+		decodedName, err := url.QueryUnescape(name)
+		if err != nil {
+			return fmt.Errorf("decode Redirect parameter name: %w", err)
+		}
+		switch decodedName {
+		case "SAMLRequest", "SAMLResponse", "RelayState", "SigAlg", "Signature":
+			if _, duplicate := parameters[decodedName]; duplicate {
+				return fmt.Errorf("Redirect parameter %s is duplicated", decodedName)
+			}
+			parameters[decodedName] = value
+		}
+	}
+	message, ok := parameters[field]
+	if !ok {
+		return fmt.Errorf("%s is required", field)
+	}
+	sigAlg, ok := parameters["SigAlg"]
+	if !ok {
+		return errors.New("SigAlg is required")
+	}
+	decodedSigAlg, err := url.QueryUnescape(sigAlg)
+	if err != nil || decodedSigAlg != samlRSASHA256Method {
+		return errors.New("Redirect SigAlg must be rsa-sha256")
+	}
+	signatureValue, ok := parameters["Signature"]
+	if !ok {
+		return errors.New("Signature is required")
+	}
+	signedQuery := field + "=" + message
+	if relayState, present := parameters["RelayState"]; present {
+		signedQuery += "&RelayState=" + relayState
+	}
+	signedQuery += "&SigAlg=" + sigAlg
+	decodedSignature, err := url.QueryUnescape(signatureValue)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature escaping: %w", err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(decodedSignature)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature: %w", err)
+	}
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("SP certificate does not contain an RSA public key")
+	}
+	digest := sha256.Sum256([]byte(signedQuery))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		return fmt.Errorf("verify Redirect signature: %w", err)
+	}
+	return nil
+}
+
+func samlFixtureElementBytes(element *etree.Element) ([]byte, error) {
+	document := etree.NewDocument()
+	document.SetRoot(element)
+	return document.WriteToBytes()
+}
+
+func decodeSAMLRedirectMessage(value string) ([]byte, error) {
+	if value == "" {
+		return nil, errors.New("SAML Redirect value is required")
+	}
+	compressed, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64: %w", err)
+	}
+	reader := flate.NewReader(bytes.NewReader(compressed))
+	defer func() {
+		_ = reader.Close()
+	}()
+	rawXML, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("inflate XML: %w", err)
+	}
+	if len(rawXML) > 1<<20 {
+		return nil, errors.New("SAML Redirect value exceeds the 1 MiB limit")
+	}
+	return rawXML, nil
+}
+
+func validateSignedSAMLFixtureXML(rawXML []byte, certificatePEM string) error {
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	document := etree.NewDocument()
+	if err := document.ReadFromBytes(rawXML); err != nil {
+		return fmt.Errorf("parse signed XML: %w", err)
+	}
+	context := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{
+		Roots: []*x509.Certificate{certificate},
+	})
+	if _, err := context.Validate(document.Root()); err != nil {
+		return fmt.Errorf("verify XML signature: %w", err)
+	}
+	return nil
+}
+
+func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certificatePEM string) error {
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	if request.Method == http.MethodGet {
+		signatureValue := request.URL.Query().Get("Signature")
+		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA256Method {
+			return errors.New("Redirect binding requires rsa-sha256 SigAlg and Signature")
+		}
+		signature, err := base64.StdEncoding.DecodeString(signatureValue)
+		if err != nil {
+			return fmt.Errorf("decode Redirect signature: %w", err)
+		}
+		signedQuery := request.URL.RawQuery
+		if index := strings.LastIndex(signedQuery, "&Signature="); index >= 0 {
+			signedQuery = signedQuery[:index]
+		} else {
+			return errors.New("Redirect signature is not the final query parameter")
+		}
+		publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("SP certificate does not contain an RSA public key")
+		}
+		digest := sha256.Sum256([]byte(signedQuery))
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+			return fmt.Errorf("verify Redirect signature: %w", err)
+		}
+		return nil
+	}
+
+	document := etree.NewDocument()
+	if err := document.ReadFromBytes(rawXML); err != nil {
+		return fmt.Errorf("parse POST XML: %w", err)
+	}
+	context := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{
+		Roots: []*x509.Certificate{certificate},
+	})
+	if _, err := context.Validate(document.Root()); err != nil {
+		return fmt.Errorf("verify POST XML signature: %w", err)
+	}
+	return nil
+}
+
+func tamperSAMLSignature(encodedResponse string) (string, error) {
+	response, err := base64.StdEncoding.DecodeString(encodedResponse)
+	if err != nil {
+		return "", fmt.Errorf("decode SAML response: %w", err)
+	}
+	start := bytes.Index(response, []byte("<ds:SignatureValue>"))
+	if start < 0 {
+		return "", errors.New("SAML response does not contain a signature value")
+	}
+	start += len("<ds:SignatureValue>")
+	end := bytes.Index(response[start:], []byte("</ds:SignatureValue>"))
+	if end <= 0 {
+		return "", errors.New("SAML response signature value is empty")
+	}
+	for i := start; i < start+end; i++ {
+		switch response[i] {
+		case 'A':
+			response[i] = 'B'
+			return base64.StdEncoding.EncodeToString(response), nil
+		case '\r', '\n', '\t', ' ':
+			continue
+		default:
+			response[i] = 'A'
+			return base64.StdEncoding.EncodeToString(response), nil
+		}
+	}
+	return "", errors.New("SAML response signature value is empty")
+}
+
+func resolveWorkDirActionPath(path string, replacements map[string]string) (string, error) {
+	workDir := replacements["{{WORK_DIR}}"]
+	expanded := strings.ReplaceAll(path, "{{WORK_DIR}}", workDir)
+	absolutePath, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", err
+	}
+	relativePath, err := filepath.Rel(workDir, absolutePath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes work directory: %s", path)
+	}
+	return absolutePath, nil
+}
+
+func expandEnvironment(environment Environment, replacements map[string]string) (Environment, error) {
+	if len(environment) == 0 {
+		return nil, nil
+	}
+	expanded := make(Environment, len(environment))
+	for name, value := range environment {
+		replaced, err := replaceFixturePlaceholders([]byte(value), replacements)
+		if err != nil {
+			return nil, fmt.Errorf("environment variable %q: %w", name, err)
+		}
+		expanded[name] = string(replaced)
+	}
+	return expanded, nil
+}
+
+func writeScenarioFiles(workDir string, files []ScenarioFile, replacements map[string]string) error {
+	for _, file := range files {
+		path := filepath.Join(workDir, filepath.Clean(file.Path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create scenario file directory: %w", err)
+		}
+		body, err := replaceFixturePlaceholders([]byte(file.Body), replacements)
+		if err != nil {
+			return fmt.Errorf("render scenario file %q: %w", file.Path, err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			return fmt.Errorf("write scenario file %q: %w", file.Path, err)
+		}
+	}
+	return nil
+}
+
+func writeStandaloneConfigUpdate(path string, config map[string]any, replacements map[string]string) error {
+	data, err := renderStandaloneConfig(config, replacements)
+	if err != nil {
+		return fmt.Errorf("render standalone config update: %w", err)
+	}
+	if err := writeStandaloneConfigSnapshot(path, data); err != nil {
+		return fmt.Errorf("write standalone config update: %w", err)
+	}
+	return nil
+}
+
+func writeStandaloneConfigSnapshot(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("create standalone config snapshot: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("chmod standalone config snapshot: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write standalone config snapshot: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("sync standalone config snapshot: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close standalone config snapshot: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace standalone config: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func waitForConfigApplied(
+	client *http.Client,
+	httpAddress string,
+	tlsAddress string,
+	probe ConfigProbe,
+	timeout time.Duration,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	return waitForAppliedState(timeout, 20*time.Millisecond, func() error {
+		return probeHTTPInput(
+			client, httpAddress, tlsAddress, probe.Input, probe.Output, capturedCookies, capturedValues,
+		)
+	})
+}
+
+func waitForAppliedState(timeout, interval time.Duration, probe func() error) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := probe(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("state was not applied within %s; last probe: %w", timeout, lastErr)
+		}
+		if remaining < interval {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(interval)
+		}
+	}
+}
+
+func probeHTTPInput(
+	client *http.Client,
+	httpAddress string,
+	tlsAddress string,
+	input HTTPInput,
+	output HTTPOutput,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	var err error
+	input, err = resolveCapturedInput(input, capturedValues)
+	if err != nil {
+		return fmt.Errorf("resolve captured response value: %w", err)
+	}
+	method := input.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	scheme := input.Scheme
+	address := httpAddress
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme == "https" {
+		address = tlsAddress
+	}
+	body := input.Body
+	if input.BodyBase64 != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.BodyBase64)
+		if decodeErr != nil {
+			return fmt.Errorf("decode probe body_base64: %w", decodeErr)
+		}
+		body = string(decoded)
+	}
+	if input.BodyRepeat != nil {
+		body = renderRepeatedBody(input.BodyRepeat)
+	}
+	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	for name, value := range input.Headers {
+		value, err = replaceCookiePlaceholders(value, capturedCookies)
+		if err != nil {
+			return fmt.Errorf("resolve probe header %s: %w", name, err)
+		}
+		if strings.EqualFold(name, "Host") {
+			request.Host = value
+			request.URL.Host = value
+			continue
+		}
+		request.Header.Set(name, value)
+	}
+	for name, values := range input.HeaderValues {
+		for _, value := range values {
+			value, err = replaceCookiePlaceholders(value, capturedCookies)
+			if err != nil {
+				return fmt.Errorf("resolve probe header %s: %w", name, err)
+			}
+			request.Header.Add(name, value)
+		}
+	}
+	if input.HMAC != nil {
+		applyHMACSignature(request, *input.HMAC, time.Now())
+	}
+	if input.Chunked {
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
+	}
+	probeClient := *client
+	probeClient.Jar = nil
+	response, err := probeClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("probe request: %w", err)
+	}
+	responseBody, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read probe response: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close probe response: %w", closeErr)
+	}
+	return matchProbeOutput(output, response, string(responseBody))
+}
+
+func matchProbeOutput(expected HTTPOutput, response *http.Response, body string) error {
+	if response.StatusCode != expected.Status {
+		return fmt.Errorf("response status = %d, want %d", response.StatusCode, expected.Status)
+	}
+	for name, matcher := range expected.Headers {
+		values, present := response.Header[http.CanonicalHeaderKey(name)]
+		if !present {
+			values = nil
+		}
+		if err := matcher.matchHeader(response.Header.Get(name), values); err != nil {
+			return fmt.Errorf("response header %s: %w", name, err)
+		}
+	}
+	if expected.Body != nil {
+		if err := expected.Body.match(body, true); err != nil {
+			return fmt.Errorf("response body: %w", err)
+		}
+	}
+	if expected.GzipBody != nil {
+		reader, err := cgzip.NewReader(strings.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("create gzip probe response reader: %w", err)
+		}
+		decoded, readErr := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if readErr != nil {
+			return fmt.Errorf("read gzip probe response: %w", readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close gzip probe response: %w", closeErr)
+		}
+		if err := expected.GzipBody.match(string(decoded), true); err != nil {
+			return fmt.Errorf("gzip probe response body: %w", err)
+		}
+	}
+	if expected.BrotliBody != nil {
+		decoded, err := io.ReadAll(brotlidec.NewReader(strings.NewReader(body)))
+		if err != nil {
+			return fmt.Errorf("read brotli probe response: %w", err)
+		}
+		if err := expected.BrotliBody.match(string(decoded), true); err != nil {
+			return fmt.Errorf("brotli probe response body: %w", err)
+		}
+	}
+	return nil
+}
+
+func runHTTPInput(
+	t *testing.T,
+	client *http.Client,
+	httpAddress string,
+	tlsAddress string,
+	input HTTPInput,
+	output HTTPOutput,
+	bodyLengths map[string]int,
+	headerHistory map[string][]string,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	t.Helper()
+	var err error
+	input, err = resolveCapturedInput(input, capturedValues)
+	if err != nil {
+		t.Errorf("resolve captured response value: %v", err)
+		return err
+	}
+	method := input.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	scheme := input.Scheme
+	address := httpAddress
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme == "https" {
+		address = tlsAddress
+	}
+	body := input.Body
+	if input.BodyBase64 != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.BodyBase64)
+		if decodeErr != nil {
+			t.Errorf("decode client body_base64: %v", decodeErr)
+			return decodeErr
+		}
+		body = string(decoded)
+	}
+	if input.BodyRepeat != nil {
+		body = renderRepeatedBody(input.BodyRepeat)
+	}
+	if input.GRPC != nil {
+		message, decodeErr := base64.StdEncoding.DecodeString(*input.GRPC.MessageBase64)
+		if decodeErr != nil {
+			t.Errorf("decode client gRPC message: %v", decodeErr)
+			return decodeErr
+		}
+		body = string(buildUnaryGRPCFrame(message))
+	}
+	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
+	if err != nil {
+		t.Errorf("build client request: %v", err)
+		return err
+	}
+	for name, value := range input.Headers {
+		value, err = replaceCookiePlaceholders(value, capturedCookies)
+		if err != nil {
+			t.Errorf("resolve input header %s: %v", name, err)
+			return err
+		}
+		if strings.EqualFold(name, "Host") {
+			request.Host = value
+			request.URL.Host = value
+			continue
+		}
+		request.Header.Set(name, value)
+	}
+	if input.GRPC != nil {
+		request.Header.Set("Content-Type", "application/grpc")
+		request.Header.Set("TE", "trailers")
+	}
+	for name, values := range input.HeaderValues {
+		for _, value := range values {
+			value, err = replaceCookiePlaceholders(value, capturedCookies)
+			if err != nil {
+				t.Errorf("resolve input header %s: %v", name, err)
+				return err
+			}
+			request.Header.Add(name, value)
+		}
+	}
+	if input.HMAC != nil {
+		applyHMACSignature(request, *input.HMAC, time.Now())
+	}
+	if input.Chunked {
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
+	}
+	if input.Version == "1.0" {
+		return runRawHTTP10Input(
+			t, client, address, request, output, bodyLengths, headerHistory, capturedCookies, capturedValues,
+		)
+	}
+	requestClient := client
+	var h2cTransport *http2.Transport
+	if input.Version == "2" && scheme == "http" {
+		h2cTransport = &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
+			},
+		}
+		defer h2cTransport.CloseIdleConnections()
+		requestClient = &http.Client{Timeout: client.Timeout, Transport: h2cTransport, Jar: client.Jar}
+	}
+	if input.WithoutCookies {
+		clientWithoutCookies := *client
+		clientWithoutCookies.Jar = nil
+		requestClient = &clientWithoutCookies
+	}
+	started := time.Now()
+	response, err := requestClient.Do(request)
+	if err != nil {
+		t.Errorf("client request: %v", err)
+		return err
+	}
+	if input.Version == "2" && response.ProtoMajor != 2 {
+		err := fmt.Errorf("response protocol = %s, want HTTP/2", response.Proto)
+		t.Error(err)
+		_ = response.Body.Close()
+		return err
+	}
+	if input.DisconnectAfterBytes > 0 {
+		_, err = io.CopyN(io.Discard, response.Body, int64(input.DisconnectAfterBytes))
+		closeErr := response.Body.Close()
+		if err != nil {
+			t.Errorf("read %d response bytes before disconnect: %v", input.DisconnectAfterBytes, err)
+			return err
+		}
+		if closeErr != nil {
+			t.Errorf("disconnect client response: %v", closeErr)
+			return closeErr
+		}
+		assertOutput(t, output, response, "")
+		assertElapsed(t, output, time.Since(started))
+		assertGeneratedHeaders(t, output, response.Header, headerHistory)
+		captureResponseCookies(response, capturedCookies)
+		if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+			t.Errorf("capture response header: %v", err)
+			return err
+		}
+		return nil
+	}
+	var responseBody []byte
+	if len(output.Chunks) > 0 {
+		responseBody, err = readAndAssertResponseChunks(t, response.Body, output.Chunks)
+	} else {
+		responseBody, err = io.ReadAll(response.Body)
+	}
+	_ = response.Body.Close()
+	if err != nil {
+		t.Errorf("read client response: %v", err)
+		return err
+	}
+	assertOutput(t, output, response, string(responseBody))
+	assertBodyLength(t, output, len(responseBody), bodyLengths)
+	assertElapsed(t, output, time.Since(started))
+	assertGeneratedHeaders(t, output, response.Header, headerHistory)
+	captureResponseCookies(response, capturedCookies)
+	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+		t.Errorf("capture response header: %v", err)
+		return err
+	}
+	if err := captureResponseBody(output.BodyCaptures, string(responseBody), capturedValues); err != nil {
+		t.Errorf("capture response body: %v", err)
+		return err
+	}
+	return nil
+}
+
+const responseSSEFrameArrivalTimeout = 500 * time.Millisecond
+
+type responseSSEFrame struct {
+	value string
+	err   error
+}
+
+func readAndAssertResponseChunks(t *testing.T, body io.Reader, expected []Matcher) ([]byte, error) {
+	t.Helper()
+	done := make(chan struct{})
+	defer close(done)
+	frames := readResponseSSEFrames(body, done)
+	var full bytes.Buffer
+	for i, matcher := range expected {
+		timer := time.NewTimer(responseSSEFrameArrivalTimeout)
+		select {
+		case frame, ok := <-frames:
+			timer.Stop()
+			if !ok {
+				return nil, fmt.Errorf("response SSE stream ended before frame %d", i+1)
+			}
+			if frame.err != nil {
+				return nil, frame.err
+			}
+			_, _ = full.WriteString(frame.value)
+			if err := matcher.match(frame.value, true); err != nil {
+				t.Errorf("response SSE frame %d: %v", i+1, err)
+			}
+		case <-timer.C:
+			return nil, fmt.Errorf(
+				"response SSE frame %d did not arrive within %s; response may not have been flushed",
+				i+1,
+				responseSSEFrameArrivalTimeout,
+			)
+		}
+	}
+
+	extraFrames := make([]string, 0)
+	for frame := range frames {
+		if frame.err != nil {
+			return nil, frame.err
+		}
+		extraFrames = append(extraFrames, frame.value)
+		_, _ = full.WriteString(frame.value)
+	}
+	if len(extraFrames) > 0 {
+		t.Errorf(
+			"response SSE frames = %d, want %d; extras: %#v",
+			len(expected)+len(extraFrames),
+			len(expected),
+			extraFrames,
+		)
+	}
+	return full.Bytes(), nil
+}
+
+func readResponseSSEFrames(body io.Reader, done <-chan struct{}) <-chan responseSSEFrame {
+	frames := make(chan responseSSEFrame)
+	go func() {
+		defer close(frames)
+		reader := bufio.NewReader(body)
+		var frame strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				frame.WriteString(line)
+				if line == "\n" || line == "\r\n" {
+					select {
+					case frames <- responseSSEFrame{value: frame.String()}:
+						frame.Reset()
+					case <-done:
+						return
+					}
+				}
+			}
+			if errors.Is(err, io.EOF) {
+				if frame.Len() > 0 {
+					select {
+					case frames <- responseSSEFrame{err: errors.New("response SSE stream ended with an unterminated frame")}:
+					case <-done:
+					}
+				}
+				return
+			}
+			if err != nil {
+				select {
+				case frames <- responseSSEFrame{err: fmt.Errorf("read response SSE stream: %w", err)}:
+				case <-done:
+				}
+				return
+			}
+		}
+	}()
+	return frames
+}
+
+func TestReadAndAssertResponseChunksReassemblesSplitSSEFrame(t *testing.T) {
+	frame := "data: first\n\n"
+
+	body, err := readAndAssertResponseChunks(
+		t,
+		iotest.OneByteReader(strings.NewReader(frame)),
+		[]Matcher{{Equals: &frame}},
+	)
+	if err != nil {
+		t.Fatalf("read split SSE frame: %v", err)
+	}
+	if string(body) != frame {
+		t.Fatalf("response body = %q, want %q", body, frame)
+	}
+}
+
+func TestReadAndAssertResponseChunksSeparatesCoalescedSSEFrames(t *testing.T) {
+	first := "data: first\n\n"
+	second := "data: second\r\n\r\n"
+
+	body, err := readAndAssertResponseChunks(
+		t,
+		strings.NewReader(first+second),
+		[]Matcher{{Equals: &first}, {Equals: &second}},
+	)
+	if err != nil {
+		t.Fatalf("read coalesced SSE frames: %v", err)
+	}
+	if string(body) != first+second {
+		t.Fatalf("response body = %q, want %q", body, first+second)
+	}
+}
+
+func applyHMACSignature(request *http.Request, spec HMACSignature, now time.Time) {
+	algorithm := spec.Algorithm
+	if algorithm == "" {
+		algorithm = "hmac-sha256"
+	}
+	date := spec.Date
+	if date == "now" {
+		date = now.UTC().Format(http.TimeFormat)
+	} else if date == "" && spec.DateOffset != 0 {
+		date = now.Add(spec.DateOffset).UTC().Format(http.TimeFormat)
+	}
+	if date != "" {
+		request.Header.Set("Date", date)
+	}
+	for _, header := range spec.Headers {
+		if strings.EqualFold(header, "date") {
+			if request.Header.Get("Date") == "" {
+				date = now.Add(spec.DateOffset).UTC().Format(http.TimeFormat)
+				request.Header.Set("Date", date)
+			}
+		}
+	}
+
+	var signingString strings.Builder
+	signingString.WriteString(spec.KeyID + "\n")
+	for _, header := range spec.Headers {
+		header = strings.ToLower(header)
+		if header == "@request-target" {
+			signingString.WriteString(request.Method + " " + request.URL.RequestURI() + "\n")
+			continue
+		}
+		if value := request.Header.Get(header); value != "" {
+			signingString.WriteString(header + ": " + value + "\n")
+		}
+	}
+
+	var hashFunc func() hash.Hash
+	switch algorithm {
+	case "hmac-sha1":
+		hashFunc = sha1.New
+	case "hmac-sha256":
+		hashFunc = sha256.New
+	case "hmac-sha512":
+		hashFunc = sha512.New
+	default:
+		panic("validated HMAC algorithm is unsupported: " + algorithm)
+	}
+	mac := hmac.New(hashFunc, []byte(spec.Secret))
+	_, _ = mac.Write([]byte(signingString.String()))
+	authorization := fmt.Sprintf(
+		`Signature keyId="%s",algorithm="%s"`, spec.KeyID, algorithm,
+	)
+	if len(spec.Headers) > 0 {
+		authorization += fmt.Sprintf(`,headers="%s"`, strings.Join(spec.Headers, " "))
+	}
+	authorization += fmt.Sprintf(`,signature="%s"`, base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	request.Header.Set("Authorization", authorization)
+}
+
+func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInput, error) {
+	var err error
+	input.Path, err = replaceCapturePlaceholders(input.Path, captured)
+	if err != nil {
+		return input, err
+	}
+	input.Body, err = replaceCapturePlaceholders(input.Body, captured)
+	if err != nil {
+		return input, err
+	}
+	if input.BodyRepeat != nil {
+		repeated := *input.BodyRepeat
+		repeated.Prefix, err = replaceCapturePlaceholders(repeated.Prefix, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat prefix: %w", err)
+		}
+		repeated.Value, err = replaceCapturePlaceholders(repeated.Value, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat: %w", err)
+		}
+		repeated.Suffix, err = replaceCapturePlaceholders(repeated.Suffix, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat suffix: %w", err)
+		}
+		input.BodyRepeat = &repeated
+	}
+	if input.Headers != nil {
+		headers := make(map[string]string, len(input.Headers))
+		for name, value := range input.Headers {
+			value, err = replaceCapturePlaceholders(value, captured)
+			if err != nil {
+				return input, fmt.Errorf("header %s: %w", name, err)
+			}
+			headers[name] = value
+		}
+		input.Headers = headers
+	}
+	if input.HeaderValues != nil {
+		headers := make(map[string][]string, len(input.HeaderValues))
+		for name, values := range input.HeaderValues {
+			expanded := make([]string, len(values))
+			for i, value := range values {
+				expanded[i], err = replaceCapturePlaceholders(value, captured)
+				if err != nil {
+					return input, fmt.Errorf("header %s: %w", name, err)
+				}
+			}
+			headers[name] = expanded
+		}
+		input.HeaderValues = headers
+	}
+	return input, nil
+}
+
+func replaceCapturePlaceholders(value string, captured map[string]string) (string, error) {
+	const prefix = "{{CAPTURE."
+	for {
+		start := strings.Index(value, prefix)
+		if start < 0 {
+			return value, nil
+		}
+		endOffset := strings.Index(value[start:], "}}")
+		if endOffset < 0 {
+			return "", fmt.Errorf("unterminated capture placeholder")
+		}
+		end := start + endOffset + 2
+		name := value[start+len(prefix) : start+endOffset]
+		if name == "" {
+			return "", fmt.Errorf("capture placeholder name is empty")
+		}
+		replacement, ok := captured[name]
+		if !ok {
+			return "", fmt.Errorf("response capture %q has not been recorded", name)
+		}
+		value = value[:start] + replacement + value[end:]
+	}
+}
+
+func captureResponseHeaders(captures map[string]HeaderCapture, headers http.Header, captured map[string]string) error {
+	for name, capture := range captures {
+		value := headers.Get(capture.Header)
+		match := regexp.MustCompile(capture.Matches).FindStringSubmatch(value)
+		if len(match) != 2 {
+			return fmt.Errorf("response header %s value %q does not match capture %q", capture.Header, value, name)
+		}
+		captured[name] = match[1]
+	}
+	return nil
+}
+
+func captureResponseBody(captures map[string]BodyCapture, body string, captured map[string]string) error {
+	for name, capture := range captures {
+		match := regexp.MustCompile(capture.Matches).FindStringSubmatch(body)
+		if len(match) != 2 {
+			return fmt.Errorf("response body value %q does not match capture %q", body, name)
+		}
+		captured[name] = match[1]
+	}
+	return nil
+}
+
+func replaceCookiePlaceholders(value string, cookies map[string]string) (string, error) {
+	const prefix = "{{COOKIE."
+	for {
+		start := strings.Index(value, prefix)
+		if start < 0 {
+			return value, nil
+		}
+		endOffset := strings.Index(value[start:], "}}")
+		if endOffset < 0 {
+			return "", fmt.Errorf("unterminated cookie placeholder")
+		}
+		end := start + endOffset + 2
+		name := value[start+len(prefix) : start+endOffset]
+		if name == "" {
+			return "", fmt.Errorf("cookie placeholder name is empty")
+		}
+		replacement := cookies[name]
+		if replacement == "" {
+			return "", fmt.Errorf("cookie %q has not been captured", name)
+		}
+		value = value[:start] + replacement + value[end:]
+	}
+}
+
+func captureResponseCookies(response *http.Response, captured map[string]string) {
+	for _, cookie := range response.Cookies() {
+		captured[cookie.Name] = cookie.Value
+	}
+}
+
+func runRawHTTP10Input(
+	t *testing.T,
+	client *http.Client,
+	address string,
+	request *http.Request,
+	output HTTPOutput,
+	bodyLengths map[string]int,
+	headerHistory map[string][]string,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	t.Helper()
+	started := time.Now()
+	var connection net.Conn
+	var err error
+	if request.URL.Scheme == "https" {
+		transport, _ := client.Transport.(*http.Transport)
+		connection, err = tls.Dial("tcp", address, transport.TLSClientConfig)
+	} else {
+		connection, err = net.DialTimeout("tcp", address, 5*time.Second)
+	}
+	if err != nil {
+		t.Errorf("dial raw HTTP/1.0 request: %v", err)
+		return err
+	}
+	defer func() { _ = connection.Close() }()
+
+	host := request.Host
+	if host == "" {
+		host = request.URL.Host
+	}
+	writer := bufio.NewWriter(connection)
+	_, _ = fmt.Fprintf(writer, "%s %s HTTP/1.0\r\nHost: %s\r\n", request.Method, request.URL.RequestURI(), host)
+	for name, values := range request.Header {
+		for _, value := range values {
+			_, _ = fmt.Fprintf(writer, "%s: %s\r\n", name, value)
+		}
+	}
+	if request.Body != nil && request.ContentLength != 0 {
+		_, _ = fmt.Fprintf(writer, "Content-Length: %d\r\n", request.ContentLength)
+	}
+	_, _ = writer.WriteString("Connection: close\r\n\r\n")
+	if request.Body != nil {
+		_, _ = io.Copy(writer, request.Body)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Errorf("write raw HTTP/1.0 request: %v", err)
+		return err
+	}
+
+	response, err := http.ReadResponse(bufio.NewReader(connection), request)
+	if err != nil {
+		t.Errorf("read raw HTTP/1.0 response: %v", err)
+		return err
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Errorf("read raw HTTP/1.0 body: %v", err)
+		return err
+	}
+	assertOutput(t, output, response, string(body))
+	assertBodyLength(t, output, len(body), bodyLengths)
+	assertElapsed(t, output, time.Since(started))
+	assertGeneratedHeaders(t, output, response.Header, headerHistory)
+	captureResponseCookies(response, capturedCookies)
+	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+		t.Errorf("capture response header: %v", err)
+		return err
+	}
+	if err := captureResponseBody(output.BodyCaptures, string(body), capturedValues); err != nil {
+		t.Errorf("capture response body: %v", err)
+		return err
+	}
+	return nil
+}
+
+func assertGeneratedHeaders(
+	t *testing.T,
+	output HTTPOutput,
+	headers http.Header,
+	history map[string][]string,
+) {
+	t.Helper()
+	for _, pair := range output.DifferentHeaders {
+		first := headers.Get(pair[0])
+		second := headers.Get(pair[1])
+		if first == "" || second == "" {
+			t.Errorf("response headers %s and %s must both be non-empty", pair[0], pair[1])
+		} else if first == second {
+			t.Errorf("response headers %s and %s both equal %q", pair[0], pair[1], first)
+		}
+	}
+	unique := make(map[string]bool, len(output.UniqueHeaders))
+	for _, name := range output.UniqueHeaders {
+		unique[http.CanonicalHeaderKey(name)] = true
+	}
+	monotonic := make(map[string]bool, len(output.MonotonicHeaders))
+	for _, name := range output.MonotonicHeaders {
+		monotonic[http.CanonicalHeaderKey(name)] = true
+	}
+	for name := range unique {
+		value := headers.Get(name)
+		if value == "" {
+			t.Errorf("response header %s is empty", name)
+			continue
+		}
+		if slices.Contains(history[name], value) {
+			t.Errorf("response header %s repeated value %q", name, value)
+		}
+	}
+	for name := range monotonic {
+		value := headers.Get(name)
+		if value == "" {
+			t.Errorf("response header %s is empty", name)
+			continue
+		}
+		values := history[name]
+		if len(values) > 0 && value <= values[len(values)-1] {
+			t.Errorf("response header %s value %q is not greater than %q", name, value, values[len(values)-1])
+		}
+	}
+	for name := range unique {
+		history[name] = append(history[name], headers.Get(name))
+	}
+	for name := range monotonic {
+		if !unique[name] {
+			history[name] = append(history[name], headers.Get(name))
+		}
+	}
+}
+
+func assertBodyLength(t *testing.T, output HTTPOutput, length int, saved map[string]int) {
+	t.Helper()
+	if output.BodyLengthLessThan != "" {
+		reference, ok := saved[output.BodyLengthLessThan]
+		if !ok {
+			t.Errorf("body length reference %q has not been saved", output.BodyLengthLessThan)
+		} else if length >= reference {
+			t.Errorf("response body length = %d, want less than %s (%d)", length, output.BodyLengthLessThan, reference)
+		}
+	}
+	if output.BodyLengthLessThanValue != nil && length >= *output.BodyLengthLessThanValue {
+		t.Errorf("response body length = %d, want less than %d", length, *output.BodyLengthLessThanValue)
+	}
+	if output.SaveBodyLength != "" {
+		if _, exists := saved[output.SaveBodyLength]; exists {
+			t.Errorf("body length reference %q is already saved", output.SaveBodyLength)
+			return
+		}
+		saved[output.SaveBodyLength] = length
+	}
+}
+
+func assertElapsed(t *testing.T, output HTTPOutput, elapsed time.Duration) {
+	t.Helper()
+	if output.ElapsedAtLeast > 0 && elapsed < output.ElapsedAtLeast {
+		t.Errorf("response elapsed time = %s, want at least %s", elapsed, output.ElapsedAtLeast)
+	}
+	if output.ElapsedLessThan > 0 && elapsed >= output.ElapsedLessThan {
+		t.Errorf("response elapsed time = %s, want less than %s", elapsed, output.ElapsedLessThan)
+	}
+}
+
+func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {
+	return assertion.Method != "" || assertion.Protocol != "" || assertion.Path != nil || assertion.Host != nil ||
+		len(assertion.Headers) > 0 || assertion.Body != nil || assertion.LokiPush != nil ||
+		assertion.SkyWalkingLogs != nil || assertion.OTLPTraces != nil || assertion.GRPC != nil
+}
+
+func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, body string) {
+	t.Helper()
+	if expected.recordStatus != nil {
+		expected.recordStatus(response.StatusCode)
+	}
+	if len(expected.StatusCounts) == 0 && response.StatusCode != expected.Status {
+		t.Errorf("response status = %d, want %d", response.StatusCode, expected.Status)
+	}
+	assertHeaders(t, "response", expected.Headers, response.Header)
+	if expected.Body != nil {
+		if err := expected.Body.match(body, true); err != nil {
+			t.Errorf("response body: %v", err)
+		}
+	}
+	if expected.GRPC != nil {
+		if err := matchUnaryGRPCFrame([]byte(body), *expected.GRPC.MessageBase64); err != nil {
+			t.Errorf("response gRPC frame: %v", err)
+		}
+		status := response.Trailer.Get("Grpc-Status")
+		if status == "" {
+			status = response.Header.Get("Grpc-Status")
+		}
+		wantStatus := expected.GRPC.Status
+		if wantStatus == "" {
+			wantStatus = "0"
+		}
+		if status != wantStatus {
+			t.Errorf("response gRPC status = %q, want %q", status, wantStatus)
+		}
+	}
+	if expected.GzipBody != nil {
+		reader, err := cgzip.NewReader(strings.NewReader(body))
+		if err != nil {
+			t.Errorf("create gzip response reader: %v", err)
+			return
+		}
+		decoded, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			t.Errorf("read gzip response body: %v", err)
+			return
+		}
+		if err := expected.GzipBody.match(string(decoded), true); err != nil {
+			t.Errorf("gzip response body: %v", err)
+		}
+	}
+	if expected.BrotliBody != nil {
+		decoded, err := io.ReadAll(brotlidec.NewReader(strings.NewReader(body)))
+		if err != nil {
+			t.Errorf("read brotli response body: %v", err)
+			return
+		}
+		if err := expected.BrotliBody.match(string(decoded), true); err != nil {
+			t.Errorf("brotli response body: %v", err)
+		}
+	}
+}
+
+func expandIterationInput(input HTTPInput, iteration int) HTTPInput {
+	replacement := strconv.Itoa(iteration)
+	input.Path = replaceIteration(input.Path, replacement)
+	input.Body = replaceIteration(input.Body, replacement)
+	if input.Headers != nil {
+		headers := make(map[string]string, len(input.Headers))
+		for name, value := range input.Headers {
+			headers[replaceIteration(name, replacement)] = replaceIteration(value, replacement)
+		}
+		input.Headers = headers
+	}
+	if input.HeaderValues != nil {
+		headers := make(map[string][]string, len(input.HeaderValues))
+		for name, values := range input.HeaderValues {
+			expanded := make([]string, len(values))
+			for i, value := range values {
+				expanded[i] = replaceIteration(value, replacement)
+			}
+			headers[replaceIteration(name, replacement)] = expanded
+		}
+		input.HeaderValues = headers
+	}
+	if input.BodyRepeat != nil {
+		repeated := *input.BodyRepeat
+		repeated.Prefix = replaceIteration(repeated.Prefix, replacement)
+		repeated.Value = replaceIteration(repeated.Value, replacement)
+		repeated.Suffix = replaceIteration(repeated.Suffix, replacement)
+		input.BodyRepeat = &repeated
+	}
+	return input
+}
+
+func renderRepeatedBody(repeated *RepeatedBody) string {
+	return repeated.Prefix + strings.Repeat(repeated.Value, repeated.Count) + repeated.Suffix
+}
+
+func expandIterationOutput(output HTTPOutput, iteration int) HTTPOutput {
+	replacement := strconv.Itoa(iteration)
+	output.Body = expandIterationMatcher(output.Body, replacement)
+	output.GzipBody = expandIterationMatcher(output.GzipBody, replacement)
+	output.BrotliBody = expandIterationMatcher(output.BrotliBody, replacement)
+	output.Logs = expandIterationMatcher(output.Logs, replacement)
+	if output.Headers != nil {
+		headers := make(map[string]Matcher, len(output.Headers))
+		for name, matcher := range output.Headers {
+			headers[replaceIteration(name, replacement)] = *expandIterationMatcher(&matcher, replacement)
+		}
+		output.Headers = headers
+	}
+	output.SaveBodyLength = replaceIteration(output.SaveBodyLength, replacement)
+	output.BodyLengthLessThan = replaceIteration(output.BodyLengthLessThan, replacement)
+	return output
+}
+
+func expandIterationMatcher(matcher *Matcher, replacement string) *Matcher {
+	if matcher == nil {
+		return nil
+	}
+	expanded := *matcher
+	if matcher.Equals != nil {
+		value := replaceIteration(*matcher.Equals, replacement)
+		expanded.Equals = &value
+	}
+	if matcher.JSONEquals != nil {
+		value := replaceIteration(*matcher.JSONEquals, replacement)
+		expanded.JSONEquals = &value
+	}
+	if matcher.Matches != nil {
+		value := replaceIteration(*matcher.Matches, replacement)
+		expanded.Matches = &value
+	}
+	if matcher.NotMatches != nil {
+		value := replaceIteration(*matcher.NotMatches, replacement)
+		expanded.NotMatches = &value
+	}
+	if matcher.Values != nil {
+		expanded.Values = make([]string, len(matcher.Values))
+		for i, value := range matcher.Values {
+			expanded.Values[i] = replaceIteration(value, replacement)
+		}
+	}
+	return &expanded
+}
+
+func TestExpandIterationOutputExpandsSemanticJSONMatcher(t *testing.T) {
+	expected := `{"iteration":{{ITERATION}}}`
+	output := expandIterationOutput(HTTPOutput{Body: &Matcher{JSONEquals: &expected}}, 42)
+
+	if output.Body == nil || output.Body.JSONEquals == nil || *output.Body.JSONEquals != `{"iteration":42}` {
+		t.Fatalf("expanded json_equals = %#v, want iteration 42", output.Body)
+	}
+}
+
+func replaceIteration(value string, replacement string) string {
+	return strings.ReplaceAll(value, "{{ITERATION}}", replacement)
+}
+
+func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received capturedRequest) {
+	t.Helper()
+	if expected.Method != "" && received.method != expected.Method {
+		t.Errorf("upstream method = %q, want %q", received.method, expected.Method)
+	}
+	if expected.Protocol != "" && received.protocol != expected.Protocol {
+		t.Errorf("upstream protocol = %q, want %q", received.protocol, expected.Protocol)
+	}
+	if expected.Path != nil {
+		if err := expected.Path.match(received.path, true); err != nil {
+			t.Errorf("upstream path: %v", err)
+		}
+	}
+	if expected.Host != nil {
+		if err := expected.Host.match(received.host, true); err != nil {
+			t.Errorf("upstream host: %v", err)
+		}
+	}
+	assertHeaders(t, "upstream", expected.Headers, received.headers)
+	if expected.Body != nil {
+		if err := expected.Body.match(received.body, true); err != nil {
+			t.Errorf("upstream body: %v", err)
+		}
+	}
+	if expected.LokiPush != nil {
+		if err := expected.LokiPush.match(received.body); err != nil {
+			t.Errorf("upstream Loki push: %v", err)
+		}
+	}
+	if expected.SkyWalkingLogs != nil {
+		if err := expected.SkyWalkingLogs.match(received.body); err != nil {
+			t.Errorf("upstream SkyWalking logs: %v", err)
+		}
+	}
+	if expected.OTLPTraces != nil {
+		if err := expected.OTLPTraces.match(received.body); err != nil {
+			t.Errorf("upstream OTLP traces: %v", err)
+		}
+	}
+	if expected.GRPC != nil {
+		if err := matchUnaryGRPCFrame([]byte(received.body), *expected.GRPC.MessageBase64); err != nil {
+			t.Errorf("upstream gRPC frame: %v", err)
+		}
+	}
+}
+
+func buildUnaryGRPCFrame(message []byte) []byte {
+	frame := make([]byte, 5+len(message))
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(message)))
+	copy(frame[5:], message)
+	return frame
+}
+
+func matchUnaryGRPCFrame(frame []byte, messageBase64 string) error {
+	if len(frame) < 5 {
+		return fmt.Errorf("frame length = %d, want at least 5", len(frame))
+	}
+	if frame[0] != 0 {
+		return fmt.Errorf("compressed flag = %d, want 0", frame[0])
+	}
+	messageLength := int(binary.BigEndian.Uint32(frame[1:5]))
+	if messageLength != len(frame)-5 {
+		return fmt.Errorf("declared message length = %d, payload bytes = %d", messageLength, len(frame)-5)
+	}
+	want, err := base64.StdEncoding.DecodeString(messageBase64)
+	if err != nil {
+		return fmt.Errorf("decode expected message: %w", err)
+	}
+	if !bytes.Equal(frame[5:], want) {
+		return fmt.Errorf("message base64 = %q, want %q", base64.StdEncoding.EncodeToString(frame[5:]), messageBase64)
+	}
+	return nil
+}
+
+func assertHeaders(t *testing.T, scope string, expected map[string]Matcher, actual http.Header) {
+	t.Helper()
+	for name, matcher := range expected {
+		values, present := actual[http.CanonicalHeaderKey(name)]
+		value := actual.Get(name)
+		if !present {
+			values = nil
+		}
+		if err := matcher.matchHeader(value, values); err != nil {
+			t.Errorf("%s header %s: %v", scope, name, err)
+		}
+	}
+}

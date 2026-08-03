@@ -1,0 +1,37 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/server-info.t
+  tests: 2
+
+cases:
+  - name: configured-instance-and-control-api
+    source:
+      tests: [1, 2]
+    runtime:
+      apisix:
+        id: "123456"
+      plugins: [server-info]
+      plugin_attr:
+        server-info:
+          report_ttl: 60
+    config:
+      routes: []
+    steps:
+      - name: server-info
+        input:
+          path: /v1/server_info
+        output:
+          status: 200
+          headers:
+            Content-Type:
+              matches: application/json
+          body:
+            matches: '^\{"etcd_version":"unknown","hostname":"[^"]+","id":"123456","version":"apisix-go","boot_time":[0-9]+\}\n$'
+      - name: server-info-remains-available
+        input:
+          path: /v1/server_info
+        output:
+          status: 200
+          body:
+            matches: '"id":"123456"'

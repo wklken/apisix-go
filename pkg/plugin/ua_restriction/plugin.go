@@ -154,6 +154,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		if len(p.config.AllowList) > 0 {
+			for _, ua := range userAgents {
+				if p.matchUserAgent(ua) == matchAllow {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			writeJSON(w, p.message)
+			return
+		}
+
 		for _, ua := range userAgents {
 			match := p.matchUserAgent(ua)
 			if match == matchDeny {

@@ -235,8 +235,8 @@ func TestHandlerRejectsInvalidDingTalkCode(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want 401", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "Invalid authorization code") {
-		t.Fatalf("response body = %q, want invalid code message", rr.Body.String())
+	if rr.Body.String() != `{"message":"Invalid authorization code"}` {
+		t.Fatalf("response body = %q, want exact invalid code message", rr.Body.String())
 	}
 }
 

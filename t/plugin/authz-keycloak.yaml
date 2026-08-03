@@ -1,0 +1,940 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak2.t
+    tests: 19
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak3.t
+    tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak4.t
+    tests: 4
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak5.t
+    tests: 1
+
+cases:
+  - name: schema-valid-configurations-execute-real-authorization
+    source: {file: t/plugin/authz-keycloak.t, tests: [1, 2, 3, 4, 5]}
+    variants:
+      - name: minimal-explicit-token-endpoint
+        config:
+          routes:
+            - id: keycloak-schema-explicit
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+                  permissions: [course_resource#view]
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: http
+            expect:
+              - &view_uma_request
+                method: POST
+                path: {equals: /token}
+                headers:
+                  Authorization: {equals: Bearer teacher-token}
+                  Content-Type: {equals: application/x-www-form-urlencoded}
+                body:
+                  equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23view&response_mode=decision
+            respond: [{status: 200, body: '{"result":true}'}]
+          - &primary_hello
+            name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /hello}}]
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - name: authorize-with-explicit-token-endpoint
+            input: &teacher_hello
+              method: GET
+              path: /hello
+              headers: {Authorization: Bearer teacher-token}
+            output: &hello_output
+              status: 200
+              body: {equals: hello world}
+      - name: minimal-discovery
+        config:
+          routes:
+            - id: keycloak-schema-discovery
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  discovery: '{{FIXTURE.keycloak.URL}}/.well-known/uma2-configuration'
+                  permissions: [course_resource#view]
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: http
+            expect:
+              - {method: GET, path: {equals: /.well-known/uma2-configuration}}
+              - *view_uma_request
+            respond:
+              - {status: 200, body: '{"token_endpoint":"/token"}'}
+              - {status: 200, body: '{"result":true}'}
+          - *primary_hello
+        steps:
+          - {name: authorize-with-discovered-token-endpoint, input: *teacher_hello, output: *hello_output}
+      - name: minimal-lazy-explicit-endpoints
+        config:
+          routes:
+            - id: keycloak-schema-lazy-explicit
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  client_secret: keycloak-secret
+                  token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+                  resource_registration_endpoint: '{{FIXTURE.keycloak.URL}}/resources'
+                  lazy_load_paths: true
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: http
+            expect: &lazy_single_expect
+              - &client_credentials_request
+                method: POST
+                path: {equals: /token}
+                headers: {Content-Type: {equals: application/x-www-form-urlencoded}}
+                body: {equals: client_id=course_management&client_secret=keycloak-secret&grant_type=client_credentials}
+              - &hello_resource_request
+                method: GET
+                path: {equals: '/resources?matchingUri=true&uri=%2Fhello'}
+                headers: {Authorization: {equals: Bearer service-token}}
+              - *view_uma_request
+            respond: &lazy_single_respond
+              - {status: 200, body: '{"access_token":"service-token","expires_in":300}'}
+              - {status: 200, body: '["course_resource#view"]'}
+              - {status: 200, body: '{"result":true}'}
+          - *primary_hello
+        steps:
+          - {name: authorize-with-explicit-lazy-endpoints, input: *teacher_hello, output: *hello_output}
+      - name: minimal-lazy-discovery
+        config:
+          routes:
+            - id: keycloak-schema-lazy-discovery
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  client_secret: keycloak-secret
+                  discovery: '{{FIXTURE.keycloak.URL}}/.well-known/uma2-configuration'
+                  lazy_load_paths: true
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: http
+            expect:
+              - {method: GET, path: {equals: /.well-known/uma2-configuration}}
+              - *client_credentials_request
+              - *hello_resource_request
+              - *view_uma_request
+            respond:
+              - {status: 200, body: '{"token_endpoint":"/token","resource_registration_endpoint":"/resources"}'}
+              - {status: 200, body: '{"access_token":"service-token","expires_in":300}'}
+              - {status: 200, body: '["course_resource#view"]'}
+              - {status: 200, body: '{"result":true}'}
+          - *primary_hello
+        steps:
+          - {name: authorize-with-discovered-lazy-endpoints, input: *teacher_hello, output: *hello_output}
+      - name: full-schema-options
+        config:
+          routes:
+            - id: keycloak-schema-full
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  discovery: '{{FIXTURE.keycloak.URL}}/.well-known/uma2-configuration'
+                  token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+                  resource_registration_endpoint: '{{FIXTURE.keycloak.URL}}/resources'
+                  client_id: course_management
+                  client_secret: keycloak-secret
+                  grant_type: urn:ietf:params:oauth:grant-type:uma-ticket
+                  policy_enforcement_mode: PERMISSIVE
+                  permissions: [course_resource#view]
+                  lazy_load_paths: false
+                  http_method_as_scope: false
+                  timeout: 1000
+                  ssl_verify: false
+                  cache_ttl_seconds: 1000
+                  keepalive: false
+                  keepalive_timeout: 10000
+                  keepalive_pool: 5
+                  access_token_expires_in: 300
+                  access_token_expires_leeway: 0
+                  refresh_token_expires_in: 3600
+                  refresh_token_expires_leeway: 0
+                  password_grant_token_generation_incoming_uri: /api/token
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: http
+            expect: [*view_uma_request]
+            respond: [{status: 200, body: '{"result":true}'}]
+          - *primary_hello
+        steps:
+          - {name: authorize-with-full-schema-options, input: *teacher_hello, output: *hello_output}
+
+  - name: schema-requires-token-or-discovery
+    source: {file: t/plugin/authz-keycloak.t, tests: [6]}
+    config:
+      routes:
+        - id: keycloak-missing-token-and-discovery
+          uri: /hello
+          plugins: {authz-keycloak: {client_id: course_management}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: missing-token-and-discovery-route-is-rejected
+        input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
+        output:
+          status: 404
+          logs: {matches: 'keycloak-missing-token-and-discovery.*authz-keycloak.*(discovery|token_endpoint)'}
+
+  - name: schema-requires-client-id
+    source: {file: t/plugin/authz-keycloak.t, tests: [7]}
+    config:
+      routes:
+        - id: keycloak-missing-client-id
+          uri: /hello
+          plugins: {authz-keycloak: {token_endpoint: 'http://127.0.0.1:1/token'}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: missing-client-id-route-is-rejected
+        input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
+        output:
+          status: 404
+          logs: {matches: 'keycloak-missing-client-id.*authz-keycloak.*missing properties:.*client_id'}
+
+  - name: lazy-schema-requires-registration-or-discovery
+    source: {file: t/plugin/authz-keycloak.t, tests: [8]}
+    config:
+      routes:
+        - id: keycloak-lazy-missing-registration
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: 'http://127.0.0.1:1/token'
+              lazy_load_paths: true
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: lazy-route-without-registration-or-discovery-is-rejected
+        input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
+        output:
+          status: 404
+          logs: {matches: 'keycloak-lazy-missing-registration.*authz-keycloak.*lazy_load_paths.*value must be false'}
+
+  - name: tls-verification-defaults-to-enabled
+    source: {file: t/plugin/authz-keycloak.t, tests: [9, 10]}
+    variants:
+      - name: untrusted-certificate-fails-before-http-handler
+        environment_unset: [SSL_CERT_FILE]
+        config:
+          routes:
+            - id: keycloak-untrusted-tls
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+                  permissions: [course_resource#delete]
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: keycloak, kind: https, expect_requests: 0, respond: [{status: 401}]}
+          - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+        steps:
+          - name: reject-untrusted-certificate
+            input: *teacher_hello
+            output:
+              status: 503
+              body: {matches: '(x509|certificate)'}
+              logs: {not_matches: 'teacher-token'}
+      - name: trusted-certificate-completes-http-request
+        environment: {SSL_CERT_FILE: '{{FIXTURE.keycloak.CA_FILE}}'}
+        config:
+          routes:
+            - id: keycloak-trusted-tls
+              uri: /hello
+              plugins:
+                authz-keycloak:
+                  client_id: course_management
+                  token_endpoint: 'https://localhost:{{FIXTURE.keycloak.PORT}}/token'
+                  permissions: [course_resource#delete]
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: keycloak
+            kind: tls-tcp
+            network_expect:
+              - payload:
+                  matches: '(?s)^POST /token HTTP/1\.1\r\n.*Authorization: Bearer teacher-token\r\n.*\r\n\r\naudience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23delete&response_mode=decision$'
+            network_respond:
+              - payload: "HTTP/1.1 401 Unauthorized\r\nContent-Length: 33\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"HTTP 401 Unauthorized\"}"
+                close: true
+          - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+        steps:
+          - name: trusted-certificate-reaches-provider
+            input: *teacher_hello
+            output:
+              status: 401
+              body: {equals: '{"error":"HTTP 401 Unauthorized"}'}
+              logs: {not_matches: 'teacher-token'}
+
+  - name: ssl-verification-disabled-preserves-provider-denial
+    source: {file: t/plugin/authz-keycloak.t, tests: [11, 12]}
+    config:
+      routes:
+        - id: keycloak-insecure-tls
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource#delete]
+              ssl_verify: false
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: https
+        expect:
+          - method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer teacher-token}}
+        respond: [{status: 401, body: '{"error":"HTTP 401 Unauthorized"}'}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: disabled-verification-reaches-provider
+        input: *teacher_hello
+        output:
+          status: 401
+          body: {equals: '{"error":"HTTP 401 Unauthorized"}'}
+          logs: {not_matches: 'teacher-token'}
+
+  - name: enforcing-empty-permissions-denies-without-provider
+    source: {file: t/plugin/authz-keycloak.t, tests: [13, 14]}
+    config:
+      routes:
+        - id: keycloak-enforcing-empty
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: keycloak, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: deny-before-provider
+        input: *teacher_hello
+        output:
+          status: 403
+          body: {equals: '{"error":"access_denied","error_description":"not_authorized"}'}
+
+  - name: enforcing-empty-permissions-redirects
+    source: {file: t/plugin/authz-keycloak.t, tests: [15, 16]}
+    config:
+      routes:
+        - id: keycloak-enforcing-empty-redirect
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              access_denied_redirect_uri: http://127.0.0.1/test
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: keycloak, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: redirect-before-provider
+        input: *teacher_hello
+        output:
+          status: 307
+          headers: {Location: {equals: http://127.0.0.1/test}}
+
+  - name: password-grant-proxies-provider-token-response
+    source: {file: t/plugin/authz-keycloak.t, tests: [17]}
+    config:
+      routes:
+        - id: keycloak-password-grant
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: keycloak-secret
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource#view]
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - &password_grant_request
+            method: POST
+            path: {equals: /token}
+            headers: {Content-Type: {equals: application/x-www-form-urlencoded}}
+            body:
+              equals: client_id=course_management&client_secret=keycloak-secret&grant_type=password&password=123456&username=teacher%40gmail.com
+        respond:
+          - status: 200
+            headers: {Content-Type: application/json}
+            body: '{"access_token":"access-token","refresh_token":"refresh-token"}'
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: proxy-password-grant
+        input: &password_grant_input
+          method: POST
+          path: /api/token
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: username=teacher%40gmail.com&password=123456
+        output:
+          status: 200
+          body: {equals: '{"access_token":"access-token","refresh_token":"refresh-token"}'}
+          logs: {not_matches: 'keycloak-secret|access-token|refresh-token|123456'}
+
+  - name: password-grant-requires-both-user-credentials
+    source: {file: t/plugin/authz-keycloak.t, tests: [18]}
+    config:
+      routes:
+        - id: keycloak-password-grant-validation
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: keycloak-secret
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: keycloak, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: missing-username
+        input:
+          method: POST
+          path: /api/token
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: password=123456
+        output:
+          status: 422
+          body: {json_equals: '{"message":"username is missing."}'}
+      - name: missing-password
+        input:
+          method: POST
+          path: /api/token
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: username=teacher%40gmail.com
+        output:
+          status: 422
+          body: {json_equals: '{"message":"password is missing."}'}
+
+  - name: static-permission-allows-valid-token-and-preserves-invalid-token
+    source: {file: t/plugin/authz-keycloak2.t, tests: [1, 2, 3]}
+    config:
+      routes:
+        - id: keycloak-static-view
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource#view]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - *view_uma_request
+          - method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer wrong_token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23view&response_mode=decision
+        respond:
+          - {status: 200, body: '{"result":true}'}
+          - {status: 401, body: '{"error":"invalid_token"}'}
+      - *primary_hello
+    steps:
+      - {name: teacher-view-is-allowed, input: *teacher_hello, output: *hello_output}
+      - name: invalid-token-is-preserved
+        input: {method: GET, path: /hello, headers: {Authorization: Bearer wrong_token}}
+        output: {status: 401, body: {equals: '{"error":"invalid_token"}'}}
+
+  - name: discovery-is-requested-once-and-cached
+    source: {file: t/plugin/authz-keycloak2.t, tests: [4, 5, 6]}
+    config:
+      routes:
+        - id: keycloak-discovered-view
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              discovery: '{{FIXTURE.keycloak.URL}}/realms/University/.well-known/uma2-configuration'
+              permissions: [course_resource#view]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /realms/University/.well-known/uma2-configuration}}
+          - *view_uma_request
+          - method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer wrong_token}}
+        respond:
+          - {status: 200, body: '{"token_endpoint":"/token"}'}
+          - {status: 200, body: '{"result":true}'}
+          - {status: 401, body: '{"error":"invalid_token"}'}
+      - *primary_hello
+    steps:
+      - {name: discovered-token-endpoint-allows-teacher, input: *teacher_hello, output: *hello_output}
+      - name: cached-discovery-preserves-invalid-token-denial
+        input: {method: GET, path: /hello, headers: {Authorization: Bearer wrong_token}}
+        output: {status: 401, body: {equals: '{"error":"invalid_token"}'}}
+
+  - name: static-delete-permission-denies-student
+    source: {file: t/plugin/authz-keycloak2.t, tests: [7, 8]}
+    config:
+      routes:
+        - id: keycloak-static-delete
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource#delete]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer student-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23delete&response_mode=decision
+        respond: [{status: 403, body: '{"error":"access_denied","error_description":"not_authorized"}'}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: student-delete-is-denied
+        input: {method: GET, path: /hello, headers: {Authorization: Bearer student-token}}
+        output:
+          status: 403
+          body: {equals: '{"error":"access_denied","error_description":"not_authorized"}'}
+
+  - name: lazy-resource-and-method-scope-matrix-has-no-state-leakage
+    source: {file: t/plugin/authz-keycloak2.t, tests: [9, 10, 11, 12, 13, 14, 15]}
+    config:
+      routes:
+        - id: keycloak-lazy-method-scope
+          uri: /course/*
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: keycloak-secret
+              discovery: '{{FIXTURE.keycloak.URL}}/realms/University/.well-known/uma2-configuration'
+              lazy_load_paths: true
+              http_method_as_scope: true
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /realms/University/.well-known/uma2-configuration}}
+          - *client_credentials_request
+          - &course_resource_request
+            method: GET
+            path: {equals: '/resources?matchingUri=true&uri=%2Fcourse%2Ffoo'}
+            headers: {Authorization: {equals: Bearer service-token}}
+          - &teacher_get_uma
+            method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer teacher-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23GET&response_mode=decision
+          - *course_resource_request
+          - &student_get_uma
+            method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer student-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23GET&response_mode=decision
+          - *course_resource_request
+          - &teacher_delete_uma
+            method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer teacher-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23DELETE&response_mode=decision
+          - *course_resource_request
+          - &student_delete_uma
+            method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer student-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23DELETE&response_mode=decision
+          - *course_resource_request
+          - *teacher_get_uma
+          - *course_resource_request
+          - *student_get_uma
+        respond:
+          - {status: 200, body: '{"token_endpoint":"/token","resource_registration_endpoint":"/resources"}'}
+          - {status: 200, body: '{"access_token":"service-token","expires_in":300}'}
+          - &course_resource_response {status: 200, body: '["course_resource"]'}
+          - &allow_response {status: 200, body: '{"result":true}'}
+          - *course_resource_response
+          - *allow_response
+          - *course_resource_response
+          - *allow_response
+          - *course_resource_response
+          - &deny_response {status: 403, body: '{"error":"access_denied","error_description":"not_authorized"}'}
+          - *course_resource_response
+          - *allow_response
+          - *course_resource_response
+          - *allow_response
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /course/foo}}
+          - {method: GET, path: {equals: /course/foo}}
+          - {method: DELETE, path: {equals: /course/foo}}
+          - {method: GET, path: {equals: /course/foo}}
+          - {method: GET, path: {equals: /course/foo}}
+        respond:
+          - &course_ok {status: 200, body: course upstream}
+          - *course_ok
+          - *course_ok
+          - *course_ok
+          - *course_ok
+    steps:
+      - &teacher_get_step
+        name: teacher-get-is-allowed
+        input: {method: GET, path: /course/foo, headers: {Authorization: Bearer teacher-token}}
+        output: {status: 200, body: {equals: course upstream}}
+      - &student_get_step
+        name: student-get-is-allowed
+        input: {method: GET, path: /course/foo, headers: {Authorization: Bearer student-token}}
+        output: {status: 200, body: {equals: course upstream}}
+      - name: teacher-delete-is-allowed
+        input: {method: DELETE, path: /course/foo, headers: {Authorization: Bearer teacher-token}}
+        output: {status: 200, body: {equals: course upstream}}
+      - name: student-delete-is-denied
+        input: {method: DELETE, path: /course/foo, headers: {Authorization: Bearer student-token}}
+        output: {status: 403, body: {equals: '{"error":"access_denied","error_description":"not_authorized"}'}}
+      - <<: *teacher_get_step
+        name: teacher-get-after-delete-does-not-inherit-delete-scope
+      - <<: *student_get_step
+        name: student-get-after-delete-does-not-inherit-delete-scope
+
+  - name: discovery-without-registration-endpoint-fails-closed
+    source: {file: t/plugin/authz-keycloak2.t, tests: [16, 17]}
+    config:
+      routes:
+        - id: keycloak-discovery-missing-registration
+          uri: /course/*
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: keycloak-secret
+              discovery: '{{FIXTURE.keycloak.URL}}/.well-known/openid-configuration'
+              lazy_load_paths: true
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /.well-known/openid-configuration}}
+          - *client_credentials_request
+        respond:
+          - {status: 200, body: '{"token_endpoint":"/token"}'}
+          - {status: 200, body: '{"access_token":"service-token","expires_in":300}'}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: fail-without-discovered-registration-endpoint
+        input: {method: GET, path: /course/foo, headers: {Authorization: Bearer student-token}}
+        output:
+          status: 503
+          body: {equals: unable to determine registration endpoint}
+          logs: {not_matches: 'student-token|keycloak-secret|service-token'}
+
+  - name: lazy-resource-lookup-strips-query-and-upstream-preserves-it
+    source: {file: t/plugin/authz-keycloak2.t, tests: [18, 19]}
+    config:
+      routes:
+        - id: keycloak-lazy-query
+          uri: /course/*
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: keycloak-secret
+              discovery: '{{FIXTURE.keycloak.URL}}/.well-known/uma2-configuration'
+              lazy_load_paths: true
+              http_method_as_scope: true
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /.well-known/uma2-configuration}}
+          - *client_credentials_request
+          - *course_resource_request
+          - *teacher_get_uma
+        respond:
+          - {status: 200, body: '{"token_endpoint":"/token","resource_registration_endpoint":"/resources"}'}
+          - {status: 200, body: '{"access_token":"service-token","expires_in":300}'}
+          - *course_resource_response
+          - *allow_response
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: '/course/foo?param=value&foo=bar'}}
+        respond: [{status: 200, body: query preserved}]
+    steps:
+      - name: strip-query-for-resource-and-preserve-for-upstream
+        input:
+          method: GET
+          path: /course/foo?param=value&foo=bar
+          headers: {Authorization: Bearer teacher-token}
+        output: {status: 200, body: {equals: query preserved}}
+
+  - name: provider-denial-is-converted-to-configured-redirect
+    source: {file: t/plugin/authz-keycloak3.t, tests: [1, 2]}
+    config:
+      routes:
+        - id: keycloak-provider-denial-redirect
+          uri: /hello
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource#delete]
+              access_denied_redirect_uri: http://127.0.0.1/test
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer student-token}}
+        respond: [*deny_response]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: redirect-provider-denial
+        input: {method: GET, path: /hello, headers: {Authorization: Bearer student-token}}
+        output:
+          status: 307
+          headers: {Location: {equals: http://127.0.0.1/test}}
+
+  - name: encrypted-client-secret-is-decrypted-only-at-plugin-boundary
+    source: {file: t/plugin/authz-keycloak3.t, tests: [3]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: keycloak-encrypted-secret
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: d1ec69e9-55d2-4109-a3ea-befa071579d5
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /token}
+            body:
+              equals: client_id=course_management&client_secret=d1ec69e9-55d2-4109-a3ea-befa071579d5&grant_type=password&password=123456&username=teacher%40gmail.com
+        respond: [{status: 200, body: '{"access_token":"encrypted-case-access","refresh_token":"encrypted-case-refresh"}'}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: decrypt-client-secret-for-provider-only
+        input: *password_grant_input
+        output:
+          status: 200
+          body: {equals: '{"access_token":"encrypted-case-access","refresh_token":"encrypted-case-refresh"}'}
+          logs:
+            not_matches: 'd1ec69e9-55d2-4109-a3ea-befa071579d5|Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB|encrypted-case-access|encrypted-case-refresh'
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: keycloak-encrypted-secret
+          fields:
+            /plugins/authz-keycloak/client_secret: Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB
+          forbidden_matches: [d1ec69e9-55d2-4109-a3ea-befa071579d5]
+
+  - name: vault-secret-resource-supplies-password-grant-client-secret
+    source: {file: t/plugin/authz-keycloak4.t, tests: [1, 2]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      routes:
+        - id: keycloak-vault-secret
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: '$secret://vault/test1/foo/client_secret'
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: vault
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/foo}
+            headers:
+              X-Vault-Token: {equals: root}
+              X-Vault-Namespace: {absent: true}
+        respond:
+          - {status: 200, body: '{"data":{"client_secret":"vault-keycloak-secret"}}'}
+      - name: keycloak
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /token}
+            body:
+              equals: client_id=course_management&client_secret=vault-keycloak-secret&grant_type=password&password=123456&username=teacher%40gmail.com
+        respond: [{status: 200, body: '{"access_token":"vault-access","refresh_token":"vault-refresh"}'}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: resolve-vault-secret-for-provider-only
+        input: *password_grant_input
+        output:
+          status: 200
+          body: {equals: '{"access_token":"vault-access","refresh_token":"vault-refresh"}'}
+          logs: {not_matches: 'vault-keycloak-secret|vault-access|vault-refresh'}
+
+  - name: environment-secret-supplies-password-grant-client-secret
+    source: {file: t/plugin/authz-keycloak4.t, tests: [3]}
+    environment: {AUTHZ_KEYCLOAK_CLIENT_SECRET: environment-keycloak-secret}
+    config:
+      routes:
+        - id: keycloak-environment-secret
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: '$env://AUTHZ_KEYCLOAK_CLIENT_SECRET'
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /token}
+            body:
+              equals: client_id=course_management&client_secret=environment-keycloak-secret&grant_type=password&password=123456&username=teacher%40gmail.com
+        respond: [{status: 200, body: '{"access_token":"environment-access","refresh_token":"environment-refresh"}'}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: resolve-environment-secret-for-provider-only
+        input: *password_grant_input
+        output:
+          status: 200
+          body: {equals: '{"access_token":"environment-access","refresh_token":"environment-refresh"}'}
+          logs: {not_matches: 'environment-keycloak-secret|environment-access|environment-refresh'}
+
+  - name: missing-environment-secret-fails-route-build-redacted
+    source: {file: t/plugin/authz-keycloak4.t, tests: [4]}
+    environment_unset: [AUTHZ_KEYCLOAK_INVALID_SECRET]
+    config:
+      routes:
+        - id: keycloak-invalid-environment-secret
+          uri: /api/token
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              client_secret: '$ENV://AUTHZ_KEYCLOAK_INVALID_SECRET'
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              password_grant_token_generation_incoming_uri: /api/token
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: keycloak, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: reject-missing-environment-secret
+        input: *password_grant_input
+        output:
+          status: 404
+          logs:
+            matches: 'keycloak-invalid-environment-secret.*resolve authz-keycloak client_secret reference: credential unavailable'
+      - name: missing-environment-secret-diagnostic-is-redacted
+        input: *password_grant_input
+        output:
+          status: 404
+          logs: {not_matches: 'environment-keycloak-secret|vault-keycloak-secret'}
+
+  - name: method-scope-does-not-accumulate-across-identical-requests
+    source: {file: t/plugin/authz-keycloak5.t, tests: [1]}
+    config:
+      routes:
+        - id: keycloak-method-scope-repeat
+          uri: /course
+          plugins:
+            authz-keycloak:
+              client_id: course_management
+              token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
+              permissions: [course_resource]
+              http_method_as_scope: true
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: keycloak
+        kind: http
+        expect:
+          - &repeat_get_uma
+            method: POST
+            path: {equals: /token}
+            headers: {Authorization: {equals: Bearer dummy-user-token}}
+            body:
+              equals: audience=course_management&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Auma-ticket&permission=course_resource%23GET&response_mode=decision
+          - *repeat_get_uma
+        respond:
+          - *allow_response
+          - *allow_response
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /course}}
+          - {method: GET, path: {equals: /course}}
+        respond:
+          - {status: 200, body: UPSTREAM-REACHED}
+          - {status: 200, body: UPSTREAM-REACHED}
+    steps:
+      - name: first-identical-get
+        input: {method: GET, path: /course, headers: {Authorization: Bearer dummy-user-token}}
+        output: {status: 200, body: {equals: UPSTREAM-REACHED}}
+      - name: second-identical-get
+        input: {method: GET, path: /course, headers: {Authorization: Bearer dummy-user-token}}
+        output: {status: 200, body: {equals: UPSTREAM-REACHED}}

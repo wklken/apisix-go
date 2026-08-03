@@ -287,7 +287,7 @@ type countLimiter interface {
 }
 
 type graphqlRequest struct {
-	Query string `json:"query"`
+	Query *string `json:"query"`
 }
 
 func (p *Plugin) Config() any {
@@ -639,11 +639,15 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 			http.Error(w, "invalid graphql request, "+err.Error(), http.StatusBadRequest)
 			return "", false
 		}
-		if req.Query == "" {
+		if req.Query == nil {
 			http.Error(w, "invalid graphql request, json body[query] is nil", http.StatusBadRequest)
 			return "", false
 		}
-		return req.Query, true
+		if strings.TrimSpace(*req.Query) == "" {
+			http.Error(w, "Invalid graphql request: empty graphql query", http.StatusBadRequest)
+			return "", false
+		}
+		return *req.Query, true
 	}
 
 	if strings.HasPrefix(contentType, "application/graphql") {
@@ -1030,7 +1034,7 @@ func validateSelectionSet(
 	for _, item := range selections {
 		if item.fragment != "" {
 			if stack[item.fragment] {
-				return fmt.Errorf("cyclic graphql fragment %q", item.fragment)
+				continue
 			}
 			fragment, ok := fragments[item.fragment]
 			if !ok {
@@ -1145,6 +1149,11 @@ func (p *graphQLParser) parseOperation() (selectionSet, error) {
 	if p.peek() == "{" {
 		return p.parseSelectionSet()
 	}
+	switch operation := p.next(); operation {
+	case "query", "mutation", "subscription":
+	default:
+		return nil, fmt.Errorf("unknown graphql operation %q", operation)
+	}
 	return p.skipToSelectionSet()
 }
 
@@ -1187,7 +1196,9 @@ func (p *graphQLParser) parseSelectionSet() (selectionSet, error) {
 		}
 
 		field := selection{name: p.next()}
-		p.skipArgumentsAndDirectives()
+		if err := p.skipArgumentsAndDirectives(); err != nil {
+			return nil, err
+		}
 		if p.hasNext() && p.peek() == "{" {
 			child, err := p.parseSelectionSet()
 			if err != nil {
@@ -1203,24 +1214,40 @@ func (p *graphQLParser) parseSelectionSet() (selectionSet, error) {
 	return selections, nil
 }
 
-func (p *graphQLParser) skipArgumentsAndDirectives() {
+func (p *graphQLParser) skipArgumentsAndDirectives() error {
 	depth := 0
+	hasArgumentValue := false
 	for p.hasNext() {
 		tok := p.peek()
 		switch tok {
 		case "(":
 			depth++
-		case ")":
-			if depth > 0 {
-				depth--
+			if depth == 1 {
+				hasArgumentValue = false
 			}
+		case ":":
+			if depth == 1 {
+				hasArgumentValue = true
+			}
+		case ")":
+			if depth == 0 {
+				return fmt.Errorf("unexpected closing parenthesis")
+			}
+			if depth == 1 && !hasArgumentValue {
+				return fmt.Errorf("graphql argument is missing a value")
+			}
+			depth--
 		case "{", "}":
 			if depth == 0 {
-				return
+				return nil
 			}
 		}
 		p.next()
 	}
+	if depth != 0 {
+		return fmt.Errorf("missing closing parenthesis")
+	}
+	return nil
 }
 
 func (p *graphQLParser) consume(token string) bool {
@@ -1258,7 +1285,7 @@ func tokenize(query string) []string {
 		case strings.HasPrefix(query[i:], "..."):
 			tokens = append(tokens, "...")
 			i += 3
-		case strings.ContainsRune("{}()", rune(ch)):
+		case strings.ContainsRune("{}():", rune(ch)):
 			tokens = append(tokens, string(ch))
 			i++
 		case isNameChar(ch):

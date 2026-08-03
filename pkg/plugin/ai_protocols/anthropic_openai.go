@@ -5,10 +5,12 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 const openAIToolNameMaxLength = 64
@@ -52,9 +54,8 @@ func ConvertAnthropicMessagesToOpenAI(body []byte) ([]byte, map[string]string, e
 	if stop, ok := request["stop_sequences"].([]any); ok {
 		converted["stop"] = stop
 	}
-	convertAnthropicThinking(converted, request["thinking"])
-	convertAnthropicToolChoice(converted, request["tool_choice"])
-	convertAnthropicResponseFormat(converted, firstNonNil(request["output_config"], request["output_format"]))
+	convertAnthropicThinking(converted, request["thinking"], request["output_config"])
+	convertAnthropicResponseFormat(converted, anthropicOutputFormat(request))
 	if metadata, ok := request["metadata"].(map[string]any); ok {
 		copyStringFieldAs(converted, metadata, "user_id", "user")
 	}
@@ -84,6 +85,7 @@ func ConvertAnthropicMessagesToOpenAI(body []byte) ([]byte, map[string]string, e
 	tools, toolNameMap := convertAnthropicTools(request["tools"])
 	if len(tools) > 0 {
 		converted["tools"] = tools
+		convertAnthropicToolChoice(converted, request["tool_choice"])
 	}
 	rewriteConvertedToolChoice(converted, toolNameMap)
 
@@ -128,7 +130,12 @@ func ConvertOpenAIChatToAnthropic(body []byte, model string, toolNameMap map[str
 		input := map[string]any{}
 		if arguments, ok := function["arguments"].(string); ok && arguments != "" {
 			if err := json.Unmarshal([]byte(arguments), &input); err != nil {
-				return nil, fmt.Errorf("invalid tool_call arguments: %w", err)
+				logger.Warnf("failed to decode tool_call arguments: %v", err)
+				input = map[string]any{}
+			}
+			if input == nil {
+				logger.Warnf("tool_call arguments are not a JSON object: %s", arguments)
+				input = map[string]any{}
 			}
 		}
 		content = append(content, map[string]any{
@@ -203,10 +210,15 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 	}
 	if len(toolResults) > 0 {
 		messages := make([]any, 0, len(toolResults)+1)
-		if text := textFromOpenAIContentParts(contentParts); text != "" {
-			messages = append(messages, map[string]any{"role": role, "content": text})
+		messages = append(messages, toolResults...)
+		if len(contentParts) > 0 {
+			if text := textFromOpenAIContentParts(contentParts); len(contentParts) == 1 && text != "" {
+				messages = append(messages, map[string]any{"role": role, "content": text})
+			} else {
+				messages = append(messages, map[string]any{"role": role, "content": contentParts})
+			}
 		}
-		return append(messages, toolResults...), nil
+		return messages, nil
 	}
 	message := map[string]any{"role": role}
 	if len(toolCalls) > 0 {
@@ -214,10 +226,14 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 		if text := textFromOpenAIContentParts(contentParts); text != "" {
 			message["content"] = text
 		}
-	} else if hasMultimodal || len(contentParts) > 1 {
+	} else if hasMultimodal {
+		message["content"] = contentParts
+	} else if role == "user" {
 		message["content"] = contentParts
 	} else if len(contentParts) == 1 {
 		message["content"] = contentParts[0].(map[string]any)["text"]
+	} else if len(contentParts) > 1 {
+		message["content"] = textFromOpenAIContentParts(contentParts)
 	} else {
 		message["content"] = ""
 	}
@@ -389,19 +405,30 @@ func textFromOpenAIContentParts(parts []any) string {
 	return text.String()
 }
 
-func convertAnthropicThinking(dst map[string]any, value any) {
+func convertAnthropicThinking(dst map[string]any, value any, outputConfig any) {
 	thinking, _ := value.(map[string]any)
-	if thinking["type"] != "enabled" {
-		return
-	}
-	budget, ok := thinking["budget_tokens"].(float64)
-	switch {
-	case !ok || budget < 16384 && budget >= 4096:
-		dst["reasoning_effort"] = "medium"
-	case budget < 4096:
-		dst["reasoning_effort"] = "low"
-	default:
-		dst["reasoning_effort"] = "high"
+	switch thinking["type"] {
+	case "enabled":
+		budget, ok := thinking["budget_tokens"].(float64)
+		switch {
+		case !ok || budget < 1024:
+			dst["reasoning_effort"] = "minimal"
+		case budget < 2048:
+			dst["reasoning_effort"] = "low"
+		case budget < 4096:
+			dst["reasoning_effort"] = "medium"
+		default:
+			dst["reasoning_effort"] = "high"
+		}
+	case "adaptive":
+		effort := ""
+		if config, ok := outputConfig.(map[string]any); ok {
+			effort = stringValue(config["effort"])
+		}
+		if effort == "" {
+			effort = "medium"
+		}
+		dst["reasoning_effort"] = effort
 	}
 }
 
@@ -424,16 +451,73 @@ func convertAnthropicToolChoice(dst map[string]any, value any) {
 	}
 }
 
+func anthropicOutputFormat(request map[string]any) any {
+	if format := request["output_format"]; format != nil {
+		return format
+	}
+	if config, ok := request["output_config"].(map[string]any); ok {
+		if format, ok := config["format"]; ok {
+			return format
+		}
+	}
+	return nil
+}
+
 func convertAnthropicResponseFormat(dst map[string]any, value any) {
 	format, _ := value.(map[string]any)
-	switch format["type"] {
-	case "json_schema":
-		if schema := format["json_schema"]; schema != nil {
-			dst["response_format"] = map[string]any{"type": "json_schema", "json_schema": schema}
-		}
-	case "json", "json_object":
-		dst["response_format"] = map[string]any{"type": "json_object"}
+	if format["type"] != "json_schema" {
+		return
 	}
+	var schema any
+	if raw, ok := format["json_schema"].(map[string]any); ok {
+		schema = raw
+	} else if raw, ok := format["schema"]; ok {
+		schema = raw
+	}
+	if schema == nil {
+		return
+	}
+	normalized := normalizeStrictSchema(schema)
+	dst["response_format"] = map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   "structured_output",
+			"strict": true,
+			"schema": normalized,
+		},
+	}
+}
+
+func normalizeStrictSchema(value any) any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	if stringValue(object["type"]) != "object" {
+		normalized := make(map[string]any, len(object))
+		for key, child := range object {
+			normalized[key] = normalizeStrictSchema(child)
+		}
+		return normalized
+	}
+	normalized := make(map[string]any, len(object)+1)
+	for key, child := range object {
+		normalized[key] = normalizeStrictSchema(child)
+	}
+	normalized["additionalProperties"] = false
+	if properties, ok := object["properties"].(map[string]any); ok {
+		required := make([]any, 0, len(properties))
+		for name := range properties {
+			required = append(required, name)
+		}
+		slices.SortFunc(required, func(a, b any) int {
+			return strings.Compare(stringValue(a), stringValue(b))
+		})
+		normalized["required"] = required
+	} else if _, ok := object["required"]; !ok {
+		normalized["required"] = []any{}
+	}
+	return normalized
 }
 
 func rewriteConvertedToolChoice(body map[string]any, nameMap map[string]string) {

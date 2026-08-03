@@ -460,8 +460,15 @@ func maskString(value string, rule MaskRule) (string, bool) {
 	if err != nil {
 		return value, false
 	}
-	masked := re.ReplaceAllString(value, rule.Value)
-	return masked, masked != value
+	match := re.FindStringSubmatchIndex(value)
+	if match == nil {
+		return value, false
+	}
+	masked := make([]byte, 0, len(value)+len(rule.Value))
+	masked = append(masked, value[:match[0]]...)
+	masked = re.ExpandString(masked, rule.Value, value, match)
+	masked = append(masked, value[match[1]:]...)
+	return string(masked), true
 }
 
 type pathSegment struct {

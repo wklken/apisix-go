@@ -7,8 +7,71 @@ import (
 	"testing"
 
 	"github.com/justinas/alice"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 )
+
+func TestAIExecutionTerminalRunsHookBeforeProviderWithoutFallback(t *testing.T) {
+	events := make([]string, 0, 2)
+	selectAI := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = apisixctx.WithBeforeProxyHook(r, func(*http.Request) {
+				events = append(events, "hook")
+			})
+			r = ai_runtime.WithExecution(r, "model-a", func(w http.ResponseWriter, _ *http.Request) {
+				events = append(events, "provider")
+				w.WriteHeader(http.StatusCreated)
+			})
+			next.ServeHTTP(w, r)
+		})
+	}
+	fallbackCalls := 0
+	handler := withAIExecutionTerminal(alice.New(selectAI), http.HandlerFunc(func(
+		http.ResponseWriter,
+		*http.Request,
+	) {
+		fallbackCalls++
+	}))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
+
+	if want := []string{"hook", "provider"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+	if fallbackCalls != 0 || response.Code != http.StatusCreated {
+		t.Fatalf("fallback calls = %d, response code = %d, want 0 and 201", fallbackCalls, response.Code)
+	}
+}
+
+func TestAIExecutionTerminalRunsOneHookBeforeOrdinaryFallback(t *testing.T) {
+	events := make([]string, 0, 2)
+	registerHook := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = apisixctx.WithBeforeProxyHook(r, func(*http.Request) {
+				events = append(events, "hook")
+			})
+			next.ServeHTTP(w, r)
+		})
+	}
+	handler := withAIExecutionTerminal(alice.New(registerHook), http.HandlerFunc(func(
+		w http.ResponseWriter,
+		_ *http.Request,
+	) {
+		events = append(events, "fallback")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if want := []string{"hook", "fallback"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("response code = %d, want 202", response.Code)
+	}
+}
 
 func TestAIExecutionRunsAfterLowerPriorityMiddleware(t *testing.T) {
 	events := make([]string, 0, 4)

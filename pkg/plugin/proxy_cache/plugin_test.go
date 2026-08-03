@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -1263,27 +1265,57 @@ func TestHandlerPurgeMissReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestHandlerSkipsUnsupportedMethods(t *testing.T) {
-	p := newTestPlugin(t, Config{CacheTTL: 60})
-	calls := 0
+func TestHandlerReportsUnsupportedMethodsWithoutCaching(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		strategy   string
+		wantStatus string
+	}{
+		{name: "disk", strategy: "disk", wantStatus: "BYPASS"},
+		{name: "memory", strategy: "memory", wantStatus: "MISS"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{CacheStrategy: test.strategy, CacheTTL: 60})
+			calls := 0
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		_, _ = w.Write([]byte("response"))
-	}))
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				_, _ = w.Write([]byte("response"))
+			}))
 
-	first := performRequest(t, handler, http.MethodPost, "/anything", nil)
-	second := performRequest(t, handler, http.MethodPost, "/anything", nil)
+			first := performRequest(t, handler, http.MethodPost, "/anything", nil)
+			second := performRequest(t, handler, http.MethodPost, "/anything", nil)
 
-	if first.Header().Get(cacheStatusHeader) != "" || second.Header().Get(cacheStatusHeader) != "" {
-		t.Fatalf(
-			"cache statuses = %q/%q, want empty",
-			first.Header().Get(cacheStatusHeader),
-			second.Header().Get(cacheStatusHeader),
-		)
+			if first.Header().Get(cacheStatusHeader) != test.wantStatus ||
+				second.Header().Get(cacheStatusHeader) != test.wantStatus {
+				t.Fatalf(
+					"cache statuses = %q/%q, want %q",
+					first.Header().Get(cacheStatusHeader),
+					second.Header().Get(cacheStatusHeader),
+					test.wantStatus,
+				)
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want 2", calls)
+			}
+		})
 	}
-	if calls != 2 {
-		t.Fatalf("upstream calls = %d, want 2", calls)
+}
+
+func TestInitRegistersPurgeHTTPMethod(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	router := chi.NewRouter()
+	router.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(purgeMethod, "/", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("PURGE response status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
 

@@ -1,0 +1,540 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/multi-auth.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/multi-auth2.t
+    tests: 16
+
+cases:
+  - name: configured-basic-key-and-jwt-alternatives
+    source: {file: t/plugin/multi-auth.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+    config:
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            key-auth: {key: auth-one}
+      routes:
+        - id: multi-auth-configured-alternatives
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {query: apikey, hide_credentials: true, header: apikey}
+                - jwt-auth: {cookie: jwt, query: jwt, hide_credentials: true, header: authorization}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: multi-auth-failure-mutation-isolation
+          uri: /ordered
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - jwt-auth: {hide_credentials: true}
+                - basic-auth: {}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}, headers: {Authorization: {equals: 'Basic Zm9vOmJhcg=='}}}
+          - {path: {equals: /hello}, headers: {apikey: {absent: true}}}
+          - {path: {equals: /ordered}, headers: {Authorization: {equals: 'Basic Zm9vOmJhcg=='}}}
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: ordered alternative}
+    steps:
+      - name: missing-authorization-is-an-exact-401
+        input: {path: /hello}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+      - name: invalid-basic-credentials-do-not-win
+        input: {path: /hello, headers: {Authorization: 'Basic YmFyOmJhcgo='}}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+      - name: invalid-api-key-does-not-win
+        input: {path: /hello, headers: {apikey: auth-two}}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+      - name: basic-auth-allows-the-request
+        input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bbar\b'}}
+      - name: key-auth-allows-and-hides-the-header
+        input: {path: /hello, headers: {apikey: auth-one}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: failed-hidden-jwt-alternative-cannot-remove-basic-credentials
+        input: {path: /ordered, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
+        output: {status: 200, body: {equals: ordered alternative}, logs: {not_matches: '\bbar\b'}}
+
+  - name: invalid-first-auth-plugin-config
+    source: {file: t/plugin/multi-auth.t, tests: [8]}
+    config:
+      routes:
+        - id: multi-auth-invalid-first
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {hide_credentials: 'false'}
+                - key-auth: {}
+                - jwt-auth: {}
+    input: {path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route multi-auth-invalid-first fail:.*basic-auth.*hide_credentials.*expected boolean'}
+
+  - name: invalid-second-auth-plugin-config
+    source: {file: t/plugin/multi-auth.t, tests: [9]}
+    config:
+      routes:
+        - id: multi-auth-invalid-second
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - key-auth: {}
+                - basic-auth: blah
+                - jwt-auth: {}
+    input: {path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route multi-auth-invalid-second fail:.*multi-auth.*expected \{ character'}
+
+  - name: invalid-third-auth-plugin-config
+    source: {file: t/plugin/multi-auth.t, tests: [10]}
+    config:
+      routes:
+        - id: multi-auth-invalid-third
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - key-auth: {}
+                - basic-auth: {}
+                - jwt-auth: {header: 123}
+    input: {path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route multi-auth-invalid-third fail:.*jwt-auth.*header.*expected string'}
+
+  - name: default-auth-configs-preserve-alternative-semantics
+    source: {file: t/plugin/multi-auth.t, tests: [11, 12, 13, 14, 15, 16]}
+    config:
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            key-auth: {key: auth-one}
+      routes:
+        - id: multi-auth-defaults
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+                - jwt-auth: {}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: missing-default-credentials
+        input: {path: /hello}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+      - name: default-basic-auth
+        input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '\bbar\b'}}
+      - name: default-key-auth
+        input: {path: /hello, headers: {apikey: auth-one}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: invalid-default-basic-auth
+        input: {path: /hello, headers: {Authorization: 'Basic YmFyOmJhcgo='}}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+      - name: invalid-default-key-auth
+        input: {path: /hello, headers: {apikey: auth-two}}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+
+  - name: auth-plugin-cardinality-reloads-retain-last-good-route
+    source: {file: t/plugin/multi-auth.t, tests: [17, 18]}
+    config: &multi_auth_last_good
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            key-auth: {key: auth-one}
+      routes:
+        - id: multi-auth-last-good
+          uri: /ready
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+            mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+    steps:
+      - name: valid-route-is-active
+        input: {path: /ready, headers: {apikey: auth-one}}
+        output: {status: 204}
+      - name: missing-auth-plugins-is-rejected
+        wait: 100ms
+        config:
+          consumers:
+            - username: foo
+              plugins:
+                basic-auth: {username: foo, password: bar}
+                key-auth: {key: auth-one}
+          routes:
+            - id: multi-auth-last-good
+              uri: /ready
+              plugins:
+                multi-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {apikey: auth-one}}
+          output: {status: 204}
+        input: {path: /ready, headers: {apikey: auth-one}}
+        output: {status: 204, logs: {matches: 'multi-auth.*auth_plugins.*required'}}
+      - name: one-auth-plugin-is-rejected
+        wait: 100ms
+        config:
+          consumers:
+            - username: foo
+              plugins:
+                basic-auth: {username: foo, password: bar}
+                key-auth: {key: auth-one}
+          routes:
+            - id: multi-auth-last-good
+              uri: /ready
+              plugins:
+                multi-auth: {auth_plugins: [{basic-auth: {}}]}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {apikey: auth-one}}
+          output: {status: 204}
+        input: {path: /ready, headers: {apikey: auth-one}}
+        output: {status: 204, logs: {matches: 'multi-auth.*auth_plugins.*minimum 2 items'}}
+      - name: multi-name-auth-plugin-entry-is-rejected
+        wait: 100ms
+        config:
+          consumers:
+            - username: foo
+              plugins:
+                basic-auth: {username: foo, password: bar}
+                key-auth: {key: auth-one}
+          routes:
+            - id: multi-auth-last-good
+              uri: /ready
+              plugins:
+                multi-auth:
+                  auth_plugins:
+                    - {basic-auth: {}, key-auth: {}}
+                    - jwt-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {apikey: auth-one}}
+          output: {status: 204}
+        input: {path: /ready, headers: {apikey: auth-one}}
+        output: {status: 204, logs: {matches: 'multi-auth.*exactly one auth plugin'}}
+
+  - name: jwt-locations-and-real-config-reload
+    source: {file: t/plugin/multi-auth.t, tests: [19, 20, 21]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: multi-auth-jwt-locations
+          uri: /jwt-locations
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {query: apikey, hide_credentials: true, header: apikey}
+                - jwt-auth: {cookie: jwt-cookie, query: jwt-query, hide_credentials: true, header: jwt-header}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: '/jwt-locations?keep=1'}}
+          - {path: {equals: /jwt-locations}, headers: {jwt-header: {absent: true}}}
+          - {path: {equals: /jwt-locations}, headers: {Cookie: {equals: ''}}}
+          - {path: {equals: '/jwt-reload-v2?keep=1'}}
+          - {path: {equals: '/jwt-reload-v2?keep=1'}}
+        respond:
+          - {status: 200, body: query jwt}
+          - {status: 200, body: header jwt}
+          - {status: 200, body: cookie jwt}
+          - {status: 200, body: reloaded jwt}
+          - {status: 200, body: reloaded jwt}
+    steps:
+      - name: configured-query-token-is-hidden
+        input:
+          path: '/jwt-locations?keep=1&jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'
+        output: {status: 200, body: {equals: query jwt}, logs: {not_matches: '(failed to authenticate the request|my-secret-key)'}}
+      - name: configured-header-token-is-hidden
+        input:
+          path: /jwt-locations
+          headers: {jwt-header: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'}
+        output: {status: 200, body: {equals: header jwt}, logs: {not_matches: '(failed to authenticate the request|my-secret-key)'}}
+      - name: configured-cookie-token-is-hidden
+        input:
+          path: /jwt-locations
+          headers: {Cookie: 'jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'}
+        output: {status: 200, body: {equals: cookie jwt}, logs: {not_matches: '(failed to authenticate the request|my-secret-key)'}}
+      - name: changed-route-reload-is-observed
+        config:
+          consumers:
+            - username: jack
+              plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+          routes:
+            - id: multi-auth-jwt-locations
+              uri: /jwt-reload-v2
+              plugins:
+                multi-auth:
+                  auth_plugins:
+                    - basic-auth: {}
+                    - key-auth: {query: apikey, hide_credentials: true, header: apikey}
+                    - jwt-auth: {cookie: jwt-cookie, query: jwt-query, hide_credentials: true, header: jwt-header}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe:
+          input:
+            path: '/jwt-reload-v2?keep=1&jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'
+          output: {status: 200, body: {equals: reloaded jwt}}
+        input:
+          path: '/jwt-reload-v2?keep=1&jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'
+        output: {status: 200, body: {equals: reloaded jwt}, logs: {not_matches: 'my-secret-key'}}
+      - name: old-route-is-gone-after-reload
+        input: {path: /jwt-locations}
+        output: {status: 404}
+
+  - name: status-only-auth-failure-does-not-crash
+    source: {file: t/plugin/multi-auth.t, tests: [22]}
+    config:
+      routes:
+        - id: multi-auth-status-only-failure
+          uri: /hello
+          plugins:
+            multi-auth: {auth_plugins: [{basic-auth: {}}, {key-auth: {}}]}
+    input: {path: /hello}
+    output:
+      status: 401
+      body: {equals: '{"message":"Authorization Failed"}'}
+      logs: {not_matches: '(?i)(panic|nil pointer|runtime error)'}
+
+  - name: four-auth-order-and-failure-diagnostics
+    source: {file: t/plugin/multi-auth2.t, tests: [1, 2, 3, 5, 7, 8, 9]}
+    config:
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            key-auth: {key: auth-one}
+        - username: hmac-user
+          plugins: {hmac-auth: {key_id: hmac-key, secret_key: hmac-secret}}
+      routes:
+        - id: multi-auth-four-auth
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+                - jwt-auth: {}
+                - hmac-auth: {}
+    steps:
+      - name: invalid-key-reports-all-failed-alternatives
+        input: {path: /hello, headers: {apikey: '123'}}
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs:
+            matches: '(?s)basic-auth failed to authenticate the request.*Missing authorization in request.*key-auth failed to authenticate the request.*Invalid API key in request.*jwt-auth failed to authenticate the request.*Missing JWT token in request.*hmac-auth failed to authenticate the request.*missing Authorization header'
+      - name: invalid-basic-reaches-later-alternatives
+        input: {path: /hello, headers: {Authorization: 'Basic YmFyOmJhcgo='}}
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs:
+            matches: '(?s)basic-auth failed to authenticate the request.*failed to find user: invalid user.*key-auth failed to authenticate the request.*Missing API key in request.*jwt-auth failed to authenticate the request.*JWT token invalid.*hmac-auth failed to authenticate the request.*does not start with.*Signature'
+      - name: missing-hmac-header-is-an-exact-401
+        input: {path: /hello}
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs: {matches: 'hmac-auth failed to authenticate the request.*missing Authorization header'}
+      - name: hmac-missing-algorithm-is-an-exact-401
+        input:
+          path: /hello
+          headers:
+            Authorization: 'Signature keyId="hmac-key",headers="@request-target date",signature="YXNkZg=="'
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs: {matches: "client request can't be validated: algorithm missing"}
+      - name: invalid-jwt-does-not-crash-or-win
+        input:
+          path: /hello
+          headers: {Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68'}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}}
+
+  - name: four-auth-successes-consumer-chain-and-body-isolation
+    source: {file: t/plugin/multi-auth2.t, tests: [4, 6]}
+    config:
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            key-auth: {key: auth-one}
+            limit-count: {count: 2, time_window: 60}
+        - username: hmac-user
+          plugins: {hmac-auth: {key_id: hmac-key, secret_key: hmac-secret}}
+        - username: body-key-user
+          plugins: {key-auth: {key: body-api-key}}
+      routes:
+        - id: multi-auth-four-auth-success
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+                - jwt-auth: {}
+                - hmac-auth: {}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: multi-auth-body-fallback
+          uri: /body-fallback
+          methods: [POST]
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - hmac-auth: {validate_request_body: true, max_req_body_size: 10}
+                - key-auth: {header: apikey}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello}}
+          - {method: POST, path: {equals: /body-fallback}, body: {equals: 'body that is longer than ten bytes'}}
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hmac world}
+          - {status: 200, echo_request_body: true}
+    steps:
+      - name: valid-key-runs-consumer-chain-once
+        input: {path: /hello, headers: {apikey: auth-one}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large)'}}
+      - name: valid-basic-runs-consumer-chain-once
+        input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|\bbar\b)'}}
+      - name: exactly-once-chain-allows-two-successes-before-limit
+        input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
+        output: {status: 503, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large)'}}
+      - name: valid-hmac-authentication
+        input:
+          path: /hello
+          hmac: {key_id: hmac-key, secret: hmac-secret, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output: {status: 200, body: {equals: hmac world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|hmac-secret)'}}
+      - name: oversized-hmac-probe-preserves-body-for-valid-key
+        input:
+          method: POST
+          path: /body-fallback
+          body: 'body that is longer than ten bytes'
+          headers: {apikey: body-api-key, Digest: 'SHA-256=unused'}
+          hmac: {key_id: hmac-key, secret: hmac-secret, algorithm: hmac-sha256, headers: ['@request-target', date]}
+        output:
+          status: 200
+          body: {equals: 'body that is longer than ten bytes'}
+          logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|hmac-secret)'}
+
+  - name: jwt-consumer-token-failures
+    source: {file: t/plugin/multi-auth2.t, tests: [10, 11, 12, 13]}
+    config: &multi_auth_jwt_matrix
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: multi-auth-jwt-matrix
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+                - jwt-auth: {}
+                - hmac-auth: {}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:9': 1}}
+    steps:
+      - name: expired-jwt-is-rejected
+        input:
+          path: /hello
+          headers: {Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68'}
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs: {matches: 'jwt-auth failed to authenticate the request'}
+      - name: wrong-jwt-signature-is-rejected
+        input:
+          path: /hello
+          headers: {Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNnJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'}
+        output:
+          status: 401
+          body: {equals: '{"message":"Authorization Failed"}'}
+          logs: {matches: 'jwt-auth failed to authenticate the request'}
+
+  - name: valid-jwt-success-has-no-failure-diagnostic
+    source: {file: t/plugin/multi-auth2.t, tests: [14]}
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: multi-auth-valid-jwt
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {}
+                - key-auth: {}
+                - jwt-auth: {}
+                - hmac-auth: {}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: valid-jwt-consumer-reaches-upstream
+        input:
+          path: /hello
+          headers: {Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|my-secret-key)'}}
+
+  - name: missing-anonymous-consumers-fail-closed
+    source: {file: t/plugin/multi-auth2.t, tests: [15, 16]}
+    config:
+      routes:
+        - id: multi-auth-missing-anonymous
+          uri: /hello
+          plugins:
+            multi-auth:
+              auth_plugins:
+                - basic-auth: {anonymous_consumer: not-found-anonymous}
+                - key-auth: {anonymous_consumer: not-found-anonymous}
+                - jwt-auth: {anonymous_consumer: not-found-anonymous}
+                - hmac-auth: {anonymous_consumer: anonymous}
+    input: {path: /hello, headers: {Authorization: 'Basic YmFyOmJhcgo='}}
+    output:
+      status: 401
+      body: {equals: '{"message":"Authorization Failed"}'}
+      logs:
+        matches: '(?s)basic-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*key-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*jwt-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*hmac-auth failed to authenticate the request.*failed to get anonymous consumer anonymous'

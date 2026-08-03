@@ -3,6 +3,8 @@ package forward_auth
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -63,7 +66,14 @@ const schema = `
       }
     },
     "extra_headers": {
-      "type": "object"
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[^:]+$": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "upstream_headers": {
       "type": "array",
@@ -189,10 +199,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		authResp, err := p.authorize(r)
 		if err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				logger.Errorf("failed to read request body: %s", err)
+				http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
+				return
+			}
 			if *p.config.AllowDegradation {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Warnf("failed to process forward auth, err: %s", err)
 			http.Error(w, http.StatusText(p.config.StatusOnError), p.config.StatusOnError)
 			return
 		}
@@ -211,16 +227,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+var errRequestBodyTooLarge = errors.New("request body too large")
+
 func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 	var body io.Reader
 	if p.config.RequestMethod == http.MethodPost {
-		reqBody, err := io.ReadAll(r.Body)
+		reqBody, err := io.ReadAll(io.LimitReader(r.Body, p.config.MaxReqBodySize+1))
 		if err != nil {
 			return nil, err
 		}
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
 		if int64(len(reqBody)) > p.config.MaxReqBodySize {
-			return nil, fmt.Errorf("request body too large")
+			return nil, errRequestBodyTooLarge
 		}
 		body = bytes.NewReader(reqBody)
 	}
@@ -232,29 +250,24 @@ func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 
 	p.setForwardedHeaders(authReq, r)
 	if p.config.RequestMethod == http.MethodPost {
-		p.copyRequestBodyHeaders(authReq, r)
+		if values := r.Header.Values("Content-Encoding"); len(values) > 0 {
+			authReq.Header["Content-Encoding"] = append([]string(nil), values...)
+		}
 	}
 	for _, header := range p.config.RequestHeaders {
+		if _, generated := authReq.Header[http.CanonicalHeaderKey(header)]; generated {
+			continue
+		}
 		if value := r.Header.Get(header); value != "" {
 			authReq.Header.Set(header, value)
 		}
 	}
+	postArgs := postArgumentCache{}
 	for header, value := range p.config.ExtraHeaders {
-		authReq.Header.Set(header, resolveValue(r, value))
+		authReq.Header.Set(header, resolveValue(r, value, &postArgs))
 	}
 
 	return p.client.Do(authReq)
-}
-
-func (p *Plugin) copyRequestBodyHeaders(authReq *http.Request, r *http.Request) {
-	for _, name := range []string{"Expect", "Transfer-Encoding", "Content-Encoding"} {
-		if values := r.Header.Values(name); len(values) > 0 {
-			authReq.Header[name] = append([]string(nil), values...)
-		}
-	}
-	if len(r.TransferEncoding) > 0 {
-		authReq.TransferEncoding = append([]string(nil), r.TransferEncoding...)
-	}
 }
 
 func (p *Plugin) setForwardedHeaders(authReq *http.Request, r *http.Request) {
@@ -269,12 +282,38 @@ func (p *Plugin) setForwardedHeaders(authReq *http.Request, r *http.Request) {
 	authReq.Header.Set("X-Forwarded-For", base.RemoteIP(r.RemoteAddr))
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+var variablePattern = regexp.MustCompile(`\$post_arg\.[A-Za-z0-9_]+|\$[A-Za-z0-9_]+`)
 
-func resolveValue(r *http.Request, value string) string {
+type postArgumentCache struct {
+	loaded bool
+	values map[string]any
+}
+
+func resolveValue(r *http.Request, value string, postArgs *postArgumentCache) string {
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		if name, ok := strings.CutPrefix(variable, "$post_arg."); ok {
+			return postArgument(r, name, postArgs)
+		}
 		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
 	})
+}
+
+func postArgument(r *http.Request, name string, cache *postArgumentCache) string {
+	if !cache.loaded {
+		cache.loaded = true
+		body, err := base.ReadRequestBody(r)
+		if err != nil {
+			return ""
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		_ = decoder.Decode(&cache.values)
+	}
+	value, ok := cache.values[name]
+	if !ok || value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 func (p *Plugin) copyConfiguredHeaders(dst, src http.Header, names []string) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -121,6 +122,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	sessionID := cookieValue(r, p.cookieName())
 	session, ok := p.getSession(sessionID)
 	if !ok {
+		logger.Error("no session found")
 		http.Error(w, util.BuildMessageResponse("no session found"), http.StatusServiceUnavailable)
 		return
 	}
@@ -136,12 +138,14 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state != session.State {
+		logger.Error("invalid state")
 		http.Error(w, util.BuildMessageResponse("invalid state"), http.StatusBadRequest)
 		return
 	}
 
 	accessToken, lifetime, err := p.fetchAccessToken(r, code)
 	if err != nil {
+		logger.Error(err.Error())
 		http.Error(w, util.BuildMessageResponse(err.Error()), http.StatusServiceUnavailable)
 		return
 	}

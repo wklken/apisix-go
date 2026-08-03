@@ -23,6 +23,15 @@ func ReadRequestBody(r *http.Request) ([]byte, error) {
 	return body, err
 }
 
+func ReplaceRequestBody(r *http.Request, body []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+}
+
 func WriteJSONMessage(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

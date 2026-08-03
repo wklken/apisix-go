@@ -3,7 +3,6 @@ package ai_prompt_template
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -155,12 +154,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		r.Body = io.NopCloser(bytes.NewReader(rewritten))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(rewritten)), nil
-		}
-		r.ContentLength = int64(len(rewritten))
-		r.Header.Set("Content-Length", fmt.Sprint(len(rewritten)))
+		base.ReplaceRequestBody(r, rewritten)
 
 		next.ServeHTTP(w, r)
 	}

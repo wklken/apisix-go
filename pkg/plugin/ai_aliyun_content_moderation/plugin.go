@@ -275,10 +275,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(body)), nil
-		}
+		base.ReplaceRequestBody(r, body)
 
 		if checkRequest {
 			if err := validateJSONContentType(r); err != nil {

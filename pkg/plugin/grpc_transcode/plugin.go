@@ -169,13 +169,6 @@ func normalizeProtoID(value any) (string, error) {
 	}
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
 type methodBinding struct {
 	method protoreflect.MethodDescriptor
 	files  *protoregistry.Files
@@ -292,13 +285,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 		if err := p.transformResponse(recorder, binding); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		recorder.writeTo(w)
+		writeTranscodedResponse(w, recorder)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -908,43 +901,42 @@ func normalizeHashInt64FieldValue(value any, field protoreflect.FieldDescriptor)
 	return strconv.FormatInt(int64(parsed), 10)
 }
 
-func (p *Plugin) transformResponse(resp *responseRecorder, binding *methodBinding) error {
-	grpcStatus := resp.header.Get("Grpc-Status")
+func (p *Plugin) transformResponse(resp *base.BufferedResponseWriter, binding *methodBinding) error {
+	grpcStatus := resp.Header().Get("Grpc-Status")
 	if grpcStatus != "" && grpcStatus != "0" {
 		if status, ok := grpcStatusToHTTPStatus[grpcStatus]; ok {
-			resp.statusCode = status
+			resp.SetStatusCode(status)
 		} else {
-			resp.statusCode = 599
+			resp.SetStatusCode(599)
 		}
-		resp.header.Del("Content-Length")
+		resp.Header().Del("Content-Length")
 		if p.config.ShowStatusInBody {
-			if encodedStatus := resp.header.Get("Grpc-Status-Details-Bin"); encodedStatus != "" {
+			if encodedStatus := resp.Header().Get("Grpc-Status-Details-Bin"); encodedStatus != "" {
 				body, err := p.decodeStatusDetails(encodedStatus, binding)
 				if err != nil {
 					return err
 				}
-				resp.body.Reset()
-				_, _ = resp.body.Write(body)
-				resp.header.Set("Content-Type", jsonContentType)
+				resp.SetBody(body)
+				resp.Header().Set("Content-Type", jsonContentType)
 				return nil
 			}
 		} else {
-			resp.body.Reset()
+			resp.SetBody(nil)
 			return nil
 		}
 	}
 
-	if resp.statusCode >= 300 && !p.config.ShowStatusInBody {
-		resp.body.Reset()
+	if resp.StatusCode() >= 300 && !p.config.ShowStatusInBody {
+		resp.SetBody(nil)
 		return nil
 	}
-	if resp.body.Len() == 0 {
-		resp.header.Set("Content-Type", jsonContentType)
-		resp.header.Del("Content-Length")
+	if len(resp.Body()) == 0 {
+		resp.Header().Set("Content-Type", jsonContentType)
+		resp.Header().Del("Content-Length")
 		return nil
 	}
 
-	payload, err := unframeGRPCMessage(resp.body.Bytes())
+	payload, err := unframeGRPCMessage(resp.Body())
 	if err != nil {
 		return err
 	}
@@ -956,10 +948,9 @@ func (p *Plugin) transformResponse(resp *responseRecorder, binding *methodBindin
 	if err != nil {
 		return fmt.Errorf("encode protobuf JSON response: %w", err)
 	}
-	resp.body.Reset()
-	_, _ = resp.body.Write(out)
-	resp.header.Set("Content-Type", jsonContentType)
-	resp.header.Del("Content-Length")
+	resp.SetBody(out)
+	resp.Header().Set("Content-Type", jsonContentType)
+	resp.Header().Del("Content-Length")
 	return nil
 }
 
@@ -1287,34 +1278,8 @@ func unframeGRPCMessage(frame []byte) ([]byte, error) {
 	return frame[5:], nil
 }
 
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
+func writeTranscodedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
+	for field, values := range resp.Header() {
 		if strings.EqualFold(field, "Content-Length") {
 			continue
 		}
@@ -1322,6 +1287,6 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 			w.Header().Add(field, value)
 		}
 	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
+	w.WriteHeader(resp.StatusCode())
+	_, _ = w.Write(resp.Body())
 }

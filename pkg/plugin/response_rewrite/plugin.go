@@ -317,51 +317,51 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
 		if p.varsMatched(r, recorder) {
 			p.rewrite(r, recorder)
 		}
-		recorder.writeTo(w)
+		writeRewrittenResponse(w, recorder)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
+func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 	if p.config.StatusCode != 0 {
-		resp.statusCode = p.config.StatusCode
+		resp.SetStatusCode(p.config.StatusCode)
 	}
 
 	if p.config.Body != nil {
 		if p.config.BodyBase64 != nil && *p.config.BodyBase64 {
 			body, err := base64.StdEncoding.DecodeString(*p.config.Body)
 			if err == nil {
-				resp.body = body
+				resp.SetBody(body)
 			}
 		} else {
-			resp.body = []byte(*p.config.Body)
+			resp.SetBody([]byte(*p.config.Body))
 		}
 		for _, field := range []string{"Content-Length", "Content-Encoding", "Last-Modified", "ETag"} {
-			resp.header[http.CanonicalHeaderKey(field)] = nil
+			resp.Header()[http.CanonicalHeaderKey(field)] = nil
 		}
 	}
 
 	if len(p.config.Filters) > 0 {
-		body := resp.body
+		body := resp.Body()
 		canFilter := true
-		if encoding := resp.header.Get("Content-Encoding"); encoding != "" {
+		if encoding := resp.Header().Get("Content-Encoding"); encoding != "" {
 			decoded, ok := decodeFilterBody(resp)
 			if !ok {
 				canFilter = false
-				resp.header.Del("Content-Encoding")
+				resp.Header().Del("Content-Encoding")
 				logger.Errorf(
 					"filters may not work as expected due to unsupported compression encoding type: %s",
 					encoding,
 				)
 			} else {
 				body = decoded
-				resp.header.Del("Content-Encoding")
+				resp.Header().Del("Content-Encoding")
 			}
 		}
 		if canFilter {
@@ -372,15 +372,15 @@ func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 				}
 				body = []byte(replaceFirstString(filter.pattern, string(body), filter.Replace))
 			}
-			resp.body = body
-			resp.header.Del("Content-Length")
+			resp.SetBody(body)
+			resp.Header().Del("Content-Length")
 		}
 	}
 
 	p.config.Headers.apply(r, resp)
 }
 
-func (p *Plugin) varsMatched(r *http.Request, resp *responseRecorder) bool {
+func (p *Plugin) varsMatched(r *http.Request, resp *base.BufferedResponseWriter) bool {
 	if p.expr == nil {
 		return true
 	}
@@ -389,8 +389,8 @@ func (p *Plugin) varsMatched(r *http.Request, resp *responseRecorder) bool {
 	})
 }
 
-func (h Headers) apply(r *http.Request, resp *responseRecorder) {
-	header := resp.header
+func (h Headers) apply(r *http.Request, resp *base.BufferedResponseWriter) {
+	header := resp.Header()
 	for _, entry := range h.Add {
 		field, value, ok := strings.Cut(entry, ":")
 		if !ok {
@@ -446,10 +446,10 @@ func replaceFirstString(pattern *regexp.Regexp, body string, replacement string)
 	})
 }
 
-func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
-	switch strings.ToLower(strings.TrimSpace(resp.header.Get("Content-Encoding"))) {
+func decodeFilterBody(resp *base.BufferedResponseWriter) ([]byte, bool) {
+	switch strings.ToLower(strings.TrimSpace(resp.Header().Get("Content-Encoding"))) {
 	case "gzip":
-		reader, err := gzip.NewReader(bytes.NewReader(resp.body))
+		reader, err := gzip.NewReader(bytes.NewReader(resp.Body()))
 		if err != nil {
 			return nil, false
 		}
@@ -460,7 +460,7 @@ func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
 		}
 		return decoded, true
 	case "br":
-		decoded, err := io.ReadAll(brotlidec.NewReader(bytes.NewReader(resp.body)))
+		decoded, err := io.ReadAll(brotlidec.NewReader(bytes.NewReader(resp.Body())))
 		if err != nil {
 			return nil, false
 		}
@@ -489,30 +489,30 @@ func expressionString(value any) string {
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
 
-func resolveValue(r *http.Request, resp *responseRecorder, value string) string {
+func resolveValue(r *http.Request, resp *base.BufferedResponseWriter, value string) string {
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
 		return responseVar(r, resp, strings.TrimPrefix(variable, "$"))
 	})
 }
 
-func responseVar(r *http.Request, resp *responseRecorder, name string) string {
+func responseVar(r *http.Request, resp *base.BufferedResponseWriter, name string) string {
 	return expressionString(responseValue(r, resp, name))
 }
 
-func responseValue(r *http.Request, resp *responseRecorder, name string) any {
+func responseValue(r *http.Request, resp *base.BufferedResponseWriter, name string) any {
 	name = strings.TrimPrefix(name, "$")
 	switch {
 	case name == "status", name == "status_code", name == "upstream_status":
-		return resp.statusCode
+		return resp.StatusCode()
 	case strings.HasPrefix(name, "sent_http_"), strings.HasPrefix(name, "upstream_http_"):
 		prefix := "sent_http_"
 		if strings.HasPrefix(name, "upstream_http_") {
 			prefix = "upstream_http_"
 		}
 		header := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
-		return headerValue(resp.header, header)
+		return headerValue(resp.Header(), header)
 	case name == "body_bytes_sent" || name == "bytes_sent":
-		return len(resp.body)
+		return len(resp.Body())
 	}
 	return pluginexpr.RequestValue(r, name)
 }
@@ -528,42 +528,8 @@ func headerValue(header http.Header, name string) any {
 	return values
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        []byte
-	statusCode  int
-	wroteHeader bool
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	r.body = append(r.body, body...)
-	return len(body), nil
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
+func writeRewrittenResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
+	for field, values := range resp.Header() {
 		if len(values) == 0 {
 			w.Header()[field] = nil
 			continue
@@ -572,8 +538,8 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 			w.Header().Add(field, value)
 		}
 	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body)
+	w.WriteHeader(resp.StatusCode())
+	_, _ = w.Write(resp.Body())
 }
 
 func jsonUnmarshal(data []byte, v any) error {

@@ -114,7 +114,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
 		result, err := p.runFunctions(r, recorder)
@@ -123,11 +123,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		result.apply(recorder)
-		recorder.writeTo(w)
+		recorder.Commit(w)
 	})
 }
 
-func (p *Plugin) runFunctions(r *http.Request, resp *responseRecorder) (luaResult, error) {
+func (p *Plugin) runFunctions(r *http.Request, resp *base.BufferedResponseWriter) (luaResult, error) {
 	runner := newLuaRunner(r, resp)
 	defer runner.close()
 
@@ -169,13 +169,13 @@ func isRequestPhase(phase string) bool {
 type luaRunner struct {
 	state        *lua.LState
 	req          *http.Request
-	resp         *responseRecorder
+	resp         *base.BufferedResponseWriter
 	originalBody string
 	sayBody      bytes.Buffer
 	luaContext   *lua.LTable
 }
 
-func newLuaRunner(r *http.Request, resp *responseRecorder) *luaRunner {
+func newLuaRunner(r *http.Request, resp *base.BufferedResponseWriter) *luaRunner {
 	l := lua.NewState()
 	runner := &luaRunner{
 		state: l,
@@ -183,7 +183,7 @@ func newLuaRunner(r *http.Request, resp *responseRecorder) *luaRunner {
 		resp:  resp,
 	}
 	if resp != nil {
-		runner.originalBody = resp.body.String()
+		runner.originalBody = string(resp.Body())
 	}
 
 	runner.registerCJSON()
@@ -341,7 +341,7 @@ func (r *luaRunner) headerTable() lua.LValue {
 		return headers
 	}
 
-	for field, values := range r.resp.header {
+	for field, values := range r.resp.Header() {
 		if len(values) == 1 {
 			headers.RawSetString(field, lua.LString(values[0]))
 		} else {
@@ -365,7 +365,7 @@ func (r *luaRunner) status() int {
 	if r.resp == nil {
 		return http.StatusOK
 	}
-	return r.resp.statusCode
+	return r.resp.StatusCode()
 }
 
 func (r *luaRunner) registerCJSON() {
@@ -408,7 +408,7 @@ func (r *luaRunner) registerApisixCore() {
 		}))
 		response.RawSetString("clear_header_as_body_modified", l.NewFunction(func(l *lua.LState) int {
 			if r.resp != nil {
-				r.resp.header.Del("Content-Length")
+				r.resp.Header().Del("Content-Length")
 			}
 			return 0
 		}))
@@ -475,20 +475,19 @@ type luaResult struct {
 	bodyModified bool
 }
 
-func (r luaResult) apply(resp *responseRecorder) {
+func (r luaResult) apply(resp *base.BufferedResponseWriter) {
 	if r.status != 0 {
-		resp.statusCode = r.status
+		resp.SetStatusCode(r.status)
 	}
 	for field, values := range r.header {
-		resp.header.Del(field)
+		resp.Header().Del(field)
 		for _, value := range values {
-			resp.header.Add(field, value)
+			resp.Header().Add(field, value)
 		}
 	}
 	if r.bodyModified {
-		resp.body.Reset()
-		resp.body.Write(r.body)
-		resp.header.Del("Content-Length")
+		resp.SetBody(r.body)
+		resp.Header().Del("Content-Length")
 	}
 }
 
@@ -504,49 +503,6 @@ func writeResult(w http.ResponseWriter, result luaResult) {
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(result.body)
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }
 
 func luaValueToStatus(value lua.LValue) (int, bool) {

@@ -1,7 +1,6 @@
 package error_page
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 
@@ -60,29 +59,28 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
 		p.rewrite(r, recorder)
-		recorder.writeTo(w)
+		recorder.Commit(w)
 	})
 }
 
-func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
-	if !p.metadata.Enable || resp.statusCode < http.StatusNotFound {
+func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
+	if !p.metadata.Enable || resp.StatusCode() < http.StatusNotFound {
 		return
 	}
 	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
 		return
 	}
-	page, ok := p.errorPage(resp.statusCode)
+	page, ok := p.errorPage(resp.StatusCode())
 	if !ok || page.Body == "" {
 		return
 	}
-	resp.body.Reset()
-	resp.body.WriteString(page.Body)
-	resp.header.Set("Content-Type", page.ContentType)
-	resp.header.Set("Content-Length", fmt.Sprint(len(page.Body)))
+	resp.SetBody([]byte(page.Body))
+	resp.Header().Set("Content-Type", page.ContentType)
+	resp.Header().Set("Content-Length", fmt.Sprint(len(page.Body)))
 }
 
 func (p *Plugin) errorPage(statusCode int) (ErrorPage, bool) {
@@ -130,47 +128,4 @@ func defaultErrorPage(page *ErrorPage, title string) {
 </body>
 </html>`, title, title)
 	}
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }

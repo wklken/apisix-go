@@ -130,13 +130,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(raw.Types, &c.Types)
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -195,12 +188,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 		if p.shouldCompressResponse(recorder) {
 			p.compressResponse(recorder)
 		}
-		recorder.writeTo(w)
+		writeCompressedResponse(w, recorder)
 	})
 }
 
@@ -243,11 +236,11 @@ func qualityIsZero(params string) bool {
 	return false
 }
 
-func (p *Plugin) shouldCompressResponse(resp *responseRecorder) bool {
-	if resp.header.Get("Content-Encoding") != "" {
+func (p *Plugin) shouldCompressResponse(resp *base.BufferedResponseWriter) bool {
+	if resp.Header().Get("Content-Encoding") != "" {
 		return false
 	}
-	contentType := resp.header.Get("Content-Type")
+	contentType := resp.Header().Get("Content-Type")
 	if contentType == "" {
 		return false
 	}
@@ -259,7 +252,7 @@ func (p *Plugin) shouldCompressResponse(resp *responseRecorder) bool {
 			return false
 		}
 	}
-	contentLength := resp.header.Get("Content-Length")
+	contentLength := resp.Header().Get("Content-Length")
 	if contentLength != "" {
 		length, err := strconv.Atoi(contentLength)
 		if err == nil && length < *p.config.MinLength {
@@ -269,27 +262,26 @@ func (p *Plugin) shouldCompressResponse(resp *responseRecorder) bool {
 	return true
 }
 
-func (p *Plugin) compressResponse(resp *responseRecorder) {
+func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) {
 	var compressed bytes.Buffer
 	writer := brotlienc.NewWriterOptions(&compressed, p.writerOptions())
-	_, writeErr := writer.Write(resp.body.Bytes())
+	_, writeErr := writer.Write(resp.Body())
 	closeErr := writer.Close()
 	if writeErr != nil || closeErr != nil {
 		return
 	}
 
-	resp.body.Reset()
-	_, _ = resp.body.Write(compressed.Bytes())
-	resp.header.Set("Content-Encoding", "br")
-	resp.header.Del("Content-Length")
+	resp.SetBody(compressed.Bytes())
+	resp.Header().Set("Content-Encoding", "br")
+	resp.Header().Del("Content-Length")
 	if p.config.Vary != nil && *p.config.Vary {
-		if vary := resp.header.Get("Vary"); vary != "" {
-			resp.header.Set("Vary", vary+", Accept-Encoding")
+		if vary := resp.Header().Get("Vary"); vary != "" {
+			resp.Header().Set("Vary", vary+", Accept-Encoding")
 		} else {
-			resp.header.Set("Vary", "Accept-Encoding")
+			resp.Header().Set("Vary", "Accept-Encoding")
 		}
 	}
-	weakenETag(resp.header)
+	weakenETag(resp.Header())
 }
 
 func (p *Plugin) writerOptions() brotlienc.WriterOptions {
@@ -315,34 +307,8 @@ func weakenETag(header http.Header) {
 	header.Del("Etag")
 }
 
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
+func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
+	for field, values := range resp.Header() {
 		if strings.EqualFold(field, "Content-Length") {
 			continue
 		}
@@ -350,11 +316,11 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 			w.Header().Add(field, value)
 		}
 	}
-	w.WriteHeader(r.statusCode)
-	if r.header.Get("Content-Encoding") == "br" {
+	w.WriteHeader(resp.StatusCode())
+	if resp.Header().Get("Content-Encoding") == "br" {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
 	}
-	_, _ = io.Copy(w, bytes.NewReader(r.body.Bytes()))
+	_, _ = io.Copy(w, bytes.NewReader(resp.Body()))
 }

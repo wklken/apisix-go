@@ -100,13 +100,6 @@ type templateContext struct {
 	format     string
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
 var (
 	templateExprPattern    = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 	templateRawExprPattern = regexp.MustCompile(`\{\*\s*([^{}]+?)\s*\*\}`)
@@ -160,13 +153,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 		if err := p.transformResponse(r, recorder); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		recorder.writeTo(w)
+		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -197,14 +190,14 @@ func (p *Plugin) transformRequest(r *http.Request) (*http.Request, error) {
 	return r, nil
 }
 
-func (p *Plugin) transformResponse(r *http.Request, recorder *responseRecorder) error {
-	format := p.detectFormat(p.config.Response, recorder.header.Get("Content-Type"), "")
+func (p *Plugin) transformResponse(r *http.Request, recorder *base.BufferedResponseWriter) error {
+	format := p.detectFormat(p.config.Response, recorder.Header().Get("Content-Type"), "")
 	ctx, err := p.buildTemplateContext(
 		r,
-		recorder.body.Bytes(),
+		recorder.Body(),
 		format,
 		"response",
-		recorder.header.Get("Content-Type"),
+		recorder.Header().Get("Content-Type"),
 	)
 	if err != nil {
 		return err
@@ -214,9 +207,8 @@ func (p *Plugin) transformResponse(r *http.Request, recorder *responseRecorder) 
 		return err
 	}
 
-	recorder.body.Reset()
-	_, _ = recorder.body.WriteString(out)
-	recorder.header.Del("Content-Length")
+	recorder.SetBody([]byte(out))
+	recorder.Header().Del("Content-Length")
 	return nil
 }
 
@@ -1123,42 +1115,6 @@ func flattenMultipartValues(body []byte, contentType string, out map[string]stri
 		}
 		indices[name] = index + 1
 	}
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     http.Header{},
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }
 
 func requestVar(r *http.Request, name string) string {

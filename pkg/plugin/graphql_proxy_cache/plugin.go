@@ -117,13 +117,6 @@ type graphqlRequest struct {
 	Query string `json:"query"`
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -341,20 +334,17 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 }
 
 func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http.Handler, key string, status string) {
-	recorder := newResponseRecorder()
+	recorder := base.NewBufferedResponseWriter()
 	next.ServeHTTP(recorder, r)
-	if recorder.statusCode == 0 {
-		recorder.statusCode = http.StatusOK
-	}
 
-	if recorder.statusCode == http.StatusOK &&
-		!responseCacheControlSkipsStore(recorder.header) &&
-		(p.cacheSetCookieEnabled() || recorder.header.Get("Set-Cookie") == "") {
+	if recorder.StatusCode() == http.StatusOK &&
+		!responseCacheControlSkipsStore(recorder.Header()) &&
+		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
 		p.store(r, key, recorder)
 	}
-	recorder.header.Set(cacheStatusHeader, status)
-	recorder.header.Set(cacheKeyHeader, key)
-	recorder.writeTo(w)
+	recorder.Header().Set(cacheStatusHeader, status)
+	recorder.Header().Set(cacheKeyHeader, key)
+	recorder.Commit(w)
 }
 
 func responseCacheControlSkipsStore(header http.Header) bool {
@@ -413,19 +403,19 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	return entry, "HIT"
 }
 
-func (p *Plugin) store(r *http.Request, key string, recorder *responseRecorder) {
-	varyHeaders, cacheable := parseVaryHeader(recorder.header)
+func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter) {
+	varyHeaders, cacheable := parseVaryHeader(recorder.Header())
 	if !cacheable {
 		return
 	}
 	ttl := time.Duration(p.config.CacheTTL) * time.Second
 	if p.diskStore != nil {
-		ttl = diskResponseTTL(recorder.header, ttl, p.now())
+		ttl = diskResponseTTL(recorder.Header(), ttl, p.now())
 	}
 	entry := cacheEntry{
-		header:   cloneHeader(recorder.header),
-		body:     append([]byte(nil), recorder.body.Bytes()...),
-		status:   recorder.statusCode,
+		header:   cloneHeader(recorder.Header()),
+		body:     append([]byte(nil), recorder.Body()...),
+		status:   recorder.StatusCode(),
 		storedAt: p.now(),
 		ttl:      ttl,
 	}
@@ -1150,42 +1140,6 @@ func isGraphQLNumber(token string) bool {
 		return false
 	}
 	return true
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     http.Header{},
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }
 
 func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus string, cacheKey string) {

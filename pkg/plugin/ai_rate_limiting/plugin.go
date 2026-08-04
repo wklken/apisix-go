@@ -1,7 +1,6 @@
 package ai_rate_limiting
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -244,13 +243,6 @@ type quota struct {
 type counter struct {
 	used  int64
 	reset time.Time
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
 }
 
 type quotaResponseWriter struct {
@@ -510,7 +502,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 		if len(p.config.Rules) == 0 {
 			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
@@ -520,15 +512,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 		}
 		for _, q := range quotas {
-			p.writeQuotaHeaders(recorder.header, q)
+			p.writeQuotaHeaders(recorder.Header(), q)
 		}
-		usedTokens := p.responseTokenCostForRequest(r, recorder.body.Bytes())
+		usedTokens := p.responseTokenCostForRequest(r, recorder.Body())
 		if usedTokens > 0 {
 			for _, q := range quotas {
 				p.charge(q, usedTokens)
 			}
 		}
-		recorder.writeTo(w)
+		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -1056,40 +1048,4 @@ func (p *Plugin) reject(w http.ResponseWriter) {
 		return
 	}
 	http.Error(w, p.config.RejectedMsg, p.config.RejectedCode)
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }

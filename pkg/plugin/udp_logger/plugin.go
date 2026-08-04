@@ -166,10 +166,7 @@ func (p *Plugin) Init() error {
 	p.Schema = schema
 	p.MetadataSchema = metadataSchema
 
-	p.FireChan = make(chan map[string]any, 1000)
-	p.AsyncBlock = true
-
-	p.SendFunc = p.Send
+	p.InitLogger(p.Send)
 
 	return nil
 }
@@ -209,17 +206,14 @@ func (p *Plugin) PostInit() error {
 
 	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
 
-	p.BatchProcessor = logger_batch.New(logger_batch.Config{
-		Name:              "udp logger",
-		BatchMaxSize:      p.config.BatchMaxSize,
-		MaxRetryCount:     p.config.MaxRetryCount,
-		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
-		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
-		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
-		MaxPendingEntries: p.config.MaxPendingEntries,
-		RouteID:           p.RouteID,
-		ServerAddr:        p.ServerAddr,
-	}, p.SendBatch)
+	p.BatchProcessor = base.NewBatchProcessor("udp logger", base.BatchDefaults{
+		BatchMaxSize:       p.config.BatchMaxSize,
+		MaxRetryCount:      p.config.MaxRetryCount,
+		RetryDelaySec:      p.config.RetryDelay,
+		BufferDurationSec:  p.config.BufferDuration,
+		InactiveTimeoutSec: p.config.InactiveTimeout,
+		MaxPendingEntries:  p.config.MaxPendingEntries,
+	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
 }

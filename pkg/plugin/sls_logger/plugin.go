@@ -171,9 +171,7 @@ func (p *Plugin) Init() error {
 	p.Schema = schema
 	p.MetadataSchema = metadataSchema
 
-	p.FireChan = make(chan map[string]any, 1000)
-	p.AsyncBlock = true
-	p.SendFunc = p.Send
+	p.InitLogger(p.Send)
 
 	return nil
 }
@@ -215,16 +213,13 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = base.LoadPluginMetadata[pluginMetadata](name).LogFormat
 	}
 
-	p.BatchProcessor = logger_batch.New(logger_batch.Config{
-		Name:            "sls logger",
-		BatchMaxSize:    p.config.BatchMaxSize,
-		MaxRetryCount:   p.config.MaxRetryCount,
-		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
-		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
-		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
-		RouteID:         p.RouteID,
-		ServerAddr:      p.ServerAddr,
-	}, p.SendBatch)
+	p.BatchProcessor = base.NewBatchProcessor("sls logger", base.BatchDefaults{
+		BatchMaxSize:       p.config.BatchMaxSize,
+		MaxRetryCount:      p.config.MaxRetryCount,
+		RetryDelaySec:      p.config.RetryDelay,
+		BufferDurationSec:  p.config.BufferDuration,
+		InactiveTimeoutSec: p.config.InactiveTimeout,
+	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
 }

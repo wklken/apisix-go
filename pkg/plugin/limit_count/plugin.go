@@ -2,7 +2,6 @@ package limit_count
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -895,7 +894,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		// each route has its own limit => we should share the redis client
 		configUID := shared.NewConfigUID()
 		configUID.Add(p.config.Redis.String())
-		c := redis.NewClient(p.redisOptions())
+		c := redis.NewClient(p.redisConnConfig().Options())
 		client := shared.LoadOrStoreClient(name, configUID, c).(*redis.Client)
 
 		// BREAKPOINT: add redis into docker-compose, then test it
@@ -924,7 +923,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		client := shared.LoadOrStoreClient(
 			name,
 			configUID,
-			redis.NewClusterClient(p.redisClusterOptions()),
+			redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
 		).(*redis.ClusterClient)
 
 		var err error
@@ -966,25 +965,20 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
 }
 
-func (p *Plugin) redisOptions() *redis.Options {
+func (p *Plugin) redisConnConfig() base.RedisConnConfig {
 	conf := p.config.Redis
-	options := &redis.Options{
-		Addr:         fmt.Sprintf("%s:%d", conf.RedisHost, conf.RedisPort),
-		Username:     conf.RedisUsername,
-		Password:     conf.RedisPassword,
-		DB:           conf.RedisDatabase,
-		DialTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
-		ReadTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
-		WriteTimeout: time.Duration(conf.RedisTimeout) * time.Millisecond,
-		PoolSize:     conf.RedisKeepalivePool,
+	return base.RedisConnConfig{
+		Host:             conf.RedisHost,
+		Port:             conf.RedisPort,
+		Username:         conf.RedisUsername,
+		Password:         conf.RedisPassword,
+		Database:         conf.RedisDatabase,
+		Timeout:          conf.RedisTimeout,
+		KeepaliveTimeout: conf.RedisKeepaliveTimeout,
+		KeepalivePool:    conf.RedisKeepalivePool,
+		SSL:              conf.RedisSSL,
+		SSLVerify:        conf.RedisSSLVerify,
 	}
-	if conf.RedisKeepaliveTimeout > 0 {
-		options.ConnMaxIdleTime = time.Duration(conf.RedisKeepaliveTimeout) * time.Millisecond
-	}
-	if conf.RedisSSL != nil && *conf.RedisSSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*conf.RedisSSLVerify}
-	}
-	return options
 }
 
 func (p *Plugin) redisSentinelOptions() *redis.FailoverOptions {
@@ -1007,23 +1001,17 @@ func (p *Plugin) redisSentinelOptions() *redis.FailoverOptions {
 	}
 }
 
-func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
+func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
 	conf := p.config.RedisCluster
-	options := &redis.ClusterOptions{
-		Addrs:        append([]string(nil), conf.RedisClusterNodes...),
-		Password:     conf.RedisPassword,
-		DialTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
-		ReadTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
-		WriteTimeout: time.Duration(conf.RedisTimeout) * time.Millisecond,
-		PoolSize:     conf.RedisKeepalivePool,
+	return base.RedisClusterConnConfig{
+		Nodes:            conf.RedisClusterNodes,
+		Password:         conf.RedisPassword,
+		Timeout:          conf.RedisTimeout,
+		KeepaliveTimeout: conf.RedisKeepaliveTimeout,
+		KeepalivePool:    conf.RedisKeepalivePool,
+		SSL:              conf.RedisClusterSSL,
+		SSLVerify:        conf.RedisClusterSSLVerify,
 	}
-	if conf.RedisKeepaliveTimeout > 0 {
-		options.ConnMaxIdleTime = time.Duration(conf.RedisKeepaliveTimeout) * time.Millisecond
-	}
-	if conf.RedisClusterSSL != nil && *conf.RedisClusterSSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*conf.RedisClusterSSLVerify}
-	}
-	return options
 }
 
 func staticLimitValue(value any, name string) (int64, bool, error) {
@@ -1357,7 +1345,7 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 		client := shared.LoadOrStoreClient(
 			name,
 			configUID,
-			redis.NewClient(p.redisOptions()),
+			redis.NewClient(p.redisConnConfig().Options()),
 		).(*redis.Client)
 		return newRedisSlidingWindowStore(client), nil
 	case "redis-cluster":
@@ -1375,7 +1363,7 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 		client := shared.LoadOrStoreClient(
 			name,
 			configUID,
-			redis.NewClusterClient(p.redisClusterOptions()),
+			redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
 		).(*redis.ClusterClient)
 		return newRedisSlidingWindowStore(client), nil
 	case "redis-sentinel":

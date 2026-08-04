@@ -2,7 +2,6 @@ package limit_conn
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"math"
 	"net"
@@ -831,28 +830,23 @@ func (p *Plugin) newRedisLimiter() connLimiter {
 		p.config.RedisKeepaliveTimeout,
 		p.config.RedisKeepalivePool,
 	)
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(p.redisOptions())).(redis.UniversalClient)
+	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(p.redisConnConfig().Options())).(redis.UniversalClient)
 	return p.newRedisConnLimiter(client)
 }
 
-func (p *Plugin) redisOptions() *redis.Options {
-	options := &redis.Options{
-		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
-		Username:     p.config.RedisUsername,
-		Password:     p.config.RedisPassword,
-		DB:           p.config.RedisDatabase,
-		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		PoolSize:     p.config.RedisKeepalivePool,
+func (p *Plugin) redisConnConfig() base.RedisConnConfig {
+	return base.RedisConnConfig{
+		Host:             p.config.RedisHost,
+		Port:             p.config.RedisPort,
+		Username:         p.config.RedisUsername,
+		Password:         p.config.RedisPassword,
+		Database:         p.config.RedisDatabase,
+		Timeout:          p.config.RedisTimeout,
+		KeepaliveTimeout: p.config.RedisKeepaliveTimeout,
+		KeepalivePool:    p.config.RedisKeepalivePool,
+		SSL:              p.config.RedisSSL,
+		SSLVerify:        p.config.RedisSSLVerify,
 	}
-	if p.config.RedisKeepaliveTimeout > 0 {
-		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
-	}
-	if p.config.RedisSSL != nil && *p.config.RedisSSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
-	}
-	return options
 }
 
 func (p *Plugin) newRedisClusterLimiter() connLimiter {
@@ -870,7 +864,7 @@ func (p *Plugin) newRedisClusterLimiter() connLimiter {
 	client := shared.LoadOrStoreClient(
 		name,
 		configUID,
-		redis.NewClusterClient(p.redisClusterOptions()),
+		redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
 	).(redis.UniversalClient)
 	return p.newRedisConnLimiter(client)
 }
@@ -884,22 +878,16 @@ func (p *Plugin) newRedisConnLimiter(client redis.UniversalClient) connLimiter {
 	}
 }
 
-func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
-	options := &redis.ClusterOptions{
-		Addrs:        append([]string(nil), p.config.RedisClusterNodes...),
-		Password:     p.config.RedisPassword,
-		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
-		PoolSize:     p.config.RedisKeepalivePool,
+func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
+	return base.RedisClusterConnConfig{
+		Nodes:            p.config.RedisClusterNodes,
+		Password:         p.config.RedisPassword,
+		Timeout:          p.config.RedisTimeout,
+		KeepaliveTimeout: p.config.RedisKeepaliveTimeout,
+		KeepalivePool:    p.config.RedisKeepalivePool,
+		SSL:              p.config.RedisClusterSSL,
+		SSLVerify:        p.config.RedisClusterSSLVerify,
 	}
-	if p.config.RedisKeepaliveTimeout > 0 {
-		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
-	}
-	if p.config.RedisClusterSSL != nil && *p.config.RedisClusterSSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisClusterSSLVerify}
-	}
-	return options
 }
 
 func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {

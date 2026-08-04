@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -311,7 +310,7 @@ func (p *Plugin) Stop() {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		request := captureAccessRequest(r, started, p.ServerAddr)
+		request := base.CaptureAccessLogRequest(r, started, p.ServerAddr)
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -332,13 +331,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.customLogFormat {
 			logFields = resolveSyslogLogFormat(r, request, p.logFormat)
 			logFields["route_id"] = p.RouteID
-			if serviceID := apisixString(r, "$service_id"); serviceID != "" {
+			if serviceID := base.ApisixString(r, "$service_id"); serviceID != "" {
 				logFields["service_id"] = serviceID
 			} else {
 				delete(logFields, "service_id")
 			}
 		} else {
-			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
+			logFields = base.BuildAccessLogSnapshot(
+				request,
+				metrics.Code,
+				w.Header(),
+				metrics.Written,
+				p.RouteID,
+				r,
+				metrics.Duration,
+			)
 			for key, value := range resolveSyslogLogFormat(r, request, p.logFormatExtra) {
 				if _, exists := logFields[key]; !exists {
 					logFields[key] = value
@@ -377,33 +384,7 @@ func selectLogFormats(config Config, metadata pluginMetadata) (map[string]any, m
 	return nil, metadata.LogFormatExtra
 }
 
-type accessRequest struct {
-	method        string
-	uri           string
-	url           string
-	host          string
-	clientIP      string
-	contentLength int64
-	headers       map[string]any
-	queryString   map[string]any
-	started       time.Time
-}
-
-func captureAccessRequest(r *http.Request, started time.Time, serverAddr string) accessRequest {
-	headers := collapseHeaderValues(r.Header)
-	headers["host"] = r.Host
-	return accessRequest{
-		method:        r.Method,
-		uri:           r.URL.RequestURI(),
-		url:           requestURL(r, serverAddr),
-		host:          requestHostname(r),
-		clientIP:      hostWithoutPort(r.RemoteAddr),
-		contentLength: max(r.ContentLength, 0),
-		headers:       headers,
-		queryString:   collapseValues(r.URL.Query()),
-		started:       started,
-	}
-}
+type accessRequest = base.AccessLogRequest
 
 func resolveSyslogLogFormat(
 	r *http.Request,
@@ -424,13 +405,13 @@ func resolveSyslogLogFormatNode(r *http.Request, request accessRequest, value an
 	case string:
 		switch typed {
 		case "$host":
-			return request.host
+			return request.Host
 		case "$remote_addr":
-			return request.clientIP
+			return request.ClientIP
 		case "$time_iso8601":
-			return request.started.Format(time.RFC3339)
+			return request.Started.Format(time.RFC3339)
 		case "$upstream_addr":
-			return upstreamAddress(r)
+			return base.UpstreamAddress(r)
 		default:
 			return apisixlog.GetField(r, typed)
 		}
@@ -458,127 +439,6 @@ func truncateSyslogLogFormat(format map[string]any, depth int) (map[string]any, 
 		truncated = truncated || childTruncated
 	}
 	return result, truncated
-}
-
-func (p *Plugin) defaultAccessLog(
-	r *http.Request,
-	request accessRequest,
-	metrics httpsnoop.Metrics,
-	responseHeaders http.Header,
-) map[string]any {
-	hostname, _ := os.Hostname()
-	latency := float64(metrics.Duration) / float64(time.Millisecond)
-	upstreamLatency := requestInt64(r, "$upstream_latency")
-	apisixLatency := latency - float64(upstreamLatency)
-	if apisixLatency < 0 {
-		apisixLatency = 0
-	}
-	log := map[string]any{
-		"request": map[string]any{
-			"url":         request.url,
-			"uri":         request.uri,
-			"method":      request.method,
-			"headers":     request.headers,
-			"querystring": request.queryString,
-			"size":        request.contentLength,
-		},
-		"response": map[string]any{
-			"status":  metrics.Code,
-			"headers": collapseHeaderValues(responseHeaders),
-			"size":    metrics.Written,
-		},
-		"server": map[string]any{
-			"hostname": hostname,
-			"version":  version,
-		},
-		"service_id":       apisixString(r, "$service_id"),
-		"route_id":         p.RouteID,
-		"client_ip":        request.clientIP,
-		"start_time":       float64(request.started.UnixNano()) / float64(time.Millisecond),
-		"latency":          latency,
-		"upstream_latency": upstreamLatency,
-		"apisix_latency":   apisixLatency,
-		"upstream":         upstreamAddress(r),
-	}
-	if consumer := apisixString(r, "$consumer_name"); consumer != "" {
-		log["consumer"] = map[string]any{"username": consumer}
-	}
-	return log
-}
-
-func requestURL(r *http.Request, serverAddr string) string {
-	scheme := r.URL.Scheme
-	if scheme == "" {
-		scheme = "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-	}
-	host := requestHostname(r)
-	_, port, err := net.SplitHostPort(serverAddr)
-	if err != nil {
-		_, port, _ = net.SplitHostPort(r.Host)
-	}
-	authority := host
-	if port != "" {
-		authority = net.JoinHostPort(host, port)
-	}
-	return scheme + "://" + authority + r.URL.RequestURI()
-}
-
-func collapseHeaderValues(values http.Header) map[string]any {
-	normalized := make(map[string][]string, len(values))
-	for key, value := range values {
-		key = strings.ToLower(key)
-		normalized[key] = append(normalized[key], value...)
-	}
-	return collapseValues(normalized)
-}
-
-func collapseValues(values map[string][]string) map[string]any {
-	collapsed := make(map[string]any, len(values))
-	for key, value := range values {
-		if len(value) == 1 {
-			collapsed[key] = value[0]
-		} else {
-			collapsed[key] = value
-		}
-	}
-	return collapsed
-}
-
-func hostWithoutPort(address string) string {
-	if host, _, err := net.SplitHostPort(address); err == nil {
-		return host
-	}
-	return strings.Trim(address, "[]")
-}
-
-func upstreamAddress(r *http.Request) string {
-	host, _ := apisixctx.GetApisixVar(r, "$balancer_ip").(string)
-	port, _ := apisixctx.GetApisixVar(r, "$balancer_port").(string)
-	if host == "" || port == "" {
-		return host
-	}
-	return net.JoinHostPort(host, port)
-}
-
-func apisixString(r *http.Request, key string) string {
-	value, _ := apisixctx.GetApisixVar(r, key).(string)
-	return value
-}
-
-func requestInt64(r *http.Request, key string) int64 {
-	switch value := apisixctx.GetRequestVar(r, key).(type) {
-	case int:
-		return int64(value)
-	case int64:
-		return value
-	case float64:
-		return int64(value)
-	default:
-		return 0
-	}
 }
 
 func (p *Plugin) Send(log map[string]any) {

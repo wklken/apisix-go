@@ -337,7 +337,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.customLogFormat {
 			logFields = resolveSyslogLogFormat(r, request, p.logFormat)
 			logFields["route_id"] = p.RouteID
-			if serviceID := base.ApisixString(r, ""); serviceID != "" {
+			if serviceID := base.ApisixString(r, "$service_id"); serviceID != "" {
 				logFields["service_id"] = serviceID
 			} else {
 				delete(logFields, "service_id")

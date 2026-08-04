@@ -588,6 +588,40 @@ func TestHandlerRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
 	}
 }
 
+func TestHandlerCustomLogFormatIncludesRuntimeServiceID(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		SockType:     "udp",
+		Timeout:      3000,
+		FlushLimit:   1,
+		BatchMaxSize: 1,
+		LogFormat:    map[string]any{"marker": "custom"},
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/with-service", nil)
+	request = apisixctx.WithApisixVars(request, map[string]string{})
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$service_id", "service-1")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if payload["service_id"] != "service-1" {
+			t.Fatalf("payload service_id = %#v, want service-1", payload["service_id"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
 func TestHandlerResolvesNestedFormatVariablesAndConstants(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)

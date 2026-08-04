@@ -2,17 +2,11 @@ package aws_lambda
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
-	"net/url"
-	"path"
-	"sort"
-	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
 )
 
@@ -166,153 +160,17 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 }
 
 func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {
-	t := now().UTC()
-	amzDate := t.Format("20060102T150405Z")
-	dateStamp := t.Format("20060102")
-	r.Header.Set("X-Amz-Date", amzDate)
-
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	canonicalQuery := canonicalQueryString(r.URL.RawQuery)
-	r.URL.RawQuery = canonicalQuery
-
-	signedHeaders, canonicalHeaders := canonicalHeaders(r)
-	canonicalRequest := strings.Join([]string{
-		strings.ToUpper(r.Method),
-		canonicalURI(r.URL.Path),
-		canonicalQuery,
-		canonicalHeaders,
-		signedHeaders,
-		sha256Hex(body),
-	}, "\n")
-
-	credentialScope := dateStamp + "/" + iam.AWSRegion + "/" + iam.Service + "/aws4_request"
-	stringToSign := strings.Join([]string{
-		algo,
-		amzDate,
-		credentialScope,
-		sha256Hex([]byte(canonicalRequest)),
-	}, "\n")
-
-	signature := hmacHex(signingKey(iam.SecretKey, dateStamp, iam.AWSRegion, iam.Service), stringToSign)
-	r.Header.Set("Authorization", algo+
-		" Credential="+iam.AccessKey+"/"+credentialScope+
-		", SignedHeaders="+signedHeaders+
-		", Signature="+signature)
-}
-
-func canonicalURI(value string) string {
-	if value == "" {
-		return "/"
-	}
-	cleaned := path.Clean(value)
-	if !strings.HasPrefix(cleaned, "/") {
-		cleaned = "/" + cleaned
-	}
-	return cleaned
-}
-
-func canonicalQueryString(rawQuery string) string {
-	if rawQuery == "" {
-		return ""
-	}
-	type queryPart struct {
-		key   string
-		value string
-	}
-	parts := make([]queryPart, 0, strings.Count(rawQuery, "&")+1)
-	for part := range strings.SplitSeq(rawQuery, "&") {
-		key, value, found := strings.Cut(part, "=")
-		key = escapeQueryPart(unescapeQueryPart(key))
-		if found {
-			value = escapeQueryPart(unescapeQueryPart(value))
-		}
-		parts = append(parts, queryPart{key: key, value: value})
-	}
-	sort.Slice(parts, func(i, j int) bool {
-		if parts[i].key != parts[j].key {
-			return parts[i].key < parts[j].key
-		}
-		return parts[i].value < parts[j].value
-	})
-	var query strings.Builder
-	for i, part := range parts {
-		if i > 0 {
-			query.WriteByte('&')
-		}
-		query.WriteString(part.key)
-		query.WriteByte('=')
-		query.WriteString(part.value)
-	}
-	return query.String()
-}
-
-func escapeQueryPart(value string) string {
-	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
-}
-
-func unescapeQueryPart(value string) string {
-	decoded, err := url.QueryUnescape(value)
-	if err != nil {
-		return value
-	}
-	return decoded
-}
-
-func canonicalHeaders(r *http.Request) (string, string) {
-	values := make(map[string]string, len(r.Header)+1)
-	host := r.Host
-	if host == "" {
-		host = r.URL.Host
-	}
-	values["host"] = normalizeHeaderValue(host)
-	for key, headerValues := range r.Header {
-		key = strings.ToLower(key)
-		if key == "connection" || key == "host" {
-			continue
-		}
-		normalized := make([]string, 0, len(headerValues))
-		for _, value := range headerValues {
-			normalized = append(normalized, normalizeHeaderValue(value))
-		}
-		values[key] = strings.Join(normalized, ",")
-	}
-
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	lines := make([]string, 0, len(keys))
-	for _, key := range keys {
-		lines = append(lines, key+":"+values[key]+"\n")
-	}
-	return strings.Join(keys, ";"), strings.Join(lines, "")
-}
-
-func normalizeHeaderValue(value string) string {
-	return strings.Join(strings.Fields(value), " ")
-}
-
-func signingKey(secret, dateStamp, region, service string) []byte {
-	kDate := hmacSHA256([]byte("AWS4"+secret), dateStamp)
-	kRegion := hmacSHA256(kDate, region)
-	kService := hmacSHA256(kRegion, service)
-	return hmacSHA256(kService, "aws4_request")
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-func hmacHex(key []byte, msg string) string {
-	return hex.EncodeToString(hmacSHA256(key, msg))
-}
-
-func hmacSHA256(key []byte, msg string) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(msg))
-	return mac.Sum(nil)
+	_ = ai_auth.SignAWSRequestWithOptions(r, body, ai_auth.AWSConfig{
+		AccessKeyID:     iam.AccessKey,
+		SecretAccessKey: iam.SecretKey,
+	}, ai_auth.SignAWSRequestOptions{
+		Region:                   iam.AWSRegion,
+		Service:                  iam.Service,
+		DeriveHeadersFromRequest: true,
+		CanonicalURI:             ai_auth.CanonicalURICleaned,
+		CanonicalQuery:           ai_auth.CanonicalQuerySortedParts,
+		RewriteQuery:             true,
+	}, now())
 }

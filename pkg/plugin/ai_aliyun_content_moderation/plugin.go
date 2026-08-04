@@ -552,32 +552,11 @@ func extractSSEText(protocol ai_protocols.Protocol, body []byte) string {
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
-		if content := extractSSEEventText(protocol, event); content != "" {
+		if content := ai_protocols.ExtractStreamEventText(protocol, event); content != "" {
 			parts = append(parts, content)
 		}
 	}
 	return strings.Join(parts, "")
-}
-
-func extractSSEEventText(protocol ai_protocols.Protocol, event map[string]any) string {
-	switch protocol {
-	case ai_protocols.OpenAIResponses:
-		text, _ := event["delta"].(string)
-		return text
-	case ai_protocols.AnthropicMessages:
-		delta, _ := event["delta"].(map[string]any)
-		text, _ := delta["text"].(string)
-		return text
-	default:
-		choices, _ := event["choices"].([]any)
-		if len(choices) == 0 {
-			return ""
-		}
-		choice, _ := choices[0].(map[string]any)
-		delta, _ := choice["delta"].(map[string]any)
-		text, _ := delta["content"].(string)
-		return text
-	}
 }
 
 func addRiskLevelToFinalSSEPacket(body []byte, riskLevel string) []byte {

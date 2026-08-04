@@ -13,12 +13,9 @@ import (
 )
 
 var legacyEncodingJSONImports = map[string]struct{}{
-	"cmd/root.go":                         {},
-	"pkg/plugin/expr/expression.go":       {},
-	"pkg/plugin/grpc_transcode/plugin.go": {},
-	"pkg/plugin/server_info/plugin.go":    {},
-	"pkg/route/builder.go":                {},
-	"pkg/server/server.go":                {},
+	"cmd/root.go":          {},
+	"pkg/route/builder.go": {},
+	"pkg/server/server.go": {},
 }
 
 func TestProductionCodeUsesProjectJSON(t *testing.T) {

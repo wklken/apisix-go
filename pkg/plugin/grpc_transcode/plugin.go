@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1176,7 +1175,7 @@ func normalizeInt64FieldValue(
 
 func formatInt64JSONValue(raw string, value uint64, signed bool, mode int64JSONMode) any {
 	if mode == int64AsNumber || fitsInt64JSONNumber(value, signed) {
-		return stdjson.Number(raw)
+		return json.Number(raw)
 	}
 	if mode == int64AsString {
 		return "#" + raw

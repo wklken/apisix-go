@@ -477,7 +477,7 @@ type luaResult struct {
 
 func (r luaResult) apply(resp *base.BufferedResponseWriter) {
 	if r.status != 0 {
-		resp.WriteHeader(r.status)
+		resp.SetStatusCode(r.status)
 	}
 	for field, values := range r.header {
 		resp.Header().Del(field)

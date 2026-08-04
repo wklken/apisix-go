@@ -141,6 +141,24 @@ func TestPostFunctionCanRewriteBodyFilterJSONBody(t *testing.T) {
 	}
 }
 
+func TestPostFunctionCanOverrideCapturedResponseStatus(t *testing.T) {
+	p := newTestPlugin(t, NewPostFunction(), Config{
+		Phase: "body_filter",
+		Functions: []string{
+			`return function(conf, ctx) ngx.status = 418 end`,
+		},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream body"))
+	})
+
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusTeapot)
+	}
+}
+
 func TestPostInitRejectsLuaChunkThatDoesNotReturnFunction(t *testing.T) {
 	p := NewPreFunction()
 	p.config = Config{

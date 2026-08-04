@@ -24,6 +24,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
@@ -880,7 +881,7 @@ func (p *Plugin) requestInstance(
 	if err != nil {
 		return nil, prepared, fmt.Errorf("failed to create LLM request: %w", err)
 	}
-	copyForwardHeaders(req.Header, r.Header)
+	ai_common.CopyForwardHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
 	for header, value := range instance.Auth.Header {
 		req.Header.Set(header, value)
@@ -1028,7 +1029,7 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-	originalBody := cloneJSONValue(bodyTab).(map[string]any)
+	originalBody := ai_common.CloneJSONValue(bodyTab).(map[string]any)
 	maps.Copy(bodyTab, instance.Options)
 	p.applyLLMOptions(bodyTab, protocol, instance)
 	p.applyRequestBodyOverride(bodyTab, protocol, instance)
@@ -1061,14 +1062,14 @@ func (p *Plugin) applyRequestBodyOverride(
 		return
 	}
 	force := instance.Override.RequestBodyForceOverride != nil && *instance.Override.RequestBodyForceOverride
-	mergeBodyMap(body, override, force)
+	ai_common.MergeBodyMap(body, override, force)
 }
 
 func requestBodyOverride(values map[string]any, protocol ai_protocols.Protocol) map[string]any {
 	if len(values) == 0 {
 		return nil
 	}
-	if override, ok := asAnyMap(values[protocol.OverrideKey]); ok {
+	if override, ok := ai_common.AsAnyMap(values[protocol.OverrideKey]); ok {
 		return override
 	}
 	if hasProtocolRequestBodyOverride(values) {
@@ -1089,45 +1090,6 @@ func hasProtocolRequestBodyOverride(values map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func mergeBodyMap(dst map[string]any, override map[string]any, force bool) {
-	for key, overrideValue := range override {
-		currentValue, exists := dst[key]
-		currentMap, currentIsMap := asAnyMap(currentValue)
-		overrideMap, overrideIsMap := asAnyMap(overrideValue)
-		if exists && currentIsMap && overrideIsMap {
-			mergeBodyMap(currentMap, overrideMap, force)
-			continue
-		}
-		if !exists || force {
-			dst[key] = cloneJSONValue(overrideValue)
-		}
-	}
-}
-
-func asAnyMap(value any) (map[string]any, bool) {
-	out, ok := value.(map[string]any)
-	return out, ok
-}
-
-func cloneJSONValue(value any) any {
-	switch v := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[key] = cloneJSONValue(item)
-		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = cloneJSONValue(item)
-		}
-		return out
-	default:
-		return value
-	}
 }
 
 func (p *Plugin) applyProviderBodyRules(body map[string]any, instance Instance) {
@@ -1380,18 +1342,6 @@ func rateLimitFallbackEnabled(strategy any) bool {
 	return strategy == "instance_health_and_rate_limiting" || fallbackStrategyHas(strategy, "rate_limiting")
 }
 
-func copyForwardHeaders(dst, src http.Header) {
-	for field, values := range src {
-		switch strings.ToLower(field) {
-		case "host", "content-length", "accept-encoding":
-			continue
-		}
-		for _, value := range values {
-			dst.Add(field, value)
-		}
-	}
-}
-
 func (p *Plugin) endpoint(
 	instance Instance,
 	protocol ai_protocols.Protocol,
@@ -1402,10 +1352,10 @@ func (p *Plugin) endpoint(
 			return instance.Override.Endpoint, nil
 		}
 		if instance.Provider == "openai-compatible" || instance.Provider == "openai" {
-			return appendProtocolEndpoint(instance.Override.Endpoint, protocol)
+			return ai_common.AppendProtocolEndpoint(instance.Override.Endpoint, protocol)
 		}
 		if instance.Provider == "bedrock" {
-			return appendBedrockEndpoint(
+			return ai_common.AppendBedrockEndpoint(
 				instance.Override.Endpoint,
 				instanceModel(instance, originalBody),
 				requestIsStreaming(originalBody, protocol),
@@ -1429,7 +1379,7 @@ func (p *Plugin) endpoint(
 		return "https://api.anthropic.com" + protocol.Endpoint, nil
 	case "bedrock":
 		region, _ := instance.ProviderConf["region"].(string)
-		return appendBedrockEndpoint(
+		return ai_common.AppendBedrockEndpoint(
 			"https://bedrock-runtime."+region+".amazonaws.com",
 			instanceModel(instance, originalBody),
 			requestIsStreaming(originalBody, protocol),
@@ -1470,40 +1420,6 @@ func instanceModel(instance Instance, body []byte) string {
 		return model
 	}
 	return modelFromBody(body)
-}
-
-func appendBedrockEndpoint(endpoint string, model string, streaming bool) (string, error) {
-	if model == "" {
-		return "", fmt.Errorf("bedrock requires options.model or request body model")
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse Bedrock endpoint: %w", err)
-	}
-	if parsed.Path != "" && parsed.Path != "/" {
-		return endpoint, nil
-	}
-	suffix := "/converse"
-	if streaming {
-		suffix = "/converse-stream"
-	}
-	parsed.Path = "/model/" + model + suffix
-	parsed.RawPath = "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + suffix
-	return parsed.String(), nil
-}
-
-func appendProtocolEndpoint(endpoint string, protocol ai_protocols.Protocol) (string, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse OpenAI-compatible endpoint: %w", err)
-	}
-	switch strings.TrimRight(parsed.Path, "/") {
-	case "", "/v1":
-		parsed.Path = protocol.Endpoint
-	default:
-		return endpoint, nil
-	}
-	return parsed.String(), nil
 }
 
 func (p *Plugin) writeProviderResponse(

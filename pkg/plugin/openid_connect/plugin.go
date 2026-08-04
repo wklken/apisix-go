@@ -435,12 +435,7 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
-type jwtToken struct {
-	header    map[string]any
-	payload   map[string]any
-	signing   string
-	signature []byte
-}
+type jwtToken = base.JWTToken
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -1614,8 +1609,8 @@ func (p *Plugin) validateSessionClaimSchema(tokens tokenResponse, userinfo strin
 	}
 	var idToken any = tokens.IDToken
 	if tokens.IDToken != "" {
-		if token, err := parseJWT(tokens.IDToken); err == nil {
-			idToken = token.payload
+		if token, err := base.ParseJWT(tokens.IDToken); err == nil {
+			idToken = token.Payload
 		}
 	}
 	return p.validateSchema(map[string]any{
@@ -1664,12 +1659,12 @@ func (p *Plugin) usesLocalJWTVerification() bool {
 }
 
 func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]any, error) {
-	token, err := parseJWT(rawToken)
+	token, err := base.ParseJWT(rawToken)
 	if err != nil {
 		return nil, fmt.Errorf("JWT token invalid")
 	}
 
-	algorithm, _ := token.header["alg"].(string)
+	algorithm, _ := token.Header["alg"].(string)
 	if algorithm == "" {
 		return nil, fmt.Errorf("JWT token missing alg")
 	}
@@ -1692,48 +1687,12 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 	if !verifyJWTSignature(token, algorithm, publicKey) {
 		return nil, fmt.Errorf("failed to verify jwt")
 	}
-	if err := verifyJWTTimeClaims(token.payload, time.Now()); err != nil {
+	if err := verifyJWTTimeClaims(token.Payload, time.Now()); err != nil {
 		return nil, err
 	}
-	p.validateIssuer(token.payload)
+	p.validateIssuer(token.Payload)
 
-	return token.payload, nil
-}
-
-func parseJWT(raw string) (jwtToken, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return jwtToken{}, fmt.Errorf("token must have three parts")
-	}
-
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return jwtToken{}, err
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return jwtToken{}, err
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return jwtToken{}, err
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return jwtToken{}, err
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		return jwtToken{}, err
-	}
-
-	return jwtToken{
-		header:    header,
-		payload:   payload,
-		signing:   parts[0] + "." + parts[1],
-		signature: signature,
-	}, nil
+	return token.Payload, nil
 }
 
 func parsePublicKey(publicKeyBytes []byte) (any, error) {
@@ -1763,16 +1722,16 @@ func verifyJWTSignature(token jwtToken, algorithm string, publicKey any) bool {
 		return false
 	}
 
-	hashAlg, digest, ok := jwtSigningDigest(algorithm, token.signing)
+	hashAlg, digest, ok := jwtSigningDigest(algorithm, token.Signing)
 	if !ok {
 		return false
 	}
 
 	switch algorithm {
 	case "RS256", "RS384", "RS512":
-		return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.signature) == nil
+		return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.Signature) == nil
 	case "PS256", "PS384", "PS512":
-		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.signature, nil) == nil
+		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.Signature, nil) == nil
 	default:
 		return false
 	}
@@ -1797,26 +1756,13 @@ func jwtSigningDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
 }
 
 func verifyJWTTimeClaims(payload map[string]any, now time.Time) error {
-	if exp, ok := numberClaim(payload["exp"]); ok && exp <= now.Unix() {
+	if exp, ok := base.NumberClaim(payload["exp"]); ok && exp <= now.Unix() {
 		return fmt.Errorf("JWT token expired")
 	}
-	if nbf, ok := numberClaim(payload["nbf"]); ok && nbf > now.Unix() {
+	if nbf, ok := base.NumberClaim(payload["nbf"]); ok && nbf > now.Unix() {
 		return fmt.Errorf("JWT token not valid yet")
 	}
 	return nil
-}
-
-func numberClaim(value any) (int64, bool) {
-	switch v := value.(type) {
-	case float64:
-		return int64(v), true
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	default:
-		return 0, false
-	}
 }
 
 func (p *Plugin) validateIssuer(payload map[string]any) {
@@ -1896,8 +1842,8 @@ func (p *Plugin) jwksPublicKey(r *http.Request, token jwtToken) (any, error) {
 		return nil, err
 	}
 
-	kid, _ := token.header["kid"].(string)
-	algorithm, _ := token.header["alg"].(string)
+	kid, _ := token.Header["kid"].(string)
+	algorithm, _ := token.Header["alg"].(string)
 	for _, key := range jwks.Keys {
 		if key.Kty != "RSA" {
 			continue

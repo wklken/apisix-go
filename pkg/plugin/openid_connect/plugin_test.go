@@ -20,6 +20,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -123,14 +124,14 @@ func TestHandlerIntrospectsBearerTokenWithPrivateKeyJWT(t *testing.T) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
-		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		assertion, err := base.ParseJWT(r.PostForm.Get("client_assertion"))
 		if err != nil {
 			t.Fatalf("parse client assertion: %v", err)
 		}
 		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
 			t.Fatal("client assertion signature did not verify")
 		}
-		if got := assertion.payload["aud"]; got != idp.URL+"/introspect" {
+		if got := assertion.Payload["aud"]; got != idp.URL+"/introspect" {
 			t.Fatalf("assertion aud = %v, want introspection endpoint", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
@@ -1141,30 +1142,30 @@ func TestHandlerCodeFlowSupportsPrivateKeyJWT(t *testing.T) {
 		); got != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
 			t.Fatalf("client_assertion_type = %q, want JWT bearer type", got)
 		}
-		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		assertion, err := base.ParseJWT(r.PostForm.Get("client_assertion"))
 		if err != nil {
 			t.Fatalf("parse client assertion: %v", err)
 		}
-		if got := assertion.header["alg"]; got != "RS256" {
+		if got := assertion.Header["alg"]; got != "RS256" {
 			t.Fatalf("assertion alg = %v, want RS256", got)
 		}
-		if got := assertion.header["kid"]; got != "key-1" {
+		if got := assertion.Header["kid"]; got != "key-1" {
 			t.Fatalf("assertion kid = %v, want key-1", got)
 		}
 		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
 			t.Fatal("client assertion signature did not verify")
 		}
-		if got := assertion.payload["iss"]; got != "apisix" {
+		if got := assertion.Payload["iss"]; got != "apisix" {
 			t.Fatalf("assertion iss = %v, want apisix", got)
 		}
-		if got := assertion.payload["sub"]; got != "apisix" {
+		if got := assertion.Payload["sub"]; got != "apisix" {
 			t.Fatalf("assertion sub = %v, want apisix", got)
 		}
-		if got := assertion.payload["aud"]; got != idp.URL+"/token" {
+		if got := assertion.Payload["aud"]; got != idp.URL+"/token" {
 			t.Fatalf("assertion aud = %v, want token endpoint", got)
 		}
-		if got, ok := assertion.payload["jti"].(string); !ok || got == "" {
-			t.Fatalf("assertion jti = %v, want a random string", assertion.payload["jti"])
+		if got, ok := assertion.Payload["jti"].(string); !ok || got == "" {
+			t.Fatalf("assertion jti = %v, want a random string", assertion.Payload["jti"])
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
 	})
@@ -1207,19 +1208,19 @@ func TestHandlerCodeFlowSupportsClientSecretJWT(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "" {
 			t.Fatalf("Authorization = %q, want no basic auth", got)
 		}
-		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		assertion, err := base.ParseJWT(r.PostForm.Get("client_assertion"))
 		if err != nil {
 			t.Fatalf("parse client assertion: %v", err)
 		}
-		if got := assertion.header["alg"]; got != "HS256" {
+		if got := assertion.Header["alg"]; got != "HS256" {
 			t.Fatalf("assertion alg = %v, want HS256", got)
 		}
 		mac := hmac.New(sha256.New, []byte("secret-a"))
-		_, _ = mac.Write([]byte(assertion.signing))
-		if !hmac.Equal(assertion.signature, mac.Sum(nil)) {
+		_, _ = mac.Write([]byte(assertion.Signing))
+		if !hmac.Equal(assertion.Signature, mac.Sum(nil)) {
 			t.Fatal("client assertion signature did not verify")
 		}
-		if got := assertion.payload["aud"]; got != idp.URL+"/token" {
+		if got := assertion.Payload["aud"]; got != idp.URL+"/token" {
 			t.Fatalf("assertion aud = %v, want token endpoint", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})

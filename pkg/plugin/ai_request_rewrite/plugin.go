@@ -263,12 +263,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		r.Body = io.NopCloser(bytes.NewReader(llmResp))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(llmResp)), nil
-		}
-		r.ContentLength = int64(len(llmResp))
-		r.Header.Set("Content-Length", fmt.Sprint(len(llmResp)))
+		base.ReplaceRequestBody(r, llmResp)
 
 		next.ServeHTTP(w, r)
 	}

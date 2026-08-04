@@ -3,7 +3,6 @@ package degraphql
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -261,13 +260,8 @@ func (p *Plugin) rewritePOST(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(rewritten))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(rewritten)), nil
-	}
-	r.ContentLength = int64(len(rewritten))
+	base.ReplaceRequestBody(r, rewritten)
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Content-Length", fmt.Sprint(len(rewritten)))
 	return nil
 }
 

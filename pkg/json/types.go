@@ -1,16 +1,44 @@
 package json
 
-import json "github.com/goccy/go-json"
+import (
+	"io"
 
-var (
-	// Marshal is exported by gin/json package.
-	Marshal = json.Marshal
-	// Unmarshal is exported by gin/json package.
-	Unmarshal = json.Unmarshal
-	// MarshalIndent is exported by gin/json package.
-	MarshalIndent = json.MarshalIndent
-	// NewDecoder is exported by gin/json package.
-	NewDecoder = json.NewDecoder
-	// NewEncoder is exported by gin/json package.
-	NewEncoder = json.NewEncoder
+	gojson "github.com/goccy/go-json"
 )
+
+type (
+	RawMessage = gojson.RawMessage
+	Number     = gojson.Number
+)
+
+type Decoder interface {
+	Decode(any) error
+	UseNumber()
+	DisallowUnknownFields()
+}
+
+type Encoder interface {
+	Encode(any) error
+	SetEscapeHTML(bool)
+	SetIndent(string, string)
+}
+
+func Marshal(value any) ([]byte, error) {
+	return gojson.Marshal(value)
+}
+
+func Unmarshal(data []byte, value any) error {
+	return gojson.Unmarshal(data, value)
+}
+
+func MarshalIndent(value any, prefix, indent string) ([]byte, error) {
+	return gojson.MarshalIndent(value, prefix, indent)
+}
+
+func NewDecoder(reader io.Reader) Decoder {
+	return gojson.NewDecoder(reader)
+}
+
+func NewEncoder(writer io.Writer) Encoder {
+	return gojson.NewEncoder(writer)
+}

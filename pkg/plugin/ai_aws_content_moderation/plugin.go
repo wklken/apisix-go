@@ -2,20 +2,16 @@ package ai_aws_content_moderation
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -329,7 +325,21 @@ func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendRes
 	}
 	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 	req.Header.Set("X-Amz-Target", "Comprehend_20171127.DetectToxicContent")
-	p.sign(req, payload)
+	if err := ai_auth.SignAWSRequestWithOptions(req, payload, ai_auth.AWSConfig{
+		AccessKeyID:     p.config.Comprehend.AccessKeyID,
+		SecretAccessKey: p.config.Comprehend.SecretAccessKey,
+		SessionToken:    p.config.Comprehend.SessionToken,
+	}, ai_auth.SignAWSRequestOptions{
+		Region:           p.config.Comprehend.Region,
+		Service:          "comprehend",
+		SetSecurityToken: true,
+		CanonicalHeaders: []string{"content-type", "host", "x-amz-date", "x-amz-target"},
+		HeaderValue:      strings.TrimSpace,
+		CanonicalURI:     ai_auth.CanonicalURIPlain,
+		CanonicalQuery:   ai_auth.CanonicalQueryRaw,
+	}, p.now()); err != nil {
+		return result, fmt.Errorf("failed to sign moderation request: %w", err)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -359,106 +369,6 @@ func (p *Plugin) endpoint() string {
 		return p.config.Comprehend.Endpoint
 	}
 	return "https://comprehend." + p.config.Comprehend.Region + ".amazonaws.com"
-}
-
-func (p *Plugin) sign(req *http.Request, payload []byte) {
-	t := p.now().UTC()
-	amzDate := t.Format("20060102T150405Z")
-	date := t.Format("20060102")
-	req.Header.Set("X-Amz-Date", amzDate)
-	if p.config.Comprehend.SessionToken != "" {
-		req.Header.Set("X-Amz-Security-Token", p.config.Comprehend.SessionToken)
-	}
-
-	payloadHash := hashHex(payload)
-	canonicalHeaders, signedHeaders := canonicalHeaders(req)
-	canonicalRequest := strings.Join([]string{
-		req.Method,
-		canonicalURI(req.URL),
-		canonicalQuery(req.URL),
-		canonicalHeaders,
-		signedHeaders,
-		payloadHash,
-	}, "\n")
-
-	scope := strings.Join([]string{date, p.config.Comprehend.Region, "comprehend", "aws4_request"}, "/")
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		scope,
-		hashHex([]byte(canonicalRequest)),
-	}, "\n")
-	signature := hex.EncodeToString(
-		hmacSHA256(
-			signingKey(p.config.Comprehend.SecretAccessKey, date, p.config.Comprehend.Region),
-			[]byte(stringToSign),
-		),
-	)
-	req.Header.Set(
-		"Authorization",
-		"AWS4-HMAC-SHA256 Credential="+p.config.Comprehend.AccessKeyID+"/"+scope+
-			", SignedHeaders="+signedHeaders+", Signature="+signature,
-	)
-}
-
-func canonicalHeaders(req *http.Request) (string, string) {
-	names := []string{"content-type", "host", "x-amz-date", "x-amz-target"}
-	values := map[string]string{
-		"content-type": req.Header.Get("Content-Type"),
-		"host":         req.URL.Host,
-		"x-amz-date":   req.Header.Get("X-Amz-Date"),
-		"x-amz-target": req.Header.Get("X-Amz-Target"),
-	}
-	if token := req.Header.Get("X-Amz-Security-Token"); token != "" {
-		names = append(names, "x-amz-security-token")
-		values["x-amz-security-token"] = token
-	}
-	sort.Strings(names)
-
-	var headers strings.Builder
-	for _, name := range names {
-		headers.WriteString(name)
-		headers.WriteByte(':')
-		headers.WriteString(strings.TrimSpace(values[name]))
-		headers.WriteByte('\n')
-	}
-	return headers.String(), strings.Join(names, ";")
-}
-
-func canonicalURI(u *url.URL) string {
-	if u.EscapedPath() == "" {
-		return "/"
-	}
-	return u.EscapedPath()
-}
-
-func canonicalQuery(u *url.URL) string {
-	if u.RawQuery == "" {
-		return ""
-	}
-	values, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
-		return u.RawQuery
-	}
-	return values.Encode()
-}
-
-func signingKey(secret string, date string, region string) []byte {
-	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(date))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte("comprehend"))
-	return hmacSHA256(kService, []byte("aws4_request"))
-}
-
-func hmacSHA256(key []byte, data []byte) []byte {
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write(data)
-	return mac.Sum(nil)
-}
-
-func hashHex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func (p *Plugin) transport() http.RoundTripper {

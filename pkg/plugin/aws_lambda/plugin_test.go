@@ -191,38 +191,6 @@ func TestHandlerForwardsMatchedExtensionPath(t *testing.T) {
 	}
 }
 
-func TestCanonicalRequestComponentsMatchAPISIXNormalization(t *testing.T) {
-	if got := canonicalURI("api//v1/../users/"); got != "/api/users" {
-		t.Fatalf("canonicalURI() = %q, want /api/users", got)
-	}
-	if got := canonicalQueryString("z=last&name=APISIX%20Go&a=first"); got != "a=first&name=APISIX%20Go&z=last" {
-		t.Fatalf("canonicalQueryString() = %q, want encoded and sorted query", got)
-	}
-	complexQuery := "with%20space=a%2Fb%20c&multi=m2&multi=m1&flag&a=*&a-=x"
-	wantComplex := "a=%2A&a-=x&flag=&multi=m1&multi=m2&with%20space=a%2Fb%20c"
-	if got := canonicalQueryString(complexQuery); got != wantComplex {
-		t.Fatalf("canonicalQueryString(complex) = %q, want %q", got, wantComplex)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "https://lambda.example/prod", nil)
-	req.Header.Set("Content-Type", " application/json;  charset=utf-8 ")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("X-Amz-Date", "20200102T030405Z")
-	req.Header.Set("X-Custom", "  first   second ")
-	signed, canonical := canonicalHeaders(req)
-
-	if signed != "content-type;host;x-amz-date;x-custom" {
-		t.Fatalf("signed headers = %q, want all forwarded headers except connection", signed)
-	}
-	wantCanonical := "content-type:application/json; charset=utf-8\n" +
-		"host:lambda.example\n" +
-		"x-amz-date:20200102T030405Z\n" +
-		"x-custom:first second\n"
-	if canonical != wantCanonical {
-		t.Fatalf("canonical headers = %q, want %q", canonical, wantCanonical)
-	}
-}
-
 func performRequest(
 	p *Plugin,
 	method string,

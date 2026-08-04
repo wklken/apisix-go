@@ -3,7 +3,6 @@ package forward_auth
 import (
 	"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )

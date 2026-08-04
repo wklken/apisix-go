@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 // SignSessionValue signs a payload for a session cookie as

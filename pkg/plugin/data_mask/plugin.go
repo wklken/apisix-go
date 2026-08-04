@@ -2,7 +2,6 @@ package data_mask
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 

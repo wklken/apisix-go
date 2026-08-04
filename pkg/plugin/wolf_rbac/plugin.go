@@ -2,7 +2,6 @@ package wolf_rbac
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -255,7 +254,7 @@ func (p *Plugin) checkPermission(
 	defer func() { _ = resp.Body.Close() }()
 
 	var body permissionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := projectjson.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return resp.StatusCode, "check permission failed! parse response json failed!", nil, nil
 	}
 	return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
@@ -469,7 +468,7 @@ func (p *Plugin) requestWolf(
 	wolfToken string,
 	body map[string]any,
 ) (wolfPublicResponse, error) {
-	encoded, err := json.Marshal(body)
+	encoded, err := projectjson.Marshal(body)
 	if err != nil {
 		return wolfPublicResponse{}, err
 	}
@@ -494,7 +493,7 @@ func (p *Plugin) requestWolf(
 		return wolfPublicResponse{}, fmt.Errorf("wolf server returned %d", resp.StatusCode)
 	}
 	var result wolfPublicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := projectjson.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return wolfPublicResponse{}, err
 	}
 	return result, nil
@@ -503,7 +502,7 @@ func (p *Plugin) requestWolf(
 func requestArguments(r *http.Request) (map[string]any, error) {
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		var args map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
+		if err := projectjson.NewDecoder(r.Body).Decode(&args); err != nil {
 			return nil, err
 		}
 		return args, nil

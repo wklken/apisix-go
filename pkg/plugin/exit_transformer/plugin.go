@@ -1,7 +1,6 @@
 package exit_transformer
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )

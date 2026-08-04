@@ -2,9 +2,10 @@ package base
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 // JWTToken is the parsed representation of an unverified JWT.

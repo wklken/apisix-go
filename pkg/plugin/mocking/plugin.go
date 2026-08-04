@@ -2,7 +2,6 @@ package mocking
 
 import (
 	"bytes"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"math"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 

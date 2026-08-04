@@ -13,23 +13,12 @@ import (
 )
 
 var legacyEncodingJSONImports = map[string]struct{}{
-	"cmd/root.go":                               {},
-	"pkg/plugin/base/jwt.go":                    {},
-	"pkg/plugin/base/oauth_session.go":          {},
-	"pkg/plugin/data_mask/plugin.go":            {},
-	"pkg/plugin/elasticsearch_logger/plugin.go": {},
-	"pkg/plugin/exit_transformer/plugin.go":     {},
-	"pkg/plugin/expr/expression.go":             {},
-	"pkg/plugin/forward_auth/plugin.go":         {},
-	"pkg/plugin/grpc_transcode/plugin.go":       {},
-	"pkg/plugin/limit_count/plugin.go":          {},
-	"pkg/plugin/mocking/plugin.go":              {},
-	"pkg/plugin/response_rewrite/plugin.go":     {},
-	"pkg/plugin/server_info/plugin.go":          {},
-	"pkg/plugin/splunk_hec_logging/plugin.go":   {},
-	"pkg/plugin/wolf_rbac/plugin.go":            {},
-	"pkg/route/builder.go":                      {},
-	"pkg/server/server.go":                      {},
+	"cmd/root.go":                         {},
+	"pkg/plugin/expr/expression.go":       {},
+	"pkg/plugin/grpc_transcode/plugin.go": {},
+	"pkg/plugin/server_info/plugin.go":    {},
+	"pkg/route/builder.go":                {},
+	"pkg/server/server.go":                {},
 }
 
 func TestProductionCodeUsesProjectJSON(t *testing.T) {

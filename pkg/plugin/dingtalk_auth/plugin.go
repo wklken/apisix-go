@@ -2,11 +2,7 @@ package dingtalk_auth
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -202,12 +197,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		r.Header.Del("X-Userinfo")
 
 		if userinfo, ok := p.userInfoFromSession(r); ok {
-			p.attachUserInfo(r, userinfo)
+			base.AttachExternalUser(r, userinfo, p.config.SetUserInfoHeader)
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		code := p.codeFromRequest(r)
+		code := base.CodeFromRequest(r, p.config.CodeHeader, p.config.CodeQuery)
 		if code == "" {
 			http.Redirect(w, r, p.config.RedirectURI, http.StatusFound)
 			return
@@ -241,7 +236,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		http.SetCookie(w, cookie)
-		p.attachUserInfo(r, userinfo)
+		base.AttachExternalUser(r, userinfo, p.config.SetUserInfoHeader)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -353,7 +348,7 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 		return nil, false
 	}
 
-	payload, ok := p.verifySignedValue(cookie.Value)
+	payload, ok := base.VerifySessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
 	if !ok {
 		return nil, false
 	}
@@ -379,62 +374,11 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 
 	return &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    p.signValue(payload),
+		Value:    base.SignSessionValue(payload, p.config.Secret),
 		Path:     "/",
 		HttpOnly: true,
 		MaxAge:   p.config.CookieExpiresIn,
 	}, nil
-}
-
-func (p *Plugin) attachUserInfo(r *http.Request, userinfo map[string]any) {
-	if vars := apisixctx.GetApisixVars(r); vars != nil {
-		vars["$external_user"] = userinfo
-	}
-	if p.config.SetUserInfoHeader != nil && !*p.config.SetUserInfoHeader {
-		return
-	}
-	raw, err := json.Marshal(userinfo)
-	if err != nil {
-		return
-	}
-	r.Header.Set("X-Userinfo", base64.StdEncoding.EncodeToString(raw))
-}
-
-func (p *Plugin) codeFromRequest(r *http.Request) string {
-	if code := r.Header.Get(p.config.CodeHeader); code != "" {
-		return code
-	}
-	return r.URL.Query().Get(p.config.CodeQuery)
-}
-
-func (p *Plugin) signValue(value []byte) string {
-	payload := base64.RawURLEncoding.EncodeToString(value)
-	mac := hmac.New(sha256.New, []byte(p.config.Secret))
-	mac.Write([]byte(payload))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return payload + "." + signature
-}
-
-func (p *Plugin) verifySignedValue(signed string) ([]byte, bool) {
-	dot := strings.LastIndexByte(signed, '.')
-	if dot < 0 {
-		return nil, false
-	}
-	payload := signed[:dot]
-	signature, err := base64.RawURLEncoding.DecodeString(signed[dot+1:])
-	if err != nil {
-		return nil, false
-	}
-	for _, secret := range append([]string{p.config.Secret}, p.config.SecretFallbacks...) {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write([]byte(payload))
-		expected := mac.Sum(nil)
-		if subtle.ConstantTimeCompare(signature, expected) == 1 {
-			decoded, err := base64.RawURLEncoding.DecodeString(payload)
-			return decoded, err == nil
-		}
-	}
-	return nil, false
 }
 
 func (p *Plugin) transport() http.RoundTripper {

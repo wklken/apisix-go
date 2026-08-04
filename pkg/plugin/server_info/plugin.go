@@ -1,7 +1,6 @@
 package server_info
 
 import (
-	stdjson "encoding/json"
 	"net/http"
 	"os"
 	"time"
@@ -126,7 +125,7 @@ func reportTTLValue(value any) (int64, bool) {
 		return int64(v), float32(int64(v)) == v
 	case float64:
 		return int64(v), float64(int64(v)) == v
-	case stdjson.Number:
+	case json.Number:
 		parsed, err := v.Int64()
 		return parsed, err == nil
 	default:

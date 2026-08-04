@@ -1,11 +1,11 @@
 package workflow
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"

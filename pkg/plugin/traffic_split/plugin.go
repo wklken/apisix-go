@@ -3,7 +3,6 @@ package traffic_split
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -18,6 +17,7 @@ import (
 
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"

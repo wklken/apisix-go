@@ -1,12 +1,13 @@
 package expr
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 type Resolver func(name string) any

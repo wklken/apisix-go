@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,9 +23,9 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	"github.com/justinas/alice"
-	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -616,7 +615,7 @@ func (b *Builder) consumerPluginChain(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) (alice.Chain, error) {
-	encoded, err := stdjson.Marshal(pluginConfigs)
+	encoded, err := json.Marshal(pluginConfigs)
 	if err != nil {
 		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
 	}
@@ -832,12 +831,12 @@ func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
 	var body []byte
 	contentType := "text/plain; charset=utf-8"
 	if object, ok := value.(map[string]any); ok {
-		body, _ = stdjson.Marshal(object)
+		body, _ = json.Marshal(object)
 		contentType = "application/json"
 	} else if text, ok := value.(string); ok {
 		body = []byte(text)
 	} else {
-		body, _ = stdjson.Marshal(value)
+		body, _ = json.Marshal(value)
 		contentType = "application/json"
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -944,7 +943,7 @@ func parsePluginPriority(value any) (int, error) {
 				return priority, nil
 			}
 		}
-	case stdjson.Number:
+	case json.Number:
 		priority, err := strconv.ParseInt(string(number), 10, 64)
 		if err == nil {
 			return parsePluginPriority(priority)
@@ -1038,7 +1037,7 @@ func (b *Builder) initServicePluginsStrict(
 			continue
 		}
 
-		encoded, err := stdjson.Marshal(config)
+		encoded, err := json.Marshal(config)
 		if err != nil {
 			return nil, fmt.Errorf("marshal service plugin %s config: %w", name, err)
 		}
@@ -1339,7 +1338,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
-			_ = render.New().JSON(w, http.StatusBadRequest, err.Error())
+			_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		r = attachHTTPRetries(r, upstream, lb)
@@ -1470,7 +1469,7 @@ func normalizeKafkaSSLID(value any) (string, error) {
 			return "", fmt.Errorf("must not be empty")
 		}
 		return value, nil
-	case stdjson.Number:
+	case json.Number:
 		return normalizeKafkaSSLNumber(string(value))
 	case float64:
 		return normalizeKafkaSSLFloat(value)
@@ -1900,7 +1899,7 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		_ = render.New().JSON(w, status, err.Error())
+		_ = util.WriteJSON(w, status, err.Error())
 	}
 }
 

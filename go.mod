@@ -14,6 +14,7 @@ require (
 	github.com/apache/apisix-ingress-controller v1.8.4
 	github.com/apache/dubbo-go-hessian2 v1.13.1
 	github.com/apache/rocketmq-client-go/v2 v2.1.2
+	github.com/beevik/etree v1.5.0
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/casbin/govaluate v1.3.0
@@ -37,6 +38,7 @@ require (
 	github.com/redis/rueidis v1.0.76
 	github.com/riandyrn/otelchi v0.12.3
 	github.com/rs/cors v1.11.1
+	github.com/russellhaering/goxmldsig v1.4.0
 	github.com/samber/lo v1.53.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/segmentio/kafka-go v0.4.51
@@ -45,7 +47,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/ulule/limiter/v3 v3.11.2
-	github.com/unrolled/render v1.7.0
+	github.com/xdg-go/scram v1.1.2
 	github.com/yuin/gopher-lua v1.1.1
 	go.etcd.io/bbolt v1.5.0
 	go.etcd.io/etcd/client/v3 v3.6.13
@@ -54,6 +56,7 @@ require (
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
+	go.opentelemetry.io/proto/otlp v1.10.0
 	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/net v0.56.0
@@ -66,7 +69,6 @@ require (
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
-	github.com/beevik/etree v1.5.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -101,7 +103,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/russellhaering/goxmldsig v1.4.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
@@ -113,14 +114,12 @@ require (
 	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
-	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.13 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.13 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect

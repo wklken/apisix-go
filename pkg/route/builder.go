@@ -23,7 +23,6 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	"github.com/justinas/alice"
-	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -1339,7 +1338,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
-			_ = render.New().JSON(w, http.StatusBadRequest, err.Error())
+			_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		r = attachHTTPRetries(r, upstream, lb)
@@ -1900,7 +1899,7 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		_ = render.New().JSON(w, status, err.Error())
+		_ = util.WriteJSON(w, status, err.Error())
 	}
 }
 

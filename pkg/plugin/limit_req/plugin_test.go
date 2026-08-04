@@ -89,7 +89,7 @@ func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
 	if p.config.RedisSSLVerify == nil || *p.config.RedisSSLVerify {
 		t.Fatalf("RedisSSLVerify = %v, want false", p.config.RedisSSLVerify)
 	}
-	options := p.redisOptions()
+	options := p.redisConnConfig().Options()
 	if options.PoolSize != 100 || options.ConnMaxIdleTime != 10*time.Second {
 		t.Fatalf("redis pool = %d, idle timeout = %s", options.PoolSize, options.ConnMaxIdleTime)
 	}
@@ -170,7 +170,7 @@ func TestPostInitBuildsRedisClusterOptions(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	options := p.redisClusterOptions()
+	options := p.redisClusterConnConfig().ClusterOptions()
 	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
 		t.Fatalf("cluster addresses = %#v", options.Addrs)
 	}

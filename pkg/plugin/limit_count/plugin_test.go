@@ -118,7 +118,7 @@ func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
 	if p.config.Redis.RedisTimeout != 1500 {
 		t.Fatalf("Redis.RedisTimeout = %d, want 1500", p.config.Redis.RedisTimeout)
 	}
-	options := p.redisOptions()
+	options := p.redisConnConfig().Options()
 	if options.PoolSize != 80 || options.ConnMaxIdleTime != 12*time.Second {
 		t.Fatalf("Redis pool = %d, idle timeout = %s; want 80 and 12s", options.PoolSize, options.ConnMaxIdleTime)
 	}
@@ -298,7 +298,7 @@ func TestPostInitBuildsRedisClusterOptionsFromRootFields(t *testing.T) {
 		RedisKeepalivePool:    80,
 	})
 
-	options := p.redisClusterOptions()
+	options := p.redisClusterConnConfig().ClusterOptions()
 	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
 		t.Fatalf("cluster addresses = %#v", options.Addrs)
 	}
@@ -437,7 +437,7 @@ func TestPostInitResolvesRedisHostEnvironmentReference(t *testing.T) {
 	if p.config.Redis.RedisHost != "127.0.0.2" {
 		t.Fatalf("resolved Redis host = %q, want 127.0.0.2", p.config.Redis.RedisHost)
 	}
-	if options := p.redisOptions(); options.Addr != "127.0.0.2:6379" {
+	if options := p.redisConnConfig().Options(); options.Addr != "127.0.0.2:6379" {
 		t.Fatalf("Redis address = %q, want 127.0.0.2:6379", options.Addr)
 	}
 }
@@ -457,7 +457,7 @@ func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
 	if !slices.Equal(p.config.RedisCluster.RedisClusterNodes, want) {
 		t.Fatalf("resolved Redis cluster nodes = %#v, want %#v", p.config.RedisCluster.RedisClusterNodes, want)
 	}
-	if options := p.redisClusterOptions(); !slices.Equal(options.Addrs, want) {
+	if options := p.redisClusterConnConfig().ClusterOptions(); !slices.Equal(options.Addrs, want) {
 		t.Fatalf("Redis cluster addresses = %#v, want %#v", options.Addrs, want)
 	}
 }

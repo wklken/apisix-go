@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	stdjson "encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -244,20 +243,20 @@ func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
 		if err := yaml.Unmarshal(data, &document); err != nil {
 			return nil, fmt.Errorf("parse standalone YAML config %q: %w", path, err)
 		}
-		encoded, err = stdjson.Marshal(document)
+		encoded, err = json.Marshal(document)
 		if err != nil {
 			return nil, fmt.Errorf("normalize standalone config %q: %w", path, err)
 		}
 	} else {
-		var document map[string]stdjson.RawMessage
-		if err := stdjson.Unmarshal(data, &document); err != nil {
+		var document map[string]json.RawMessage
+		if err := json.Unmarshal(data, &document); err != nil {
 			return nil, fmt.Errorf("parse standalone JSON config %q: %w", path, err)
 		}
 		encoded = data
 	}
 
-	var sections map[string]stdjson.RawMessage
-	if err := stdjson.Unmarshal(encoded, &sections); err != nil {
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &sections); err != nil {
 		return nil, fmt.Errorf("decode standalone resources %q: %w", path, err)
 	}
 
@@ -267,8 +266,8 @@ func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
 		if !ok {
 			continue
 		}
-		var resources []stdjson.RawMessage
-		if err := stdjson.Unmarshal(raw, &resources); err != nil {
+		var resources []json.RawMessage
+		if err := json.Unmarshal(raw, &resources); err != nil {
 			return nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
 		}
 		for _, resource := range resources {
@@ -285,9 +284,9 @@ func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
 	return snapshot, nil
 }
 
-func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string, []byte, error) {
-	var fields map[string]stdjson.RawMessage
-	if err := stdjson.Unmarshal(raw, &fields); err != nil {
+func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return "", nil, err
 	}
 
@@ -296,7 +295,7 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 		keys = []string{"username", "id"}
 	}
 	var idKey string
-	var idRaw stdjson.RawMessage
+	var idRaw json.RawMessage
 	for _, key := range keys {
 		if value, ok := fields[key]; ok {
 			idKey = key
@@ -312,14 +311,14 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 		return "", nil, err
 	}
 	if idKey == "id" {
-		fields[idKey], err = stdjson.Marshal(id)
+		fields[idKey], err = json.Marshal(id)
 		if err != nil {
 			return "", nil, err
 		}
 	}
 	if rawPlugins, ok := fields["plugins"]; ok {
 		var plugins map[string]any
-		if err := stdjson.Unmarshal(rawPlugins, &plugins); err != nil {
+		if err := json.Unmarshal(rawPlugins, &plugins); err != nil {
 			return "", nil, fmt.Errorf("decode plugins: %w", err)
 		}
 		keyring, enabled := data_encryption.Keyring()
@@ -327,7 +326,7 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 			if err := data_encryption.EncryptPluginConfigs(plugins, keyring); err != nil {
 				return "", nil, fmt.Errorf("encrypt plugin fields: %w", err)
 			}
-			fields["plugins"], err = stdjson.Marshal(plugins)
+			fields["plugins"], err = json.Marshal(plugins)
 			if err != nil {
 				return "", nil, fmt.Errorf("encode encrypted plugins: %w", err)
 			}
@@ -336,35 +335,35 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 	if bucket == "plugin_metadata" {
 		keyring, enabled := data_encryption.Keyring()
 		if enabled && data_encryption.HasEncryptedPluginMetadata(id) {
-			encoded, err := stdjson.Marshal(fields)
+			encoded, err := json.Marshal(fields)
 			if err != nil {
 				return "", nil, fmt.Errorf("encode plugin metadata: %w", err)
 			}
 			var metadata map[string]any
-			if err := stdjson.Unmarshal(encoded, &metadata); err != nil {
+			if err := json.Unmarshal(encoded, &metadata); err != nil {
 				return "", nil, fmt.Errorf("decode plugin metadata: %w", err)
 			}
 			if err := data_encryption.EncryptPluginMetadata(id, metadata, keyring); err != nil {
 				return "", nil, fmt.Errorf("encrypt plugin metadata fields: %w", err)
 			}
-			encoded, err = stdjson.Marshal(metadata)
+			encoded, err = json.Marshal(metadata)
 			if err != nil {
 				return "", nil, fmt.Errorf("encode encrypted plugin metadata: %w", err)
 			}
-			if err := stdjson.Unmarshal(encoded, &fields); err != nil {
+			if err := json.Unmarshal(encoded, &fields); err != nil {
 				return "", nil, fmt.Errorf("decode encrypted plugin metadata: %w", err)
 			}
 		}
 	}
-	value, err := stdjson.Marshal(fields)
+	value, err := json.Marshal(fields)
 	if err != nil {
 		return "", nil, err
 	}
 	return id, value, nil
 }
 
-func standaloneResourceID(raw stdjson.RawMessage) (string, error) {
-	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
+func standaloneResourceID(raw json.RawMessage) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
@@ -376,7 +375,7 @@ func standaloneResourceID(raw stdjson.RawMessage) (string, error) {
 			return "", fmt.Errorf("id is empty")
 		}
 		return value, nil
-	case stdjson.Number:
+	case json.Number:
 		return value.String(), nil
 	default:
 		return "", fmt.Errorf("id must be a string or number")

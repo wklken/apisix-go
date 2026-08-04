@@ -3,7 +3,6 @@ package log_rotate
 import (
 	"archive/tar"
 	"compress/gzip"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
@@ -64,11 +64,11 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type configAlias Config
 	var decoded configAlias
-	if err := stdjson.Unmarshal(data, &decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	var fields map[string]stdjson.RawMessage
-	if err := stdjson.Unmarshal(data, &fields); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	*c = Config(decoded)

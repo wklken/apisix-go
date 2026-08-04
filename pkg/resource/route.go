@@ -1,11 +1,12 @@
 package resource
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 //	{

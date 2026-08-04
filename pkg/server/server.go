@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -24,6 +23,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
@@ -612,7 +612,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 			nodeID,
 			server_info.ReportTTL(),
 			func() ([]byte, error) {
-				return stdjson.Marshal(server_info.CurrentInfo())
+				return json.Marshal(server_info.CurrentInfo())
 			},
 		)
 		if err != nil {

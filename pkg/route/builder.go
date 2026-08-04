@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +26,7 @@ import (
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -616,7 +616,7 @@ func (b *Builder) consumerPluginChain(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) (alice.Chain, error) {
-	encoded, err := stdjson.Marshal(pluginConfigs)
+	encoded, err := json.Marshal(pluginConfigs)
 	if err != nil {
 		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
 	}
@@ -832,12 +832,12 @@ func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
 	var body []byte
 	contentType := "text/plain; charset=utf-8"
 	if object, ok := value.(map[string]any); ok {
-		body, _ = stdjson.Marshal(object)
+		body, _ = json.Marshal(object)
 		contentType = "application/json"
 	} else if text, ok := value.(string); ok {
 		body = []byte(text)
 	} else {
-		body, _ = stdjson.Marshal(value)
+		body, _ = json.Marshal(value)
 		contentType = "application/json"
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -944,7 +944,7 @@ func parsePluginPriority(value any) (int, error) {
 				return priority, nil
 			}
 		}
-	case stdjson.Number:
+	case json.Number:
 		priority, err := strconv.ParseInt(string(number), 10, 64)
 		if err == nil {
 			return parsePluginPriority(priority)
@@ -1038,7 +1038,7 @@ func (b *Builder) initServicePluginsStrict(
 			continue
 		}
 
-		encoded, err := stdjson.Marshal(config)
+		encoded, err := json.Marshal(config)
 		if err != nil {
 			return nil, fmt.Errorf("marshal service plugin %s config: %w", name, err)
 		}
@@ -1470,7 +1470,7 @@ func normalizeKafkaSSLID(value any) (string, error) {
 			return "", fmt.Errorf("must not be empty")
 		}
 		return value, nil
-	case stdjson.Number:
+	case json.Number:
 		return normalizeKafkaSSLNumber(string(value))
 	case float64:
 		return normalizeKafkaSSLFloat(value)

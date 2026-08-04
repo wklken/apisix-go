@@ -12,11 +12,7 @@ import (
 	"testing"
 )
 
-var legacyEncodingJSONImports = map[string]struct{}{
-	"cmd/root.go":          {},
-	"pkg/route/builder.go": {},
-	"pkg/server/server.go": {},
-}
+var legacyEncodingJSONImports = map[string]struct{}{}
 
 func TestProductionCodeUsesProjectJSON(t *testing.T) {
 	root := repositoryRoot(t)

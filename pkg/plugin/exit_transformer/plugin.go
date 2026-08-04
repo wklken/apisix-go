@@ -1,7 +1,6 @@
 package exit_transformer
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -87,13 +86,13 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
 		resp := exitResponse{
-			status: recorder.statusCode,
-			body:   recorder.body.Bytes(),
-			header: recorder.header.Clone(),
+			status: recorder.StatusCode(),
+			body:   recorder.Body(),
+			header: recorder.Header().Clone(),
 		}
 		if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
 			writeResponse(w, resp)
@@ -226,39 +225,6 @@ func normalizeBody(status int, body []byte) []byte {
 		return body
 	}
 	return encoded
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
 }
 
 func writeResponse(w http.ResponseWriter, resp exitResponse) {

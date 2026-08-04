@@ -1,7 +1,6 @@
 package proxy_cache
 
 import (
-	"bytes"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
@@ -514,13 +513,6 @@ type diskVaryIndex struct {
 	Headers    []string  `json:"headers"`
 	Signatures []string  `json:"signatures"`
 	ExpiresAt  time.Time `json:"expires_at"`
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
 }
 
 func (p *Plugin) Config() any {
@@ -1106,33 +1098,30 @@ func (p *Plugin) fetchAndMaybeStore(
 	cacheStatus string,
 	shouldStore bool,
 ) {
-	recorder := newResponseRecorder()
+	recorder := base.NewBufferedResponseWriter()
 	next.ServeHTTP(recorder, r)
-	if recorder.statusCode == 0 {
-		recorder.statusCode = http.StatusOK
-	}
 
 	if p.hasTruthyValue(r, p.config.NoCache) {
 		shouldStore = false
 		cacheStatus = "EXPIRED"
 	}
-	if responseCacheControlSkipsStore(recorder.header) {
+	if responseCacheControlSkipsStore(recorder.Header()) {
 		shouldStore = false
 	}
 	cacheTTL := time.Duration(p.config.CacheTTL) * time.Second
 	if shouldStore && p.cacheControlEnabled() {
 		var ok bool
-		cacheTTL, ok = responseCacheControlTTL(recorder.header)
+		cacheTTL, ok = responseCacheControlTTL(recorder.Header())
 		if !ok {
 			shouldStore = false
 		}
 	}
-	if shouldStore && p.cacheableStatus(recorder.statusCode) &&
-		(p.cacheSetCookieEnabled() || recorder.header.Get("Set-Cookie") == "") {
+	if shouldStore && p.cacheableStatus(recorder.StatusCode()) &&
+		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
 		p.store(r, key, recorder, cacheTTL)
 	}
-	recorder.header.Set(cacheStatusHeader, cacheStatus)
-	recorder.writeTo(w)
+	recorder.Header().Set(cacheStatusHeader, cacheStatus)
+	recorder.Commit(w)
 }
 
 func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
@@ -1204,17 +1193,17 @@ func (p *Plugin) purgeAllLocked(key string) bool {
 	return baseOK || indexOK
 }
 
-func (p *Plugin) store(r *http.Request, key string, recorder *responseRecorder, ttl time.Duration) {
-	varyHeaders, cacheable := parseVaryHeader(recorder.header)
+func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter, ttl time.Duration) {
+	varyHeaders, cacheable := parseVaryHeader(recorder.Header())
 	if !cacheable {
 		return
 	}
 
 	now := time.Now()
 	entry := cacheEntry{
-		header:    cloneHeader(recorder.header),
-		body:      append([]byte(nil), recorder.body.Bytes()...),
-		status:    recorder.statusCode,
+		header:    cloneHeader(recorder.Header()),
+		body:      append([]byte(nil), recorder.Body()...),
+		status:    recorder.StatusCode(),
 		storedAt:  now,
 		ttl:       ttl,
 		expiresAt: now.Add(ttl),
@@ -1526,42 +1515,6 @@ func cacheControlValueDirective(value string, names ...string) (string, bool) {
 		}
 	}
 	return found, ok
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     http.Header{},
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }
 
 func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus string) {

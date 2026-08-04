@@ -81,80 +81,36 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		recorder := newResponseRecorder()
+		recorder := base.NewBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
 		p.rewrite(recorder)
-		recorder.writeTo(w)
+		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) rewrite(resp *responseRecorder) {
+func (p *Plugin) rewrite(resp *base.BufferedResponseWriter) {
 	bodyChanged := false
 	if p.config.Body != "" {
-		resp.body = []byte(p.config.Body)
+		resp.SetBody([]byte(p.config.Body))
 		bodyChanged = true
 	} else {
 		if p.config.BeforeBody != "" {
-			resp.body = append([]byte(p.config.BeforeBody), resp.body...)
+			resp.SetBody(append([]byte(p.config.BeforeBody), resp.Body()...))
 			bodyChanged = true
 		}
 		if p.config.AfterBody != "" {
-			resp.body = append(resp.body, []byte(p.config.AfterBody)...)
+			resp.SetBody(append(resp.Body(), []byte(p.config.AfterBody)...))
 			bodyChanged = true
 		}
 	}
 
 	if bodyChanged {
-		resp.header.Del("Content-Length")
+		resp.Header().Del("Content-Length")
 	}
 
 	for field, value := range p.config.Headers {
-		resp.header.Set(field, fmt.Sprint(value))
+		resp.Header().Set(field, fmt.Sprint(value))
 	}
-}
-
-type responseRecorder struct {
-	header      http.Header
-	body        []byte
-	statusCode  int
-	wroteHeader bool
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	r.body = append(r.body, body...)
-	return len(body), nil
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body)
 }

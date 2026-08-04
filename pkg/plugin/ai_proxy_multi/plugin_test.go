@@ -15,6 +15,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -1131,14 +1132,14 @@ func TestHandlerBuildsAndSignsBedrockConverseInstance(t *testing.T) {
 
 func TestAppendBedrockEndpointEscapesARNModelAsOnePathSegment(t *testing.T) {
 	const model = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123"
-	got, err := appendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
+	got, err := ai_common.AppendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
 	if err != nil {
-		t.Fatalf("appendBedrockEndpoint() error = %v", err)
+		t.Fatalf("ai_common.AppendBedrockEndpoint() error = %v", err)
 	}
 	const want = "https://bedrock-runtime.us-east-1.amazonaws.com/model/" +
 		"arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse"
 	if got != want {
-		t.Fatalf("appendBedrockEndpoint() = %q, want %q", got, want)
+		t.Fatalf("ai_common.AppendBedrockEndpoint() = %q, want %q", got, want)
 	}
 }
 

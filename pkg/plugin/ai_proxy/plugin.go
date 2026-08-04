@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
@@ -526,7 +527,7 @@ func (p *Plugin) prepareProviderRequest(
 	prepared := preparedProviderRequest{
 		clientBody: body, providerBody: body, clientProtocol: protocol, providerProtocol: protocol,
 	}
-	if protocol != ai_protocols.AnthropicMessages || !providerUsesOpenAIChat(p.config.Provider) {
+	if protocol != ai_protocols.AnthropicMessages || !ai_common.ProviderUsesOpenAIChat(p.config.Provider) {
 		return prepared, nil
 	}
 	converted, toolNameMap, err := ai_protocols.ConvertAnthropicMessagesToOpenAI(body)
@@ -552,16 +553,6 @@ func (p *Plugin) prepareProviderRequest(
 	prepared.toolNameMap = toolNameMap
 	prepared.anthropicConversion = true
 	return prepared, nil
-}
-
-func providerUsesOpenAIChat(provider string) bool {
-	switch provider {
-	case "openai", "deepseek", "aimlapi", "openai-compatible", "azure-openai", "openrouter", "gemini",
-		"vertex-ai":
-		return true
-	default:
-		return false
-	}
 }
 
 func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, error) {
@@ -599,13 +590,13 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, ai_protocols.Protocol{}, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-	originalBody := cloneJSONValue(bodyTab).(map[string]any)
+	originalBody := ai_common.CloneJSONValue(bodyTab).(map[string]any)
 	protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 	if err != nil {
 		return nil, ai_protocols.Protocol{}, err
 	}
 	maps.Copy(bodyTab, p.config.Options)
-	if protocol != ai_protocols.AnthropicMessages || !providerUsesOpenAIChat(p.config.Provider) {
+	if protocol != ai_protocols.AnthropicMessages || !ai_common.ProviderUsesOpenAIChat(p.config.Provider) {
 		p.applyLLMOptions(bodyTab, protocol)
 		if ai_protocols.IsStreaming(protocol, bodyTab) && protocol == ai_protocols.OpenAIChat {
 			bodyTab["stream_options"] = map[string]any{"include_usage": true}
@@ -630,14 +621,14 @@ func (p *Plugin) applyRequestBodyOverride(body map[string]any, protocol ai_proto
 		return
 	}
 	force := p.config.Override.RequestBodyForceOverride != nil && *p.config.Override.RequestBodyForceOverride
-	mergeBodyMap(body, override, force)
+	ai_common.MergeBodyMap(body, override, force)
 }
 
 func (p *Plugin) requestBodyOverride(protocol ai_protocols.Protocol) map[string]any {
 	if len(p.config.Override.RequestBody) == 0 {
 		return nil
 	}
-	if override, ok := asAnyMap(p.config.Override.RequestBody[protocol.OverrideKey]); ok {
+	if override, ok := ai_common.AsAnyMap(p.config.Override.RequestBody[protocol.OverrideKey]); ok {
 		return override
 	}
 	if hasProtocolRequestBodyOverride(p.config.Override.RequestBody) {
@@ -658,45 +649,6 @@ func hasProtocolRequestBodyOverride(values map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func mergeBodyMap(dst map[string]any, override map[string]any, force bool) {
-	for key, overrideValue := range override {
-		currentValue, exists := dst[key]
-		currentMap, currentIsMap := asAnyMap(currentValue)
-		overrideMap, overrideIsMap := asAnyMap(overrideValue)
-		if exists && currentIsMap && overrideIsMap {
-			mergeBodyMap(currentMap, overrideMap, force)
-			continue
-		}
-		if !exists || force {
-			dst[key] = cloneJSONValue(overrideValue)
-		}
-	}
-}
-
-func asAnyMap(value any) (map[string]any, bool) {
-	out, ok := value.(map[string]any)
-	return out, ok
-}
-
-func cloneJSONValue(value any) any {
-	switch v := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[key] = cloneJSONValue(item)
-		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = cloneJSONValue(item)
-		}
-		return out
-	default:
-		return value
-	}
 }
 
 func (p *Plugin) applyProviderBodyRules(body map[string]any) {
@@ -770,7 +722,7 @@ func (p *Plugin) buildProviderRequest(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM request: %w", err)
 	}
-	copyForwardHeaders(req.Header, r.Header)
+	ai_common.CopyForwardHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
 	for header, value := range p.config.Auth.Header {
 		req.Header.Set(header, value)
@@ -834,28 +786,16 @@ func (p *Plugin) finalProviderBody(body []byte, protocol ai_protocols.Protocol) 
 	return encoded, nil
 }
 
-func copyForwardHeaders(dst, src http.Header) {
-	for field, values := range src {
-		switch strings.ToLower(field) {
-		case "host", "content-length", "accept-encoding":
-			continue
-		}
-		for _, value := range values {
-			dst.Add(field, value)
-		}
-	}
-}
-
 func (p *Plugin) endpoint(protocol ai_protocols.Protocol, body []byte) (string, error) {
 	if p.config.Override.Endpoint != "" {
 		if protocol == ai_protocols.Passthrough {
 			return p.config.Override.Endpoint, nil
 		}
 		if p.config.Provider == "openai" || p.config.Provider == "openai-compatible" {
-			return appendProtocolEndpoint(p.config.Override.Endpoint, protocol)
+			return ai_common.AppendProtocolEndpoint(p.config.Override.Endpoint, protocol)
 		}
 		if p.config.Provider == "bedrock" {
-			return appendBedrockEndpoint(
+			return ai_common.AppendBedrockEndpoint(
 				p.config.Override.Endpoint,
 				p.requestModel(body),
 				requestIsStreaming(body, protocol),
@@ -879,7 +819,7 @@ func (p *Plugin) endpoint(protocol ai_protocols.Protocol, body []byte) (string, 
 		return "https://api.anthropic.com" + protocol.Endpoint, nil
 	case "bedrock":
 		region, _ := p.config.ProviderConf["region"].(string)
-		return appendBedrockEndpoint(
+		return ai_common.AppendBedrockEndpoint(
 			"https://bedrock-runtime."+region+".amazonaws.com",
 			p.requestModel(body),
 			requestIsStreaming(body, protocol),
@@ -920,40 +860,6 @@ func (p *Plugin) requestModel(body []byte) string {
 		return model
 	}
 	return modelFromBody(body)
-}
-
-func appendBedrockEndpoint(endpoint string, model string, streaming bool) (string, error) {
-	if model == "" {
-		return "", fmt.Errorf("bedrock requires options.model or request body model")
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse Bedrock endpoint: %w", err)
-	}
-	if parsed.Path != "" && parsed.Path != "/" {
-		return endpoint, nil
-	}
-	suffix := "/converse"
-	if streaming {
-		suffix = "/converse-stream"
-	}
-	parsed.Path = "/model/" + model + suffix
-	parsed.RawPath = "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + suffix
-	return parsed.String(), nil
-}
-
-func appendProtocolEndpoint(endpoint string, protocol ai_protocols.Protocol) (string, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse OpenAI-compatible endpoint: %w", err)
-	}
-	switch strings.TrimRight(parsed.Path, "/") {
-	case "", "/v1":
-		parsed.Path = protocol.Endpoint
-	default:
-		return endpoint, nil
-	}
-	return parsed.String(), nil
 }
 
 func (p *Plugin) writeProviderResponse(

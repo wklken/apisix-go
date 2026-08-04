@@ -20,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	observabilitymetrics "github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -1022,14 +1023,14 @@ func TestHandlerBuildsAndSignsBedrockConverseRequest(t *testing.T) {
 
 func TestAppendBedrockEndpointEscapesARNModelAsOnePathSegment(t *testing.T) {
 	const model = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123"
-	got, err := appendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
+	got, err := ai_common.AppendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", model, false)
 	if err != nil {
-		t.Fatalf("appendBedrockEndpoint() error = %v", err)
+		t.Fatalf("ai_common.AppendBedrockEndpoint() error = %v", err)
 	}
 	const want = "https://bedrock-runtime.us-east-1.amazonaws.com/model/" +
 		"arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse"
 	if got != want {
-		t.Fatalf("appendBedrockEndpoint() = %q, want %q", got, want)
+		t.Fatalf("ai_common.AppendBedrockEndpoint() = %q, want %q", got, want)
 	}
 }
 
@@ -1906,12 +1907,12 @@ func TestOpenAICompatibleEndpointUsesProtocolPathOnlyForHostOverride(t *testing.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := appendProtocolEndpoint(tt.endpoint, ai_protocols.OpenAIResponses)
+			got, err := ai_common.AppendProtocolEndpoint(tt.endpoint, ai_protocols.OpenAIResponses)
 			if err != nil {
-				t.Fatalf("appendProtocolEndpoint() error = %v", err)
+				t.Fatalf("ai_common.AppendProtocolEndpoint() error = %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("appendProtocolEndpoint() = %q, want %q", got, tt.want)
+				t.Fatalf("ai_common.AppendProtocolEndpoint() = %q, want %q", got, tt.want)
 			}
 		})
 	}

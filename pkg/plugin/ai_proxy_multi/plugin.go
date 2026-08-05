@@ -993,7 +993,7 @@ func (p *Plugin) prepareInstanceRequest(
 		clientProtocol:   protocol,
 		providerProtocol: protocol,
 	}
-	if protocol != ai_protocols.AnthropicMessages || !instanceUsesOpenAIChat(instance.Provider) {
+	if protocol != ai_protocols.AnthropicMessages || !ai_common.ProviderUsesOpenAIChat(instance.Provider) {
 		providerBody, providerDocument, err := p.providerBody(body, document, protocol, instance)
 		prepared.providerBody = providerBody
 		prepared.providerDocument = providerDocument
@@ -1024,16 +1024,6 @@ func (p *Plugin) prepareInstanceRequest(
 	prepared.toolNameMap = toolNameMap
 	prepared.anthropicConversion = true
 	return prepared, nil
-}
-
-func instanceUsesOpenAIChat(provider string) bool {
-	switch provider {
-	case "openai", "deepseek", "aimlapi", "openai-compatible", "azure-openai", "openrouter", "gemini",
-		"vertex-ai":
-		return true
-	default:
-		return false
-	}
 }
 
 func (p *Plugin) providerBody(

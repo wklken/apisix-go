@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
@@ -47,6 +48,23 @@ func TestReadRequestBodyRestoresRequestBody(t *testing.T) {
 	}
 	if string(restored) != "payload" {
 		t.Fatalf("restored body = %q, want payload", restored)
+	}
+}
+
+func TestReadSharedRequestBodyUsesCurrentBodyAfterEarlierCache(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("original"))
+	r = apisixctx.WithRequestVars(r)
+	if _, err := apisixctx.ReadRequestBody(r); err != nil {
+		t.Fatalf("cache original request body: %v", err)
+	}
+	ReplaceRequestBody(r, []byte("rewritten"))
+
+	body, err := ReadSharedRequestBody(r, 0)
+	if err != nil {
+		t.Fatalf("ReadSharedRequestBody() error = %v", err)
+	}
+	if body != "rewritten" {
+		t.Fatalf("ReadSharedRequestBody() = %q, want rewritten", body)
 	}
 }
 
@@ -94,6 +112,72 @@ func TestRequestVarReadsApisixContext(t *testing.T) {
 
 	if got := RequestVar(r, "$route_id", 0); got != "route-1" {
 		t.Fatalf("RequestVar() = %q, want route-1", got)
+	}
+}
+
+func TestSharedResponseRecorderReusesAdjacentLoggerWriter(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	outer := GetOrCreateSharedResponseRecorderWithLimit(httptest.NewRecorder(), r, 0)
+	inner := GetOrCreateSharedResponseRecorderWithLimit(outer, r, 0)
+	if inner != outer {
+		t.Fatal("adjacent loggers should share one response recorder")
+	}
+}
+
+func TestSharedResponseRecorderReusesCaptureThroughMetricsWrapper(t *testing.T) {
+	destination := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	outer := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 4)
+	wrapped := httpsnoop.Wrap(outer, httpsnoop.Hooks{})
+	inner := GetOrCreateSharedResponseRecorderWithLimit(wrapped, r, 8)
+
+	_, _ = inner.Write([]byte("abcdefgh"))
+	if got := outer.Body(); got != "abcdefgh" {
+		t.Fatalf("outer captured body = %q, want shared eight-byte capture", got)
+	}
+	if got := inner.Body(); got != "abcdefgh" {
+		t.Fatalf("inner captured body = %q, want shared eight-byte capture", got)
+	}
+}
+
+func TestSharedResponseRecorderDoesNotBypassResponseTransformer(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	destination := httptest.NewRecorder()
+	outer := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 0)
+	transform := NewBufferedResponseWriter()
+	inner := GetOrCreateSharedResponseRecorderWithLimit(transform, r, 0)
+	if inner == outer {
+		t.Fatal("logger separated by a response transformer must not reuse the outer recorder")
+	}
+
+	_, _ = inner.Write([]byte("upstream"))
+	transform.SetBody([]byte("transformed"))
+	transform.Commit(outer)
+
+	if got := destination.Body.String(); got != "transformed" {
+		t.Fatalf("destination body = %q, want transformed", got)
+	}
+	if got := outer.Body(); got != "transformed" {
+		t.Fatalf("outer logger body = %q, want transformed", got)
+	}
+	if got := inner.Body(); got != "upstream" {
+		t.Fatalf("inner logger body = %q, want upstream", got)
+	}
+}
+
+func TestSharedResponseRecorderCaptureLimit(t *testing.T) {
+	destination := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 4)
+	written, err := recorder.Write([]byte("abcdefgh"))
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if written != 8 || destination.Body.String() != "abcdefgh" {
+		t.Fatalf("forwarded response = %q (%d bytes), want abcdefgh (8 bytes)", destination.Body.String(), written)
+	}
+	if recorder.Body() != "abcd" {
+		t.Fatalf("captured response = %q, want abcd", recorder.Body())
 	}
 }
 

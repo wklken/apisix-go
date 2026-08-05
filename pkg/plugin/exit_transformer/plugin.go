@@ -86,7 +86,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorder := base.NewBufferedResponseWriter()
+		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 
 		resp := exitResponse{
@@ -234,5 +234,9 @@ func writeResponse(w http.ResponseWriter, resp exitResponse) {
 		}
 	}
 	w.WriteHeader(resp.status)
-	_, _ = w.Write(resp.body)
+	if brw, ok := w.(*base.BufferedResponseWriter); ok {
+		brw.SetBody(resp.body)
+	} else {
+		_, _ = w.Write(resp.body)
+	}
 }

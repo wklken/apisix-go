@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sort"
 
@@ -244,6 +245,7 @@ func ParseConsumer(config []byte) (resource.Consumer, error) {
 		return c, err
 	}
 	decryptPluginConfigs(c.Plugins)
+	c.ConfigDigest = sha256.Sum256(config)
 	return c, nil
 }
 
@@ -254,6 +256,7 @@ func ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
 		return c, err
 	}
 	decryptPluginConfigs(c.Plugins)
+	c.ConfigDigest = sha256.Sum256(config)
 	return c, nil
 }
 

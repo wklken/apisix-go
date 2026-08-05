@@ -502,7 +502,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := base.NewBufferedResponseWriter()
+		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 		if len(p.config.Rules) == 0 {
 			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {

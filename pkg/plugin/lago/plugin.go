@@ -308,7 +308,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var requestBody string
 		if p.config.IncludeReqBody {
-			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}

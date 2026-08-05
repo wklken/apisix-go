@@ -317,7 +317,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		recorder := base.NewBufferedResponseWriter()
+		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 
 		if p.varsMatched(r, recorder) {
@@ -539,7 +539,7 @@ func writeRewrittenResponse(w http.ResponseWriter, resp *base.BufferedResponseWr
 		}
 	}
 	w.WriteHeader(resp.StatusCode())
-	_, _ = w.Write(resp.Body())
+	resp.WriteBodyTo(w)
 }
 
 func jsonUnmarshal(data []byte, v any) error {

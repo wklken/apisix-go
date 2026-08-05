@@ -2,6 +2,7 @@ package gzip
 
 import (
 	"bytes"
+	"compress/flate"
 	cgzip "compress/gzip"
 	"io"
 	"net/http"
@@ -90,6 +91,40 @@ func TestHandlerWildcardTypesCompressesAnyContentType(t *testing.T) {
 	}
 	if decoded := decodeGzip(t, res.Body.Bytes()); decoded != `{"ok":true}` {
 		t.Fatalf("decoded body = %q, want JSON", decoded)
+	}
+}
+
+func TestHandlerCompressesMultipleWritesOnce(t *testing.T) {
+	for _, acceptEncoding := range []string{"gzip", "deflate"} {
+		t.Run(acceptEncoding, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+			req := httptest.NewRequest(http.MethodGet, "/text", nil)
+			req.Header.Set("Accept-Encoding", acceptEncoding)
+			res := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("hello "))
+				_, _ = w.Write([]byte("world"))
+			})).ServeHTTP(res, req)
+
+			var decoded string
+			if acceptEncoding == "gzip" {
+				decoded = decodeGzip(t, res.Body.Bytes())
+			} else {
+				reader := flate.NewReader(bytes.NewReader(res.Body.Bytes()))
+				decompressed, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatalf("decode deflate: %v", err)
+				}
+				_ = reader.Close()
+				decoded = string(decompressed)
+			}
+			if decoded != "hello world" {
+				t.Fatalf("decoded body = %q, want hello world", decoded)
+			}
+		})
 	}
 }
 

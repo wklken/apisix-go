@@ -363,19 +363,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var requestBody string
 		captureRequestBody := p.config.IncludeReqBody || logFormatContains(p.logFormat, "$request_body")
 		if captureRequestBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}
 		}
 
 		writer := w
-		var recorder *base.ResponseRecorder
+		var recorder *base.SharedResponseRecorder
 		captureResponseBody := p.config.IncludeRespBody ||
 			logFormatContains(p.logFormat, "$resp_body") ||
 			len(p.logFormat) == 0
 		if captureResponseBody {
-			recorder = base.NewResponseRecorder(w, p.config.MaxRespBodyBytes)
+			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
 			writer = recorder
 		}
 
@@ -385,7 +385,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var responseBody string
 		if recorder != nil && recorder.HasBody() &&
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			responseBody = decodeResponseBody(recorder.Body(), w.Header().Get("Content-Encoding"))
+			responseBody = decodeResponseBody(
+				recorder.BodyTruncated(p.config.MaxRespBodyBytes),
+				w.Header().Get("Content-Encoding"),
+			)
 		}
 
 		var logFields map[string]any

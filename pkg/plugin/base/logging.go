@@ -2,6 +2,7 @@ package base
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -251,4 +252,177 @@ func RequestVar(r *http.Request, name string, status int) string {
 		}
 		return ""
 	}
+}
+
+type sharedRequestBodyContextKey struct{}
+
+type sharedRequestBodyCapture struct {
+	body []byte
+	err  error
+}
+
+// ReadSharedRequestBody returns the current request body up to limit bytes.
+// The first logger captures and restores r.Body, then adjacent logger plugins
+// reuse that capture. This cache is separate from the request-variable body
+// cache because higher-priority plugins may rewrite r.Body after validation.
+func ReadSharedRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	capture, _ := r.Context().Value(sharedRequestBodyContextKey{}).(*sharedRequestBodyCapture)
+	if capture == nil {
+		body, err := ReadRequestBody(r)
+		capture = &sharedRequestBodyCapture{body: body, err: err}
+		*r = *r.WithContext(context.WithValue(r.Context(), sharedRequestBodyContextKey{}, capture))
+	}
+	if capture.err != nil {
+		return "", capture.err
+	}
+	body := capture.body
+	if len(body) == 0 {
+		return "", nil
+	}
+	if limit > 0 && limit < len(body) {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+type sharedResponseCapture struct {
+	buf      bytes.Buffer
+	status   int
+	maxBytes int
+}
+
+// SharedResponseRecorder captures response body once per request and is shared
+// across multiple logger plugins to avoid O(logger × body) buffer duplication.
+type SharedResponseRecorder struct {
+	http.ResponseWriter
+	capture     *sharedResponseCapture
+	forwardOnly bool
+}
+
+// NewSharedResponseRecorder creates a new shared response recorder wrapping w.
+func NewSharedResponseRecorder(w http.ResponseWriter) *SharedResponseRecorder {
+	return &SharedResponseRecorder{
+		ResponseWriter: w,
+		capture:        &sharedResponseCapture{},
+	}
+}
+
+func (w *SharedResponseRecorder) WriteHeader(status int) {
+	if !w.forwardOnly {
+		w.sharedCapture().status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *SharedResponseRecorder) Write(body []byte) (int, error) {
+	if !w.forwardOnly {
+		capture := w.sharedCapture()
+		if capture.status == 0 {
+			capture.status = http.StatusOK
+		}
+		capturedBody := body
+		if capture.maxBytes > 0 {
+			remaining := capture.maxBytes - capture.buf.Len()
+			if remaining <= 0 {
+				capturedBody = nil
+			} else if len(capturedBody) > remaining {
+				capturedBody = capturedBody[:remaining]
+			}
+		}
+		_, _ = capture.buf.Write(capturedBody)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *SharedResponseRecorder) BodyBytes() []byte {
+	return w.sharedCapture().buf.Bytes()
+}
+
+// Body returns the full captured response body as a string.
+func (w *SharedResponseRecorder) Body() string {
+	return w.sharedCapture().buf.String()
+}
+
+// BodyTruncated returns the response body as a string, truncated to limit bytes.
+func (w *SharedResponseRecorder) BodyTruncated(limit int) string {
+	b := w.sharedCapture().buf.Bytes()
+	if limit > 0 && len(b) > limit {
+		b = b[:limit]
+	}
+	return string(b)
+}
+
+func (w *SharedResponseRecorder) StatusCode() int {
+	return w.sharedCapture().status
+}
+
+func (w *SharedResponseRecorder) HasBody() bool {
+	return w.sharedCapture().buf.Len() > 0
+}
+
+func (w *SharedResponseRecorder) sharedCapture() *sharedResponseCapture {
+	if w.capture == nil {
+		w.capture = &sharedResponseCapture{}
+	}
+	return w.capture
+}
+
+type sharedResponseRecorderContextKey struct{}
+
+func GetOrCreateSharedResponseRecorderWithLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	limit int,
+) *SharedResponseRecorder {
+	if existing, _ := r.Context().Value(sharedResponseRecorderContextKey{}).(*SharedResponseRecorder); existing != nil {
+		existingCapture := existing.sharedCapture()
+		if w == existing {
+			updateSharedResponseCaptureLimit(existingCapture, limit)
+			return existing
+		}
+		if responseWriterWrapsSharedCapture(w, existingCapture) {
+			updateSharedResponseCaptureLimit(existingCapture, limit)
+			return &SharedResponseRecorder{
+				ResponseWriter: w,
+				capture:        existingCapture,
+				forwardOnly:    true,
+			}
+		}
+		recorder := NewSharedResponseRecorder(w)
+		recorder.capture.maxBytes = limit
+		return recorder
+	}
+	recorder := NewSharedResponseRecorder(w)
+	recorder.capture.maxBytes = limit
+	*r = *r.WithContext(context.WithValue(r.Context(), sharedResponseRecorderContextKey{}, recorder))
+	return recorder
+}
+
+func updateSharedResponseCaptureLimit(capture *sharedResponseCapture, limit int) {
+	if limit <= 0 || capture.maxBytes <= 0 {
+		capture.maxBytes = 0
+	} else if limit > capture.maxBytes {
+		capture.maxBytes = limit
+	}
+}
+
+func responseWriterWrapsSharedCapture(w http.ResponseWriter, capture *sharedResponseCapture) bool {
+	for w != nil {
+		if recorder, ok := w.(*SharedResponseRecorder); ok {
+			return recorder.sharedCapture() == capture
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		next := unwrapper.Unwrap()
+		if next == w {
+			return false
+		}
+		w = next
+	}
+	return false
 }

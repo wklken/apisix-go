@@ -149,7 +149,7 @@ func TestAttachHTTPRetriesAdvancesTrafficSplitTargets(t *testing.T) {
 	if !applyTrafficSplitOverride(request) {
 		t.Fatal("initial traffic-split override was not applied")
 	}
-	request = attachHTTPRetries(request, resource.Upstream{}, nil)
+	request = attachHTTPRetriesCompiled(request, resource.Upstream{}, nil, nil)
 
 	var attemptedHosts []string
 	transport := pxy.NewRetryTransport(routeRoundTripperFunc(func(request *http.Request) (*http.Response, error) {

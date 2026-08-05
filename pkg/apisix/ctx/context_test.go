@@ -2,13 +2,53 @@ package ctx
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+func TestRequestStateSharesOneContextValueAndTypedFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = WithApisixVars(req, map[string]string{"$route_id": "route-1"})
+	state := GetRequestState(req)
+	if state == nil {
+		t.Fatal("request state is nil")
+	}
+	reqWithVars := WithRequestVars(req)
+	if GetRequestState(reqWithVars) != state {
+		t.Fatal("WithRequestVars installed a second request state")
+	}
+	RegisterApisixVar(reqWithVars, "$balancer_ip", "127.0.0.1")
+	RegisterApisixVar(reqWithVars, "$balancer_port", "8080")
+	RegisterRequestVar(reqWithVars, "$value", "ok")
+	if state.BalancerIP != "127.0.0.1" || state.BalancerPort != "8080" {
+		t.Fatalf("typed balancer state = %s:%s", state.BalancerIP, state.BalancerPort)
+	}
+	if got := GetRequestVar(reqWithVars, "$value"); got != "ok" {
+		t.Fatalf("request variable = %v, want ok", got)
+	}
+	RecycleVars(reqWithVars)
+}
+
+func TestReadRequestBodyWithoutRequestVars(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/missing", strings.NewReader("payload"))
+	body, err := ReadRequestBody(req)
+	if err != nil {
+		t.Fatalf("ReadRequestBody() error = %v", err)
+	}
+	if string(body) != "payload" {
+		t.Fatalf("body = %q, want payload", body)
+	}
+	restored, err := io.ReadAll(req.Body)
+	if err != nil || string(restored) != "payload" {
+		t.Fatalf("restored body = %q, error = %v", restored, err)
+	}
+}
 
 func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

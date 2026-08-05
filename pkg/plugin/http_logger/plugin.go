@@ -284,7 +284,7 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.logFormat != nil {
 		var truncated bool
-		p.logFormat, truncated = truncateLogFormat(p.logFormat, 0)
+		p.logFormat, truncated = base.TruncateLogFormat(p.logFormat, 5)
 		if truncated {
 			logger.Warn("log_format nesting exceeds max depth 5, truncating")
 		}
@@ -492,29 +492,6 @@ func logFormatContains(format map[string]any, variable string) bool {
 		}
 	}
 	return false
-}
-
-func truncateLogFormat(format map[string]any, depth int) (map[string]any, bool) {
-	const maxDepth = 5
-
-	result := make(map[string]any, len(format))
-	truncated := false
-	for key, value := range format {
-		nested, ok := value.(map[string]any)
-		if !ok {
-			result[key] = value
-			continue
-		}
-		if depth+1 >= maxDepth {
-			result[key] = map[string]any{}
-			truncated = truncated || len(nested) > 0
-			continue
-		}
-		resolved, childTruncated := truncateLogFormat(nested, depth+1)
-		result[key] = resolved
-		truncated = truncated || childTruncated
-	}
-	return result, truncated
 }
 
 func (p *Plugin) Send(log map[string]any) {

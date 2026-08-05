@@ -21,7 +21,6 @@ const (
 	priority       = 401
 	name           = "syslog"
 	version        = "apisix-go"
-	maxFormatDepth = 5
 	syslogFrameKey = "__apisix_syslog_frame"
 )
 
@@ -266,9 +265,9 @@ func (p *Plugin) PostInit() error {
 	p.customLogFormat = p.config.logFormatSet || len(p.config.LogFormat) > 0 ||
 		len(metadata.LogFormat) > 0
 	var truncated bool
-	p.logFormat, truncated = truncateSyslogLogFormat(p.logFormat, 0)
+	p.logFormat, truncated = base.TruncateLogFormat(p.logFormat, 5)
 	var extraTruncated bool
-	p.logFormatExtra, extraTruncated = truncateSyslogLogFormat(p.logFormatExtra, 0)
+	p.logFormatExtra, extraTruncated = base.TruncateLogFormat(p.logFormatExtra, 5)
 	if truncated || extraTruncated {
 		logger.Warn("log_format nesting exceeds max depth 5, truncating")
 	}
@@ -421,27 +420,6 @@ func resolveSyslogLogFormatNode(r *http.Request, request accessRequest, value an
 	default:
 		return typed
 	}
-}
-
-func truncateSyslogLogFormat(format map[string]any, depth int) (map[string]any, bool) {
-	result := make(map[string]any, len(format))
-	truncated := false
-	for key, value := range format {
-		nested, ok := value.(map[string]any)
-		if !ok {
-			result[key] = value
-			continue
-		}
-		if depth+1 >= maxFormatDepth {
-			result[key] = map[string]any{}
-			truncated = truncated || len(nested) > 0
-			continue
-		}
-		resolved, childTruncated := truncateSyslogLogFormat(nested, depth+1)
-		result[key] = resolved
-		truncated = truncated || childTruncated
-	}
-	return result, truncated
 }
 
 func (p *Plugin) Send(log map[string]any) {

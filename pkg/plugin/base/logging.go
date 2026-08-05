@@ -2,6 +2,7 @@ package base
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	brotli "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
@@ -257,8 +259,10 @@ func RequestVar(r *http.Request, name string, status int) string {
 type sharedRequestBodyContextKey struct{}
 
 type sharedRequestBodyCapture struct {
-	body []byte
-	err  error
+	body        []byte
+	err         error
+	bodyText    string
+	bodyTextLen int
 }
 
 // ReadSharedRequestBody returns the current request body up to limit bytes.
@@ -278,20 +282,18 @@ func ReadSharedRequestBody(r *http.Request, limit int) (string, error) {
 	if capture.err != nil {
 		return "", capture.err
 	}
-	body := capture.body
-	if len(body) == 0 {
-		return "", nil
-	}
-	if limit > 0 && limit < len(body) {
-		body = body[:limit]
-	}
-	return string(body), nil
+	return capture.bodyString(limit), nil
 }
 
 type sharedResponseCapture struct {
-	buf      bytes.Buffer
-	status   int
-	maxBytes int
+	buf             bytes.Buffer
+	status          int
+	maxBytes        int
+	bodyText        string
+	bodyTextLen     int
+	decodedBody     string
+	decodedEncoding string
+	decodedReady    bool
 }
 
 // SharedResponseRecorder captures response body once per request and is shared
@@ -332,7 +334,14 @@ func (w *SharedResponseRecorder) Write(body []byte) (int, error) {
 				capturedBody = capturedBody[:remaining]
 			}
 		}
-		_, _ = capture.buf.Write(capturedBody)
+		if len(capturedBody) > 0 {
+			_, _ = capture.buf.Write(capturedBody)
+			capture.bodyText = ""
+			capture.bodyTextLen = 0
+			capture.decodedBody = ""
+			capture.decodedEncoding = ""
+			capture.decodedReady = false
+		}
 	}
 	return w.ResponseWriter.Write(body)
 }
@@ -343,16 +352,29 @@ func (w *SharedResponseRecorder) BodyBytes() []byte {
 
 // Body returns the full captured response body as a string.
 func (w *SharedResponseRecorder) Body() string {
-	return w.sharedCapture().buf.String()
+	return w.sharedCapture().bodyString(0)
 }
 
 // BodyTruncated returns the response body as a string, truncated to limit bytes.
 func (w *SharedResponseRecorder) BodyTruncated(limit int) string {
-	b := w.sharedCapture().buf.Bytes()
-	if limit > 0 && len(b) > limit {
-		b = b[:limit]
+	return w.sharedCapture().bodyString(limit)
+}
+
+// BodyDecoded returns the captured response body after decoding gzip or Brotli.
+// The decoded representation is cached per response so adjacent logger plugins
+// do not repeat the decompression or byte-to-string conversion.
+func (w *SharedResponseRecorder) BodyDecoded(limit int, encoding string) string {
+	capture := w.sharedCapture()
+	encoding = strings.ToLower(strings.TrimSpace(encoding))
+	if encoding == "" || encoding == "identity" {
+		return capture.bodyString(limit)
 	}
-	return string(b)
+	if !capture.decodedReady || capture.decodedEncoding != encoding {
+		capture.decodedBody = decodeResponseBody(capture.buf.Bytes(), encoding)
+		capture.decodedEncoding = encoding
+		capture.decodedReady = true
+	}
+	return truncateString(capture.decodedBody, limit)
 }
 
 func (w *SharedResponseRecorder) StatusCode() int {
@@ -368,6 +390,60 @@ func (w *SharedResponseRecorder) sharedCapture() *sharedResponseCapture {
 		w.capture = &sharedResponseCapture{}
 	}
 	return w.capture
+}
+
+func (capture *sharedRequestBodyCapture) bodyString(limit int) string {
+	requested := len(capture.body)
+	if limit > 0 && limit < requested {
+		requested = limit
+	}
+	if capture.bodyTextLen < requested {
+		capture.bodyText = string(capture.body[:requested])
+		capture.bodyTextLen = requested
+	}
+	return capture.bodyText[:requested]
+}
+
+func (capture *sharedResponseCapture) bodyString(limit int) string {
+	body := capture.buf.Bytes()
+	requested := len(body)
+	if limit > 0 && limit < requested {
+		requested = limit
+	}
+	if capture.bodyTextLen < requested {
+		capture.bodyText = string(body[:requested])
+		capture.bodyTextLen = requested
+	}
+	return capture.bodyText[:requested]
+}
+
+func truncateString(value string, limit int) string {
+	if limit > 0 && len(value) > limit {
+		return value[:limit]
+	}
+	return value
+}
+
+func decodeResponseBody(body []byte, encoding string) string {
+	var reader io.Reader
+	switch {
+	case strings.Contains(encoding, "gzip"):
+		gzipReader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return string(body)
+		}
+		defer func() { _ = gzipReader.Close() }()
+		reader = gzipReader
+	case encoding == "br":
+		reader = brotli.NewReader(bytes.NewReader(body))
+	default:
+		return string(body)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return string(body)
+	}
+	return string(decoded)
 }
 
 type sharedResponseRecorderContextKey struct{}

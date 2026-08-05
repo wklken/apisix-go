@@ -15,9 +15,23 @@ func newVars() map[string]any {
 }
 
 func putBack(vars map[string]any) {
-	// Reset fields
+	if vars == nil {
+		return
+	}
 	clear(vars)
-
-	// Put back to the pool
 	varsPool.Put(vars)
+}
+
+func newRequestState() *RequestState {
+	return new(RequestState)
+}
+
+func putRequestState(state *RequestState) {
+	if state == nil || state.recycled.Swap(true) {
+		return
+	}
+	putBack(state.ApisixVars)
+	putBack(state.RequestVars)
+	state.ApisixVars = nil
+	state.RequestVars = nil
 }

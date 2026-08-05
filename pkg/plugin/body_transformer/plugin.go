@@ -90,6 +90,9 @@ type Transform struct {
 	InputFormat      string `json:"input_format,omitempty"`
 	Template         string `json:"template"`
 	TemplateIsBase64 bool   `json:"template_is_base64,omitempty"`
+
+	compiled       *compiledTemplate
+	compiledBase64 *compiledTemplate
 }
 
 type templateContext struct {
@@ -98,6 +101,25 @@ type templateContext struct {
 	body       string
 	req        *http.Request
 	format     string
+}
+
+type compiledTemplate struct {
+	nodes []templateNode
+	err   error
+}
+
+type templateNode struct {
+	text     string
+	expr     string
+	escaped  bool
+	branches []compiledTemplateBranch
+	elseBody *compiledTemplate
+	err      error
+}
+
+type compiledTemplateBranch struct {
+	condition string
+	body      *compiledTemplate
 }
 
 var (
@@ -128,6 +150,28 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if err := compileTransform(p.config.Request); err != nil {
+		return fmt.Errorf("invalid request transform: %w", err)
+	}
+	if err := compileTransform(p.config.Response); err != nil {
+		return fmt.Errorf("invalid response transform: %w", err)
+	}
+	return nil
+}
+
+func compileTransform(transform *Transform) error {
+	if transform == nil {
+		return nil
+	}
+	transform.compiled = compileTemplate(transform.Template)
+	transform.compiledBase64 = nil
+	if decoded, err := base64.StdEncoding.DecodeString(transform.Template); err == nil {
+		transform.compiledBase64 = compileTemplate(string(decoded))
+	}
+	// Template syntax and expression errors historically surface from the
+	// request handler with phase-specific status codes. Keep that behavior by
+	// storing compile errors in the immutable template instead of rejecting the
+	// plugin configuration here.
 	return nil
 }
 
@@ -153,15 +197,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := base.NewBufferedResponseWriter()
+		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 		if err := p.transformResponse(r, recorder); err != nil {
+			resetBufferedResponse(w)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func resetBufferedResponse(w http.ResponseWriter) {
+	switch writer := w.(type) {
+	case *base.BufferedResponseWriter:
+		writer.Reset()
+	case *base.SharedResponseRecorder:
+		resetBufferedResponse(writer.ResponseWriter)
+	}
 }
 
 func (p *Plugin) transformRequest(r *http.Request) (*http.Request, error) {
@@ -302,37 +356,158 @@ func (p *Plugin) buildTemplateContext(
 }
 
 func renderTemplate(transform *Transform, ctx templateContext) (string, error) {
-	text := transform.Template
+	compiled := transform.compiled
 	if transform.TemplateIsBase64 || (ctx.format != "" && ctx.format != "encoded" && ctx.format != "args") {
-		if decoded, err := base64.StdEncoding.DecodeString(text); err == nil {
-			text = string(decoded)
+		if transform.compiledBase64 != nil {
+			compiled = transform.compiledBase64
 		}
 	}
-	var err error
-	if text, err = renderTemplateBlocks(text, ctx); err != nil {
-		return "", err
+	if compiled == nil {
+		text := transform.Template
+		if transform.TemplateIsBase64 || (ctx.format != "" && ctx.format != "encoded" && ctx.format != "args") {
+			if decoded, err := base64.StdEncoding.DecodeString(text); err == nil {
+				text = string(decoded)
+			}
+		}
+		compiled = compileTemplate(text)
 	}
-	if err := validateTemplate(text); err != nil {
-		return "", err
-	}
-	if err := validateTemplateFunctionCalls(text); err != nil {
-		return "", &templateRenderingError{err: err}
-	}
+	return compiled.render(ctx)
+}
 
-	text = templateRawExprPattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := templateRawExprPattern.FindStringSubmatch(match)
-		if len(parts) != 2 {
-			return match
+func compileTemplate(text string) *compiledTemplate {
+	compiled := &compiledTemplate{}
+	if err := validateTemplate(text); err != nil {
+		compiled.err = err
+		return compiled
+	}
+	for position := 0; position < len(text); {
+		next, kind := nextTemplateToken(text, position)
+		if next < 0 {
+			compiled.nodes = append(compiled.nodes, templateNode{text: text[position:]})
+			break
 		}
-		return resolveExpression(strings.TrimSpace(parts[1]), ctx)
-	})
-	return templateExprPattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := templateExprPattern.FindStringSubmatch(match)
-		if len(parts) != 2 {
-			return match
+		if next > position {
+			compiled.nodes = append(compiled.nodes, templateNode{text: text[position:next]})
 		}
-		return escapeTemplateHTML(resolveExpression(strings.TrimSpace(parts[1]), ctx))
-	}), nil
+		switch kind {
+		case "block":
+			directiveEnd := strings.Index(text[next+2:], "%}")
+			if directiveEnd < 0 {
+				compiled.err = errors.New("template contains an unmatched opening block delimiter")
+				return compiled
+			}
+			directiveEnd += next + 2
+			directive := strings.TrimSpace(text[next+2 : directiveEnd])
+			condition, err := parseTemplateConditionDirective(directive, "if")
+			if err != nil {
+				compiled.err = err
+				return compiled
+			}
+			branches, elseBody, after, err := findTemplateIfBlock(text, condition, directiveEnd+2)
+			if err != nil {
+				compiled.err = err
+				return compiled
+			}
+			node := templateNode{}
+			for _, branch := range branches {
+				node.branches = append(node.branches, compiledTemplateBranch{
+					condition: branch.condition,
+					body:      compileTemplate(branch.body),
+				})
+			}
+			if elseBody != "" {
+				node.elseBody = compileTemplate(elseBody)
+			}
+			compiled.nodes = append(compiled.nodes, node)
+			position = after
+		case "raw", "escaped":
+			closeDelimiter := "*}"
+			if kind == "escaped" {
+				closeDelimiter = "}}"
+			}
+			end := strings.Index(text[next+2:], closeDelimiter)
+			if end < 0 {
+				compiled.err = fmt.Errorf("template contains an unmatched opening delimiter for %s", map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"])
+				return compiled
+			}
+			end += next + 2
+			expression := strings.TrimSpace(text[next+2 : end])
+			if expression == "" {
+				compiled.err = fmt.Errorf("template %s is empty", map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"])
+				return compiled
+			}
+			if err := validateCompiledExpression(expression); err != nil {
+				compiled.err = &templateRenderingError{err: err}
+				return compiled
+			}
+			compiled.nodes = append(compiled.nodes, templateNode{expr: expression, escaped: kind == "escaped"})
+			position = end + 2
+		}
+	}
+	return compiled
+}
+
+func nextTemplateToken(text string, position int) (int, string) {
+	best := -1
+	kind := ""
+	for token, tokenKind := range map[string]string{"{%": "block", "{*": "raw", "{{": "escaped"} {
+		if offset := strings.Index(text[position:], token); offset >= 0 && (best < 0 || offset < best-position) {
+			best = position + offset
+			kind = tokenKind
+		}
+	}
+	return best, kind
+}
+
+func validateCompiledExpression(expression string) error {
+	for _, call := range templateCallPattern.FindAllStringSubmatch(expression, -1) {
+		if len(call) != 2 {
+			continue
+		}
+		switch call[1] {
+		case "_escape_json", "_escape_xml", "string.gsub":
+			continue
+		}
+		name := strings.Split(call[1], ".")[0]
+		return fmt.Errorf("attempt to call global '%s' (a string value)", name)
+	}
+	return nil
+}
+
+func (compiled *compiledTemplate) render(ctx templateContext) (string, error) {
+	if compiled.err != nil {
+		return "", compiled.err
+	}
+	var builder strings.Builder
+	for _, node := range compiled.nodes {
+		if node.text != "" {
+			builder.WriteString(node.text)
+			continue
+		}
+		if node.expr != "" {
+			value := resolveExpression(node.expr, ctx)
+			if node.escaped {
+				value = escapeTemplateHTML(value)
+			}
+			builder.WriteString(value)
+			continue
+		}
+		selected := node.elseBody
+		for _, branch := range node.branches {
+			if evaluateTemplateCondition(branch.condition, ctx) {
+				selected = branch.body
+				break
+			}
+		}
+		if selected != nil {
+			rendered, err := selected.render(ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(rendered)
+		}
+	}
+	return builder.String(), nil
 }
 
 func escapeTemplateHTML(value string) string {
@@ -488,7 +663,10 @@ func findTemplateIfBlock(
 		case strings.HasPrefix(directive, "if "):
 			depth++
 		case strings.HasPrefix(directive, "elseif "):
-			if depth != 1 || hasElse {
+			if depth > 1 {
+				break
+			}
+			if hasElse {
 				return nil, "", 0, errors.New("template contains an invalid elseif directive")
 			}
 			branches[len(branches)-1].body = text[currentBodyStart:start]
@@ -499,7 +677,10 @@ func findTemplateIfBlock(
 			branches = append(branches, templateIfBranch{condition: condition})
 			currentBodyStart = end + 2
 		case directive == "else":
-			if depth != 1 || hasElse {
+			if depth > 1 {
+				break
+			}
+			if hasElse {
 				return nil, "", 0, errors.New("template contains an invalid else directive")
 			}
 			branches[len(branches)-1].body = text[currentBodyStart:start]

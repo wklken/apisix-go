@@ -400,6 +400,66 @@ func TestHandlerMasksJSONBodyWithQuotedBracketPath(t *testing.T) {
 	}
 }
 
+func TestHandlerMasksJSONBodyWithQuotedDottedKey(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type: "body", BodyFormat: "json", Name: `$["a.b"]`, Action: "replace", Value: "*****",
+	}}})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"a.b":"secret","a":{"b":"preserve"}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if decoded["a.b"] != "*****" || decoded["a"].(map[string]any)["b"] != "preserve" {
+			t.Fatalf("body = %s, want only literal dotted key masked", body)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestHandlerMasksJSONBodyWithRecursiveWildcardPath(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type: "body", BodyFormat: "json", Name: "$..users[*].token", Action: "replace", Value: "*****",
+	}}})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"group":{"users":[{"token":"one"},{"token":"two"}]}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if strings.Contains(string(body), `"token":"one"`) || strings.Contains(string(body), `"token":"two"`) {
+			t.Fatalf("body = %s, want recursive wildcard tokens masked", body)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestHandlerMasksTerminalNamedArraySelector(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: []MaskRule{{
+		Type: "body", BodyFormat: "json", Name: "$.users[0]", Action: "replace", Value: "masked",
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"users":["one","two"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != `{"users":["masked","two"]}` {
+			t.Fatalf("body = %s, want only selected array element masked", body)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), req)
+}
+
 func TestHandlerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
@@ -430,6 +490,18 @@ func TestHandlerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestPostInitIgnoresRegexOnNonRegexRule(t *testing.T) {
+	p := &Plugin{config: Config{Request: []MaskRule{{
+		Type: "query", Name: "token", Action: "remove", Regex: "[",
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
 	}
 }
 

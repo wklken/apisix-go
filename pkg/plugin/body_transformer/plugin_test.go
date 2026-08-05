@@ -12,6 +12,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 )
 
@@ -288,6 +289,34 @@ func TestHandlerDistinguishesEscapedAndRawTemplateExpressions(t *testing.T) {
 				t.Fatalf("status = %d, want 204", rr.Code)
 			}
 		})
+	}
+}
+
+func TestHandlerSupportsNestedConditionalBranches(t *testing.T) {
+	p := newTestPlugin(t, Config{Request: &Transform{
+		InputFormat: "json",
+		Template: `{% if outer then %}{% if first then %}A{% elseif second then %}B{% else %}C{% end %}` +
+			`{% else %}D{% end %}`,
+	}})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"outer":true,"first":false,"second":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		if string(body) != "B" {
+			t.Fatalf("transformed body = %q, want B", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%q", rr.Code, rr.Body.String())
 	}
 }
 
@@ -857,6 +886,32 @@ func TestHandlerTransformsResponseBody(t *testing.T) {
 	}
 	if rr.Header().Get("Content-Length") != "" {
 		t.Fatalf("Content-Length = %q, want empty after rewrite", rr.Header().Get("Content-Length"))
+	}
+}
+
+func TestResponseTransformErrorReplacesSharedPipelineBody(t *testing.T) {
+	p := newTestPlugin(t, Config{Response: &Transform{
+		InputFormat: "json",
+		Template:    `{"result":"{{message}}"}`,
+	}})
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`not-json`))
+	})
+	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := base.GetOrCreateTransformResponseWriter(r)
+		p.Handler(downstream).ServeHTTP(recorder, r)
+		recorder.Commit(w)
+	})
+	handler := base.WithTransformPipeline(2)(outer)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/anything", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "not-json") {
+		t.Fatalf("response body leaked upstream body: %q", rr.Body.String())
 	}
 }
 

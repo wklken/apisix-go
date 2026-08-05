@@ -25,6 +25,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/aws_lambda"
 	"github.com/wklken/apisix-go/pkg/plugin/azure_functions"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
 	"github.com/wklken/apisix-go/pkg/plugin/body_transformer"
 	"github.com/wklken/apisix-go/pkg/plugin/brotli"
@@ -364,8 +365,15 @@ func BuildPluginChain(plugins ...Plugin) alice.Chain {
 		return plugins[i].GetPriority() > plugins[j].GetPriority()
 	})
 
+	transformCount := 0
+	for _, plugin := range plugins {
+		if isResponseTransformPlugin(plugin.GetName()) {
+			transformCount++
+		}
+	}
+
 	// build the alice chain
-	chain := alice.New()
+	chain := alice.New(base.WithTransformPipeline(transformCount))
 	// chain = chain.Append(Recoverer)
 	for _, plugin := range plugins {
 		fmt.Println("plugin name:", plugin.GetName(), "priority:", plugin.GetPriority())
@@ -373,6 +381,17 @@ func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	}
 
 	return chain
+}
+
+func isResponseTransformPlugin(name string) bool {
+	switch name {
+	case "proxy-cache", "echo", "response-rewrite", "serverless-pre-function", "serverless-post-function",
+		"brotli", "ai-rate-limiting", "grpc-transcode", "exit-transformer", "body-transformer",
+		"error-page", "graphql-proxy-cache":
+		return true
+	default:
+		return false
+	}
 }
 
 // func Recoverer(next http.Handler) http.Handler {

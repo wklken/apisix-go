@@ -16,7 +16,8 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config    Config
+	bodyRules []MaskRule
 }
 
 const (
@@ -93,6 +94,9 @@ type MaskRule struct {
 	Action     string `json:"action"`
 	Regex      string `json:"regex,omitempty"`
 	Value      string `json:"value,omitempty"`
+
+	compiledRegex *regexp.Regexp
+	pathSegments  []pathSegment
 }
 
 func (p *Plugin) Init() error {
@@ -111,8 +115,29 @@ func (p *Plugin) PostInit() error {
 		n := 100
 		p.config.MaxReqPostArgs = &n
 	}
-
-	return nil
+	p.bodyRules = p.bodyRules[:0]
+	compileRules := func(rules []MaskRule) error {
+		for i := range rules {
+			rule := &rules[i]
+			rule.compiledRegex = nil
+			rule.pathSegments = nil
+			if rule.Action == "regex" {
+				compiled, err := regexp.Compile(rule.Regex)
+				if err != nil {
+					return fmt.Errorf("invalid regex %q for %s: %w", rule.Regex, rule.Name, err)
+				}
+				rule.compiledRegex = compiled
+			}
+			if rule.Type == "body" && rule.BodyFormat == "json" {
+				rule.pathSegments = parseJSONPath(rule.Name)
+			}
+			if rule.Type == "body" {
+				p.bodyRules = append(p.bodyRules, *rule)
+			}
+		}
+		return nil
+	}
+	return compileRules(p.config.Request)
 }
 
 func (p *Plugin) Config() any {
@@ -130,35 +155,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) maskRequest(r *http.Request) error {
-	var body []byte
-	bodyLoaded := false
 	for _, rule := range p.config.Request {
 		switch rule.Type {
 		case "query":
 			maskQuery(r, rule)
 		case "header":
 			maskHeader(r, rule)
-		case "body":
-			if !bodyLoaded {
-				var err error
-				body, err = readBody(r)
-				if err != nil {
-					return err
-				}
-				bodyLoaded = true
-			}
-			masked, newBody, err := p.maskBody(body, rule)
-			if err != nil {
-				return err
-			}
-			if masked {
-				body = newBody
-			}
 		}
 	}
-	if bodyLoaded {
-		setBody(r, body)
+	if len(p.bodyRules) == 0 {
+		return nil
 	}
+	body, err := readBody(r)
+	if err != nil {
+		return err
+	}
+	body, _, err = p.maskBodyRules(body, p.bodyRules)
+	if err != nil {
+		return err
+	}
+	setBody(r, body)
 	return nil
 }
 
@@ -191,35 +207,56 @@ func maskHeader(r *http.Request, rule MaskRule) {
 }
 
 func (p *Plugin) maskBody(body []byte, rule MaskRule) (bool, []byte, error) {
-	switch rule.BodyFormat {
-	case "urlencoded":
-		values, err := parseURLValues(string(body), *p.config.MaxReqPostArgs)
-		if err != nil {
-			return false, body, err
+	newBody, masked, err := p.maskBodyRules(body, []MaskRule{rule})
+	return masked, newBody, err
+}
+
+func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, error) {
+	masked := false
+	for start := 0; start < len(rules); {
+		format := rules[start].BodyFormat
+		end := start + 1
+		for end < len(rules) && rules[end].BodyFormat == format {
+			end++
 		}
-		if !maskValues(values, rule) {
-			return false, body, nil
+
+		switch format {
+		case "urlencoded":
+			values, err := parseURLValues(string(body), *p.config.MaxReqPostArgs)
+			if err != nil {
+				return nil, false, err
+			}
+			groupMasked := false
+			for _, rule := range rules[start:end] {
+				groupMasked = maskValues(values, rule) || groupMasked
+			}
+			if groupMasked {
+				body = []byte(values.Encode())
+				masked = true
+			}
+		case "json":
+			if len(body) <= p.config.MaxBodySize {
+				var obj any
+				if err := json.Unmarshal(body, &obj); err != nil {
+					return nil, false, err
+				}
+				groupMasked := false
+				for _, rule := range rules[start:end] {
+					groupMasked = maskJSONPath(obj, rule) || groupMasked
+				}
+				if groupMasked {
+					encoded, err := json.Marshal(obj)
+					if err != nil {
+						return nil, false, err
+					}
+					body = encoded
+					masked = true
+				}
+			}
 		}
-		return true, []byte(values.Encode()), nil
-	case "json":
-		if len(body) > p.config.MaxBodySize {
-			return false, body, nil
-		}
-		var obj any
-		if err := json.Unmarshal(body, &obj); err != nil {
-			return false, body, err
-		}
-		if !maskJSONPath(obj, rule) {
-			return false, body, nil
-		}
-		masked, err := json.Marshal(obj)
-		if err != nil {
-			return false, body, err
-		}
-		return true, masked, nil
-	default:
-		return false, body, nil
+		start = end
 	}
+	return body, masked, nil
 }
 
 func parseURLValues(raw string, maxArgs int) (url.Values, error) {
@@ -288,7 +325,10 @@ func maskValues(values url.Values, rule MaskRule) bool {
 }
 
 func maskJSONPath(root any, rule MaskRule) bool {
-	segments := parseJSONPath(rule.Name)
+	segments := rule.pathSegments
+	if len(segments) == 0 {
+		segments = parseJSONPath(rule.Name)
+	}
 	if len(segments) == 0 {
 		return false
 	}
@@ -339,17 +379,18 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 	if !exists {
 		return false
 	}
-	if len(segments) == 1 {
-		return maskJSONField(object, segment.name, rule)
-	}
 	if segment.each {
 		items, ok := value.([]any)
 		if !ok {
 			return false
 		}
 		masked := false
-		for _, item := range items {
-			if maskJSONNode(item, segments[1:], rule) {
+		for index, item := range items {
+			if len(segments) == 1 {
+				if maskJSONArrayElement(items, index, rule) {
+					masked = true
+				}
+			} else if maskJSONNode(item, segments[1:], rule) {
 				masked = true
 			}
 		}
@@ -357,16 +398,16 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 	}
 	if segment.hasIndex {
 		items, ok := value.([]any)
-		if !ok {
-			return false
-		}
-		if segment.index < 0 || segment.index >= len(items) {
+		if !ok || segment.index < 0 || segment.index >= len(items) {
 			return false
 		}
 		if len(segments) == 1 {
 			return maskJSONArrayElement(items, segment.index, rule)
 		}
 		return maskJSONNode(items[segment.index], segments[1:], rule)
+	}
+	if len(segments) == 1 {
+		return maskJSONField(object, segment.name, rule)
 	}
 	return maskJSONNode(value, segments[1:], rule)
 }
@@ -384,14 +425,8 @@ func maskJSONRecursive(node any, segments []pathSegment, rule MaskRule) bool {
 	masked := false
 	switch typed := node.(type) {
 	case map[string]any:
-		if value, ok := typed[segment.name]; ok {
-			if len(remaining) == 1 {
-				if maskJSONField(typed, segment.name, rule) {
-					masked = true
-				}
-			} else if maskJSONNode(value, remaining[1:], rule) {
-				masked = true
-			}
+		if maskJSONNode(typed, remaining, rule) {
+			masked = true
 		}
 		for _, value := range typed {
 			if maskJSONRecursive(value, segments, rule) {
@@ -399,6 +434,9 @@ func maskJSONRecursive(node any, segments []pathSegment, rule MaskRule) bool {
 			}
 		}
 	case []any:
+		if segment.name == "" && maskJSONNode(typed, remaining, rule) {
+			masked = true
+		}
 		for _, value := range typed {
 			if maskJSONRecursive(value, segments, rule) {
 				masked = true
@@ -456,9 +494,13 @@ func maskJSONArrayElement(items []any, index int, rule MaskRule) bool {
 }
 
 func maskString(value string, rule MaskRule) (string, bool) {
-	re, err := regexp.Compile(rule.Regex)
-	if err != nil {
-		return value, false
+	re := rule.compiledRegex
+	if re == nil {
+		var err error
+		re, err = regexp.Compile(rule.Regex)
+		if err != nil {
+			return value, false
+		}
 	}
 	match := re.FindStringSubmatchIndex(value)
 	if match == nil {
@@ -479,41 +521,70 @@ type pathSegment struct {
 	recursive bool
 }
 
-var quotedJSONPathSegment = regexp.MustCompile(`\[(?:"([^"]+)"|'([^']+)')\]`)
-
 func parseJSONPath(path string) []pathSegment {
 	path = strings.TrimSpace(path)
-	path = quotedJSONPathSegment.ReplaceAllStringFunc(path, func(segment string) string {
-		matches := quotedJSONPathSegment.FindStringSubmatch(segment)
-		if matches[1] != "" {
-			return "." + matches[1]
-		}
-		return "." + matches[2]
-	})
 	recursive := false
 	if after, ok := strings.CutPrefix(path, "$.."); ok {
 		path = after
 		recursive = true
-	} else if after, ok := strings.CutPrefix(path, "$."); ok {
-		path = after
 	} else if after, ok := strings.CutPrefix(path, "$"); ok {
-		path = after
-		path = strings.TrimPrefix(path, ".")
+		path = strings.TrimPrefix(after, ".")
 	}
 	if path == "" {
 		return nil
 	}
-	parts := strings.Split(path, ".")
-	segments := make([]pathSegment, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
+
+	segments := make([]pathSegment, 0, strings.Count(path, ".")+1)
+	for position := 0; position < len(path); {
+		if path[position] == '.' {
+			position++
+			if position == len(path) || path[position] == '.' {
+				return nil
+			}
+			continue
+		}
+		if path[position] != '[' {
+			end := position
+			for end < len(path) && path[end] != '.' && path[end] != '[' {
+				end++
+			}
+			segment, ok := parsePathSegment(path[position:end])
+			if !ok {
+				return nil
+			}
+			segments = append(segments, segment)
+			position = end
+			continue
+		}
+
+		close := strings.IndexByte(path[position+1:], ']')
+		if close < 0 {
 			return nil
 		}
-		segment, ok := parsePathSegment(part)
-		if !ok {
-			return nil
+		close += position + 1
+		content := path[position+1 : close]
+		if len(content) >= 2 && (content[0] == '\'' || content[0] == '"') && content[len(content)-1] == content[0] {
+			segments = append(segments, pathSegment{name: content[1 : len(content)-1]})
+		} else {
+			if len(segments) == 0 || (position > 0 && path[position-1] == '.') {
+				segments = append(segments, pathSegment{})
+			}
+			segment := &segments[len(segments)-1]
+			if content == "*" {
+				segment.each = true
+			} else {
+				index, err := strconv.Atoi(content)
+				if err != nil {
+					return nil
+				}
+				segment.hasIndex = true
+				segment.index = index
+			}
 		}
-		segments = append(segments, segment)
+		position = close + 1
+	}
+	if len(segments) == 0 {
+		return nil
 	}
 	if recursive {
 		segments[0].recursive = true

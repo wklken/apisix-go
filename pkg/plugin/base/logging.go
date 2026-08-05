@@ -2,6 +2,7 @@ package base
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -251,4 +252,120 @@ func RequestVar(r *http.Request, name string, status int) string {
 		}
 		return ""
 	}
+}
+
+// ReadSharedRequestBody returns the request body up to limit bytes, using the
+// already-cached body from ctx.ReadRequestBody to avoid repeated io.ReadAll
+// calls across multiple logger plugins in a single request.
+func ReadSharedRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := apisixctx.ReadRequestBody(r)
+	if err != nil {
+		return "", err
+	}
+	if len(body) == 0 {
+		return "", nil
+	}
+	if limit > 0 && limit < len(body) {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+// SharedResponseRecorder captures response body once per request and is shared
+// across multiple logger plugins to avoid O(logger × body) buffer duplication.
+type SharedResponseRecorder struct {
+	http.ResponseWriter
+	buf      bytes.Buffer
+	status   int
+	maxBytes int
+}
+
+// NewSharedResponseRecorder creates a new shared response recorder wrapping w.
+func NewSharedResponseRecorder(w http.ResponseWriter) *SharedResponseRecorder {
+	return &SharedResponseRecorder{ResponseWriter: w}
+}
+
+func (w *SharedResponseRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *SharedResponseRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	capture := body
+	if w.maxBytes > 0 {
+		remaining := w.maxBytes - w.buf.Len()
+		if remaining <= 0 {
+			capture = nil
+		} else if len(capture) > remaining {
+			capture = capture[:remaining]
+		}
+	}
+	_, _ = w.buf.Write(capture)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *SharedResponseRecorder) BodyBytes() []byte {
+	return w.buf.Bytes()
+}
+
+// Body returns the full captured response body as a string.
+func (w *SharedResponseRecorder) Body() string {
+	return string(w.buf.Bytes())
+}
+
+// BodyTruncated returns the response body as a string, truncated to limit bytes.
+func (w *SharedResponseRecorder) BodyTruncated(limit int) string {
+	b := w.buf.Bytes()
+	if limit > 0 && len(b) > limit {
+		b = b[:limit]
+	}
+	return string(b)
+}
+
+func (w *SharedResponseRecorder) StatusCode() int {
+	return w.status
+}
+
+func (w *SharedResponseRecorder) HasBody() bool {
+	return w.buf.Len() > 0
+}
+
+type sharedResponseRecorderContextKey struct{}
+
+// GetOrCreateSharedResponseRecorder returns the current shared recorder for
+// adjacent logger middleware. If another response middleware sits between two
+// loggers, a new recorder is required so that the current writer is never
+// bypassed and each logger preserves its response-view semantics.
+func GetOrCreateSharedResponseRecorder(w http.ResponseWriter, r *http.Request) *SharedResponseRecorder {
+	return GetOrCreateSharedResponseRecorderWithLimit(w, r, 0)
+}
+
+func GetOrCreateSharedResponseRecorderWithLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	limit int,
+) *SharedResponseRecorder {
+	if existing, _ := r.Context().Value(sharedResponseRecorderContextKey{}).(*SharedResponseRecorder); existing != nil {
+		if w == existing {
+			if limit <= 0 || existing.maxBytes <= 0 {
+				existing.maxBytes = 0
+			} else if limit > existing.maxBytes {
+				existing.maxBytes = limit
+			}
+			return existing
+		}
+		recorder := NewSharedResponseRecorder(w)
+		recorder.maxBytes = limit
+		return recorder
+	}
+	recorder := NewSharedResponseRecorder(w)
+	recorder.maxBytes = limit
+	*r = *r.WithContext(context.WithValue(r.Context(), sharedResponseRecorderContextKey{}, recorder))
+	return recorder
 }

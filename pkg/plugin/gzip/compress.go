@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type encoding int
@@ -79,9 +80,65 @@ func selectEncoding(h http.Header) encoding {
 	return encodingNone
 }
 
+type resettableWriteCloser interface {
+	io.WriteCloser
+	Reset(io.Writer)
+}
+
+var gzipWriterPools [10]sync.Pool
+var deflateWriterPools [10]sync.Pool
+
+func acquireCompressionWriter(enc encoding, level int, destination io.Writer) (resettableWriteCloser, error) {
+	if level < 0 || level >= len(gzipWriterPools) {
+		if enc == encodingGzip {
+			return cgzip.NewWriterLevel(destination, level)
+		}
+		return flate.NewWriter(destination, level)
+	}
+	var pool *sync.Pool
+	switch enc {
+	case encodingGzip:
+		pool = &gzipWriterPools[level]
+	case encodingDeflate:
+		pool = &deflateWriterPools[level]
+	default:
+		return nil, nil
+	}
+	if pooled := pool.Get(); pooled != nil {
+		writer := pooled.(resettableWriteCloser)
+		writer.Reset(destination)
+		return writer, nil
+	}
+	if enc == encodingGzip {
+		return cgzip.NewWriterLevel(destination, level)
+	}
+	return flate.NewWriter(destination, level)
+}
+
+func releaseCompressionWriter(enc encoding, level int, writer resettableWriteCloser) error {
+	if writer == nil {
+		return nil
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if level < 0 || level >= len(gzipWriterPools) {
+		return nil
+	}
+	writer.Reset(io.Discard)
+	switch enc {
+	case encodingGzip:
+		gzipWriterPools[level].Put(writer)
+	case encodingDeflate:
+		deflateWriterPools[level].Put(writer)
+	}
+	return nil
+}
+
 type maybeCompressResponseWriter struct {
 	http.ResponseWriter
 	w            io.Writer
+	compressor   resettableWriteCloser
 	encoding     encoding
 	contentTypes map[string]struct{}
 	level        int
@@ -94,6 +151,7 @@ func (w *maybeCompressResponseWriter) WriteHeader(code int) {
 	if w.wroteHeader {
 		return
 	}
+	w.wroteHeader = true
 	defer w.ResponseWriter.WriteHeader(code)
 
 	// Already compressed data?
@@ -131,24 +189,16 @@ func (w *maybeCompressResponseWriter) WriteHeader(code int) {
 		return
 	}
 
-	// Select the compress writer.
-	switch w.encoding {
-	case encodingGzip:
-		gw, err := cgzip.NewWriterLevel(w.ResponseWriter, w.level)
-		if err != nil {
-			w.w = w.ResponseWriter
-			return
-		}
-		w.w = gw
+	compressor, err := acquireCompressionWriter(w.encoding, w.level, w.ResponseWriter)
+	if err != nil {
+		w.w = w.ResponseWriter
+		return
+	}
+	w.compressor = compressor
+	w.w = compressor
+	if w.encoding == encodingGzip {
 		w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
-
-	case encodingDeflate:
-		dw, err := flate.NewWriter(w.ResponseWriter, w.level)
-		if err != nil {
-			w.w = w.ResponseWriter
-			return
-		}
-		w.w = dw
+	} else {
 		w.ResponseWriter.Header().Set("Content-Encoding", "deflate")
 	}
 }
@@ -162,14 +212,20 @@ func (w *maybeCompressResponseWriter) Write(p []byte) (int, error) {
 }
 
 func (w *maybeCompressResponseWriter) Flush() {
-	if f, ok := w.w.(http.Flusher); ok {
-		f.Flush()
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if compressor, ok := w.w.(interface{ Flush() error }); ok {
+		_ = compressor.Flush()
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
 func (w *maybeCompressResponseWriter) Close() error {
-	if c, ok := w.w.(io.WriteCloser); ok {
-		return c.Close()
-	}
-	return nil
+	compressor := w.compressor
+	w.compressor = nil
+	w.w = w.ResponseWriter
+	return releaseCompressionWriter(w.encoding, w.level, compressor)
 }

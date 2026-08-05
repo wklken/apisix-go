@@ -1098,7 +1098,7 @@ func (p *Plugin) fetchAndMaybeStore(
 	cacheStatus string,
 	shouldStore bool,
 ) {
-	recorder := base.NewBufferedResponseWriter()
+	recorder := base.GetOrCreateTransformResponseWriter(r)
 	next.ServeHTTP(recorder, r)
 
 	if p.hasTruthyValue(r, p.config.NoCache) {

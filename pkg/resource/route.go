@@ -311,14 +311,16 @@ type Service struct {
 
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
 type Consumer struct {
-	Username string                  `json:"username"`
-	GroupID  string                  `json:"group_id,omitempty"`
-	Plugins  map[string]PluginConfig `json:"plugins" yaml:"plugins"`
-	Labels   map[string]any          `json:"labels,omitempty"`
+	Username     string                  `json:"username"`
+	GroupID      string                  `json:"group_id,omitempty"`
+	Plugins      map[string]PluginConfig `json:"plugins" yaml:"plugins"`
+	Labels       map[string]any          `json:"labels,omitempty"`
+	ConfigDigest [32]byte                `json:"-" yaml:"-"`
 }
 
 type ConsumerGroup struct {
-	Plugins map[string]PluginConfig
+	Plugins      map[string]PluginConfig
+	ConfigDigest [32]byte `json:"-" yaml:"-"`
 }
 
 type GlobalRule struct {

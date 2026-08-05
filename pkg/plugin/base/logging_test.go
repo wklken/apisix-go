@@ -97,6 +97,56 @@ func TestRequestVarReadsApisixContext(t *testing.T) {
 	}
 }
 
+func TestSharedResponseRecorderReusesAdjacentLoggerWriter(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	outer := GetOrCreateSharedResponseRecorder(httptest.NewRecorder(), r)
+	inner := GetOrCreateSharedResponseRecorder(outer, r)
+	if inner != outer {
+		t.Fatal("adjacent loggers should share one response recorder")
+	}
+}
+
+func TestSharedResponseRecorderDoesNotBypassResponseTransformer(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	destination := httptest.NewRecorder()
+	outer := GetOrCreateSharedResponseRecorder(destination, r)
+	transform := NewBufferedResponseWriter()
+	inner := GetOrCreateSharedResponseRecorder(transform, r)
+	if inner == outer {
+		t.Fatal("logger separated by a response transformer must not reuse the outer recorder")
+	}
+
+	_, _ = inner.Write([]byte("upstream"))
+	transform.SetBody([]byte("transformed"))
+	transform.Commit(outer)
+
+	if got := destination.Body.String(); got != "transformed" {
+		t.Fatalf("destination body = %q, want transformed", got)
+	}
+	if got := outer.Body(); got != "transformed" {
+		t.Fatalf("outer logger body = %q, want transformed", got)
+	}
+	if got := inner.Body(); got != "upstream" {
+		t.Fatalf("inner logger body = %q, want upstream", got)
+	}
+}
+
+func TestSharedResponseRecorderCaptureLimit(t *testing.T) {
+	destination := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 4)
+	written, err := recorder.Write([]byte("abcdefgh"))
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if written != 8 || destination.Body.String() != "abcdefgh" {
+		t.Fatalf("forwarded response = %q (%d bytes), want abcdefgh (8 bytes)", destination.Body.String(), written)
+	}
+	if recorder.Body() != "abcd" {
+		t.Fatalf("captured response = %q, want abcd", recorder.Body())
+	}
+}
+
 func TestResponseRecorderForwardsAndCapturesBoundedResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 	recorder := NewResponseRecorder(rr, 4)

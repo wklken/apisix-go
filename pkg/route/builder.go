@@ -3,6 +3,7 @@ package route
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -158,7 +159,7 @@ type wildcardRoute struct {
 }
 
 type wildcardDispatcher struct {
-	routes []wildcardRoute
+	buckets [2][3][2][]wildcardRoute // embedded, host rank, exact method
 }
 
 func registerWildcardRoute(
@@ -177,7 +178,7 @@ func registerWildcardRoute(
 
 	embedded := strings.Contains(pattern, "/*/")
 	if len(methods) == 0 {
-		dispatcher.routes = append(dispatcher.routes, wildcardRoute{
+		dispatcher.add(wildcardRoute{
 			method:   "*",
 			pattern:  pattern,
 			embedded: embedded,
@@ -192,13 +193,49 @@ func registerWildcardRoute(
 			continue
 		}
 		logger.Debugf("add route: %s %s", method, converted)
-		dispatcher.routes = append(dispatcher.routes, wildcardRoute{
+		dispatcher.add(wildcardRoute{
 			method:   strings.ToUpper(method),
 			pattern:  pattern,
 			embedded: embedded,
 			hosts:    hosts,
 			handler:  handler,
 		})
+	}
+}
+
+func (d *wildcardDispatcher) add(route wildcardRoute) {
+	embeddedIndex := 1
+	if route.embedded {
+		embeddedIndex = 0
+	}
+	methodIndex := 0
+	if route.method == "*" {
+		methodIndex = 1
+	}
+	if len(route.hosts) == 0 {
+		d.buckets[embeddedIndex][0][methodIndex] = append(
+			d.buckets[embeddedIndex][0][methodIndex], route,
+		)
+		return
+	}
+	hasExact := false
+	hasWildcard := false
+	for _, host := range route.hosts {
+		if strings.ContainsAny(host, "*?[") {
+			hasWildcard = true
+		} else {
+			hasExact = true
+		}
+	}
+	if hasExact {
+		d.buckets[embeddedIndex][2][methodIndex] = append(
+			d.buckets[embeddedIndex][2][methodIndex], route,
+		)
+	}
+	if hasWildcard {
+		d.buckets[embeddedIndex][1][methodIndex] = append(
+			d.buckets[embeddedIndex][1][methodIndex], route,
+		)
 	}
 }
 
@@ -219,11 +256,11 @@ func existingWildcardDispatcher(mux *chi.Mux, pattern string) *wildcardDispatche
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	pathMatched := false
 	hostMatched := false
-	for _, embedded := range []bool{true, false} {
+	for embeddedIndex := range 2 {
 		for _, hostRank := range []int{2, 1, 0} {
-			for _, exactMethod := range []bool{true, false} {
-				for _, route := range slices.Backward(d.routes) {
-					if route.embedded != embedded || !matchesRoutePath(route.pattern, request.URL.Path) {
+			for methodIndex := range 2 {
+				for _, route := range slices.Backward(d.buckets[embeddedIndex][hostRank][methodIndex]) {
+					if !matchesRoutePath(route.pattern, request.URL.Path) {
 						continue
 					}
 					pathMatched = true
@@ -231,8 +268,8 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 						continue
 					}
 					hostMatched = true
-					if (exactMethod && route.method != request.Method) ||
-						(!exactMethod && route.method != "*") {
+					if (methodIndex == 0 && route.method != request.Method) ||
+						(methodIndex == 1 && route.method != "*") {
 						continue
 					}
 					route.handler.ServeHTTP(writer, request)
@@ -302,9 +339,12 @@ type Builder struct {
 }
 
 type consumerPluginChainKey struct {
-	plugins   string
-	routeID   string
-	serviceID string
+	consumerID     string
+	consumerDigest [32]byte
+	groupID        string
+	groupDigest    [32]byte
+	routeID        string
+	serviceID      string
 }
 
 type servicePluginKey struct {
@@ -565,13 +605,13 @@ func (b *Builder) runConsumerPlugins(
 		return
 	}
 
-	pluginConfigs := consumerPluginConfigs(consumer)
+	pluginConfigs, groupDigest := consumerPluginConfigsWithDigest(consumer)
 	if len(pluginConfigs) == 0 {
 		next.ServeHTTP(w, r)
 		return
 	}
 
-	chain, err := b.consumerPluginChain(pluginConfigs, routeContext)
+	chain, err := b.consumerPluginChainForIdentity(pluginConfigs, consumer, groupDigest, routeContext)
 	if err != nil {
 		logger.Errorf("initialize consumer plugins for %s: %s", consumer.Username, err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -586,10 +626,19 @@ func (b *Builder) runConsumerPlugins(
 }
 
 func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.PluginConfig {
+	pluginConfigs, _ := consumerPluginConfigsWithDigest(consumer)
+	return pluginConfigs
+}
+
+func consumerPluginConfigsWithDigest(
+	consumer resource.Consumer,
+) (map[string]resource.PluginConfig, [32]byte) {
 	pluginConfigs := make(map[string]resource.PluginConfig)
+	var groupDigest [32]byte
 	if consumer.GroupID != "" {
 		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
 			maps.Copy(pluginConfigs, group.Plugins)
+			groupDigest = group.ConfigDigest
 		}
 	}
 	maps.Copy(pluginConfigs, consumer.Plugins)
@@ -599,7 +648,7 @@ func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.Plugi
 			delete(pluginConfigs, name)
 		}
 	}
-	return pluginConfigs
+	return pluginConfigs, groupDigest
 }
 
 func isConsumerAuthenticationPlugin(name string) bool {
@@ -619,10 +668,30 @@ func (b *Builder) consumerPluginChain(
 	if err != nil {
 		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
 	}
+	consumer := resource.Consumer{ConfigDigest: sha256.Sum256(encoded)}
+	return b.consumerPluginChainForIdentity(pluginConfigs, consumer, [32]byte{}, routeContext)
+}
+
+func (b *Builder) consumerPluginChainForIdentity(
+	pluginConfigs map[string]resource.PluginConfig,
+	consumer resource.Consumer,
+	groupDigest [32]byte,
+	routeContext pluginRouteContext,
+) (alice.Chain, error) {
+	if consumer.ConfigDigest == ([32]byte{}) {
+		encoded, err := json.Marshal(consumer.Plugins)
+		if err != nil {
+			return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
+		}
+		consumer.ConfigDigest = sha256.Sum256(encoded)
+	}
 	key := consumerPluginChainKey{
-		plugins:   string(encoded),
-		routeID:   routeContext.routeID,
-		serviceID: routeContext.service.ID,
+		consumerID:     consumer.Username,
+		consumerDigest: consumer.ConfigDigest,
+		groupID:        consumer.GroupID,
+		groupDigest:    groupDigest,
+		routeID:        routeContext.routeID,
+		serviceID:      routeContext.service.ID,
 	}
 
 	b.consumerPluginChainMu.Lock()
@@ -1228,8 +1297,27 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 		}
+		if port == 0 {
+			switch strings.ToLower(targetScheme) {
+			case "https":
+				port = 443
+			case "http":
+				port = 80
+			}
+		}
+		if host == "" || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("invalid upstream node %q:%d", host, port)
+		}
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
+	}
+	if len(servers) == 0 && !strings.EqualFold(scheme, "kafka") {
+		return nil, fmt.Errorf("upstream must contain at least one node")
+	}
+
+	compiledTargets, err := compileUpstreamTargets(servers)
+	if err != nil {
+		return nil, err
 	}
 
 	if strings.EqualFold(scheme, "kafka") {
@@ -1258,7 +1346,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
 		} else {
-			if err := applyUpstreamTarget(req, lb, upstream, originalHost); err != nil {
+			if err := applyUpstreamTargetCompiled(req, lb, upstream, originalHost, compiledTargets); err != nil {
 				panic("parse host fail, invalid target")
 			}
 		}
@@ -1331,17 +1419,17 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = pxy.WithHealthReporter(r, healthReporter(lb))
-		if serveDubboIfConfigured(w, r, lb, upstream.Retries) {
+		if serveDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
 			return
 		}
-		if serveHTTPDubboIfConfigured(w, r, lb, upstream.Retries) {
+		if serveHTTPDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
 			_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		r = attachHTTPRetries(r, upstream, lb)
+		r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
 		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
 	}), nil
 }
@@ -1558,6 +1646,16 @@ func serveDubboIfConfigured(
 	lb pxy.LoadBalancer,
 	retries ...int,
 ) bool {
+	return serveDubboIfConfiguredCompiled(w, r, lb, nil, retries...)
+}
+
+func serveDubboIfConfiguredCompiled(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+	retries ...int,
+) bool {
 	cfg, ok := dubbo_proxy.GetConfig(r)
 	if !ok {
 		return false
@@ -1568,7 +1666,7 @@ func serveDubboIfConfigured(
 		retryCount = retries[0]
 	}
 	dubbo_proxy.ServeDubboWithRetries(w, r, func() (string, error) {
-		return selectHTTPDubboTarget(r, lb)
+		return selectHTTPDubboTarget(r, lb, targets)
 	}, cfg, retryCount)
 	return true
 }
@@ -1577,6 +1675,16 @@ func serveHTTPDubboIfConfigured(
 	w http.ResponseWriter,
 	r *http.Request,
 	lb pxy.LoadBalancer,
+	retries ...int,
+) bool {
+	return serveHTTPDubboIfConfiguredCompiled(w, r, lb, nil, retries...)
+}
+
+func serveHTTPDubboIfConfiguredCompiled(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
 	retries ...int,
 ) bool {
 	cfg, ok := http_dubbo.GetConfig(r)
@@ -1589,12 +1697,68 @@ func serveHTTPDubboIfConfigured(
 		retryCount = retries[0]
 	}
 	http_dubbo.ServeDubboWithRetries(w, r, func() (string, error) {
-		return selectHTTPDubboTarget(r, lb)
+		return selectHTTPDubboTarget(r, lb, targets)
 	}, cfg, retryCount)
 	return true
 }
 
-func selectHTTPDubboTarget(r *http.Request, lb pxy.LoadBalancer) (string, error) {
+type compiledUpstreamTarget struct {
+	scheme   string
+	host     string
+	nodeHost string
+}
+
+func compileUpstreamTargets(servers map[string]int) (map[string]compiledUpstreamTarget, error) {
+	targets := make(map[string]compiledUpstreamTarget, len(servers))
+	for target := range servers {
+		compiled, err := parseCompiledUpstreamTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		targets[target] = compiled
+	}
+	return targets, nil
+}
+
+func resolveCompiledUpstreamTarget(
+	target string,
+	targets map[string]compiledUpstreamTarget,
+) (compiledUpstreamTarget, error) {
+	if compiled, ok := targets[target]; ok {
+		return compiled, nil
+	}
+	// Compatibility fallback for direct helper callers. Built route handlers
+	// always provide the immutable precompiled target table.
+	return parseCompiledUpstreamTarget(target)
+}
+
+func parseCompiledUpstreamTarget(target string) (compiledUpstreamTarget, error) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return compiledUpstreamTarget{}, fmt.Errorf("parse upstream target %q: %w", target, err)
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return compiledUpstreamTarget{}, fmt.Errorf("upstream target %q has no host", target)
+	}
+	port := parsed.Port()
+	if port != "" {
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 1 || numericPort > 65535 {
+			return compiledUpstreamTarget{}, fmt.Errorf("upstream target %q has invalid port", target)
+		}
+	}
+	return compiledUpstreamTarget{
+		scheme:   parsed.Scheme,
+		host:     parsed.Host,
+		nodeHost: upstreamNodeHost(parsed.Scheme, parsed.Hostname(), port),
+	}, nil
+}
+
+func selectHTTPDubboTarget(
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) (string, error) {
 	if override := traffic_split.GetOverride(r); override != nil {
 		if override.HealthReporter != nil {
 			r = pxy.WithHealthReporter(r, override.HealthReporter)
@@ -1605,14 +1769,11 @@ func selectHTTPDubboTarget(r *http.Request, lb pxy.LoadBalancer) (string, error)
 
 	target := lb.Next()
 	pxy.SetSelectedTarget(r, target)
-	u, err := url.Parse(target)
+	compiled, err := resolveCompiledUpstreamTarget(target, targets)
 	if err != nil {
-		return "", fmt.Errorf("parse upstream target %q: %w", target, err)
+		return "", err
 	}
-	if u.Host == "" {
-		return "", fmt.Errorf("upstream target %q has no host", target)
-	}
-	return u.Host, nil
+	return compiled.host, nil
 }
 
 func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingHandler http.Handler) http.Handler {
@@ -1660,6 +1821,15 @@ func attachHTTPRetries(
 	upstream resource.Upstream,
 	loadBalancer pxy.LoadBalancer,
 ) *http.Request {
+	return attachHTTPRetriesCompiled(request, upstream, loadBalancer, nil)
+}
+
+func attachHTTPRetriesCompiled(
+	request *http.Request,
+	upstream resource.Upstream,
+	loadBalancer pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) *http.Request {
 	originalHost := request.Host
 	if override := traffic_split.GetOverride(request); override != nil {
 		return pxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
@@ -1675,7 +1845,7 @@ func attachHTTPRetries(
 		})
 	}
 	return pxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
-		if err := applyUpstreamTarget(retry, loadBalancer, upstream, originalHost); err != nil {
+		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
 			return false
 		}
 		applyFinalProxyRewrite(retry)
@@ -1689,15 +1859,25 @@ func applyUpstreamTarget(
 	upstream resource.Upstream,
 	originalHost string,
 ) error {
+	return applyUpstreamTargetCompiled(request, loadBalancer, upstream, originalHost, nil)
+}
+
+func applyUpstreamTargetCompiled(
+	request *http.Request,
+	loadBalancer pxy.LoadBalancer,
+	upstream resource.Upstream,
+	originalHost string,
+	targets map[string]compiledUpstreamTarget,
+) error {
 	target := loadBalancer.Next()
 	pxy.SetSelectedTarget(request, target)
-	parsed, err := url.Parse(target)
+	compiled, err := resolveCompiledUpstreamTarget(target, targets)
 	if err != nil {
-		return fmt.Errorf("parse upstream target %q: %w", target, err)
+		return err
 	}
-	request.URL.Scheme = parsed.Scheme
-	request.URL.Host = parsed.Host
-	nodeHost := upstreamNodeHost(parsed.Scheme, parsed.Hostname(), parsed.Port())
+	request.URL.Scheme = compiled.scheme
+	request.URL.Host = compiled.host
+	nodeHost := compiled.nodeHost
 	switch upstream.PassHost {
 	case "", "pass":
 		request.Host = originalHost

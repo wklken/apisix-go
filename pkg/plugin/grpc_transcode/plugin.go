@@ -284,7 +284,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := base.NewBufferedResponseWriter()
+		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 		if err := p.transformResponse(recorder, binding); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1287,5 +1287,5 @@ func writeTranscodedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 		}
 	}
 	w.WriteHeader(resp.StatusCode())
-	_, _ = w.Write(resp.Body())
+	resp.WriteBodyTo(w)
 }

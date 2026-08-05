@@ -31,13 +31,28 @@ func ConvertAnthropicHeadersToOpenAI(headers http.Header) {
 }
 
 func ConvertAnthropicMessagesToOpenAI(body []byte) ([]byte, map[string]string, error) {
-	var request map[string]any
-	if err := json.Unmarshal(body, &request); err != nil {
+	document, err := DecodeDocument(body)
+	if err != nil {
 		return nil, nil, fmt.Errorf("decode Anthropic request: %w", err)
 	}
+	convertedDocument, toolNameMap, err := ConvertAnthropicMessagesDocumentToOpenAI(document)
+	if err != nil {
+		return nil, nil, err
+	}
+	encoded, err := json.Marshal(convertedDocument.Raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode OpenAI Chat request: %w", err)
+	}
+	return encoded, toolNameMap, nil
+}
+
+func ConvertAnthropicMessagesDocumentToOpenAI(
+	document Document,
+) (Document, map[string]string, error) {
+	request := document.Raw
 	rawMessages, ok := request["messages"].([]any)
 	if !ok || len(rawMessages) == 0 {
-		return nil, nil, fmt.Errorf("missing messages")
+		return Document{}, nil, fmt.Errorf("missing messages")
 	}
 
 	converted := make(map[string]any)
@@ -68,15 +83,15 @@ func ConvertAnthropicMessagesToOpenAI(body []byte) ([]byte, map[string]string, e
 	for i, rawMessage := range rawMessages {
 		message, ok := rawMessage.(map[string]any)
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid message at index %d", i+1)
+			return Document{}, nil, fmt.Errorf("invalid message at index %d", i+1)
 		}
 		role, ok := message["role"].(string)
 		if !ok || role == "" {
-			return nil, nil, fmt.Errorf("invalid message at index %d", i+1)
+			return Document{}, nil, fmt.Errorf("invalid message at index %d", i+1)
 		}
 		convertedMessages, err := convertAnthropicMessage(role, message["content"])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid message content at index %d: %w", i+1, err)
+			return Document{}, nil, fmt.Errorf("invalid message content at index %d: %w", i+1, err)
 		}
 		messages = append(messages, convertedMessages...)
 	}
@@ -88,12 +103,7 @@ func ConvertAnthropicMessagesToOpenAI(body []byte) ([]byte, map[string]string, e
 		convertAnthropicToolChoice(converted, request["tool_choice"])
 	}
 	rewriteConvertedToolChoice(converted, toolNameMap)
-
-	encoded, err := json.Marshal(converted)
-	if err != nil {
-		return nil, nil, fmt.Errorf("encode OpenAI Chat request: %w", err)
-	}
-	return encoded, toolNameMap, nil
+	return Document{Raw: converted}, toolNameMap, nil
 }
 
 func ConvertOpenAIChatToAnthropic(body []byte, model string, toolNameMap map[string]string) ([]byte, error) {

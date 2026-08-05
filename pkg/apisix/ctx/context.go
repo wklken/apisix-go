@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -259,18 +260,47 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 // }
 
 const ApisixVarsKey ContextKey = "apisix_vars"
+const requestStateKey ContextKey = "request_state"
+
+// RequestState owns the mutable per-request maps and typed hot fields behind a
+// single context value. The maps remain available for plugin compatibility.
+type RequestState struct {
+	ApisixVars  map[string]any
+	RequestVars map[string]any
+	recycled    atomic.Bool
+
+	Status       int
+	BalancerIP   string
+	BalancerPort string
+	RouteID      string
+	ServiceID    string
+}
+
+func GetRequestState(r *http.Request) *RequestState {
+	state, _ := r.Context().Value(requestStateKey).(*RequestState)
+	return state
+}
 
 func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {
-	apisixVars := newVars()
-	for k, v := range vars {
-		apisixVars[k] = v
+	state := GetRequestState(r)
+	if state == nil {
+		state = newRequestState()
+		state.RequestVars, _ = r.Context().Value(RequestVarsKey).(map[string]any)
+		r = r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
 	}
-
-	r = r.WithContext(context.WithValue(r.Context(), ApisixVarsKey, apisixVars))
+	if state.ApisixVars == nil {
+		state.ApisixVars = newVars()
+	}
+	for k, v := range vars {
+		state.ApisixVars[k] = v
+	}
 	return r
 }
 
 func GetApisixVars(r *http.Request) map[string]any {
+	if state := GetRequestState(r); state != nil {
+		return state.ApisixVars
+	}
 	vars, _ := r.Context().Value(ApisixVarsKey).(map[string]any)
 	return vars
 }
@@ -286,6 +316,22 @@ func GetApisixVar(r *http.Request, key string) any {
 func RegisterApisixVar(r *http.Request, key string, val any) {
 	vars := GetApisixVars(r)
 	vars[key] = val
+	state := GetRequestState(r)
+	if state == nil {
+		return
+	}
+	switch key {
+	case "$status":
+		state.Status, _ = val.(int)
+	case "$balancer_ip":
+		state.BalancerIP, _ = val.(string)
+	case "$balancer_port":
+		state.BalancerPort, _ = val.(string)
+	case "$route_id":
+		state.RouteID, _ = val.(string)
+	case "$service_id":
+		state.ServiceID, _ = val.(string)
+	}
 }
 
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
@@ -297,20 +343,33 @@ func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 }
 
 func RecycleVars(r *http.Request) {
+	if state := GetRequestState(r); state != nil {
+		putRequestState(state)
+		return
+	}
 	putBack(GetApisixVars(r))
-
 	putBack(GetRequestVars(r))
 }
 
 const RequestVarsKey ContextKey = "request_vars"
 
 func WithRequestVars(r *http.Request) *http.Request {
-	vars := newVars()
-	r = r.WithContext(context.WithValue(r.Context(), RequestVarsKey, vars))
+	state := GetRequestState(r)
+	if state == nil {
+		state = newRequestState()
+		state.ApisixVars, _ = r.Context().Value(ApisixVarsKey).(map[string]any)
+		r = r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
+	}
+	if state.RequestVars == nil {
+		state.RequestVars = newVars()
+	}
 	return r
 }
 
 func GetRequestVars(r *http.Request) map[string]any {
+	if state := GetRequestState(r); state != nil {
+		return state.RequestVars
+	}
 	vars, _ := r.Context().Value(RequestVarsKey).(map[string]any)
 	return vars
 }
@@ -345,6 +404,8 @@ func ReadRequestBody(r *http.Request) ([]byte, error) {
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	RegisterRequestVar(r, RequestBodyKey, body)
+	if GetRequestVars(r) != nil {
+		RegisterRequestVar(r, RequestBodyKey, body)
+	}
 	return body, err
 }

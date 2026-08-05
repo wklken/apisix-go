@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
-	logger      *zap.Logger
-	sugarLogger *zap.SugaredLogger
-	observers   = observerRegistry{entries: make(map[string]observer)}
+	logger       *zap.Logger
+	sugarLogger  *zap.SugaredLogger
+	runtimeLevel = zap.NewAtomicLevelAt(zap.InfoLevel)
+	observers    = observerRegistry{entries: make(map[string]observer)}
 )
 
 // Entry is the normalized application log record delivered to observers.
@@ -37,10 +39,38 @@ type observerRegistry struct {
 func init() {
 	cfg := zap.NewProductionConfig()
 	cfg.OutputPaths = []string{"stdout"} // Replace with your desired log file path
-	cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	cfg.Level = runtimeLevel
 	logger, _ = cfg.Build()
 
 	sugarLogger = logger.Sugar()
+}
+
+func parseAPISIXLogLevel(value string) (zapcore.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "info", "notice":
+		return zapcore.InfoLevel, nil
+	case "debug":
+		return zapcore.DebugLevel, nil
+	case "warn":
+		return zapcore.WarnLevel, nil
+	case "error", "crit", "alert", "emerg":
+		return zapcore.ErrorLevel, nil
+	default:
+		return zapcore.InfoLevel, fmt.Errorf("unsupported error_log_level %q", value)
+	}
+}
+
+func ConfigureLevel(value string) error {
+	level, err := parseAPISIXLogLevel(value)
+	if err != nil {
+		return err
+	}
+	runtimeLevel.SetLevel(level)
+	return nil
+}
+
+func DebugEnabled() bool {
+	return runtimeLevel.Enabled(zap.DebugLevel)
 }
 
 // Use the logger variable to log messages throughout your code

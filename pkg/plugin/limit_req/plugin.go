@@ -471,7 +471,9 @@ type redisPoolStatsProvider interface {
 }
 
 func logRedisConnectionReuse(client redisPoolStatsProvider) {
-	logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
+	if logger.DebugEnabled() {
+		logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
+	}
 }
 
 func (p *Plugin) newRedisLimiter() reqLimiter {

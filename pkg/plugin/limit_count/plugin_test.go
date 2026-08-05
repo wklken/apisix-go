@@ -463,6 +463,10 @@ func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
 }
 
 func TestRedisDiagnosticStoreLogsConnectionReuseFromInitializationBaseline(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("enable debug logging: %v", err)
+	}
 	var hits atomic.Uint32
 	store := newRedisDiagnosticStore(
 		countingLimiterStore{

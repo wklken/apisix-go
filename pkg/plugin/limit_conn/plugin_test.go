@@ -438,6 +438,10 @@ func TestHandlerLogsRedisLimiterError(t *testing.T) {
 }
 
 func TestLogRedisConnectionReuseReportsPoolHits(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("enable debug logging: %v", err)
+	}
 	entries := make(chan logger.Entry, 2)
 	stop := logger.ReplaceObserver("limit-conn-redis-reuse-test", func(entry logger.Entry) {
 		if strings.HasPrefix(entry.Message, "redis connection reused times:") {
@@ -1023,6 +1027,10 @@ func TestResolveKeyLogsFallbackToClientIP(t *testing.T) {
 }
 
 func TestDecreaseLogsMeasuredAndDefaultRequestLatency(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("enable debug logging: %v", err)
+	}
 	tests := []struct {
 		name                string
 		onlyUseDefaultDelay bool

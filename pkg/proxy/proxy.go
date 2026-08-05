@@ -3,9 +3,8 @@ package proxy
 import (
 	"net/http"
 	"net/http/httputil"
+	"sync"
 	"time"
-
-	"github.com/oxtoacart/bpool"
 )
 
 // TODO: 1. websocket
@@ -18,13 +17,34 @@ type (
 	Director       func(req *http.Request)
 )
 
-var bufferPool *bpool.BytePool
+const proxyBufferSize = 32 * 1024
 
-func init() {
-	// use byte pool to prevent gc
-	// will take 320MB memory
-	bufferPool = bpool.NewBytePool(10000, 32*1024)
+type proxyBuffer [proxyBufferSize]byte
+
+type proxyBufferPool struct {
+	pool sync.Pool
 }
+
+func newProxyBufferPool() *proxyBufferPool {
+	pool := &proxyBufferPool{}
+	pool.pool.New = func() any { return new(proxyBuffer) }
+	return pool
+}
+
+func (p *proxyBufferPool) Get() []byte {
+	return p.pool.Get().(*proxyBuffer)[:]
+}
+
+func (p *proxyBufferPool) Put(buffer []byte) {
+	if cap(buffer) != proxyBufferSize {
+		return
+	}
+	p.pool.Put((*proxyBuffer)(buffer[:proxyBufferSize]))
+}
+
+var _ httputil.BufferPool = (*proxyBufferPool)(nil)
+
+var bufferPool = newProxyBufferPool()
 
 func NewProxyHandler(transport http.RoundTripper, director Director,
 	modifyResponse ModifyResponse, errorHandler ErrorHandler,

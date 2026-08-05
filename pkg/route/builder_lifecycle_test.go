@@ -904,3 +904,10 @@ func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
 		t.Fatal("Build() returned a partial handler, want nil for an undecodable global-rule snapshot")
 	}
 }
+
+func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {
+	_, err := (&Builder{}).buildReverseHandler(resource.Route{}, resource.Service{})
+	if err != nil {
+		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
+	}
+}

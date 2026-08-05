@@ -5,12 +5,18 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 const accessLogVersion = "apisix-go"
+
+var accessLogHostname = sync.OnceValue(func() string {
+	hostname, _ := os.Hostname()
+	return hostname
+})
 
 // AccessLogRequest is the captured request snapshot shared by the
 // access-log style logger plugins.
@@ -24,6 +30,16 @@ type AccessLogRequest struct {
 	Headers       map[string]any
 	QueryString   map[string]any
 	Started       time.Time
+}
+
+// CaptureMinimalAccessLogRequest captures only fields needed by custom log
+// formats, avoiding header/query snapshots when the default log is disabled.
+func CaptureMinimalAccessLogRequest(r *http.Request, started time.Time) AccessLogRequest {
+	return AccessLogRequest{
+		Host:     HostWithoutPort(r.Host),
+		ClientIP: HostWithoutPort(r.RemoteAddr),
+		Started:  started,
+	}
 }
 
 // CaptureAccessLogRequest snapshots a request for an access-log entry.
@@ -54,7 +70,7 @@ func BuildAccessLogSnapshot(
 	r *http.Request,
 	duration time.Duration,
 ) map[string]any {
-	hostname, _ := os.Hostname()
+	hostname := accessLogHostname()
 	latency := float64(duration) / float64(time.Millisecond)
 	upstreamLatency := RequestInt64(r, "$upstream_latency")
 	apisixLatency := latency - float64(upstreamLatency)
@@ -151,8 +167,17 @@ func HostWithoutPort(address string) string {
 
 // UpstreamAddress joins the balancer ip/port request variables.
 func UpstreamAddress(r *http.Request) string {
-	host, _ := apisixctx.GetApisixVar(r, "$balancer_ip").(string)
-	port, _ := apisixctx.GetApisixVar(r, "$balancer_port").(string)
+	var host, port string
+	if state := apisixctx.GetRequestState(r); state != nil {
+		host = state.BalancerIP
+		port = state.BalancerPort
+	}
+	if host == "" {
+		host, _ = apisixctx.GetApisixVar(r, "$balancer_ip").(string)
+	}
+	if port == "" {
+		port, _ = apisixctx.GetApisixVar(r, "$balancer_port").(string)
+	}
 	if host == "" || port == "" {
 		return host
 	}

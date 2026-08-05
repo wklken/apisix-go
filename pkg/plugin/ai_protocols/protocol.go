@@ -60,6 +60,29 @@ type ResponseMetadata struct {
 	CompletionTokens int64
 }
 
+// Document is a decoded AI JSON payload. Callers should decode each request or
+// non-streaming response once and pass the document to all extractors.
+type Document struct {
+	Raw map[string]any
+}
+
+func DecodeDocument(body []byte) (Document, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return Document{}, err
+	}
+	return Document{Raw: raw}, nil
+}
+
+func (d Document) Model() string {
+	model, _ := d.Raw["model"].(string)
+	return model
+}
+
+func (d Document) IsStreaming(protocol Protocol) bool {
+	return IsStreaming(protocol, d.Raw)
+}
+
 func Detect(requestPath string, body map[string]any) (Protocol, error) {
 	if isNonEmptyObject(body) && strings.HasSuffix(requestPath, BedrockConverse.Endpoint) && hasMessages(body) {
 		return BedrockConverse, nil
@@ -447,32 +470,36 @@ func copySimpleOptions(body map[string]any, options map[string]any) {
 }
 
 func ExtractResponseMetadata(protocol Protocol, body []byte) ResponseMetadata {
-	metadata := ResponseMetadata{PromptTokens: -1, CompletionTokens: -1}
-	var decoded struct {
-		Model string         `json:"model"`
-		Usage map[string]any `json:"usage"`
+	document, err := DecodeDocument(body)
+	if err != nil {
+		return ResponseMetadata{PromptTokens: -1, CompletionTokens: -1}
 	}
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return metadata
-	}
+	return ExtractResponseMetadataDocument(protocol, document)
+}
 
-	metadata.Model = decoded.Model
+func ExtractResponseMetadataDocument(protocol Protocol, document Document) ResponseMetadata {
+	metadata := ResponseMetadata{
+		Model:            document.Model(),
+		PromptTokens:     -1,
+		CompletionTokens: -1,
+	}
+	usage, _ := document.Raw["usage"].(map[string]any)
 	switch protocol {
 	case OpenAIResponses:
-		metadata.PromptTokens = numericUsage(decoded.Usage["input_tokens"])
-		metadata.CompletionTokens = numericUsage(decoded.Usage["output_tokens"])
+		metadata.PromptTokens = numericUsage(usage["input_tokens"])
+		metadata.CompletionTokens = numericUsage(usage["output_tokens"])
 	case OpenAIEmbeddings:
-		metadata.PromptTokens = numericUsage(decoded.Usage["prompt_tokens"])
+		metadata.PromptTokens = numericUsage(usage["prompt_tokens"])
 		metadata.CompletionTokens = 0
 	case AnthropicMessages:
-		metadata.PromptTokens = numericUsage(decoded.Usage["input_tokens"])
-		metadata.CompletionTokens = numericUsage(decoded.Usage["output_tokens"])
+		metadata.PromptTokens = numericUsage(usage["input_tokens"])
+		metadata.CompletionTokens = numericUsage(usage["output_tokens"])
 	case BedrockConverse:
-		metadata.PromptTokens = numericUsage(decoded.Usage["inputTokens"])
-		metadata.CompletionTokens = numericUsage(decoded.Usage["outputTokens"])
+		metadata.PromptTokens = numericUsage(usage["inputTokens"])
+		metadata.CompletionTokens = numericUsage(usage["outputTokens"])
 	default:
-		metadata.PromptTokens = numericUsage(decoded.Usage["prompt_tokens"])
-		metadata.CompletionTokens = numericUsage(decoded.Usage["completion_tokens"])
+		metadata.PromptTokens = numericUsage(usage["prompt_tokens"])
+		metadata.CompletionTokens = numericUsage(usage["completion_tokens"])
 	}
 	return metadata
 }

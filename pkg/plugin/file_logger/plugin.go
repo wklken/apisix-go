@@ -1,10 +1,7 @@
 package file_logger
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -247,16 +244,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		request := captureRequest(r)
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}
 		}
 
 		writer := w
-		var recorder *base.ResponseRecorder
+		var recorder *base.SharedResponseRecorder
 		if p.config.IncludeRespBody {
-			recorder = base.NewResponseRecorder(w, p.config.MaxRespBodyBytes)
+			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
 			writer = recorder
 		}
 
@@ -269,7 +266,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code)
 		var capturedResponseBody string
 		if includeResponseBody {
-			capturedResponseBody = responseBody(recorder.Body(), w.Header().Get("Content-Encoding"))
+			capturedResponseBody = recorder.BodyDecoded(
+				p.config.MaxRespBodyBytes,
+				w.Header().Get("Content-Encoding"),
+			)
 			apisixctx.RegisterRequestVar(r, "$resp_body", capturedResponseBody)
 		}
 		logFields := p.buildLogFields(r, request, w.Header(), metrics, started)
@@ -482,22 +482,6 @@ func logValues(values http.Header) map[string]any {
 		}
 	}
 	return result
-}
-
-func responseBody(body string, encoding string) string {
-	if !strings.Contains(strings.ToLower(encoding), "gzip") {
-		return body
-	}
-	reader, err := gzip.NewReader(bytes.NewBufferString(body))
-	if err != nil {
-		return body
-	}
-	defer func() { _ = reader.Close() }()
-	decoded, err := io.ReadAll(reader)
-	if err != nil {
-		return body
-	}
-	return string(decoded)
 }
 
 type appendFileWriteSyncer struct {

@@ -334,7 +334,7 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 }
 
 func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http.Handler, key string, status string) {
-	recorder := base.NewBufferedResponseWriter()
+	recorder := base.GetOrCreateTransformResponseWriter(r)
 	next.ServeHTTP(recorder, r)
 
 	if recorder.StatusCode() == http.StatusOK &&

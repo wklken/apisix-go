@@ -19,13 +19,24 @@ func TestConsumerPluginChainDoesNotShareRouteBoundPluginsAcrossRoutes(t *testing
 		},
 	}
 
-	firstChain, err := builder.consumerPluginChain(configs, builder.pluginRouteContext(resource.Route{ID: "route-1"}))
+	consumer := resource.Consumer{Username: "test-consumer", Plugins: configs}
+	firstChain, err := builder.consumerPluginChainForIdentity(
+		configs,
+		consumer,
+		[32]byte{},
+		builder.pluginRouteContext(resource.Route{ID: "route-1"}),
+	)
 	if err != nil {
-		t.Fatalf("first consumerPluginChain() error = %v", err)
+		t.Fatalf("first consumerPluginChainForIdentity() error = %v", err)
 	}
-	secondChain, err := builder.consumerPluginChain(configs, builder.pluginRouteContext(resource.Route{ID: "route-2"}))
+	secondChain, err := builder.consumerPluginChainForIdentity(
+		configs,
+		consumer,
+		[32]byte{},
+		builder.pluginRouteContext(resource.Route{ID: "route-2"}),
+	)
 	if err != nil {
-		t.Fatalf("second consumerPluginChain() error = %v", err)
+		t.Fatalf("second consumerPluginChainForIdentity() error = %v", err)
 	}
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

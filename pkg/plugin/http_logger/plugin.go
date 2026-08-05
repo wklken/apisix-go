@@ -1,18 +1,14 @@
 package http_logger
 
 import (
-	"bytes"
-	"compress/gzip"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
-	brotli "github.com/andybalholm/brotli"
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
@@ -363,19 +359,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var requestBody string
 		captureRequestBody := p.config.IncludeReqBody || logFormatContains(p.logFormat, "$request_body")
 		if captureRequestBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}
 		}
 
 		writer := w
-		var recorder *base.ResponseRecorder
+		var recorder *base.SharedResponseRecorder
 		captureResponseBody := p.config.IncludeRespBody ||
 			logFormatContains(p.logFormat, "$resp_body") ||
 			len(p.logFormat) == 0
 		if captureResponseBody {
-			recorder = base.NewResponseRecorder(w, p.config.MaxRespBodyBytes)
+			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
 			writer = recorder
 		}
 
@@ -385,7 +381,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var responseBody string
 		if recorder != nil && recorder.HasBody() &&
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			responseBody = decodeResponseBody(recorder.Body(), w.Header().Get("Content-Encoding"))
+			responseBody = recorder.BodyDecoded(
+				p.config.MaxRespBodyBytes,
+				w.Header().Get("Content-Encoding"),
+			)
 		}
 
 		var logFields map[string]any
@@ -516,28 +515,6 @@ func truncateLogFormat(format map[string]any, depth int) (map[string]any, bool) 
 		truncated = truncated || childTruncated
 	}
 	return result, truncated
-}
-
-func decodeResponseBody(body string, encoding string) string {
-	var reader io.Reader
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "gzip":
-		gzipReader, err := gzip.NewReader(bytes.NewBufferString(body))
-		if err != nil {
-			return body
-		}
-		defer func() { _ = gzipReader.Close() }()
-		reader = gzipReader
-	case "br":
-		reader = brotli.NewReader(bytes.NewBufferString(body))
-	default:
-		return body
-	}
-	decoded, err := io.ReadAll(reader)
-	if err != nil {
-		return body
-	}
-	return string(decoded)
 }
 
 func (p *Plugin) Send(log map[string]any) {

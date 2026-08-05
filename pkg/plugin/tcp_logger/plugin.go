@@ -339,7 +339,7 @@ func resolveTCPLogFormatNode(r *http.Request, request accessRequest, value any) 
 func (p *Plugin) Send(log map[string]any) {
 	logMessage, err := json.Marshal(log)
 	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in udp-logger", err)
+		logger.Errorf("failed to marshal log message: %s in tcp-logger", err)
 		return
 	}
 

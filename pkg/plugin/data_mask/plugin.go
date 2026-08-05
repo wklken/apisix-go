@@ -1,7 +1,6 @@
 package data_mask
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -174,7 +173,7 @@ func (p *Plugin) maskRequest(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	setBody(r, body)
+	base.ReplaceRequestBody(r, body)
 	return nil
 }
 
@@ -620,13 +619,4 @@ func readBody(r *http.Request) ([]byte, error) {
 		return nil, fmt.Errorf("read request body: %w", err)
 	}
 	return body, nil
-}
-
-func setBody(r *http.Request, body []byte) {
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
 }

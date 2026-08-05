@@ -568,11 +568,6 @@ func (p *Plugin) prepareProviderRequest(
 	return prepared, nil
 }
 
-func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, error) {
-	body, _, protocol, err := p.readJSONDocument(r)
-	return body, protocol, err
-}
-
 func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Document, ai_protocols.Protocol, error) {
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
@@ -582,7 +577,9 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		)
 	}
 	if r.ContentLength > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("request body exceeds max_req_body_size")
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
+			"request body exceeds max_req_body_size",
+		)
 	}
 
 	reader := io.LimitReader(r.Body, p.config.MaxReqBodySize+1)
@@ -598,7 +595,9 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("could not get body: %w", err)
 	}
 	if int64(len(body)) > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("request body exceeds max_req_body_size")
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
+			"request body exceeds max_req_body_size",
+		)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
@@ -606,7 +605,10 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 
 	document, err := ai_protocols.DecodeDocument(body)
 	if err != nil {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("could not parse JSON request body: %w", err)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
+			"could not parse JSON request body: %w",
+			err,
+		)
 	}
 	bodyTab := document.Raw
 	originalBody := ai_common.CloneJSONValue(bodyTab).(map[string]any)
@@ -629,7 +631,10 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("failed to encode provider request body: %w", err)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
+			"failed to encode provider request body: %w",
+			err,
+		)
 	}
 	return rewritten, document, protocol, nil
 }
@@ -1039,11 +1044,6 @@ func (p *Plugin) writeProviderResponse(
 	_, _ = w.Write(body)
 }
 
-func requestIsStreaming(body []byte, protocol ai_protocols.Protocol) bool {
-	var decoded map[string]any
-	return json.Unmarshal(body, &decoded) == nil && ai_protocols.IsStreaming(protocol, decoded)
-}
-
 func registerStreamingLLMRequestVars(
 	r *http.Request,
 	requestDocument ai_protocols.Document,
@@ -1253,11 +1253,6 @@ func numericToken(value any) int64 {
 	}
 }
 
-func registerUsageContextVars(r *http.Request, responseBody []byte, promptTokens, completionTokens int64) {
-	document, _ := ai_protocols.DecodeDocument(responseBody)
-	registerUsageContextDocumentVars(r, document, promptTokens, completionTokens)
-}
-
 func registerUsageContextDocumentVars(
 	r *http.Request,
 	document ai_protocols.Document,
@@ -1277,16 +1272,6 @@ func registerUsageContextDocumentVars(
 		"completion_tokens": completionTokens,
 		"total_tokens":      promptTokens + completionTokens,
 	})
-}
-
-func modelFromBody(body []byte) string {
-	var decoded struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return ""
-	}
-	return decoded.Model
 }
 
 func (p *Plugin) transport() http.RoundTripper {

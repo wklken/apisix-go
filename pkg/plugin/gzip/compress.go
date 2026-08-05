@@ -85,8 +85,10 @@ type resettableWriteCloser interface {
 	Reset(io.Writer)
 }
 
-var gzipWriterPools [10]sync.Pool
-var deflateWriterPools [10]sync.Pool
+var (
+	gzipWriterPools    [10]sync.Pool
+	deflateWriterPools [10]sync.Pool
+)
 
 func acquireCompressionWriter(enc encoding, level int, destination io.Writer) (resettableWriteCloser, error) {
 	if level < 0 || level >= len(gzipWriterPools) {

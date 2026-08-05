@@ -25,8 +25,8 @@ func TestServeHTTPDubboIfConfiguredUsesRouteUpstreamTarget(t *testing.T) {
 	})
 	rr := httptest.NewRecorder()
 
-	if !serveHTTPDubboIfConfigured(rr, req, lb) {
-		t.Fatal("serveHTTPDubboIfConfigured() = false, want true")
+	if !serveHTTPDubboIfConfiguredCompiled(rr, req, lb, nil) {
+		t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
 	}
 	if rr.Code != http.StatusOK {
 		t.Fatalf("response code = %d, want 200; body=%q", rr.Code, rr.Body.String())
@@ -54,8 +54,8 @@ func TestServeHTTPDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
 	})
 	rr := httptest.NewRecorder()
 
-	if !serveHTTPDubboIfConfigured(rr, req, lb, 1) {
-		t.Fatal("serveHTTPDubboIfConfigured() = false, want true")
+	if !serveHTTPDubboIfConfiguredCompiled(rr, req, lb, nil, 1) {
+		t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
 	}
 	if rr.Code != http.StatusOK {
 		t.Fatalf("response code = %d, want 200; body=%q", rr.Code, rr.Body.String())
@@ -72,8 +72,13 @@ func TestServeHTTPDubboIfConfiguredSkipsUnconfiguredRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
 	rr := httptest.NewRecorder()
 
-	if serveHTTPDubboIfConfigured(rr, req, pxy.NewWeightedRRLoadBalance(map[string]int{"dubbo://127.0.0.1:20880": 1})) {
-		t.Fatal("serveHTTPDubboIfConfigured() = true, want false")
+	if serveHTTPDubboIfConfiguredCompiled(
+		rr,
+		req,
+		pxy.NewWeightedRRLoadBalance(map[string]int{"dubbo://127.0.0.1:20880": 1}),
+		nil,
+	) {
+		t.Fatal("serveHTTPDubboIfConfiguredCompiled() = true, want false")
 	}
 }
 

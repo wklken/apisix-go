@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -902,6 +903,33 @@ func TestResponseTransformErrorReplacesSharedPipelineBody(t *testing.T) {
 	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		p.Handler(downstream).ServeHTTP(recorder, r)
+		recorder.Commit(w)
+	})
+	handler := base.WithTransformPipeline(2)(outer)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/anything", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "not-json") {
+		t.Fatalf("response body leaked upstream body: %q", rr.Body.String())
+	}
+}
+
+func TestResponseTransformErrorReplacesSharedPipelineBodyThroughWrapper(t *testing.T) {
+	p := newTestPlugin(t, Config{Response: &Transform{
+		InputFormat: "json",
+		Template:    `{"result":"{{message}}"}`,
+	}})
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`not-json`))
+	})
+	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := base.GetOrCreateTransformResponseWriter(r)
+		wrapped := httpsnoop.Wrap(recorder, httpsnoop.Hooks{})
+		p.Handler(downstream).ServeHTTP(wrapped, r)
 		recorder.Commit(w)
 	})
 	handler := base.WithTransformPipeline(2)(outer)

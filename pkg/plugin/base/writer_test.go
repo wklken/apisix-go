@@ -116,7 +116,7 @@ func TestPipelineBodySharing(t *testing.T) {
 	}
 
 	// Write through w1, verify w2 sees it.
-	w1.Write([]byte("shared-body"))
+	_, _ = w1.Write([]byte("shared-body"))
 	if got := string(w2.Body()); got != "shared-body" {
 		t.Fatalf("w2.Body() = %q, want shared-body", got)
 	}
@@ -136,7 +136,7 @@ func TestPipelineCommitSkipsBodyBetweenPipelines(t *testing.T) {
 
 	// Inner plugin (w2) writes body, sets headers, then commits to w1.
 	w2.WriteHeader(http.StatusCreated)
-	w2.Write([]byte("from-inner"))
+	_, _ = w2.Write([]byte("from-inner"))
 	w2.Header().Set("X-Inner", "true")
 	w2.Commit(w1)
 
@@ -210,7 +210,7 @@ func TestPipelineEnsureBufferNotCopied(t *testing.T) {
 
 	// Write large body to simulate real usage.
 	largeBody := bytes.Repeat([]byte("x"), 10*1024) // 10 KiB
-	w2.Write(largeBody)
+	_, _ = w2.Write(largeBody)
 
 	// Snapshot w1's buffer pointer before commit.
 	bufBefore := w1.bodyPtr

@@ -165,9 +165,9 @@ func TestBuildProviderRequestUsesOfficialOpenAIEndpointAndAuth(t *testing.T) {
 	)
 	clientRequest.Header.Set("Content-Type", "application/json")
 
-	body, protocol, err := p.readJSONBody(clientRequest)
+	body, _, protocol, err := p.readJSONDocument(clientRequest)
 	if err != nil {
-		t.Fatalf("readJSONBody() error = %v", err)
+		t.Fatalf("readJSONDocument() error = %v", err)
 	}
 	providerRequest, err := p.buildProviderRequest(clientRequest, body, protocol)
 	if err != nil {
@@ -208,9 +208,9 @@ func TestBuildProviderRequestPreservesPassthroughRouting(t *testing.T) {
 	)
 	clientRequest.Header.Set("Content-Type", "application/json")
 
-	body, protocol, err := p.readJSONBody(clientRequest)
+	body, _, protocol, err := p.readJSONDocument(clientRequest)
 	if err != nil {
-		t.Fatalf("readJSONBody() error = %v", err)
+		t.Fatalf("readJSONDocument() error = %v", err)
 	}
 	if protocol != ai_protocols.Passthrough {
 		t.Fatalf("protocol = %#v, want passthrough", protocol)
@@ -237,8 +237,8 @@ func TestReadJSONBodyRejectsNullWithoutPanicking(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("null"))
 	req.Header.Set("Content-Type", "application/json")
 
-	if _, _, err := p.readJSONBody(req); err == nil {
-		t.Fatal("readJSONBody() error = nil, want unsupported null body")
+	if _, _, _, err := p.readJSONDocument(req); err == nil {
+		t.Fatal("readJSONDocument() error = nil, want unsupported null body")
 	}
 }
 

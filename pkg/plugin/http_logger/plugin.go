@@ -385,7 +385,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var responseBody string
 		if recorder != nil && recorder.HasBody() &&
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			responseBody = decodeResponseBody(recorder.BodyTruncated(p.config.MaxRespBodyBytes), w.Header().Get("Content-Encoding"))
+			responseBody = decodeResponseBody(
+				recorder.BodyTruncated(p.config.MaxRespBodyBytes),
+				w.Header().Get("Content-Encoding"),
+			)
 		}
 
 		var logFields map[string]any

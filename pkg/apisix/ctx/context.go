@@ -259,8 +259,10 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 // 	return r
 // }
 
-const ApisixVarsKey ContextKey = "apisix_vars"
-const requestStateKey ContextKey = "request_state"
+const (
+	ApisixVarsKey   ContextKey = "apisix_vars"
+	requestStateKey ContextKey = "request_state"
+)
 
 // RequestState owns the mutable per-request maps and typed hot fields behind a
 // single context value. The maps remain available for plugin compatibility.

@@ -625,11 +625,6 @@ func (b *Builder) runConsumerPlugins(
 	chain.Then(next).ServeHTTP(w, r)
 }
 
-func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.PluginConfig {
-	pluginConfigs, _ := consumerPluginConfigsWithDigest(consumer)
-	return pluginConfigs
-}
-
 func consumerPluginConfigsWithDigest(
 	consumer resource.Consumer,
 ) (map[string]resource.PluginConfig, [32]byte) {
@@ -658,18 +653,6 @@ func isConsumerAuthenticationPlugin(name string) bool {
 	default:
 		return false
 	}
-}
-
-func (b *Builder) consumerPluginChain(
-	pluginConfigs map[string]resource.PluginConfig,
-	routeContext pluginRouteContext,
-) (alice.Chain, error) {
-	encoded, err := json.Marshal(pluginConfigs)
-	if err != nil {
-		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
-	}
-	consumer := resource.Consumer{ConfigDigest: sha256.Sum256(encoded)}
-	return b.consumerPluginChainForIdentity(pluginConfigs, consumer, [32]byte{}, routeContext)
 }
 
 func (b *Builder) consumerPluginChainForIdentity(
@@ -1311,10 +1294,6 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
 	}
-	if len(servers) == 0 && !strings.EqualFold(scheme, "kafka") {
-		return nil, fmt.Errorf("upstream must contain at least one node")
-	}
-
 	compiledTargets, err := compileUpstreamTargets(servers)
 	if err != nil {
 		return nil, err
@@ -1640,15 +1619,6 @@ func buildKafkaRawProxyHandler(lb pxy.LoadBalancer, upstream resource.Upstream) 
 	})
 }
 
-func serveDubboIfConfigured(
-	w http.ResponseWriter,
-	r *http.Request,
-	lb pxy.LoadBalancer,
-	retries ...int,
-) bool {
-	return serveDubboIfConfiguredCompiled(w, r, lb, nil, retries...)
-}
-
 func serveDubboIfConfiguredCompiled(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -1669,15 +1639,6 @@ func serveDubboIfConfiguredCompiled(
 		return selectHTTPDubboTarget(r, lb, targets)
 	}, cfg, retryCount)
 	return true
-}
-
-func serveHTTPDubboIfConfigured(
-	w http.ResponseWriter,
-	r *http.Request,
-	lb pxy.LoadBalancer,
-	retries ...int,
-) bool {
-	return serveHTTPDubboIfConfiguredCompiled(w, r, lb, nil, retries...)
 }
 
 func serveHTTPDubboIfConfiguredCompiled(
@@ -1816,14 +1777,6 @@ func httpRetryCount(upstream resource.Upstream) int {
 	return max(len(upstream.Nodes)-1, 0)
 }
 
-func attachHTTPRetries(
-	request *http.Request,
-	upstream resource.Upstream,
-	loadBalancer pxy.LoadBalancer,
-) *http.Request {
-	return attachHTTPRetriesCompiled(request, upstream, loadBalancer, nil)
-}
-
 func attachHTTPRetriesCompiled(
 	request *http.Request,
 	upstream resource.Upstream,
@@ -1851,15 +1804,6 @@ func attachHTTPRetriesCompiled(
 		applyFinalProxyRewrite(retry)
 		return true
 	})
-}
-
-func applyUpstreamTarget(
-	request *http.Request,
-	loadBalancer pxy.LoadBalancer,
-	upstream resource.Upstream,
-	originalHost string,
-) error {
-	return applyUpstreamTargetCompiled(request, loadBalancer, upstream, originalHost, nil)
 }
 
 func applyUpstreamTargetCompiled(

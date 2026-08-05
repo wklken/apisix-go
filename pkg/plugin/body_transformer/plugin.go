@@ -114,7 +114,6 @@ type templateNode struct {
 	escaped  bool
 	branches []compiledTemplateBranch
 	elseBody *compiledTemplate
-	err      error
 }
 
 type compiledTemplateBranch struct {
@@ -123,7 +122,6 @@ type compiledTemplateBranch struct {
 }
 
 var (
-	templateExprPattern    = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 	templateRawExprPattern = regexp.MustCompile(`\{\*\s*([^{}]+?)\s*\*\}`)
 	templateCallPattern    = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_.]*)\s*\(`)
 )
@@ -215,6 +213,10 @@ func resetBufferedResponse(w http.ResponseWriter) {
 		writer.Reset()
 	case *base.SharedResponseRecorder:
 		resetBufferedResponse(writer.ResponseWriter)
+	case interface{ Unwrap() http.ResponseWriter }:
+		if underlying := writer.Unwrap(); underlying != w {
+			resetBufferedResponse(underlying)
+		}
 	}
 }
 
@@ -427,13 +429,19 @@ func compileTemplate(text string) *compiledTemplate {
 			}
 			end := strings.Index(text[next+2:], closeDelimiter)
 			if end < 0 {
-				compiled.err = fmt.Errorf("template contains an unmatched opening delimiter for %s", map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"])
+				compiled.err = fmt.Errorf(
+					"template contains an unmatched opening delimiter for %s",
+					map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"],
+				)
 				return compiled
 			}
 			end += next + 2
 			expression := strings.TrimSpace(text[next+2 : end])
 			if expression == "" {
-				compiled.err = fmt.Errorf("template %s is empty", map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"])
+				compiled.err = fmt.Errorf(
+					"template %s is empty",
+					map[bool]string{true: "expression", false: "raw expression"}[kind == "escaped"],
+				)
 				return compiled
 			}
 			if err := validateCompiledExpression(expression); err != nil {
@@ -521,28 +529,6 @@ func escapeTemplateHTML(value string) string {
 	).Replace(value)
 }
 
-func validateTemplateFunctionCalls(text string) error {
-	for _, pattern := range []*regexp.Regexp{templateRawExprPattern, templateExprPattern} {
-		for _, expression := range pattern.FindAllStringSubmatch(text, -1) {
-			if len(expression) != 2 {
-				continue
-			}
-			for _, call := range templateCallPattern.FindAllStringSubmatch(expression[1], -1) {
-				if len(call) != 2 {
-					continue
-				}
-				switch call[1] {
-				case "_escape_json", "_escape_xml", "string.gsub":
-					continue
-				}
-				name := strings.Split(call[1], ".")[0]
-				return fmt.Errorf("attempt to call global '%s' (a string value)", name)
-			}
-		}
-	}
-	return nil
-}
-
 func validateTemplate(text string) error {
 	if err := validateTemplateDelimiter(text, "{*", "*}", "raw expression"); err != nil {
 		return err
@@ -579,45 +565,6 @@ func validateTemplateDelimiter(text, openDelimiter, closeDelimiter, kind string)
 type templateIfBranch struct {
 	condition string
 	body      string
-}
-
-func renderTemplateBlocks(text string, ctx templateContext) (string, error) {
-	for {
-		start := strings.Index(text, "{%")
-		if start < 0 {
-			return text, nil
-		}
-		directiveEnd := strings.Index(text[start+2:], "%}")
-		if directiveEnd < 0 {
-			return "", errors.New("template contains an unmatched opening block delimiter")
-		}
-		directiveEnd += start + 2
-		directive := strings.TrimSpace(text[start+2 : directiveEnd])
-		if !strings.HasPrefix(directive, "if ") {
-			return "", fmt.Errorf("unsupported template directive %q", directive)
-		}
-
-		condition, err := parseTemplateConditionDirective(directive, "if")
-		if err != nil {
-			return "", err
-		}
-		branches, elseBody, after, err := findTemplateIfBlock(text, condition, directiveEnd+2)
-		if err != nil {
-			return "", err
-		}
-		selected := elseBody
-		for _, branch := range branches {
-			if evaluateTemplateCondition(branch.condition, ctx) {
-				selected = branch.body
-				break
-			}
-		}
-		rendered, err := renderTemplateBlocks(selected, ctx)
-		if err != nil {
-			return "", err
-		}
-		text = text[:start] + rendered + text[after:]
-	}
 }
 
 func parseTemplateConditionDirective(directive, keyword string) (string, error) {

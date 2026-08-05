@@ -206,11 +206,6 @@ func maskHeader(r *http.Request, rule MaskRule) {
 	}
 }
 
-func (p *Plugin) maskBody(body []byte, rule MaskRule) (bool, []byte, error) {
-	newBody, masked, err := p.maskBodyRules(body, []MaskRule{rule})
-	return masked, newBody, err
-}
-
 func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, error) {
 	masked := false
 	for start := 0; start < len(rules); {

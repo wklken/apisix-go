@@ -269,7 +269,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code)
 		var capturedResponseBody string
 		if includeResponseBody {
-			capturedResponseBody = responseBody(recorder.BodyTruncated(p.config.MaxRespBodyBytes), w.Header().Get("Content-Encoding"))
+			capturedResponseBody = responseBody(
+				recorder.BodyTruncated(p.config.MaxRespBodyBytes),
+				w.Header().Get("Content-Encoding"),
+			)
 			apisixctx.RegisterRequestVar(r, "$resp_body", capturedResponseBody)
 		}
 		logFields := p.buildLogFields(r, request, w.Header(), metrics, started)

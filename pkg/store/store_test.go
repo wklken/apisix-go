@@ -162,3 +162,38 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestGetBucketDataReturnsCopiesOutsideReadTransaction(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/list-copy.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	})
+
+	storage := &Store{db: db}
+	storage.InitBuckets()
+	want := bytes.Repeat([]byte("r"), 64<<10)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routes")).Put([]byte("route-1"), want)
+	}); err != nil {
+		t.Fatalf("store route: %v", err)
+	}
+
+	got := storage.GetBucketData("routes")
+	if len(got) != 1 || !bytes.Equal(got[0], want) {
+		t.Fatalf("GetBucketData() = %d values, want one copied route", len(got))
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		stored := tx.Bucket([]byte("routes")).Get([]byte("route-1"))
+		if &got[0][0] == &stored[0] {
+			t.Fatal("GetBucketData() returned bbolt transaction-owned storage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("compare stored route: %v", err)
+	}
+}

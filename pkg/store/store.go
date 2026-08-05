@@ -133,8 +133,8 @@ func (s *Store) GetBucketData(bucketName string) [][]byte {
 		if b == nil {
 			return errBucketNotFound
 		}
-		_ = b.ForEach(func(_, v []byte) error {
-			data = append(data, v)
+		_ = b.ForEach(func(_, value []byte) error {
+			data = append(data, bytes.Clone(value))
 			return nil
 		})
 		return nil

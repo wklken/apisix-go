@@ -1,6 +1,8 @@
 package base
 
 import (
+	"bytes"
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +67,36 @@ func TestReadSharedRequestBodyUsesCurrentBodyAfterEarlierCache(t *testing.T) {
 	}
 	if body != "rewritten" {
 		t.Fatalf("ReadSharedRequestBody() = %q, want rewritten", body)
+	}
+}
+
+func TestReadSharedRequestBodyCachesLargestString(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("abcdefgh"))
+
+	short, err := ReadSharedRequestBody(r, 4)
+	if err != nil {
+		t.Fatalf("ReadSharedRequestBody() error = %v", err)
+	}
+	if short != "abcd" {
+		t.Fatalf("short body = %q, want abcd", short)
+	}
+	long, err := ReadSharedRequestBody(r, 8)
+	if err != nil {
+		t.Fatalf("ReadSharedRequestBody() error = %v", err)
+	}
+	if long != "abcdefgh" {
+		t.Fatalf("long body = %q, want abcdefgh", long)
+	}
+	if got, err := ReadSharedRequestBody(r, 4); err != nil || got != "abcd" {
+		t.Fatalf("repeated short body = %q, %v; want abcd, nil", got, err)
+	}
+
+	capture, ok := r.Context().Value(sharedRequestBodyContextKey{}).(*sharedRequestBodyCapture)
+	if !ok {
+		t.Fatal("shared request body capture missing from request context")
+	}
+	if capture.bodyTextLen != 8 {
+		t.Fatalf("cached body text length = %d, want 8", capture.bodyTextLen)
 	}
 }
 
@@ -178,6 +210,59 @@ func TestSharedResponseRecorderCaptureLimit(t *testing.T) {
 	}
 	if recorder.Body() != "abcd" {
 		t.Fatalf("captured response = %q, want abcd", recorder.Body())
+	}
+}
+
+func TestSharedResponseRecorderCachesLargestBodyString(t *testing.T) {
+	destination := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 0)
+	if _, err := recorder.Write([]byte("abcd")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := recorder.BodyTruncated(2); got != "ab" {
+		t.Fatalf("short body = %q, want ab", got)
+	}
+	if _, err := recorder.Write([]byte("efgh")); err != nil {
+		t.Fatalf("second Write() error = %v", err)
+	}
+	if got := recorder.Body(); got != "abcdefgh" {
+		t.Fatalf("full body = %q, want abcdefgh", got)
+	}
+	if got := recorder.BodyTruncated(4); got != "abcd" {
+		t.Fatalf("repeated short body = %q, want abcd", got)
+	}
+	if got := recorder.sharedCapture().bodyTextLen; got != 8 {
+		t.Fatalf("cached body text length = %d, want 8", got)
+	}
+}
+
+func TestSharedResponseRecorderCachesDecodedBody(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte("hello world")); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	destination := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := GetOrCreateSharedResponseRecorderWithLimit(destination, r, 0)
+	if _, err := recorder.Write(compressed.Bytes()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if got := recorder.BodyDecoded(5, " GZIP "); got != "hello" {
+		t.Fatalf("short decoded body = %q, want hello", got)
+	}
+	if got := recorder.BodyDecoded(0, "gzip"); got != "hello world" {
+		t.Fatalf("full decoded body = %q, want hello world", got)
+	}
+	capture := recorder.sharedCapture()
+	if !capture.decodedReady || capture.decodedEncoding != "gzip" {
+		t.Fatalf("decoded cache = ready:%v encoding:%q, want ready gzip", capture.decodedReady, capture.decodedEncoding)
 	}
 }
 

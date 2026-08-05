@@ -1,10 +1,7 @@
 package file_logger
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -269,8 +266,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code)
 		var capturedResponseBody string
 		if includeResponseBody {
-			capturedResponseBody = responseBody(
-				recorder.BodyTruncated(p.config.MaxRespBodyBytes),
+			capturedResponseBody = recorder.BodyDecoded(
+				p.config.MaxRespBodyBytes,
 				w.Header().Get("Content-Encoding"),
 			)
 			apisixctx.RegisterRequestVar(r, "$resp_body", capturedResponseBody)
@@ -485,22 +482,6 @@ func logValues(values http.Header) map[string]any {
 		}
 	}
 	return result
-}
-
-func responseBody(body string, encoding string) string {
-	if !strings.Contains(strings.ToLower(encoding), "gzip") {
-		return body
-	}
-	reader, err := gzip.NewReader(bytes.NewBufferString(body))
-	if err != nil {
-		return body
-	}
-	defer func() { _ = reader.Close() }()
-	decoded, err := io.ReadAll(reader)
-	if err != nil {
-		return body
-	}
-	return string(decoded)
 }
 
 type appendFileWriteSyncer struct {

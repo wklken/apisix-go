@@ -15,7 +15,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -489,27 +488,16 @@ func requestScheme(r *http.Request) string {
 	return "http"
 }
 
-func loadMetadata() (metadata Metadata) {
-	metadata = Metadata{
+func loadMetadata() Metadata {
+	return metadataWithDefaults(base.LoadPluginMetadata[Metadata](name))
+}
+
+func metadataWithDefaults(configured Metadata) Metadata {
+	metadata := Metadata{
 		Host:         "127.0.0.1",
 		Port:         8125,
 		Namespace:    "apisix",
 		ConstantTags: []string{"source:apisix"},
-	}
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{
-				Host:         "127.0.0.1",
-				Port:         8125,
-				Namespace:    "apisix",
-				ConstantTags: []string{"source:apisix"},
-			}
-		}
-	}()
-
-	var configured Metadata
-	if err := store.GetPluginMetadata(name, &configured); err != nil {
-		return metadata
 	}
 	if configured.Host != "" {
 		metadata.Host = configured.Host

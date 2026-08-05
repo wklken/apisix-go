@@ -266,6 +266,16 @@ func BeginLLMRequest(r *http.Request) func() {
 	return gauge.Dec
 }
 
+func HTTPRequestMetricsEnabled() bool {
+	return Requests != nil &&
+		HttpStatus != nil &&
+		HttpLatency != nil &&
+		Bandwidth != nil &&
+		LLMLatency != nil &&
+		LLMPromptTokens != nil &&
+		LLMCompletionTokens != nil
+}
+
 func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 	common := []string{
 		entry.Route,

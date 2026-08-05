@@ -31,7 +31,7 @@ type healthRequestContextKey struct{}
 // a request. The pointer state survives ReverseProxy request cloning and is
 // also available to protocol terminals that execute inside the route.
 func WithHealthReporter(r *http.Request, reporter HealthReporter) *http.Request {
-	if r == nil {
+	if r == nil || reporter == nil {
 		return r
 	}
 	state, ok := r.Context().Value(healthRequestContextKey{}).(*healthRequestState)

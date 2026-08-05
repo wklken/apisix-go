@@ -177,7 +177,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		defer func() { _ = res.Body.Close() }()
 
-		p.writeActionResponse(w, res)
+		p.writeActionResponse(w, res, r.ProtoMajor >= 2)
 	})
 }
 
@@ -215,7 +215,7 @@ func (p *Plugin) actionPath() string {
 	return path + url.PathEscape(p.config.Action)
 }
 
-func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response) {
+func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response, http2 bool) {
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		http.Error(w, "failed to read openwhisk response data", http.StatusServiceUnavailable)
@@ -234,6 +234,9 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response) 
 
 	for field, value := range result.Headers {
 		setResultHeader(w.Header(), field, value)
+	}
+	if http2 {
+		base.RemoveHTTP2ConnectionHeaders(w.Header())
 	}
 
 	status := res.StatusCode

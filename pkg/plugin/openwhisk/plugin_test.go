@@ -150,6 +150,31 @@ func TestSchemaRejectsInvalidOpenWhiskNames(t *testing.T) {
 	}
 }
 
+func TestWriteActionResponseDropsConnectionHeadersForHTTP2(t *testing.T) {
+	p := &Plugin{}
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"statusCode":200,"headers":{"Connection":"keep-alive","Keep-Alive":"timeout=5","Proxy-Connection":"keep-alive","Upgrade":"websocket","Transfer-Encoding":"chunked","X-Result":"ok"},"body":"done"}`,
+		)),
+	}
+	recorder := httptest.NewRecorder()
+
+	p.writeActionResponse(recorder, response, true)
+
+	for _, field := range []string{"Connection", "Keep-Alive", "Proxy-Connection", "Upgrade", "Transfer-Encoding"} {
+		if got := recorder.Header().Get(field); got != "" {
+			t.Fatalf("%s = %q, want removed", field, got)
+		}
+	}
+	if got := recorder.Header().Get("X-Result"); got != "ok" {
+		t.Fatalf("X-Result = %q, want ok", got)
+	}
+	if got := recorder.Body.String(); got != "done" {
+		t.Fatalf("body = %q, want done", got)
+	}
+}
+
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

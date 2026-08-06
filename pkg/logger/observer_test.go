@@ -55,3 +55,25 @@ func TestReplaceObserverWithNilClearsNamedObserver(t *testing.T) {
 		t.Fatalf("cleared observer entries = %#v, want none", entries)
 	}
 }
+
+func TestObserversHonorConfiguredRuntimeLevel(t *testing.T) {
+	t.Cleanup(func() { _ = ConfigureLevel("info") })
+	if err := ConfigureLevel("error"); err != nil {
+		t.Fatalf("configure error level: %v", err)
+	}
+
+	var entries []Entry
+	stop := ReplaceObserver("runtime-level-test", func(entry Entry) {
+		entries = append(entries, entry)
+	})
+	t.Cleanup(stop)
+
+	Debug("filtered debug marker")
+	Info("filtered info marker")
+	Warn("filtered warning marker")
+	Error("visible error marker")
+
+	if len(entries) != 1 || entries[0].Level != "ERROR" || entries[0].Message != "visible error marker" {
+		t.Fatalf("observer entries = %#v, want only the error marker", entries)
+	}
+}

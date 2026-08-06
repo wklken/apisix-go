@@ -240,7 +240,7 @@ cases:
     steps:
       - name: missing-get-query-returns-diagnostic
         input: {method: GET, path: /graphql}
-        output: {status: 400, body: {matches: 'args\[query\] is nil'}}
+        output: {status: 400, body: {matches: "can't get graphql request body"}}
 
   - name: graphql-oversize-get-is-rejected-test-6
     source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [6]}
@@ -357,7 +357,7 @@ cases:
     steps:
       - name: empty-json-query-is-rejected
         input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":""}'}
-        output: {status: 400, body: {matches: 'json body\[query\] is nil'}}
+        output: {status: 400, body: {matches: 'Invalid graphql request: empty graphql query'}}
 
   - name: graphql-document-containing-mutation-bypasses-test-15
     source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [15]}

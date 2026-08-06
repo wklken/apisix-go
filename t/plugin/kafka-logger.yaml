@@ -17,61 +17,61 @@ cases:
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [2]}
     config:
       routes:
-        - {id: kafka-002, uri: /kafka-002, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, meta_format: origin, include_req_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-002, uri: /kafka-002, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, meta_format: origin, include_req_body: true, max_req_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "origin-body"}}], network_respond: [{}]}
-    steps: [{name: origin-request-body-config-produces-raw-request-real-request-produces-asserted-record, input: {method: POST, path: /kafka-002, body: origin-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "abcde$"}, forbidden_matches: ["abcdef"]}], network_respond: [{}]}
+    steps: [{name: origin-request-body-config-produces-raw-request-real-request-produces-asserted-record, input: {method: POST, path: /kafka-002, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: origin-request-body-hit-includes-payload
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [3]}
     config:
       routes:
-        - {id: kafka-003, uri: /kafka-003, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, meta_format: origin, include_req_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-003, uri: /kafka-003, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, meta_format: origin, include_req_body: true, max_req_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "origin-body"}}], network_respond: [{}]}
-    steps: [{name: origin-request-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: POST, path: /kafka-003, body: origin-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "abcde$"}, forbidden_matches: ["abcdef"]}], network_respond: [{}]}
+    steps: [{name: origin-request-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: POST, path: /kafka-003, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: default-request-body-config-produces-json
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [4]}
     config:
       routes:
-        - {id: kafka-004, uri: /kafka-004, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-004, uri: /kafka-004, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*request-body"}}], network_respond: [{}]}
-    steps: [{name: default-request-body-config-produces-json-real-request-produces-asserted-record, input: {method: POST, path: /kafka-004, body: request-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"abcde"'}, forbidden_matches: ['"body":"abcdef"']}], network_respond: [{}]}
+    steps: [{name: default-request-body-config-produces-json-real-request-produces-asserted-record, input: {method: POST, path: /kafka-004, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: default-request-body-hit-includes-payload
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [5]}
     config:
       routes:
-        - {id: kafka-005, uri: /kafka-005, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-005, uri: /kafka-005, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*request-body"}}], network_respond: [{}]}
-    steps: [{name: default-request-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: POST, path: /kafka-005, body: request-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"abcde"'}, forbidden_matches: ['"body":"abcdef"']}], network_respond: [{}]}
+    steps: [{name: default-request-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: POST, path: /kafka-005, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: default-response-body-config-produces-json
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [6]}
     config:
       routes:
-        - {id: kafka-006, uri: /kafka-006, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-006, uri: /kafka-006, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
-      - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*response-body"}}], network_respond: [{}]}
-    steps: [{name: default-response-body-config-produces-json-real-request-produces-asserted-record, input: {method: GET, path: /kafka-006}, output: {status: 200, body: {equals: "response-body"}}}]
+      - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"hello"'}, forbidden_matches: ['"body":"hello world"']}], network_respond: [{}]}
+    steps: [{name: default-response-body-config-produces-json-real-request-produces-asserted-record, input: {method: GET, path: /kafka-006}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: default-response-body-hit-includes-payload
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [7]}
     config:
       routes:
-        - {id: kafka-007, uri: /kafka-007, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-007, uri: /kafka-007, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
-      - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*response-body"}}], network_respond: [{}]}
-    steps: [{name: default-response-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: GET, path: /kafka-007}, output: {status: 200, body: {equals: "response-body"}}}]
+      - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"hello"'}, forbidden_matches: ['"body":"hello world"']}], network_respond: [{}]}
+    steps: [{name: default-response-body-hit-includes-payload-real-request-produces-asserted-record, input: {method: GET, path: /kafka-007}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: origin-response-body-config-preserves-origin-request
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [8]}
@@ -97,21 +97,21 @@ cases:
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [10]}
     config:
       routes:
-        - {id: kafka-010, uri: /kafka-010, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-010, uri: /kafka-010, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
-      - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*request-body.*response.*response-body"}}], network_respond: [{}]}
-    steps: [{name: default-request-and-response-config-is-accepted-real-request-produces-asserted-record, input: {method: POST, path: /kafka-010, body: request-body}, output: {status: 200, body: {equals: "response-body"}}}]
+      - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde"\},"response":\{"body":"hello"\}'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
+    steps: [{name: default-request-and-response-config-is-accepted-real-request-produces-asserted-record, input: {method: POST, path: /kafka-010, body: abcdef}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: default-request-and-response-hit-includes-both
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [11]}
     config:
       routes:
-        - {id: kafka-011, uri: /kafka-011, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-011, uri: /kafka-011, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
-      - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*request-body.*response.*response-body"}}], network_respond: [{}]}
-    steps: [{name: default-request-and-response-hit-includes-both-real-request-produces-asserted-record, input: {method: POST, path: /kafka-011, body: request-body}, output: {status: 200, body: {equals: "response-body"}}}]
+      - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde"\},"response":\{"body":"hello"\}'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
+    steps: [{name: default-request-and-response-hit-includes-both-real-request-produces-asserted-record, input: {method: POST, path: /kafka-011, body: abcdef}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: disabled-request-and-response-body-config-is-accepted
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [12]}
@@ -130,8 +130,13 @@ cases:
         - {id: kafka-013, uri: /kafka-013, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-013"}}], network_respond: [{}]}
-    steps: [{name: disabled-request-and-response-body-hit-omits-bodies-real-request-produces-asserted-record, input: {method: GET, path: /kafka-013}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - name: sink
+        kind: kafka
+        network_expect:
+          - payload: {matches: '"path":"/kafka-013"'}
+            forbidden_matches: ['"request"\s*:', '"response"\s*:']
+        network_respond: [{}]
+    steps: [{name: disabled-request-and-response-body-hit-omits-bodies-real-request-produces-asserted-record, input: {method: POST, path: /kafka-013, body: secret-request-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: large-request-and-response-config-is-accepted
     source: {file: t/plugin/kafka-logger-large-body.t, tests: [14]}
@@ -210,7 +215,12 @@ cases:
         - {id: kafka-021, uri: /kafka-021, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 256, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*y{256}"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        network_expect:
+          - payload: {matches: '"response"\s*:\s*\{\s*"body"\s*:\s*"y{256}"\s*\}'}
+            forbidden_matches: ['y{257}']
+        network_respond: [{}]
     steps: [{name: one-megabyte-response-is-truncated-to-256-bytes-real-request-produces-asserted-record, input: {method: GET, path: /kafka-021}, output: {status: 200, body: {equals: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}}}]
 
   - name: request-body-limit-config-is-accepted
@@ -324,9 +334,15 @@ cases:
     config:
       routes:
         - {id: kafka-032, uri: /kafka-032, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {route_path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+      plugin_metadata: [{id: kafka-logger, log_format: {metadata_path: '$uri'}}]
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "route_path.*/kafka\\-032"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        network_expect:
+          - payload: {matches: '^\{"route_path":"/kafka-032"\}$'}
+            forbidden_matches: ['metadata_path']
+        network_respond: [{}]
     steps: [{name: route-log-format-overrides-plugin-metadata-real-request-produces-asserted-record, input: {method: GET, path: /kafka-032}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: route-format-is-emitted-to-kafka
@@ -354,10 +370,10 @@ cases:
     config: {routes: [{id: kafka-035, uri: /kafka-035, plugins: {kafka-logger: {kafka_topic: integration}}}]}
     steps: [{name: missing-broker-list-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-035}, output: {status: 404, logs: {matches: '(validate|schema|build plugin)'}}}]
 
-  - name: string-broker-list-is-rejected
+  - name: string-timeout-is-rejected
     source: {file: t/plugin/kafka-logger.t, tests: [3]}
-    config: {routes: [{id: kafka-036, uri: /kafka-036, plugins: {kafka-logger: {broker_list: invalid, kafka_topic: integration}}}]}
-    steps: [{name: string-broker-list-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-036}, output: {status: 404, logs: {matches: '(validate|schema|build plugin)'}}}]
+    config: {routes: [{id: kafka-036, uri: /kafka-036, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 3000}, kafka_topic: integration, key: key1, timeout: "10"}}}]}
+    steps: [{name: string-timeout-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-036}, output: {status: 404, logs: {matches: '(validate|schema|build plugin)'}}}]
 
   - name: broker-list-route-is-accepted
     source: {file: t/plugin/kafka-logger.t, tests: [4]}
@@ -405,8 +421,16 @@ cases:
         - {id: kafka-041, uri: /kafka-041, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, meta_format: origin, include_req_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "origin-body"}}], network_respond: [{}]}
-    steps: [{name: origin-request-is-produced-real-request-produces-asserted-record, input: {method: POST, path: /kafka-041, body: origin-body}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - name: sink
+        kind: kafka
+        network_expect:
+          - payload: {matches: '(?s)^POST /kafka-041 HTTP/1\.1\r\n.*Content-Type: application/json\r\n.*X-Origin-Case: pinned-upstream\r\n\r\n\{"hello":"world"\}$'}
+            forbidden_matches: ['^\{.*"request"']
+        network_respond: [{}]
+    steps:
+      - name: origin-request-is-produced-real-request-produces-asserted-record
+        input: {method: POST, path: /kafka-041, headers: {Content-Type: application/json, X-Origin-Case: pinned-upstream}, body: '{"hello":"world"}'}
+        output: {status: 200, body: {equals: "upstream-ok"}}
 
   - name: origin-without-request-body-route-is-accepted
     source: {file: t/plugin/kafka-logger.t, tests: [9]}
@@ -442,10 +466,20 @@ cases:
     source: {file: t/plugin/kafka-logger.t, tests: [12]}
     config:
       routes:
-        - {id: kafka-045, uri: /kafka-045, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-045, uri: /kafka-045, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-045"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        network_expect:
+          - json_fields:
+              - {path: /route_id, value: {equals: kafka-045}}
+              - {path: /request/method, value: {equals: GET}}
+              - {path: /request/uri, value: {equals: /kafka-045}}
+              - {path: /response/status, value: {equals: "200"}}
+              - {path: /response/size, value: {equals: "11"}}
+              - {path: /upstream, value: {matches: '^127\.0\.0\.1:\d+$'}}
+        network_respond: [{}]
     steps: [{name: default-meta-format-record-is-produced-real-request-produces-asserted-record, input: {method: GET, path: /kafka-045}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: missing-message-key-is-accepted
@@ -482,10 +516,16 @@ cases:
     source: {file: t/plugin/kafka-logger.t, tests: [16]}
     config:
       routes:
-        - {id: kafka-049, uri: /kafka-049, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-049, uri: /kafka-049, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-049"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        network_expect:
+          - json_fields:
+              - {path: /request/uri, value: {equals: /kafka-049}}
+              - {path: /upstream, value: {matches: '^127\.0\.0\.1:\d+$'}}
+        network_respond: [{}]
     steps: [{name: default-record-without-key-is-produced-real-request-produces-asserted-record, input: {method: GET, path: /kafka-049}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: multi-partition-topic-config-is-accepted
@@ -522,25 +562,27 @@ cases:
     source: {file: t/plugin/kafka-logger.t, tests: [20]}
     config:
       routes:
-        - {id: kafka-053, uri: /kafka-053, plugins: {kafka-logger: {brokers: [{host: '127.0.0.1', port: 1, sasl_config: {mechanism: PLAIN, user: admin, password: wrong}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-053, uri: /kafka-053, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: wrong}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-    steps: [{name: incorrect-plain-sasl-config-is-installed-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-053}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: "(failed to send data|dial tcp|Unknown Topic)"}}, wait: 500ms}]
+      - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}}
+    steps: [{name: incorrect-plain-sasl-config-is-installed-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-053}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: "SASL authentication failed"}}, wait: 500ms}]
 
   - name: incorrect-plain-sasl-delivery-reports-error
     source: {file: t/plugin/kafka-logger.t, tests: [21]}
     config:
       routes:
-        - {id: kafka-054, uri: /kafka-054, plugins: {kafka-logger: {brokers: [{host: '127.0.0.1', port: 1, sasl_config: {mechanism: PLAIN, user: admin, password: wrong}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-054, uri: /kafka-054, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: wrong}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-    steps: [{name: incorrect-plain-sasl-delivery-reports-error-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-054}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: "(failed to send data|dial tcp|Unknown Topic)"}}, wait: 500ms}]
+      - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}}
+    steps: [{name: incorrect-plain-sasl-delivery-reports-error-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-054}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: "SASL authentication failed"}}, wait: 500ms}]
 
   - name: plain-sasl-config-is-accepted
     source: {file: t/plugin/kafka-logger.t, tests: [22]}
     config:
       routes:
-        - {id: kafka-055, uri: /kafka-055, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-055, uri: /kafka-055, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}, network_expect: [{payload: {matches: "/kafka\\-055"}}], network_respond: [{}]}
@@ -550,11 +592,16 @@ cases:
     source: {file: t/plugin/kafka-logger.t, tests: [23]}
     config:
       routes:
-        - {id: kafka-056, uri: /kafka-056, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-056, uri: /kafka-056, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}, network_expect: [{payload: {matches: "/kafka\\-056"}}], network_respond: [{}]}
-    steps: [{name: plain-sasl-record-is-produced-real-request-produces-asserted-record, input: {method: GET, path: /kafka-056}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - name: sink
+        kind: kafka
+        kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}
+        network_expect:
+          - payload: {matches: '"path":"/kafka\-056".*"body":"abcdef"'}
+        network_respond: [{}]
+    steps: [{name: plain-sasl-record-is-produced-real-request-produces-asserted-record, input: {method: POST, path: /kafka-056, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: batch-size-two-initializes-batch-processor
     source: {file: t/plugin/kafka-logger.t, tests: [24]}
@@ -742,7 +789,7 @@ cases:
         - {id: kafka-068, uri: /kafka-068, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 1}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-    steps: [{name: configured-broker-address-appears-in-delivery-error-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-068}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: "(failed to send data|dial tcp|Unknown Topic)"}}, wait: 500ms}]
+    steps: [{name: configured-broker-address-appears-in-delivery-error-request-completes-while-delivery-fails, input: {method: GET, path: /kafka-068}, output: {status: 200, body: {equals: "upstream-ok"}, logs: {matches: '(?s)(failed to send data|dial tcp|Unknown Topic).*127\.0\.0\.1:1|127\.0\.0\.1:1.*(failed to send data|dial tcp|Unknown Topic)'}}, wait: 500ms}]
 
   - name: request-body-expression-route-is-accepted
     source: {file: t/plugin/kafka-logger2.t, tests: [7]}
@@ -901,8 +948,8 @@ cases:
         - {id: kafka-085, uri: /kafka-085, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
-    steps: [{name: request-match-response-miss-remains-stable-real-request-produces-asserted-record, input: {method: POST, path: "/kafka-085?capture=yes", body: matched-request}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-085"}, forbidden_matches: ['"body":"matched-request"', '"body":"upstream-ok"']}], network_respond: [{}]}
+    steps: [{name: request-match-response-miss-remains-stable-real-request-produces-asserted-record, input: {method: POST, path: "/kafka-085?name=xxxxxx", body: matched-request}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: updated-request-expression-route-is-applied
     source: {file: t/plugin/kafka-logger2.t, tests: [24]}
@@ -938,11 +985,11 @@ cases:
     source: {file: t/plugin/kafka-logger2.t, tests: [27]}
     config:
       routes:
-        - {id: kafka-089, uri: /kafka-089, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, meta_refresh_interval: 1, batch_max_size: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-089, uri: /kafka-089, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, meta_refresh_interval: 1, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-089"}}], network_respond: [{}]}
-    steps: [{name: meta-refresh-interval-route-produces-record-real-request-produces-asserted-record, input: {method: GET, path: /kafka-089}, output: {status: 200, body: {equals: "upstream-ok"}}}]
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"path":"/kafka\-089".*"body":"abcdef"'}}], network_respond: [{}]}
+    steps: [{name: meta-refresh-interval-route-produces-record-real-request-produces-asserted-record, input: {method: POST, path: /kafka-089, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: max-pending-entries-drops-excess-records
     source: {file: t/plugin/kafka-logger3.t, tests: [1]}
@@ -979,10 +1026,16 @@ cases:
     source: {file: t/plugin/kafka-logger4.t, tests: [2]}
     config:
       routes:
-        - {id: kafka-093, uri: /kafka-093, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: SCRAM-SHA-256, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-093, uri: /kafka-093, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: SCRAM-SHA-256, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: SCRAM-SHA-256, username: admin, password: secret}}, network_expect: [{payload: {matches: "/kafka\\-093"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        kafka: {topics: [integration], sasl: {mechanism: SCRAM-SHA-256, username: admin, password: secret}}
+        network_expect:
+          - json_fields:
+              - {path: /route_id, value: {equals: kafka-093}}
+        network_respond: [{}]
     steps: [{name: scram-sha-256-correct-credential-produces-record-real-request-produces-asserted-record, input: {method: GET, path: /kafka-093}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: scram-sha-256-incorrect-password-config-is-accepted
@@ -1019,10 +1072,16 @@ cases:
     source: {file: t/plugin/kafka-logger4.t, tests: [6]}
     config:
       routes:
-        - {id: kafka-097, uri: /kafka-097, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: SCRAM-SHA-512, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-097, uri: /kafka-097, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: SCRAM-SHA-512, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, max_retry_count: 0, timeout: 1}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: SCRAM-SHA-512, username: admin, password: secret}}, network_expect: [{payload: {matches: "/kafka\\-097"}}], network_respond: [{}]}
+      - name: sink
+        kind: kafka
+        kafka: {topics: [integration], sasl: {mechanism: SCRAM-SHA-512, username: admin, password: secret}}
+        network_expect:
+          - json_fields:
+              - {path: /route_id, value: {equals: kafka-097}}
+        network_respond: [{}]
     steps: [{name: scram-sha-512-correct-credential-produces-record-real-request-produces-asserted-record, input: {method: GET, path: /kafka-097}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: scram-sha-512-incorrect-password-config-is-accepted

@@ -113,11 +113,16 @@ sources:
     manifest: ai-proxy.yaml
     reason: mapped by the ai-proxy standalone manifest
   - file: t/plugin/ai-proxy-fixture.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14]
     owner: ai-proxy
     disposition: converted
     manifest: ai-proxy.yaml
     reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-fixture.t
+    test_numbers: [12]
+    owner: ai-proxy
+    disposition: blocked_runtime
+    reason: pinned path traversal test exercises the Apache APISIX Lua fixture helper and has no production ai-proxy request surface
   - file: t/plugin/ai-proxy-flush.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7]
     owner: ai-proxy
@@ -243,11 +248,16 @@ sources:
     manifest: ai-proxy.yaml
     reason: mapped by the ai-proxy standalone manifest
   - file: t/plugin/ai-proxy-vertex-ai.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    test_numbers: [1, 2, 3, 4, 10, 11, 12]
     owner: ai-proxy
     disposition: converted
     manifest: ai-proxy.yaml
     reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-vertex-ai.t
+    test_numbers: [5, 6, 7, 8, 9]
+    owner: ai-proxy
+    disposition: blocked_runtime
+    reason: pinned GCP service-account helper, token exchange, cache, and default max_ttl observations are covered by local Go unit tests but the manifest harness cannot inject an equivalent RSA service-account fixture
   - file: t/plugin/ai-proxy.openai-compatible.t
     test_numbers: [1, 2, 3, 4, 5]
     owner: ai-proxy
@@ -517,11 +527,16 @@ sources:
     manifest: clickhouse-logger.yaml
     reason: mapped by the clickhouse-logger standalone manifest
   - file: t/plugin/client-control.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]
     owner: client-control
     disposition: converted
     manifest: client-control.yaml
     reason: mapped by the client-control standalone manifest
+  - file: t/plugin/client-control.t
+    test_numbers: [10, 11]
+    owner: client-control
+    disposition: blocked_runtime
+    reason: requires the NGINX global client_max_body_size request-body reader; no Go-native target plugin is activated
   - file: t/plugin/consumer-bug-fix.t
     test_numbers: [1, 2, 3, 4, 5]
     owner: consumer framework
@@ -948,11 +963,16 @@ sources:
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth-more-algo.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    test_numbers: [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth-more-algo.t
+    test_numbers: [3]
+    owner: jwt-auth
+    disposition: blocked_design
+    reason: pinned test only registers a public-api route at /apisix/plugin/jwt/sign; this project has no jwt-auth sign endpoint to exercise
   - file: t/plugin/jwt-auth-realm.t
     test_numbers: [1, 2, 3, 4, 5, 6]
     owner: jwt-auth
@@ -960,11 +980,16 @@ sources:
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth.t
+    test_numbers: [26]
+    owner: jwt-auth
+    disposition: blocked_design
+    reason: pinned test signs/verifies RS256 with a 512-bit private key; Go's crypto/rsa stdlib rejects RSA keys under 1024 bits at verification time ("512-bit keys are insecure"), so this key size cannot be exercised through the standard library verifier this plugin uses
   - file: t/plugin/jwt-auth2.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     owner: jwt-auth
@@ -978,11 +1003,16 @@ sources:
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
   - file: t/plugin/jwt-auth4.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11]
     owner: jwt-auth
     disposition: converted
     manifest: jwt-auth.yaml
     reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth4.t
+    test_numbers: [10]
+    owner: jwt-auth
+    disposition: blocked_design
+    reason: pinned test exercises Ed448 JWK verification via lua-resty-openssl; Go's crypto/ed25519 stdlib has no Ed448 support and no equivalent curve is registered by this project
   - file: t/plugin/kafka-logger-large-body.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
     owner: kafka-logger
@@ -1200,11 +1230,16 @@ sources:
     manifest: limit-count.yaml
     reason: mapped by the limit-count standalone manifest
   - file: t/plugin/limit-count.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
     owner: limit-count
     disposition: converted
     manifest: limit-count.yaml
     reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count.t
+    test_numbers: [23]
+    owner: limit-count
+    disposition: blocked_design
+    reason: upstream demonstrates that reapplying an unchanged limit-count route (count stays 2) preserves the shared-dict-cached limiter and keeps the exhausted counter across the no-op Admin PUT; the Go route builder reconstructs a fresh plugin instance (and its in-memory limiter map) on every config sync regardless of byte-for-byte content equality, so a no-op reapply cannot be distinguished from a genuine change in this harness
   - file: t/plugin/limit-count2.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
     owner: limit-count
@@ -1396,7 +1431,12 @@ sources:
     manifest: openid-connect.yaml
     reason: mapped by the openid-connect standalone manifest
   - file: t/plugin/openid-connect10.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    test_numbers: [6]
+    owner: openid-connect
+    disposition: blocked_design
+    reason: pinned test calls the Lua plugin's internal _build_session_opts(nil) helper directly and asserts it returns nil; there is no equivalent internal-function boundary or HTTP behavior to exercise in the Go rewrite, and the previously converted case asserted unrelated schema-rejection (missing session config -> 404), which is a different, opposite-level semantic
+  - file: t/plugin/openid-connect10.t
+    test_numbers: [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
     owner: openid-connect
     disposition: converted
     manifest: openid-connect.yaml
@@ -1422,9 +1462,8 @@ sources:
   - file: t/plugin/openid-connect5.t
     test_numbers: [1, 2]
     owner: openid-connect
-    disposition: converted
-    manifest: openid-connect.yaml
-    reason: mapped by the openid-connect standalone manifest
+    disposition: blocked_design
+    reason: real Keycloak login flow plus lua-resty-openidc Redis distributed session locking (session_redis_uselocking); the Go plugin has no equivalent cross-worker session lock, so a converted case could only assert the trivially-true absence of blocking and would misrepresent the locking behavior under test
   - file: t/plugin/openid-connect6.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
     owner: openid-connect
@@ -1450,11 +1489,21 @@ sources:
     manifest: openid-connect.yaml
     reason: mapped by the openid-connect standalone manifest
   - file: t/plugin/opentelemetry.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 29, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
     owner: opentelemetry
     disposition: converted
     manifest: opentelemetry.yaml
     reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry.t
+    test_numbers: [26, 27, 28]
+    owner: opentelemetry
+    disposition: blocked_runtime
+    reason: requires Lua serverless-pre-function rewrite-phase request-header mutation before OpenTelemetry attribute extraction
+  - file: t/plugin/opentelemetry.t
+    test_numbers: [30]
+    owner: opentelemetry
+    disposition: blocked_design
+    reason: verifies the apisix.phase.access core span emitted by OpenResty inject_core_spans phase instrumentation; the Go opentelemetry plugin emits one request-scoped span per request and has no phase-level span tree to carry the reloaded service.name onto
   - file: t/plugin/opentelemetry2.t
     test_numbers: [1, 2, 3, 4]
     owner: opentelemetry
@@ -1464,9 +1513,8 @@ sources:
   - file: t/plugin/opentelemetry3.t
     test_numbers: [1, 2, 3, 4]
     owner: opentelemetry
-    disposition: converted
-    manifest: opentelemetry.yaml
-    reason: mapped by the opentelemetry standalone manifest
+    disposition: blocked_runtime
+    reason: requires OpenResty set_ngx_var and cross-plugin access to opentelemetry_context_traceparent
   - file: t/plugin/opentelemetry4-bugfix-pb-state.t
     test_numbers: [1, 2, 3]
     owner: opentelemetry
@@ -1480,11 +1528,16 @@ sources:
     manifest: opentelemetry.yaml
     reason: mapped by the opentelemetry standalone manifest
   - file: t/plugin/opentelemetry6.t
-    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    test_numbers: [1, 2, 3, 4, 5, 7, 8, 9]
     owner: opentelemetry
     disposition: converted
     manifest: opentelemetry.yaml
     reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry6.t
+    test_numbers: [6]
+    owner: opentelemetry
+    disposition: blocked_design
+    reason: verifies the full inject_core_spans span tree (root span plus apisix.phase.access/header_filter/body_filter/log children and sni_radixtree_match/http_router_match/resolve_dns grandchildren) via otel.verify_tree; the Go opentelemetry plugin has no phase-level span instrumentation and emits only the single request-scoped root span
   - file: t/plugin/openwhisk.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
     owner: openwhisk
@@ -1558,7 +1611,7 @@ sources:
     owner: proxy-control
     disposition: converted
     manifest: proxy-control.yaml
-    reason: mapped by the proxy-control standalone manifest
+    reason: mapped by the proxy-control standalone manifest; Go-native boundary verifies request delivery while NGINX buffering internals are not observable
   - file: t/plugin/proxy-mirror.t
     test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     owner: proxy-mirror

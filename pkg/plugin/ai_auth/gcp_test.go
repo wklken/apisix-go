@@ -62,6 +62,15 @@ func TestGCPTokenSourceExchangesAndCachesServiceAccountToken(t *testing.T) {
 	if tokenCalls.Load() != 1 {
 		t.Fatalf("token endpoint calls = %d, want 1", tokenCalls.Load())
 	}
+
+	source.now = func() time.Time { return time.Date(2026, time.July, 11, 1, 7, 4, 0, time.UTC) }
+	req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
+	if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
+		t.Fatalf("Apply() after default max TTL error = %v", err)
+	}
+	if tokenCalls.Load() != 2 {
+		t.Fatalf("token endpoint calls after default max TTL = %d, want 2", tokenCalls.Load())
+	}
 }
 
 func TestGCPTokenSourceRejectsMissingServiceAccount(t *testing.T) {
@@ -77,6 +86,45 @@ func TestGCPTokenSourceRejectsMissingServiceAccountFromConfig(t *testing.T) {
 	source := NewGCPTokenSource()
 	if _, err := source.Token(t.Context(), http.DefaultClient, GCPConfig{ServiceAccountJSON: ""}); err == nil {
 		t.Fatal("Token() error = nil, want missing service account error")
+	}
+}
+
+func TestGCPTokenSourceFailsClosedOnTokenEndpointError(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "denied", http.StatusUnauthorized)
+	}))
+	defer tokenServer.Close()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	serviceAccount, err := json.Marshal(map[string]any{
+		"client_email": "service@example.test",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
+		"token_uri":    tokenServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("marshal service account: %v", err)
+	}
+
+	source := NewGCPTokenSource()
+	request := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
+	err = source.Apply(
+		request.Context(),
+		tokenServer.Client(),
+		request,
+		GCPConfig{ServiceAccountJSON: string(serviceAccount)},
+	)
+	if err == nil || !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("Apply() error = %v, want token endpoint status", err)
+	}
+	if authorization := request.Header.Get("Authorization"); authorization != "" {
+		t.Fatalf("Authorization = %q, want no provider credential after token failure", authorization)
 	}
 }
 

@@ -401,13 +401,13 @@ cases:
           uri: /test/*
           plugins:
             proxy-rewrite:
-              regex_uri: ['^/test/(.*)']
+              regex_uri: ['^/test/(.*)', '/$1', 'extra']
           upstream: *fixture_route
     upstream: &unused_fixture
       respond: *hello_response
-    output: &proxy_rewrite_error
+    output:
       logs:
-        matches: 'build route proxy-rewrite-reject-.* fail:.*proxy-rewrite'
+        matches: 'build route proxy-rewrite-reject-odd-regex-uri fail:.*regex_uri length should be even'
 
   - name: reject-invalid-regex-pattern
     source:
@@ -422,7 +422,9 @@ cases:
               regex_uri: ['[^/test/(.*)', '/$1']
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-invalid-regex-pattern fail:.*invalid regex_uri pattern'
 
   - name: reject-invalid-regex-replacement
     source:
@@ -437,7 +439,9 @@ cases:
               regex_uri: ['^/test/(.*)', '/$`1']
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-invalid-regex-replacement fail:.*invalid regex_uri replacement'
 
   - name: reject-invalid-uri
     source:
@@ -452,7 +456,9 @@ cases:
               uri: hello
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-invalid-uri fail:.*uri.*must begin with /'
 
   - name: reject-non-string-uri
     source:
@@ -467,7 +473,9 @@ cases:
               uri: 123
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-non-string-uri fail:.*uri.*expected string'
 
   - name: reject-invalid-header-field
     source:
@@ -484,7 +492,9 @@ cases:
                 'X-Api:Version': v2
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-invalid-header-field fail:.*invalid header field'
 
   - name: reject-invalid-header-value
     source:
@@ -501,7 +511,9 @@ cases:
                 X-Api-Version: "v2\r\n"
           upstream: *fixture_route
     upstream: *unused_fixture
-    output: *proxy_rewrite_error
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-reject-invalid-header-value fail:.*invalid header value'
 
   - name: rewrite-uri-with-arguments
     source:
@@ -557,6 +569,7 @@ cases:
           fields:
             /plugins/proxy-rewrite/uri: /uri/plugin_proxy_rewrite
             /plugins/proxy-rewrite/headers/X-Api: v2
+          forbidden_matches: ['regexURIPairs']
 
   - name: header-request-variables
     source:
@@ -1080,7 +1093,7 @@ cases:
       respond: *hello_response
     output:
       logs:
-        matches: 'build route proxy-rewrite-bad-method.*method'
+        matches: 'build route proxy-rewrite-bad-method.*method.*enum'
 
   - name: method-with-headers
     source:
@@ -1250,6 +1263,8 @@ cases:
       expect:
         host:
           equals: test.xxxx.com
+        path:
+          equals: '/hello%3F0z=700&a=c%20HTTP/1.1%0D%0AHost:google.com%0D%0A%0D%0A'
       respond: *hello_response
     output: *hello_output
 
@@ -1401,10 +1416,10 @@ cases:
       respond: *hello_response
     output: *hello_output
 
-  - name: multi-regex-uri
+  - name: multi-regex-uri-first-branch
     source:
       file: t/plugin/proxy-rewrite3.t
-      tests: [37, 38, 39]
+      tests: [37, 38]
     config:
       routes:
         - id: proxy-rewrite-multi-regex
@@ -1423,6 +1438,31 @@ cases:
       expect:
         path:
           equals: /hello/plugin_proxy_rewrite
+      respond: *hello_response
+    output: *hello_output
+
+  - name: multi-regex-uri-second-branch
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [39]
+    config:
+      routes:
+        - id: proxy-rewrite-multi-regex-world
+          uri: /test/*
+          plugins:
+            proxy-rewrite:
+              regex_uri:
+                - "^/test/(.*)/(.*)/(.*)/hello"
+                - "/hello/$1_$2_$3"
+                - "^/test/(.*)/(.*)/(.*)/world"
+                - "/world/$1_$2_$3"
+          upstream: *fixture_route
+    input:
+      path: /test/plugin/proxy/rewrite/world
+    upstream:
+      expect:
+        path:
+          equals: /world/plugin_proxy_rewrite
       respond: *hello_response
     output: *hello_output
 

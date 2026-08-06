@@ -215,6 +215,11 @@ func (s *Store) processEvents() {
 				}
 			}
 
+			// Index consumers before the bolt write becomes visible so
+			// GetConsumer's bucket fallback cannot race ahead of plugin-key lookup.
+			if isConsumer {
+				s.applyConsumerSnapshot(snapshot)
+			}
 			err := s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
@@ -225,8 +230,10 @@ func (s *Store) processEvents() {
 				}
 				return nil
 			})
-			if err == nil && isConsumer {
-				s.applyConsumerSnapshot(snapshot)
+			if err != nil && isConsumer {
+				if delErr := s.consumerKVDelete(id); delErr != nil {
+					logger.Errorf("rollback consumer index after put fail: %s", delErr)
+				}
 			}
 		case EventTypeDelete:
 			isConsumer := bytes.Equal(bucketName, []byte("consumers"))

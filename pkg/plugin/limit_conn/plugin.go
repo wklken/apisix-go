@@ -514,6 +514,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
+		logger.Infof("limit key: %sroute", key)
 		conn, burst, err := p.resolveLimits(r)
 		if err != nil {
 			if *p.config.AllowDegradation {

@@ -388,7 +388,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route redirect-reject-http-to-https-with-uri fail:.*redirect'
+        matches: 'build route redirect-reject-http-to-https-with-uri fail:.*oneOf'
 
   - name: http-to-https-with-upstream
     source:
@@ -737,4 +737,4 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route redirect-reject-http-to-https-with-query-append fail:.*redirect'
+        matches: 'build route redirect-reject-http-to-https-with-query-append fail:.*http_to_https and append_query_string cannot be configured together'

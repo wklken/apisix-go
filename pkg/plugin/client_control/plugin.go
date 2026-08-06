@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -61,6 +63,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				if err.Error() == "http: request body too large" {
+					if isChunkedRequest(r) {
+						logger.Error("client intended to send too large chunked body")
+					}
 					// TODO: change to http.Error?
 					w.WriteHeader(http.StatusRequestEntityTooLarge)
 					return
@@ -77,4 +82,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(fn)
+}
+
+func isChunkedRequest(r *http.Request) bool {
+	for _, encoding := range r.TransferEncoding {
+		if strings.EqualFold(encoding, "chunked") {
+			return true
+		}
+	}
+	return strings.EqualFold(r.Header.Get("Transfer-Encoding"), "chunked")
 }

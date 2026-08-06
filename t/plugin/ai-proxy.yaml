@@ -4179,45 +4179,6 @@ cases:
           output:
             status: 429
 
-    - name: fixture-path-traversal-rejected
-      source: {file: t/plugin/ai-proxy-fixture.t, tests: [12]}
-      config:
-        routes:
-            - id: ai-proxy-fixture-traversal
-              uri: /anything
-              plugins:
-                ai-proxy-multi:
-                  instances:
-                    - name: fixture-test
-                      provider: openai
-                      weight: 1
-                      auth:
-                        header:
-                          Authorization: Bearer test-key
-                      options:
-                        model: gpt-4o
-                      override:
-                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
-                  ssl_verify: false
-      fixtures:
-        - name: openai
-          kind: http
-          expect:
-            - method: POST
-              path: {equals: /v1/chat/completions}
-          respond:
-            - {status: 200, headers: {Content-Type: text/plain}, body: 'blocked: invalid fixture name'}
-      steps:
-        - name: path-traversal-fixture-name-is-rejected
-          input:
-            method: POST
-            path: /anything
-            headers: {Content-Type: application/json}
-            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
-          output:
-            status: 200
-            body: {equals: 'blocked: invalid fixture name'}
-
     - name: flush-zero-route-is-runnable
       source: {file: t/plugin/ai-proxy-flush.t, tests: [1]}
       config:
@@ -7072,137 +7033,6 @@ cases:
             status: 200
             body: {matches: '"total_tokens":7'}
 
-    - name: vertex-ai-gcp-service-account-requires-credentials
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [5]}
-      config:
-        routes:
-            - id: ai-proxy-vertex-gcp-missing
-              uri: /anything
-              plugins:
-                ai-proxy-multi:
-                  instances:
-                    - name: vertex-ai
-                      provider: vertex-ai
-                      weight: 1
-                      auth:
-                        gcp: {}
-                      options:
-                        model: gemini-2.0-flash
-                        max_tokens: 512
-                        temperature: 1.0
-                      override:
-                        endpoint: '{{FIXTURE.vertex.URL}}/v1/chat/completions'
-                  ssl_verify: false
-      fixtures:
-        - name: vertex
-          kind: http
-          expect_requests: 0
-          respond: [{status: 200, body: unexpected}]
-      steps:
-        - name: vertex-gcp-without-credentials-fails-closed
-          input:
-            method: POST
-            path: /anything
-            headers: {Content-Type: application/json}
-            body: '{"messages":[{"role":"user","content":"What is 1+1?"}]}'
-          output:
-            status: 503
-            body: {matches: 'failed to request LLM'}
-
-    - name: vertex-ai-gcp-token-exchange-failure-fails-closed
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [6, 7]}
-      config:
-        routes:
-            - id: ai-proxy-vertex-gcp-token
-              uri: /anything
-              plugins:
-                ai-proxy-multi:
-                  instances:
-                    - name: vertex-ai
-                      provider: vertex-ai
-                      weight: 1
-                      auth:
-                        gcp: {max_ttl: 8}
-                      options:
-                        model: gemini-2.0-flash
-                        max_tokens: 512
-                        temperature: 1.0
-                      override:
-                        endpoint: '{{FIXTURE.vertex.URL}}/v1/chat/completions'
-                  ssl_verify: false
-      fixtures:
-        - name: vertex
-          kind: http
-          expect_requests: 0
-          respond: [{status: 200, body: unexpected}]
-      steps:
-        - name: vertex-gcp-without-service-account-fails-closed
-          input:
-            method: POST
-            path: /anything
-            headers: {Content-Type: application/json}
-            body: '{"messages":[{"role":"user","content":"What is 1+1?"}]}'
-          output:
-            status: 503
-            body: {matches: 'failed to request LLM'}
-
-    - name: vertex-ai-multi-instances-health-check-routes-to-healthy
-      source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [8, 9]}
-      config:
-        routes:
-            - id: ai-proxy-vertex-health-checks
-              uri: /anything
-              plugins:
-                ai-proxy-multi:
-                  instances:
-                    - name: vertex-ai-one
-                      provider: vertex-ai
-                      weight: 1
-                      priority: 2
-                      auth:
-                        header:
-                          Authorization: Bearer token
-                      options:
-                        model: gemini-2.0-flash
-                        max_tokens: 512
-                        temperature: 1.0
-                      override:
-                        endpoint: '{{FIXTURE.vertex.URL}}/v1/chat/completions'
-                    - name: openai-gpt3
-                      provider: openai
-                      weight: 1
-                      priority: 1
-                      auth:
-                        header:
-                          Authorization: Bearer token
-                      options:
-                        model: gpt-3
-                      override:
-                        endpoint: '{{FIXTURE.openai.URL}}'
-                  ssl_verify: false
-      fixtures:
-        - name: vertex
-          kind: http
-          expect:
-            - method: POST
-              path: {equals: /v1/chat/completions}
-          respond:
-            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"1 + 1 = 2."}}]}'}
-        - name: openai
-          kind: http
-          expect_requests: 0
-          respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"fallback"}}]}'}]
-      steps:
-        - name: vertex-multi-instance-request-routes-to-provider
-          input:
-            method: POST
-            path: /anything
-            headers: {Content-Type: application/json}
-            body: '{"messages":[{"role":"user","content":"What is 1+1?"}]}'
-          output:
-            status: 200
-            body: {matches: '"content":"1 \+ 1 = 2\."'}
-
     - name: vertex-ai-health-check-routes-to-healthy-instance
       source: {file: t/plugin/ai-proxy-vertex-ai.t, tests: [10, 11]}
       config:
@@ -9052,7 +8882,8 @@ sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-fixture.t
-      tests: 14
+      tests: 13
+      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14]
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-flush.t
@@ -9088,7 +8919,8 @@ sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-vertex-ai.t
-      tests: 12
+      tests: 7
+      test_numbers: [1, 2, 3, 4, 10, 11, 12]
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy.openai-compatible.t

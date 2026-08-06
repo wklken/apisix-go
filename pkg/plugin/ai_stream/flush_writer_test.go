@@ -22,11 +22,17 @@ func TestFlushWriterSupportsSynchronousAndPeriodicFlush(t *testing.T) {
 			_, _ = writer.Write([]byte("data"))
 			writer.Flush()
 			if test.interval > 0 {
-				time.Sleep(5 * time.Millisecond)
+				deadline := time.Now().Add(100 * time.Millisecond)
+				for !recorder.Flushed && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+			}
+			if !recorder.Flushed {
+				t.Fatalf("data was not flushed before Close for interval %s", test.interval)
 			}
 			writer.Close()
-			if !recorder.Flushed || firstWrites.Load() != 1 {
-				t.Fatalf("flushed = %v, first writes = %d", recorder.Flushed, firstWrites.Load())
+			if firstWrites.Load() != 1 {
+				t.Fatalf("first writes = %d, want 1", firstWrites.Load())
 			}
 		})
 	}

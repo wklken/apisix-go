@@ -24,7 +24,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 
 func TestHandlerReplacesResponseBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		Body: "replacement",
+		Body: new("replacement"),
 	})
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +63,7 @@ func TestHandlerAddsBeforeAndAfterBody(t *testing.T) {
 func TestHandlerComposesBeforeReplacementAndAfterBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BeforeBody: "before-",
-		Body:       "replacement",
+		Body:       new("replacement"),
 		AfterBody:  "-after",
 	})
 
@@ -74,6 +74,27 @@ func TestHandlerComposesBeforeReplacementAndAfterBody(t *testing.T) {
 
 	if got := res.Body.String(); got != "before-replacement-after" {
 		t.Fatalf("body = %q, want before-replacement-after", got)
+	}
+}
+
+func TestHandlerComposesBeforeAndAfterWithEmptyReplacement(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BeforeBody: "before-",
+		Body:       new(""),
+		AfterBody:  "-after",
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	if got := res.Body.String(); got != "before--after" {
+		t.Fatalf("body = %q, want before--after", got)
+	}
+	if got := res.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want removed after empty body replacement", got)
 	}
 }
 

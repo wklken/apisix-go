@@ -50,7 +50,7 @@ func Info(msg string, fields ...zap.Field) {
 }
 
 func Infof(template string, args ...any) {
-	sugarLogger.Infof(template, args)
+	sugarLogger.Infof(template, args...)
 	notifyObservers("INFO", fmt.Sprintf(template, args...))
 }
 
@@ -60,7 +60,7 @@ func Warn(msg string, fields ...zap.Field) {
 }
 
 func Warnf(template string, args ...any) {
-	sugarLogger.Warnf(template, args)
+	sugarLogger.Warnf(template, args...)
 	notifyObservers("WARN", fmt.Sprintf(template, args...))
 }
 

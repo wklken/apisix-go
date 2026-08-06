@@ -58,7 +58,7 @@ const schema = `
 
 type Config struct {
 	BeforeBody string         `json:"before_body,omitempty"`
-	Body       string         `json:"body,omitempty"`
+	Body       *string        `json:"body,omitempty"`
 	AfterBody  string         `json:"after_body,omitempty"`
 	Headers    map[string]any `json:"headers,omitempty"`
 }
@@ -93,8 +93,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 func (p *Plugin) rewrite(resp *base.BufferedResponseWriter) {
 	body := resp.Body()
 	bodyChanged := false
-	if p.config.Body != "" {
-		body = []byte(p.config.Body)
+	if p.config.Body != nil {
+		body = []byte(*p.config.Body)
 		bodyChanged = true
 	}
 	if p.config.BeforeBody != "" {

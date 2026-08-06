@@ -57,9 +57,9 @@ cases:
               status_code: 599
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: &response_rewrite_error
+    output:
       logs:
-        matches: 'build route response-rewrite-reject-.* fail:.*response-rewrite'
+        matches: 'build route response-rewrite-reject-invalid-status fail:.*status_code.*598'
 
   - name: reject-invalid-config
     source:
@@ -76,7 +76,9 @@ cases:
                 X-Server-id: "3"
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-invalid-config fail:.*body.*expected string'
 
   - name: rewrite-headers-and-body
     source:
@@ -195,7 +197,9 @@ cases:
                 "": 2
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-empty-header-field fail:.*headers.*(pattern|additional)'
 
   - name: reject-array-header-value
     source:
@@ -212,7 +216,9 @@ cases:
                 X-Name: []
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-array-header-value fail:.*X-Name.*(string|number)'
 
   - name: base64-body
     source:
@@ -249,7 +255,9 @@ cases:
               body_base64: true
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-invalid-base64 fail:.*body is not valid base64'
 
   - name: admin-etcd-clean-serialization
     source:
@@ -291,6 +299,7 @@ cases:
             /plugins/response-rewrite/headers/X-Server-status: on
             /plugins/response-rewrite/headers/Content-Type: ""
             /plugins/response-rewrite/body: "new body\n"
+          forbidden_matches: ['"pattern"', 'LegacySet']
 
   - name: valid-status-expression
     source:
@@ -328,7 +337,9 @@ cases:
                 - []
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-invalid-expression fail:.*vars validation failed'
 
   - name: matching-status-expression
     source:
@@ -396,7 +407,9 @@ cases:
               body_base64: true
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-empty-base64-body fail:.*body_base64 requires a non-empty body'
 
   - name: nil-base64-body
     source:
@@ -411,7 +424,9 @@ cases:
               body_base64: true
           upstream: *fixture_route
     upstream: *hello_fixture
-    output: *response_rewrite_error
+    output:
+      logs:
+        matches: 'build route response-rewrite-reject-nil-base64-body fail:.*body_base64 requires a non-empty body'
 
   - name: response-header-variables
     source:
@@ -489,30 +504,67 @@ cases:
     source:
       file: t/plugin/response-rewrite2.t
       tests: [1, 2]
-    config:
-      routes:
-        - id: response-rewrite-filter-sanity
-          uri: /hello
-          plugins:
-            response-rewrite:
-              filters:
-                - regex: l
-                  replace: m
-                - regex: Hello
-                  scope: global
-                  replace: World
-                  options: jo
-          upstream: *fixture_route
-    upstream:
-      respond:
-        status: 200
-        body: hello world
-    input:
-      path: /hello
-    output:
-      status: 200
-      body:
-        equals: hemlo world
+    variants:
+      - name: valid-filters
+        config:
+          routes:
+            - id: response-rewrite-filter-sanity
+              uri: /hello
+              plugins:
+                response-rewrite:
+                  filters:
+                    - regex: l
+                      replace: m
+                    - regex: Hello
+                      scope: global
+                      replace: World
+                      options: jo
+              upstream: *fixture_route
+        upstream:
+          respond:
+            status: 200
+            body: hello world
+        input:
+          path: /hello
+        output:
+          status: 200
+          body:
+            equals: hemlo world
+      - name: rejects-body-and-filters-together
+        config:
+          routes:
+            - id: response-rewrite-body-and-filters
+              uri: /hello
+              plugins:
+                response-rewrite:
+                  body: test
+                  filters:
+                    - regex: l
+                      replace: m
+              upstream: *fixture_route
+        upstream:
+          respond:
+            status: 200
+            body: hello world
+        output:
+          logs:
+            matches: 'build route response-rewrite-body-and-filters fail:.*dependencies/(body|filters)/not'
+      - name: rejects-empty-filters-array
+        config:
+          routes:
+            - id: response-rewrite-empty-filters
+              uri: /hello
+              plugins:
+                response-rewrite:
+                  filters: []
+              upstream: *fixture_route
+        upstream:
+          respond:
+            status: 200
+            body: hello world
+        output:
+          logs:
+            matches: 'build route response-rewrite-empty-filters fail:.*properties/filters/minItems: minimum 1 items required'
 
   - name: filter-rejects-missing-replace
     source:
@@ -533,7 +585,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-missing-replace.*response-rewrite'
+        matches: 'build route response-rewrite-missing-replace.*missing properties: .replace.'
 
   - name: filter-rejects-invalid-scope
     source:
@@ -883,7 +935,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-headers-schema.*response-rewrite'
+        matches: 'build route response-rewrite-headers-schema.*headers.*add.*pattern'
 
   - name: gzip-upstream-preserved
     source:

@@ -43,6 +43,25 @@ type jwtAuth struct {
 	Key string `json:"key"`
 }
 
+const jwtAuthConsumerSchema = `
+{
+  "type": "object",
+  "required": ["key"],
+  "properties": {
+    "key": {"type": "string", "minLength": 1},
+    "secret": {"type": "string", "minLength": 1},
+    "public_key": {"type": "string", "minLength": 1},
+    "private_key": {"type": "string", "minLength": 1},
+    "algorithm": {
+      "type": "string",
+      "enum": ["HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"]
+    },
+    "exp": {"type": "integer", "minimum": 1},
+    "base64_secret": {"type": "boolean"},
+    "lifetime_grace_period": {"type": "integer", "minimum": 0}
+  }
+}`
+
 type hmacAuth struct {
 	KeyID     string `json:"key_id"`
 	SecretKey string `json:"secret_key"`
@@ -83,6 +102,17 @@ type wolfRBAC struct {
 	AppID string `json:"appid"`
 }
 
+const wolfRBACConsumerSchema = `
+{
+  "type": "object",
+  "required": ["appid"],
+  "properties": {
+    "appid": {"type": "string", "minLength": 1},
+    "header_prefix": {"type": "string", "minLength": 1},
+    "wolf_url": {"type": "string", "minLength": 1}
+  }
+}`
+
 type consumerSnapshot struct {
 	id               []byte
 	consumer         resource.Consumer
@@ -105,6 +135,11 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 			return consumerSnapshot{}, fmt.Errorf("basic-auth consumer configuration: %w", err)
 		}
 	}
+	if jwtAuthPlugin, ok := consumer.Plugins["jwt-auth"]; ok {
+		if err := util.Validate(jwtAuthPlugin, jwtAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("jwt-auth consumer configuration: %w", err)
+		}
+	}
 	if hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]; ok {
 		if err := util.Validate(hmacAuthPlugin, hmacAuthConsumerSchema); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("hmac-auth consumer configuration: %w", err)
@@ -113,6 +148,11 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 	if ldapAuthPlugin, ok := consumer.Plugins["ldap-auth"]; ok {
 		if err := util.Validate(ldapAuthPlugin, ldapAuthConsumerSchema); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("ldap-auth consumer configuration: %w", err)
+		}
+	}
+	if wolfRBACPlugin, ok := consumer.Plugins["wolf-rbac"]; ok {
+		if err := util.Validate(wolfRBACPlugin, wolfRBACConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("wolf-rbac consumer configuration: %w", err)
 		}
 	}
 	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]

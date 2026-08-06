@@ -362,6 +362,11 @@ cases:
           path: /hello
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date], date_offset: -2s}
         output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Clock skew exceeded'}}
+      - name: clock-skew-rejection-does-not-log-the-secret
+        input:
+          path: /hello
+          hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date], date_offset: -2s}
+        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {not_matches: 'my-secret-key'}}
 
   - name: default-clock-skew-put
     source: {file: t/plugin/hmac-auth.t, tests: [21, 22]}

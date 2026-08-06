@@ -386,11 +386,9 @@ func TestFixtureFamilyManifestPreservesPinnedErrorBehavior(t *testing.T) {
 			fixtureCode: http.StatusInternalServerError, fixtureBody: "fixture not found",
 			outputCode: http.StatusInternalServerError, outputBody: "fixture not found",
 		},
-		12: {
-			name:        "fixture-path-traversal-rejected",
-			fixtureCode: http.StatusOK, fixtureBody: "blocked: invalid fixture name",
-			outputCode: http.StatusOK, outputBody: "blocked: invalid fixture name",
-		},
+		// ai-proxy-fixture.t TEST 12 (path traversal) is blocked_runtime in
+		// corpus_scope.yaml: it only exercises the Apache APISIX Lua fixture
+		// helper and has no production ai-proxy request surface.
 	}
 
 	for number, want := range expectations {

@@ -1878,13 +1878,24 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.first.ADDR}}'
                             weight: 1
                         type: roundrobin
                       weight: 1
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "2"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.second.ADDR}}'
@@ -1899,7 +1910,7 @@ cases:
     fixtures:
       - expect:
           - path:
-              matches: ^/split(?:\?.*)?$
+              equals: '/split?id=1'
         kind: http
         name: first
         respond:
@@ -1907,13 +1918,15 @@ cases:
             status: 200
       - expect:
           - path:
-              matches: ^/split(?:\?.*)?$
+              equals: '/split?id=2'
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path:
+              equals: /split
         kind: http
         name: route
         respond:
@@ -1925,27 +1938,39 @@ cases:
       tests:
         - 12
     steps:
-      - input:
-          path: /split
-        name: each-weighted-upstream-is-selected-once-per-cycle
-        output:
-          body:
-            matches: ^(first|second|route)$
-          status: 200
-        repeat: 2
+      - input: {path: /split}
+        name: unmatched-request-uses-route-upstream
+        output: {status: 200, body: {equals: route}}
+      - input: {path: '/split?id=1'}
+        name: first-match-selects-first-weighted-upstream
+        output: {status: 200, body: {equals: first}}
+      - input: {path: '/split?id=2'}
+        name: second-match-selects-second-weighted-upstream
+        output: {status: 200, body: {equals: second}}
   - config:
       routes:
         - id: traffic-split
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.first.ADDR}}'
                             weight: 1
                         type: roundrobin
                       weight: 1
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "2"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.second.ADDR}}'
@@ -1959,22 +1984,30 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=1'}}
+          - {path: {equals: '/split?id=1'}}
+          - {path: {equals: '/split?id=1'}}
+        expect_requests: 3
         kind: http
         name: first
         respond:
           - body: first
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=2'}}
+          - {path: {equals: '/split?id=2'}}
+          - {path: {equals: '/split?id=2'}}
+        expect_requests: 3
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 3
         kind: http
         name: route
         respond:
@@ -1986,14 +2019,18 @@ cases:
       tests:
         - 13
     steps:
-      - input:
-          path: /split
-        name: each-weighted-upstream-is-selected-once-per-cycle
-        output:
-          body:
-            matches: ^(first|second|route)$
-          status: 200
-        repeat: 2
+      - input: {path: /split}
+        name: unmatched-request-uses-route-upstream
+        output: {status: 200, body: {equals: route}}
+        repeat: 3
+      - input: {path: '/split?id=1'}
+        name: first-match-selects-first-weighted-upstream
+        output: {status: 200, body: {equals: first}}
+        repeat: 3
+      - input: {path: '/split?id=2'}
+        name: second-match-selects-second-weighted-upstream
+        output: {status: 200, body: {equals: second}}
+        repeat: 3
   - config:
       routes:
         - id: traffic-split
@@ -2064,13 +2101,25 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.first.ADDR}}'
                             weight: 1
                         type: roundrobin
                       weight: 1
+                    - weight: 1
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "2"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.second.ADDR}}'
@@ -2085,24 +2134,29 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?id=1$'}
+          - path: {matches: '^/split\?id=1$'}
+        expect_requests: 2
         kind: http
         name: first
         respond:
           - body: first
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?id=2$'}
+          - path: {matches: '^/split\?id=2$'}
+        expect_requests: 2
         kind: http
         name: second
         respond:
           - body: second
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?id=[12]$'}
+          - path: {matches: '^/split\?id=[12]$'}
+          - path: {matches: '^/split\?id=[12]$'}
+          - path: {matches: '^/split\?id=[12]$'}
+        expect_requests: 4
         kind: http
         name: route
         respond:
@@ -2115,13 +2169,21 @@ cases:
         - 15
     steps:
       - input:
-          path: /split
-        name: each-weighted-upstream-is-selected-once-per-cycle
+          path: '/split?id=1'
+        name: id-1-splits-evenly-between-named-upstream-and-route-default
         output:
           body:
-            matches: ^(first|second|route)$
+            matches: ^(first|route)$
           status: 200
-        repeat: 3
+        repeat: 4
+      - input:
+          path: '/split?id=2'
+        name: id-2-splits-evenly-between-named-upstream-and-route-default
+        output:
+          body:
+            matches: ^(second|route)$
+          status: 200
+        repeat: 4
   - config:
       routes:
         - id: traffic-split
@@ -2190,9 +2252,20 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream_id: one
                       weight: 1
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "2"
+                  weighted_upstreams:
                     - upstream_id: two
                       weight: 1
           upstream:
@@ -2211,22 +2284,30 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=1'}}
+          - {path: {equals: '/split?id=1'}}
+          - {path: {equals: '/split?id=1'}}
+        expect_requests: 3
         kind: http
         name: first
         respond:
           - body: first
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=2'}}
+          - {path: {equals: '/split?id=2'}}
+          - {path: {equals: '/split?id=2'}}
+        expect_requests: 3
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 3
         kind: http
         name: route
         respond:
@@ -2238,14 +2319,18 @@ cases:
       tests:
         - 17
     steps:
-      - input:
-          path: /split
-        name: referenced-upstream-ids-join-the-weighted-cycle
-        output:
-          body:
-            matches: ^(first|second)$
-          status: 200
-        repeat: 2
+      - input: {path: /split}
+        name: unmatched-request-uses-route-upstream
+        output: {status: 200, body: {equals: route}}
+        repeat: 3
+      - input: {path: '/split?id=1'}
+        name: first-match-selects-first-referenced-upstream
+        output: {status: 200, body: {equals: first}}
+        repeat: 3
+      - input: {path: '/split?id=2'}
+        name: second-match-selects-second-referenced-upstream
+        output: {status: 200, body: {equals: second}}
+        repeat: 3
   - config:
       routes:
         - id: traffic-split
@@ -2314,11 +2399,16 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.first.ADDR}}'
-                            weight: 1
+                            weight: 1000
                           - host: '{{FIXTURE.second.ADDR}}'
                             weight: 1
                         pass_host: node
@@ -2340,11 +2430,7 @@ cases:
         respond:
           - body: first
             status: 200
-      - expect:
-          - host:
-              matches: ^127\.0\.0\.1:[0-9]+$
-            path:
-              matches: ^/split(?:\?.*)?$
+      - expect_requests: 0
         kind: http
         name: second
         respond:
@@ -2363,13 +2449,12 @@ cases:
         - 19
     steps:
       - input:
-          path: /split
-        name: node-host-mode-follows-each-selected-node
+          path: /split?id=1
+        name: node-host-mode-uses-selected-node-host
         output:
           body:
-            matches: ^(first|second)$
+            equals: first
           status: 200
-        repeat: 2
   - config:
       routes:
         - id: traffic-split
@@ -2377,7 +2462,7 @@ cases:
             traffic-split:
               rules:
                 - weighted_upstreams:
-                    - upstream_id: missing
+                    - upstream_id: invalid-id
                       weight: 1
           upstream:
             nodes:
@@ -2402,7 +2487,7 @@ cases:
         name: missing-upstream-id-fails-the-request
         output:
           body:
-            matches: failed to fetch upstream info
+            matches: 'failed to find upstream by id: invalid-id'
           status: 500
   - config:
       routes:
@@ -2500,77 +2585,23 @@ cases:
           body:
             equals: secure
           status: 200
-  - config:
+  - name: traffic-split3-01-mock-blue-green-release-setup-smoke
+    source: {file: t/plugin/traffic-split3.t, tests: [1]}
+    config:
       routes:
-        - id: traffic-split
+        - id: traffic-split3-setup-1
+          uri: /split
           plugins:
             traffic-split:
               rules:
-                - match:
-                    - vars:
-                        - - http_release
-                          - ==
-                          - blue
-                  weighted_upstreams:
-                    - upstream:
-                        nodes:
-                          - host: '{{FIXTURE.blue.ADDR}}'
-                            weight: 1
-                        type: roundrobin
-                      weight: 1
-                - match:
-                    - vars:
-                        - - http_release
-                          - ==
-                          - green
-                  weighted_upstreams:
-                    - upstream:
-                        nodes:
-                          - host: '{{FIXTURE.green.ADDR}}'
-                            weight: 1
-                        type: roundrobin
-                      weight: 1
-          upstream:
-            nodes:
-              '{{FIXTURE.route.ADDR}}': 1
-            type: roundrobin
-          uri: /split
+                - match: [{vars: [[http_release, '==', blue]]}]
+                  weighted_upstreams: [{upstream: {type: roundrobin, nodes: [{host: '{{FIXTURE.blue.ADDR}}', weight: 1}]}, weight: 1}]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.route.ADDR}}': 1}}
     fixtures:
-      - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
-        kind: http
-        name: blue
-        respond:
-          - body: blue
-            status: 200
-      - expect_requests: 0
-        kind: http
-        name: green
-        respond:
-          - body: green
-            status: 200
-      - expect_requests: 0
-        kind: http
-        name: route
-        respond:
-          - body: route
-            status: 200
-    name: traffic-split3-01-mock-blue-green-release
-    source:
-      file: t/plugin/traffic-split3.t
-      tests:
-        - 1
+      - {name: blue, kind: http, expect: [{path: {equals: /split}}], expect_requests: 1, respond: [{status: 200, body: blue}]}
+      - {name: route, kind: http, expect_requests: 0, respond: [{status: 200, body: route}]}
     steps:
-      - input:
-          headers:
-            Release: blue
-          path: /split
-        name: release-header-selects-blue-upstream-not-green
-        output:
-          body:
-            equals: blue
-          status: 200
+      - {name: configured-blue-rule-is-executable, input: {path: /split, headers: {Release: blue}}, output: {status: 200, body: {equals: blue}}}
   - config:
       routes:
         - id: traffic-split
@@ -2608,8 +2639,13 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 6
         kind: http
         name: blue
         respond:
@@ -2637,11 +2673,12 @@ cases:
           headers:
             Release: blue
           path: /split
-        name: release-header-selects-blue-upstream-not-green
+        name: all-blue-release-requests-select-blue-upstream
         output:
           body:
             equals: blue
           status: 200
+        repeat: 6
   - config:
       routes:
         - id: traffic-split
@@ -2660,18 +2697,6 @@ cases:
                             weight: 1
                         type: roundrobin
                       weight: 1
-                - match:
-                    - vars:
-                        - - http_release
-                          - ==
-                          - green
-                  weighted_upstreams:
-                    - upstream:
-                        nodes:
-                          - host: '{{FIXTURE.green.ADDR}}'
-                            weight: 1
-                        type: roundrobin
-                      weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -2685,14 +2710,13 @@ cases:
           - body: blue
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
-        kind: http
-        name: green
-        respond:
-          - body: green
-            status: 200
-      - expect_requests: 0
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 6
         kind: http
         name: route
         respond:
@@ -2708,66 +2732,33 @@ cases:
           headers:
             Release: green
           path: /split
-        name: release-header-selects-green-upstream-not-blue
+        name: unmatched-green-release-falls-through-to-route-upstream
         output:
           body:
-            equals: green
+            equals: route
           status: 200
-  - config:
+        repeat: 6
+  - name: traffic-split3-04-mock-custom-release-setup-smoke
+    source: {file: t/plugin/traffic-split3.t, tests: [4]}
+    config:
       routes:
-        - id: traffic-split
+        - id: traffic-split3-setup-4
+          uri: /split
           plugins:
             traffic-split:
               rules:
-                - match:
-                    - vars:
-                        - - arg_name
-                          - ==
-                          - jack
-                        - - arg_age
-                          - '>='
-                          - 18
+                - match: [{vars: [[arg_name, '==', jack], [arg_age, '>', 23], [http_appkey, '~~', '[a-z]{1,5}']]}]
                   weighted_upstreams:
-                    - upstream:
-                        nodes:
-                          - host: '{{FIXTURE.custom.ADDR}}'
-                            weight: 1
-                        type: roundrobin
-                      weight: 1
-          upstream:
-            nodes:
-              '{{FIXTURE.route.ADDR}}': 1
-            type: roundrobin
-          uri: /split
+                    - {upstream: {type: roundrobin, nodes: [{host: '{{FIXTURE.custom.ADDR}}', weight: 1}]}, weight: 2}
+                    - {upstream: {type: roundrobin, nodes: [{host: '{{FIXTURE.second.ADDR}}', weight: 1}]}, weight: 2}
+                    - {weight: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.route.ADDR}}': 1}}
     fixtures:
-      - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
-        kind: http
-        name: custom
-        respond:
-          - body: custom
-            status: 200
-      - expect_requests: 0
-        kind: http
-        name: route
-        respond:
-          - body: route
-            status: 200
-    name: traffic-split3-04-mock-custom-release
-    source:
-      file: t/plugin/traffic-split3.t
-      tests:
-        - 4
+      - {name: custom, kind: http, expect: [{path: {equals: '/split?name=jack&age=36'}}], expect_requests: 1, respond: [{status: 200, body: custom}]}
+      - {name: second, kind: http, expect_requests: 0, respond: [{status: 200, body: second}]}
+      - {name: route, kind: http, expect_requests: 0, respond: [{status: 200, body: route}]}
     steps:
-      - input:
-          method: GET
-          path: /split?name=jack&age=22
-        name: custom-release-expression-selects-expected-target
-        output:
-          body:
-            equals: custom
-          status: 200
+      - {name: configured-custom-rule-is-executable, input: {path: '/split?name=jack&age=36', headers: {Appkey: api-key}}, output: {status: 200, body: {equals: custom}}}
   - config:
       routes:
         - id: traffic-split
@@ -2780,15 +2771,25 @@ cases:
                           - ==
                           - jack
                         - - arg_age
-                          - '>='
-                          - 18
+                          - '>'
+                          - 23
+                        - - http_appkey
+                          - '~~'
+                          - '[a-z]{1,5}'
                   weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.custom.ADDR}}'
                             weight: 1
                         type: roundrobin
-                      weight: 1
+                      weight: 2
+                    - upstream:
+                        nodes:
+                          - host: '{{FIXTURE.second.ADDR}}'
+                            weight: 1
+                        type: roundrobin
+                      weight: 2
+                    - weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -2796,14 +2797,26 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?name=jack&age=36'}}
+          - {path: {equals: '/split?name=jack&age=36'}}
+        expect_requests: 2
         kind: http
         name: custom
         respond:
           - body: custom
             status: 200
-      - expect_requests: 0
+      - expect:
+          - {path: {equals: '/split?name=jack&age=36'}}
+          - {path: {equals: '/split?name=jack&age=36'}}
+        expect_requests: 2
+        kind: http
+        name: second
+        respond:
+          - body: second
+            status: 200
+      - expect:
+          - {path: {equals: '/split?name=jack&age=36'}}
+        expect_requests: 1
         kind: http
         name: route
         respond:
@@ -2817,12 +2830,14 @@ cases:
     steps:
       - input:
           method: GET
-          path: /split?name=jack&age=22
-        name: custom-release-expression-selects-expected-target
+          path: /split?name=jack&age=36
+          headers: {Appkey: api-key}
+        name: custom-release-preserves-two-two-one-multiset
         output:
           body:
-            equals: custom
+            matches: ^(custom|second|route)$
           status: 200
+        repeat: 5
   - config:
       routes:
         - id: traffic-split
@@ -2857,8 +2872,13 @@ cases:
           - body: custom
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?name=jack&age=15'}}
+          - {path: {equals: '/split?name=jack&age=15'}}
+          - {path: {equals: '/split?name=jack&age=15'}}
+          - {path: {equals: '/split?name=jack&age=15'}}
+          - {path: {equals: '/split?name=jack&age=15'}}
+          - {path: {equals: '/split?name=jack&age=15'}}
+        expect_requests: 6
         kind: http
         name: route
         respond:
@@ -2873,11 +2893,12 @@ cases:
       - input:
           method: GET
           path: /split?name=jack&age=15
-        name: custom-release-expression-selects-expected-target
+        name: all-age-mismatch-requests-use-route-upstream
         output:
           body:
             equals: route
           status: 200
+        repeat: 6
   - config:
       routes:
         - id: traffic-split
@@ -2887,24 +2908,16 @@ cases:
                 - weighted_upstreams:
                     - upstream:
                         nodes:
-                          - host: localhost:{{FIXTURE.domain.PORT}}
+                          - host: nxdomain.apisix-go.invalid:80
                             weight: 1
                         type: roundrobin
-                      weight: 1
+                      weight: 2
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
             type: roundrobin
           uri: /split
     fixtures:
-      - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
-        kind: http
-        name: domain
-        respond:
-          - body: domain
-            status: 200
       - expect_requests: 0
         kind: http
         name: route
@@ -2920,11 +2933,9 @@ cases:
       - input:
           method: GET
           path: /split
-        name: array-domain-node-resolves-successfully
+        name: unresolved-array-domain-node-fails-closed
         output:
-          body:
-            equals: domain
-          status: 200
+          status: 502
   - config:
       routes:
         - id: traffic-split
@@ -2934,26 +2945,16 @@ cases:
                 - weighted_upstreams:
                     - upstream:
                         nodes:
-                          - host: localhost:{{FIXTURE.domain.PORT}}
+                          - host: nxdomain.apisix-go.invalid:80
                             weight: 1
                         type: roundrobin
-                      weight: 1
+                      weight: 2
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
             type: roundrobin
           uri: /split
     fixtures:
-      - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
-          - path:
-              matches: ^/split(?:\?.*)?$
-        kind: http
-        name: domain
-        respond:
-          - body: domain
-            status: 200
       - expect_requests: 0
         kind: http
         name: route
@@ -2969,11 +2970,9 @@ cases:
       - input:
           method: GET
           path: /split
-        name: array-domain-node-resolves-successfully
+        name: unresolved-domain-node-returns-bad-gateway
         output:
-          body:
-            equals: domain
-          status: 200
+          status: 502
         repeat: 2
   - config:
       routes:
@@ -3178,13 +3177,14 @@ cases:
                           - host: '{{FIXTURE.first.ADDR}}'
                             weight: 1
                         type: roundrobin
-                      weight: 1
+                      weight: 2
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.second.ADDR}}'
                             weight: 1
                         type: roundrobin
-                      weight: 1
+                      weight: 2
+                    - weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -3192,22 +3192,26 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 2
         kind: http
         name: first
         respond:
           - body: first
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: /split}}
+          - {path: {equals: /split}}
+        expect_requests: 2
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - {path: {equals: /split}}
+        expect_requests: 1
         kind: http
         name: route
         respond:
@@ -3221,12 +3225,12 @@ cases:
     steps:
       - input:
           path: /split
-        name: each-weighted-upstream-is-selected-once-per-cycle
+        name: weighted-cycle-preserves-two-two-one-multiset
         output:
           body:
             matches: ^(first|second|route)$
           status: 200
-        repeat: 2
+        repeat: 5
   - config:
       routes:
         - id: traffic-split
@@ -3546,17 +3550,19 @@ cases:
               rules:
                 - match:
                     - vars:
-                        - - http_x-release-version
+                        - - http_x-api-appkey
                           - ==
-                          - v2
+                          - api-key
                   weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.split.ADDR}}'
-                            weight: 1
+                            weight: 2
+                          - host: '{{FIXTURE.second.ADDR}}'
+                            weight: 2
                         type: roundrobin
-                      weight: 1
-                    - weight: 0
+                      weight: 4
+                    - weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -3564,20 +3570,26 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+        expect_requests: 2
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+        expect_requests: 2
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
+        expect_requests: 1
         kind: http
         name: route
         respond:
@@ -3591,14 +3603,14 @@ cases:
     steps:
       - input:
           headers:
-            X-Release-Version: v2
+            X-Api-Appkey: api-key
           path: /split
-        name: matching-expression-enables-weighted-targets
+        name: weighted-upstream-honors-4-to-1-plugin-to-route-ratio
         output:
           body:
             matches: ^(split|second|route)$
           status: 200
-        repeat: 1
+        repeat: 5
   - config:
       routes:
         - id: traffic-split
@@ -3671,20 +3683,25 @@ cases:
               rules:
                 - match:
                     - vars:
-                        - - arg_release-version
+                        - - arg_x-api-name
                           - ==
-                          - v2
-                        - - http_x-user-id
-                          - ==
-                          - "42"
+                          - jack
+                        - - arg_x-api-age
+                          - '>'
+                          - "23"
+                        - - http_x-api-appkey
+                          - ~~
+                          - '[a-z]{1,5}'
                   weighted_upstreams:
                     - upstream:
                         nodes:
                           - host: '{{FIXTURE.split.ADDR}}'
-                            weight: 1
+                            weight: 2
+                          - host: '{{FIXTURE.second.ADDR}}'
+                            weight: 2
                         type: roundrobin
-                      weight: 1
-                    - weight: 0
+                      weight: 4
+                    - weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -3692,20 +3709,26 @@ cases:
           uri: /split
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?x-api-name=jack&x-api-age=36$'}
+          - path: {matches: '^/split\?x-api-name=jack&x-api-age=36$'}
+        expect_requests: 2
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: '^/split\?x-api-name=jack&x-api-age=36$'}
+          - path: {matches: '^/split\?x-api-name=jack&x-api-age=36$'}
+        expect_requests: 2
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: '^/split\?x-api-name=jack&x-api-age=36$'}
+        expect_requests: 1
         kind: http
         name: route
         respond:
@@ -3719,14 +3742,14 @@ cases:
     steps:
       - input:
           headers:
-            X-User-Id: "42"
-          path: /split?release-version=v2
-        name: matching-expression-enables-weighted-targets
+            X-Api-Appkey: hello
+          path: /split?x-api-name=jack&x-api-age=36
+        name: weighted-upstream-honors-4-to-1-plugin-to-route-ratio
         output:
           body:
             matches: ^(split|second|route)$
           status: 200
-        repeat: 1
+        repeat: 5
   - config:
       routes:
         - id: traffic-split
@@ -3823,9 +3846,13 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_name
+                          - ==
+                          - James
+                  weighted_upstreams:
                     - upstream_id: split
-                      weight: 1
           upstream_id: route
           uri: /split
       upstreams:
@@ -3839,14 +3866,14 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?name=James$'}
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
         kind: http
         name: route
         respond:
@@ -3859,22 +3886,32 @@ cases:
         - 3
     steps:
       - input:
-          path: /split
-        name: plugin-upstream-id-and-route-fallback-resolve-independently
+          path: /split?name=James
+        name: match-rule-passed-uses-plugin-upstream-id
         output:
           body:
-            matches: ^(split|route)$
+            equals: split
           status: 200
-        repeat: 1
+      - input:
+          path: /split
+        name: match-rule-failed-falls-back-to-route-upstream-id
+        output:
+          body:
+            equals: route
+          status: 200
   - config:
       routes:
         - id: traffic-split
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_name
+                          - ==
+                          - James
+                  weighted_upstreams:
                     - upstream_id: split
-                      weight: 1
           upstream_id: route
           uri: /split
       upstreams:
@@ -3888,14 +3925,20 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?name=James$'}
+          - path: {matches: '^/split\?name=James$'}
+          - path: {matches: '^/split\?name=James$'}
+        expect_requests: 3
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+        expect_requests: 3
         kind: http
         name: route
         respond:
@@ -3908,22 +3951,34 @@ cases:
         - 4
     steps:
       - input:
-          path: /split
-        name: plugin-upstream-id-and-route-fallback-resolve-independently
+          path: /split?name=James
+        name: match-rule-passed-uses-plugin-upstream-id
         output:
           body:
-            matches: ^(split|route)$
+            equals: split
           status: 200
-        repeat: 1
+        repeat: 3
+      - input:
+          path: /split
+        name: match-rule-failed-falls-back-to-route-upstream-id
+        output:
+          body:
+            equals: route
+          status: 200
+        repeat: 3
   - config:
       routes:
         - id: traffic-split
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_name
+                          - ==
+                          - James
+                  weighted_upstreams:
                     - upstream_id: split
-                      weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -3936,14 +3991,14 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?name=James$'}
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
         kind: http
         name: route
         respond:
@@ -3956,12 +4011,18 @@ cases:
         - 5
     steps:
       - input:
-          method: GET
-          path: /split
-        name: plugin-reference-overrides-inline-route-upstream
+          path: /split?name=James
+        name: match-rule-passed-uses-plugin-upstream-id
         output:
           body:
             equals: split
+          status: 200
+      - input:
+          path: /split
+        name: match-rule-failed-falls-back-to-inline-route-upstream
+        output:
+          body:
+            equals: route
           status: 200
   - config:
       routes:
@@ -3969,9 +4030,13 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_name
+                          - ==
+                          - James
+                  weighted_upstreams:
                     - upstream_id: split
-                      weight: 1
           upstream:
             nodes:
               '{{FIXTURE.route.ADDR}}': 1
@@ -3984,14 +4049,20 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - path: {matches: '^/split\?name=James$'}
+          - path: {matches: '^/split\?name=James$'}
+          - path: {matches: '^/split\?name=James$'}
+        expect_requests: 3
         kind: http
         name: split
         respond:
           - body: split
             status: 200
-      - expect_requests: 0
+      - expect:
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+          - path: {matches: ^/split$}
+        expect_requests: 3
         kind: http
         name: route
         respond:
@@ -4004,13 +4075,21 @@ cases:
         - 6
     steps:
       - input:
-          method: GET
-          path: /split
-        name: plugin-reference-overrides-inline-route-upstream
+          path: /split?name=James
+        name: match-rule-passed-uses-plugin-upstream-id
         output:
           body:
             equals: split
           status: 200
+        repeat: 3
+      - input:
+          path: /split
+        name: match-rule-failed-falls-back-to-inline-route-upstream
+        output:
+          body:
+            equals: route
+          status: 200
+        repeat: 3
   - config:
       routes:
         - id: traffic-split

@@ -30,6 +30,7 @@ require (
 	github.com/goccy/go-json v0.10.6
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jpillora/ipfilter v1.4.0
 	github.com/justinas/alice v1.2.0

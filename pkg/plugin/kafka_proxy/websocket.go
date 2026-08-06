@@ -1,11 +1,7 @@
 package kafka_proxy
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,10 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/segmentio/kafka-go"
 )
-
-const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 var (
 	ErrWebSocketUpgradeRequired = errors.New("kafka-proxy requires a WebSocket upgrade")
@@ -87,27 +82,19 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 	}
 	defer func() { _ = backend.Close() }()
 
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		return fmt.Errorf("kafka WebSocket server does not support connection hijacking")
-	}
-	client, rw, err := hijacker.Hijack()
+	conn, err := upgradeKafkaWebSocket(w, r, transport)
 	if err != nil {
-		return fmt.Errorf("hijack Kafka WebSocket: %w", err)
+		return fmt.Errorf("upgrade Kafka WebSocket: %w", err)
 	}
-	defer func() { _ = client.Close() }()
-	if err := writeWebSocketHandshake(rw, r.Header.Get("Sec-WebSocket-Key")); err != nil {
-		return &websocketProxyError{hijacked: true, err: fmt.Errorf("write Kafka WebSocket handshake: %w", err)}
-	}
+	defer func() { _ = conn.Close() }()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	closeOnCancel := closeConnectionsOnCancel(ctx, client, backend)
+	closeOnCancel := closeConnectionsOnCancel(ctx, conn.UnderlyingConn(), backend)
 	defer closeOnCancel()
 
 	bridge := &websocketBridge{
-		client:       client,
-		rw:           rw,
+		conn:         conn,
 		maxFrameSize: transport.maxFrameSize,
 		readTimeout:  transport.readTimeout,
 		writeTimeout: transport.writeTimeout,
@@ -118,7 +105,7 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 
 	first := <-results
 	cancel()
-	_ = client.Close()
+	_ = conn.Close()
 	_ = backend.Close()
 	second := <-results
 	if websocketBridgeNormalClose(ctx, first) ||
@@ -146,26 +133,18 @@ func ServePubSubWebSocket(
 	}
 	transport := NewTransport(options)
 
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		return fmt.Errorf("kafka PubSub WebSocket server does not support connection hijacking")
-	}
-	client, rw, err := hijacker.Hijack()
+	conn, err := upgradeKafkaWebSocket(w, r, transport)
 	if err != nil {
-		return fmt.Errorf("hijack Kafka PubSub WebSocket: %w", err)
+		return fmt.Errorf("upgrade Kafka PubSub WebSocket: %w", err)
 	}
-	defer func() { _ = client.Close() }()
-	if err := writeWebSocketHandshake(rw, r.Header.Get("Sec-WebSocket-Key")); err != nil {
-		return &websocketProxyError{hijacked: true, err: fmt.Errorf("write Kafka PubSub handshake: %w", err)}
-	}
+	defer func() { _ = conn.Close() }()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	closeOnCancel := closeConnectionsOnCancel(ctx, client)
+	closeOnCancel := closeConnectionsOnCancel(ctx, conn.UnderlyingConn())
 	defer closeOnCancel()
 	bridge := &websocketBridge{
-		client:       client,
-		rw:           rw,
+		conn:         conn,
 		maxFrameSize: transport.maxFrameSize,
 		readTimeout:  transport.readTimeout,
 		writeTimeout: transport.writeTimeout,
@@ -220,10 +199,7 @@ func ServePubSubWebSocket(
 				err:      fmt.Errorf("kafka PubSub response exceeds max frame size %d", transport.maxFrameSize),
 			}
 		}
-		if err := setDeadline(ctx, client, transport.writeTimeout, client.SetWriteDeadline); err != nil {
-			return &websocketProxyError{hijacked: true, err: err}
-		}
-		if err := bridge.writeFrame(0x2, encoded); err != nil {
+		if err := bridge.writeBinary(encoded); err != nil {
 			return &websocketProxyError{hijacked: true, err: err}
 		}
 	}
@@ -274,9 +250,6 @@ func pubSubErrorMessage(command PubSubCommand, err error) string {
 	if command == CmdKafkaFetch {
 		return "Kafka fetch failed"
 	}
-	if err != nil {
-		return "Kafka PubSub command failed"
-	}
 	return "Kafka PubSub command failed"
 }
 
@@ -290,9 +263,20 @@ func isKafkaAuthError(err error) bool {
 		strings.Contains(strings.ToLower(err.Error()), "sasl authentication")
 }
 
+func upgradeKafkaWebSocket(w http.ResponseWriter, r *http.Request, transport *Transport) (*websocket.Conn, error) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(int64(transport.maxFrameSize + 4))
+	return conn, nil
+}
+
 type websocketBridge struct {
-	client       net.Conn
-	rw           *bufio.ReadWriter
+	conn         *websocket.Conn
 	writeMu      sync.Mutex
 	maxFrameSize int
 	readTimeout  time.Duration
@@ -324,10 +308,7 @@ func (b *websocketBridge) kafkaToClient(ctx context.Context, backend net.Conn) e
 		if err != nil {
 			return err
 		}
-		if err := setDeadline(ctx, b.client, b.writeTimeout, b.client.SetWriteDeadline); err != nil {
-			return err
-		}
-		if err := b.writeFrame(0x2, frame); err != nil {
+		if err := b.writeBinary(frame); err != nil {
 			return err
 		}
 	}
@@ -366,171 +347,50 @@ func writeKafkaPayload(
 	return nil
 }
 
-func writeWebSocketHandshake(rw *bufio.ReadWriter, key string) error {
-	hash := sha1.Sum([]byte(key + websocketGUID))
-	accept := base64.StdEncoding.EncodeToString(hash[:])
-	if _, err := fmt.Fprintf(
-		rw,
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
-		accept,
-	); err != nil {
-		return err
-	}
-	return rw.Flush()
-}
-
-type websocketFrame struct {
-	fin     bool
-	opcode  byte
-	payload []byte
-}
-
+// readMessage returns one complete binary WebSocket message.
 func (b *websocketBridge) readMessage() ([]byte, error) {
-	var message bytes.Buffer
-	var dataOpcode byte
-	for {
-		frame, err := b.readFrame()
-		if err != nil {
-			return nil, err
-		}
-		switch frame.opcode {
-		case 0x8:
-			_ = b.writeFrame(0x8, frame.payload)
+	if err := b.conn.SetReadDeadline(time.Now().Add(b.readTimeout)); err != nil {
+		return nil, err
+	}
+	messageType, payload, err := b.conn.ReadMessage()
+	if err != nil {
+		var closeErr *websocket.CloseError
+		if errors.As(err, &closeErr) {
 			return nil, io.EOF
-		case 0x9:
-			if err := b.writeFrame(0xa, frame.payload); err != nil {
-				return nil, err
-			}
-			continue
-		case 0xa:
-			continue
-		case 0x1:
-			if dataOpcode != 0 {
-				return nil, b.protocolError(1002, "nested WebSocket message")
-			}
-			dataOpcode = frame.opcode
-		case 0x2:
-			if dataOpcode != 0 {
-				return nil, b.protocolError(1002, "nested WebSocket message")
-			}
-			dataOpcode = frame.opcode
-		case 0x0:
-			if dataOpcode == 0 {
-				return nil, b.protocolError(1002, "unexpected WebSocket continuation")
-			}
-		default:
-			return nil, b.protocolError(1002, "unsupported WebSocket opcode")
 		}
-		if dataOpcode == 0x1 {
-			return nil, b.protocolError(1003, "Kafka WebSocket messages must be binary")
+		if errors.Is(err, websocket.ErrReadLimit) {
+			return nil, fmt.Errorf("%w: Kafka WebSocket message is too large", ErrWebSocketProtocol)
 		}
-		if message.Len()+len(frame.payload) > b.maxFrameSize+4 {
-			return nil, b.protocolError(1009, "Kafka WebSocket message is too large")
-		}
-		_, _ = message.Write(frame.payload)
-		if frame.fin {
-			return message.Bytes(), nil
-		}
+		return nil, err
 	}
+	if messageType != websocket.BinaryMessage {
+		_ = b.writeClose(1003, "Kafka WebSocket messages must be binary")
+		return nil, fmt.Errorf("%w: Kafka WebSocket messages must be binary", ErrWebSocketProtocol)
+	}
+	return payload, nil
 }
 
-func (b *websocketBridge) readFrame() (websocketFrame, error) {
-	if err := setDeadline(context.Background(), b.client, b.readTimeout, b.client.SetReadDeadline); err != nil {
-		return websocketFrame{}, err
-	}
-	var header [2]byte
-	if _, err := io.ReadFull(b.client, header[:]); err != nil {
-		return websocketFrame{}, err
-	}
-	if header[0]&0x70 != 0 {
-		return websocketFrame{}, b.protocolError(1002, "reserved WebSocket bits are set")
-	}
-	frame := websocketFrame{fin: header[0]&0x80 != 0, opcode: header[0] & 0x0f}
-	masked := header[1]&0x80 != 0
-	if !masked {
-		return websocketFrame{}, b.protocolError(1002, "client WebSocket frame is not masked")
-	}
-	payloadLength := uint64(header[1] & 0x7f)
-	switch payloadLength {
-	case 126:
-		var extended [2]byte
-		if _, err := io.ReadFull(b.client, extended[:]); err != nil {
-			return websocketFrame{}, err
-		}
-		payloadLength = uint64(binary.BigEndian.Uint16(extended[:]))
-	case 127:
-		var extended [8]byte
-		if _, err := io.ReadFull(b.client, extended[:]); err != nil {
-			return websocketFrame{}, err
-		}
-		payloadLength = binary.BigEndian.Uint64(extended[:])
-		if payloadLength&(1<<63) != 0 {
-			return websocketFrame{}, b.protocolError(1002, "invalid WebSocket payload length")
-		}
-	}
-	if payloadLength > uint64(b.maxFrameSize+4) {
-		return websocketFrame{}, b.protocolError(1009, "Kafka WebSocket frame is too large")
-	}
-	if (frame.opcode&0x8) != 0 && (!frame.fin || payloadLength > 125) {
-		return websocketFrame{}, b.protocolError(1002, "invalid WebSocket control frame")
-	}
-	var mask [4]byte
-	if _, err := io.ReadFull(b.client, mask[:]); err != nil {
-		return websocketFrame{}, err
-	}
-	frame.payload = make([]byte, int(payloadLength))
-	if _, err := io.ReadFull(b.client, frame.payload); err != nil {
-		return websocketFrame{}, err
-	}
-	for index := range frame.payload {
-		frame.payload[index] ^= mask[index%4]
-	}
-	return frame, nil
-}
-
-func (b *websocketBridge) writeFrame(opcode byte, payload []byte) error {
+func (b *websocketBridge) writeBinary(payload []byte) error {
 	if len(payload) > b.maxFrameSize+4 {
 		return fmt.Errorf("WebSocket response frame is too large")
 	}
-	header := make([]byte, 2)
-	header[0] = 0x80 | opcode
-	switch {
-	case len(payload) < 126:
-		header[1] = byte(len(payload))
-	case uint64(len(payload)) <= 0xffff:
-		header[1] = 126
-		var extended [2]byte
-		binary.BigEndian.PutUint16(extended[:], uint16(len(payload)))
-		header = append(header, extended[:]...)
-	default:
-		header[1] = 127
-		var extended [8]byte
-		binary.BigEndian.PutUint64(extended[:], uint64(len(payload)))
-		header = append(header, extended[:]...)
-	}
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
-	if _, err := b.rw.Write(header); err != nil {
+	if err := b.conn.SetWriteDeadline(time.Now().Add(b.writeTimeout)); err != nil {
 		return err
 	}
-	if _, err := b.rw.Write(payload); err != nil {
-		return err
-	}
-	return b.rw.Flush()
-}
-
-func (b *websocketBridge) protocolError(code uint16, reason string) error {
-	_ = b.writeClose(code, reason)
-	return fmt.Errorf("%w: %s", ErrWebSocketProtocol, reason)
+	return b.conn.WriteMessage(websocket.BinaryMessage, payload)
 }
 
 func (b *websocketBridge) writeClose(code uint16, reason string) error {
-	var closePayload [2]byte
-	binary.BigEndian.PutUint16(closePayload[:], code)
 	if len(reason) > 123 {
 		reason = reason[:123]
 	}
-	return b.writeFrame(0x8, append(closePayload[:], []byte(reason)...))
+	return b.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(int(code), reason),
+		time.Now().Add(b.writeTimeout),
+	)
 }
 
 func closeConnectionsOnCancel(ctx context.Context, connections ...net.Conn) func() {

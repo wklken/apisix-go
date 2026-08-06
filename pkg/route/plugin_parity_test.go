@@ -893,7 +893,9 @@ func TestErrorPageRouteChainRewritesConfiguredMetadata(t *testing.T) {
 
 func TestExitTransformerRouteChainRemapsLocalError(t *testing.T) {
 	handler := buildRoutePluginChainWithFallback(t, "exit-transformer", map[string]any{
-		"functions": []any{"if code == 500 then return 503"},
+		"functions": []any{
+			`return (function(code, body, header) if code == 500 then return 503, body, header end return code, body, header end)(...)`,
+		},
 	}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("failure"))

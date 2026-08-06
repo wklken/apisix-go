@@ -60,6 +60,23 @@ func TestHandlerAddsBeforeAndAfterBody(t *testing.T) {
 	}
 }
 
+func TestHandlerComposesBeforeReplacementAndAfterBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BeforeBody: "before-",
+		Body:       "replacement",
+		AfterBody:  "-after",
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	if got := res.Body.String(); got != "before-replacement-after" {
+		t.Fatalf("body = %q, want before-replacement-after", got)
+	}
+}
+
 func TestHandlerSetsResponseHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Headers: map[string]any{

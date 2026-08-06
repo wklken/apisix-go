@@ -91,22 +91,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) rewrite(resp *base.BufferedResponseWriter) {
+	body := resp.Body()
 	bodyChanged := false
 	if p.config.Body != "" {
-		resp.SetBody([]byte(p.config.Body))
+		body = []byte(p.config.Body)
 		bodyChanged = true
-	} else {
-		if p.config.BeforeBody != "" {
-			resp.SetBody(append([]byte(p.config.BeforeBody), resp.Body()...))
-			bodyChanged = true
-		}
-		if p.config.AfterBody != "" {
-			resp.SetBody(append(resp.Body(), []byte(p.config.AfterBody)...))
-			bodyChanged = true
-		}
+	}
+	if p.config.BeforeBody != "" {
+		body = append([]byte(p.config.BeforeBody), body...)
+		bodyChanged = true
+	}
+	if p.config.AfterBody != "" {
+		body = append(body, []byte(p.config.AfterBody)...)
+		bodyChanged = true
 	}
 
 	if bodyChanged {
+		resp.SetBody(body)
 		resp.Header().Del("Content-Length")
 	}
 

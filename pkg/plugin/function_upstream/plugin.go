@@ -137,15 +137,7 @@ func appendExtensionPath(basePath string, extension string) string {
 
 func writeResponse(w http.ResponseWriter, res *http.Response, http2 bool) {
 	if http2 {
-		for _, field := range []string{
-			"Connection",
-			"Keep-Alive",
-			"Proxy-Connection",
-			"Upgrade",
-			"Transfer-Encoding",
-		} {
-			res.Header.Del(field)
-		}
+		base.RemoveHTTP2ConnectionHeaders(res.Header)
 	}
 	for field, values := range res.Header {
 		for _, value := range values {

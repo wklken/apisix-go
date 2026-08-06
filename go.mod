@@ -14,6 +14,8 @@ require (
 	github.com/apache/apisix-ingress-controller v1.8.4
 	github.com/apache/dubbo-go-hessian2 v1.13.1
 	github.com/apache/rocketmq-client-go/v2 v2.1.2
+	github.com/aws/aws-sdk-go-v2 v1.43.4
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16
 	github.com/beevik/etree v1.5.0
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/casbin/casbin/v2 v2.135.0
@@ -70,6 +72,7 @@ require (
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.0 // indirect
+	github.com/aws/smithy-go v1.27.6 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

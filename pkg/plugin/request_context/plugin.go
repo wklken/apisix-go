@@ -50,10 +50,6 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		labels := p.metricLabels()
-
-		metrics.Requests.Inc()
-
 		r = ctx.WithApisixVars(r, map[string]string{
 			"$route_id":     p.config.RouteID,
 			"$route_name":   p.config.RouteName,
@@ -63,6 +59,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			"$service_name": p.config.ServiceName,
 		})
 		r = ctx.WithRequestVars(r)
+
+		if !metrics.HTTPRequestMetricsEnabled() {
+			next.ServeHTTP(w, r)
+			ctx.RecycleVars(r)
+			return
+		}
+
+		labels := p.metricLabels()
+		metrics.Requests.Inc()
 
 		captured := httpsnoop.CaptureMetrics(next, w, r)
 		consumer := apisixStringVar(r, "$consumer_name")

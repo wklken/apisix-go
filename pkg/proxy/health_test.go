@@ -146,3 +146,22 @@ func TestHealthAwareLoadBalanceRejectsMalformedPassiveChecks(t *testing.T) {
 		t.Fatal("NewHealthAwareLoadBalance() error = nil, want malformed check rejection")
 	}
 }
+
+func TestWithHealthReporterReturnsOriginalRequestWhenDisabled(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	if got := WithHealthReporter(req, nil); got != req {
+		t.Fatal("WithHealthReporter() replaced the request for a nil reporter")
+	}
+}
+
+func TestWithHealthReporterDisabledAllocatesNothing(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.test", nil)
+	allocations := testing.AllocsPerRun(1000, func() {
+		if WithHealthReporter(req, nil) != req {
+			t.Fatal("WithHealthReporter() changed request identity")
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("disabled WithHealthReporter allocations = %v, want 0", allocations)
+	}
+}

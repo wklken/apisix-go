@@ -219,7 +219,7 @@ cases:
 
   - name: limit-conn-redis-cluster-10-keepalive-diagnostic
     source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [10]}
-    runtime: *redis_cluster_runtime
+    runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
         - id: limit-conn-redis-cluster-10
@@ -706,7 +706,7 @@ cases:
 
   - name: limit-conn-redis-26-connection-reuse-diagnostic
     source: {file: t/plugin/limit-conn-redis.t, tests: [26]}
-    runtime: *redis_limit_runtime
+    runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
         - {id: limit-conn-redis-26, uri: /limit_conn, plugins: {limit-conn: *redis_five_capacity}, upstream: *redis_origin_upstream}
@@ -2004,7 +2004,7 @@ cases:
 
   - name: limit-conn2-02-request-latency-is-recorded
     source: {file: t/plugin/limit-conn2.t, tests: [2]}
-    runtime: *limit_conn2_runtime
+    runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       upstreams:
         - id: limit-conn2-retry-02
@@ -2055,7 +2055,7 @@ cases:
 
   - name: limit-conn2-04-global-and-route-record-latency
     source: {file: t/plugin/limit-conn2.t, tests: [4]}
-    runtime: *limit_conn2_runtime
+    runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       global_rules:
         - id: limit-conn2-global-04
@@ -2101,7 +2101,7 @@ cases:
 
   - name: limit-conn2-06-only-default-delay-omits-measured-latency
     source: {file: t/plugin/limit-conn2.t, tests: [6]}
-    runtime: *limit_conn2_runtime
+    runtime: {plugins: [limit-conn], nginx_config: {error_log_level: debug}}
     config:
       routes:
         - {id: limit-conn2-06, uri: /hello1, plugins: {limit-conn: *limit_conn2_default_delay_only}, upstream: *limit_conn2_hello_upstream}

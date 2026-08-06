@@ -38,6 +38,7 @@ func TestGCPTokenSourceExchangesAndCachesServiceAccountToken(t *testing.T) {
 		t.Fatalf("marshal private key: %v", err)
 	}
 	serviceAccount, err := json.Marshal(map[string]any{
+		"type":           "service_account",
 		"client_email":   "service@example.test",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
 		"private_key_id": "key-id",
@@ -61,6 +62,54 @@ func TestGCPTokenSourceExchangesAndCachesServiceAccountToken(t *testing.T) {
 	}
 	if tokenCalls.Load() != 1 {
 		t.Fatalf("token endpoint calls = %d, want 1", tokenCalls.Load())
+	}
+}
+
+func TestGoogleTokenSourceReusesValidToken(t *testing.T) {
+	var exchanges atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		exchanges.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"shared-token","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	serviceAccount, err := json.Marshal(map[string]any{
+		"type":         "service_account",
+		"client_email": "shared@example.test",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
+		"token_uri":    tokenServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("marshal service account: %v", err)
+	}
+
+	source, err := NewGoogleTokenSource(
+		t.Context(),
+		serviceAccount,
+		[]string{gcpCloudPlatformScope},
+		tokenServer.Client(),
+	)
+	if err != nil {
+		t.Fatalf("NewGoogleTokenSource() error = %v", err)
+	}
+	first, err := source.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := source.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AccessToken != second.AccessToken || exchanges.Load() != 1 {
+		t.Fatalf("tokens/exchanges = %q/%q/%d", first.AccessToken, second.AccessToken, exchanges.Load())
 	}
 }
 
@@ -97,6 +146,7 @@ func TestGCPTokenSourceCachesWithMaxTTL(t *testing.T) {
 		t.Fatalf("marshal private key: %v", err)
 	}
 	serviceAccount, err := json.Marshal(map[string]any{
+		"type":           "service_account",
 		"client_email":   "service@example.test",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
 		"private_key_id": "key-id",

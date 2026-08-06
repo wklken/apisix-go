@@ -21,7 +21,6 @@ import (
 const (
 	priority          = 399
 	name              = "file-logger"
-	maxLogFormatDepth = 5
 	fileLoggerVersion = "apisix-go"
 )
 
@@ -193,7 +192,7 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.logFormat != nil {
 		var truncated bool
-		p.logFormat, truncated = truncateLogFormat(p.logFormat, 0)
+		p.logFormat, truncated = base.TruncateLogFormat(p.logFormat, 5)
 		if truncated {
 			logger.Warn("log_format nesting exceeds max depth 5, truncating")
 		}
@@ -425,27 +424,6 @@ func resolveLogValue(value string, r *http.Request, request requestSnapshot, sta
 	default:
 		return apisixlog.GetField(r, value)
 	}
-}
-
-func truncateLogFormat(format map[string]any, depth int) (map[string]any, bool) {
-	result := make(map[string]any, len(format))
-	truncated := false
-	for key, value := range format {
-		nested, ok := value.(map[string]any)
-		if !ok {
-			result[key] = value
-			continue
-		}
-		if depth+1 >= maxLogFormatDepth {
-			result[key] = map[string]any{}
-			truncated = truncated || len(nested) > 0
-			continue
-		}
-		resolved, childTruncated := truncateLogFormat(nested, depth+1)
-		result[key] = resolved
-		truncated = truncated || childTruncated
-	}
-	return result, truncated
 }
 
 func resolvedUpstream(r *http.Request) string {

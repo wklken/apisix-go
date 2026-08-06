@@ -66,6 +66,46 @@ func TestGetFromBucketReturnsCopyStableAcrossDatabaseGrowth(t *testing.T) {
 	}
 }
 
+func TestGetBucketDataReturnsCopies(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/bucket-copy.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	})
+
+	storage := &Store{db: db}
+	storage.InitBuckets()
+
+	key := []byte("route-1")
+	want := bytes.Repeat([]byte("r"), 64<<10)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routes")).Put(key, want)
+	}); err != nil {
+		t.Fatalf("store route: %v", err)
+	}
+
+	got := storage.GetBucketData("routes")
+	if len(got) != 1 {
+		t.Fatalf("GetBucketData() returned %d values, want 1", len(got))
+	}
+	if !bytes.Equal(got[0], want) {
+		t.Fatalf("GetBucketData() returned unexpected %d-byte value", len(got[0]))
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		stored := tx.Bucket([]byte("routes")).Get(key)
+		if &got[0][0] == &stored[0] {
+			t.Fatal("GetBucketData() returned bbolt transaction-owned storage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("compare stored route: %v", err)
+	}
+}
+
 func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	db, err := bolt.Open(t.TempDir()+"/store.db", 0o600, nil)
 	if err != nil {

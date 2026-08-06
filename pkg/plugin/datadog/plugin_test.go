@@ -359,6 +359,19 @@ func TestMetadataSchemaPublishesPinnedDefaults(t *testing.T) {
 	}
 }
 
+func TestMetadataWithDefaultsOverlaysConfiguredValues(t *testing.T) {
+	got := metadataWithDefaults(Metadata{Host: "dogstatsd", Port: 18125})
+	if got.Host != "dogstatsd" || got.Port != 18125 {
+		t.Fatalf("configured endpoint = %s:%d", got.Host, got.Port)
+	}
+	if got.Namespace != "apisix" {
+		t.Fatalf("default namespace = %q, want apisix", got.Namespace)
+	}
+	if !reflect.DeepEqual(got.ConstantTags, []string{"source:apisix"}) {
+		t.Fatalf("default constant tags = %#v", got.ConstantTags)
+	}
+}
+
 func TestSendCoalescesMetricsWithinDogStatsDDatagramLimit(t *testing.T) {
 	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)

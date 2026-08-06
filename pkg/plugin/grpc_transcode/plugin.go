@@ -453,7 +453,7 @@ func (p *Plugin) transformRequest(r *http.Request, binding *methodBinding) error
 
 func (p *Plugin) requestPayload(r *http.Request, desc protoreflect.MessageDescriptor) ([]byte, error) {
 	if r.Body != nil && r.Body != http.NoBody && strings.Contains(r.Header.Get("Content-Type"), jsonContentType) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
 			return nil, err
 		}
@@ -1245,15 +1245,6 @@ func wrapGRPCStatusJSON(statusJSON []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode grpc status JSON: %w", err)
 	}
 	return json.Marshal(map[string]any{"error": statusValue})
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
 }
 
 func frameGRPCMessage(payload []byte) []byte {

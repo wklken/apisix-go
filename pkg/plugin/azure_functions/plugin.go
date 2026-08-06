@@ -3,8 +3,8 @@ package azure_functions
 import (
 	"net/http"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -133,17 +133,5 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 }
 
 func (p *Plugin) loadMetadata() {
-	var metadata Metadata
-	if err := safeGetPluginMetadata(name, &metadata); err == nil {
-		p.metadata = metadata
-	}
-}
-
-func safeGetPluginMetadata(id string, target any) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = store.ErrNotFound
-		}
-	}()
-	return store.GetPluginMetadata(id, target)
+	p.metadata = base.LoadPluginMetadata[Metadata](name)
 }

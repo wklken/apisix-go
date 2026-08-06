@@ -20,6 +20,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -794,5 +795,26 @@ func assertNestedNonnegativeNumber(t *testing.T, payload map[string]any, object,
 	value, ok := nested[field].(float64)
 	if !ok || value < 0 {
 		t.Fatalf("%s.%s = %#v, want nonnegative number", object, field, nested[field])
+	}
+}
+
+func TestSendMarshalErrorNamesTCPLogger(t *testing.T) {
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if entry.Level == "ERROR" {
+			entries <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	(&Plugin{}).Send(map[string]any{"unsupported": make(chan int)})
+
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "in tcp-logger") {
+			t.Fatalf("marshal error message = %q, want tcp-logger", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for tcp-logger marshal error")
 	}
 }

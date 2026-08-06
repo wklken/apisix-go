@@ -6,7 +6,6 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -98,14 +97,8 @@ func (p *Plugin) errorPage(statusCode int) (ErrorPage, bool) {
 	}
 }
 
-func (p *Plugin) loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
-	_ = store.GetPluginMetadata(name, &metadata)
-	return metadata
+func (p *Plugin) loadMetadata() Metadata {
+	return base.LoadPluginMetadata[Metadata](name)
 }
 
 func applyDefaults(metadata *Metadata) {

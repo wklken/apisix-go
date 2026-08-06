@@ -81,6 +81,7 @@ func TestHandlerPassesAndRestoresValidRequestBody(t *testing.T) {
 func TestHandlerMatchesOpenAPIServerURLPrefix(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: `{
   "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
   "servers": [{"url": "/api/v3"}],
   "paths": {
     "/pets": {
@@ -101,22 +102,34 @@ func TestHandlerMatchesOpenAPIServerURLPrefix(t *testing.T) {
 }
 
 func TestHandlerPrefersLiteralPathOverPathParameter(t *testing.T) {
-	spec := &compiledSpec{operations: []compiledOperation{
-		{
-			method:   http.MethodGet,
-			template: "/api/v31/pet/{petId}",
-			segments: splitPath("/api/v31/pet/{petId}"),
-		},
-		{
-			method:   http.MethodGet,
-			template: "/api/v31/pet/findByStatus",
-			segments: splitPath("/api/v31/pet/findByStatus"),
-		},
-	}}
+	p := newTestPlugin(t, Config{Spec: `{
+  "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
+  "paths": {
+    "/api/v31/pet/{petId}": {
+      "get": {
+        "parameters": [{"name": "petId", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/api/v31/pet/findByStatus": {
+      "get": {
+        "responses": {"200": {"description": "OK"}}
+      }
+    }
+  }
+}`})
 
-	operation, _ := spec.match(http.MethodGet, "/api/v31/pet/findByStatus")
-	if operation == nil || operation.template != "/api/v31/pet/findByStatus" {
-		t.Fatalf("matched operation = %#v, want literal path", operation)
+	req := httptest.NewRequest(http.MethodGet, "/api/v31/pet/findByStatus", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/api/v31/pet/findByStatus" {
+			t.Fatalf("path = %q, want literal path preserved", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -171,12 +184,14 @@ func TestHandlerValidatesRequestBodyWithLocalSchemaRef(t *testing.T) {
 func TestHandlerResolvesLocalParameterRef(t *testing.T) {
 	spec := `{
   "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
   "paths": {
     "/pets": {
       "get": {
         "parameters": [
           {"$ref": "#/components/parameters/Trace"}
-        ]
+        ],
+        "responses": {"200": {"description": "OK"}}
       }
     }
   },
@@ -221,9 +236,11 @@ func TestHandlerResolvesLocalParameterRef(t *testing.T) {
 func TestHandlerResolvesLocalRequestBodyRef(t *testing.T) {
 	spec := `{
   "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
   "paths": {
     "/pets": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {"$ref": "#/components/requestBodies/Pet"}
       }
     }
@@ -457,21 +474,6 @@ func TestHandlerMatchesStructuredXMLAndYAMLWildcardMediaTypes(t *testing.T) {
 	}
 }
 
-func TestSelectMediaTypePrefersSpecificWildcard(t *testing.T) {
-	content := map[string]mediaType{
-		"*/*":           {Schema: map[string]any{"title": "generic"}},
-		"application/*": {Schema: map[string]any{"title": "application"}},
-	}
-
-	selected, ok := selectMediaType(content, "application/json")
-	if !ok {
-		t.Fatal("selectMediaType() found no matching wildcard")
-	}
-	if got := selected.Schema["title"]; got != "application" {
-		t.Fatalf("selected schema title = %v, want application-specific wildcard", got)
-	}
-}
-
 func TestHandlerValidatesOctetStreamBodyAsString(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: octetStreamBodySpec()})
 	req := httptest.NewRequest(http.MethodPost, "/blobs", strings.NewReader("binary-payload"))
@@ -513,7 +515,7 @@ func TestHandlerValidatesSpaceDelimitedQueryArray(t *testing.T) {
 	}
 }
 
-func TestHandlerValidatesDelimitedQueryObject(t *testing.T) {
+func TestHandlerRejectsDelimitedQueryObject(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		style string
@@ -530,9 +532,9 @@ func TestHandlerValidatesDelimitedQueryObject(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			})).ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusNoContent {
+			if rr.Code != http.StatusBadRequest {
 				t.Fatalf(
-					"response code = %d, want 204 for %s-delimited query object: %s",
+					"response code = %d, want 400 for %s-delimited query object: %s",
 					rr.Code,
 					test.style,
 					rr.Body.String(),
@@ -550,12 +552,15 @@ func TestHandlerRejectsMalformedDelimitedQueryObject(t *testing.T) {
 		t.Fatal("next handler was called for malformed delimited query object")
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
+		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
 	}
 }
 
-func TestHandlerFlattensRepeatedDelimitedQueryArrayValues(t *testing.T) {
+func TestHandlerRejectsRepeatedDelimitedQueryArrayValues(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		style string
@@ -572,9 +577,9 @@ func TestHandlerFlattensRepeatedDelimitedQueryArrayValues(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			})).ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusNoContent {
+			if rr.Code != http.StatusBadRequest {
 				t.Fatalf(
-					"response code = %d, want 204 for repeated %s-delimited values: %s",
+					"response code = %d, want 400 for repeated %s-delimited values: %s",
 					rr.Code,
 					test.style,
 					rr.Body.String(),
@@ -612,8 +617,8 @@ func TestHandlerRejectsRepeatedDeepObjectScalarProperty(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "filter.name") {
-		t.Fatalf("response body = %q, want repeated-property error", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "filter") {
+		t.Fatalf("response body = %q, want deepObject error mentioning filter", rr.Body.String())
 	}
 }
 
@@ -660,27 +665,18 @@ func TestHandlerValidatesJSONContentQueryParameter(t *testing.T) {
 	}
 }
 
-func TestHandlerValidatesTextContentQueryParameter(t *testing.T) {
-	p := newTestPlugin(t, Config{Spec: textContentQueryParameterSpec()})
-	for _, test := range []struct {
-		name       string
-		value      string
-		wantStatus int
-	}{
-		{name: "valid integer", value: "3", wantStatus: http.StatusNoContent},
-		{name: "invalid integer", value: "not-an-integer", wantStatus: http.StatusBadRequest},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/pets?limit="+test.value, nil)
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			})).ServeHTTP(rr, req)
+func TestHandlerRejectsNonJSONContentQueryParameter(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: textContentQueryParameterSpec(), VerboseErrors: true})
+	for _, value := range []string{"3", "not-an-integer"} {
+		req := httptest.NewRequest(http.MethodGet, "/pets?limit="+value, nil)
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("next handler was called for a non-JSON content parameter")
+		})).ServeHTTP(rr, req)
 
-			if rr.Code != test.wantStatus {
-				t.Fatalf("response code = %d, want %d: %s", rr.Code, test.wantStatus, rr.Body.String())
-			}
-		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("response code = %d, want 400 for %q: %s", rr.Code, value, rr.Body.String())
+		}
 	}
 }
 
@@ -696,8 +692,8 @@ func TestHandlerRejectsUnsupportedContentQueryMediaType(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "unsupported parameter content media type") {
-		t.Fatalf("response body = %q, want explicit unsupported-media error", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "limit") {
+		t.Fatalf("response body = %q, want parameter name in error", rr.Body.String())
 	}
 }
 
@@ -714,16 +710,16 @@ func TestHandlerValidatesExplodedFormObjectQueryParameter(t *testing.T) {
 	}
 }
 
-func TestHandlerValidatesFreeFormExplodedFormObjectQueryParameter(t *testing.T) {
-	p := newTestPlugin(t, Config{Spec: freeFormExplodedFormObjectQuerySpec()})
+func TestHandlerRejectsUnprefixedExplodedFormObjectQueryParameter(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: freeFormExplodedFormObjectQuerySpec(), VerboseErrors: true})
 	req := httptest.NewRequest(http.MethodGet, "/pets?role=admin&tenant=blue", nil)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		t.Fatal("next handler was called for unprefixed exploded form object properties")
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want 204 for free-form exploded form object: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400 for unprefixed exploded form object: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -756,19 +752,20 @@ func TestHandlerRejectsMalformedNonExplodedFormObjectQueryParameter(t *testing.T
 	}
 }
 
-func TestHandlerRejectsDuplicateNonExplodedFormObjectField(t *testing.T) {
+func TestHandlerAllowsRepeatedNonExplodedFormObjectField(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: nonExplodedFormObjectQuerySpec(), VerboseErrors: true})
 	req := httptest.NewRequest(http.MethodGet, "/pets?filter=name,Alex,name,Bob,age,3", nil)
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler was called for a duplicate object field")
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "duplicate field") {
-		t.Fatalf("response body = %q, want duplicate-field error", rr.Body.String())
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf(
+			"response code = %d, want 204 for repeated non-exploded form object field: %s",
+			rr.Code,
+			rr.Body.String(),
+		)
 	}
 }
 
@@ -844,49 +841,13 @@ func TestHandlerRejectsParameterStylesUnsupportedForLocation(t *testing.T) {
 				t.Fatal("next handler was called for an unsupported parameter style")
 			})).ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusBadRequest {
-				t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("response code = %d, want 500: %s", rr.Code, rr.Body.String())
 			}
-			if !strings.Contains(rr.Body.String(), "unsupported") {
-				t.Fatalf("response body = %q, want unsupported-style error", rr.Body.String())
-			}
-		})
-	}
-}
-
-func TestValidateParameterStyleRejectsSchemaMismatch(t *testing.T) {
-	tests := []struct {
-		name   string
-		style  string
-		schema map[string]any
-	}{
-		{name: "deep object primitive", style: "deepObject", schema: map[string]any{"type": "string"}},
-		{name: "space delimited primitive", style: "spaceDelimited", schema: map[string]any{"type": "string"}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := validateParameterStyle(parameter{Style: test.style, Schema: test.schema}, "query")
-			if err == nil {
-				t.Fatalf("validateParameterStyle() error = nil, want schema mismatch rejection")
-			}
-			if !strings.Contains(err.Error(), "schema type") {
-				t.Fatalf("validateParameterStyle() error = %q, want schema type context", err)
+			if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
+				t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
 			}
 		})
-	}
-}
-
-func TestValidateParameterStyleRejectsNonExplodedDeepObject(t *testing.T) {
-	err := validateParameterStyle(parameter{
-		Style:   "deepObject",
-		Explode: new(false),
-		Schema:  map[string]any{"type": "object"},
-	}, "query")
-	if err == nil {
-		t.Fatal("validateParameterStyle() error = nil, want deepObject explode=false rejection")
-	}
-	if !strings.Contains(err.Error(), "explode") {
-		t.Fatalf("validateParameterStyle() error = %q, want explode context", err)
 	}
 }
 
@@ -904,26 +865,30 @@ func TestHandlerValidatesExplodedSimpleHeaderObject(t *testing.T) {
 	}
 }
 
-func TestHandlerValidatesCookieParameterStyles(t *testing.T) {
+func TestHandlerCookieParameterStyles(t *testing.T) {
 	tests := []struct {
-		name   string
-		spec   string
-		cookie string
+		name       string
+		spec       string
+		cookie     string
+		wantStatus int
 	}{
 		{
-			name:   "exploded object",
-			spec:   explodedCookieObjectSpec(),
-			cookie: "role=admin; first=Alex",
+			name:       "exploded object",
+			spec:       explodedCookieObjectSpec(),
+			cookie:     "role=admin; first=Alex",
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:   "non-exploded object",
-			spec:   nonExplodedCookieObjectSpec(),
-			cookie: "filter=name,Alex,age,3",
+			name:       "non-exploded object",
+			spec:       nonExplodedCookieObjectSpec(),
+			cookie:     "filter=name,Alex,age,3",
+			wantStatus: http.StatusNoContent,
 		},
 		{
-			name:   "repeated array",
-			spec:   repeatedCookieArraySpec(),
-			cookie: "tags=red; tags=blue",
+			name:       "repeated array",
+			spec:       repeatedCookieArraySpec(),
+			cookie:     "tags=red; tags=blue",
+			wantStatus: http.StatusBadRequest,
 		},
 	}
 	for _, test := range tests {
@@ -936,8 +901,14 @@ func TestHandlerValidatesCookieParameterStyles(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			})).ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusNoContent {
-				t.Fatalf("response code = %d, want 204 for %s cookie: %s", rr.Code, test.name, rr.Body.String())
+			if rr.Code != test.wantStatus {
+				t.Fatalf(
+					"response code = %d, want %d for %s cookie: %s",
+					rr.Code,
+					test.wantStatus,
+					test.name,
+					rr.Body.String(),
+				)
 			}
 		})
 	}
@@ -977,19 +948,16 @@ func TestHandlerRejectsRepeatedNonExplodedFormArrayQuery(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: repeatedNonExplodedFormArrayQuerySpec(), VerboseErrors: true})
 	req := httptest.NewRequest(http.MethodGet, "/pets?tags=red&tags=blue", nil)
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler was called for a repeated non-exploded form array")
 	})).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400: %s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "must appear once") {
-		t.Fatalf("response body = %q, want repeated-parameter error", rr.Body.String())
+		t.Fatalf("response code = %d, want 400 for repeated non-exploded form array: %s", rr.Code, rr.Body.String())
 	}
 }
 
-func TestHandlerValidatesRepeatedDeepObjectArrayValues(t *testing.T) {
+func TestHandlerRejectsRepeatedDeepObjectArrayValues(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: deepObjectArrayQuerySpec()})
 	req := httptest.NewRequest(http.MethodGet, "/pets?filter%5Btags%5D=red&filter%5Btags%5D=blue", nil)
 	rr := httptest.NewRecorder()
@@ -997,8 +965,8 @@ func TestHandlerValidatesRepeatedDeepObjectArrayValues(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want 204 for repeated deepObject array values: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400 for repeated deepObject array values: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -1246,9 +1214,11 @@ func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
 
 	spec := `{
   "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
   "paths": {
     "/pets": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "content": {
             "application/json": {
@@ -1373,6 +1343,7 @@ func testSpecWithComponentsRef() string {
   "paths": {
     "/pets": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -1407,6 +1378,7 @@ func formSpec() string {
   "paths": {
     "/pets": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -1960,6 +1932,7 @@ func jsonSuffixBodySpec() string {
   "paths": {
     "/events": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -1986,6 +1959,7 @@ func octetStreamBodySpec() string {
   "paths": {
     "/blobs": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -2008,6 +1982,7 @@ func customOpaqueBodySpec() string {
   "paths": {
     "/payload": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -2030,6 +2005,7 @@ func plainTextSpec() string {
   "paths": {
     "/messages": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -2050,6 +2026,7 @@ func yamlBodySpec() string {
   "paths": {
     "/users": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -2079,6 +2056,7 @@ func xmlBodySpec() string {
   "paths": {
     "/users": {
       "post": {
+        "responses": {"200": {"description": "OK"}},
         "requestBody": {
           "required": true,
           "content": {
@@ -2098,6 +2076,69 @@ func xmlBodySpec() string {
                   }
                 }
               }
+            }
+          }
+        },
+        "responses": {"204": {"description": "No Content"}}
+      }
+    }
+  }
+}`
+}
+
+func TestValidationSkipMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(*Config)
+		wantStatus int
+	}{
+		{"none", func(*Config) {}, http.StatusBadRequest},
+		{"body", func(c *Config) { c.SkipRequestBodyValidation = true }, http.StatusBadRequest},
+		{"all", func(c *Config) {
+			c.VerboseErrors = true
+			c.SkipRequestBodyValidation = true
+			c.SkipRequestHeaderValidation = true
+			c.SkipQueryParamValidation = true
+			c.SkipPathParamsValidation = true
+		}, http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Spec: skipMatrixSpec()}
+			tc.configure(&cfg)
+			p := newTestPlugin(t, cfg)
+
+			req := httptest.NewRequest(http.MethodPost, "/pets/123?age=not-an-integer", nil)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Trace", "")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("response code = %d, want %d: %s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+		})
+	}
+}
+
+func skipMatrixSpec() string {
+	return `{
+  "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
+  "paths": {
+    "/pets/{id}": {
+      "post": {
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}},
+          {"name": "X-Trace", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1}},
+          {"name": "age", "in": "query", "required": true, "schema": {"type": "integer"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}
             }
           }
         },

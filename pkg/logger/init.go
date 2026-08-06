@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
-	logger      *zap.Logger
-	sugarLogger *zap.SugaredLogger
-	observers   = observerRegistry{entries: make(map[string]observer)}
+	logger       *zap.Logger
+	sugarLogger  *zap.SugaredLogger
+	runtimeLevel = zap.NewAtomicLevelAt(zap.InfoLevel)
+	observers    = observerRegistry{entries: make(map[string]observer)}
 )
 
 // Entry is the normalized application log record delivered to observers.
@@ -37,60 +39,88 @@ type observerRegistry struct {
 func init() {
 	cfg := zap.NewProductionConfig()
 	cfg.OutputPaths = []string{"stdout"} // Replace with your desired log file path
-	cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	cfg.Level = runtimeLevel
 	logger, _ = cfg.Build()
 
 	sugarLogger = logger.Sugar()
 }
 
+func parseAPISIXLogLevel(value string) (zapcore.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "info", "notice":
+		return zapcore.InfoLevel, nil
+	case "debug":
+		return zapcore.DebugLevel, nil
+	case "warn":
+		return zapcore.WarnLevel, nil
+	case "error", "crit", "alert", "emerg":
+		return zapcore.ErrorLevel, nil
+	default:
+		return zapcore.InfoLevel, fmt.Errorf("unsupported error_log_level %q", value)
+	}
+}
+
+func ConfigureLevel(value string) error {
+	level, err := parseAPISIXLogLevel(value)
+	if err != nil {
+		return err
+	}
+	runtimeLevel.SetLevel(level)
+	return nil
+}
+
+func DebugEnabled() bool {
+	return runtimeLevel.Enabled(zap.DebugLevel)
+}
+
 // Use the logger variable to log messages throughout your code
 func Info(msg string, fields ...zap.Field) {
 	logger.Info(msg, fields...)
-	notifyObservers("INFO", msg)
+	notifyObservers(zapcore.InfoLevel, msg)
 }
 
 func Infof(template string, args ...any) {
-	sugarLogger.Infof(template, args...)
-	notifyObservers("INFO", fmt.Sprintf(template, args...))
+	sugarLogger.Infof(template, args)
+	notifyObservers(zapcore.InfoLevel, fmt.Sprintf(template, args...))
 }
 
 func Warn(msg string, fields ...zap.Field) {
 	logger.Warn(msg, fields...)
-	notifyObservers("WARN", msg)
+	notifyObservers(zapcore.WarnLevel, msg)
 }
 
 func Warnf(template string, args ...any) {
-	sugarLogger.Warnf(template, args...)
-	notifyObservers("WARN", fmt.Sprintf(template, args...))
+	sugarLogger.Warnf(template, args)
+	notifyObservers(zapcore.WarnLevel, fmt.Sprintf(template, args...))
 }
 
 func Error(msg string, fields ...zap.Field) {
 	logger.Error(msg, fields...)
-	notifyObservers("ERROR", msg)
+	notifyObservers(zapcore.ErrorLevel, msg)
 }
 
 func Errorf(template string, args ...any) {
 	sugarLogger.Errorf(template, args...)
-	notifyObservers("ERROR", fmt.Sprintf(template, args...))
+	notifyObservers(zapcore.ErrorLevel, fmt.Sprintf(template, args...))
 }
 
 func Debug(msg string, fields ...zap.Field) {
 	logger.Debug(msg, fields...)
-	notifyObservers("DEBUG", msg)
+	notifyObservers(zapcore.DebugLevel, msg)
 }
 
 func Debugf(template string, args ...any) {
 	sugarLogger.Debugf(template, args...)
-	notifyObservers("DEBUG", fmt.Sprintf(template, args...))
+	notifyObservers(zapcore.DebugLevel, fmt.Sprintf(template, args...))
 }
 
 func Fatal(msg string, fields ...zap.Field) {
-	notifyObservers("FATAL", msg)
+	notifyObservers(zapcore.FatalLevel, msg)
 	logger.Fatal(msg, fields...)
 }
 
 func Fatalf(template string, args ...any) {
-	notifyObservers("FATAL", fmt.Sprintf(template, args...))
+	notifyObservers(zapcore.FatalLevel, fmt.Sprintf(template, args...))
 	sugarLogger.Fatalf(template, args...)
 }
 
@@ -120,16 +150,20 @@ func ReplaceObserver(name string, notify func(Entry)) func() {
 	}
 }
 
-func notifyObservers(level string, message string) {
+func notifyObservers(level zapcore.Level, message string) {
+	if !runtimeLevel.Enabled(level) {
+		return
+	}
+	levelName := level.CapitalString()
 	now := time.Now()
 	entry := Entry{
 		Time:    now,
-		Level:   level,
+		Level:   levelName,
 		Message: message,
 		Line: fmt.Sprintf(
 			"%s [%s] %s",
 			now.UTC().Format(time.RFC3339Nano),
-			strings.ToLower(level),
+			strings.ToLower(levelName),
 			message,
 		),
 	}

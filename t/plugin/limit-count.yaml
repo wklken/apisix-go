@@ -6645,6 +6645,7 @@ cases:
       source:
         file: t/plugin/limit-count-redis4.t
         tests: [5]
+      runtime: {nginx_config: {error_log_level: debug}}
       environment:
         LIMIT_COUNT_REDIS_HOST: '{{FIXTURE.redis.HOST}}'
       config:

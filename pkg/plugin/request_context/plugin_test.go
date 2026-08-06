@@ -194,3 +194,44 @@ func histogramCount(t *testing.T, observer prometheus.Observer) uint64 {
 	}
 	return metric.GetHistogram().GetSampleCount()
 }
+
+func TestHandlerWorksWhenPrometheusCollectorsAreDisabled(t *testing.T) {
+	oldRequests := metrics.Requests
+	oldStatus := metrics.HttpStatus
+	oldLatency := metrics.HttpLatency
+	oldBandwidth := metrics.Bandwidth
+	oldLLMLatency := metrics.LLMLatency
+	oldPrompt := metrics.LLMPromptTokens
+	oldCompletion := metrics.LLMCompletionTokens
+	metrics.Requests = nil
+	metrics.HttpStatus = nil
+	metrics.HttpLatency = nil
+	metrics.Bandwidth = nil
+	metrics.LLMLatency = nil
+	metrics.LLMPromptTokens = nil
+	metrics.LLMCompletionTokens = nil
+	t.Cleanup(func() {
+		metrics.Requests = oldRequests
+		metrics.HttpStatus = oldStatus
+		metrics.HttpLatency = oldLatency
+		metrics.Bandwidth = oldBandwidth
+		metrics.LLMLatency = oldLLMLatency
+		metrics.LLMPromptTokens = oldPrompt
+		metrics.LLMCompletionTokens = oldCompletion
+	})
+
+	called := false
+	handler := (&Plugin{}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if apisixctx.GetRequestVars(r) == nil {
+			t.Fatal("request variables were not initialized")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
+
+	if !called || response.Code != http.StatusNoContent {
+		t.Fatalf("downstream called = %v, status = %d", called, response.Code)
+	}
+}

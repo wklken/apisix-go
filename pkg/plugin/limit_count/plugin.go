@@ -81,7 +81,9 @@ func newRedisDiagnosticStore(store limiter.Store, client redisPoolStatsProvider)
 }
 
 func (s *redisDiagnosticStore) logConnectionReuse() {
-	logger.Debugf("redis connection reused times: %d", s.client.PoolStats().Hits-s.baselineHits)
+	if logger.DebugEnabled() {
+		logger.Debugf("redis connection reused times: %d", s.client.PoolStats().Hits-s.baselineHits)
+	}
 }
 
 func (s *redisDiagnosticStore) Get(

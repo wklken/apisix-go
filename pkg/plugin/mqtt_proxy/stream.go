@@ -1,6 +1,7 @@
 package mqtt_proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -138,7 +139,9 @@ func (p *Plugin) ServeStream(
 	}
 
 	info := StreamInfo{ConnectInfo: connectInfo, ClientID: clientID, Peer: peer}
-	return info, copyMQTTStream(ctx, client, upstream)
+	// Any bytes already buffered after CONNECT are forwarded exactly once
+	// through the buffered reader.
+	return info, copyMQTTStream(ctx, bufio.NewReader(client), client, upstream)
 }
 
 func readConnectFromStream(
@@ -147,48 +150,21 @@ func readConnectFromStream(
 	protocolName string,
 	protocolLevel int,
 ) ([]byte, ConnectInfo, error) {
-	buffer := make([]byte, 0, 1024)
-	chunk := make([]byte, 1024)
-	for {
-		if len(buffer) >= DefaultMaxConnectPacketSize {
-			return nil, ConnectInfo{}, fmt.Errorf(
-				"%w: CONNECT packet exceeds %d bytes",
-				ErrMalformedConnect,
-				DefaultMaxConnectPacketSize,
-			)
-		}
-		deadline := time.Now().Add(defaultMQTTStreamPrereadTimeout)
-		if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-			deadline = contextDeadline
-		}
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			return nil, ConnectInfo{}, fmt.Errorf("mqtt CONNECT read deadline: %w", err)
-		}
-		read, readErr := conn.Read(chunk)
-		if read > 0 {
-			if len(buffer)+read > DefaultMaxConnectPacketSize {
-				return nil, ConnectInfo{}, fmt.Errorf(
-					"%w: CONNECT packet exceeds %d bytes",
-					ErrMalformedConnect,
-					DefaultMaxConnectPacketSize,
-				)
-			}
-			buffer = append(buffer, chunk[:read]...)
-			info, parseErr := ParseConnectPacket(buffer, protocolName, protocolLevel)
-			if parseErr == nil {
-				return buffer, info, nil
-			}
-			if !errors.Is(parseErr, ErrNeedMoreData) {
-				return nil, ConnectInfo{}, parseErr
-			}
-		}
-		if readErr != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ConnectInfo{}, ctxErr
-			}
-			return nil, ConnectInfo{}, readErr
-		}
+	deadline := time.Now().Add(defaultMQTTStreamPrereadTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
 	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, ConnectInfo{}, fmt.Errorf("mqtt CONNECT read deadline: %w", err)
+	}
+	info, raw, err := decodeConnect(conn, protocolName, protocolLevel)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ConnectInfo{}, ctxErr
+		}
+		return nil, ConnectInfo{}, err
+	}
+	return raw, info, nil
 }
 
 func writeStreamBytes(ctx context.Context, conn net.Conn, payload []byte) error {
@@ -212,10 +188,10 @@ func writeStreamBytes(ctx context.Context, conn net.Conn, payload []byte) error 
 	return nil
 }
 
-func copyMQTTStream(ctx context.Context, client net.Conn, upstream net.Conn) error {
+func copyMQTTStream(ctx context.Context, reader *bufio.Reader, client net.Conn, upstream net.Conn) error {
 	results := make(chan error, 2)
-	go copyMQTTDirection(upstream, client, results)
 	go copyMQTTDirection(client, upstream, results)
+	go copyMQTTDirection(upstream, reader, results)
 
 	var first error
 	select {
@@ -232,7 +208,7 @@ func copyMQTTStream(ctx context.Context, client net.Conn, upstream net.Conn) err
 	return normalizeMQTTCopyError(first)
 }
 
-func copyMQTTDirection(dst net.Conn, src net.Conn, results chan<- error) {
+func copyMQTTDirection(dst net.Conn, src io.Reader, results chan<- error) {
 	_, err := io.Copy(dst, src)
 	results <- err
 }

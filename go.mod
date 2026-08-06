@@ -21,6 +21,7 @@ require (
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/casbin/govaluate v1.3.0
 	github.com/crewjam/saml v0.5.1
+	github.com/eclipse/paho.golang v0.23.0
 	github.com/elastic/go-elasticsearch/v8 v8.19.6
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1

@@ -1,11 +1,10 @@
 package base
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
-	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // JWTToken is the parsed representation of an unverified JWT.
@@ -18,38 +17,21 @@ type JWTToken struct {
 
 // ParseJWT splits and decodes a three-part JWT without verifying it.
 func ParseJWT(raw string) (JWTToken, error) {
+	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+	token, _, err := parser.ParseUnverified(raw, jwt.MapClaims{})
+	if err != nil {
+		return JWTToken{}, err
+	}
+	payload, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return JWTToken{}, fmt.Errorf("unexpected JWT claims type")
+	}
 	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return JWTToken{}, fmt.Errorf("token must have three parts")
-	}
-
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return JWTToken{}, err
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return JWTToken{}, err
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return JWTToken{}, err
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return JWTToken{}, err
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		return JWTToken{}, err
-	}
-
 	return JWTToken{
-		Header:    header,
+		Header:    token.Header,
 		Payload:   payload,
 		Signing:   parts[0] + "." + parts[1],
-		Signature: signature,
+		Signature: token.Signature,
 	}, nil
 }
 

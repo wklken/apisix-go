@@ -1,24 +1,15 @@
 package jwt_auth
 
 import (
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/hmac"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/sha512"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"hash"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -225,19 +216,110 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		authConfig.Algorithm = "HS256"
 	}
 
-	tokenAlgorithm, _ := token.Header["alg"].(string)
-	if tokenAlgorithm != authConfig.Algorithm {
+	now := p.now()
+	claims, err := verifyToken(
+		rawToken,
+		authConfig,
+		now,
+		time.Duration(authConfig.LifetimeGracePeriod)*time.Second,
+		p.config.ClaimsToVerify,
+	)
+	if err != nil {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
 
-	if !verifySignature(token, authConfig) {
-		return resource.Consumer{}, token, "failed to verify jwt"
+	return consumer, jwtToken{
+		Header:    token.Header,
+		Payload:   claims,
+		Signing:   token.Signing,
+		Signature: token.Signature,
+	}, ""
+}
+
+// verifyToken parses and verifies a raw JWT against a consumer configuration.
+// The token algorithm must match the consumer algorithm, signatures are
+// checked with the consumer secret or public key, and exp/nbf claims follow
+// APISIX semantics with the configured grace period.
+func verifyToken(
+	raw string,
+	consumer consumerConfig,
+	now time.Time,
+	leeway time.Duration,
+	requiredClaims []string,
+) (jwt.MapClaims, error) {
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{consumer.Algorithm}),
+		jwt.WithTimeFunc(func() time.Time { return now }),
+		jwt.WithoutClaimsValidation(),
+	)
+	claims := jwt.MapClaims{}
+	token, err := parser.ParseWithClaims(raw, claims, func(*jwt.Token) (any, error) {
+		return jwtVerificationKey(consumer)
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("failed to verify jwt: %w", err)
 	}
-	if err := p.verifyClaims(token.Payload, authConfig.LifetimeGracePeriod); err != nil {
-		return resource.Consumer{}, token, "failed to verify jwt"
+	if err := verifyAPISIXTimeClaims(claims, now, leeway, requiredClaims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func jwtVerificationKey(consumer consumerConfig) (any, error) {
+	if strings.HasPrefix(consumer.Algorithm, "HS") {
+		secret, ok := consumer.secret()
+		if !ok {
+			return nil, fmt.Errorf("invalid secret")
+		}
+		return secret, nil
 	}
 
-	return consumer, token, ""
+	publicKey, ok := consumer.publicKey()
+	if !ok {
+		return nil, fmt.Errorf("invalid public key")
+	}
+	return publicKey, nil
+}
+
+// verifyAPISIXTimeClaims mirrors the APISIX jwt-auth claim semantics: exp is
+// invalid at or before now-leeway and nbf is invalid at or after now+leeway.
+// Claims are optional by default; when requiredClaims is configured, a missing
+// claim is rejected.
+func verifyAPISIXTimeClaims(claims jwt.MapClaims, now time.Time, leeway time.Duration, requiredClaims []string) error {
+	check := requiredClaims
+	if len(check) == 0 {
+		check = []string{"exp", "nbf"}
+	}
+
+	nowUnix := now.Unix()
+	leewaySeconds := int64(leeway / time.Second)
+	for _, claim := range check {
+		value, exists := claims[claim]
+		if !exists {
+			if len(requiredClaims) == 0 {
+				continue
+			}
+			return fmt.Errorf("claim %s is missing", claim)
+		}
+
+		ts, ok := base.NumberClaim(value)
+		if !ok {
+			return fmt.Errorf("claim %s is not a number", claim)
+		}
+
+		switch claim {
+		case "exp":
+			if ts <= nowUnix-leewaySeconds {
+				return fmt.Errorf("claim exp expired")
+			}
+		case "nbf":
+			if ts >= nowUnix+leewaySeconds {
+				return fmt.Errorf("claim nbf not valid yet")
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
@@ -268,167 +350,6 @@ func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
 		removeCookie(r, p.config.Cookie)
 	}
 	return cookie.Value, true
-}
-
-func verifySignature(token jwtToken, authConfig consumerConfig) bool {
-	if strings.HasPrefix(authConfig.Algorithm, "HS") {
-		secret, ok := authConfig.secret()
-		return ok && verifyHMAC(token, authConfig.Algorithm, secret)
-	}
-
-	publicKey, ok := authConfig.publicKey()
-	if !ok {
-		return false
-	}
-
-	switch authConfig.Algorithm {
-	case "RS256", "RS384", "RS512":
-		return verifyRSA(token, authConfig.Algorithm, publicKey, false)
-	case "PS256", "PS384", "PS512":
-		return verifyRSA(token, authConfig.Algorithm, publicKey, true)
-	case "ES256", "ES384", "ES512":
-		return verifyECDSA(token, authConfig.Algorithm, publicKey)
-	case "EdDSA":
-		return verifyEdDSA(token, publicKey)
-	default:
-		return false
-	}
-}
-
-func verifyHMAC(token jwtToken, algorithm string, secret []byte) bool {
-	hashFunc, ok := hmacHash(algorithm)
-	if !ok {
-		return false
-	}
-
-	mac := hmac.New(hashFunc, secret)
-	mac.Write([]byte(token.Signing))
-	expected := mac.Sum(nil)
-
-	return subtle.ConstantTimeCompare(token.Signature, expected) == 1
-}
-
-func hmacHash(algorithm string) (func() hash.Hash, bool) {
-	switch algorithm {
-	case "HS256":
-		return sha256.New, true
-	case "HS384":
-		return sha512.New384, true
-	case "HS512":
-		return sha512.New, true
-	default:
-		return nil, false
-	}
-}
-
-func verifyRSA(token jwtToken, algorithm string, publicKey any, pss bool) bool {
-	rsaKey, ok := publicKey.(*rsa.PublicKey)
-	if !ok {
-		return false
-	}
-	hashAlg, digest, ok := signingDigest(algorithm, token.Signing)
-	if !ok {
-		return false
-	}
-	if pss {
-		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.Signature, nil) == nil
-	}
-	return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.Signature) == nil
-}
-
-func verifyECDSA(token jwtToken, algorithm string, publicKey any) bool {
-	ecdsaKey, ok := publicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return false
-	}
-	_, digest, ok := signingDigest(algorithm, token.Signing)
-	if !ok {
-		return false
-	}
-
-	size, ok := ecdsaSignatureSize(algorithm)
-	if !ok || len(token.Signature) != size*2 {
-		return false
-	}
-
-	r := new(big.Int).SetBytes(token.Signature[:size])
-	s := new(big.Int).SetBytes(token.Signature[size:])
-	return ecdsa.Verify(ecdsaKey, digest, r, s)
-}
-
-func verifyEdDSA(token jwtToken, publicKey any) bool {
-	edKey, ok := publicKey.(ed25519.PublicKey)
-	if !ok {
-		return false
-	}
-	return ed25519.Verify(edKey, []byte(token.Signing), token.Signature)
-}
-
-func signingDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
-	var hashAlg crypto.Hash
-	switch algorithm {
-	case "RS256", "PS256", "ES256":
-		hashAlg = crypto.SHA256
-	case "RS384", "PS384", "ES384":
-		hashAlg = crypto.SHA384
-	case "RS512", "PS512", "ES512":
-		hashAlg = crypto.SHA512
-	default:
-		return 0, nil, false
-	}
-
-	hashFunc := hashAlg.New()
-	hashFunc.Write([]byte(signing))
-	return hashAlg, hashFunc.Sum(nil), true
-}
-
-func ecdsaSignatureSize(algorithm string) (int, bool) {
-	switch algorithm {
-	case "ES256":
-		return 32, true
-	case "ES384":
-		return 48, true
-	case "ES512":
-		return 66, true
-	default:
-		return 0, false
-	}
-}
-
-func (p *Plugin) verifyClaims(payload map[string]any, gracePeriod int64) error {
-	claims := p.config.ClaimsToVerify
-	if len(claims) == 0 {
-		claims = []string{"exp", "nbf"}
-	}
-
-	for _, claim := range claims {
-		value, exists := payload[claim]
-		if !exists {
-			if len(p.config.ClaimsToVerify) == 0 {
-				continue
-			}
-			return fmt.Errorf("claim %s is missing", claim)
-		}
-
-		ts, ok := base.NumberClaim(value)
-		if !ok {
-			return fmt.Errorf("claim %s is not a number", claim)
-		}
-
-		now := p.now().Unix()
-		switch claim {
-		case "exp":
-			if ts <= now-gracePeriod {
-				return fmt.Errorf("claim exp expired")
-			}
-		case "nbf":
-			if ts >= now+gracePeriod {
-				return fmt.Errorf("claim nbf not valid yet")
-			}
-		}
-	}
-
-	return nil
 }
 
 func (c consumerConfig) secret() ([]byte, bool) {

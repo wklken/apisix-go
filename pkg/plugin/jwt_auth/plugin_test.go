@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -123,6 +124,198 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestVerifyTokenSupportsConfiguredAlgorithms(t *testing.T) {
+	for _, algorithm := range []string{
+		"HS256", "HS384", "HS512",
+		"RS256", "RS384", "RS512",
+		"PS256", "PS384", "PS512",
+		"ES256", "ES384", "ES512", "EdDSA",
+	} {
+		t.Run(algorithm, func(t *testing.T) {
+			raw, consumer := signedTokenFixture(t, algorithm, map[string]any{
+				"key": "consumer-key", "exp": time.Now().Add(time.Hour).Unix(),
+			})
+			claims, err := verifyToken(raw, consumer, time.Now(), 0, nil)
+			if err != nil || claims["key"] != "consumer-key" {
+				t.Fatalf("verifyToken() claims/error = %#v/%v", claims, err)
+			}
+		})
+	}
+}
+
+func TestVerifyTokenRejectsAlgorithmConfusion(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "HS256", map[string]any{"key": "consumer-key"})
+	confused := consumer
+	confused.Algorithm = "HS512"
+	if _, err := verifyToken(raw, confused, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want algorithm mismatch rejection")
+	}
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	rsaConsumer := consumerConfig{
+		Key:       "consumer-key",
+		Algorithm: "RS256",
+		PublicKey: publicKeyPEM(t, &rsaKey.PublicKey),
+	}
+	if _, err := verifyToken(raw, rsaConsumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want HS-token-rejected-by-RS-consumer")
+	}
+}
+
+func TestVerifyTokenRejectsMalformedECDSASignature(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "ES256", map[string]any{"key": "consumer-key"})
+	parts := strings.Split(raw, ".")
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	malformed := base64.RawURLEncoding.EncodeToString(signature[:len(signature)-1])
+	raw = parts[0] + "." + parts[1] + "." + malformed
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want malformed ECDSA signature rejection")
+	}
+}
+
+func TestVerifyTokenExpiredWithAndWithoutLeeway(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "HS256", map[string]any{
+		"key": "consumer-key", "exp": time.Now().Add(-100 * time.Second).Unix(),
+	})
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want expired token rejection")
+	}
+	if _, err := verifyToken(raw, consumer, time.Now(), 200*time.Second, nil); err != nil {
+		t.Fatalf("verifyToken() with leeway error = %v, want acceptance", err)
+	}
+}
+
+func TestVerifyTokenFutureNbfWithAndWithoutLeeway(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "HS256", map[string]any{
+		"key": "consumer-key", "nbf": time.Now().Add(100 * time.Second).Unix(),
+	})
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want future nbf rejection")
+	}
+	if _, err := verifyToken(raw, consumer, time.Now(), 200*time.Second, nil); err != nil {
+		t.Fatalf("verifyToken() with leeway error = %v, want acceptance", err)
+	}
+}
+
+func TestVerifyTokenRejectsMissingAndInvalidClaims(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "HS256", map[string]any{"key": "consumer-key"})
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, []string{"exp"}); err == nil {
+		t.Fatal("verifyToken() error = nil, want missing exp rejection")
+	}
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, nil); err != nil {
+		t.Fatalf("verifyToken() default error = %v, want optional exp/nbf", err)
+	}
+
+	invalid, invalidConsumer := signedTokenFixture(t, "HS256", map[string]any{
+		"key": "consumer-key", "exp": "not-a-number",
+	})
+	if _, err := verifyToken(invalid, invalidConsumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want non-numeric exp rejection")
+	}
+}
+
+func TestVerifyTokenSupportsBase64Secrets(t *testing.T) {
+	secret := "raw-secret-bytes"
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	base64Enabled := true
+	raw := signHS256(t, secret, map[string]any{"key": "consumer-key"})
+	consumer := consumerConfig{
+		Key:          "consumer-key",
+		Secret:       encoded,
+		Algorithm:    "HS256",
+		Base64Secret: &base64Enabled,
+	}
+	if _, err := verifyToken(raw, consumer, time.Now(), 0, nil); err != nil {
+		t.Fatalf("verifyToken() base64-secret error = %v", err)
+	}
+
+	rawSecret := signHS256(t, encoded, map[string]any{"key": "consumer-key"})
+	if _, err := verifyToken(rawSecret, consumer, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want base64-decoded secret mismatch")
+	}
+}
+
+func TestVerifyTokenRejectsInvalidPEM(t *testing.T) {
+	raw, consumer := signedTokenFixture(t, "RS256", map[string]any{"key": "consumer-key"})
+	invalid := consumer
+	invalid.PublicKey = "not-a-pem"
+	if _, err := verifyToken(raw, invalid, time.Now(), 0, nil); err == nil {
+		t.Fatal("verifyToken() error = nil, want invalid PEM rejection")
+	}
+}
+
+func signedTokenFixture(t *testing.T, algorithm string, payload map[string]any) (string, consumerConfig) {
+	t.Helper()
+
+	switch {
+	case strings.HasPrefix(algorithm, "HS"):
+		secret := "fixture-secret-" + algorithm
+		return signWithJWT(t, algorithm, []byte(secret), payload), consumerConfig{
+			Key:       "consumer-key",
+			Secret:    secret,
+			Algorithm: algorithm,
+		}
+	case strings.HasPrefix(algorithm, "RS"), strings.HasPrefix(algorithm, "PS"):
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate rsa key: %v", err)
+		}
+		return signWithJWT(t, algorithm, key, payload), consumerConfig{
+			Key:       "consumer-key",
+			Algorithm: algorithm,
+			PublicKey: publicKeyPEM(t, &key.PublicKey),
+		}
+	case strings.HasPrefix(algorithm, "ES"):
+		var curve elliptic.Curve
+		switch algorithm {
+		case "ES256":
+			curve = elliptic.P256()
+		case "ES384":
+			curve = elliptic.P384()
+		case "ES512":
+			curve = elliptic.P521()
+		}
+		key, err := ecdsa.GenerateKey(curve, rand.Reader)
+		if err != nil {
+			t.Fatalf("generate ecdsa key: %v", err)
+		}
+		return signWithJWT(t, algorithm, key, payload), consumerConfig{
+			Key:       "consumer-key",
+			Algorithm: algorithm,
+			PublicKey: publicKeyPEM(t, &key.PublicKey),
+		}
+	case algorithm == "EdDSA":
+		publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate ed25519 key: %v", err)
+		}
+		return signWithJWT(t, algorithm, privateKey, payload), consumerConfig{
+			Key:       "consumer-key",
+			Algorithm: algorithm,
+			PublicKey: publicKeyPEM(t, publicKey),
+		}
+	}
+	t.Fatalf("unknown algorithm %s", algorithm)
+	return "", consumerConfig{}
+}
+
+func signWithJWT(t *testing.T, algorithm string, key any, payload map[string]any) string {
+	t.Helper()
+
+	token := jwt.NewWithClaims(jwt.GetSigningMethod(algorithm), jwt.MapClaims(payload))
+	raw, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("sign %s token: %v", algorithm, err)
+	}
+	return raw
 }
 
 func TestHandlerAcceptsBearerTokenAndAttachesConsumer(t *testing.T) {

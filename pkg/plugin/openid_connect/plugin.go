@@ -17,8 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +25,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 
 	_ "crypto/sha512"
 
@@ -374,14 +375,15 @@ type SessionRedisConfig struct {
 }
 
 type discoveryData struct {
-	Issuer                string `json:"issuer"`
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	UserinfoEndpoint      string `json:"userinfo_endpoint"`
-	EndSessionEndpoint    string `json:"end_session_endpoint"`
-	RevocationEndpoint    string `json:"revocation_endpoint"`
-	IntrospectionEndpoint string `json:"introspection_endpoint"`
-	JWKSURI               string `json:"jwks_uri"`
+	Issuer                           string   `json:"issuer"`
+	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
+	TokenEndpoint                    string   `json:"token_endpoint"`
+	UserinfoEndpoint                 string   `json:"userinfo_endpoint"`
+	EndSessionEndpoint               string   `json:"end_session_endpoint"`
+	RevocationEndpoint               string   `json:"revocation_endpoint"`
+	IntrospectionEndpoint            string   `json:"introspection_endpoint"`
+	JWKSURI                          string   `json:"jwks_uri"`
+	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 }
 
 type sessionData struct {
@@ -434,8 +436,6 @@ type tokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int64  `json:"expires_in"`
 }
-
-type jwtToken = base.JWTToken
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -810,8 +810,8 @@ func (p *Plugin) beginAuthorization(
 	previous *sessionData,
 	prompt string,
 ) {
-	discovery, err := p.discoveryDoc()
-	if err != nil || discovery.AuthorizationEndpoint == "" {
+	client, err := p.providerClient(r)
+	if err != nil || client.oauth2Config.Endpoint.AuthURL == "" {
 		http.Error(w, "openid discovery document has no authorization_endpoint", http.StatusBadGateway)
 		return
 	}
@@ -834,19 +834,14 @@ func (p *Plugin) beginAuthorization(
 		session.RedisID = previous.RedisID
 	}
 
-	parameters := url.Values{}
-	parameters.Set("client_id", p.config.ClientID)
-	parameters.Set("scope", p.config.Scope)
-	parameters.Set("response_type", "code")
-	parameters.Set("redirect_uri", redirectURI)
-	parameters.Set("state", state)
+	options := make([]oauth2.AuthCodeOption, 0, len(p.config.AuthorizationParams)+2)
 	for key, value := range p.config.AuthorizationParams {
 		if value != nil {
-			parameters.Set(key, fmt.Sprint(value))
+			options = append(options, oauth2.SetAuthURLParam(key, fmt.Sprint(value)))
 		}
 	}
 	if prompt != "" {
-		parameters.Set("prompt", prompt)
+		options = append(options, oauth2.SetAuthURLParam("prompt", prompt))
 	}
 	if p.config.UsePKCE {
 		verifier, err := randomURLValue(32)
@@ -855,24 +850,16 @@ func (p *Plugin) beginAuthorization(
 			return
 		}
 		session.CodeVerifier = verifier
-		challenge := sha256.Sum256([]byte(verifier))
-		parameters.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
-		parameters.Set("code_challenge_method", "S256")
+		options = append(options, oauth2.S256ChallengeOption(verifier))
 	}
 	if err := p.writeSession(w, session); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	authorizationURL, err := url.Parse(discovery.AuthorizationEndpoint)
-	if err != nil {
-		http.Error(w, "invalid authorization endpoint", http.StatusBadGateway)
-		return
-	}
-	query := authorizationURL.Query()
-	maps.Copy(query, parameters)
-	authorizationURL.RawQuery = query.Encode()
-	http.Redirect(w, r, authorizationURL.String(), http.StatusFound)
+	client.oauth2Config.RedirectURL = redirectURI
+	authorizationURL := client.oauth2Config.AuthCodeURL(state, options...)
+	http.Redirect(w, r, authorizationURL, http.StatusFound)
 }
 
 func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redirectURI string) {
@@ -929,6 +916,26 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 }
 
 func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier string) (tokenResponse, error) {
+	if standardClientAuth(p.config.TokenEndpointAuthMethod) {
+		client, err := p.providerClient(r)
+		if err != nil {
+			return tokenResponse{}, err
+		}
+		client.oauth2Config.RedirectURL = redirectURI
+		options := []oauth2.AuthCodeOption{}
+		if p.config.UsePKCE {
+			if verifier == "" {
+				return tokenResponse{}, errors.New("missing PKCE verifier")
+			}
+			options = append(options, oauth2.VerifierOption(verifier))
+		}
+		token, err := client.oauth2Config.Exchange(r.Context(), code, options...)
+		if err != nil {
+			return tokenResponse{}, err
+		}
+		return tokenResponseFromOAuth2(token), nil
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
@@ -943,11 +950,33 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 }
 
 func (p *Plugin) refreshAccessToken(r *http.Request, refreshToken string) (tokenResponse, error) {
+	if standardClientAuth(p.config.TokenEndpointAuthMethod) {
+		client, err := p.providerClient(r)
+		if err != nil {
+			return tokenResponse{}, err
+		}
+		token, err := client.oauth2Config.TokenSource(
+			r.Context(),
+			&oauth2.Token{RefreshToken: refreshToken},
+		).Token()
+		if err != nil {
+			return tokenResponse{}, err
+		}
+		return tokenResponseFromOAuth2(token), nil
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("scope", p.config.Scope)
 	return p.requestTokens(r, form)
+}
+
+// standardClientAuth reports whether x/oauth2 can express the configured
+// token-endpoint authentication; JWT assertion methods stay on the custom
+// request builder.
+func standardClientAuth(method string) bool {
+	return method == "" || method == "client_secret_basic" || method == "client_secret_post"
 }
 
 func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse, error) {
@@ -1663,7 +1692,6 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 	if err != nil {
 		return nil, fmt.Errorf("JWT token invalid")
 	}
-
 	algorithm, _ := token.Header["alg"].(string)
 	if algorithm == "" {
 		return nil, fmt.Errorf("JWT token missing alg")
@@ -1672,27 +1700,47 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 		return nil, fmt.Errorf("JWT token alg mismatch")
 	}
 
-	var publicKey any
+	var verifier *oidc.IDTokenVerifier
 	if p.config.PublicKey != "" {
-		publicKey, err = parsePublicKey([]byte(p.config.PublicKey))
+		verifier, err = p.staticKeyVerifier(algorithm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse public key")
 		}
 	} else {
-		publicKey, err = p.jwksPublicKey(r, token)
+		client, err := p.providerClient(r)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to verify jwt")
 		}
+		verifier = client.verifier
 	}
-	if !verifyJWTSignature(token, algorithm, publicKey) {
+	idToken, err := verifier.Verify(r.Context(), rawToken)
+	if err != nil {
 		return nil, fmt.Errorf("failed to verify jwt")
 	}
-	if err := verifyJWTTimeClaims(token.Payload, time.Now()); err != nil {
+	claims := map[string]any{}
+	if err := idToken.Claims(&claims); err != nil {
+		return nil, fmt.Errorf("failed to parse jwt claims")
+	}
+	p.validateIssuer(claims)
+
+	return claims, nil
+}
+
+// staticKeyVerifier builds a go-oidc verifier over the configured static
+// public key. Issuer validation is deferred to validateIssuer because the
+// plugin accepts an explicit issuer list.
+func (p *Plugin) staticKeyVerifier(algorithm string) (*oidc.IDTokenVerifier, error) {
+	publicKey, err := parsePublicKey([]byte(p.config.PublicKey))
+	if err != nil {
 		return nil, err
 	}
-	p.validateIssuer(token.Payload)
-
-	return token.Payload, nil
+	return oidc.NewVerifier("", &oidc.StaticKeySet{
+		PublicKeys: []crypto.PublicKey{publicKey},
+	}, &oidc.Config{
+		SkipClientIDCheck:    true,
+		SkipIssuerCheck:      true,
+		SupportedSigningAlgs: []string{algorithm},
+	}), nil
 }
 
 func parsePublicKey(publicKeyBytes []byte) (any, error) {
@@ -1714,55 +1762,6 @@ func parsePublicKey(publicKeyBytes []byte) (any, error) {
 		return publicKey, nil
 	}
 	return nil, fmt.Errorf("unsupported public key")
-}
-
-func verifyJWTSignature(token jwtToken, algorithm string, publicKey any) bool {
-	rsaKey, ok := publicKey.(*rsa.PublicKey)
-	if !ok {
-		return false
-	}
-
-	hashAlg, digest, ok := jwtSigningDigest(algorithm, token.Signing)
-	if !ok {
-		return false
-	}
-
-	switch algorithm {
-	case "RS256", "RS384", "RS512":
-		return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.Signature) == nil
-	case "PS256", "PS384", "PS512":
-		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.Signature, nil) == nil
-	default:
-		return false
-	}
-}
-
-func jwtSigningDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
-	var hashAlg crypto.Hash
-	switch algorithm {
-	case "RS256", "PS256":
-		hashAlg = crypto.SHA256
-	case "RS384", "PS384":
-		hashAlg = crypto.SHA384
-	case "RS512", "PS512":
-		hashAlg = crypto.SHA512
-	default:
-		return 0, nil, false
-	}
-
-	hashFunc := hashAlg.New()
-	hashFunc.Write([]byte(signing))
-	return hashAlg, hashFunc.Sum(nil), true
-}
-
-func verifyJWTTimeClaims(payload map[string]any, now time.Time) error {
-	if exp, ok := base.NumberClaim(payload["exp"]); ok && exp <= now.Unix() {
-		return fmt.Errorf("JWT token expired")
-	}
-	if nbf, ok := base.NumberClaim(payload["nbf"]); ok && nbf > now.Unix() {
-		return fmt.Errorf("JWT token not valid yet")
-	}
-	return nil
 }
 
 func (p *Plugin) validateIssuer(payload map[string]any) {
@@ -1811,77 +1810,6 @@ func (p *Plugin) configuredIssuers() ([]string, error) {
 	default:
 		return nil, errors.New("claim_validator.issuer.valid_issuers must be an array")
 	}
-}
-
-func (p *Plugin) jwksPublicKey(r *http.Request, token jwtToken) (any, error) {
-	discovery, err := p.discoveryDoc()
-	if err != nil {
-		return nil, err
-	}
-	if discovery.JWKSURI == "" {
-		return nil, errors.New("openid discovery document has no jwks_uri")
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, discovery.JWKSURI, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
-	}
-
-	var jwks struct {
-		Keys []jwkKey `json:"keys"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return nil, err
-	}
-
-	kid, _ := token.Header["kid"].(string)
-	algorithm, _ := token.Header["alg"].(string)
-	for _, key := range jwks.Keys {
-		if key.Kty != "RSA" {
-			continue
-		}
-		if kid != "" && key.Kid != "" && key.Kid != kid {
-			continue
-		}
-		if key.Alg != "" && key.Alg != algorithm {
-			continue
-		}
-		return key.rsaPublicKey()
-	}
-	return nil, errors.New("no matching jwks key")
-}
-
-type jwkKey struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Alg string `json:"alg"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-}
-
-func (k jwkKey) rsaPublicKey() (*rsa.PublicKey, error) {
-	modulus, err := base64.RawURLEncoding.DecodeString(k.N)
-	if err != nil {
-		return nil, err
-	}
-	exponentBytes, err := base64.RawURLEncoding.DecodeString(k.E)
-	if err != nil {
-		return nil, err
-	}
-	exponent := new(big.Int).SetBytes(exponentBytes).Int64()
-	if exponent <= 0 {
-		return nil, fmt.Errorf("invalid RSA exponent")
-	}
-
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(exponent)}, nil
 }
 
 func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, error) {

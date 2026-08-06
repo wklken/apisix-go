@@ -21,7 +21,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
-const gcpJWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+const (
+	gcpJWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+	defaultGCPMaxTTL      = 300
+)
 
 type GCPConfig struct {
 	ServiceAccountJSON string `json:"service_account_json,omitempty"`
@@ -138,8 +141,12 @@ func (s *GCPTokenSource) Token(ctx context.Context, client *http.Client, config 
 	if ttl > early {
 		ttl -= early
 	}
-	if config.MaxTTL > 0 && ttl > config.MaxTTL {
-		ttl = config.MaxTTL
+	maxTTL := config.MaxTTL
+	if maxTTL == 0 {
+		maxTTL = defaultGCPMaxTTL
+	}
+	if ttl > maxTTL {
+		ttl = maxTTL
 	}
 	s.cache[cacheKey] = cachedGCPToken{value: token.AccessToken, expires: now.Add(time.Duration(ttl) * time.Second)}
 	return token.AccessToken, nil

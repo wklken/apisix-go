@@ -30,7 +30,7 @@ cases:
     output:
       status: 200
       body:
-        equals: body to attach
+        equals: body beforebody to attachbody after
 
   - name: reject-wrong-after-body-type
     source:
@@ -80,7 +80,7 @@ cases:
         Authorization:
           equals: userpass
       body:
-        equals: hello upstream
+        equals: before the body modification hello upstream after the body modification.
 
   - name: prepend-body-without-replacement
     source:

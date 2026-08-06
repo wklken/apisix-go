@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -353,24 +352,40 @@ func TestRelativeServiceURLUsesListenerPortNotForgedHostPort(t *testing.T) {
 	}
 }
 
-func TestSchemaRejectsSameSiteNoneWithoutSecureCookie(t *testing.T) {
-	p := newTestPlugin(t, Config{})
-	config := map[string]any{
-		"idp_uri":          "https://cas.example.com",
-		"cas_callback_uri": "/cas_callback",
-		"logout_uri":       "/logout",
-		"cookie": map[string]any{
-			"secret":   strings.Repeat("s", 32),
-			"samesite": "None",
-			"secure":   false,
+func TestPostInitRejectsSameSiteNoneWithoutSecureCookie(t *testing.T) {
+	secureFalse := false
+	p := &Plugin{config: Config{
+		IDPURI:         "https://cas.example.com",
+		CASCallbackURI: "/cas_callback",
+		LogoutURI:      "/logout",
+		Cookie: CookieConfig{
+			Secret:   strings.Repeat("s", 32),
+			SameSite: "None",
+			Secure:   &secureFalse,
 		},
+	}}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("SameSite=None with secure=false passed PostInit validation")
 	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("SameSite=None with secure=false passed schema validation")
+	want := `cookie.secure must be true when cookie.samesite is "None"`
+	if err.Error() != want {
+		t.Fatalf("PostInit error = %q, want %q", err.Error(), want)
 	}
-	config["cookie"].(map[string]any)["secure"] = true
-	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("SameSite=None with secure=true failed schema validation: %v", err)
+
+	secureTrue := true
+	p2 := &Plugin{config: Config{
+		IDPURI:         "https://cas.example.com",
+		CASCallbackURI: "/cas_callback",
+		LogoutURI:      "/logout",
+		Cookie: CookieConfig{
+			Secret:   strings.Repeat("s", 32),
+			SameSite: "None",
+			Secure:   &secureTrue,
+		},
+	}}
+	if err := p2.PostInit(); err != nil {
+		t.Fatalf("SameSite=None with secure=true failed PostInit validation: %v", err)
 	}
 }
 

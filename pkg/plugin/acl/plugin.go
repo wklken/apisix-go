@@ -9,6 +9,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -236,11 +237,15 @@ func extractValuesWithParser(value any, parser, separator string) []string {
 	switch parser {
 	case "segmented_text":
 		text, ok := value.(string)
-		if !ok || separator == "" {
+		if !ok {
+			return nil
+		}
+		if separator == "" {
 			return nil
 		}
 		re, err := regexp.Compile(`\s*(?:` + separator + `)\s*`)
 		if err != nil {
+			logger.Warnf("failed to split labels [%s], err: %v", text, err)
 			return nil
 		}
 		parts := re.Split(text, -1)
@@ -253,23 +258,51 @@ func extractValuesWithParser(value any, parser, separator string) []string {
 		return values
 	case "json":
 		text, ok := value.(string)
-		if !ok || !strings.HasPrefix(strings.TrimSpace(text), "[") {
+		if !ok {
+			logger.Warnf("the parser is specified as json array, but the value type is not string")
+			return nil
+		}
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmed, "[") {
+			logger.Warnf("the parser is specified as json array, but the value do not has prefix '['")
 			return nil
 		}
 		var decoded []any
 		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			logger.Warnf("failed to decode labels [%s] as array, err: %v", text, err)
 			return nil
 		}
 		return extractValues(decoded)
 	case "table":
 		if _, ok := value.([]any); !ok {
 			if _, ok := value.([]string); !ok {
+				logger.Warnf(
+					"the parser is specified as table, but the type of value is not table: %s",
+					luaTypeName(value),
+				)
 				return nil
 			}
 		}
 		return extractValues(value)
 	default:
 		return extractValues(value)
+	}
+}
+
+func luaTypeName(value any) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case nil:
+		return "nil"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return "number"
+	case map[string]any:
+		return "table"
+	default:
+		return fmt.Sprintf("%T", value)
 	}
 }
 
@@ -450,5 +483,6 @@ func extractStringValues(value string) []string {
 		return values
 	}
 
+	logger.Infof("the string value can not parsed by json or segmented_text")
 	return []string{value}
 }

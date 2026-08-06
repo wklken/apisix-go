@@ -2,6 +2,7 @@ package proxy
 
 // loadbalance
 import (
+	"sort"
 	"sync"
 
 	"github.com/smallnest/weighted"
@@ -58,8 +59,15 @@ func (rr *RRLoadBalance) Next() string {
 
 func NewWeightedRRLoadBalance(servers map[string]int) *RRLoadBalance {
 	w := &weighted.SW{}
-	for server, weight := range servers {
-		w.Add(server, weight)
+	// Map iteration order is random; sort keys so the first smooth-RR pick is
+	// stable across processes (needed for smoke tests that assert one request).
+	names := make([]string, 0, len(servers))
+	for server := range servers {
+		names = append(names, server)
+	}
+	sort.Strings(names)
+	for _, server := range names {
+		w.Add(server, servers[server])
 	}
 
 	return &RRLoadBalance{

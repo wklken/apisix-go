@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,9 +45,10 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit      string `yaml:"commit"`
+			File        string `yaml:"file"`
+			Tests       int    `yaml:"tests"`
+			TestNumbers []int  `yaml:"test_numbers"`
 		} `yaml:"sources"`
 		Cases []jwtManifestCase `yaml:"cases"`
 	}
@@ -54,33 +56,53 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 
+	// testNumbers is nil when every pinned test 1..tests is converted with no
+	// gaps. A non-nil list names the exact pinned upstream test numbers that
+	// are converted, in ascending order, allowing blocked/removed numbers
+	// (e.g. Ed448 in jwt-auth4.t TEST 10) to leave a gap instead of requiring
+	// contiguous 1..N coverage.
 	wantSources := []struct {
-		file  string
-		tests int
+		file        string
+		tests       int
+		testNumbers []int
 	}{
-		{"t/plugin/jwt-auth-anonymous-consumer.t", 7},
-		{"t/plugin/jwt-auth-more-algo.t", 17},
-		{"t/plugin/jwt-auth-realm.t", 6},
-		{"t/plugin/jwt-auth.t", 59},
-		{"t/plugin/jwt-auth2.t", 9},
-		{"t/plugin/jwt-auth3.t", 21},
-		{"t/plugin/jwt-auth4.t", 11},
+		{"t/plugin/jwt-auth-anonymous-consumer.t", 7, nil},
+		{"t/plugin/jwt-auth-more-algo.t", 16, []int{1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}},
+		{"t/plugin/jwt-auth-realm.t", 6, nil},
+		{"t/plugin/jwt-auth.t", 58, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59}},
+		{"t/plugin/jwt-auth2.t", 9, nil},
+		{"t/plugin/jwt-auth3.t", 21, nil},
+		{"t/plugin/jwt-auth4.t", 10, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 11}},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	total := 0
-	next := make(map[string]int, len(wantSources))
+	// sequence holds, per source file, the ordered list of pinned upstream
+	// test numbers that must appear (in that order) across manifest.Cases.
+	sequence := make(map[string][]int, len(wantSources))
+	position := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		got := manifest.Sources[i]
 		if got.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
 			t.Fatalf("source %d commit = %q, want pinned Apache APISIX commit", i+1, got.Commit)
 		}
-		if got.File != want.file || got.Tests != want.tests {
-			t.Fatalf("source %d = (%q, %d), want (%q, %d)", i+1, got.File, got.Tests, want.file, want.tests)
+		wantNumbers := want.testNumbers
+		if wantNumbers == nil {
+			wantNumbers = make([]int, want.tests)
+			for n := range wantNumbers {
+				wantNumbers[n] = n + 1
+			}
+		}
+		if got.File != want.file || got.Tests != want.tests || !slices.Equal(got.TestNumbers, want.testNumbers) {
+			t.Fatalf(
+				"source %d = (%q, %d, %v), want (%q, %d, %v)",
+				i+1, got.File, got.Tests, got.TestNumbers, want.file, want.tests, want.testNumbers,
+			)
 		}
 		total += want.tests
-		next[want.file] = 1
+		sequence[want.file] = wantNumbers
+		position[want.file] = 0
 	}
 	if len(manifest.Cases) != total {
 		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
@@ -91,14 +113,19 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		if len(testCase.Source.Tests) != 1 {
 			t.Fatalf("case %d %q source tests = %v, want one pinned block", i+1, testCase.Name, testCase.Source.Tests)
 		}
-		want, ok := next[testCase.Source.File]
+		wantNumbers, ok := sequence[testCase.Source.File]
 		if !ok {
 			t.Fatalf("case %d %q has unexpected source %q", i+1, testCase.Name, testCase.Source.File)
 		}
+		pos := position[testCase.Source.File]
+		if pos >= len(wantNumbers) {
+			t.Fatalf("case %d %q has more blocks than %s declares", i+1, testCase.Name, testCase.Source.File)
+		}
+		want := wantNumbers[pos]
 		if testCase.Source.Tests[0] != want {
 			t.Fatalf("case %d %q source test = %d, want %d", i+1, testCase.Name, testCase.Source.Tests[0], want)
 		}
-		next[testCase.Source.File]++
+		position[testCase.Source.File]++
 		if _, exists := names[testCase.Name]; exists {
 			t.Errorf("case %d has duplicate behavior name %q", i+1, testCase.Name)
 		}
@@ -111,7 +138,7 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		assertJWTSensitiveCaseSemantics(t, testCase)
 	}
 	for _, want := range wantSources {
-		if got := next[want.file] - 1; got != want.tests {
+		if got := position[want.file]; got != want.tests {
 			t.Fatalf("%s mapped through block %d, want %d", want.file, got, want.tests)
 		}
 	}

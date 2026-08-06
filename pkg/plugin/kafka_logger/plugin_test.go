@@ -315,6 +315,36 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 }
 
+func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		Brokers:      []Broker{{Host: "127.0.0.1", Port: 9092}},
+		KafkaTopic:   "apisix-logs",
+		BatchMaxSize: 1,
+	}, sender)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?debug=true", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
+	})).ServeHTTP(rr, req)
+
+	message := sender.waitForMessage(t)
+	var payload map[string]any
+	if err := json.Unmarshal(message.Value, &payload); err != nil {
+		t.Fatalf("unmarshal kafka payload: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok || response["status"] != float64(http.StatusAccepted) {
+		t.Fatalf("payload response = %#v, want status 202", payload["response"])
+	}
+	request, ok := payload["request"].(map[string]any)
+	if !ok || request["uri"] != "/orders?debug=true" {
+		t.Fatalf("payload request = %#v, want request URI", payload["request"])
+	}
+}
+
 func TestHandlerSendsOriginRequestLog(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
@@ -494,11 +524,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	if err := json.Unmarshal(message.Value, &payload); err != nil {
 		t.Fatalf("unmarshal kafka payload: %v", err)
 	}
-	if _, ok := payload["request"]; ok {
-		t.Fatalf("payload request = %#v, want no request body", payload["request"])
+	request, ok := payload["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload request = %#v, want default request fields", payload["request"])
 	}
-	if _, ok := payload["response"]; ok {
-		t.Fatalf("payload response = %#v, want no response body", payload["response"])
+	if _, ok := request["body"]; ok {
+		t.Fatalf("payload request = %#v, want no request body", request)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload response = %#v, want default response fields", payload["response"])
+	}
+	if _, ok := response["body"]; ok {
+		t.Fatalf("payload response = %#v, want no response body", response)
 	}
 }
 
@@ -552,6 +590,27 @@ func TestNewWriterUsesBrokerSASLConfig(t *testing.T) {
 	}
 	if got := transport.SASL.Name(); got != "SCRAM-SHA-512" {
 		t.Fatalf("writer SASL mechanism = %q, want SCRAM-SHA-512", got)
+	}
+}
+
+func TestSchemaEnforcesPositiveIntegerTimeout(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"broker_list": map[string]any{"127.0.0.1": 9092},
+		"kafka_topic": "integration",
+		"timeout":     1,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("validate timeout 1: %v", err)
+	}
+	for _, invalid := range []any{0, -1, "1"} {
+		config["timeout"] = invalid
+		if err := util.Validate(config, p.GetSchema()); err == nil {
+			t.Fatalf("validate timeout %#v = nil, want positive integer rejection", invalid)
+		}
 	}
 }
 

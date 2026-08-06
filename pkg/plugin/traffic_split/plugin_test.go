@@ -833,7 +833,7 @@ func TestHandlerReturnsInternalServerErrorForMissingUpstreamID(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
-	if got := rr.Body.String(); got != "failed to fetch upstream info by upstream id: missing\n" {
+	if got := rr.Body.String(); got != "failed to find upstream by id: missing\n" {
 		t.Fatalf("response body = %q, want missing upstream error", got)
 	}
 }
@@ -869,7 +869,7 @@ func TestHandlerRejectsInvalidUpstreamIDBeforeRuleMatching(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want 500", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "failed to fetch upstream info") {
+	if !strings.Contains(rr.Body.String(), "failed to find upstream by id") {
 		t.Fatalf("response body = %q, want upstream lookup error", rr.Body.String())
 	}
 }

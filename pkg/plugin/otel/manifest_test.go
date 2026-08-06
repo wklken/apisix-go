@@ -13,8 +13,9 @@ import (
 
 type opentelemetryManifest struct {
 	Sources []struct {
-		File  string `yaml:"file"`
-		Tests int    `yaml:"tests"`
+		File        string `yaml:"file"`
+		Tests       int    `yaml:"tests"`
+		TestNumbers []int  `yaml:"test_numbers"`
 	} `yaml:"sources"`
 	Cases []struct {
 		Name     string                      `yaml:"name"`
@@ -62,28 +63,59 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode opentelemetry manifest: %v", err)
 	}
-	wantSources := map[string]int{
-		"t/plugin/opentelemetry.t":                  48,
-		"t/plugin/opentelemetry2.t":                 4,
-		"t/plugin/opentelemetry3.t":                 4,
-		"t/plugin/opentelemetry4-bugfix-pb-state.t": 3,
-		"t/plugin/opentelemetry5.t":                 13,
-		"t/plugin/opentelemetry6.t":                 9,
+	// testNumbers is nil when every pinned test 1..tests is converted. A
+	// non-nil list names the exact converted upstream numbers, allowing
+	// blocked gaps (opentelemetry.t TEST 26-28 serverless rewrite injection).
+	// TEST 30 (opentelemetry.t) and TEST 6 (opentelemetry6.t) verify the
+	// OpenResty inject_core_spans phase-level span tree (apisix.phase.*
+	// spans with sni_radixtree_match/http_router_match/resolve_dns
+	// children). The Go opentelemetry plugin emits a single request-scoped
+	// span per request and has no phase-span instrumentation, so both
+	// numbers are blocked_design in corpus_scope.yaml instead of converted.
+	wantSources := []struct {
+		file        string
+		tests       int
+		testNumbers []int
+	}{
+		{
+			"t/plugin/opentelemetry.t",
+			44,
+			[]int{
+				1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+				21, 22, 23, 24, 25, 29, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+				41, 42, 43, 44, 45, 46, 47, 48,
+			},
+		},
+		{"t/plugin/opentelemetry2.t", 4, nil},
+		{"t/plugin/opentelemetry4-bugfix-pb-state.t", 3, nil},
+		{"t/plugin/opentelemetry5.t", 13, nil},
+		{"t/plugin/opentelemetry6.t", 8, []int{1, 2, 3, 4, 5, 7, 8, 9}},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
-	for _, source := range manifest.Sources {
-		want, ok := wantSources[source.File]
-		if !ok {
-			t.Fatalf("unknown source %q", source.File)
+	total := 0
+	sequence := make(map[string][]int, len(wantSources))
+	for i, want := range wantSources {
+		got := manifest.Sources[i]
+		wantNumbers := want.testNumbers
+		if wantNumbers == nil {
+			wantNumbers = make([]int, want.tests)
+			for n := range wantNumbers {
+				wantNumbers[n] = n + 1
+			}
 		}
-		if source.Tests != want {
-			t.Fatalf("source %s tests = %d, want %d", source.File, source.Tests, want)
+		if got.File != want.file || got.Tests != want.tests || !slices.Equal(got.TestNumbers, want.testNumbers) {
+			t.Fatalf(
+				"source %d = (%q, %d, %v), want (%q, %d, %v)",
+				i+1, got.File, got.Tests, got.TestNumbers, want.file, want.tests, want.testNumbers,
+			)
 		}
+		total += len(wantNumbers)
+		sequence[want.file] = wantNumbers
 	}
-	if len(manifest.Cases) != 81 {
-		t.Fatalf("top-level cases = %d, want 81 pinned TEST blocks", len(manifest.Cases))
+	if len(manifest.Cases) != total {
+		t.Fatalf("top-level cases = %d, want %d pinned TEST blocks", len(manifest.Cases), total)
 	}
 
 	mapped := make(map[string][]int, len(wantSources))
@@ -96,7 +128,7 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 				testCase.Source.Tests,
 			)
 		}
-		if _, ok := wantSources[testCase.Source.File]; !ok {
+		if _, ok := sequence[testCase.Source.File]; !ok {
 			t.Fatalf("case %d %q maps unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
 		mapped[testCase.Source.File] = append(mapped[testCase.Source.File], testCase.Source.Tests[0])
@@ -106,11 +138,7 @@ func TestManifestMapsEveryPinnedBlockToIndependentRealProcessCase(t *testing.T) 
 		assertOpenTelemetryRuntime(t, i+1, testCase.Name, testCase.Runtime)
 		assertOpenTelemetryRoute(t, i+1, testCase.Name, testCase.Config)
 	}
-	for file, count := range wantSources {
-		want := make([]int, count)
-		for i := range want {
-			want[i] = i + 1
-		}
+	for file, want := range sequence {
 		if !slices.Equal(mapped[file], want) {
 			t.Fatalf("source %s mappings = %v, want %v", file, mapped[file], want)
 		}

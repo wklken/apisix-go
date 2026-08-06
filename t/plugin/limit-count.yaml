@@ -66,7 +66,8 @@ sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count.t
-      tests: 42
+      tests: 41
+      test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/limit-count2.t
@@ -370,7 +371,7 @@ cases:
             - id: premium
               plugins:
                 limit-count:
-                    count: 4
+                    count: 10
                     key: remote_addr
                     rejected_code: 429
                     show_limit_quota_header: true
@@ -422,7 +423,7 @@ cases:
             - id: premium
               plugins:
                 limit-count:
-                    count: 4
+                    count: 10
                     key: remote_addr
                     rejected_code: 429
                     show_limit_quota_header: true
@@ -474,7 +475,7 @@ cases:
             - id: premium
               plugins:
                 limit-count:
-                    count: 4
+                    count: 10
                     key: remote_addr
                     rejected_code: 429
                     show_limit_quota_header: true
@@ -496,8 +497,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 4
-            at_most: 4
+            at_least: 10
+            at_most: 10
           expect:
             - method: GET
               path:
@@ -538,6 +539,54 @@ cases:
             method: GET
             path: /limit-count
           name: group-quota-allows-4
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-5
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-6
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-7
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-8
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-9
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: premium-key
+            method: GET
+            path: /limit-count
+          name: group-quota-allows-10
           output:
             status: 200
         - input:
@@ -1337,6 +1386,12 @@ cases:
       steps:
         - input:
             method: GET
+            path: /limit-count-missing
+          name: unmatched-path-does-not-consume-the-counter
+          output:
+            status: 404
+        - input:
+            method: GET
             path: /limit-count
           name: allowed-request-1
           output:
@@ -1344,6 +1399,12 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
+        - input:
+            method: GET
+            path: /limit-count-missing-2
+          name: unmatched-path-still-does-not-consume-the-counter
+          output:
+            status: 404
         - input:
             method: GET
             path: /limit-count
@@ -1428,7 +1489,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 9999
                     key: remote_addr
                     policy: redis-cluster
                     redis_cluster_name: fixture-cluster
@@ -1444,8 +1505,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 20
+            at_most: 20
           expect:
             - method: GET
               path:
@@ -1466,30 +1527,10 @@ cases:
         - input:
             method: GET
             path: /limit-count
-          name: allowed-request-1
+          name: twenty-consecutive-requests-never-rate-limited
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
             status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
+          repeat: 20
     - name: limit-count-redis-cluster-update-route-use-new-limit-configuration-test-9
       source:
         file: t/plugin/limit-count-redis-cluster.t
@@ -2672,6 +2713,7 @@ cases:
         - {name: third-request-is-rejected, input: {path: /echo}, wait: 1s, output: {status: 503, headers: {X-RateLimit-Remaining: {equals: "0"}}}}
     - name: limit-count-redis-delayed-sync-queue-full-delayed-sync-drops-enqueue-and-warns-request-still-succeeds-test-5
       source: {file: t/plugin/limit-count-redis-delayed-sync.t, tests: [5]}
+      serial: true
       config:
         routes:
           - id: delayed-sync-queue-full
@@ -3209,67 +3251,12 @@ cases:
                     key: remote_addr
                     policy: redis-sentinel
                     redis_master_name: fixture-master
-                    redis_password: secret
                     redis_sentinels:
                         - host: '{{FIXTURE.redis.HOST}}'
                           port: '{{FIXTURE.redis.PORT}}'
-                    redis_username: alice
                     rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis-sentinel
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            auth:
-                - password: secret
-                  username: alice
-            ignore_negotiation: true
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: authenticated-redis-quota-allows-request
-          output:
-            status: 200
-    - name: limit-count-redis-sentinel-up-the-limit-test-8
-      source:
-        file: t/plugin/limit-count-redis-sentinel.t
-        tests:
-            - 8
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-sentinel
-                    redis_master_name: fixture-master
-                    redis_password: wrong
-                    redis_sentinels:
-                        - host: '{{FIXTURE.redis.HOST}}'
-                          port: '{{FIXTURE.redis.PORT}}'
-                    redis_username: alice
-                    rejected_code: 503
+                    sentinel_password: wrong
+                    sentinel_username: admin
                     show_limit_quota_header: true
                     time_window: 60
               upstream:
@@ -3292,17 +3279,75 @@ cases:
             allow_unasserted_commands: true
             auth:
                 - password: wrong
-                  username: alice
+                  username: admin
             ignore_negotiation: true
       steps:
         - input:
             method: GET
             path: /limit-count
-          name: redis-authentication-failure-is-not-bypassed
+          name: missing-sentinel-credentials-are-not-bypassed
           output:
             body:
                 equals: |
                     failed to limit count
+            logs:
+                matches: 'failed to limit count: .*WRONGPASS invalid username-password pair'
+            status: 500
+    - name: limit-count-redis-sentinel-up-the-limit-test-8
+      source:
+        file: t/plugin/limit-count-redis-sentinel.t
+        tests:
+            - 8
+      config:
+        routes:
+            - id: limit-count-route
+              plugins:
+                limit-count:
+                    count: 2
+                    key: remote_addr
+                    policy: redis-sentinel
+                    redis_master_name: fixture-master
+                    redis_sentinels:
+                        - host: '{{FIXTURE.redis.HOST}}'
+                          port: '{{FIXTURE.redis.PORT}}'
+                    rejected_code: 503
+                    sentinel_password: wrong
+                    sentinel_username: admin
+                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count
+      fixtures:
+        - expect_requests: 0
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+        - kind: redis-sentinel
+          name: redis
+          network_respond:
+            - payload: "-WRONGPASS invalid username-password pair\r\n"
+          redis:
+            allow_unasserted_commands: true
+            auth:
+                - password: wrong
+                  username: admin
+            ignore_negotiation: true
+      steps:
+        - input:
+            method: GET
+            path: /limit-count
+          name: missing-sentinel-credentials-are-not-bypassed-again
+          output:
+            body:
+                equals: |
+                    failed to limit count
+            logs:
+                matches: 'failed to limit count: .*WRONGPASS invalid username-password pair'
             status: 500
     - name: limit-count-redis-sentinel-set-route-with-authenticated-redis-sentinel-with-password-test-9
       source:
@@ -3317,13 +3362,14 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis-sentinel
+                    redis_database: 1
                     redis_master_name: fixture-master
-                    redis_password: secret
                     redis_sentinels:
                         - host: '{{FIXTURE.redis.HOST}}'
                           port: '{{FIXTURE.redis.PORT}}'
-                    redis_username: alice
                     rejected_code: 503
+                    sentinel_password: admin-password
+                    sentinel_username: admin
                     show_limit_quota_header: true
                     time_window: 60
               upstream:
@@ -3331,6 +3377,27 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /limit-count
+            - id: limit-count-route-b
+              plugins:
+                limit-count:
+                    count: 1
+                    key: remote_addr
+                    policy: redis-sentinel
+                    redis_database: 1
+                    redis_master_name: fixture-master
+                    redis_sentinels:
+                        - host: '{{FIXTURE.redis.HOST}}'
+                          port: '{{FIXTURE.redis.PORT}}'
+                    rejected_code: 503
+                    sentinel_password: admin-password
+                    sentinel_username: admin
+                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count-b
       fixtures:
         - count:
             at_least: 1
@@ -3349,14 +3416,14 @@ cases:
           redis:
             allow_unasserted_commands: true
             auth:
-                - password: secret
-                  username: alice
+                - password: admin-password
+                  username: admin
             ignore_negotiation: true
       steps:
         - input:
             method: GET
             path: /limit-count
-          name: authenticated-redis-quota-allows-request
+          name: authenticated-sentinel-route-allows-request
           output:
             status: 200
     - name: limit-count-redis-sentinel-up-the-limit-test-10
@@ -3372,11 +3439,14 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis-sentinel
+                    redis_database: 1
                     redis_master_name: fixture-master
                     redis_sentinels:
                         - host: '{{FIXTURE.redis.HOST}}'
                           port: '{{FIXTURE.redis.PORT}}'
                     rejected_code: 503
+                    sentinel_password: admin-password
+                    sentinel_username: admin
                     show_limit_quota_header: true
                     time_window: 60
               upstream:
@@ -3384,10 +3454,31 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /limit-count
+            - id: limit-count-route-b
+              plugins:
+                limit-count:
+                    count: 1
+                    key: remote_addr
+                    policy: redis-sentinel
+                    redis_database: 1
+                    redis_master_name: fixture-master
+                    redis_sentinels:
+                        - host: '{{FIXTURE.redis.HOST}}'
+                          port: '{{FIXTURE.redis.PORT}}'
+                    rejected_code: 503
+                    sentinel_password: admin-password
+                    sentinel_username: admin
+                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count-b
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -3401,6 +3492,9 @@ cases:
           name: redis
           redis:
             allow_unasserted_commands: true
+            auth:
+                - password: admin-password
+                  username: admin
             ignore_negotiation: true
       steps:
         - input:
@@ -3430,6 +3524,24 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
+        - input:
+            method: GET
+            path: /limit-count-b
+          name: second-route-allowed-request
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count-b
+          name: second-route-request-over-limit-is-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
     - name: limit-count-redis-sentinel-create-a-limit-count-with-broken-redis-sentinels-test-11
       source:
         file: t/plugin/limit-count-redis-sentinel.t
@@ -3443,48 +3555,40 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis-sentinel
-                    redis_master_name: fixture-master
+                    redis_master_name: mymaster
+                    redis_role: master
                     redis_sentinels:
-                        - host: '{{FIXTURE.redis.HOST}}'
-                          port: '{{FIXTURE.redis.PORT}}'
+                        - host: 127.0.0.1
+                          port: 503
+                        - host: 127.0.0.2
+                          port: 503
+                    redis_timeout: 50
                     rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
+                    time_window: 2
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /limit-count
       fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
+        - expect_requests: 0
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
-        - kind: redis-sentinel
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
       steps:
         - input:
             method: GET
             path: /limit-count
-          name: configured-limit-allows-request
+          name: route-with-broken-sentinels-fails-at-request-time
           output:
             body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
+                equals: |
+                    failed to limit count
+            logs:
+                matches: failed to limit count
+            status: 500
     - name: limit-count-redis-sentinel-send-test-request-test-12
       source:
         file: t/plugin/limit-count-redis-sentinel.t
@@ -3498,48 +3602,40 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis-sentinel
-                    redis_master_name: fixture-master
+                    redis_master_name: mymaster
+                    redis_role: master
                     redis_sentinels:
-                        - host: '{{FIXTURE.redis.HOST}}'
-                          port: '{{FIXTURE.redis.PORT}}'
+                        - host: 127.0.0.1
+                          port: 503
+                        - host: 127.0.0.2
+                          port: 503
+                    redis_timeout: 50
                     rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
+                    time_window: 2
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /limit-count
       fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
+        - expect_requests: 0
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
-        - kind: redis-sentinel
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
       steps:
         - input:
             method: GET
             path: /limit-count
-          name: configured-limit-allows-request
+          name: send-test-request-fails-with-no-hosts-available
           output:
             body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
+                equals: |
+                    failed to limit count
+            logs:
+                matches: failed to limit count
+            status: 500
     - name: limit-count-redis-sentinel-set-route-with-invalid-username-password-test-13
       source:
         file: t/plugin/limit-count-redis-sentinel.t
@@ -4029,6 +4125,12 @@ cases:
       steps:
         - input:
             method: GET
+            path: /limit-count-missing
+          name: unmatched-path-does-not-consume-the-counter
+          output:
+            status: 404
+        - input:
+            method: GET
             path: /limit-count
           name: allowed-request-1
           output:
@@ -4036,6 +4138,12 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
+        - input:
+            method: GET
+            path: /limit-count-missing-2
+          name: unmatched-path-still-does-not-consume-the-counter
+          output:
+            status: 404
         - input:
             method: GET
             path: /limit-count
@@ -4314,6 +4422,15 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
+        - input:
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected-again
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
     - name: limit-count-redis-up-the-limit-test-11
       source:
         file: t/plugin/limit-count-redis.t
@@ -4358,6 +4475,12 @@ cases:
       steps:
         - input:
             method: GET
+            path: /limit-count-missing
+          name: unmatched-path-does-not-consume-the-counter
+          output:
+            status: 404
+        - input:
+            method: GET
             path: /limit-count
           name: allowed-request-1
           output:
@@ -4365,6 +4488,12 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
+        - input:
+            method: GET
+            path: /limit-count-missing-2
+          name: unmatched-path-still-does-not-consume-the-counter
+          output:
+            status: 404
         - input:
             method: GET
             path: /limit-count
@@ -4870,6 +4999,15 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
+        - input:
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected-again
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
     - name: limit-count-redis-up-the-limit-test-21
       source:
         file: t/plugin/limit-count-redis.t
@@ -4914,6 +5052,12 @@ cases:
       steps:
         - input:
             method: GET
+            path: /limit-count-missing
+          name: unmatched-path-does-not-consume-the-counter
+          output:
+            status: 404
+        - input:
+            method: GET
             path: /limit-count
           name: allowed-request-1
           output:
@@ -4921,6 +5065,12 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
+        - input:
+            method: GET
+            path: /limit-count-missing-2
+          name: unmatched-path-still-does-not-consume-the-counter
+          output:
+            status: 404
         - input:
             method: GET
             path: /limit-count
@@ -5058,6 +5208,7 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis
+                    redis_database: 999999
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
                     rejected_code: 503
@@ -5164,6 +5315,7 @@ cases:
                     count: 2
                     key: remote_addr
                     policy: redis
+                    redis_database: 1
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
                     rejected_code: 503
@@ -6927,6 +7079,8 @@ cases:
             path: /limit-count
           name: unresolved-rules-fail-closed
           output:
+            logs:
+                matches: failed to get rate limit rules
             status: 500
     - name: limit-count-rules-match-user-rule-test-5
       source:
@@ -6938,85 +7092,15 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
+                        - count: '${http_jack_count}'
+                          key: '${http_user}'
                           time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
+                        - count: '${http_apisix_count}'
+                          key: '${http_project}'
                           time_window: 60
-                    show_limit_quota_header: true
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-allows-first
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-rejects-second
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
-    - name: limit-count-rules-match-project-rule-test-6
-      source:
-        file: t/plugin/limit-count-rules.t
-        tests:
-            - 6
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    key: remote_addr
-                    rejected_code: 429
-                    rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
-                          time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
-                          time_window: 60
-                    show_limit_quota_header: true
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7038,43 +7122,97 @@ cases:
       steps:
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
+                jack-count: "2"
+                user: jack
+            method: GET
+            path: /limit-count
+          name: matching-user-rule-allows-first
+          output:
+            body:
+                equals: limit-count upstream
+            status: 200
+        - input:
+            headers:
+                jack-count: "2"
+                user: jack
+            method: GET
+            path: /limit-count
+          name: matching-user-rule-allows-second
+          output:
+            body:
+                equals: limit-count upstream
+            status: 200
+        - input:
+            headers:
+                jack-count: "2"
+                user: jack
+            method: GET
+            path: /limit-count
+          name: matching-user-rule-rejects-third
+          output:
+            body:
+                equals: '{"error_msg":"rejected"}'
+            status: 503
+    - name: limit-count-rules-match-project-rule-test-6
+      source:
+        file: t/plugin/limit-count-rules.t
+        tests:
+            - 6
+      config:
+        routes:
+            - id: limit-count-route
+              plugins:
+                limit-count:
+                    rejected_code: 503
+                    rejected_msg: rejected
+                    rules:
+                        - count: '${http_jack_count}'
+                          key: '${http_user}'
+                          time_window: 60
+                        - count: '${http_apisix_count}'
+                          key: '${http_project}'
+                          time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count
+      fixtures:
+        - count:
+            at_least: 2
+            at_most: 2
+          expect:
+            - method: GET
+              path:
+                matches: ^/limit-count(?:-b)?$
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+      steps:
+        - input:
+            headers:
+                apisix-count: "3"
+                project: apisix
             method: GET
             path: /limit-count
           name: project-rule-first
           output:
-            headers:
-                X-Project-RateLimit-Remaining:
-                    equals: "1"
+            body:
+                equals: limit-count upstream
             status: 200
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jill
+                apisix-count: "3"
+                project: apisix
             method: GET
             path: /limit-count
           name: project-rule-second
           output:
-            headers:
-                X-Project-RateLimit-Remaining:
-                    equals: "0"
+            body:
+                equals: limit-count upstream
             status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jane
-            method: GET
-            path: /limit-count
-          name: project-rule-rejects-third-user
-          output:
-            headers:
-                X-Project-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
     - name: limit-count-rules-setup-route-with-rules-with-variables-with-default-values-test-7
       source:
         file: t/plugin/limit-count-rules.t
@@ -7085,14 +7223,12 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: $http_x_count
-                          header_prefix: User
-                          key: $http_x_user
-                          time_window: 60
-                    show_limit_quota_header: true
+                        - count: '${http_count ?? 2}'
+                          key: '${remote_addr}'
+                          time_window: '${http_tw ?? 5}'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7113,17 +7249,12 @@ cases:
               status: 200
       steps:
         - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: configured-limit-allows-request
           output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+            body:
+                equals: limit-count upstream
             status: 200
     - name: limit-count-rules-rules-with-variables-in-count-default-value-test-8
       source:
@@ -7135,14 +7266,12 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: $http_x_count
-                          header_prefix: User
-                          key: $http_x_user
-                          time_window: 60
-                    show_limit_quota_header: true
+                        - count: '${http_count ?? 2}'
+                          key: '${remote_addr}'
+                          time_window: '${http_tw ?? 5}'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7150,8 +7279,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
@@ -7163,31 +7292,29 @@ cases:
               status: 200
       steps:
         - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: default-count-allows-first
           output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+            body:
+                equals: limit-count upstream
             status: 200
         - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-rejects-second
+          name: default-count-allows-second
           output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
+            body:
+                equals: limit-count upstream
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: default-count-rejects-third
+          output:
+            body:
+                equals: '{"error_msg":"rejected"}'
+            status: 503
     - name: limit-count-rules-rules-with-variables-in-count-with-header-test-9
       source:
         file: t/plugin/limit-count-rules.t
@@ -7315,18 +7442,14 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
-                          time_window: 60
                         - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
-                          time_window: 60
-                    show_limit_quota_header: true
+                          key: '${remote_addr}_2s'
+                          time_window: 2
+                        - count: 3
+                          key: '${remote_addr}_5s'
+                          time_window: 5
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7334,8 +7457,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -7347,31 +7470,42 @@ cases:
               status: 200
       steps:
         - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: first-request-allowed-by-both-rules
           output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+            body:
+                equals: limit-count upstream
             status: 200
         - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-rejects-second
+          name: second-request-allowed-by-both-rules
           output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
+            body:
+                equals: limit-count upstream
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: third-request-rejected-by-the-2s-rule
+          output:
+            status: 503
+          wait: 2s
+        - input:
+            method: GET
+            path: /limit-count
+          name: fourth-request-allowed-after-the-2s-rule-window-expires
+          output:
+            body:
+                equals: limit-count upstream
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: fifth-request-rejected-by-the-exhausted-5s-rule
+          output:
+            status: 503
     - name: limit-count-rules-setup-route-with-header-prefix-test-12
       source:
         file: t/plugin/limit-count-rules.t
@@ -7436,18 +7570,17 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
+                        - count: '${http_jack_count}'
+                          header_prefix: jack
+                          key: '${http_user}'
                           time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
+                        - count: '${http_apisix_count}'
+                          header_prefix: bar
+                          key: '${http_project}'
                           time_window: 60
-                    show_limit_quota_header: true
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7469,30 +7602,20 @@ cases:
       steps:
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
+                jack-count: "2"
+                user: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: matching-jack-rule-reports-full-quota-headers
           output:
             headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+                X-jack-RateLimit-Limit:
+                    equals: "2"
+                X-jack-RateLimit-Remaining:
+                    equals: "1"
+                X-jack-RateLimit-Reset:
+                    equals: "60"
             status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-rejects-second
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
     - name: limit-count-rules-match-bar-test-14
       source:
         file: t/plugin/limit-count-rules.t
@@ -7503,18 +7626,17 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
+                        - count: '${http_jack_count}'
+                          header_prefix: jack
+                          key: '${http_user}'
                           time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
+                        - count: '${http_apisix_count}'
+                          header_prefix: bar
+                          key: '${http_project}'
                           time_window: 60
-                    show_limit_quota_header: true
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7536,30 +7658,20 @@ cases:
       steps:
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
+                apisix-count: "3"
+                project: apisix
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: matching-bar-rule-reports-full-quota-headers
           output:
             headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+                X-bar-RateLimit-Limit:
+                    equals: "3"
+                X-bar-RateLimit-Remaining:
+                    equals: "2"
+                X-bar-RateLimit-Reset:
+                    equals: "60"
             status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-rejects-second
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
     - name: limit-count-rules-setup-route-without-header-prefix-test-15
       source:
         file: t/plugin/limit-count-rules.t
@@ -7619,18 +7731,15 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
+                        - count: '${http_jack_count}'
+                          key: '${http_user}'
                           time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
+                        - count: '${http_apisix_count}'
+                          key: '${http_project}'
                           time_window: 60
-                    show_limit_quota_header: true
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7652,30 +7761,20 @@ cases:
       steps:
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
+                jack-count: "2"
+                user: jack
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: matching-jack-rule-reports-default-numbered-headers
           output:
             headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+                X-1-RateLimit-Limit:
+                    equals: "2"
+                X-1-RateLimit-Remaining:
+                    equals: "1"
+                X-1-RateLimit-Reset:
+                    equals: "60"
             status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-rejects-second
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
     - name: limit-count-rules-match-bar-test-17
       source:
         file: t/plugin/limit-count-rules.t
@@ -7686,18 +7785,15 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    key: remote_addr
-                    rejected_code: 429
+                    rejected_code: 503
+                    rejected_msg: rejected
                     rules:
-                        - count: 1
-                          header_prefix: User
-                          key: $http_x_user
+                        - count: '${http_jack_count}'
+                          key: '${http_user}'
                           time_window: 60
-                        - count: 2
-                          header_prefix: Project
-                          key: $http_x_project
+                        - count: '${http_apisix_count}'
+                          key: '${http_project}'
                           time_window: 60
-                    show_limit_quota_header: true
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -7719,30 +7815,20 @@ cases:
       steps:
         - input:
             headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
+                apisix-count: "3"
+                project: apisix
             method: GET
             path: /limit-count
-          name: matching-user-rule-allows-first
+          name: matching-bar-rule-reports-default-numbered-headers
           output:
             headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
+                X-2-RateLimit-Limit:
+                    equals: "3"
+                X-2-RateLimit-Remaining:
+                    equals: "2"
+                X-2-RateLimit-Reset:
+                    equals: "60"
             status: 200
-        - input:
-            headers:
-                X-Count: "1"
-                X-Project: apisix
-                X-User: jack
-            method: GET
-            path: /limit-count
-          name: matching-user-rule-rejects-second
-          output:
-            headers:
-                X-User-RateLimit-Remaining:
-                    equals: "0"
-            status: 429
     - name: limit-count-rules-use-variable-with-default-value-in-rules-key-test-18
       source:
         file: t/plugin/limit-count-rules.t
@@ -9671,7 +9757,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -9704,7 +9790,7 @@ cases:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
-                    equals: "2"
+                    equals: "3"
             status: 200
     - name: limit-count-up-the-limit-test-7
       source:
@@ -9716,7 +9802,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -9728,8 +9814,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -9747,12 +9833,21 @@ cases:
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "1"
+                    equals: "2"
             status: 200
         - input:
             method: GET
             path: /limit-count
           name: allowed-request-2
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "1"
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: allowed-request-3
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -10366,8 +10461,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -10378,17 +10473,46 @@ cases:
             - body: limit-count upstream
               status: 200
       steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
-          output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
+        - input: {method: GET, path: /limit-count}
+          name: allowed-request-1
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "1"}}}
+        - input: {method: GET, path: /limit-count}
+          name: allowed-request-2
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - input: {method: GET, path: /limit-count}
+          name: request-over-limit-is-rejected
+          output: {status: 503, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - name: reduced-count-rebuilds-the-limiter
+          config:
+            routes:
+                - id: limit-count-route
+                  plugins:
+                    limit-count:
+                        count: 1
+                        key: remote_addr
+                        rejected_code: 503
+                        show_limit_quota_header: true
+                        time_window: 60
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /limit-count
+                - id: limit-count-reconfigure-ready-21
+                  plugins:
+                    mocking:
+                        content_type: text/plain
+                        response_example: ready
+                        response_status: 200
+                  uri: /limit-count-ready-21
+          config_probe:
+            input: {method: GET, path: /limit-count-ready-21}
+            output: {status: 200, body: {equals: ready}}
+          input: {method: GET, path: /limit-count}
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - input: {method: GET, path: /limit-count}
+          name: reduced-count-rejects-the-second-request
+          output: {status: 503, headers: {X-RateLimit-Remaining: {equals: "0"}}}
     - name: limit-count-when-the-count-is-changed-check-the-limit-is-correct-from-1-to-2-test-22
       source:
         file: t/plugin/limit-count.t
@@ -10399,7 +10523,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 1
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -10411,8 +10535,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -10423,62 +10547,46 @@ cases:
             - body: limit-count upstream
               status: 200
       steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
-          output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
-    - name: limit-count-when-the-count-is-changed-check-the-limit-is-correct-from-2-to-2-test-23
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 23
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
-          output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
+        - input: {method: GET, path: /limit-count}
+          name: allowed-request-1
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - input: {method: GET, path: /limit-count}
+          name: request-over-limit-is-rejected
+          output: {status: 503, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - name: increased-count-rebuilds-the-limiter
+          config:
+            routes:
+                - id: limit-count-route
+                  plugins:
+                    limit-count:
+                        count: 2
+                        key: remote_addr
+                        rejected_code: 503
+                        show_limit_quota_header: true
+                        time_window: 60
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /limit-count
+                - id: limit-count-reconfigure-ready-22
+                  plugins:
+                    mocking:
+                        content_type: text/plain
+                        response_example: ready
+                        response_status: 200
+                  uri: /limit-count-ready-22
+          config_probe:
+            input: {method: GET, path: /limit-count-ready-22}
+            output: {status: 200, body: {equals: ready}}
+          input: {method: GET, path: /limit-count}
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "1"}}}
+        - input: {method: GET, path: /limit-count}
+          name: increased-count-allows-the-second-request
+          output: {status: 200, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        - input: {method: GET, path: /limit-count}
+          name: increased-count-rejects-the-third-request
+          output: {status: 503, headers: {X-RateLimit-Remaining: {equals: "0"}}}
     - name: limit-count-create-consumer-and-bind-key-auth-plugin-test-24
       source:
         file: t/plugin/limit-count.t
@@ -10977,6 +11085,21 @@ cases:
                 X-RateLimit-Limit:
                     equals: "2"
             status: 200
+        - name: deleted-route-no-longer-matches
+          config:
+            routes:
+                - id: limit-count-delete-ready-33
+                  plugins:
+                    mocking:
+                        content_type: text/plain
+                        response_example: ready
+                        response_status: 200
+                  uri: /limit-count-delete-ready-33
+          config_probe:
+            input: {method: GET, path: /limit-count-delete-ready-33}
+            output: {status: 200, body: {equals: ready}}
+          input: {method: GET, path: /limit-count}
+          output: {status: 404}
     - name: limit-count-delete-service-id-1-test-34
       source:
         file: t/plugin/limit-count.t
@@ -11022,6 +11145,21 @@ cases:
                 X-RateLimit-Limit:
                     equals: "2"
             status: 200
+        - name: deleted-service-bound-route-no-longer-matches
+          config:
+            routes:
+                - id: limit-count-delete-ready-34
+                  plugins:
+                    mocking:
+                        content_type: text/plain
+                        response_example: ready
+                        response_status: 200
+                  uri: /limit-count-delete-ready-34
+          config_probe:
+            input: {method: GET, path: /limit-count-delete-ready-34}
+            output: {status: 200, body: {equals: ready}}
+          input: {method: GET, path: /limit-count}
+          output: {status: 404}
     - name: limit-count-use-remote-addr-as-default-key-test-35
       source:
         file: t/plugin/limit-count.t
@@ -11138,7 +11276,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -11171,7 +11309,7 @@ cases:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
-                    equals: "2"
+                    equals: "3"
             status: 200
     - name: limit-count-normal-the-result-is-as-expected-test-38
       source:
@@ -11183,7 +11321,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -11195,8 +11333,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -11214,12 +11352,21 @@ cases:
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "1"
+                    equals: "2"
             status: 200
         - input:
             method: GET
             path: /limit-count
           name: allowed-request-2
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "1"
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: allowed-request-3
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -11229,6 +11376,15 @@ cases:
             method: GET
             path: /limit-count
           name: request-over-limit-is-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+        - input:
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected-again
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -11244,7 +11400,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -11277,7 +11433,7 @@ cases:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
-                    equals: "2"
+                    equals: "3"
             status: 200
     - name: limit-count-normal-the-result-is-as-expected-test-40
       source:
@@ -11289,7 +11445,7 @@ cases:
             - id: limit-count-route
               plugins:
                 limit-count:
-                    count: 2
+                    count: 3
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -11301,8 +11457,8 @@ cases:
               uri: /limit-count
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 3
+            at_most: 3
           expect:
             - method: GET
               path:
@@ -11320,12 +11476,21 @@ cases:
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "1"
+                    equals: "2"
             status: 200
         - input:
             method: GET
             path: /limit-count
           name: allowed-request-2
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "1"
+            status: 200
+        - input:
+            method: GET
+            path: /limit-count
+          name: allowed-request-3
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -11335,6 +11500,15 @@ cases:
             method: GET
             path: /limit-count
           name: request-over-limit-is-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+        - input:
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected-again
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -11653,9 +11827,9 @@ cases:
               plugins:
                 limit-count:
                     count: 2
-                    key: remote_addr
+                    key: http_a
+                    key_type: var
                     rejected_code: 503
-                    show_limit_quota_header: true
                     time_window: 60
               upstream:
                 nodes:
@@ -11683,9 +11857,6 @@ cases:
           output:
             body:
                 equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
             status: 200
     - name: limit-count2-exceed-the-burst-when-key-type-is-var-test-7
       source:
@@ -11698,9 +11869,75 @@ cases:
               plugins:
                 limit-count:
                     count: 2
-                    key: remote_addr
+                    key: http_a
+                    key_type: var
                     rejected_code: 503
-                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /limit-count
+      fixtures:
+        - count:
+            at_least: 2
+            at_most: 2
+          expect:
+            - method: GET
+              path:
+                matches: ^/limit-count(?:-b)?$
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+      steps:
+        - input:
+            headers:
+                a: "1"
+            method: GET
+            path: /limit-count
+          name: allowed-request-1
+          output:
+            status: 200
+        - input:
+            headers:
+                a: "1"
+            method: GET
+            path: /limit-count
+          name: allowed-request-2
+          output:
+            status: 200
+        - input:
+            headers:
+                a: "1"
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected
+          output:
+            status: 503
+        - input:
+            headers:
+                a: "1"
+            method: GET
+            path: /limit-count
+          name: request-over-limit-is-rejected-again
+          output:
+            status: 503
+    - name: limit-count2-bypass-empty-key-when-key-type-is-var-test-8
+      source:
+        file: t/plugin/limit-count2.t
+        tests:
+            - 8
+      config:
+        routes:
+            - id: limit-count-route
+              plugins:
+                limit-count:
+                    count: 2
+                    key: http_a
+                    key_type: var
+                    rejected_code: 503
                     time_window: 60
               upstream:
                 nodes:
@@ -11726,73 +11963,25 @@ cases:
             path: /limit-count
           name: allowed-request-1
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
             status: 200
         - input:
             method: GET
             path: /limit-count
           name: allowed-request-2
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
             status: 200
         - input:
             method: GET
             path: /limit-count
           name: request-over-limit-is-rejected
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
             status: 503
-    - name: limit-count2-bypass-empty-key-when-key-type-is-var-test-8
-      source:
-        file: t/plugin/limit-count2.t
-        tests:
-            - 8
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
         - input:
             method: GET
             path: /limit-count
-          name: configured-limit-allows-request
+          name: request-over-limit-is-rejected-again
           output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
+            status: 503
     - name: limit-count2-update-plugin-to-set-key-type-to-var-combination-test-9
       source:
         file: t/plugin/limit-count2.t
@@ -12381,8 +12570,8 @@ cases:
               plugins:
                 limit-count:
                     count: 2
-                    group: shared-limit
-                    key: remote_addr
+                    group: shared-limit-constant
+                    key_type: constant
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -12395,8 +12584,8 @@ cases:
               plugins:
                 limit-count:
                     count: 2
-                    group: shared-limit
-                    key: remote_addr
+                    group: shared-limit-constant
+                    key_type: constant
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -12492,8 +12681,10 @@ cases:
             - id: group-a
               plugins:
                 limit-count:
+                    _meta:
+                        disable: false
                     count: 2
-                    group: shared-limit
+                    group: shared-limit-meta-disable
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true
@@ -12506,8 +12697,10 @@ cases:
             - id: group-b
               plugins:
                 limit-count:
+                    _meta:
+                        disable: false
                     count: 2
-                    group: shared-limit
+                    group: shared-limit-meta-disable
                     key: remote_addr
                     rejected_code: 503
                     show_limit_quota_header: true

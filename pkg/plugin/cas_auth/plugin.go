@@ -74,23 +74,7 @@ const schema = `
       "required": ["secret"]
     }
   },
-  "required": ["idp_uri", "cas_callback_uri", "logout_uri", "cookie"],
-  "allOf": [
-    {
-      "not": {
-        "properties": {
-          "cookie": {
-            "properties": {
-              "samesite": {"const": "None"},
-              "secure": {"const": false}
-            },
-            "required": ["samesite", "secure"]
-          }
-        },
-        "required": ["cookie"]
-      }
-    }
-  ]
+  "required": ["idp_uri", "cas_callback_uri", "logout_uri", "cookie"]
 }
 `
 
@@ -185,6 +169,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.Cookie.SameSite == "" {
 		p.config.Cookie.SameSite = "Lax"
+	}
+	if p.config.Cookie.SameSite == "None" && !*p.config.Cookie.Secure {
+		return fmt.Errorf(`cookie.secure must be true when cookie.samesite is "None"`)
 	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}

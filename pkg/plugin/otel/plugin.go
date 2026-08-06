@@ -200,6 +200,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		apisixctx.RegisterRequestVar(r, "$request_time", time.Since(started).Seconds())
 		apisixctx.RegisterRequestVar(r, "$bytes_sent", metrics.Written)
 		attrs := append(p.resourceSpanAttributes(), requestAttributes...)
+		if source, ok := apisixctx.GetRequestVar(r, "$response_source").(string); ok && source != "" {
+			attrs = append(attrs, attribute.String("apisix.response_source", source))
+		}
 		attrs = append(attrs, p.additionalSpanAttributes(r)...)
 		if len(attrs) > 0 {
 			trace.SpanFromContext(r.Context()).SetAttributes(attrs...)

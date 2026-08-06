@@ -56,28 +56,33 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 
+	// testNumbers lists the exact upstream test numbers that were converted for a
+	// source file, in manifest order. Leave nil for sources where every test 1..tests
+	// was converted contiguously; set it explicitly when specific test numbers were
+	// blocked (see t/plugin/corpus_scope.yaml) and therefore have gaps.
 	wantSources := []struct {
-		file  string
-		tests int
+		file        string
+		tests       int
+		testNumbers []int
 	}{
-		{"t/plugin/openid-connect-identity-headers.t", 4},
-		{"t/plugin/openid-connect-redis.t", 4},
-		{"t/plugin/openid-connect.t", 54},
-		{"t/plugin/openid-connect10.t", 12},
-		{"t/plugin/openid-connect2.t", 21},
-		{"t/plugin/openid-connect3.t", 6},
-		{"t/plugin/openid-connect4.t", 6},
-		{"t/plugin/openid-connect5.t", 2},
-		{"t/plugin/openid-connect6.t", 8},
-		{"t/plugin/openid-connect7.t", 10},
-		{"t/plugin/openid-connect8.t", 8},
-		{"t/plugin/openid-connect9.t", 6},
+		{"t/plugin/openid-connect-identity-headers.t", 4, nil},
+		{"t/plugin/openid-connect-redis.t", 4, nil},
+		{"t/plugin/openid-connect.t", 54, nil},
+		{"t/plugin/openid-connect10.t", 11, []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12}},
+		{"t/plugin/openid-connect2.t", 21, nil},
+		{"t/plugin/openid-connect3.t", 6, nil},
+		{"t/plugin/openid-connect4.t", 6, nil},
+		{"t/plugin/openid-connect6.t", 8, nil},
+		{"t/plugin/openid-connect7.t", 10, nil},
+		{"t/plugin/openid-connect8.t", 8, nil},
+		{"t/plugin/openid-connect9.t", 6, nil},
 	}
 	if len(manifest.Sources) != len(wantSources) {
 		t.Fatalf("sources = %d, want %d", len(manifest.Sources), len(wantSources))
 	}
 	total := 0
-	next := make(map[string]int, len(wantSources))
+	nextIndex := make(map[string]int, len(wantSources))
+	testNumbersByFile := make(map[string][]int, len(wantSources))
 	for i, want := range wantSources {
 		got := manifest.Sources[i]
 		if got.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
@@ -86,8 +91,19 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		if got.File != want.file || got.Tests != want.tests {
 			t.Fatalf("source %d = (%q, %d), want (%q, %d)", i+1, got.File, got.Tests, want.file, want.tests)
 		}
+		numbers := want.testNumbers
+		if numbers == nil {
+			numbers = make([]int, want.tests)
+			for j := range numbers {
+				numbers[j] = j + 1
+			}
+		}
+		if len(numbers) != want.tests {
+			t.Fatalf("source %d %q testNumbers = %d entries, want %d", i+1, want.file, len(numbers), want.tests)
+		}
 		total += want.tests
-		next[want.file] = 1
+		nextIndex[want.file] = 0
+		testNumbersByFile[want.file] = numbers
 	}
 	if len(manifest.Cases) != total {
 		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
@@ -99,14 +115,19 @@ func TestStandaloneManifestMapsOneIndependentCasePerPinnedBlock(t *testing.T) {
 		if len(testCase.Source.Tests) != 1 {
 			t.Fatalf("case %d %q source tests = %v, want one pinned block", i+1, testCase.Name, testCase.Source.Tests)
 		}
-		want, ok := next[testCase.Source.File]
+		idx, ok := nextIndex[testCase.Source.File]
 		if !ok {
 			t.Fatalf("case %d %q has unexpected source %q", i+1, testCase.Name, testCase.Source.File)
 		}
+		numbers := testNumbersByFile[testCase.Source.File]
+		if idx >= len(numbers) {
+			t.Fatalf("case %d %q has more cases than expected for source %q", i+1, testCase.Name, testCase.Source.File)
+		}
+		want := numbers[idx]
 		if testCase.Source.Tests[0] != want {
 			t.Fatalf("case %d %q source test = %d, want %d", i+1, testCase.Name, testCase.Source.Tests[0], want)
 		}
-		next[testCase.Source.File]++
+		nextIndex[testCase.Source.File] = idx + 1
 		if _, exists := names[testCase.Name]; exists {
 			t.Errorf("case %d has duplicate behavior name %q", i+1, testCase.Name)
 		}
@@ -237,8 +258,6 @@ func assertOpenIDSensitiveSemantics(t *testing.T, testCase openIDManifestCase) {
 		if number >= 3 {
 			contains("required_scopes")
 		}
-	case "t/plugin/openid-connect5.t":
-		contains("concurrency:")
 	case "t/plugin/openid-connect6.t":
 		if number >= 4 {
 			contains("introspection_addon_headers")

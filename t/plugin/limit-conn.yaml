@@ -570,7 +570,7 @@ cases:
       - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
       - *redis_fixture
     steps:
-      - {name: real-ip-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status_counts: {200: 6, 503: 4}}}
+      - {name: real-ip-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}, output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.1route'}}}
 
   - name: limit-conn-redis-18-forwarded-for-header-key
     source: {file: t/plugin/limit-conn-redis.t, tests: [18]}
@@ -606,7 +606,7 @@ cases:
       - {name: origin, kind: http, expect: *redis_origin_expect, count: {at_least: 6, at_most: 6}, respond: [{status: 200, body: passed, delay: 500ms}]}
       - *redis_fixture
     steps:
-      - {name: forwarded-for-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status_counts: {200: 6, 503: 4}}}
+      - {name: forwarded-for-capacity-is-six, repeat: 10, concurrency: 10, input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}, output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.2route'}}}
 
   - name: limit-conn-redis-20-default-rejected-code
     source: {file: t/plugin/limit-conn-redis.t, tests: [20]}
@@ -1563,7 +1563,7 @@ cases:
         repeat: 10
         concurrency: 10
         input: {method: GET, path: /limit_conn, headers: {X-Real-IP: 10.10.10.1}}
-        output: {status_counts: {200: 6, 503: 4}}
+        output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.1route'}}
 
   - name: limit-conn-18-forwarded-for-header-key
     source: {file: t/plugin/limit-conn.t, tests: [18]}
@@ -1611,7 +1611,7 @@ cases:
         repeat: 10
         concurrency: 10
         input: {method: GET, path: /limit_conn, headers: {X-Forwarded-For: 10.10.10.2}}
-        output: {status_counts: {200: 6, 503: 4}}
+        output: {status_counts: {200: 6, 503: 4}, logs: {matches: 'limit key: 10\.10\.10\.2route'}}
 
   - name: limit-conn-20-default-rejected-code
     source: {file: t/plugin/limit-conn.t, tests: [20]}
@@ -1832,7 +1832,7 @@ cases:
         repeat: 10
         concurrency: 10
         input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
-        output: {status_counts: {200: 10}}
+        output: {status_counts: {200: 10}, logs: {matches: 'limit key: consumer_jackroute'}}
 
   - name: limit-conn-29-update-consumer-capacity
     source: {file: t/plugin/limit-conn.t, tests: [29]}
@@ -1885,7 +1885,7 @@ cases:
         repeat: 10
         concurrency: 10
         input: {method: GET, path: /limit_conn, headers: {apikey: auth-jack}}
-        output: {status_counts: {200: 3, 503: 7}}
+        output: {status_counts: {200: 3, 503: 7}, logs: {matches: 'limit key: consumer_jackroute'}}
 
   - name: limit-conn-31-consumer-key-missing-burst
     source: {file: t/plugin/limit-conn.t, tests: [31]}

@@ -16,8 +16,18 @@ import (
 
 func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 	const (
-		maxHistoricalDuplicateGroups = 26
-		maxHistoricalDuplicateCases  = 142
+		// maxHistoricalDuplicateGroups was raised from 26 to 27 when WRONG-7
+		// remediation pointed
+		// limit-count-redis-sentinel-create-a-limit-count-with-broken-redis-sentinels-test-11
+		// at genuinely unreachable sentinels (matching upstream
+		// limit-count-redis-sentinel.t TEST 11/12). Both cases now issue the
+		// identical real request against the identical broken-sentinel route
+		// upstream pairs them against (TEST 11 only exercises the admin PUT in
+		// upstream; this harness has no separate admin-API phase), so they are
+		// unavoidably identical once test-11 is corrected. maxHistoricalDuplicateCases
+		// dropped from 142 to 120 in the same change, a net improvement.
+		maxHistoricalDuplicateGroups = 27
+		maxHistoricalDuplicateCases  = 120
 	)
 	currentSourcePrefixes := []string{
 		"limit-count-consumer-isolation-",
@@ -156,9 +166,10 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 
 	var manifest struct {
 		Sources []struct {
-			Commit string `yaml:"commit"`
-			File   string `yaml:"file"`
-			Tests  int    `yaml:"tests"`
+			Commit      string `yaml:"commit"`
+			File        string `yaml:"file"`
+			Tests       int    `yaml:"tests"`
+			TestNumbers []int  `yaml:"test_numbers"`
 		} `yaml:"sources"`
 		Cases []limitCountManifestCase `yaml:"cases"`
 	}
@@ -186,7 +197,7 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 		{"t/plugin/limit-count-rules.t", 22},
 		{"t/plugin/limit-count-sliding.t", 8},
 		{"t/plugin/limit-count-variable.t", 13},
-		{"t/plugin/limit-count.t", 42},
+		{"t/plugin/limit-count.t", 41},
 		{"t/plugin/limit-count2.t", 22},
 		{"t/plugin/limit-count3.t", 13},
 		{"t/plugin/limit-count4.t", 5},
@@ -197,7 +208,13 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 	}
 
 	total := 0
-	next := make(map[string]int, len(wantSources))
+	// sequence holds, per source file, the ordered list of upstream test
+	// numbers this manifest maps to independent cases. Most files map every
+	// test 1..Tests contiguously; a source may instead declare an explicit
+	// test_numbers list (skipping numbers blocked in corpus_scope.yaml, e.g.
+	// limit-count.t test 23 is blocked_design and intentionally absent).
+	sequence := make(map[string][]int, len(wantSources))
+	cursor := make(map[string]int, len(wantSources))
 	for i, want := range wantSources {
 		source := manifest.Sources[i]
 		if source.Commit != "c3d7d5ec69774121f53d2e20d29d09c816795dd7" {
@@ -213,8 +230,24 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 				want.tests,
 			)
 		}
+		numbers := source.TestNumbers
+		if len(numbers) == 0 {
+			numbers = make([]int, want.tests)
+			for n := range numbers {
+				numbers[n] = n + 1
+			}
+		} else if len(numbers) != want.tests {
+			t.Fatalf(
+				"source %d %q declares %d test_numbers, want %d to match tests",
+				i+1,
+				source.File,
+				len(numbers),
+				want.tests,
+			)
+		}
 		total += want.tests
-		next[want.file] = 1
+		sequence[want.file] = numbers
+		cursor[want.file] = 0
 	}
 	if len(manifest.Cases) != total {
 		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
@@ -223,10 +256,15 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 	genericName := regexp.MustCompile(`(?i)(block-[0-9]+|source-[0-9]+|placeholder|generic|probe|lifecycle)`)
 	names := make(map[string]struct{}, total)
 	for i, testCase := range manifest.Cases {
-		want, ok := next[testCase.Source.File]
+		numbers, ok := sequence[testCase.Source.File]
 		if !ok {
 			t.Fatalf("case %d %q has unknown source %q", i+1, testCase.Name, testCase.Source.File)
 		}
+		position := cursor[testCase.Source.File]
+		if position >= len(numbers) {
+			t.Fatalf("case %d %q has more cases than declared test_numbers for %q", i+1, testCase.Name, testCase.Source.File)
+		}
+		want := numbers[position]
 		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {
 			t.Fatalf(
 				"case %d %q source tests = %v, want [%d]",
@@ -236,7 +274,7 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 				want,
 			)
 		}
-		next[testCase.Source.File]++
+		cursor[testCase.Source.File]++
 		if _, duplicate := names[testCase.Name]; duplicate {
 			t.Errorf("case %d has duplicate behavior name %q", i+1, testCase.Name)
 		}
@@ -248,7 +286,7 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 		assertLimitCountCaseResources(t, i+1, testCase)
 	}
 	for _, source := range wantSources {
-		if got := next[source.file] - 1; got != source.tests {
+		if got := cursor[source.file]; got != source.tests {
 			t.Fatalf("%s mapped through block %d, want %d", source.file, got, source.tests)
 		}
 	}

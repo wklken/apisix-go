@@ -851,6 +851,54 @@ func TestHandlerValidatesIssuerAgainstConfiguredIssuers(t *testing.T) {
 	}
 }
 
+func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		Session:      SessionConfig{Secret: "0123456789abcdef"},
+	})
+
+	if p.config.Scope != "openid" || p.config.Timeout != 3 || p.config.Realm != "apisix" ||
+		p.config.LogoutPath != "/logout" || p.config.UnauthAction != "auth" ||
+		p.config.IntrospectionEndpointAuthMethod != "client_secret_basic" ||
+		p.config.TokenEndpointAuthMethod != "client_secret_basic" || p.config.ClientJWTAssertionExpiresIn != 60 {
+		t.Fatalf("OIDC defaults not applied: %#v", p.config)
+	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify ||
+		p.config.SetAccessTokenHeader == nil || !*p.config.SetAccessTokenHeader ||
+		p.config.SetIDTokenHeader == nil || !*p.config.SetIDTokenHeader ||
+		p.config.SetUserinfoHeader == nil || !*p.config.SetUserinfoHeader ||
+		p.config.SetRefreshTokenHeader == nil || *p.config.SetRefreshTokenHeader ||
+		p.config.RenewAccessTokenOnExpiry == nil || !*p.config.RenewAccessTokenOnExpiry {
+		t.Fatalf("OIDC boolean defaults not applied: %#v", p.config)
+	}
+	if p.config.Session.Storage != "cookie" || p.config.Session.CookieName != "session" ||
+		p.config.Session.CookiePath != "/" || p.config.Session.CookieHTTPOnly == nil ||
+		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSameSite != "Default" {
+		t.Fatalf("OIDC session defaults not applied: %#v", p.config.Session)
+	}
+}
+
+func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"client_id": "apisix", "client_secret": "secret-a",
+		"discovery": "https://idp.example.com/.well-known/openid-configuration",
+		"session":   map[string]any{"secret": "0123456789abcdef", "cookie_same_site": "None"},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
+	}
+	config["session"].(map[string]any)["cookie_secure"] = true
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
+	}
+}
+
 func TestSchemaRejectsUnknownSessionFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -1719,8 +1767,9 @@ func TestHandlerLogoutFallsBackToPostLogoutRedirectURI(t *testing.T) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "https://example.com/logout", nil))
 
-	if got := rr.Header().Get("Location"); got != cfg.PostLogoutRedirectURI {
-		t.Fatalf("logout fallback = %q, want %q", got, cfg.PostLogoutRedirectURI)
+	want := cfg.PostLogoutRedirectURI + "?post_logout_redirect_uri=" + url.QueryEscape(cfg.PostLogoutRedirectURI)
+	if got := rr.Header().Get("Location"); got != want {
+		t.Fatalf("logout fallback = %q, want %q", got, want)
 	}
 }
 

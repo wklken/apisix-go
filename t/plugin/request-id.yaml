@@ -245,6 +245,7 @@ cases:
           headers:
             X-Request-Id:
               matches: '^(?:[1-9a-f][0-9a-f]{3}|0[1-9a-f][0-9a-f]{2}|00[1-9a-f][0-9a-f]|000[1-9a-f])[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          unique_headers: [X-Request-Id]
 
   - name: uuid-v7-custom-header
     source:

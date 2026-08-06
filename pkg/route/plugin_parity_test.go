@@ -67,13 +67,13 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumer("restricted-basic-user"); err == nil {
+		if _, err := store.GetConsumerByPluginKey("basic-auth", "restricted-basic-user"); err == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := store.GetConsumer("restricted-basic-user"); err != nil {
-		t.Fatalf("store consumer: %v", err)
+	if _, err := store.GetConsumerByPluginKey("basic-auth", "restricted-basic-user"); err != nil {
+		t.Fatalf("store consumer basic-auth index: %v", err)
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

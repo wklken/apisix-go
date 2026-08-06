@@ -197,7 +197,9 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "set_id_token_header": false,
+                "set_userinfo_header": false
               }
             },
             "upstream": {
@@ -228,6 +230,12 @@
               "headers": {
                 "X-Access-Token": {
                   "equals": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsInNjb3BlIjoib3BlbmlkIHJlYWQgd3JpdGUiLCJhdWQiOiJpbnRlZ3JhdGlvbi1jbGllbnQiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLnRlc3QiLCJleHAiOjQxMDI0NDQ4MDB9.meTpjwB2tD1sFo8vCfuDhabg_RmgyBGo3TWDtPEOZOsC25QCpD_EzZvic6p0j_yHdt2PgmB00lt7PASo9Qpai-raI0htzA0PCXHgw3bCcaUPjUbkeLXdfvczNPUqE6pG3vgyH0E8u-k5BLcgifg6VvnTSerh3vwqiVUXdniTR8BxgI8WsoTpwD5_ZWJZc6AbZbp4IrZDn6W6pcPorRU973B30h0dGuD0N3FQ9cdWRdH8ce_uSSIN59WoSfxtYm0aSQfuII54OZ_fUscxqONw3E3Rzz75TaIEdnJZvzOa5NUcwcG-E0duoD7R5bDvBk2SQF6Y8O8iRiqX6EqDel4i1A"
+                },
+                "X-ID-Token": {
+                  "absent": true
+                },
+                "X-Userinfo": {
+                  "absent": true
                 }
               }
             }
@@ -269,7 +277,9 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "set_id_token_header": false,
+                "set_userinfo_header": false
               }
             },
             "upstream": {
@@ -300,6 +310,12 @@
               "headers": {
                 "X-Access-Token": {
                   "equals": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsInNjb3BlIjoib3BlbmlkIHJlYWQgd3JpdGUiLCJhdWQiOiJpbnRlZ3JhdGlvbi1jbGllbnQiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLnRlc3QiLCJleHAiOjQxMDI0NDQ4MDB9.meTpjwB2tD1sFo8vCfuDhabg_RmgyBGo3TWDtPEOZOsC25QCpD_EzZvic6p0j_yHdt2PgmB00lt7PASo9Qpai-raI0htzA0PCXHgw3bCcaUPjUbkeLXdfvczNPUqE6pG3vgyH0E8u-k5BLcgifg6VvnTSerh3vwqiVUXdniTR8BxgI8WsoTpwD5_ZWJZc6AbZbp4IrZDn6W6pcPorRU973B30h0dGuD0N3FQ9cdWRdH8ce_uSSIN59WoSfxtYm0aSQfuII54OZ_fUscxqONw3E3Rzz75TaIEdnJZvzOa5NUcwcG-E0duoD7R5bDvBk2SQF6Y8O8iRiqX6EqDel4i1A"
+                },
+                "X-ID-Token": {
+                  "absent": true
+                },
+                "X-Userinfo": {
+                  "absent": true
                 }
               }
             }
@@ -477,7 +493,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "properties/redis/properties/port/type: expected integer, but got string"
             }
           }
         }
@@ -511,7 +527,8 @@
                   }
                 },
                 "ssl_verify": false,
-                "set_refresh_token_header": true
+                "set_refresh_token_header": true,
+                "access_token_expires_leeway": 60
               }
             },
             "upstream": {
@@ -541,13 +558,13 @@
               },
               "headers": {
                 "X-Access-Token": {
-                  "equals": "session-access"
+                  "equals": "refreshed-access"
                 },
                 "X-ID-Token": {
                   "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
                 },
                 "X-Refresh-Token": {
-                  "equals": "session-refresh"
+                  "equals": "refreshed-refresh"
                 },
                 "X-Userinfo": {
                   "matches": ".+"
@@ -593,6 +610,15 @@
                   "equals": "Bearer session-access"
                 }
               }
+            },
+            {
+              "method": "POST",
+              "path": {
+                "equals": "/token"
+              },
+              "body": {
+                "matches": "grant_type=refresh_token&refresh_token=session-refresh"
+              }
             }
           ],
           "respond": [
@@ -602,11 +628,15 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":1}"
             },
             {
               "status": 200,
               "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
+            },
+            {
+              "status": 200,
+              "body": "{\"access_token\":\"refreshed-access\",\"refresh_token\":\"refreshed-refresh\",\"expires_in\":3600}"
             }
           ]
         }
@@ -716,7 +746,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "session.redis is required when session.storage is redis"
             }
           }
         }
@@ -847,7 +877,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "missing properties: 'client_id'"
             }
           }
         }
@@ -905,7 +935,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "properties/client_id/type: expected string, but got number"
             }
           }
         }
@@ -1012,7 +1042,8 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "introspection_endpoint": "{{FIXTURE.idp.URL}}/introspect",
-                "ssl_verify": false
+                "ssl_verify": false,
+                "client_rsa_private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKebDxlvQMGyEesAL1r1nIJBkSdqu3Hr7noq/0ukiZqVQLSJPMOv\n0oxQSutvvK3hoibwGakDOza+xRITB7cs2cECAwEAAQJAYPWh6YvjwWobVYC45Hz7\n+pqlt1DWeVQMlN407HSWKjdH548ady46xiQuZ5Cfx3YyCcnsfVWaQNbC+jFbY4YL\nwQIhANfASwz8+2sKg1xtvzyaChX5S5XaQTB+azFImBJumixZAiEAxt93Td6JH1RF\nIeQmD/K+DClZMqSrliUzUqJnCPCzy6kCIAekDsRh/UF4ONjAJkKuLedDUfL3rNFb\n2M4BBSm58wnZAiEAwYLMOg8h6kQ7iMDRcI9I8diCHM8yz0SfbfbsvzxIFxECICXs\nYvIufaZvBa8f+E/9CANlVhm5wKAyM8N8GJsiCyEG\n-----END RSA PRIVATE KEY-----"
               }
             },
             "upstream": {
@@ -1078,10 +1109,12 @@
             "bucket": "routes",
             "key": "openid-connect-5",
             "fields": {
-              "/plugins/openid-connect/client_secret": "JzDCJ/3ZALYTXC7pdfF/wxWClTc/EA5AQbJ7lTNtP9E="
+              "/plugins/openid-connect/client_secret": "JzDCJ/3ZALYTXC7pdfF/wxWClTc/EA5AQbJ7lTNtP9E=",
+              "/plugins/openid-connect/client_rsa_private_key": "HrMHUvE9Esvn7GnZ+vAynaIg/8wlB3r0zm0htmnwofYPZeBpLnpW3iN9UtQG4ZIBYRZih6EBuRK8W3Kychw/SgjIFuzVeTFowBCUfd1wZ4Q+frUOLZ0Xmkh8j3yHUprnh+d9PA8EHCEapdkWY3psJj6rTgrREzjDEVf/TV3EjjfgG16ih5/c3TChApLXwfEwfBp5APSf7kzMccCRbA4bXvMDsQSQAwVsRD8cjJkSdHTvuzfg1g8xoCy4I05DsMM8CybJAd+BDZnJxhrGIQaItu5/0XQJy+uy/niOpzYYN+NDX+8fl65VUxdUtqXF82ChRlmGP3+zKN7epufAsL/36pHOnS73Q7WBKRxyyA16BEBk0wK7rI+KemBfG5YFXjcBnPkxYssSudqhmlcr6e5Tl0LhVj/BIj94fVE3/EJ+NO3BJMrlhjorilrQKAsiCWujWSqAK7gtAp3YEO//yOygh/p8gh22NdIV0ykGAx4QNKINUgdgh+g8DdykNGLGStH8TPUs8GmzV7nxvw/0cbiocLps6uk0VjjVUqUAvOdwpbiRwv6effPUB6cxW3G6QllBbTP8I+eoFIRfYd6cFJPpX1AtISfNZw459WarwZmHrZGOQU4iKlyl2yLcKY634Fx5JykUY5YP+MYYDHbIcD2gxA=="
             },
             "forbidden_matches": [
-              "integration\\-secret"
+              "integration\\-secret",
+              "BEGIN RSA PRIVATE KEY"
             ]
           }
         }
@@ -1516,9 +1549,10 @@
                 },
                 "ssl_verify": false,
                 "set_refresh_token_header": false,
-                "set_access_token_header": false,
+                "set_access_token_header": true,
                 "set_id_token_header": false,
-                "set_userinfo_header": false
+                "set_userinfo_header": false,
+                "access_token_in_authorization_header": true
               }
             },
             "upstream": {
@@ -1558,6 +1592,9 @@
                 },
                 "X-Userinfo": {
                   "absent": true
+                },
+                "Authorization": {
+                  "equals": "Bearer session-access"
                 }
               }
             }
@@ -3159,7 +3196,7 @@
         "routes": [
           {
             "id": "openid-connect-30",
-            "uri": "/oidc/openid-connect/30",
+            "uri": "/*",
             "plugins": {
               "openid-connect": {
                 "client_id": "integration-client",
@@ -3169,7 +3206,7 @@
                   "secret": "0123456789abcdef"
                 },
                 "ssl_verify": false,
-                "logout_path": "/oidc/openid-connect/30",
+                "logout_path": "/oidc/openid-connect/30/logout",
                 "post_logout_redirect_uri": "https://client.example.test/logged-out"
               }
             },
@@ -3203,21 +3240,83 @@
               "path": {
                 "equals": "/.well-known/openid-configuration"
               }
+            },
+            {
+              "method": "POST",
+              "path": {
+                "equals": "/token"
+              },
+              "body": {
+                "matches": "code=good"
+              }
+            },
+            {
+              "method": "GET",
+              "path": {
+                "equals": "/userinfo"
+              },
+              "headers": {
+                "Authorization": {
+                  "equals": "Bearer session-access"
+                }
+              }
             }
           ],
           "respond": [
             {
               "status": 200,
               "body": "{\"issuer\":\"https://issuer.example.test\",\"authorization_endpoint\":\"https://provider.example.test/authorize\",\"token_endpoint\":\"{{SELF.URL}}/token\",\"userinfo_endpoint\":\"{{SELF.URL}}/userinfo\",\"jwks_uri\":\"{{SELF.URL}}/jwks\",\"introspection_endpoint\":\"{{SELF.URL}}/introspect\",\"revocation_endpoint\":\"{{SELF.URL}}/revoke\",\"end_session_endpoint\":\"https://provider.example.test/logout\"}"
+            },
+            {
+              "status": 200,
+              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+            },
+            {
+              "status": 200,
+              "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
             }
           ]
         }
       ],
       "steps": [
         {
-          "name": "exercise-access-route-without-bearer-token-and-request-logout-to-redirect-to-post",
+          "name": "start-access-route-without-bearer-token-and-request-logout-to-redirect-to-post",
           "input": {
             "path": "/oidc/openid-connect/30"
+          },
+          "output": {
+            "status": 302,
+            "headers": {
+              "Location": {
+                "matches": "^https://provider\\.example\\.test/authorize\\?.*state="
+              }
+            },
+            "captures": {
+              "state": {
+                "header": "Location",
+                "matches": ".*[?&]state=([^&]+)"
+              }
+            }
+          }
+        },
+        {
+          "name": "complete-access-route-without-bearer-token-and-request-logout-to-redirect-to-post",
+          "input": {
+            "path": "/oidc/openid-connect/30/.apisix/redirect?code=good&state={{CAPTURE.state}}"
+          },
+          "output": {
+            "status": 302,
+            "headers": {
+              "Location": {
+                "equals": "/oidc/openid-connect/30"
+              }
+            }
+          }
+        },
+        {
+          "name": "exercise-access-route-without-bearer-token-and-request-logout-to-redirect-to-post",
+          "input": {
+            "path": "/oidc/openid-connect/30/logout"
           },
           "output": {
             "status": 302,
@@ -3505,7 +3604,8 @@
                 "client_id": "integration-client",
                 "discovery": "{{FIXTURE.idp.URL}}/.well-known/openid-configuration",
                 "bearer_only": true,
-                "use_jwks": true
+                "use_jwks": true,
+                "set_userinfo_header": true
               }
             },
             "upstream": {
@@ -3532,6 +3632,11 @@
               "method": "GET",
               "path": {
                 "equals": "/oidc/openid-connect/34"
+              },
+              "headers": {
+                "X-Userinfo": {
+                  "matches": "^ey"
+                }
               }
             }
           ]
@@ -3737,7 +3842,7 @@
             "status": 302,
             "headers": {
               "Location": {
-                "matches": "^https://client\\.example\\.test/logged-out$"
+                "matches": "^https://client\\.example\\.test/logged-out\\?post_logout_redirect_uri=https%3A%2F%2Fclient\\.example\\.test%2Flogged-out$"
               }
             }
           }
@@ -4109,7 +4214,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "session.secret must be at least 16 characters for code flow"
             }
           }
         }
@@ -4330,7 +4435,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "client_secret is required for bearer introspection"
             }
           }
         }
@@ -4554,7 +4659,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "client_secret is required for code flow"
             }
           }
         }
@@ -4683,7 +4788,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "client_secret is required for bearer introspection"
             }
           }
         }
@@ -4744,7 +4849,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "client_secret is required for code flow"
             }
           }
         }
@@ -4978,6 +5083,9 @@
             "headers": {
               "Location": {
                 "equals": "/oidc/openid-connect/52"
+              },
+              "Set-Cookie": {
+                "matches": "custom_oidc="
               }
             }
           }
@@ -5679,63 +5787,6 @@
       ]
     },
     {
-      "name": "openid-connect10-build-session-opts-returns-nil-for-nil-input-test-6",
-      "source": {
-        "file": "t/plugin/openid-connect10.t",
-        "tests": [
-          6
-        ]
-      },
-      "config": {
-        "routes": [
-          {
-            "id": "openid-connect10-6",
-            "uri": "/oidc/openid-connect10/6",
-            "plugins": {
-              "openid-connect": {
-                "client_id": "integration-client",
-                "client_secret": "integration-secret",
-                "discovery": "http://127.0.0.1:1/.well-known/openid-configuration"
-              }
-            },
-            "upstream": {
-              "type": "roundrobin",
-              "nodes": {
-                "{{FIXTURE.primary.ADDR}}": 1
-              }
-            }
-          }
-        ]
-      },
-      "fixtures": [
-        {
-          "name": "primary",
-          "kind": "http",
-          "respond": [
-            {
-              "status": 200,
-              "body": "openid upstream"
-            }
-          ],
-          "expect_requests": 0
-        }
-      ],
-      "steps": [
-        {
-          "name": "reject-build-session-opts-returns-nil-for-nil-input",
-          "input": {
-            "path": "/oidc/openid-connect10/6"
-          },
-          "output": {
-            "status": 404,
-            "logs": {
-              "matches": "build route"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "openid-connect10-build-session-opts-works-when-cookie-field-is-absent-test-7",
       "source": {
         "file": "t/plugin/openid-connect10.t",
@@ -5875,7 +5926,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "properties/cookie/properties/lifetime/type: expected integer, but got string"
             }
           }
         }
@@ -6117,7 +6168,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "additionalProperties 'unknown' not allowed"
             }
           }
         }
@@ -6179,7 +6230,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "cookie_same_site/enum: value must be one of"
             }
           }
         }
@@ -7660,7 +7711,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "check claim_schema failed"
             }
           }
         }
@@ -9265,192 +9316,6 @@
       ]
     },
     {
-      "name": "openid-connect5-call-to-route-with-locking-session-storage-should-not-block-subsequent-r-test-1",
-      "source": {
-        "file": "t/plugin/openid-connect5.t",
-        "tests": [
-          1
-        ]
-      },
-      "config": {
-        "routes": [
-          {
-            "id": "openid-connect5-1",
-            "uri": "/*",
-            "plugins": {
-              "openid-connect": {
-                "client_id": "integration-client",
-                "client_secret": "integration-secret",
-                "discovery": "{{FIXTURE.idp.URL}}/.well-known/openid-configuration",
-                "session": {
-                  "secret": "0123456789abcdef"
-                },
-                "ssl_verify": false
-              }
-            },
-            "upstream": {
-              "type": "roundrobin",
-              "nodes": {
-                "{{FIXTURE.primary.ADDR}}": 1
-              }
-            }
-          }
-        ]
-      },
-      "fixtures": [
-        {
-          "name": "primary",
-          "kind": "http",
-          "respond": [
-            {
-              "status": 200,
-              "body": "openid upstream"
-            }
-          ],
-          "expect_requests": 0
-        },
-        {
-          "name": "idp",
-          "kind": "http",
-          "expect": [
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/.well-known/openid-configuration"
-              }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/.well-known/openid-configuration"
-              }
-            }
-          ],
-          "respond": [
-            {
-              "status": 200,
-              "body": "{\"issuer\":\"https://issuer.example.test\",\"authorization_endpoint\":\"https://provider.example.test/authorize\",\"token_endpoint\":\"{{SELF.URL}}/token\",\"userinfo_endpoint\":\"{{SELF.URL}}/userinfo\",\"jwks_uri\":\"{{SELF.URL}}/jwks\",\"introspection_endpoint\":\"{{SELF.URL}}/introspect\",\"revocation_endpoint\":\"{{SELF.URL}}/revoke\",\"end_session_endpoint\":\"https://provider.example.test/logout\"}"
-            },
-            {
-              "status": 200,
-              "body": "{\"issuer\":\"https://issuer.example.test\",\"authorization_endpoint\":\"https://provider.example.test/authorize\",\"token_endpoint\":\"{{SELF.URL}}/token\",\"userinfo_endpoint\":\"{{SELF.URL}}/userinfo\",\"jwks_uri\":\"{{SELF.URL}}/jwks\",\"introspection_endpoint\":\"{{SELF.URL}}/introspect\",\"revocation_endpoint\":\"{{SELF.URL}}/revoke\",\"end_session_endpoint\":\"https://provider.example.test/logout\"}"
-            }
-          ]
-        }
-      ],
-      "steps": [
-        {
-          "name": "exercise-call-to-route-with-locking-session-storage-should-not-block-subsequent-r",
-          "input": {
-            "path": "/oidc/openid-connect5/1"
-          },
-          "output": {
-            "status": 302,
-            "headers": {
-              "Location": {
-                "matches": "^https://provider\\.example\\.test/authorize\\?.*client_id=integration-client"
-              }
-            }
-          },
-          "concurrency": 2,
-          "repeat": 2
-        }
-      ]
-    },
-    {
-      "name": "openid-connect5-call-to-route-with-locking-session-storage-no-authentication-and-unauth-test-2",
-      "source": {
-        "file": "t/plugin/openid-connect5.t",
-        "tests": [
-          2
-        ]
-      },
-      "config": {
-        "routes": [
-          {
-            "id": "openid-connect5-2",
-            "uri": "/*",
-            "plugins": {
-              "openid-connect": {
-                "client_id": "integration-client",
-                "client_secret": "integration-secret",
-                "discovery": "{{FIXTURE.idp.URL}}/.well-known/openid-configuration",
-                "session": {
-                  "secret": "0123456789abcdef"
-                },
-                "ssl_verify": false
-              }
-            },
-            "upstream": {
-              "type": "roundrobin",
-              "nodes": {
-                "{{FIXTURE.primary.ADDR}}": 1
-              }
-            }
-          }
-        ]
-      },
-      "fixtures": [
-        {
-          "name": "primary",
-          "kind": "http",
-          "respond": [
-            {
-              "status": 200,
-              "body": "openid upstream"
-            }
-          ],
-          "expect_requests": 0
-        },
-        {
-          "name": "idp",
-          "kind": "http",
-          "expect": [
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/.well-known/openid-configuration"
-              }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/.well-known/openid-configuration"
-              }
-            }
-          ],
-          "respond": [
-            {
-              "status": 200,
-              "body": "{\"issuer\":\"https://issuer.example.test\",\"authorization_endpoint\":\"https://provider.example.test/authorize\",\"token_endpoint\":\"{{SELF.URL}}/token\",\"userinfo_endpoint\":\"{{SELF.URL}}/userinfo\",\"jwks_uri\":\"{{SELF.URL}}/jwks\",\"introspection_endpoint\":\"{{SELF.URL}}/introspect\",\"revocation_endpoint\":\"{{SELF.URL}}/revoke\",\"end_session_endpoint\":\"https://provider.example.test/logout\"}"
-            },
-            {
-              "status": 200,
-              "body": "{\"issuer\":\"https://issuer.example.test\",\"authorization_endpoint\":\"https://provider.example.test/authorize\",\"token_endpoint\":\"{{SELF.URL}}/token\",\"userinfo_endpoint\":\"{{SELF.URL}}/userinfo\",\"jwks_uri\":\"{{SELF.URL}}/jwks\",\"introspection_endpoint\":\"{{SELF.URL}}/introspect\",\"revocation_endpoint\":\"{{SELF.URL}}/revoke\",\"end_session_endpoint\":\"https://provider.example.test/logout\"}"
-            }
-          ]
-        }
-      ],
-      "steps": [
-        {
-          "name": "exercise-call-to-route-with-locking-session-storage-no-authentication-and-unauth",
-          "input": {
-            "path": "/oidc/openid-connect5/2"
-          },
-          "output": {
-            "status": 302,
-            "headers": {
-              "Location": {
-                "matches": "^https://provider\\.example\\.test/authorize\\?.*client_id=integration-client"
-              }
-            }
-          },
-          "concurrency": 2,
-          "repeat": 2
-        }
-      ]
-    },
-    {
       "name": "openid-connect6-check-configuration-of-cookie-test-1",
       "source": {
         "file": "t/plugin/openid-connect6.t",
@@ -10646,7 +10511,10 @@
             }
           },
           "output": {
-            "status": 403
+            "status": 403,
+            "body": {
+              "equals": "{\"error\":\"required audience claim not present\"}"
+            }
           }
         }
       ]
@@ -11084,7 +10952,10 @@
             }
           },
           "output": {
-            "status": 403
+            "status": 403,
+            "body": {
+              "equals": "{\"error\":\"required audience claim not present\"}"
+            }
           }
         }
       ]
@@ -11147,7 +11018,7 @@
           "output": {
             "status": 404,
             "logs": {
-              "matches": "build route"
+              "matches": "claim_validator/properties/issuer/properties/valid_issuers/type: expected array, but got number"
             }
           }
         }
@@ -12298,7 +12169,20 @@
       "repository": "https://github.com/apache/apisix",
       "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
       "file": "t/plugin/openid-connect10.t",
-      "tests": 12
+      "tests": 11,
+      "test_numbers": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
     },
     {
       "repository": "https://github.com/apache/apisix",
@@ -12317,12 +12201,6 @@
       "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
       "file": "t/plugin/openid-connect4.t",
       "tests": 6
-    },
-    {
-      "repository": "https://github.com/apache/apisix",
-      "commit": "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-      "file": "t/plugin/openid-connect5.t",
-      "tests": 2
     },
     {
       "repository": "https://github.com/apache/apisix",

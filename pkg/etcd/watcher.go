@@ -1,14 +1,21 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/store"
 	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+type (
+	watchOpenFunc func(context.Context, int64) clientv3.WatchChan
+	snapshotFunc  func(context.Context) (*clientv3.GetResponse, error)
 )
 
 type ConfigClient struct {
@@ -21,6 +28,11 @@ type ConfigClient struct {
 	closeErr       error
 	requestTimeout time.Duration
 	startupRetry   int
+
+	openWatch    watchOpenFunc
+	loadSnapshot snapshotFunc
+	knownKeys    map[string]struct{}
+	lastRevision int64
 }
 
 type ClientOptions struct {
@@ -70,13 +82,25 @@ func NewConfigClientWithOptions(
 		return nil, err
 	}
 
-	return &ConfigClient{
+	configClient := &ConfigClient{
 		client:         client,
 		prefix:         prefix,
 		events:         events,
 		requestTimeout: options.RequestTimeout,
 		startupRetry:   options.StartupRetry,
-	}, nil
+		knownKeys:      make(map[string]struct{}),
+	}
+	configClient.openWatch = func(ctx context.Context, revision int64) clientv3.WatchChan {
+		opts := []clientv3.OpOption{clientv3.WithPrefix()}
+		if revision > 0 {
+			opts = append(opts, clientv3.WithRev(revision))
+		}
+		return client.Watch(ctx, prefix, opts...)
+	}
+	configClient.loadSnapshot = func(ctx context.Context) (*clientv3.GetResponse, error) {
+		return client.Get(ctx, prefix, clientv3.WithPrefix())
+	}
+	return configClient, nil
 }
 
 func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Config, error) {
@@ -97,42 +121,132 @@ func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Conf
 	return config, nil
 }
 
-func (c *ConfigClient) Watch(contexts ...context.Context) {
-	watcher := clientv3.NewWatcher(c.client)
-	defer func() { _ = watcher.Close() }()
+func watchRetryDelay(attempt int) time.Duration {
+	delay := 100 * time.Millisecond
+	for range min(attempt, 6) {
+		delay *= 2
+	}
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
 
+func waitForWatchRetry(ctx context.Context, attempt int) bool {
+	timer := time.NewTimer(watchRetryDelay(attempt))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
+	snapshotCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	response, err := c.loadSnapshot(snapshotCtx)
+	if err != nil {
+		return err
+	}
+	return c.applySnapshot(ctx, response)
+}
+
+func (c *ConfigClient) Watch(contexts ...context.Context) {
 	ctx := context.Background()
 	if len(contexts) > 0 && contexts[0] != nil {
 		ctx = contexts[0]
 	}
-
-	watchChan := watcher.Watch(ctx, c.prefix, clientv3.WithPrefix())
-
-	for resp := range watchChan {
-		// if resp.Err() != nil {
-		// 	if errors.Is(resp.Err(), v3rpc.ErrCompacted) {
-		// 		logger.Infof("Compaction occurred at revision: %d", resp.CompactRevision)
-		// 		watchChan = watcher.Watch(ctx, c.prefix, clientv3.WithPrefix(), clientv3.WithRev(resp.CompactRevision+1))
-		// 		continue
-		// 	} else {
-		// 		// log.Println("Watch canceled due to compaction")
-		// 		logger.Errorf("Watch fail due to error: %v", resp.Err())
-		// 		// Optionally reset the watch if needed
-		// 		watchChan = watcher.Watch(ctx, c.prefix, clientv3.WithPrefix(), clientv3.WithRev(resp.CompactRevision+1))
-		// 		continue
-		// 	}
-		// }
-
-		for _, event := range resp.Events {
-			e := store.NewEvent()
-
-			e.Type = store.EventType(event.Type)
-			e.Key = event.Kv.Key
-			e.Value = event.Kv.Value
-
-			c.events <- e
+	revision := c.lastRevision + 1
+	retry := 0
+	for ctx.Err() == nil {
+		stream := c.openWatch(ctx, revision)
+		for response := range stream {
+			if err := response.Err(); err != nil {
+				logger.Errorf("etcd watch canceled: %v", err)
+				break
+			}
+			if !c.applyWatchResponse(ctx, response) {
+				return
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		for {
+			if err := c.recoverSnapshot(ctx); err == nil {
+				revision = c.lastRevision + 1
+				retry = 0
+				break
+			} else {
+				logger.Errorf("recover etcd watch snapshot: %v", err)
+			}
+			if !waitForWatchRetry(ctx, retry) {
+				return
+			}
+			retry++
 		}
 	}
+}
+
+func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) bool {
+	event := store.NewEvent()
+	event.Type = eventType
+	event.Key = bytes.Clone(key)
+	event.Value = bytes.Clone(value)
+	select {
+	case c.events <- event:
+		return true
+	case <-ctx.Done():
+		store.PutBack(event)
+		return false
+	}
+}
+
+func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
+	if response == nil || response.Header == nil {
+		return errors.New("etcd snapshot is missing a response header")
+	}
+	nextKeys := make(map[string]struct{}, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		nextKeys[string(kv.Key)] = struct{}{}
+	}
+	for key := range c.knownKeys {
+		if _, ok := nextKeys[key]; !ok && !c.sendEvent(ctx, store.EventTypeDelete, []byte(key), nil) {
+			return ctx.Err()
+		}
+	}
+	for _, kv := range response.Kvs {
+		if !c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value) {
+			return ctx.Err()
+		}
+	}
+	c.knownKeys = nextKeys
+	c.lastRevision = response.Header.Revision
+	return nil
+}
+
+func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3.WatchResponse) bool {
+	for _, watched := range response.Events {
+		eventType := store.EventType(watched.Type)
+		if !c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value) {
+			return false
+		}
+		key := string(watched.Kv.Key)
+		if eventType == store.EventTypeDelete {
+			delete(c.knownKeys, key)
+		} else {
+			c.knownKeys[key] = struct{}{}
+		}
+		if watched.Kv.ModRevision > c.lastRevision {
+			c.lastRevision = watched.Kv.ModRevision
+		}
+	}
+	if response.Header.Revision > c.lastRevision {
+		c.lastRevision = response.Header.Revision
+	}
+	return true
 }
 
 func (c *ConfigClient) Close() error {
@@ -150,19 +264,11 @@ func (c *ConfigClient) FetchAll() error {
 	for attempt := 0; attempt <= c.startupRetry; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
 		var resp *clientv3.GetResponse
-		resp, err = c.client.Get(ctx, c.prefix, clientv3.WithPrefix())
+		resp, err = c.loadSnapshot(ctx)
 		cancel()
 		if err == nil {
 			logger.Info("got response")
-			for _, kv := range resp.Kvs {
-				e := store.NewEvent()
-				e.Type = store.EventTypePut
-				e.Key = kv.Key
-				e.Value = kv.Value
-
-				c.events <- e
-			}
-			return nil
+			return c.applySnapshot(context.Background(), resp)
 		}
 		if attempt < c.startupRetry {
 			time.Sleep(100 * time.Millisecond)

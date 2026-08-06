@@ -29,6 +29,13 @@ func initConfig() {
 	}
 }
 
+func configureLogger(cfg *config.Config) error {
+	if cfg == nil {
+		return logger.ConfigureLevel("")
+	}
+	return logger.ConfigureLevel(cfg.NginxConfig.ErrorLogLevel)
+}
+
 func init() {
 	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
 	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
@@ -66,6 +73,9 @@ func Start() {
 		viper.SetConfigFile(cfgFile)
 	}
 	initConfig()
+	if err := configureLogger(globalConfig); err != nil {
+		logger.Fatalf("configure logger: %s", err)
+	}
 
 	fmt.Printf("global config: %+v\n", globalConfig)
 	b, _ := json.Marshal(globalConfig)

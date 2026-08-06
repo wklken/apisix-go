@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -117,7 +118,7 @@ type varyIndex struct {
 }
 
 type graphqlRequest struct {
-	Query string `json:"query"`
+	Query *string `json:"query"`
 }
 
 func (p *Plugin) Config() any {
@@ -265,6 +266,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		isMutation, err := graphqlHasMutation(query)
 		if err != nil {
+			if errors.Is(err, errEmptyGraphqlQuery) {
+				http.Error(w, "Invalid graphql request: empty graphql query", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "Invalid graphql request: failed to parse graphql query", http.StatusBadRequest)
 			return
 		}
@@ -300,6 +305,10 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 			http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
 			return nil, "", false
 		}
+		if r.URL.RawQuery == "" {
+			http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
+			return nil, "", false
+		}
 		query := r.URL.Query().Get("query")
 		if query == "" {
 			http.Error(w, "invalid graphql request, args[query] is nil", http.StatusBadRequest)
@@ -321,11 +330,11 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 			http.Error(w, "invalid graphql request, "+err.Error(), http.StatusBadRequest)
 			return nil, "", false
 		}
-		if req.Query == "" {
+		if req.Query == nil {
 			http.Error(w, "invalid graphql request, json body[query] is nil", http.StatusBadRequest)
 			return nil, "", false
 		}
-		return body, req.Query, true
+		return body, *req.Query, true
 	}
 
 	if strings.HasPrefix(contentType, "application/graphql") {
@@ -686,7 +695,12 @@ func varyStorageKeys(index varyIndex) []string {
 	return keys
 }
 
+var errEmptyGraphqlQuery = errors.New("empty graphql query")
+
 func graphqlHasMutation(query string) (bool, error) {
+	if strings.TrimSpace(query) == "" {
+		return false, errEmptyGraphqlQuery
+	}
 	doc, err := graphql.Parse(query)
 	if err != nil {
 		return false, err

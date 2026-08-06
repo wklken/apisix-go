@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
@@ -389,10 +390,6 @@ func (p *Plugin) resolveSecrets() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if p.config.MetaFormat != "origin" && !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
@@ -409,7 +406,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		if p.config.MetaFormat == "origin" {
 			_ = p.Fire(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
@@ -417,12 +414,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
+		status := metrics.Code
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = apisixlog.GetFields(r, p.LogFormat)
+		} else {
+			logFields = p.defaultLogFields(r, metrics)
 		}
-
-		logFields := apisixlog.GetFields(r, p.LogFormat)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -433,6 +431,29 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) defaultLogFields(r *http.Request, metrics httpsnoop.Metrics) map[string]any {
+	upstreamHost := base.RequestVar(r, "$balancer_ip", metrics.Code)
+	upstreamPort := base.RequestVar(r, "$balancer_port", metrics.Code)
+	upstream := upstreamHost
+	if upstreamHost != "" && upstreamPort != "" {
+		upstream = net.JoinHostPort(upstreamHost, upstreamPort)
+	}
+	return map[string]any{
+		"route_id":   p.RouteID,
+		"service_id": base.RequestVar(r, "$service_id", metrics.Code),
+		"client_ip":  base.RemoteIP(r.RemoteAddr),
+		"upstream":   upstream,
+		"request": map[string]any{
+			"method": r.Method,
+			"uri":    r.URL.RequestURI(),
+		},
+		"response": map[string]any{
+			"status": metrics.Code,
+			"size":   metrics.Written,
+		},
+	}
 }
 
 func (p *Plugin) Send(log map[string]any) {

@@ -18,6 +18,7 @@ import (
 const (
 	gcpCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	gcpJWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+	defaultGCPMaxTTL      = 300
 )
 
 type GCPConfig struct {
@@ -163,10 +164,12 @@ func shortenedGCPTokenExpiry(expiry time.Time, now time.Time, config GCPConfig) 
 	if expiry.Sub(now) > early {
 		expiry = expiry.Add(-early)
 	}
-	if config.MaxTTL > 0 {
-		if maxTTL := time.Duration(config.MaxTTL) * time.Second; expiry.Sub(now) > maxTTL {
-			expiry = now.Add(maxTTL)
-		}
+	maxTTL := config.MaxTTL
+	if maxTTL == 0 {
+		maxTTL = defaultGCPMaxTTL
+	}
+	if cap := time.Duration(maxTTL) * time.Second; expiry.Sub(now) > cap {
+		expiry = now.Add(cap)
 	}
 	return expiry
 }

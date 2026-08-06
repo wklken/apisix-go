@@ -15,9 +15,12 @@ cases:
           plugins:
             uri-blocker:
               block_rules: ['.+(']
+    input:
+      path: /hello
     output:
+      status: 404
       logs:
-        matches: 'build route uri-blocker-invalid-regex fail:.*uri-blocker'
+        matches: 'build route uri-blocker-invalid-regex fail:.*compile block_rules:.*missing closing.*[.][+][(]'
 
   - name: accept-multiple-valid-rules
     source:
@@ -54,9 +57,12 @@ cases:
           plugins:
             uri-blocker:
               block_rules: ['^a', '^b(']
+    input:
+      path: /hello
     output:
+      status: 404
       logs:
-        matches: 'build route uri-blocker-one-invalid-rule fail:.*uri-blocker'
+        matches: 'build route uri-blocker-one-invalid-rule fail:.*compile block_rules:.*missing closing.*[\^]a[|][\^]b[(]'
 
   - name: one-rule-blocks-query
     source:
@@ -219,9 +225,12 @@ cases:
                 uri-blocker:
                   block_rules: ['^a']
                   rejected_msg: ''
+        input:
+          path: /hello
         output:
+          status: 404
           logs:
-            matches: 'build route uri-blocker-empty-message fail:.*uri-blocker'
+            matches: 'build route uri-blocker-empty-message fail:.*rejected_msg.*(length|minLength).*1'
       - name: boolean
         config:
           routes:
@@ -231,9 +240,12 @@ cases:
                 uri-blocker:
                   block_rules: ['^a']
                   rejected_msg: true
+        input:
+          path: /hello
         output:
+          status: 404
           logs:
-            matches: 'build route uri-blocker-boolean-message fail:.*uri-blocker'
+            matches: 'build route uri-blocker-boolean-message fail:.*rejected_msg.*expected string'
 
   - name: custom-rejected-message
     source:

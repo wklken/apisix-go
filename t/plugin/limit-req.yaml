@@ -490,6 +490,7 @@ cases:
 
   - name: limit-req-redis-connection-is-reused-test-5
     source: {file: t/plugin/limit-req-redis.t, tests: [5]}
+    runtime: {nginx_config: {error_log_level: debug}}
     config:
       routes:
         - id: limit-req-redis-test-05

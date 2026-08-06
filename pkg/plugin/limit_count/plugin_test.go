@@ -463,6 +463,10 @@ func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
 }
 
 func TestRedisDiagnosticStoreLogsConnectionReuseFromInitializationBaseline(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("enable debug logging: %v", err)
+	}
 	var hits atomic.Uint32
 	store := newRedisDiagnosticStore(
 		countingLimiterStore{
@@ -590,6 +594,32 @@ func TestHandlerAppliesResolvedRules(t *testing.T) {
 	handler.ServeHTTP(thirdRecorder, third)
 	if thirdRecorder.Code != http.StatusNoContent {
 		t.Fatalf("third status = %d, want tenant rule still allows second tenant request", thirdRecorder.Code)
+	}
+}
+
+func TestHandlerResolvesRuleKeyDefaultValue(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RejectedCode: http.StatusServiceUnavailable,
+		Rules: []Rule{{
+			Count:      1,
+			TimeWindow: 60,
+			Key:        "${http_project ?? apisix}",
+		}},
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/", nil))
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want default-key request allowed", first.Code)
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/", nil))
+	if second.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second status = %d, want shared default-key quota rejection", second.Code)
 	}
 }
 

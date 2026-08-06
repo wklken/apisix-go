@@ -81,7 +81,9 @@ func newRedisDiagnosticStore(store limiter.Store, client redisPoolStatsProvider)
 }
 
 func (s *redisDiagnosticStore) logConnectionReuse() {
-	logger.Debugf("redis connection reused times: %d", s.client.PoolStats().Hits-s.baselineHits)
+	if logger.DebugEnabled() {
+		logger.Debugf("redis connection reused times: %d", s.client.PoolStats().Hits-s.baselineHits)
+	}
 }
 
 func (s *redisDiagnosticStore) Get(
@@ -1125,6 +1127,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					continue
 				}
 				key = p.consumerScopedKey(r, key)
+				logger.Infof("limit key: %s", key)
 				count, timeWindow, err := p.resolveRuleLimit(r, rule)
 				if err != nil {
 					if *p.config.AllowDegradation {
@@ -1180,6 +1183,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				}
 			}
 			if applied == 0 && !*p.config.AllowDegradation {
+				logger.Error("failed to get rate limit rules")
 				http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
 				return
 			}
@@ -1673,6 +1677,14 @@ func limitCountRequestVar(r *http.Request, name string) string {
 }
 
 func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
+	if match := defaultVarPattern.FindStringSubmatch(rule.Key); match != nil {
+		key := limitCountRequestVar(r, match[1])
+		if key == "" {
+			key = strings.TrimSpace(match[2])
+		}
+		return key, key != ""
+	}
+
 	resolved := 0
 	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")

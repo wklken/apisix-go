@@ -225,7 +225,7 @@ cases:
     steps:
       - name: refuse-disk-storage-for-no-cache-query
         input: {method: GET, path: '/disk-no-cache?no_cache=1'}
-        output: {status: 200, body: {equals: disk-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}
+        output: {status: 200, body: {equals: disk-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
         file_assertions:
           - {path: {equals: '{{WORK_DIR}}/cache/disk_cache_one/8944ecb65f5615d59bd20a8b9f93fe30e84d628df3cd6ad656a411031a14e743.entry'}, absent: true}
 
@@ -244,7 +244,7 @@ cases:
     steps:
       - name: issue-no-cache-request-first
         input: {method: GET, path: '/disk-no-cache-followup?no_cache=1'}
-        output: {status: 200, body: {equals: refused-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}
+        output: {status: 200, body: {equals: refused-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
       - name: observe-miss-after-refused-storage
         input: {method: GET, path: /disk-no-cache-followup}
         output: {status: 200, body: {equals: stored-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}
@@ -627,7 +627,7 @@ cases:
     runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
     config: {routes: [{id: memory-no-cache-query, uri: /memory-no-cache, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
     fixtures: [{name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: '/memory-no-cache?no_cache=1'}}], respond: [{status: 200, body: memory-no-cache-origin}]}]
-    steps: [{name: refuse-memory-storage-for-no-cache-query, input: {method: GET, path: '/memory-no-cache?no_cache=1'}, output: {status: 200, body: {equals: memory-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}}]
+    steps: [{name: refuse-memory-storage-for-no-cache-query, input: {method: GET, path: '/memory-no-cache?no_cache=1'}, output: {status: 200, body: {equals: memory-no-cache-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}]
 
   - name: memory-request-after-no-cache-is-still-miss-test-9
     source: {file: t/plugin/proxy-cache/memory.t, tests: [9]}
@@ -635,7 +635,7 @@ cases:
     config: {routes: [{id: memory-miss-after-no-cache, uri: /memory-no-cache-followup, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, no_cache: ['$arg_no_cache'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
     fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '^/memory-no-cache-followup'}}, {path: {matches: '^/memory-no-cache-followup'}}], respond: [{status: 200, body: memory-refused-origin}, {status: 200, body: memory-stored-origin}]}]
     steps:
-      - {name: issue-memory-no-cache-request, input: {method: GET, path: '/memory-no-cache-followup?no_cache=1'}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: EXPIRED}}}}
+      - {name: issue-memory-no-cache-request, input: {method: GET, path: '/memory-no-cache-followup?no_cache=1'}, output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}}
       - {name: observe-memory-miss-after-refusal, input: {method: GET, path: /memory-no-cache-followup}, output: {status: 200, body: {equals: memory-stored-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
 
   - name: memory-cacheable-success-becomes-hit-test-10

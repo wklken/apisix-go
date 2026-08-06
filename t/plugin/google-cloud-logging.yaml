@@ -811,7 +811,7 @@ cases:
         kind: http
         expect:
           - {method: POST, path: {equals: /token}}
-          - {method: POST, path: {equals: /entries}, body: {matches: '"jsonPayload":\{"@timestamp":"[^"]+","client_ip":"127\.0\.0\.1","host":"metadata\.example"\}'}}
+          - {method: POST, path: {equals: /entries}, body: {matches: '"jsonPayload":\{"@timestamp":"[^"]+","client_ip":"127\.0\.0\.1","host":"metadata\.example"\}.*"resource":\{"type":"global"\}'}}
         respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'}, {status: 200, body: ok}]
     steps:
       - {name: setup-case-uses-metadata-format, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -840,7 +840,7 @@ cases:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
       - name: sink
         kind: http
-        expect: [{method: POST, path: {equals: /token}}, {method: POST, path: {equals: /entries}, body: {matches: '"client_ip":"127\.0\.0\.1".*"host":"metadata-request\.example"'}}]
+        expect: [{method: POST, path: {equals: /token}}, {method: POST, path: {equals: /entries}, body: {matches: '"client_ip":"127\.0\.0\.1".*"host":"metadata-request\.example".*"resource":\{"type":"global"\}'}}]
         respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'}, {status: 200, body: ok}]
     steps:
       - {name: request-delivers-metadata-format, input: {path: /hello, headers: {Host: metadata-request.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -916,7 +916,7 @@ cases:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
       - name: sink
         kind: http
-        expect: [{method: POST, path: {equals: /token}}, {method: POST, path: {equals: /entries}, body: {matches: '"host":"route-request\.example".*"vip":"127\.0\.0\.1"'}}]
+        expect: [{method: POST, path: {equals: /token}}, {method: POST, path: {equals: /entries}, body: {matches: '"host":"route-request\.example".*"vip":"127\.0\.0\.1".*"resource":\{"type":"global"\}'}}]
         respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'}, {status: 200, body: ok}]
     steps:
       - {name: request-delivers-route-format, input: {path: /hello, headers: {Host: route-request.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}

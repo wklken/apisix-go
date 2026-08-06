@@ -514,6 +514,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
+		logger.Infof("limit key: %sroute", key)
 		conn, burst, err := p.resolveLimits(r)
 		if err != nil {
 			if *p.config.AllowDegradation {
@@ -788,7 +789,9 @@ func (p *Plugin) decrease(key string, latency *time.Duration) {
 	if p.config.OnlyUseDefaultDelay {
 		logger.Debug("request latency is nil")
 	} else if latency != nil {
-		logger.Debugf("request latency is %.1f", latency.Seconds())
+		if logger.DebugEnabled() {
+			logger.Debugf("request latency is %.1f", latency.Seconds())
+		}
 		p.unitDelay = (p.unitDelay + latency.Seconds()) / 2
 	}
 
@@ -813,7 +816,9 @@ type redisPoolStatsProvider interface {
 }
 
 func logRedisConnectionReuse(client redisPoolStatsProvider) {
-	logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
+	if logger.DebugEnabled() {
+		logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
+	}
 }
 
 func (p *Plugin) newRedisLimiter() connLimiter {

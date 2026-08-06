@@ -154,7 +154,19 @@ const schema = `
             "keepalive_timeout": {"type": "integer", "minimum": 1000}
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"cookie_same_site": {"const": "None"}},
+            "required": ["cookie_same_site"]
+          },
+          "then": {
+            "properties": {"cookie_secure": {"const": true}},
+            "required": ["cookie_secure"]
+          }
+        }
+      ]
     },
     "proxy_opts": {
       "type": "object",
@@ -1161,19 +1173,33 @@ func (p *Plugin) handleLogout(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid end session endpoint", http.StatusBadGateway)
 			return
 		}
-		if p.config.PostLogoutRedirectURI != "" {
-			query := logoutURL.Query()
-			query.Set("post_logout_redirect_uri", p.config.PostLogoutRedirectURI)
-			logoutURL.RawQuery = query.Encode()
-		}
+		p.appendPostLogoutRedirectURI(logoutURL)
 		http.Redirect(w, r, logoutURL.String(), http.StatusFound)
 		return
 	}
 	if p.config.PostLogoutRedirectURI != "" {
+		// Mirrors lua-resty-openidc's logout(): even without an end_session_endpoint,
+		// it still appends post_logout_redirect_uri as a query parameter on the
+		// fallback redirect target instead of a bare redirect.
+		fallbackURL, parseErr := url.Parse(p.config.PostLogoutRedirectURI)
+		if parseErr == nil {
+			p.appendPostLogoutRedirectURI(fallbackURL)
+			http.Redirect(w, r, fallbackURL.String(), http.StatusFound)
+			return
+		}
 		http.Redirect(w, r, p.config.PostLogoutRedirectURI, http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (p *Plugin) appendPostLogoutRedirectURI(target *url.URL) {
+	if p.config.PostLogoutRedirectURI == "" {
+		return
+	}
+	query := target.Query()
+	query.Set("post_logout_redirect_uri", p.config.PostLogoutRedirectURI)
+	target.RawQuery = query.Encode()
 }
 
 func (p *Plugin) revokeTokens(r *http.Request, session sessionData) {

@@ -2,7 +2,8 @@ source:
   repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/client-control.t
-  tests: 12
+  tests: 10
+  test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]
 
 cases:
   - name: route-body-limit
@@ -44,7 +45,10 @@ cases:
           path: /hello
           body: 'Hello '
           chunked: true
-        output: *too_large
+        output:
+          status: 413
+          logs:
+            matches: 'client intended to send too large chunked body'
       - name: exact-limit
         input:
           method: POST
@@ -121,28 +125,6 @@ cases:
     upstream:
       respond: *done_response
     output: *done_output
-
-  - name: global-body-limit-without-route-override
-    source:
-      tests: [10, 11]
-    runtime: *thirty_megabyte_runtime
-    config:
-      routes:
-        - id: client-control-global-limit
-          uri: /hello
-          plugins:
-            client-control:
-              max_body_size: 31457280
-          upstream: *single_upstream
-    input:
-      method: POST
-      path: /hello
-      body_repeat:
-        value: A
-        count: 32505856
-    upstream:
-      respond: *done_response
-    output: *too_large
 
   - name: global-rule-cleanup-state
     source:

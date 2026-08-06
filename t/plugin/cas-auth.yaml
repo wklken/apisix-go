@@ -207,7 +207,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: None, secure: false}}
         input: {path: /schema}
-        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*not'}}
+        output: {status: 404, logs: {matches: 'cookie\.secure must be true when cookie\.samesite is \\"None\\"'}}
       - name: none-with-secure-is-valid
         config:
           routes:

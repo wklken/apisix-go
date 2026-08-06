@@ -1103,7 +1103,6 @@ func (p *Plugin) fetchAndMaybeStore(
 
 	if p.hasTruthyValue(r, p.config.NoCache) {
 		shouldStore = false
-		cacheStatus = "EXPIRED"
 	}
 	if responseCacheControlSkipsStore(recorder.Header()) {
 		shouldStore = false

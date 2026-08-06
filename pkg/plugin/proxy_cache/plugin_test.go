@@ -767,8 +767,8 @@ func TestHandlerHonorsNoCacheAndCacheBypass(t *testing.T) {
 	}))
 
 	noCache := performRequest(t, handler, http.MethodGet, "/anything?no_cache=1", nil)
-	if noCache.Header().Get(cacheStatusHeader) != "EXPIRED" {
-		t.Fatalf("no-cache status = %q, want EXPIRED", noCache.Header().Get(cacheStatusHeader))
+	if noCache.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("no-cache status = %q, want MISS", noCache.Header().Get(cacheStatusHeader))
 	}
 	normal := performRequest(t, handler, http.MethodGet, "/anything", nil)
 	if normal.Header().Get(cacheStatusHeader) != "MISS" {

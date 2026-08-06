@@ -330,7 +330,7 @@ func (p *Plugin) PostInit() error {
 				upstream, err = getUpstreamByID(weightedUpstream.UpstreamID)
 				if err != nil {
 					compileErr = fmt.Errorf(
-						"failed to fetch upstream info by upstream id: %s",
+						"failed to find upstream by id: %s",
 						weightedUpstream.UpstreamID,
 					)
 					continue

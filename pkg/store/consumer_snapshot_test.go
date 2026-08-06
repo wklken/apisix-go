@@ -40,6 +40,79 @@ func TestConsumerSnapshotRejectsInvalidBasicAuthUpdateAndKeepsLastGood(t *testin
 	}
 }
 
+func TestConsumerSnapshotValidatesJWTAuthConsumerSchema(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		diagnostic string
+	}{
+		{name: "defaults", config: `{"key":"user-key","secret":"my-secret-key"}`},
+		{name: "asymmetric", config: `{"key":"user-key","algorithm":"RS256","public_key":"public"}`},
+		{name: "missing key", config: `{}`, diagnostic: "key"},
+		{name: "numeric key", config: `{"key":123}`, diagnostic: "expected string"},
+		{name: "empty key", config: `{"key":""}`, diagnostic: "length must be >= 1"},
+		{name: "empty secret", config: `{"key":"user-key","secret":""}`, diagnostic: "length must be >= 1"},
+		{
+			name:       "invalid algorithm",
+			config:     `{"key":"user-key","algorithm":"none"}`,
+			diagnostic: "value must be one of",
+		},
+		{name: "zero expiration", config: `{"key":"user-key","exp":0}`, diagnostic: "must be >= 1"},
+		{name: "negative grace", config: `{"key":"user-key","lifetime_grace_period":-1}`, diagnostic: "must be >= 0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumerStore := &Store{consumerKV: make(map[string][]byte), consumerToKeys: make(map[string][]string)}
+			value := []byte(`{"username":"jack","plugins":{"jwt-auth":` + test.config + `}}`)
+			err := consumerStore.consumerKVAdd([]byte("jack"), value)
+			if test.diagnostic == "" {
+				if err != nil {
+					t.Fatalf("consumerKVAdd() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.diagnostic) {
+				t.Fatalf("consumerKVAdd() error = %v, want %q", err, test.diagnostic)
+			}
+		})
+	}
+}
+
+func TestConsumerSnapshotValidatesWolfRBACConsumerSchema(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		diagnostic string
+	}{
+		{name: "valid", config: `{"appid":"wolf-app","header_prefix":"X-","wolf_url":"http://wolf.example"}`},
+		{name: "missing appid", config: `{}`, diagnostic: "appid"},
+		{name: "numeric appid", config: `{"appid":123}`, diagnostic: "expected string"},
+		{name: "empty appid", config: `{"appid":""}`, diagnostic: "length must be >= 1"},
+		{
+			name:       "invalid header prefix",
+			config:     `{"appid":"wolf-app","header_prefix":7}`,
+			diagnostic: "expected string",
+		},
+		{name: "invalid wolf url", config: `{"appid":"wolf-app","wolf_url":false}`, diagnostic: "expected string"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumerStore := &Store{consumerKV: make(map[string][]byte), consumerToKeys: make(map[string][]string)}
+			value := []byte(`{"username":"jack","plugins":{"wolf-rbac":` + test.config + `}}`)
+			err := consumerStore.consumerKVAdd([]byte("jack"), value)
+			if test.diagnostic == "" {
+				if err != nil {
+					t.Fatalf("consumerKVAdd() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.diagnostic) {
+				t.Fatalf("consumerKVAdd() error = %v, want %q", err, test.diagnostic)
+			}
+		})
+	}
+}
+
 func TestConsumerSnapshotRejectsInvalidHMACAuthUpdateAndKeepsLastGood(t *testing.T) {
 	consumerStore := &Store{
 		consumerKV:     make(map[string][]byte),

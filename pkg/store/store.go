@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
@@ -35,6 +37,10 @@ type Store struct {
 	// store consumer ID -> plugin names registered in consumerReferenceKV
 	consumerToReferences map[string][]string
 	consumerMu           sync.RWMutex
+
+	vaultMu      sync.Mutex
+	vaultClient  *http.Client
+	vaultSecrets *cacheutil.BoundedTTLMap[string]
 
 	validatedPluginMetadata *validatedPluginMetadataCache
 }

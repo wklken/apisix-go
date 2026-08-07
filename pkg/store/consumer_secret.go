@@ -1,7 +1,7 @@
 package store
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,13 +12,41 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 const (
 	environmentSecretPrefix = "$ENV://"
 	managedSecretPrefix     = "$secret://"
+
+	// vaultSecretCacheTTL bounds how long a successful Vault resolution is
+	// reused before the secret is fetched again.
+	vaultSecretCacheTTL = 60 * time.Second
+
+	// vaultSecretCacheCapacity bounds cached Vault resolutions.
+	vaultSecretCacheCapacity = 1024
 )
+
+var defaultVaultTimeout = 5 * time.Second
+
+func (s *Store) vaultHTTPClient() *http.Client {
+	s.vaultMu.Lock()
+	defer s.vaultMu.Unlock()
+	if s.vaultClient == nil {
+		s.vaultClient = &http.Client{}
+	}
+	return s.vaultClient
+}
+
+func (s *Store) vaultSecretCache() *cacheutil.BoundedTTLMap[string] {
+	s.vaultMu.Lock()
+	defer s.vaultMu.Unlock()
+	if s.vaultSecrets == nil {
+		s.vaultSecrets = cacheutil.NewBoundedTTLMap[string](vaultSecretCacheCapacity, time.Now)
+	}
+	return s.vaultSecrets
+}
 
 type vaultSecretConfig struct {
 	URI       string `json:"uri"`
@@ -198,7 +226,19 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 		return "", fmt.Errorf("vault URI scheme must be http or https")
 	}
 	endpoint.Path = path.Join(endpoint.Path, "/v1", config.Prefix, key[:lastSlash])
-	request, err := http.NewRequest(http.MethodGet, endpoint.String(), bytes.NewBufferString("{}"))
+
+	cacheKey := id + "/" + key
+	if cached, ok := s.vaultSecretCache().Get(cacheKey); ok {
+		return cached, nil
+	}
+
+	timeout := time.Duration(config.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = defaultVaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return "", fmt.Errorf("create Vault request: %w", err)
 	}
@@ -206,11 +246,7 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 	if config.Namespace != "" {
 		request.Header.Set("X-Vault-Namespace", config.Namespace)
 	}
-	timeout := time.Duration(config.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	response, err := s.vaultHTTPClient().Do(request)
 	if err != nil {
 		return "", fmt.Errorf("request Vault secret: %w", err)
 	}
@@ -235,6 +271,7 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("vault response does not contain string field %q", key[lastSlash+1:])
 	}
+	s.vaultSecretCache().Set(cacheKey, value, vaultSecretCacheTTL)
 	return value, nil
 }
 

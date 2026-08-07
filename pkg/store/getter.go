@@ -16,8 +16,21 @@ var ErrNotFound = fmt.Errorf("not found")
 // FIXME: add a cache layer here, if the source data changed, del the cache at the same time
 
 func GetPluginMetadata(id string, v any) error {
+	if s == nil {
+		return ErrNotFound
+	}
 	config := s.GetFromBucket("plugin_metadata", []byte(id))
 	return decodePluginMetadata(config, id, v)
+}
+
+// GetPluginMetadataRaw returns the raw plugin_metadata bytes for id, or nil
+// when the metadata is absent. It is intended for change detection; callers
+// still decode with GetPluginMetadata when a change is observed.
+func GetPluginMetadataRaw(id string) ([]byte, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.GetFromBucket("plugin_metadata", []byte(id)), nil
 }
 
 func decodePluginMetadata(config []byte, id string, v any) error {

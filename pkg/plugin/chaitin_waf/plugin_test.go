@@ -1,6 +1,9 @@
 package chaitin_waf
 
 import (
+	"bytes"
+	"net"
+	"sync"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -354,4 +359,136 @@ func nodeFromURL(t *testing.T, rawURL string) Node {
 		t.Fatalf("parse waf port: %v", err)
 	}
 	return Node{Host: parsed.Hostname(), Port: port}
+}
+
+var (
+	chaitinMetadataOnce    sync.Once
+	chaitinMetadataStore   *store.Store
+	chaitinMetadataEvents  chan *store.Event
+)
+
+func putChaitinMetadata(t *testing.T, nodes []any) {
+	t.Helper()
+	chaitinMetadataOnce.Do(func() {
+		chaitinMetadataEvents = make(chan *store.Event, 8)
+		chaitinMetadataStore = store.NewStore(t.TempDir()+"/chaitin-waf.db", chaitinMetadataEvents)
+		chaitinMetadataStore.Start()
+	})
+	body, err := json.Marshal(map[string]any{"nodes": nodes})
+	if err != nil {
+		t.Fatalf("marshal chaitin metadata: %v", err)
+	}
+	chaitinMetadataEvents <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/plugin_metadata/chaitin-waf"),
+		Value: body,
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := store.GetPluginMetadataRaw(name)
+		if err == nil && bytes.Equal(raw, body) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for chaitin-waf plugin metadata")
+}
+
+func TestHandlerRebuildsMetadataOnlyWhenConfigurationChanges(t *testing.T) {
+	firstWAF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(firstWAF.Close)
+	secondWAF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(secondWAF.Close)
+
+	putChaitinMetadata(t, []any{map[string]any{"host": "127.0.0.1", "port": firstWAFPort(t, firstWAF)}})
+	p := newTestPlugin(t, Config{Mode: "block"})
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/check", nil)
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := request(); rr.Code != http.StatusNoContent {
+		t.Fatalf("first request code = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := request(); rr.Code != http.StatusNoContent {
+		t.Fatalf("second request code = %d, want 204", rr.Code)
+	}
+
+	p.metaMu.Lock()
+	builds := p.metaBuilds
+	p.metaMu.Unlock()
+	if builds != 1 {
+		t.Fatalf("metadata builds after two stable requests = %d, want 1", builds)
+	}
+
+	putChaitinMetadata(t, []any{map[string]any{"host": "127.0.0.1", "port": secondWAFPort(t, secondWAF)}})
+	if rr := request(); rr.Code != http.StatusNoContent {
+		t.Fatalf("request after metadata change code = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	p.metaMu.Lock()
+	builds = p.metaBuilds
+	p.metaMu.Unlock()
+	if builds != 2 {
+		t.Fatalf("metadata builds after one change = %d, want 2", builds)
+	}
+}
+
+func TestHandlerConcurrentRequestsShareStableMetadata(t *testing.T) {
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(waf.Close)
+
+	putChaitinMetadata(t, []any{map[string]any{"host": "127.0.0.1", "port": firstWAFPort(t, waf)}})
+	p := newTestPlugin(t, Config{Mode: "block"})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/check", nil)
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusNoContent {
+				t.Errorf("concurrent request code = %d, want 204", rr.Code)
+			}
+		}()
+	}
+	wg.Wait()
+
+	p.metaMu.Lock()
+	builds := p.metaBuilds
+	p.metaMu.Unlock()
+	if builds != 1 {
+		t.Fatalf("metadata builds under concurrency = %d, want 1", builds)
+	}
+}
+
+func firstWAFPort(t *testing.T, server *httptest.Server) int {
+	t.Helper()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split WAF address: %v", err)
+	}
+	parsed, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("parse WAF port: %v", err)
+	}
+	return parsed
+}
+
+func secondWAFPort(t *testing.T, server *httptest.Server) int {
+	return firstWAFPort(t, server)
 }

@@ -16,7 +16,7 @@ import (
 type Plugin struct {
 	base.BasePlugin
 	config   Config
-	enforcer *casbin.Enforcer
+	enforcer *casbin.SyncedEnforcer
 	mu       sync.Mutex
 	metadata Metadata
 }
@@ -129,9 +129,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) newEnforcer() (*casbin.Enforcer, error) {
+func (p *Plugin) newEnforcer() (*casbin.SyncedEnforcer, error) {
 	if p.config.ModelPath != "" && p.config.PolicyPath != "" {
-		return casbin.NewEnforcer(p.config.ModelPath, p.config.PolicyPath)
+		return casbin.NewSyncedEnforcer(p.config.ModelPath, p.config.PolicyPath)
 	}
 
 	if p.config.Model != "" && p.config.Policy != "" {
@@ -139,7 +139,7 @@ func (p *Plugin) newEnforcer() (*casbin.Enforcer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return casbin.NewEnforcer(m, stringadapter.NewAdapter(p.config.Policy))
+		return casbin.NewSyncedEnforcer(m, stringadapter.NewAdapter(p.config.Policy))
 	}
 
 	return nil, fmt.Errorf("not enough configuration to create enforcer")
@@ -150,7 +150,7 @@ func (p *Plugin) hasRouteConfig() bool {
 		(p.config.Model != "" && p.config.Policy != "")
 }
 
-func (p *Plugin) currentEnforcer() (*casbin.Enforcer, error) {
+func (p *Plugin) currentEnforcer() (*casbin.SyncedEnforcer, error) {
 	if p.hasRouteConfig() {
 		if p.enforcer == nil {
 			return nil, fmt.Errorf("casbin enforcer is not initialized")
@@ -160,7 +160,7 @@ func (p *Plugin) currentEnforcer() (*casbin.Enforcer, error) {
 	return p.metadataEnforcer()
 }
 
-func (p *Plugin) metadataEnforcer() (*casbin.Enforcer, error) {
+func (p *Plugin) metadataEnforcer() (*casbin.SyncedEnforcer, error) {
 	var metadata Metadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
 		return nil, err
@@ -179,7 +179,7 @@ func (p *Plugin) metadataEnforcer() (*casbin.Enforcer, error) {
 	if err != nil {
 		return nil, err
 	}
-	enforcer, err := casbin.NewEnforcer(m, stringadapter.NewAdapter(metadata.Policy))
+	enforcer, err := casbin.NewSyncedEnforcer(m, stringadapter.NewAdapter(metadata.Policy))
 	if err != nil {
 		return nil, err
 	}

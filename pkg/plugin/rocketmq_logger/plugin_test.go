@@ -11,11 +11,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	rocketmq "github.com/apache/rocketmq-client-go/v2"
+	"github.com/apache/rocketmq-client-go/v2/primitive"
 	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
@@ -696,4 +699,45 @@ func encryptRocketMQLoggerTestValue(t *testing.T, key string, value string) stri
 	ciphertext := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
 	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+// delayedUnblockProducer simulates a RocketMQ broker that honors context
+// cancellation but unwinds slowly, so a wrapper goroutine that outlives the
+// send is observable. Only SendSync is used by the sender under test.
+type delayedUnblockProducer struct {
+	rocketmq.Producer
+}
+
+func (*delayedUnblockProducer) SendSync(ctx context.Context, msgs ...*primitive.Message) (*primitive.SendResult, error) {
+	<-ctx.Done()
+	time.Sleep(300 * time.Millisecond)
+	return nil, ctx.Err()
+}
+
+func TestSenderCancellationUnblocksSendWithoutLeakedGoroutine(t *testing.T) {
+	sender := &rocketmqClientSender{producer: &delayedUnblockProducer{}}
+	p := &Plugin{config: Config{Topic: "logs", Timeout: 1}, sender: sender}
+
+	before := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := sender.Send(ctx, rocketmqMessage{Topic: "logs"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Send() error = nil, want context deadline exceeded")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("Send took %v, want cancellation to unblock it", elapsed)
+	}
+
+	if _, batchErr := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); batchErr == nil {
+		t.Fatal("SendBatch() error = nil, want delivery failure after cancellation")
+	}
+	if got := runtime.NumGoroutine(); got > before {
+		t.Fatalf("goroutines after SendBatch = %d, want <= %d", got, before)
+	}
 }

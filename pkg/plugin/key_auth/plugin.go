@@ -126,6 +126,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		if err != nil {
+			if !ctx.RecordAuthProbeDiagnostic(r, "failed to resolve API key consumer") {
+				logger.Error("failed to resolve key-auth consumer")
+			}
+			p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
+			return
+		}
+
 		if *p.config.HideCredentials {
 			if fromHeader {
 				r.Header.Del(p.config.Header)

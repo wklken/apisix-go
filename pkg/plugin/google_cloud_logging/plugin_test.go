@@ -566,7 +566,7 @@ func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
 		}
 		tokenRequests <- r.Form
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":30}`))
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":1}`))
 	}))
 	t.Cleanup(tokenServer.Close)
 
@@ -589,6 +589,11 @@ func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
 	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
 		t.Fatalf("first SendBatch() error = %v", err)
 	}
+
+	// Let the 1-second token expire before the next batch so the shared token
+	// source is forced to refresh over the network.
+	time.Sleep(1100 * time.Millisecond)
+
 	if _, err := p.SendBatch([]map[string]any{{"path": "/b"}}, 1); err != nil {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
@@ -691,4 +696,130 @@ func writeTempAuthFile(t *testing.T, pemKey string) string {
 
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
+}
+
+func TestSendBatchUsesCachedAuthFileAfterRemoval(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	body := map[string]any{
+		"client_email": "svc@example.iam.gserviceaccount.com",
+		"private_key":  pemKey,
+		"project_id":   "project-from-file",
+		"token_uri":    tokenServer.URL,
+		"entries_uri":  entryServer.URL,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal auth file: %v", err)
+	}
+	file := t.TempDir() + "/auth.json"
+	if err := writeFile(file, data); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{AuthFile: file})
+	if err := os.Remove(file); err != nil {
+		t.Fatalf("remove auth file: %v", err)
+	}
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+		t.Fatalf("SendBatch() after auth file removal error = %v, want cached auth config", err)
+	}
+}
+
+func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(tokenServer.Close)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	pemKey, _ := testPrivateKey(t)
+	p := &Plugin{
+		config: Config{AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		}},
+		requestTimeout: 300 * time.Millisecond,
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	start := time.Now()
+	_, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want token endpoint timeout")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("SendBatch took %v, want bounded by the request timeout", elapsed)
+	}
+}
+
+func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(entryServer.Close)
+
+	pemKey, _ := testPrivateKey(t)
+	p := &Plugin{
+		config: Config{AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		}},
+		requestTimeout: 300 * time.Millisecond,
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	start := time.Now()
+	_, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want write endpoint timeout")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("SendBatch took %v, want bounded by the request timeout", elapsed)
+	}
 }

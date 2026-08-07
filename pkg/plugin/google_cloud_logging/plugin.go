@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"golang.org/x/oauth2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -30,6 +31,13 @@ type Plugin struct {
 
 	client *resty.Client
 
+	// resolvedAuth and tokenSource are built once in PostInit: immutable auth
+	// file parsing never runs on the delivery path, and token refreshes reuse
+	// the same token source.
+	resolvedAuth   *AuthConfig
+	tokenSource    oauth2.TokenSource
+	requestTimeout time.Duration
+
 	tokenMu      sync.Mutex
 	accessToken  string
 	tokenType    string
@@ -45,6 +53,8 @@ const (
 	defaultLogID      = "apisix.apache.org%2Flogs"
 
 	jwtBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+	defaultGoogleCloudLoggingTimeout = 10 * time.Second
 )
 
 const (
@@ -358,9 +368,20 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	configUID.Add(trustIdentity)
+	if p.requestTimeout <= 0 {
+		p.requestTimeout = defaultGoogleCloudLoggingTimeout
+	}
 	client := resty.New()
 	client.SetTLSClientConfig(tlsConfig)
+	client.SetTimeout(p.requestTimeout)
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+
+	// Parse the immutable auth config once so the delivery path never reads
+	// the file or rebuilds the token source.
+	if auth, err := p.resolveAuthConfig(); err == nil {
+		p.resolvedAuth = auth
+		p.tokenSource = googleTokenSource(auth, p.client.GetClient())
+	}
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
@@ -453,6 +474,17 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 }
 
 func (p *Plugin) authConfig() (*AuthConfig, error) {
+	if p.resolvedAuth != nil {
+		auth := *p.resolvedAuth
+		return &auth, nil
+	}
+	return p.resolveAuthConfig()
+}
+
+// resolveAuthConfig builds the effective auth config from auth_config or the
+// auth_file, applying defaults. It performs file I/O when the auth file is
+// used, so it is called once at initialization on the cached path.
+func (p *Plugin) resolveAuthConfig() (*AuthConfig, error) {
 	if p.config.AuthConfig != nil {
 		auth := *p.config.AuthConfig
 		p.applyAuthDefaults(&auth)
@@ -498,37 +530,38 @@ func (a *AuthConfig) scopes() []string {
 
 func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
 	p.tokenMu.Lock()
-	defer p.tokenMu.Unlock()
-
 	if p.accessToken != "" && time.Now().Before(p.tokenExpires.Add(-tokenRefreshSkew)) {
-		return p.accessToken, p.tokenType, nil
+		accessToken := p.accessToken
+		tokenType := p.tokenType
+		p.tokenMu.Unlock()
+		return accessToken, tokenType, nil
 	}
+	p.tokenMu.Unlock()
 
+	// The network refresh runs outside the mutex so one slow token endpoint
+	// does not serialize every concurrent batch.
 	token, err := p.fetchAccessToken(auth)
 	if err != nil {
 		return "", "", err
 	}
+
+	p.tokenMu.Lock()
 	p.accessToken = token.AccessToken
 	p.tokenType = token.TokenType
 	p.tokenExpires = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
-	return p.accessToken, p.tokenType, nil
+	accessToken := p.accessToken
+	tokenType := p.tokenType
+	p.tokenMu.Unlock()
+	return accessToken, tokenType, nil
 }
 
 func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
-	rawJSON, err := json.Marshal(map[string]any{
-		"type":         "service_account",
-		"client_email": auth.ClientEmail,
-		"subject":      auth.ClientEmail,
-		"private_key":  auth.PrivateKey,
-		"project_id":   auth.ProjectID,
-		"token_uri":    auth.TokenURI,
-	})
-	if err != nil {
-		return tokenResponse{}, err
+	source := p.tokenSource
+	if source == nil {
+		source = googleTokenSource(auth, p.client.GetClient())
 	}
-	source, err := ai_auth.NewGoogleTokenSource(context.Background(), rawJSON, auth.scopes(), p.client.GetClient())
-	if err != nil {
-		return tokenResponse{}, err
+	if source == nil {
+		return tokenResponse{}, errors.New("failed to build Google token source")
 	}
 	token, err := source.Token()
 	if err != nil {
@@ -543,6 +576,25 @@ func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
 		TokenType:   token.TokenType,
 		ExpiresIn:   expiresIn,
 	}, nil
+}
+
+func googleTokenSource(auth *AuthConfig, client *http.Client) oauth2.TokenSource {
+	rawJSON, err := json.Marshal(map[string]any{
+		"type":         "service_account",
+		"client_email": auth.ClientEmail,
+		"subject":      auth.ClientEmail,
+		"private_key":  auth.PrivateKey,
+		"project_id":   auth.ProjectID,
+		"token_uri":    auth.TokenURI,
+	})
+	if err != nil {
+		return nil
+	}
+	source, err := ai_auth.NewGoogleTokenSource(context.Background(), rawJSON, auth.scopes(), client)
+	if err != nil {
+		return nil
+	}
+	return source
 }
 
 func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {

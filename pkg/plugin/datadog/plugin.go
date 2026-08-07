@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -25,12 +26,20 @@ type Plugin struct {
 	BatchProcessor *logger_batch.Processor
 	RouteID        string
 	ServerAddr     string
+
+	// dialFunc is the DogStatsD socket factory; retained so tests can count
+	// dials. The socket itself is reused across sends and closed on Stop.
+	dialFunc func() (net.Conn, error)
+	connMu   sync.Mutex
+	conn     net.Conn
 }
 
 const (
 	priority        = 495
 	name            = "datadog"
 	maxDatagramSize = 8192
+
+	datadogSendTimeout = time.Second
 )
 
 const schema = `
@@ -274,6 +283,13 @@ func (p *Plugin) Stop() {
 	if p.BatchProcessor != nil {
 		p.BatchProcessor.Stop()
 	}
+
+	p.connMu.Lock()
+	if p.conn != nil {
+		_ = p.conn.Close()
+		p.conn = nil
+	}
+	p.connMu.Unlock()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -310,17 +326,26 @@ func (p *Plugin) Send(entry metricEntry) {
 }
 
 func (p *Plugin) send(entry metricEntry) error {
-	addr := net.JoinHostPort(p.metadata.Host, fmt.Sprint(p.metadata.Port))
-	conn, err := net.Dial("udp", addr)
-	if err != nil {
-		return fmt.Errorf("connect to DogStatsD endpoint %s: %w", addr, err)
-	}
-	defer func() { _ = conn.Close() }()
-
 	lines := p.metricLines(entry)
 	payload := strings.Join(lines, "\n")
+
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+
+	conn := p.conn
+	if conn == nil {
+		var err error
+		conn, err = p.dial()
+		if err != nil {
+			return fmt.Errorf("connect to DogStatsD endpoint %s: %w", p.dogstatsdAddr(), err)
+		}
+		p.conn = conn
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(datadogSendTimeout))
+
 	if len(payload) <= maxDatagramSize {
 		if _, err := conn.Write([]byte(payload)); err != nil {
+			p.resetConnLocked(conn)
 			return fmt.Errorf("send DogStatsD metrics: %w", err)
 		}
 		return nil
@@ -328,10 +353,29 @@ func (p *Plugin) send(entry metricEntry) error {
 
 	for _, line := range lines {
 		if _, err := conn.Write([]byte(line)); err != nil {
+			p.resetConnLocked(conn)
 			return fmt.Errorf("send DogStatsD metric %q: %w", line, err)
 		}
 	}
 	return nil
+}
+
+func (p *Plugin) dogstatsdAddr() string {
+	return net.JoinHostPort(p.metadata.Host, fmt.Sprint(p.metadata.Port))
+}
+
+func (p *Plugin) dial() (net.Conn, error) {
+	if p.dialFunc != nil {
+		return p.dialFunc()
+	}
+	return net.DialTimeout("udp", p.dogstatsdAddr(), datadogSendTimeout)
+}
+
+func (p *Plugin) resetConnLocked(conn net.Conn) {
+	_ = conn.Close()
+	if p.conn == conn {
+		p.conn = nil
+	}
 }
 
 func (p *Plugin) deliver(entries []map[string]any, _ int) (int, error) {

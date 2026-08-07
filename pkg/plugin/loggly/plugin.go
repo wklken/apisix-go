@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -22,6 +23,13 @@ import (
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
+
+	// dialFunc is the syslog socket factory; retained so tests can count
+	// dials. The socket is reused across messages and closed on Stop.
+	dialFunc   func() (net.Conn, error)
+	connMu     sync.Mutex
+	conn       net.Conn
+	httpClient *http.Client
 }
 
 const (
@@ -275,6 +283,13 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = metadata.LogFormat
 	}
 
+	p.httpClient = &http.Client{
+		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: !*p.config.SSLVerify},
+		},
+	}
+
 	p.BatchProcessor = base.NewBatchProcessor("loggly", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -383,20 +398,60 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 }
 
 func (p *Plugin) sendUDPMessage(message string) error {
-	conn, err := net.DialTimeout(
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+
+	conn := p.conn
+	if conn == nil {
+		var err error
+		conn, err = p.dial()
+		if err != nil {
+			return fmt.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %w", p.config.Host, p.config.Port, err)
+		}
+		p.conn = conn
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond))
+
+	if _, err := conn.Write([]byte(message)); err != nil {
+		p.resetConnLocked(conn)
+		return fmt.Errorf("failed to send loggly message: %w", err)
+	}
+	return nil
+}
+
+func (p *Plugin) dial() (net.Conn, error) {
+	if p.dialFunc != nil {
+		return p.dialFunc()
+	}
+	return net.DialTimeout(
 		"udp",
 		fmt.Sprintf("%s:%d", p.config.Host, p.config.Port),
 		time.Duration(p.config.Timeout)*time.Millisecond,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %w", p.config.Host, p.config.Port, err)
-	}
-	defer func() { _ = conn.Close() }()
+}
 
-	if _, err := conn.Write([]byte(message)); err != nil {
-		return fmt.Errorf("failed to send loggly message: %w", err)
+func (p *Plugin) resetConnLocked(conn net.Conn) {
+	_ = conn.Close()
+	if p.conn == conn {
+		p.conn = nil
 	}
-	return nil
+}
+
+// Stop drains the batch processor, then closes the retained syslog socket
+// and any idle HTTP connections.
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+
+	p.connMu.Lock()
+	if p.conn != nil {
+		_ = p.conn.Close()
+		p.conn = nil
+	}
+	p.connMu.Unlock()
+
+	if p.httpClient != nil {
+		p.httpClient.CloseIdleConnections()
+	}
 }
 
 func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error {
@@ -412,13 +467,7 @@ func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LOGGLY-TAG", strings.Join(p.config.Tags, ","))
 
-	client := &http.Client{
-		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: !*p.config.SSLVerify},
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send loggly bulk message: %w", err)
 	}

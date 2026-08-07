@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	brotlidec "github.com/andybalholm/brotli"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -342,6 +344,40 @@ func TestHandlerAcceptsPositiveBrotliQuality(t *testing.T) {
 		t.Fatalf("Content-Encoding = %q, want br", got)
 	}
 }
+
+func TestWriteCompressedResponseFlushesThroughWrapperChain(t *testing.T) {
+	recorder := base.NewBufferedResponseWriter()
+	recorder.Header().Set("Content-Type", "text/plain")
+	recorder.Header().Set("Content-Encoding", "br")
+	recorder.WriteHeader(http.StatusOK)
+	recorder.SetBody([]byte("compressed"))
+
+	fake := &fakeCapabilityWriter{}
+	wrapper := &capabilityUnwrapper{ResponseWriter: fake}
+
+	writeCompressedResponse(wrapper, recorder)
+
+	if fake.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 reached through the wrapper chain", fake.flushes)
+	}
+}
+
+type fakeCapabilityWriter struct {
+	flushes int
+}
+
+func (w *fakeCapabilityWriter) Header() http.Header { return make(http.Header) }
+func (w *fakeCapabilityWriter) WriteHeader(int)      {}
+func (w *fakeCapabilityWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+func (w *fakeCapabilityWriter) Flush() { w.flushes++ }
+
+type capabilityUnwrapper struct {
+	http.ResponseWriter
+}
+
+func (w *capabilityUnwrapper) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestWriterOptionsApplyCompressionLevelAndWindow(t *testing.T) {
 	p := newTestPlugin(t, Config{

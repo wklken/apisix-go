@@ -1,16 +1,69 @@
 package gzip
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	cgzip "compress/gzip"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type fakeCapabilityWriter struct {
+	flushes  int
+	hijacks  int
+	flushErr error
+}
+
+func (w *fakeCapabilityWriter) Header() http.Header { return make(http.Header) }
+func (w *fakeCapabilityWriter) WriteHeader(int)      {}
+func (w *fakeCapabilityWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+func (w *fakeCapabilityWriter) Flush() { w.flushes++ }
+func (w *fakeCapabilityWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacks++
+	return nil, nil, http.ErrNotSupported
+}
+
+func TestMaybeCompressResponseWriterPreservesCapabilities(t *testing.T) {
+	fake := &fakeCapabilityWriter{}
+	wrapper := &maybeCompressResponseWriter{
+		ResponseWriter: fake,
+		w:              fake,
+		encoding:       encodingNone,
+		minLength:      1,
+	}
+
+	http.NewResponseController(wrapper).Flush()
+	if fake.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 reached through the wrapper", fake.flushes)
+	}
+
+	if _, _, err := wrapper.Hijack(); err != http.ErrNotSupported {
+		t.Fatalf("Hijack() error = %v, want ErrNotSupported from fake", err)
+	}
+	if fake.hijacks != 1 {
+		t.Fatalf("hijacks = %d, want exactly 1 delegated call", fake.hijacks)
+	}
+}
+
+func TestMaybeCompressResponseWriterHijackWithoutUnderlyingSupport(t *testing.T) {
+	wrapper := &maybeCompressResponseWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		w:              httptest.NewRecorder(),
+		encoding:       encodingNone,
+		minLength:      1,
+	}
+	if _, _, err := wrapper.Hijack(); err != http.ErrNotSupported {
+		t.Fatalf("Hijack() error = %v, want typed ErrNotSupported", err)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func ReadRequestBody(r *http.Request) ([]byte, error) {
@@ -32,10 +33,10 @@ func ReplaceRequestBody(r *http.Request, body []byte) {
 	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
 }
 
+// WriteJSONMessage preserves the plugin-base API for existing callers while
+// using the canonical response writer in util.
 func WriteJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
+	_ = util.WriteJSONMessage(w, status, message)
 }
 
 func RemoteIP(remoteAddr string) string {

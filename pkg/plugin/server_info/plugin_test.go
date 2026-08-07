@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,8 +98,11 @@ func TestInfoHandlerWritesJSON(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
-	if got := response.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := response.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q, want application/json with UTF-8 charset", got)
+	}
+	if strings.HasSuffix(response.Body.String(), "\n") {
+		t.Fatalf("body has trailing newline: %q", response.Body.String())
 	}
 	var decoded Response
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {

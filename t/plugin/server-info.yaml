@@ -25,9 +25,9 @@ cases:
           status: 200
           headers:
             Content-Type:
-              matches: application/json
+              equals: application/json; charset=UTF-8
           body:
-            matches: '^\{"etcd_version":"unknown","hostname":"[^"]+","id":"123456","version":"apisix-go","boot_time":[0-9]+\}\n$'
+            matches: '^\{"etcd_version":"unknown","hostname":"[^"]+","id":"123456","version":"apisix-go","boot_time":[0-9]+\}$'
       - name: server-info-remains-available
         input:
           path: /v1/server_info

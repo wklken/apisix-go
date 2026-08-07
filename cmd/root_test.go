@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"
@@ -39,5 +41,19 @@ func TestRootCommandConfigFlagMetadata(t *testing.T) {
 	}
 	if flag.DefValue != "conf/config-default.yaml" {
 		t.Fatalf("config default = %q, want conf/config-default.yaml", flag.DefValue)
+	}
+}
+
+func TestStartReturnsStartupErrorWithoutPanic(t *testing.T) {
+	previous := cfgFile
+	t.Cleanup(func() { cfgFile = previous })
+	cfgFile = filepath.Join(t.TempDir(), "missing.yaml")
+
+	err := Start()
+	if err == nil {
+		t.Fatal("Start() error = nil with an unreadable config file")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "config") {
+		t.Fatalf("Start() error = %v, want configuration context in the error", err)
 	}
 }

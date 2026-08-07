@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -492,6 +493,37 @@ func TestEtcdTLSRequiredForCertKeyAndSNI(t *testing.T) {
 	}
 	if !etcdTLSRequired(endpoints, config.EtcdTLS{SNI: "etcd.example.test"}) {
 		t.Fatal("etcdTLSRequired() = false with an SNI override")
+	}
+}
+
+func TestStartReturnsListenError(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy listener: %v", err)
+	}
+	defer occupied.Close()
+	address := occupied.Addr().String()
+
+	server := &Server{
+		addr:   address,
+		addrs:  []string{address},
+		server: newConfiguredHTTPServer(http.NotFoundHandler()),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.startHTTPListeners(ctx) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start() error = nil for an occupied listener address")
+		}
+		if !strings.Contains(err.Error(), occupied.Addr().String()) {
+			t.Fatalf("Start() error = %v, want the occupied address in the error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start() did not return a listener bind error")
 	}
 }
 

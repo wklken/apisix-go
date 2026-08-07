@@ -1,7 +1,6 @@
 package proxy_cache
 
 import (
-	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 )
 
 type Plugin struct {
@@ -368,7 +368,7 @@ func (s *MemoryZoneStore) Close() {
 
 func sharedCacheEntry(entry cacheEntry) SharedCacheEntry {
 	return SharedCacheEntry{
-		Header:    cloneHeader(entry.header),
+		Header:    cacheutil.CloneHeader(entry.header),
 		Body:      append([]byte(nil), entry.body...),
 		Status:    entry.status,
 		StoredAt:  entry.storedAt,
@@ -379,7 +379,7 @@ func sharedCacheEntry(entry cacheEntry) SharedCacheEntry {
 
 func localCacheEntry(entry SharedCacheEntry) cacheEntry {
 	return cacheEntry{
-		header:    cloneHeader(entry.Header),
+		header:    cacheutil.CloneHeader(entry.Header),
 		body:      append([]byte(nil), entry.Body...),
 		status:    entry.Status,
 		storedAt:  entry.StoredAt,
@@ -460,7 +460,7 @@ func (s *DiskZoneStore) Load(storageKey string, now time.Time) (SharedCacheEntry
 		return SharedCacheEntry{}, false, true
 	}
 	return SharedCacheEntry{
-		Header:    cloneHeader(persisted.Header),
+		Header:    cacheutil.CloneHeader(persisted.Header),
 		Body:      append([]byte(nil), persisted.Body...),
 		Status:    persisted.Status,
 		StoredAt:  persisted.StoredAt,
@@ -474,7 +474,7 @@ func (s *DiskZoneStore) Store(storageKey string, entry SharedCacheEntry) error {
 		return fmt.Errorf("proxy-cache disk store is nil")
 	}
 	return writeDiskJSON(s.root, s.entryPath(storageKey), diskCacheEntry{
-		Header:    cloneHeader(entry.Header),
+		Header:    cacheutil.CloneHeader(entry.Header),
 		Body:      append([]byte(nil), entry.Body...),
 		Status:    entry.Status,
 		StoredAt:  entry.StoredAt,
@@ -938,7 +938,7 @@ func (p *Plugin) varyIndexPath(key string) string {
 
 func (p *Plugin) persistEntry(storageKey string, entry cacheEntry) error {
 	return writeDiskJSON(p.diskRoot, p.entryPath(storageKey), diskCacheEntry{
-		Header:    cloneHeader(entry.header),
+		Header:    cacheutil.CloneHeader(entry.header),
 		Body:      append([]byte(nil), entry.body...),
 		Status:    entry.status,
 		StoredAt:  entry.storedAt,
@@ -987,7 +987,7 @@ func (p *Plugin) loadEntryLocked(storageKey string) (cacheEntry, bool) {
 		return cacheEntry{}, false
 	}
 	return cacheEntry{
-		header:    cloneHeader(persisted.Header),
+		header:    cacheutil.CloneHeader(persisted.Header),
 		body:      append([]byte(nil), persisted.Body...),
 		status:    persisted.Status,
 		storedAt:  persisted.StoredAt,
@@ -1164,7 +1164,7 @@ func (p *Plugin) storageKeyLocked(r *http.Request, key string) string {
 	if !ok || time.Now().After(index.expiresAt) || len(index.headers) == 0 {
 		return key
 	}
-	return key + "::" + varySignature(index.headers, r)
+	return key + "::" + cacheutil.VarySignature(index.headers, r)
 }
 
 func (p *Plugin) purgeAll(key string) bool {
@@ -1193,14 +1193,14 @@ func (p *Plugin) purgeAllLocked(key string) bool {
 }
 
 func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter, ttl time.Duration) {
-	varyHeaders, cacheable := parseVaryHeader(recorder.Header())
+	varyHeaders, cacheable := cacheutil.ParseVaryHeader(recorder.Header())
 	if !cacheable {
 		return
 	}
 
 	now := time.Now()
 	entry := cacheEntry{
-		header:    cloneHeader(recorder.Header()),
+		header:    cacheutil.CloneHeader(recorder.Header()),
 		body:      append([]byte(nil), recorder.Body()...),
 		status:    recorder.StatusCode(),
 		storedAt:  now,
@@ -1219,7 +1219,7 @@ func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedRespo
 		p.loadVaryIndexLocked(key)
 	}
 	if len(varyHeaders) > 0 {
-		signature := varySignature(varyHeaders, r)
+		signature := cacheutil.VarySignature(varyHeaders, r)
 		storageKey = key + "::" + signature
 		p.updateVaryIndexLocked(key, varyHeaders, signature, entry.expiresAt)
 		delete(p.entries, key)
@@ -1331,7 +1331,7 @@ func (p *Plugin) forgetDiskEntryLocked(path string) {
 
 func (p *Plugin) updateVaryIndexLocked(key string, headers []string, signature string, expiresAt time.Time) {
 	index, ok := p.vary[key]
-	if ok && sameStringSlice(index.headers, headers) {
+	if ok && slices.Equal(index.headers, headers) {
 		found := slices.Contains(index.signatures, signature)
 		if !found {
 			for len(index.signatures) >= maxVaryVariants {
@@ -1510,6 +1510,7 @@ func cacheControlValueDirective(value string, names ...string) (string, bool) {
 			if directive == name {
 				found = directiveValue
 				ok = true
+				break
 			}
 		}
 	}
@@ -1527,63 +1528,6 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 	w.Header().Set(cacheStatusHeader, cacheStatus)
 	w.WriteHeader(entry.status)
 	_, _ = w.Write(entry.body)
-}
-
-func cloneHeader(header http.Header) http.Header {
-	cloned := make(http.Header, len(header))
-	for field, values := range header {
-		cloned[field] = append([]string(nil), values...)
-	}
-	return cloned
-}
-
-func parseVaryHeader(header http.Header) ([]string, bool) {
-	values := header.Values("Vary")
-	if len(values) == 0 {
-		return nil, true
-	}
-
-	seen := map[string]struct{}{}
-	var headers []string
-	for _, value := range values {
-		for part := range strings.SplitSeq(value, ",") {
-			name := strings.ToLower(strings.TrimSpace(part))
-			if name == "" {
-				continue
-			}
-			if name == "*" {
-				return nil, false
-			}
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			headers = append(headers, name)
-		}
-	}
-	sort.Strings(headers)
-	return headers, true
-}
-
-func varySignature(headers []string, r *http.Request) string {
-	values := make([]string, 0, len(headers))
-	for _, header := range headers {
-		values = append(values, r.Header.Get(header))
-	}
-	sum := md5.Sum([]byte(strings.Join(values, "\x00")))
-	return hex.EncodeToString(sum[:])
-}
-
-func sameStringSlice(a []string, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func cacheKeyHasIdentity(cacheKey []string) bool {

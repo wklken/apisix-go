@@ -929,6 +929,20 @@ func TestHandlerCacheControlResponseDirectivesSkipStore(t *testing.T) {
 	}
 }
 
+func TestHeaderCacheControlDirectiveValuePreservesLastMatchAcrossFields(t *testing.T) {
+	header := http.Header{}
+	header.Add("Cache-Control", "max-age=60, s-maxage=30")
+	header.Add("Cache-Control", "max-age=10")
+
+	got, ok := headerCacheControlDirectiveValue(header, "s-maxage", "max-age")
+	if !ok {
+		t.Fatal("headerCacheControlDirectiveValue() did not find a matching directive")
+	}
+	if got != "10" {
+		t.Fatalf("headerCacheControlDirectiveValue() = %q, want last matching value 10", got)
+	}
+}
+
 func TestHandlerCacheControlOnlyIfCachedMissReturnsGatewayTimeout(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
 	calls := 0

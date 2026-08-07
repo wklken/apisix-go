@@ -1,6 +1,7 @@
 package serverless
 
 import (
+	"sync"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -182,4 +183,57 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(upstream)).ServeHTTP(rr, req)
 	return rr
+}
+
+func TestServerlessCompilesFunctionsOnceOutsideRequestPath(t *testing.T) {
+	before := compileFunctionCount.Load()
+	p := newTestPlugin(t, NewPreFunction(), Config{
+		Phase: "access",
+		Functions: []string{
+			`return function() ngx.say("first") end`,
+			`return function() ngx.say("second") end`,
+		},
+	})
+	compiledDuringInit := compileFunctionCount.Load() - before
+	if compiledDuringInit != 2 {
+		t.Fatalf("compilations during PostInit = %d, want 2", compiledDuringInit)
+	}
+
+	for i := 0; i < 5; i++ {
+		res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+		if res.Code != http.StatusOK {
+			t.Fatalf("request %d code = %d, want 200; body=%s", i+1, res.Code, res.Body.String())
+		}
+	}
+	if got := compileFunctionCount.Load() - before; got != 2 {
+		t.Fatalf("compilations after 5 requests = %d, want the 2 static functions only", got)
+	}
+}
+
+func TestServerlessConcurrentRequestsDoNotRecompile(t *testing.T) {
+	before := compileFunctionCount.Load()
+	p := newTestPlugin(t, NewPreFunction(), Config{
+		Phase:    "access",
+		Functions: []string{`return function() ngx.say("ok") end`},
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})
+			if res.Code != http.StatusOK {
+				t.Errorf("concurrent request code = %d, want 200", res.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := compileFunctionCount.Load() - before; got != 1 {
+		t.Fatalf("compilations under concurrency = %d, want 1", got)
+	}
 }

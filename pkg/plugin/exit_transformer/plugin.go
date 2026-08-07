@@ -4,17 +4,24 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync/atomic"
+	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	lua "github.com/yuin/gopher-lua"
+	lua_parse "github.com/yuin/gopher-lua/parse"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
+
+	// compiled holds the immutable precompiled function chunks, parsed once
+	// in PostInit instead of on every response.
+	compiled []*lua.FunctionProto
 }
 
 const (
@@ -60,9 +67,14 @@ func (p *Plugin) PostInit() error {
 	defer runner.close()
 
 	for _, source := range p.config.Functions {
-		if err := runner.validate(source); err != nil {
+		proto, err := compileFunction(source)
+		if err != nil {
 			return err
 		}
+		if err := runner.validate(proto); err != nil {
+			return err
+		}
+		p.compiled = append(p.compiled, proto)
 	}
 	return nil
 }
@@ -87,8 +99,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		runner := newTransformerRunner(r)
 		defer runner.close()
-		for _, fn := range p.config.Functions {
-			transformed, err := runner.transform(resp, fn)
+		for _, proto := range p.compiled {
+			transformed, err := runner.transform(resp, proto)
 			if err != nil {
 				logger.Errorf("exit-transformer: %v", err)
 				continue
@@ -203,13 +215,10 @@ func (r *transformerRunner) preloadApisixCore() {
 	})
 }
 
-func (r *transformerRunner) validate(source string) error {
-	fn, err := r.state.LoadString(source)
-	if err != nil {
-		return fmt.Errorf("unexpected symbol: %w", err)
-	}
-	r.state.Push(fn)
+func (r *transformerRunner) validate(proto *lua.FunctionProto) error {
+	r.state.Push(r.state.NewFunctionFromProto(proto))
 	if err := r.state.PCall(0, lua.MultRet, nil); err != nil {
+		r.state.SetTop(0)
 		return fmt.Errorf("unexpected symbol: %w", err)
 	}
 	result := r.state.Get(1)
@@ -220,11 +229,27 @@ func (r *transformerRunner) validate(source string) error {
 	return nil
 }
 
-func (r *transformerRunner) transform(resp exitResponse, source string) (exitResponse, error) {
-	fn, err := r.state.LoadString(source)
+// compileFunctionCount counts Lua chunk compilations; responses must never
+// recompile the static configured functions.
+var compileFunctionCount atomic.Int32
+
+// compileFunction parses and compiles a Lua source chunk into an immutable
+// prototype shared by every per-request Lua state.
+func compileFunction(source string) (*lua.FunctionProto, error) {
+	compileFunctionCount.Add(1)
+	chunk, err := lua_parse.Parse(strings.NewReader(source), "exit-transformer")
 	if err != nil {
-		return resp, err
+		return nil, fmt.Errorf("unexpected symbol: %w", err)
 	}
+	proto, err := lua.Compile(chunk, "exit-transformer")
+	if err != nil {
+		return nil, fmt.Errorf("unexpected symbol: %w", err)
+	}
+	return proto, nil
+}
+
+func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProto) (exitResponse, error) {
+	fn := r.state.NewFunctionFromProto(proto)
 	code, body, header := responseValues(r.state, resp)
 	r.state.Push(fn)
 	r.state.Push(code)

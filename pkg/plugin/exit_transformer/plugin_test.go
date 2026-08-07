@@ -10,6 +10,32 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
+func TestPostInitRejectsNonFunctionLua(t *testing.T) {
+	p := &Plugin{config: Config{Functions: []string{`return 42`}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "only accept Lua function") {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+}
+
+func TestHandlerExecutesGeneralLuaControlFlow(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{`
+		return function(code, body, header)
+			for i = 1, 2 do code = code + 1 end
+			header["X-Transformed"] = tostring(code)
+			return code, body, header
+		end
+	`}})
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	if res.Code != http.StatusPaymentRequired || res.Header().Get("X-Transformed") != "402" {
+		t.Fatalf("response = %d/%q", res.Code, res.Header().Get("X-Transformed"))
+	}
+}
+
 func TestPostInitRejectsMalformedEquality(t *testing.T) {
 	p := &Plugin{config: Config{Functions: []string{
 		"return (function(code, body, header) if code == then return 405 end return code, body, header end)(...)",

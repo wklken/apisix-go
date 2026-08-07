@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
@@ -968,17 +969,27 @@ func requestVar(r *http.Request, key string) string {
 	return value
 }
 
+func isNameChar(ch byte) bool {
+	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
 func queryDepth(query string) (int, error) {
-	tokens := tokenize(query)
-	parser := graphQLParser{tokens: tokens}
-	doc, err := parser.parseDocument()
+	doc, err := graphql.Parse(query)
 	if err != nil {
 		return 0, err
 	}
-	if err := doc.validate(); err != nil {
-		return 0, err
+	if len(doc.Operations) == 0 {
+		return 0, fmt.Errorf("empty graphql query")
 	}
-	return doc.depth(), nil
+	depth := 0
+	for _, operation := range doc.Operations {
+		opDepth, err := graphql.OperationDepth(doc, operation)
+		if err != nil {
+			return 0, err
+		}
+		depth = max(depth, opDepth)
+	}
+	return max(depth, 1), nil
 }
 
 func templateVariables(template string) []string {
@@ -1010,312 +1021,4 @@ func templateVariables(template string) []string {
 		}
 	}
 	return variables
-}
-
-type graphQLDocument struct {
-	operations []selectionSet
-	fragments  map[string]selectionSet
-}
-
-func (d graphQLDocument) validate() error {
-	for _, operation := range d.operations {
-		if err := validateSelectionSet(operation, d.fragments, map[string]bool{}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateSelectionSet(
-	selections selectionSet,
-	fragments map[string]selectionSet,
-	stack map[string]bool,
-) error {
-	for _, item := range selections {
-		if item.fragment != "" {
-			if stack[item.fragment] {
-				continue
-			}
-			fragment, ok := fragments[item.fragment]
-			if !ok {
-				return fmt.Errorf("undefined graphql fragment %q", item.fragment)
-			}
-			stack[item.fragment] = true
-			if err := validateSelectionSet(fragment, fragments, stack); err != nil {
-				return err
-			}
-			delete(stack, item.fragment)
-		}
-		if item.inline {
-			if err := validateSelectionSet(item.child, fragments, stack); err != nil {
-				return err
-			}
-		}
-		if err := validateSelectionSet(item.child, fragments, stack); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d graphQLDocument) depth() int {
-	depth := 0
-	for _, op := range d.operations {
-		depth = max(depth, op.depth(d.fragments, map[string]bool{}))
-	}
-	return max(depth, 1)
-}
-
-type selectionSet []selection
-
-func (s selectionSet) depth(fragments map[string]selectionSet, visited map[string]bool) int {
-	depth := 0
-	for _, item := range s {
-		depth = max(depth, item.depth(fragments, visited))
-	}
-	return depth
-}
-
-type selection struct {
-	name     string
-	child    selectionSet
-	fragment string
-	inline   bool
-}
-
-func (s selection) depth(fragments map[string]selectionSet, visited map[string]bool) int {
-	if s.fragment != "" {
-		if visited[s.fragment] {
-			return 0
-		}
-		fragment, ok := fragments[s.fragment]
-		if !ok {
-			return 0
-		}
-		visited[s.fragment] = true
-		depth := fragment.depth(fragments, visited)
-		delete(visited, s.fragment)
-		return depth
-	}
-	if s.inline {
-		return s.child.depth(fragments, visited)
-	}
-	if len(s.child) == 0 {
-		return 1
-	}
-	return 1 + s.child.depth(fragments, visited)
-}
-
-type graphQLParser struct {
-	tokens []string
-	pos    int
-}
-
-func (p *graphQLParser) parseDocument() (graphQLDocument, error) {
-	doc := graphQLDocument{fragments: map[string]selectionSet{}}
-	for p.hasNext() {
-		if p.peek() == "fragment" {
-			name, set, err := p.parseFragment()
-			if err != nil {
-				return doc, err
-			}
-			doc.fragments[name] = set
-			continue
-		}
-
-		set, err := p.parseOperation()
-		if err != nil {
-			return doc, err
-		}
-		doc.operations = append(doc.operations, set)
-	}
-	if len(doc.operations) == 0 {
-		return doc, fmt.Errorf("empty graphql query")
-	}
-	return doc, nil
-}
-
-func (p *graphQLParser) parseFragment() (string, selectionSet, error) {
-	p.next()
-	if !p.hasNext() {
-		return "", nil, fmt.Errorf("missing fragment name")
-	}
-	name := p.next()
-	set, err := p.skipToSelectionSet()
-	return name, set, err
-}
-
-func (p *graphQLParser) parseOperation() (selectionSet, error) {
-	if p.peek() == "{" {
-		return p.parseSelectionSet()
-	}
-	switch operation := p.next(); operation {
-	case "query", "mutation", "subscription":
-	default:
-		return nil, fmt.Errorf("unknown graphql operation %q", operation)
-	}
-	return p.skipToSelectionSet()
-}
-
-func (p *graphQLParser) skipToSelectionSet() (selectionSet, error) {
-	for p.hasNext() && p.peek() != "{" {
-		p.next()
-	}
-	if !p.hasNext() {
-		return nil, fmt.Errorf("missing selection set")
-	}
-	return p.parseSelectionSet()
-}
-
-func (p *graphQLParser) parseSelectionSet() (selectionSet, error) {
-	if !p.consume("{") {
-		return nil, fmt.Errorf("missing opening selection")
-	}
-
-	var selections selectionSet
-	for p.hasNext() && p.peek() != "}" {
-		if p.peek() == "..." {
-			p.next()
-			if !p.hasNext() {
-				return nil, fmt.Errorf("missing fragment spread")
-			}
-			if p.peek() == "on" {
-				p.next()
-				if p.hasNext() {
-					p.next()
-				}
-				child, err := p.skipToSelectionSet()
-				if err != nil {
-					return nil, err
-				}
-				selections = append(selections, selection{inline: true, child: child})
-				continue
-			}
-			selections = append(selections, selection{fragment: p.next()})
-			continue
-		}
-
-		field := selection{name: p.next()}
-		if err := p.skipArgumentsAndDirectives(); err != nil {
-			return nil, err
-		}
-		if p.hasNext() && p.peek() == "{" {
-			child, err := p.parseSelectionSet()
-			if err != nil {
-				return nil, err
-			}
-			field.child = child
-		}
-		selections = append(selections, field)
-	}
-	if !p.consume("}") {
-		return nil, fmt.Errorf("missing closing selection")
-	}
-	return selections, nil
-}
-
-func (p *graphQLParser) skipArgumentsAndDirectives() error {
-	depth := 0
-	hasArgumentValue := false
-	for p.hasNext() {
-		tok := p.peek()
-		switch tok {
-		case "(":
-			depth++
-			if depth == 1 {
-				hasArgumentValue = false
-			}
-		case ":":
-			if depth == 1 {
-				hasArgumentValue = true
-			}
-		case ")":
-			if depth == 0 {
-				return fmt.Errorf("unexpected closing parenthesis")
-			}
-			if depth == 1 && !hasArgumentValue {
-				return fmt.Errorf("graphql argument is missing a value")
-			}
-			depth--
-		case "{", "}":
-			if depth == 0 {
-				return nil
-			}
-		}
-		p.next()
-	}
-	if depth != 0 {
-		return fmt.Errorf("missing closing parenthesis")
-	}
-	return nil
-}
-
-func (p *graphQLParser) consume(token string) bool {
-	if !p.hasNext() || p.peek() != token {
-		return false
-	}
-	p.next()
-	return true
-}
-
-func (p *graphQLParser) peek() string {
-	return p.tokens[p.pos]
-}
-
-func (p *graphQLParser) next() string {
-	token := p.tokens[p.pos]
-	p.pos++
-	return token
-}
-
-func (p *graphQLParser) hasNext() bool {
-	return p.pos < len(p.tokens)
-}
-
-func tokenize(query string) []string {
-	var tokens []string
-	for i := 0; i < len(query); {
-		switch ch := query[i]; {
-		case ch == '#':
-			for i < len(query) && query[i] != '\n' {
-				i++
-			}
-		case ch == '"':
-			i = skipString(query, i)
-		case strings.HasPrefix(query[i:], "..."):
-			tokens = append(tokens, "...")
-			i += 3
-		case strings.ContainsRune("{}():", rune(ch)):
-			tokens = append(tokens, string(ch))
-			i++
-		case isNameChar(ch):
-			start := i
-			for i < len(query) && isNameChar(query[i]) {
-				i++
-			}
-			tokens = append(tokens, query[start:i])
-		default:
-			i++
-		}
-	}
-	return tokens
-}
-
-func skipString(query string, start int) int {
-	i := start + 1
-	for i < len(query) {
-		if query[i] == '\\' {
-			i += 2
-			continue
-		}
-		if query[i] == '"' {
-			return i + 1
-		}
-		i++
-	}
-	return i
-}
-
-func isNameChar(ch byte) bool {
-	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
 }

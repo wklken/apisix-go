@@ -22,6 +22,8 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -44,6 +46,7 @@ func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                 "http://" + r.Host,
 				"introspection_endpoint": "http://" + r.Host + "/introspect",
@@ -54,6 +57,7 @@ func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
 			}
 			forms <- r.PostForm
 			authHeaders <- r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
 				"scope":  "read write",
@@ -128,12 +132,13 @@ func TestHandlerIntrospectsBearerTokenWithPrivateKeyJWT(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse client assertion: %v", err)
 		}
-		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
+		if !verifyClientAssertionSignature(r.PostForm.Get("client_assertion"), &privateKey.PublicKey) {
 			t.Fatal("client assertion signature did not verify")
 		}
 		if got := assertion.Payload["aud"]; got != idp.URL+"/introspect" {
 			t.Fatalf("assertion aud = %v, want introspection endpoint", got)
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
 	}))
 	t.Cleanup(idp.Close)
@@ -172,6 +177,7 @@ func TestDiscoveryUsesConfiguredHTTPProxy(t *testing.T) {
 			proxyAuth     string
 			requestTarget string
 		}{path: r.URL.Path, proxyAuth: r.Header.Get("Proxy-Authorization"), requestTarget: r.URL.String()}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "http://idp.example.test"})
 	}))
 	t.Cleanup(proxy.Close)
@@ -210,6 +216,7 @@ func TestDiscoveryUsesConfiguredHTTPProxy(t *testing.T) {
 
 func TestDiscoveryNoProxyBypassesConfiguredHTTPProxy(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host})
 	}))
 	t.Cleanup(idp.Close)
@@ -240,6 +247,7 @@ func TestHandlerAcceptsXAccessTokenAsBearerInput(t *testing.T) {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
 		forms <- r.PostForm
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true})
 	}))
 	t.Cleanup(idp.Close)
@@ -279,6 +287,7 @@ func TestHandlerVerifiesBearerJWTWithPublicKey(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer": "http://" + r.Host,
 			})
@@ -346,11 +355,13 @@ func TestHandlerVerifiesBearerJWTWithJWKS(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":   "http://" + r.Host,
 				"jwks_uri": "http://" + r.Host + "/jwks",
 			})
 		case "/jwks":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"keys": []any{rsaJWK(&privateKey.PublicKey, "kid-a")},
 			})
@@ -393,6 +404,7 @@ func TestHandlerVerifiesBearerJWTWithJWKS(t *testing.T) {
 
 func TestHandlerRejectsMissingRequiredScope(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "scope": "read"})
 	}))
 	t.Cleanup(idp.Close)
@@ -422,6 +434,7 @@ func TestHandlerRejectsMissingRequiredScope(t *testing.T) {
 
 func TestHandlerRejectsMissingRequiredAudienceClaim(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
 	}))
 	t.Cleanup(idp.Close)
@@ -455,6 +468,7 @@ func TestHandlerRejectsMissingRequiredAudienceClaim(t *testing.T) {
 
 func TestHandlerValidatesAudienceClaimAgainstClientID(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": true,
 			"aud":    []string{"other-client", "apisix"},
@@ -496,6 +510,7 @@ func TestHandlerValidatesAudienceClaimAgainstClientID(t *testing.T) {
 
 func TestHandlerRejectsMismatchedAudienceClaim(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": true,
 			"aud":    "other-client",
@@ -533,6 +548,7 @@ func TestHandlerRejectsMismatchedAudienceClaim(t *testing.T) {
 
 func TestHandlerRejectsClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
 	}))
 	t.Cleanup(idp.Close)
@@ -568,6 +584,7 @@ func TestHandlerRejectsClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 
 func TestHandlerAllowsClaimsThatMatchClaimSchema(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": true,
 			"sub":    "alice",
@@ -1066,6 +1083,7 @@ func TestHandlerCodeFlowPKCEExchangesMatchingVerifier(t *testing.T) {
 		) {
 			t.Fatalf("Authorization = %q, want client_secret_basic", got)
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "access-token",
 			"id_token":      "id-token",
@@ -1132,6 +1150,7 @@ func TestHandlerCodeFlowSupportsClientSecretPost(t *testing.T) {
 		}
 		tokenForm = r.PostForm
 		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
 	})
 	cfg := codeFlowConfig(idp.URL)
@@ -1200,7 +1219,7 @@ func TestHandlerCodeFlowSupportsPrivateKeyJWT(t *testing.T) {
 		if got := assertion.Header["kid"]; got != "key-1" {
 			t.Fatalf("assertion kid = %v, want key-1", got)
 		}
-		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
+		if !verifyClientAssertionSignature(r.PostForm.Get("client_assertion"), &privateKey.PublicKey) {
 			t.Fatal("client assertion signature did not verify")
 		}
 		if got := assertion.Payload["iss"]; got != "apisix" {
@@ -1215,6 +1234,7 @@ func TestHandlerCodeFlowSupportsPrivateKeyJWT(t *testing.T) {
 		if got, ok := assertion.Payload["jti"].(string); !ok || got == "" {
 			t.Fatalf("assertion jti = %v, want a random string", assertion.Payload["jti"])
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
 	})
 	cfg := codeFlowConfig(idp.URL)
@@ -1271,6 +1291,7 @@ func TestHandlerCodeFlowSupportsClientSecretJWT(t *testing.T) {
 		if got := assertion.Payload["aud"]; got != idp.URL+"/token" {
 			t.Fatalf("assertion aud = %v, want token endpoint", got)
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
 	})
 	cfg := codeFlowConfig(idp.URL)
@@ -1332,6 +1353,7 @@ func TestHandlerCodeFlowRejectsMismatchedStateWithoutTokenExchange(t *testing.T)
 
 func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T) {
 	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "access-token",
 			"id_token":      "id-token",
@@ -1402,6 +1424,7 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                 "http://" + r.Host,
 				"authorization_endpoint": idp.URL + "/authorize",
@@ -1409,8 +1432,10 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 				"userinfo_endpoint":      idp.URL + "/userinfo",
 			})
 		case "/token":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token", "id_token": "id-token"})
 		case "/userinfo":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"role": "viewer"})
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -1517,6 +1542,7 @@ func TestHandlerRenewsExpiredSessionAccessToken(t *testing.T) {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
 		tokenForm = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "renewed-access-token",
 			"expires_in":   3600,
@@ -1676,6 +1702,7 @@ func TestHandlerLogoutRevokesSessionAccessAndRefreshTokens(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":               "http://" + r.Host,
 				"end_session_endpoint": "http://" + r.Host + "/logout",
@@ -1755,6 +1782,7 @@ func TestHandlerLogoutFallsBackToPostLogoutRedirectURI(t *testing.T) {
 		if r.URL.Path != "/.well-known/openid-configuration" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host})
 	}))
 	t.Cleanup(idp.Close)
@@ -1952,6 +1980,7 @@ func newCodeFlowIDP(t *testing.T, tokenHandler http.HandlerFunc) *httptest.Serve
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                 "http://" + r.Host,
 				"authorization_endpoint": "http://" + r.Host + "/authorize",
@@ -2026,4 +2055,12 @@ func rsaJWK(publicKey *rsa.PublicKey, kid string) map[string]any {
 
 func timeNowUnix() int64 {
 	return time.Now().Unix()
+}
+
+func verifyClientAssertionSignature(raw string, publicKey *rsa.PublicKey) bool {
+	parser := jwt.NewParser(jwt.WithValidMethods([]string{"RS256"}))
+	_, err := parser.ParseWithClaims(raw, jwt.MapClaims{}, func(*jwt.Token) (any, error) {
+		return publicKey, nil
+	})
+	return err == nil
 }

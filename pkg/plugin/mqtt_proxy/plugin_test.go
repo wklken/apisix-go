@@ -1,8 +1,11 @@
 package mqtt_proxy
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -68,13 +71,13 @@ func TestSchemaValidatesOfficialConfig(t *testing.T) {
 	}
 }
 
-func TestParseConnectPacketExtractsClientIDAndPreservesPacketLength(t *testing.T) {
+func TestDecodeConnectExtractsClientIDAndPreservesPacketLength(t *testing.T) {
 	packet := mqttConnectPacket(4, 0x02, "client-1", nil, nil)
 	packet = append(packet, []byte("next-packet")...)
 
-	info, err := ParseConnectPacket(packet, "MQTT", 4)
+	info, raw, err := decodeConnect(bytes.NewReader(packet), "MQTT", 4)
 	if err != nil {
-		t.Fatalf("ParseConnectPacket() error = %v", err)
+		t.Fatalf("decodeConnect() error = %v", err)
 	}
 	if info.ProtocolName != "MQTT" || info.ProtocolLevel != 4 {
 		t.Fatalf("protocol = %q/%d, want MQTT/4", info.ProtocolName, info.ProtocolLevel)
@@ -85,12 +88,32 @@ func TestParseConnectPacketExtractsClientIDAndPreservesPacketLength(t *testing.T
 	if info.PacketLength != len(packet)-len("next-packet") {
 		t.Fatalf("packet length = %d, want %d", info.PacketLength, len(packet)-len("next-packet"))
 	}
+	if !bytes.Equal(raw, packet[:len(packet)-len("next-packet")]) {
+		t.Fatalf("raw packet = %x, want exact CONNECT bytes", raw)
+	}
 	if got := ClientIDOrPeer(info, "192.0.2.10:1234"); got != "client-1" {
 		t.Fatalf("ClientIDOrPeer() = %q, want client-1", got)
 	}
 }
 
-func TestParseConnectPacketSupportsMQTT5PropertiesAndEmptyClientIDFallback(t *testing.T) {
+func TestDecodeConnectDoesNotConsumeFollowingPacket(t *testing.T) {
+	connect := mqttConnectPacket(5, 0x02, "client-1", nil, nil)
+	publish := []byte{0x30, 0x00}
+	reader := bufio.NewReader(bytes.NewReader(append(append([]byte(nil), connect...), publish...)))
+	info, raw, err := decodeConnect(reader, "MQTT", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.PacketLength != len(connect) || !bytes.Equal(raw, connect) {
+		t.Fatalf("packet/raw = %d/%x", info.PacketLength, raw)
+	}
+	rest, _ := io.ReadAll(reader)
+	if !bytes.Equal(rest, publish) {
+		t.Fatalf("remaining = %x", rest)
+	}
+}
+
+func TestDecodeConnectSupportsMQTT5PropertiesAndEmptyClientIDFallback(t *testing.T) {
 	properties := []byte{
 		0x11, 0, 0, 0, 30,
 		0x21, 0, 10,
@@ -98,16 +121,42 @@ func TestParseConnectPacketSupportsMQTT5PropertiesAndEmptyClientIDFallback(t *te
 	}
 	packet := mqttConnectPacket(5, 0x02, "", properties, nil)
 
-	info, err := ParseConnectPacket(packet, "MQTT", 5)
+	info, _, err := decodeConnect(bytes.NewReader(packet), "MQTT", 5)
 	if err != nil {
-		t.Fatalf("ParseConnectPacket() error = %v", err)
+		t.Fatalf("decodeConnect() error = %v", err)
 	}
 	if got := ClientIDOrPeer(info, "198.51.100.8:1883"); got != "198.51.100.8:1883" {
 		t.Fatalf("ClientIDOrPeer() = %q, want peer fallback", got)
 	}
 }
 
-func TestParseConnectPacketRejectsMalformedPackets(t *testing.T) {
+func TestDecodeConnectSupportsMQTT31Packets(t *testing.T) {
+	packet := mqttConnectPacketWithName("MQIsdp", 3, 0x02, "client-31", nil, nil)
+	info, _, err := decodeConnect(bytes.NewReader(packet), "MQIsdp", 3)
+	if err != nil {
+		t.Fatalf("decodeConnect() error = %v", err)
+	}
+	if info.ProtocolName != "MQIsdp" || info.ProtocolLevel != 3 || info.ClientID != "client-31" {
+		t.Fatalf("info = %#v, want MQIsdp/3/client-31", info)
+	}
+}
+
+func TestDecodeConnectParsesWillUsernameAndPassword(t *testing.T) {
+	payload := appendMQTTUTF8(nil, "will-topic")
+	payload = append(payload, 0, 3, 'w', 'i', 'l')
+	payload = append(payload, appendMQTTUTF8(nil, "user")...)
+	payload = append(payload, 0, 4, 'p', 'a', 's', 's')
+	packet := mqttConnectPacket(4, 0xc6, "client-4", nil, payload)
+	info, _, err := decodeConnect(bytes.NewReader(packet), "MQTT", 4)
+	if err != nil {
+		t.Fatalf("decodeConnect() error = %v", err)
+	}
+	if info.ClientID != "client-4" {
+		t.Fatalf("client ID = %q, want client-4", info.ClientID)
+	}
+}
+
+func TestDecodeConnectRejectsMalformedPackets(t *testing.T) {
 	valid := mqttConnectPacket(4, 0x02, "client", nil, nil)
 	tests := []struct {
 		name  string
@@ -116,6 +165,7 @@ func TestParseConnectPacketRejectsMalformedPackets(t *testing.T) {
 		want  error
 	}{
 		{name: "partial remaining length", data: []byte{0x10, 0x80}, want: ErrNeedMoreData},
+		{name: "truncated packet body", data: []byte{0x10, 0x10, 'M', 'Q'}, want: ErrNeedMoreData},
 		{name: "wrong packet type", data: append([]byte{0x20}, valid[1:]...), want: ErrMalformedConnect},
 		{
 			name: "invalid reserved flag",
@@ -133,27 +183,38 @@ func TestParseConnectPacketRejectsMalformedPackets(t *testing.T) {
 			data: mqttConnectPacketWithName("AMQP", 4, 0x02, "client", nil, nil),
 			want: ErrMalformedConnect,
 		},
+		{
+			name: "invalid UTF-8 client ID",
+			data: mqttConnectPacket(4, 0x02, "cli\xffent", nil, nil),
+			want: ErrMalformedConnect,
+		},
+		{
+			name:  "truncated properties",
+			data:  mqttConnectPacket(5, 0x02, "client", []byte{0x11, 0, 0}, nil),
+			level: 5,
+			want:  ErrNeedMoreData,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseConnectPacket(tt.data, "MQTT", tt.level)
+			_, _, err := decodeConnect(bytes.NewReader(tt.data), "MQTT", tt.level)
 			if err == nil || !errors.Is(err, tt.want) {
-				t.Fatalf("ParseConnectPacket() error = %v, want %v", err, tt.want)
+				t.Fatalf("decodeConnect() error = %v, want %v", err, tt.want)
 			}
 		})
 	}
 }
 
-func TestParseConnectPacketRejectsInvalidWillAndTrailingBytes(t *testing.T) {
+func TestDecodeConnectRejectsInvalidWillAndTrailingBytes(t *testing.T) {
 	invalidWillQoS := mqttConnectPacket(4, 0x1a, "client", nil, nil)
-	if _, err := ParseConnectPacket(invalidWillQoS, "MQTT", 4); err == nil {
-		t.Fatal("ParseConnectPacket() error = nil for invalid will QoS")
+	if _, _, err := decodeConnect(bytes.NewReader(invalidWillQoS), "MQTT", 4); err == nil {
+		t.Fatal("decodeConnect() error = nil for invalid will QoS")
 	}
 
 	trailing := mqttConnectPacket(4, 0x02, "client", nil, []byte{0x01})
-	if _, err := ParseConnectPacket(trailing, "MQTT", 4); err == nil {
-		t.Fatal("ParseConnectPacket() error = nil for trailing payload bytes")
+	if _, _, err := decodeConnect(bytes.NewReader(trailing), "MQTT", 4); err == nil {
+		t.Fatal("decodeConnect() error = nil for trailing payload bytes")
 	}
 }
 

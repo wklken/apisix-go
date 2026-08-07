@@ -1,21 +1,15 @@
 package google_cloud_logging
 
 import (
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -494,75 +489,11 @@ func (p *Plugin) applyAuthDefaults(auth *AuthConfig) {
 	}
 }
 
-func (p *Plugin) buildJWTAssertion(now time.Time) (string, error) {
-	auth, err := p.authConfig()
-	if err != nil {
-		return "", err
-	}
-
-	header := map[string]string{
-		"alg": "RS256",
-		"typ": "JWT",
-	}
-	claims := map[string]any{
-		"iss":   auth.ClientEmail,
-		"sub":   auth.ClientEmail,
-		"aud":   auth.TokenURI,
-		"scope": strings.Join(auth.scopes(), " "),
-		"iat":   now.Unix(),
-		"exp":   now.Add(time.Hour).Unix(),
-	}
-
-	encodedHeader, err := encodeJWTPart(header)
-	if err != nil {
-		return "", err
-	}
-	encodedClaims, err := encodeJWTPart(claims)
-	if err != nil {
-		return "", err
-	}
-	signingInput := encodedHeader + "." + encodedClaims
-
-	privateKey, err := parsePrivateKey(auth.PrivateKey)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
 func (a *AuthConfig) scopes() []string {
 	if len(a.Scopes) > 0 {
 		return a.Scopes
 	}
 	return a.Scope
-}
-
-func encodeJWTPart(v any) (string, error) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
-}
-
-func parsePrivateKey(privateKey string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(privateKey))
-	if block == nil {
-		return nil, errors.New("invalid private key PEM")
-	}
-	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		rsaKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, errors.New("private key is not RSA")
-		}
-		return rsaKey, nil
-	}
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
 func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
@@ -584,33 +515,34 @@ func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
 }
 
 func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
-	assertion, err := p.buildJWTAssertion(time.Now())
+	rawJSON, err := json.Marshal(map[string]any{
+		"type":         "service_account",
+		"client_email": auth.ClientEmail,
+		"subject":      auth.ClientEmail,
+		"private_key":  auth.PrivateKey,
+		"project_id":   auth.ProjectID,
+		"token_uri":    auth.TokenURI,
+	})
 	if err != nil {
 		return tokenResponse{}, err
 	}
-
-	resp, err := p.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(url.Values{
-			"grant_type": {jwtBearerGrantType},
-			"assertion":  {assertion},
-		}.Encode()).
-		Post(auth.TokenURI)
+	source, err := ai_auth.NewGoogleTokenSource(context.Background(), rawJSON, auth.scopes(), p.client.GetClient())
 	if err != nil {
 		return tokenResponse{}, err
 	}
-	if resp.StatusCode() != http.StatusOK {
-		return tokenResponse{}, errors.New(resp.String())
-	}
-
-	var token tokenResponse
-	if err := json.Unmarshal(resp.Body(), &token); err != nil {
+	token, err := source.Token()
+	if err != nil {
 		return tokenResponse{}, err
 	}
-	if token.AccessToken == "" {
-		return tokenResponse{}, errors.New("access_token is empty")
+	expiresIn := 0
+	if !token.Expiry.IsZero() {
+		expiresIn = int(time.Until(token.Expiry).Seconds())
 	}
-	return token, nil
+	return tokenResponse{
+		AccessToken: token.AccessToken,
+		TokenType:   token.TokenType,
+		ExpiresIn:   expiresIn,
+	}, nil
 }
 
 func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {

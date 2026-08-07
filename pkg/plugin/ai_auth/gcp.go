@@ -2,26 +2,21 @@ package ai_auth
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/jwt"
 
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
 const (
+	gcpCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	gcpJWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 	defaultGCPMaxTTL      = 300
 )
@@ -50,9 +45,41 @@ type gcpServiceAccount struct {
 	TokenURI     string `json:"token_uri"`
 }
 
-type gcpTokenResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
+// NewGoogleTokenSource builds an OAuth2 token source for a Google service
+// account that exchanges a signed JWT assertion for an access token.
+func NewGoogleTokenSource(
+	ctx context.Context,
+	rawJSON []byte,
+	scopes []string,
+	client *http.Client,
+) (oauth2.TokenSource, error) {
+	var account struct {
+		ClientEmail  string `json:"client_email"`
+		PrivateKey   string `json:"private_key"`
+		PrivateKeyID string `json:"private_key_id"`
+		TokenURI     string `json:"token_uri"`
+		Subject      string `json:"subject"`
+	}
+	if err := json.Unmarshal(rawJSON, &account); err != nil {
+		return nil, fmt.Errorf("parse Google service account: %w", err)
+	}
+	if account.ClientEmail == "" || account.PrivateKey == "" {
+		return nil, fmt.Errorf("parse Google service account: client_email and private_key are required")
+	}
+	tokenURL := account.TokenURI
+	if tokenURL == "" {
+		tokenURL = google.JWTTokenURL
+	}
+	cfg := &jwt.Config{
+		Email:        account.ClientEmail,
+		Subject:      account.Subject,
+		PrivateKey:   []byte(account.PrivateKey),
+		PrivateKeyID: account.PrivateKeyID,
+		TokenURL:     tokenURL,
+		Scopes:       scopes,
+	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, client)
+	return oauth2.ReuseTokenSource(nil, cfg.TokenSource(ctx)), nil
 }
 
 func NewGCPTokenSource() *GCPTokenSource {
@@ -96,116 +123,53 @@ func (s *GCPTokenSource) Token(ctx context.Context, client *http.Client, config 
 	if cached, ok := s.cache[cacheKey]; ok && now.Before(cached.expires) {
 		return cached.value, nil
 	}
-	assertion, err := buildGCPJWTAssertion(account, now)
+	token, err := s.exchangeToken(ctx, client, []byte(serviceAccountJSON), config, now)
 	if err != nil {
 		return "", err
 	}
-	form := url.Values{
-		"grant_type": {gcpJWTBearerGrantType},
-		"assertion":  {assertion},
-	}
-	tokenReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		account.TokenURI,
-		strings.NewReader(form.Encode()),
-	)
+	s.cache[cacheKey] = cachedGCPToken{value: token.AccessToken, expires: token.Expiry}
+	return token.AccessToken, nil
+}
+
+func (s *GCPTokenSource) exchangeToken(
+	ctx context.Context,
+	client *http.Client,
+	rawJSON []byte,
+	config GCPConfig,
+	now time.Time,
+) (*oauth2.Token, error) {
+	source, err := NewGoogleTokenSource(ctx, rawJSON, []string{gcpCloudPlatformScope}, client)
 	if err != nil {
-		return "", fmt.Errorf("create GCP token request: %w", err)
+		return nil, err
 	}
-	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := client.Do(tokenReq)
+	token, err := source.Token()
 	if err != nil {
-		return "", fmt.Errorf("request GCP access token: %w", err)
+		return nil, fmt.Errorf("request GCP access token: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read GCP token response: %w", err)
+	if token.AccessToken == "" {
+		return nil, fmt.Errorf("invalid GCP token response")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GCP token endpoint returned status %d", resp.StatusCode)
+	token.Expiry = shortenedGCPTokenExpiry(token.Expiry, now, config)
+	return token, nil
+}
+
+func shortenedGCPTokenExpiry(expiry time.Time, now time.Time, config GCPConfig) time.Time {
+	if expiry.IsZero() {
+		expiry = now.Add(time.Hour)
 	}
-	var token gcpTokenResponse
-	if err := json.Unmarshal(body, &token); err != nil || token.AccessToken == "" {
-		return "", fmt.Errorf("invalid GCP token response")
+	early := time.Duration(config.ExpireEarlySecs) * time.Second
+	if config.ExpireEarlySecs == 0 {
+		early = time.Minute
 	}
-	ttl := token.ExpiresIn
-	if ttl <= 0 {
-		ttl = 3600
-	}
-	early := config.ExpireEarlySecs
-	if early == 0 {
-		early = 60
-	}
-	if ttl > early {
-		ttl -= early
+	if expiry.Sub(now) > early {
+		expiry = expiry.Add(-early)
 	}
 	maxTTL := config.MaxTTL
 	if maxTTL == 0 {
 		maxTTL = defaultGCPMaxTTL
 	}
-	if ttl > maxTTL {
-		ttl = maxTTL
+	if cap := time.Duration(maxTTL) * time.Second; expiry.Sub(now) > cap {
+		expiry = now.Add(cap)
 	}
-	s.cache[cacheKey] = cachedGCPToken{value: token.AccessToken, expires: now.Add(time.Duration(ttl) * time.Second)}
-	return token.AccessToken, nil
-}
-
-func buildGCPJWTAssertion(account gcpServiceAccount, now time.Time) (string, error) {
-	header := map[string]any{"alg": "RS256", "typ": "JWT"}
-	if account.PrivateKeyID != "" {
-		header["kid"] = account.PrivateKeyID
-	}
-	claims := map[string]any{
-		"iss":   account.ClientEmail,
-		"scope": "https://www.googleapis.com/auth/cloud-platform",
-		"aud":   account.TokenURI,
-		"iat":   now.Unix(),
-		"exp":   now.Add(time.Hour).Unix(),
-	}
-	encodedHeader, err := encodeGCPJWTPart(header)
-	if err != nil {
-		return "", err
-	}
-	encodedClaims, err := encodeGCPJWTPart(claims)
-	if err != nil {
-		return "", err
-	}
-	unsigned := encodedHeader + "." + encodedClaims
-	key, err := parseGCPPrivateKey(account.PrivateKey)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256([]byte(unsigned))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", fmt.Errorf("sign GCP JWT: %w", err)
-	}
-	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
-func encodeGCPJWTPart(value any) (string, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", fmt.Errorf("encode GCP JWT: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(encoded), nil
-}
-
-func parseGCPPrivateKey(value string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(value))
-	if block == nil {
-		return nil, fmt.Errorf("invalid GCP private key PEM")
-	}
-	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		if rsaKey, ok := key.(*rsa.PrivateKey); ok {
-			return rsaKey, nil
-		}
-	}
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse GCP private key: %w", err)
-	}
-	return key, nil
+	return expiry
 }

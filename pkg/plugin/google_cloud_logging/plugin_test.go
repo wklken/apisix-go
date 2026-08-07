@@ -155,23 +155,47 @@ func TestPostInitResolvesRotatedEncryptedPrivateKey(t *testing.T) {
 	}
 }
 
-func TestBuildJWTAssertionUsesServiceAccountClaims(t *testing.T) {
+func TestServiceAccountAssertionUsesConfiguredClaims(t *testing.T) {
 	pemKey, key := testPrivateKey(t)
+	assertions := make(chan url.Values, 1)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		assertions <- r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
 	p := newTestPlugin(t, Config{
 		AuthConfig: &AuthConfig{
 			ClientEmail: "svc@example.iam.gserviceaccount.com",
 			PrivateKey:  pemKey,
 			ProjectID:   "project-a",
-			TokenURI:    "http://127.0.0.1/token",
+			TokenURI:    tokenServer.URL,
 			Scopes:      []string{"scope-a", "scope-b"},
 		},
 	})
 
-	assertion, err := p.buildJWTAssertion(time.Unix(1700000000, 0))
+	auth, err := p.authConfig()
 	if err != nil {
-		t.Fatalf("buildJWTAssertion() error = %v", err)
+		t.Fatalf("authConfig() error = %v", err)
+	}
+	if _, _, err := p.accessTokenFor(auth); err != nil {
+		t.Fatalf("accessTokenFor() error = %v", err)
 	}
 
+	var form url.Values
+	select {
+	case form = <-assertions:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for token request")
+	}
+	if form.Get("grant_type") != jwtBearerGrantType {
+		t.Fatalf("grant_type = %q, want jwt bearer grant", form.Get("grant_type"))
+	}
+	assertion := form.Get("assertion")
 	parts := strings.Split(assertion, ".")
 	if len(parts) != 3 {
 		t.Fatalf("assertion has %d parts, want 3", len(parts))
@@ -191,7 +215,7 @@ func TestBuildJWTAssertionUsesServiceAccountClaims(t *testing.T) {
 	if claims["sub"] != "svc@example.iam.gserviceaccount.com" {
 		t.Fatalf("sub = %v, want service account email", claims["sub"])
 	}
-	if claims["aud"] != "http://127.0.0.1/token" {
+	if claims["aud"] != tokenServer.URL {
 		t.Fatalf("aud = %v, want token uri", claims["aud"])
 	}
 	if claims["scope"] != "scope-a scope-b" {

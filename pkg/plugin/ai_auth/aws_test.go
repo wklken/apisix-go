@@ -19,6 +19,7 @@ func TestSignAWSRequestAddsDeterministicSigV4Headers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	now := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
 	err = SignAWSRequest(req, body, AWSConfig{
 		AccessKeyID:     "AKIDEXAMPLE",
@@ -29,17 +30,28 @@ func TestSignAWSRequestAddsDeterministicSigV4Headers(t *testing.T) {
 		t.Fatalf("SignAWSRequest() error = %v", err)
 	}
 
+	const wantAuth = "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260711/us-east-1/bedrock/aws4_request, " +
+		"SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, " +
+		"Signature=4df878a3e20d23fb974ef5817f2b30372a3524df30d9920398122fecb59f04b9"
+	if got := req.Header.Get("Authorization"); got != wantAuth {
+		t.Fatalf("Authorization = %q, want %q", got, wantAuth)
+	}
 	if got := req.Header.Get("X-Amz-Date"); got != "20260711T010203Z" {
 		t.Fatalf("X-Amz-Date = %q", got)
+	}
+	if got := req.Header.Get(
+		"X-Amz-Content-Sha256",
+	); got != "331b626fbec967399a3c05643d22e56af43ee9839874a2db641bd025f84436d8" {
+		t.Fatalf("X-Amz-Content-Sha256 = %q", got)
 	}
 	if got := req.Header.Get("X-Amz-Security-Token"); got != "session-token" {
 		t.Fatalf("X-Amz-Security-Token = %q", got)
 	}
-	authorization := req.Header.Get("Authorization")
-	if !strings.Contains(authorization, "Credential=AKIDEXAMPLE/20260711/us-east-1/bedrock/aws4_request") ||
-		!strings.Contains(authorization, "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token") ||
-		!strings.Contains(authorization, "Signature=") {
-		t.Fatalf("Authorization = %q", authorization)
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want preserved", got)
+	}
+	if got := req.URL.RawQuery; got != "trace=on" {
+		t.Fatalf("RawQuery after signing = %q, want trace=on", got)
 	}
 }
 

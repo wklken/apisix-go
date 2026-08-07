@@ -9,6 +9,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 )
 
 type Plugin struct {
@@ -75,140 +76,20 @@ func validateGraphQLQuery(query string, operationName string) error {
 	if len(query) > 1024 {
 		return fmt.Errorf("GraphQL query exceeds 1024 bytes")
 	}
-
-	braceDepth := 0
-	parenDepth := 0
-	bracketDepth := 0
-	operationCount := 0
-	pendingDefinition := ""
-	inString := false
-	inBlockString := false
-	inComment := false
-	escaped := false
-
-	for i := 0; i < len(query); {
-		if inComment {
-			if query[i] == '\n' || query[i] == '\r' {
-				inComment = false
-			}
-			i++
-			continue
-		}
-		if inBlockString {
-			if strings.HasPrefix(query[i:], `"""`) {
-				inBlockString = false
-				i += 3
-				continue
-			}
-			i++
-			continue
-		}
-		if inString {
-			if escaped {
-				escaped = false
-				i++
-				continue
-			}
-			switch query[i] {
-			case '\\':
-				escaped = true
-			case '"':
-				inString = false
-			}
-			i++
-			continue
-		}
-
-		if query[i] == '#' {
-			inComment = true
-			i++
-			continue
-		}
-		if strings.HasPrefix(query[i:], `"""`) {
-			inBlockString = true
-			i += 3
-			continue
-		}
-		if query[i] == '"' {
-			inString = true
-			i++
-			continue
-		}
-
-		switch query[i] {
-		case '{':
-			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
-				if pendingDefinition != "operation" {
-					operationCount++
-				}
-				pendingDefinition = ""
-			}
-			braceDepth++
-		case '}':
-			braceDepth--
-			if braceDepth < 0 {
-				return fmt.Errorf("invalid GraphQL query: unexpected }")
-			}
-		case '(':
-			parenDepth++
-		case ')':
-			parenDepth--
-			if parenDepth < 0 {
-				return fmt.Errorf("invalid GraphQL query: unexpected )")
-			}
-		case '[':
-			bracketDepth++
-		case ']':
-			bracketDepth--
-			if bracketDepth < 0 {
-				return fmt.Errorf("invalid GraphQL query: unexpected ]")
-			}
-		default:
-			if isGraphQLNameStart(query[i]) {
-				start := i
-				i++
-				for i < len(query) && isGraphQLNamePart(query[i]) {
-					i++
-				}
-				if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
-					definitionName := query[start:i]
-					switch definitionName {
-					case "query", "mutation", "subscription":
-						operationCount++
-						pendingDefinition = "operation"
-					case "fragment", "schema", "directive":
-						pendingDefinition = "non-operation"
-					default:
-						if operationCount == 0 && pendingDefinition == "" {
-							return fmt.Errorf("invalid GraphQL query: unexpected top-level name %q", definitionName)
-						}
-					}
-				}
-				continue
-			}
-		}
-		i++
+	doc, err := graphql.Parse(query)
+	if err != nil {
+		return fmt.Errorf("invalid GraphQL query: %w", err)
 	}
-
-	if inString || inBlockString || braceDepth != 0 || parenDepth != 0 || bracketDepth != 0 ||
-		pendingDefinition == "operation" {
-		return fmt.Errorf("invalid GraphQL query: unterminated selection or literal")
+	if len(doc.Operations) == 1 {
+		return nil
 	}
-	if operationCount == 0 {
-		return fmt.Errorf("invalid GraphQL query: no operation found")
-	}
-	if operationCount > 1 && strings.TrimSpace(operationName) == "" {
+	if strings.TrimSpace(operationName) == "" {
 		return fmt.Errorf("operation_name is required when query contains multiple operations")
 	}
+	if _, err := graphql.Operation(doc, operationName); err != nil {
+		return fmt.Errorf("invalid GraphQL query: %w", err)
+	}
 	return nil
-}
-
-func isGraphQLNameStart(char byte) bool {
-	return char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z'
-}
-
-func isGraphQLNamePart(char byte) bool {
-	return isGraphQLNameStart(char) || char >= '0' && char <= '9'
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

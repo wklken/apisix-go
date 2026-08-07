@@ -1,16 +1,21 @@
 package ai_auth
 
 import (
-	"crypto/hmac"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
 type AWSConfig struct {
@@ -88,47 +93,101 @@ func SignAWSRequestWithOptions(
 		opts.CanonicalQuery = canonicalQueryEncoded
 	}
 
-	amzDate := now.UTC().Format("20060102T150405Z")
-	date := now.UTC().Format("20060102")
-	payloadHash := sha256Hex(body)
-	req.Header.Set("X-Amz-Date", amzDate)
-	if opts.IncludePayloadHash {
-		req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	credentials := aws.Credentials{
+		AccessKeyID:     config.AccessKeyID,
+		SecretAccessKey: config.SecretAccessKey,
+		SessionToken:    config.SessionToken,
 	}
-	if opts.SetSecurityToken && config.SessionToken != "" {
-		req.Header.Set("X-Amz-Security-Token", config.SessionToken)
+	if !opts.SetSecurityToken {
+		credentials.SessionToken = ""
 	}
 
-	canonicalHeaders, signedHeaders := canonicalAWSHeaders(req, opts)
-	canonicalRequest := strings.Join([]string{
-		req.Method,
-		opts.CanonicalURI(req.URL),
-		opts.CanonicalQuery(req.URL),
-		canonicalHeaders,
-		signedHeaders,
-		payloadHash,
-	}, "\n")
-	if opts.RewriteQuery {
-		req.URL.RawQuery = opts.CanonicalQuery(req.URL)
+	amzDate := now.UTC().Format("20060102T150405Z")
+	// The SDK signs every header present on the request, so reduce the
+	// request to exactly the header set this mode signs, then restore the
+	// stripped headers afterwards.
+	stripped := scopeSignedHeaders(req, opts)
+	req.Header.Set("X-Amz-Date", amzDate)
+	if opts.IncludePayloadHash {
+		req.Header.Set("X-Amz-Content-Sha256", sha256Hex(body))
 	}
-	scope := strings.Join([]string{date, opts.Region, opts.Service, "aws4_request"}, "/")
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		scope,
-		sha256Hex([]byte(canonicalRequest)),
-	}, "\n")
-	signature := hex.EncodeToString(
-		hmacSHA256(awsSigningKey(config.SecretAccessKey, date, opts.Region, opts.Service), stringToSign),
+	originalQuery := req.URL.RawQuery
+	originalLength := req.ContentLength
+	req.ContentLength = 0
+
+	err := signWithSDK(req.Context(), req, sha256Hex(body), credentials, opts, now)
+
+	for name, values := range stripped {
+		if isSigningHeader(name) {
+			continue
+		}
+		req.Header[name] = values
+	}
+	req.ContentLength = originalLength
+	if !opts.RewriteQuery {
+		req.URL.RawQuery = originalQuery
+	}
+	return err
+}
+
+func signWithSDK(
+	ctx context.Context,
+	req *http.Request,
+	payloadHash string,
+	credentials aws.Credentials,
+	options SignAWSRequestOptions,
+	now time.Time,
+) error {
+	return v4.NewSigner().SignHTTP(
+		ctx, credentials, req, payloadHash,
+		options.Service, options.Region, now,
+		func(o *v4.SignerOptions) {
+			o.DisableURIPathEscaping = reflect.ValueOf(options.CanonicalURI).Pointer() ==
+				reflect.ValueOf(CanonicalURIPlain).Pointer()
+		},
 	)
-	req.Header.Set("Authorization", fmt.Sprintf(
-		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		config.AccessKeyID,
-		scope,
-		signedHeaders,
-		signature,
-	))
-	return nil
+}
+
+// scopeSignedHeaders removes request headers that must not be signed for the
+// selected mode and returns them so the caller can restore them. The SDK
+// always adds host, x-amz-date and optionally x-amz-security-token itself.
+func scopeSignedHeaders(req *http.Request, opts SignAWSRequestOptions) map[string][]string {
+	stripped := req.Header.Clone()
+	if opts.DeriveHeadersFromRequest {
+		// host is provided by the signer; connection and content-length are
+		// never signed.
+		req.Header.Del("Connection")
+		req.Header.Del("Content-Length")
+		req.Header.Del("Host")
+		return stripped
+	}
+	if len(opts.CanonicalHeaders) > 0 {
+		keep := make(http.Header)
+		for _, name := range opts.CanonicalHeaders {
+			// host and the signing headers are provided by the signer.
+			if name == "host" || isSigningHeader(name) {
+				continue
+			}
+			if values, ok := stripped[textproto.CanonicalMIMEHeaderKey(name)]; ok {
+				keep[name] = values
+			}
+		}
+		req.Header = keep
+		return stripped
+	}
+	// Default mode signs only host, x-amz-date, x-amz-content-sha256 and
+	// x-amz-security-token.
+	req.Header = make(http.Header)
+	return stripped
+}
+
+func isSigningHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "x-amz-date", "x-amz-security-token", "x-amz-content-sha256":
+		return true
+	default:
+		return false
+	}
 }
 
 // CanonicalURIPlain canonicalizes the request path as the escaped path
@@ -203,63 +262,6 @@ func CanonicalQuerySortedParts(target *url.URL) string {
 	return query.String()
 }
 
-func canonicalAWSHeaders(req *http.Request, opts SignAWSRequestOptions) (string, string) {
-	values := make(map[string]string)
-	names := make([]string, 0)
-	if opts.DeriveHeadersFromRequest {
-		names = append(names, "host")
-		values["host"] = opts.HeaderValue(requestHost(req))
-		for key, headerValues := range req.Header {
-			key = strings.ToLower(key)
-			if key == "connection" || key == "host" {
-				continue
-			}
-			normalized := make([]string, 0, len(headerValues))
-			for _, value := range headerValues {
-				normalized = append(normalized, opts.HeaderValue(value))
-			}
-			values[key] = strings.Join(normalized, ",")
-			names = append(names, key)
-		}
-	} else {
-		if len(opts.CanonicalHeaders) == 0 {
-			names = []string{"host", "x-amz-date"}
-			if opts.IncludePayloadHash {
-				names = append(names, "x-amz-content-sha256")
-			}
-		} else {
-			names = append([]string(nil), opts.CanonicalHeaders...)
-		}
-		if token := req.Header.Get("X-Amz-Security-Token"); token != "" {
-			names = append(names, "x-amz-security-token")
-		}
-		for _, name := range names {
-			if name == "host" {
-				values["host"] = opts.HeaderValue(requestHost(req))
-			} else {
-				values[name] = opts.HeaderValue(req.Header.Get(name))
-			}
-		}
-	}
-	sort.Strings(names)
-
-	var canonical strings.Builder
-	for _, name := range names {
-		canonical.WriteString(name)
-		canonical.WriteByte(':')
-		canonical.WriteString(values[name])
-		canonical.WriteByte('\n')
-	}
-	return canonical.String(), strings.Join(names, ";")
-}
-
-func requestHost(req *http.Request) string {
-	if req.Host != "" {
-		return req.Host
-	}
-	return req.URL.Host
-}
-
 // canonicalURISegments canonicalizes the path as double-escaped segments.
 func canonicalURISegments(target *url.URL) string {
 	value := target.EscapedPath()
@@ -300,20 +302,7 @@ func unescapeQueryPart(value string) string {
 	return decoded
 }
 
-func awsSigningKey(secret, date, region, service string) []byte {
-	kDate := hmacSHA256([]byte("AWS4"+secret), date)
-	kRegion := hmacSHA256(kDate, region)
-	kService := hmacSHA256(kRegion, service)
-	return hmacSHA256(kService, "aws4_request")
-}
-
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func hmacSHA256(key []byte, msg string) []byte {
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(msg))
-	return mac.Sum(nil)
 }

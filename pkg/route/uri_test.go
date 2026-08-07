@@ -62,10 +62,16 @@ func TestRegisterRouteMatchesEmbeddedWildcardAcrossPathDepths(t *testing.T) {
 	t.Parallel()
 
 	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	if err := registerRoute(router, []string{http.MethodGet}, "/articles/*/comments", handler); err != nil {
+	if err := registrar.registerRouteWithHosts(
+		[]string{http.MethodGet},
+		"/articles/*/comments",
+		nil,
+		handler,
+	); err != nil {
 		t.Fatalf("registerRoute() error = %v", err)
 	}
 
@@ -100,10 +106,11 @@ func TestRegisterRouteWithoutMethodsUsesConvertedURI(t *testing.T) {
 	t.Parallel()
 
 	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	if err := registerRoute(router, nil, "/articles/*/comments", handler); err != nil {
+	if err := registrar.registerRouteWithHosts(nil, "/articles/*/comments", nil, handler); err != nil {
 		t.Fatalf("registerRoute() error = %v", err)
 	}
 
@@ -129,6 +136,7 @@ func TestEmbeddedWildcardDoesNotShadowExactSiblingRoute(t *testing.T) {
 			t.Parallel()
 
 			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
 			wildcard := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				writer.WriteHeader(http.StatusNoContent)
 			})
@@ -137,13 +145,13 @@ func TestEmbeddedWildcardDoesNotShadowExactSiblingRoute(t *testing.T) {
 			})
 			registerWildcard := func() {
 				t.Helper()
-				if err := registerRoute(router, nil, "/articles/*/comments", wildcard); err != nil {
+				if err := registrar.registerRouteWithHosts(nil, "/articles/*/comments", nil, wildcard); err != nil {
 					t.Fatalf("register wildcard route: %v", err)
 				}
 			}
 			registerExact := func() {
 				t.Helper()
-				if err := registerRoute(router, nil, "/articles/12345/replies", exact); err != nil {
+				if err := registrar.registerRouteWithHosts(nil, "/articles/12345/replies", nil, exact); err != nil {
 					t.Fatalf("register exact route: %v", err)
 				}
 			}
@@ -179,12 +187,18 @@ func TestEmbeddedWildcardSiblingRoutesCoexist(t *testing.T) {
 			t.Parallel()
 
 			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
 			register := func(pattern string, status int) {
 				t.Helper()
 				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 					writer.WriteHeader(status)
 				})
-				if err := registerRoute(router, []string{http.MethodGet}, pattern, handler); err != nil {
+				if err := registrar.registerRouteWithHosts(
+					[]string{http.MethodGet},
+					pattern,
+					nil,
+					handler,
+				); err != nil {
 					t.Fatalf("register %s: %v", pattern, err)
 				}
 			}
@@ -214,6 +228,55 @@ func TestEmbeddedWildcardSiblingRoutesCoexist(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWildcardOverlappingSuffixUsesLatestRegistration(t *testing.T) {
+	t.Parallel()
+
+	for _, specificFirst := range []bool{true, false} {
+		name := "generic-first"
+		want := http.StatusCreated
+		if specificFirst {
+			name = "specific-first"
+			want = http.StatusAccepted
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
+			register := func(pattern string, status int) {
+				t.Helper()
+				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					writer.WriteHeader(status)
+				})
+				if err := registrar.registerRouteWithHosts(
+					[]string{http.MethodGet},
+					pattern,
+					nil,
+					handler,
+				); err != nil {
+					t.Fatalf("register %s: %v", pattern, err)
+				}
+			}
+			if specificFirst {
+				register("/articles/*/v1/comments", http.StatusCreated)
+				register("/articles/*/comments", http.StatusAccepted)
+			} else {
+				register("/articles/*/comments", http.StatusAccepted)
+				register("/articles/*/v1/comments", http.StatusCreated)
+			}
+
+			response := httptest.NewRecorder()
+			router.ServeHTTP(
+				response,
+				httptest.NewRequest(http.MethodGet, "/articles/tenant/v1/comments", nil),
+			)
+			if response.Code != want {
+				t.Fatalf("overlapping suffix status = %d, want %d", response.Code, want)
+			}
+		})
+	}
+}
+
 func TestEmbeddedWildcardWinsOverCatchAllSibling(t *testing.T) {
 	t.Parallel()
 
@@ -226,12 +289,18 @@ func TestEmbeddedWildcardWinsOverCatchAllSibling(t *testing.T) {
 			t.Parallel()
 
 			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
 			register := func(pattern string, status int) {
 				t.Helper()
 				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 					writer.WriteHeader(status)
 				})
-				if err := registerRoute(router, []string{http.MethodGet}, pattern, handler); err != nil {
+				if err := registrar.registerRouteWithHosts(
+					[]string{http.MethodGet},
+					pattern,
+					nil,
+					handler,
+				); err != nil {
 					t.Fatalf("register %s: %v", pattern, err)
 				}
 			}
@@ -316,12 +385,13 @@ func TestWildcardDispatcherKeepsMethodScopesSeparate(t *testing.T) {
 					t.Parallel()
 
 					router := chi.NewRouter()
+					registrar := newRouteRegistrar(router)
 					register := func(methods []string, pattern string, status int) {
 						t.Helper()
 						handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 							writer.WriteHeader(status)
 						})
-						if err := registerRoute(router, methods, pattern, handler); err != nil {
+						if err := registrar.registerRouteWithHosts(methods, pattern, nil, handler); err != nil {
 							t.Fatalf("register %s: %v", pattern, err)
 						}
 					}
@@ -359,12 +429,13 @@ func TestRouteDispatcherSelectsSamePatternByHost(t *testing.T) {
 	t.Parallel()
 
 	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
 	register := func(hosts []string, status int) {
 		t.Helper()
 		handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 			writer.WriteHeader(status)
 		})
-		if err := registerRouteWithHosts(router, nil, "/*", hosts, handler); err != nil {
+		if err := registrar.registerRouteWithHosts(nil, "/*", hosts, handler); err != nil {
 			t.Fatalf("register hosts %v: %v", hosts, err)
 		}
 	}
@@ -404,12 +475,13 @@ func TestRouteDispatcherKeepsExactHostFallbackInBothRegistrationOrders(t *testin
 			t.Parallel()
 
 			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
 			register := func(hosts []string, status int) {
 				t.Helper()
 				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 					writer.WriteHeader(status)
 				})
-				if err := registerRouteWithHosts(router, nil, "/login/callback", hosts, handler); err != nil {
+				if err := registrar.registerRouteWithHosts(nil, "/login/callback", hosts, handler); err != nil {
 					t.Fatalf("register hosts %v: %v", hosts, err)
 				}
 			}

@@ -67,6 +67,32 @@ go test ./... -count=1
 - If a check already fails before your change, record the exact package, file, line, and message. Do not report a skipped or failing check as passing.
 - For docs-only changes, a markdown/diff review is enough unless the documented commands themselves changed.
 
+## Performance Benchmarking
+
+Benchmark evidence is produced only through `scripts/benchmark.sh` via the Makefile `benchmark-*` targets; raw results, metadata, and profiles are written to the ignored `BENCH_DIR` (default `.cache/bench`) and never committed. Direct `go test -bench` runs are exploratory, not baseline evidence.
+
+Workflow:
+
+- `make init-bench` installs the pinned `benchstat` once; it does not touch `go.mod` or `vendor`.
+- `make benchmark-runner-test` runs the fail-closed runner regression tests.
+- `make benchmark-baseline` records an immutable baseline on the intended base; rerunning the same label is rejected.
+- `make benchmark-current` records the change under test, then `make benchmark-compare` runs the pinned benchstat.
+- `make benchmark-profile-cpu` / `benchmark-profile-mem` write separate CPU/heap profiles for diagnosis.
+
+Acceptance contract:
+
+- Before: declare the hypothesis, the affected benchmark rows, the primary metric, and a practical threshold.
+- After: run `benchmark-current` with identical settings, then `benchmark-compare`. A rejected metadata or corpus fingerprint means the comparison is invalid.
+- Report all affected rows and regressions; do not cherry-pick one size.
+- Statistical significance is evidence against noise, not production impact.
+- Allocation work reports exact B/op and allocs/op deltas; architectural latency claims also need a profile or end-to-end measurement tied to the hypothesis.
+- Race/profile runs are diagnostic, never normal benchmark evidence.
+- There is no uniform percentage threshold; without a pre-declared practical threshold, report measurements only and do not announce an optimization as verified.
+
+Correctness:
+
+- Focused tests, relevant race tests, `go test ./... -count=1 -p=1`, `make lint`, and `make build` remain mandatory.
+
 ## Code Style
 
 - Match existing Go style and package organization. Keep changes surgical.

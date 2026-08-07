@@ -1333,6 +1333,174 @@ func TestInitRegistersPurgeHTTPMethod(t *testing.T) {
 	}
 }
 
+func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T) {
+	if store := AcquireMemoryZoneStore(""); store != nil {
+		t.Fatal("AcquireMemoryZoneStore(empty) returned a store")
+	}
+
+	first := AcquireMemoryZoneStore("shared-store-contract")
+	second := AcquireMemoryZoneStore("shared-store-contract")
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+
+	now := time.Now().Round(time.Second)
+	entry := SharedCacheEntry{
+		Header:    http.Header{"X-Origin": {"upstream"}},
+		Body:      []byte("cached-body"),
+		Status:    http.StatusCreated,
+		StoredAt:  now,
+		TTL:       time.Minute,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	first.Store("cache-key", entry)
+	entry.Header.Set("X-Origin", "mutated")
+	entry.Body[0] = 'X'
+
+	loaded, ok := second.Load("cache-key")
+	if !ok {
+		t.Fatal("Load() missed an entry stored through the shared zone")
+	}
+	if got := loaded.Header.Get("X-Origin"); got != "upstream" {
+		t.Fatalf("loaded header = %q, want cloned upstream value", got)
+	}
+	if got := string(loaded.Body); got != "cached-body" {
+		t.Fatalf("loaded body = %q, want cloned cached body", got)
+	}
+	if loaded.Status != http.StatusCreated || loaded.StoredAt != now || loaded.TTL != time.Minute ||
+		loaded.ExpiresAt != now.Add(time.Minute) {
+		t.Fatalf("loaded metadata = %#v, want stored metadata", loaded)
+	}
+
+	loaded.Header.Set("X-Origin", "changed-after-load")
+	loaded.Body[0] = 'Y'
+	reloaded, ok := first.Load("cache-key")
+	if !ok || reloaded.Header.Get("X-Origin") != "upstream" || string(reloaded.Body) != "cached-body" {
+		t.Fatalf("stored entry was aliased by Load(): %#v, ok=%t", reloaded, ok)
+	}
+	if !second.Delete("cache-key") || second.Delete("cache-key") {
+		t.Fatal("Delete() did not report found then missing")
+	}
+	if _, ok := first.Load("cache-key"); ok {
+		t.Fatal("deleted entry remained visible through another reference")
+	}
+
+	first.Close()
+	first.Close()
+	second.Close()
+	reopened := AcquireMemoryZoneStore("shared-store-contract")
+	t.Cleanup(reopened.Close)
+	if _, ok := reopened.Load("cache-key"); ok {
+		t.Fatal("last Close() retained the prior memory-zone generation")
+	}
+
+	var nilStore *MemoryZoneStore
+	nilStore.Store("ignored", SharedCacheEntry{})
+	if _, ok := nilStore.Load("ignored"); ok || nilStore.Delete("ignored") {
+		t.Fatal("nil memory store reported an entry")
+	}
+	nilStore.Close()
+}
+
+func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "shared-disk-contract", DiskPath: root, DiskSize: "1m"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	store, configured, err := NewDiskZoneStore("shared-disk-contract")
+	if err != nil || !configured {
+		t.Fatalf("NewDiskZoneStore() = configured %t, error %v", configured, err)
+	}
+	now := time.Now().Round(time.Second)
+	entry := SharedCacheEntry{
+		Header:    http.Header{"X-Origin": {"upstream"}},
+		Body:      []byte("disk-body"),
+		Status:    http.StatusOK,
+		StoredAt:  now,
+		TTL:       time.Minute,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	if err := store.Store("cache-key", entry); err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+	entry.Header.Set("X-Origin", "mutated")
+	entry.Body[0] = 'X'
+	loaded, found, expired := store.Load("cache-key", now)
+	if !found || expired || loaded.Header.Get("X-Origin") != "upstream" || string(loaded.Body) != "disk-body" {
+		t.Fatalf("Load() = %#v, found %t, expired %t", loaded, found, expired)
+	}
+	if loaded.Status != http.StatusOK || !loaded.StoredAt.Equal(now) || loaded.TTL != time.Minute ||
+		!loaded.ExpiresAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("loaded metadata = %#v, want stored metadata", loaded)
+	}
+	if !store.Delete("cache-key") || store.Delete("cache-key") {
+		t.Fatal("Delete() did not report found then missing")
+	}
+
+	expiredEntry := entry
+	expiredEntry.ExpiresAt = now.Add(-time.Second)
+	if err := store.Store("expired", expiredEntry); err != nil {
+		t.Fatalf("Store(expired) error = %v", err)
+	}
+	if _, found, expired := store.Load("expired", now); found || !expired {
+		t.Fatalf("Load(expired) = found %t, expired %t", found, expired)
+	}
+	if _, err := os.Stat(store.entryPath("expired")); !os.IsNotExist(err) {
+		t.Fatalf("expired entry stat error = %v, want removal", err)
+	}
+
+	corruptPath := store.entryPath("corrupt")
+	if err := os.WriteFile(corruptPath, []byte("not-json"), 0o600); err != nil {
+		t.Fatalf("write corrupt entry: %v", err)
+	}
+	if _, found, expired := store.Load("corrupt", now); found || expired {
+		t.Fatalf("Load(corrupt) = found %t, expired %t", found, expired)
+	}
+	if _, err := os.Stat(corruptPath); !os.IsNotExist(err) {
+		t.Fatalf("corrupt entry stat error = %v, want removal", err)
+	}
+
+	invalidStatusPath := store.entryPath("invalid-status")
+	if err := os.WriteFile(invalidStatusPath, []byte(`{"status":99}`), 0o600); err != nil {
+		t.Fatalf("write invalid-status entry: %v", err)
+	}
+	if _, found, expired := store.Load("invalid-status", now); found || expired {
+		t.Fatalf("Load(invalid-status) = found %t, expired %t", found, expired)
+	}
+
+	cleanupEntry := entry
+	cleanupEntry.ExpiresAt = now.Add(-time.Second)
+	if err := store.Store("cleanup-expired", cleanupEntry); err != nil {
+		t.Fatalf("Store(cleanup-expired) error = %v", err)
+	}
+	store.Cleanup(now)
+	if _, err := os.Stat(store.entryPath("cleanup-expired")); !os.IsNotExist(err) {
+		t.Fatalf("Cleanup() stat error = %v, want expired entry removed", err)
+	}
+
+	var nilStore *DiskZoneStore
+	if err := nilStore.Store("ignored", SharedCacheEntry{}); err == nil {
+		t.Fatal("nil DiskZoneStore.Store() error = nil")
+	}
+	if _, found, expired := nilStore.Load("ignored", now); found || expired || nilStore.Delete("ignored") {
+		t.Fatal("nil disk store reported an entry")
+	}
+	nilStore.Cleanup(now)
+}
+
+func TestNewDiskZoneStorePreservesUnconfiguredFallback(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	store, configured, err := NewDiskZoneStore("undeclared")
+	if err != nil || configured || store != nil {
+		t.Fatalf("NewDiskZoneStore(unconfigured) = %#v, %t, %v", store, configured, err)
+	}
+}
+
 func performConsumerRequest(
 	t *testing.T,
 	handler http.Handler,

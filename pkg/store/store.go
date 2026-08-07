@@ -201,6 +201,7 @@ func (s *Store) processEvents() {
 		}
 
 		bucketName, id := getTypeAndIDFromKey(event.Key)
+		processed := false
 		switch event.Type {
 		case EventTypePut:
 			var snapshot consumerSnapshot
@@ -235,6 +236,7 @@ func (s *Store) processEvents() {
 					logger.Errorf("rollback consumer index after put fail: %s", delErr)
 				}
 			}
+			processed = err == nil
 		case EventTypeDelete:
 			isConsumer := bytes.Equal(bucketName, []byte("consumers"))
 			err := s.db.Update(func(tx *bolt.Tx) error {
@@ -255,11 +257,12 @@ func (s *Store) processEvents() {
 					logger.Errorf("store process the consumer fail, err=%s", err)
 				}
 			}
+			processed = err == nil
 		}
 
 		// FIXME: what type of event should trigger the hooks?
 		bucket := string(bucketName)
-		if IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket) {
+		if processed && (IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket)) {
 			s.triggerEventUpdateHooks(event)
 		}
 		PutBack(event)

@@ -193,9 +193,18 @@ func BenchmarkSharedResponseRecorderDecoded(b *testing.B) {
 		for _, phase := range []string{"cold", "cached"} {
 			for _, loggers := range []int{1, 3} {
 				for _, spec := range benchmarkBodySizes {
-					b.Run(fmt.Sprintf("encoding=%s/phase=%s/loggers=%d/size=%s", encoding, phase, loggers, spec.name), func(b *testing.B) {
-						benchmarkSharedResponseRecorderDecoded(b, benchmarkBodyPayloads[spec.name], encoding, phase, loggers)
-					})
+					b.Run(
+						fmt.Sprintf("encoding=%s/phase=%s/loggers=%d/size=%s", encoding, phase, loggers, spec.name),
+						func(b *testing.B) {
+							benchmarkSharedResponseRecorderDecoded(
+								b,
+								benchmarkBodyPayloads[spec.name],
+								encoding,
+								phase,
+								loggers,
+							)
+						},
+					)
 				}
 			}
 		}

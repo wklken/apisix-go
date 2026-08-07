@@ -48,11 +48,12 @@ build:
 test:
 	go test ./cmd/... ./pkg/... -count=1
 
-COVERAGE_MIN ?= 80.0
+COVERAGE_MIN ?= 82.0
 COVERAGE_FILE ?= coverage.out
 
 .PHONY: test-cover
 test-cover:
+	bash scripts/check-unit-coverage_test.sh
 	COVERAGE_MIN=$(COVERAGE_MIN) ./scripts/check-unit-coverage.sh $(COVERAGE_FILE)
 
 .PHONY: test-integration

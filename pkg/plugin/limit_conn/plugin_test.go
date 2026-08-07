@@ -1106,6 +1106,140 @@ type fakeRedisConnLimiter struct {
 	left       int
 }
 
+type scriptedConnRedisClient struct {
+	redis.UniversalClient
+	result any
+	err    error
+	keys   []string
+	args   []any
+}
+
+func (f *scriptedConnRedisClient) Eval(_ context.Context, _ string, keys []string, args ...any) *redis.Cmd {
+	f.keys = append([]string(nil), keys...)
+	f.args = append([]any(nil), args...)
+	return redis.NewCmdResult(f.result, f.err)
+}
+
+func (f *scriptedConnRedisClient) PoolStats() *redis.PoolStats {
+	return &redis.PoolStats{}
+}
+
+func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
+	client := &scriptedConnRedisClient{result: []any{int64(1), "250"}}
+	limiter := &redisConnLimiter{
+		client:    client,
+		unitDelay: 2,
+		keyTTL:    90 * time.Second,
+	}
+
+	delay, allowed, err := limiter.incoming("route-a:client-a", 3, 4)
+	if err != nil {
+		t.Fatalf("incoming() error = %v", err)
+	}
+	if delay != 250*time.Millisecond || !allowed {
+		t.Fatalf("incoming() = delay %s, allowed %t", delay, allowed)
+	}
+	if len(client.keys) != 1 || client.keys[0] != "plugin-limit-conn:route-a:client-a" {
+		t.Fatalf("Eval keys = %#v", client.keys)
+	}
+	wantArgs := []any{3, 4, float64(2), int64(90_000)}
+	if len(client.args) != len(wantArgs) {
+		t.Fatalf("Eval args = %#v, want %#v", client.args, wantArgs)
+	}
+	for i := range wantArgs {
+		if client.args[i] != wantArgs[i] {
+			t.Fatalf("Eval arg %d = %#v, want %#v", i, client.args[i], wantArgs[i])
+		}
+	}
+
+	latency := 4 * time.Second
+	client.result = nil
+	if err := limiter.leaving("route-a:client-a", &latency); err != nil {
+		t.Fatalf("leaving() error = %v", err)
+	}
+	if limiter.unitDelay != 3 {
+		t.Fatalf("unitDelay = %v, want averaged 3 seconds", limiter.unitDelay)
+	}
+}
+
+func TestRedisConnLimiterFailsClosedOnBackendAndProtocolErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		result any
+		err    error
+	}{
+		{name: "backend error", err: errors.New("redis unavailable")},
+		{name: "wrong result type", result: "invalid"},
+		{name: "wrong result length", result: []any{1}},
+		{name: "invalid allowed", result: []any{[]byte("1"), 2}},
+		{name: "invalid delay", result: []any{1, "invalid"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limiter := &redisConnLimiter{
+				client: &scriptedConnRedisClient{result: test.result, err: test.err},
+				keyTTL: time.Minute,
+			}
+			_, _, err := limiter.incoming("key", 1, 2)
+			if err == nil {
+				t.Fatal("incoming() error = nil")
+			}
+		})
+	}
+}
+
+func TestRedisConnLimiterLeavingPreservesConfiguredDelayAndErrors(t *testing.T) {
+	backendErr := errors.New("redis unavailable")
+	client := &scriptedConnRedisClient{err: backendErr}
+	limiter := &redisConnLimiter{client: client, unitDelay: 2}
+	latency := 4 * time.Second
+	if err := limiter.leaving("key", &latency); !errors.Is(err, backendErr) {
+		t.Fatalf("leaving() error = %v, want %v", err, backendErr)
+	}
+	if limiter.unitDelay != 2 {
+		t.Fatalf("unitDelay changed after backend error: %v", limiter.unitDelay)
+	}
+
+	client.err = nil
+	limiter.onlyUseDefaultDelay = true
+	if err := limiter.leaving("key", &latency); err != nil {
+		t.Fatalf("leaving(default delay) error = %v", err)
+	}
+	if limiter.unitDelay != 2 {
+		t.Fatalf("configured unitDelay changed: %v", limiter.unitDelay)
+	}
+
+	limiter.onlyUseDefaultDelay = false
+	if err := limiter.leaving("key", nil); err != nil {
+		t.Fatalf("leaving(nil latency) error = %v", err)
+	}
+	if limiter.unitDelay != 2 {
+		t.Fatalf("unitDelay changed for nil latency: %v", limiter.unitDelay)
+	}
+}
+
+func TestRedisConnIntRejectsOverflowAndInvalidWireValues(t *testing.T) {
+	for _, test := range []struct {
+		value any
+		want  int64
+		ok    bool
+	}{
+		{value: int(1), want: 1, ok: true},
+		{value: int64(2), want: 2, ok: true},
+		{value: uint64(3), want: 3, ok: true},
+		{value: "4", want: 4, ok: true},
+		{value: "invalid"},
+		{value: []byte("5")},
+		{value: ^uint64(0)},
+	} {
+		got, ok := redisInt(test.value)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("redisInt(%#v) = %d, %t; want %d, %t", test.value, got, ok, test.want, test.ok)
+		}
+	}
+}
+
 type fakeRedisPoolStatsProvider struct {
 	hits uint32
 }

@@ -100,19 +100,19 @@ func TestReadSharedRequestBodyCachesLargestString(t *testing.T) {
 	}
 }
 
-func TestWriteJSONMessageWritesStatusAndEscapedMessage(t *testing.T) {
+func TestWriteJSONMessageUsesProjectJSONContract(t *testing.T) {
 	rr := httptest.NewRecorder()
 
-	WriteJSONMessage(rr, http.StatusBadRequest, "bad \"input\"")
+	WriteJSONMessage(rr, http.StatusBadRequest, "bad \"<input>\" & line\nnext")
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("content type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("content type = %q, want application/json with UTF-8 charset", got)
 	}
-	if got := rr.Body.String(); got != `{"message":"bad \"input\""}` {
-		t.Fatalf("body = %q, want escaped JSON message", got)
+	if got := rr.Body.String(); got != `{"message":"bad \"\u003cinput\u003e\" \u0026 line\nnext"}` {
+		t.Fatalf("body = %q, want project JSON escaping without a trailing newline", got)
 	}
 }
 

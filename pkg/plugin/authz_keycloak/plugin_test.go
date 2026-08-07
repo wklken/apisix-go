@@ -21,6 +21,26 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+func TestWriteJSONUsesCanonicalResponseContract(t *testing.T) {
+	p := &Plugin{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := rr.Body.String(); got != `{"message":"Missing JWT token in request"}` {
+		t.Fatalf("body = %q", got)
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 

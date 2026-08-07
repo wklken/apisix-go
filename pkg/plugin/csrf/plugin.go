@@ -13,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -150,9 +151,7 @@ func (p *Plugin) expires() int64 {
 }
 
 func writeCSRFError(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error_msg": message})
+	_ = util.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error_msg": message})
 }
 
 type csrfToken struct {

@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 
 	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -85,9 +85,7 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = util.WriteJSON(w, http.StatusOK, resp)
 }
 
 func formatUint(v uint64) string {

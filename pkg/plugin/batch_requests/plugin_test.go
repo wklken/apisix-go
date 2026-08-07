@@ -43,6 +43,12 @@ func TestHandlerRejectsUnknownPipelineField(t *testing.T) {
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
 	}
+	if got := res.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if strings.HasSuffix(res.Body.String(), "\n") {
+		t.Fatalf("response body has trailing newline: %q", res.Body.String())
+	}
 	if !strings.Contains(res.Body.String(), "unknown_field") {
 		t.Fatalf("response body = %q, want unknown field error", res.Body.String())
 	}

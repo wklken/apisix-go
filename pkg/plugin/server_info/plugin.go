@@ -9,6 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -136,9 +137,7 @@ func reportTTLValue(value any) (int64, bool) {
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	resp := CurrentInfo()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = util.WriteJSON(w, http.StatusOK, resp)
 }
 
 func hostname() string {

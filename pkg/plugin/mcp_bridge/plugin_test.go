@@ -3,6 +3,7 @@ package mcp_bridge
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,20 @@ import (
 	"testing"
 	"time"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestNewSessionIDReturnsErrorForFailingReader(t *testing.T) {
+	id, err := newSessionID(failingReader{})
+	if err == nil {
+		t.Fatal("newSessionID() error = nil, want failure")
+	}
+	if id != "" {
+		t.Fatalf("newSessionID() = %q, want empty on failure", id)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -27,7 +28,7 @@ type Plugin struct {
 
 	client *resty.Client
 
-	sampleRandom func() float64
+	sampleRandom func() (float64, error)
 
 	reportMu    sync.Mutex
 	reportTimer *time.Timer
@@ -130,7 +131,7 @@ func (p *Plugin) PostInit() error {
 	p.loadPluginAttr()
 	p.applyDefaults()
 	if p.sampleRandom == nil {
-		p.sampleRandom = randomUnit
+		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
 	}
 
 	configUID := shared.NewConfigUID()
@@ -152,17 +153,32 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), tracingContextKey{}, struct{}{}))
-		if !p.shouldSample() {
+		sample, err := p.shouldSample()
+		if err != nil {
+			http.Error(w, "failed to generate sampling decision", http.StatusInternalServerError)
+			return
+		}
+		if !sample {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		ctx, _ := parseSW8(r.Header.Get("sw8"))
 		if ctx.TraceID == "" {
-			ctx.TraceID = randomID(16)
+			traceID, err := randomID(rand.Reader, 16)
+			if err != nil {
+				http.Error(w, "failed to generate trace id", http.StatusInternalServerError)
+				return
+			}
+			ctx.TraceID = traceID
 		}
 		if ctx.TraceSegmentID == "" {
-			ctx.TraceSegmentID = randomID(16)
+			segmentID, err := randomID(rand.Reader, 16)
+			if err != nil {
+				http.Error(w, "failed to generate trace segment id", http.StatusInternalServerError)
+				return
+			}
+			ctx.TraceSegmentID = segmentID
 		}
 		ctx.SpanID = 0
 		r.Header.Set("sw8", ctx.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
@@ -214,8 +230,15 @@ func (p *Plugin) applyDefaults() {
 	}
 }
 
-func (p *Plugin) shouldSample() bool {
-	return p.config.SampleRatio >= 1 || p.sampleRandom() < p.config.SampleRatio
+func (p *Plugin) shouldSample() (bool, error) {
+	if p.config.SampleRatio >= 1 {
+		return true, nil
+	}
+	random, err := p.sampleRandom()
+	if err != nil {
+		return false, err
+	}
+	return random < p.config.SampleRatio, nil
 }
 
 func (p *Plugin) buildSegment(
@@ -400,20 +423,20 @@ func encodeBase64URL(value string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
-func randomID(n int) string {
+func randomID(reader io.Reader, n int) (string, error) {
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic(fmt.Sprintf("read random bytes: %s", err))
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }
 
-func randomUnit() float64 {
+func randomUnit(reader io.Reader) (float64, error) {
 	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		panic(fmt.Sprintf("read random bytes: %s", err))
+	if _, err := io.ReadFull(reader, raw[:]); err != nil {
+		return 0, fmt.Errorf("read random bytes: %w", err)
 	}
-	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53)
+	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53), nil
 }
 
 func intFromAttr(attr map[string]any, key string) int {

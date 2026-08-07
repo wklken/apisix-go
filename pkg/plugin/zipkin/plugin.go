@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"regexp"
@@ -25,7 +26,7 @@ type Plugin struct {
 
 	client *resty.Client
 
-	sampleRandom func() float64
+	sampleRandom func() (float64, error)
 }
 
 const (
@@ -134,7 +135,7 @@ func (p *Plugin) PostInit() error {
 		p.config.SpanVersion = 2
 	}
 	if p.sampleRandom == nil {
-		p.sampleRandom = randomUnit
+		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
 	}
 
 	configUID := shared.NewConfigUID()
@@ -154,10 +155,20 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if ctx.TraceID == "" {
-			ctx.TraceID = randomHex(16)
+			traceID, err := randomHex(rand.Reader, 16)
+			if err != nil {
+				http.Error(w, "failed to generate trace id", http.StatusInternalServerError)
+				return
+			}
+			ctx.TraceID = traceID
 		}
 		if ctx.Sampled == "" {
-			if p.shouldSample() {
+			sample, err := p.shouldSample()
+			if err != nil {
+				http.Error(w, "failed to generate sampling decision", http.StatusInternalServerError)
+				return
+			}
+			if sample {
 				ctx.Sampled = "1"
 			} else {
 				ctx.Sampled = "0"
@@ -166,7 +177,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if ctx.SpanID != "" {
 			ctx.ParentSpanID = ctx.SpanID
 		}
-		ctx.SpanID = randomHex(8)
+		spanID, err := randomHex(rand.Reader, 8)
+		if err != nil {
+			http.Error(w, "failed to generate span id", http.StatusInternalServerError)
+			return
+		}
+		ctx.SpanID = spanID
 		injectB3(r, ctx)
 
 		start := time.Now()
@@ -183,8 +199,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) shouldSample() bool {
-	return p.config.SampleRatio >= 1 || p.sampleRandom() < p.config.SampleRatio
+func (p *Plugin) shouldSample() (bool, error) {
+	if p.config.SampleRatio >= 1 {
+		return true, nil
+	}
+	random, err := p.sampleRandom()
+	if err != nil {
+		return false, err
+	}
+	return random < p.config.SampleRatio, nil
 }
 
 func extractB3(r *http.Request) (b3Context, error) {
@@ -352,20 +375,20 @@ func (p *Plugin) reportSpan(span zipkinSpan) {
 	}
 }
 
-func randomHex(n int) string {
+func randomHex(reader io.Reader, n int) (string, error) {
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic(fmt.Sprintf("read random bytes: %s", err))
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }
 
-func randomUnit() float64 {
+func randomUnit(reader io.Reader) (float64, error) {
 	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		panic(fmt.Sprintf("read random bytes: %s", err))
+	if _, err := io.ReadFull(reader, raw[:]); err != nil {
+		return 0, fmt.Errorf("read random bytes: %w", err)
 	}
-	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53)
+	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53), nil
 }
 
 func requestServerPort(r *http.Request) int {

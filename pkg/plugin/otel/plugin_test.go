@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
 
 type otelMinimalWriter struct {
 	header http.Header
@@ -307,6 +312,26 @@ func TestBuildSamplerUsesOfficialSamplerNames(t *testing.T) {
 				t.Fatalf("sampling decision = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRandomTraceIDReturnsErrorForFailingReader(t *testing.T) {
+	traceID, err := randomTraceID(failingReader{})
+	if err == nil {
+		t.Fatal("randomTraceID() error = nil, want failure")
+	}
+	if traceID.IsValid() {
+		t.Fatalf("randomTraceID() = %s, want invalid ID on failure", traceID)
+	}
+}
+
+func TestRandomSpanIDReturnsErrorForFailingReader(t *testing.T) {
+	spanID, err := randomSpanID(failingReader{})
+	if err == nil {
+		t.Fatal("randomSpanID() error = nil, want failure")
+	}
+	if spanID.IsValid() {
+		t.Fatalf("randomSpanID() = %s, want invalid ID on failure", spanID)
 	}
 }
 

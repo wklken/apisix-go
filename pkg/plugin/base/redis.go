@@ -33,7 +33,9 @@ func (c RedisConnConfig) Options() *redis.Options {
 		options.ConnMaxIdleTime = time.Duration(c.KeepaliveTimeout) * time.Millisecond
 	}
 	if c.SSL != nil && *c.SSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*c.SSLVerify}
+		verify := c.SSLVerify == nil || *c.SSLVerify
+		tlsConfig := &tls.Config{InsecureSkipVerify: !verify} //nolint:gosec // explicit operator configuration only
+		options.TLSConfig = tlsConfig
 	}
 	return options
 }
@@ -62,7 +64,9 @@ func (c RedisClusterConnConfig) ClusterOptions() *redis.ClusterOptions {
 		options.ConnMaxIdleTime = time.Duration(c.KeepaliveTimeout) * time.Millisecond
 	}
 	if c.SSL != nil && *c.SSL {
-		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*c.SSLVerify}
+		verify := c.SSLVerify == nil || *c.SSLVerify
+		tlsConfig := &tls.Config{InsecureSkipVerify: !verify} //nolint:gosec // explicit operator configuration only
+		options.TLSConfig = tlsConfig
 	}
 	return options
 }

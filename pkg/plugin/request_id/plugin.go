@@ -4,6 +4,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math/big"
 	"math/rand"
@@ -142,17 +143,22 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		requestID := r.Header.Get(p.config.HeaderName)
 		if requestID == "" {
+			var err error
 			switch p.config.Algorithm {
 			case "uuid":
-				requestID = uuid.Must(uuid.NewV4()).String()
+				requestID, err = p.uuidV4ID(crand.Reader)
 			case "uuidv7":
 				requestID = p.uuidv7ID()
 			case "nanoid":
 				requestID, _ = gonanoid.New()
 			case "ksuid":
-				requestID = p.ksuidID()
+				requestID, err = p.ksuidID(crand.Reader)
 			case "range_id":
 				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
+			}
+			if err != nil {
+				http.Error(w, "failed to generate request id", http.StatusInternalServerError)
+				return
 			}
 		}
 
@@ -231,14 +237,21 @@ const (
 	ksuidAlphabet     = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 
-func (p *Plugin) ksuidID() string {
+func (p *Plugin) uuidV4ID(reader io.Reader) (string, error) {
+	id, err := uuid.NewGenWithOptions(uuid.WithRandomReader(reader)).NewV4()
+	if err != nil {
+		return "", fmt.Errorf("generate uuid request id: %w", err)
+	}
+	return id.String(), nil
+}
+
+func (p *Plugin) ksuidID(reader io.Reader) (string, error) {
 	value := make([]byte, 20)
 	binary.BigEndian.PutUint32(value[:4], uint32(time.Now().Unix()-ksuidEpochSeconds))
-	if _, err := crand.Read(value[4:]); err != nil {
-		fallback := uuid.Must(uuid.NewV4())
-		copy(value[4:], fallback[:])
+	if _, err := io.ReadFull(reader, value[4:]); err != nil {
+		return "", fmt.Errorf("generate ksuid request id: %w", err)
 	}
-	return encodeBase62(value)
+	return encodeBase62(value), nil
 }
 
 func encodeBase62(value []byte) string {

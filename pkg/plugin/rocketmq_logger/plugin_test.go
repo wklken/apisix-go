@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	brotli "github.com/andybalholm/brotli"
 	rocketmq "github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
-	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
@@ -708,7 +708,10 @@ type delayedUnblockProducer struct {
 	rocketmq.Producer
 }
 
-func (*delayedUnblockProducer) SendSync(ctx context.Context, msgs ...*primitive.Message) (*primitive.SendResult, error) {
+func (*delayedUnblockProducer) SendSync(
+	ctx context.Context,
+	msgs ...*primitive.Message,
+) (*primitive.SendResult, error) {
 	<-ctx.Done()
 	time.Sleep(300 * time.Millisecond)
 	return nil, ctx.Err()

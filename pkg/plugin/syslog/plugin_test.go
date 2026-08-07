@@ -1191,7 +1191,11 @@ func TestUnmarshalJSONPreservesExplicitFieldPresence(t *testing.T) {
 		t.Fatalf("log_format = %#v, set = %v, want decoded and present", cfg.LogFormat, cfg.logFormatSet)
 	}
 	if cfg.LogFormatExtra["host"] != "$host" || !cfg.logFormatExtraSet {
-		t.Fatalf("log_format_extra = %#v, set = %v, want decoded and present", cfg.LogFormatExtra, cfg.logFormatExtraSet)
+		t.Fatalf(
+			"log_format_extra = %#v, set = %v, want decoded and present",
+			cfg.LogFormatExtra,
+			cfg.logFormatExtraSet,
+		)
 	}
 }
 

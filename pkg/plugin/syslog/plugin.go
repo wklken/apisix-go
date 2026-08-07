@@ -201,9 +201,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	var parsed struct {
 		config
-		RetryDelay      json.RawMessage `json:"retry_delay"`
-		LogFormat       json.RawMessage `json:"log_format"`
-		LogFormatExtra  json.RawMessage `json:"log_format_extra"`
+		RetryDelay     json.RawMessage `json:"retry_delay"`
+		LogFormat      json.RawMessage `json:"log_format"`
+		LogFormatExtra json.RawMessage `json:"log_format_extra"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err

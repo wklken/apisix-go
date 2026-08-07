@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"golang.org/x/oauth2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -23,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"golang.org/x/oauth2"
 )
 
 type Plugin struct {

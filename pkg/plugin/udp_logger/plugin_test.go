@@ -590,13 +590,13 @@ func TestSendBatchRejectsOversizeDatagram(t *testing.T) {
 // deterministically.
 type failingConn struct{}
 
-func (failingConn) Read([]byte) (int, error)      { return 0, io.EOF }
-func (failingConn) Write([]byte) (int, error)     { return 0, errors.New("write failed") }
-func (failingConn) Close() error                  { return nil }
-func (failingConn) LocalAddr() net.Addr           { return nil }
-func (failingConn) RemoteAddr() net.Addr          { return nil }
-func (failingConn) SetDeadline(time.Time) error   { return nil }
-func (failingConn) SetReadDeadline(time.Time) error { return nil }
+func (failingConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (failingConn) Write([]byte) (int, error)        { return 0, errors.New("write failed") }
+func (failingConn) Close() error                     { return nil }
+func (failingConn) LocalAddr() net.Addr              { return nil }
+func (failingConn) RemoteAddr() net.Addr             { return nil }
+func (failingConn) SetDeadline(time.Time) error      { return nil }
+func (failingConn) SetReadDeadline(time.Time) error  { return nil }
 func (failingConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestSendBatchReportsWriteFailure(t *testing.T) {

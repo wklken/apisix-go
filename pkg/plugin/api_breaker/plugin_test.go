@@ -168,7 +168,7 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 	t.Cleanup(stop)
 
 	p := newTestPlugin(t, Config{
-		Unhealthy:    UnHealthCheck{Failures: pointerTo(2)},
+		Unhealthy:     UnHealthCheck{Failures: pointerTo(2)},
 		MaxBreakerSec: 300,
 	})
 	p.unhealthyCount = 2

@@ -795,7 +795,9 @@ func TestSendBatchReusesConnectionAndRedialsOnce(t *testing.T) {
 	if _, err := p.SendBatch([]map[string]any{{"route_id": "r4"}}, 1); err != nil {
 		t.Fatalf("SendBatch #4 error = %v, want redial delivery", err)
 	}
-	waitForTCP(t, func() bool { return server.acceptCount() == 2 && strings.Contains(server.payload(1), `"route_id":"r4"`) })
+	waitForTCP(t, func() bool {
+		return server.acceptCount() == 2 && strings.Contains(server.payload(1), `"route_id":"r4"`)
+	})
 	if got := server.acceptCount(); got != 2 {
 		t.Fatalf("connections after redial = %d, want exactly 2", got)
 	}

@@ -133,3 +133,162 @@ func TestWatchStopsWhileSnapshotRecoveryIsFailing(t *testing.T) {
 		t.Fatal("Watch did not stop after context cancellation")
 	}
 }
+
+func TestWatchReconcilesSnapshotAfterCompaction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan *store.Event, 4)
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{"/apisix/routes/stale": {}},
+		lastRevision: 7,
+	}
+
+	var opens atomic.Int32
+	var resumedRevision int64
+	client.openWatch = func(_ context.Context, revision int64) clientv3.WatchChan {
+		stream := make(chan clientv3.WatchResponse, 1)
+		if opens.Add(1) == 1 {
+			stream <- clientv3.WatchResponse{CompactRevision: 8}
+			close(stream)
+			return stream
+		}
+		resumedRevision = revision
+		cancel()
+		close(stream)
+		return stream
+	}
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		return &clientv3.GetResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: 10},
+			Kvs: []*mvccpb.KeyValue{{
+				Key:         []byte("/apisix/routes/replacement"),
+				Value:       []byte(`{"id":"replacement"}`),
+				ModRevision: 10,
+			}},
+		}, nil
+	}
+
+	client.Watch(ctx)
+	if resumedRevision != 11 {
+		t.Fatalf("resumed revision = %d, want 11", resumedRevision)
+	}
+	deleted := <-events
+	created := <-events
+	if deleted.Type != store.EventTypeDelete || string(deleted.Key) != "/apisix/routes/stale" {
+		t.Fatalf("delete event = %s", deleted)
+	}
+	if created.Type != store.EventTypePut || string(created.Key) != "/apisix/routes/replacement" {
+		t.Fatalf("put event = %s", created)
+	}
+	store.PutBack(deleted)
+	store.PutBack(created)
+}
+
+func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
+	events := make(chan *store.Event, 8)
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{},
+		lastRevision: 10,
+	}
+	response := clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 14},
+		Events: []*clientv3.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/a"), Value: []byte(`{"id":"a"}`), ModRevision: 12}},
+			{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/b"), ModRevision: 13}},
+		},
+	}
+
+	if !client.applyWatchResponse(context.Background(), response) {
+		t.Fatal("applyWatchResponse() = false")
+	}
+	first := <-events
+	second := <-events
+	if first.Type != store.EventTypePut || string(first.Key) != "/apisix/routes/a" {
+		t.Fatalf("first event = %s, want put of routes/a", first)
+	}
+	if second.Type != store.EventTypeDelete || string(second.Key) != "/apisix/routes/b" {
+		t.Fatalf("second event = %s, want delete of routes/b", second)
+	}
+	if _, ok := client.knownKeys["/apisix/routes/a"]; !ok {
+		t.Fatal("knownKeys does not retain the put key")
+	}
+	if _, ok := client.knownKeys["/apisix/routes/b"]; ok {
+		t.Fatal("knownKeys still contains the deleted key")
+	}
+	if client.lastRevision != 14 {
+		t.Fatalf("lastRevision = %d, want header revision 14", client.lastRevision)
+	}
+	store.PutBack(first)
+	store.PutBack(second)
+}
+
+func TestFetchAllRetriesThenAppliesSnapshot(t *testing.T) {
+	events := make(chan *store.Event, 4)
+	client := &ConfigClient{
+		prefix:         "/apisix",
+		events:         events,
+		knownKeys:      map[string]struct{}{"/apisix/routes/stale": {}},
+		lastRevision:   10,
+		requestTimeout: time.Second,
+		startupRetry:   1,
+	}
+	var loads atomic.Int32
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		if loads.Add(1) == 1 {
+			return nil, errors.New("unavailable")
+		}
+		return &clientv3.GetResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: 20},
+			Kvs: []*mvccpb.KeyValue{{
+				Key:         []byte("/apisix/routes/fresh"),
+				Value:       []byte(`{"id":"fresh"}`),
+				ModRevision: 20,
+			}},
+		}, nil
+	}
+
+	if err := client.FetchAll(); err != nil {
+		t.Fatalf("FetchAll() error = %v", err)
+	}
+	if loads.Load() != 2 {
+		t.Fatalf("snapshot loads = %d, want retry on first failure", loads.Load())
+	}
+	deleted := <-events
+	created := <-events
+	if deleted.Type != store.EventTypeDelete || string(deleted.Key) != "/apisix/routes/stale" {
+		t.Fatalf("delete event = %s", deleted)
+	}
+	if created.Type != store.EventTypePut || string(created.Key) != "/apisix/routes/fresh" {
+		t.Fatalf("put event = %s", created)
+	}
+	if client.lastRevision != 20 {
+		t.Fatalf("lastRevision = %d, want 20", client.lastRevision)
+	}
+	store.PutBack(deleted)
+	store.PutBack(created)
+}
+
+func TestFetchAllWithoutRetryPropagatesSnapshotError(t *testing.T) {
+	client := &ConfigClient{
+		prefix:         "/apisix",
+		events:         make(chan *store.Event, 1),
+		knownKeys:      map[string]struct{}{},
+		requestTimeout: time.Second,
+		startupRetry:   0,
+	}
+	var loads atomic.Int32
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		loads.Add(1)
+		return nil, errors.New("unavailable")
+	}
+
+	if err := client.FetchAll(); err == nil || err.Error() != "unavailable" {
+		t.Fatalf("FetchAll() error = %v, want unavailable", err)
+	}
+	if loads.Load() != 1 {
+		t.Fatalf("snapshot loads = %d, want exactly one without retry", loads.Load())
+	}
+}

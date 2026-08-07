@@ -2,6 +2,8 @@ package etcd
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,5 +111,46 @@ func TestServerInfoReporterRecreatesLeaseAfterKeepAliveFailure(t *testing.T) {
 
 	if client.grantCount != 2 {
 		t.Fatalf("Grant calls = %d, want lease recreation after keepalive failure", client.grantCount)
+	}
+}
+
+func TestServerInfoReporterStartCancellationStopsRefresh(t *testing.T) {
+	client := &fakeServerInfoLeaseClient{nextLeaseID: 42}
+	reporter := newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 2*time.Second)
+
+	var providerCalls atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := reporter.Start(ctx, func() ([]byte, error) {
+		providerCalls.Add(1)
+		return []byte(`{"id":"node-a"}`), nil
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if client.putCount != 1 || providerCalls.Load() != 1 {
+		t.Fatalf("put/provider after start = %d/%d, want immediate first report", client.putCount, providerCalls.Load())
+	}
+
+	cancel()
+	time.Sleep(1100 * time.Millisecond)
+	if client.putCount != 1 || providerCalls.Load() != 1 {
+		t.Fatalf("put/provider after cancellation = %d/%d, want no refresh", client.putCount, providerCalls.Load())
+	}
+}
+
+func TestServerInfoReporterStartRejectsNilProviderAndProviderErrors(t *testing.T) {
+	client := &fakeServerInfoLeaseClient{nextLeaseID: 42}
+
+	reporter := newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 2*time.Second)
+	if err := reporter.Start(context.Background(), nil); err == nil {
+		t.Fatal("Start(nil provider) error = nil")
+	}
+
+	if err := reporter.Start(context.Background(), func() ([]byte, error) {
+		return nil, errors.New("build failed")
+	}); err == nil {
+		t.Fatal("Start(failing provider) error = nil")
+	}
+	if client.putCount != 0 {
+		t.Fatalf("Put calls = %d, want none before a successful report", client.putCount)
 	}
 }

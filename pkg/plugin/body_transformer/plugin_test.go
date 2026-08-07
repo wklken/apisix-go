@@ -1017,3 +1017,83 @@ func TestHandlerRejectsMalformedTemplate(t *testing.T) {
 		t.Fatalf("body = %q, want template validation error", rr.Body.String())
 	}
 }
+
+func TestEvaluateTemplateCondition(t *testing.T) {
+	ctx := templateContext{
+		values: map[string]string{
+			"count":       "5",
+			"name":        "alice",
+			"missing":     "null",
+			"empty_value": "",
+		},
+		body:   "payload",
+		req:    httptest.NewRequest(http.MethodPost, "http://example.test/", nil),
+		format: "json",
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{name: "equal", expr: `name == "alice"`, want: true},
+		{name: "greater", expr: `count > 3`, want: true},
+		{name: "greater or equal", expr: `count >= 5`, want: true},
+		{name: "less", expr: `count < 3`},
+		{name: "less or equal", expr: `count <= 4`},
+		{name: "match", expr: `name ~= "ali"`, want: true},
+		{name: "and", expr: `count > 3 and name == "alice"`, want: true},
+		{name: "and short-circuit", expr: `count < 3 and name == "alice"`},
+		{name: "or", expr: `count < 3 or name == "alice"`, want: true},
+		{name: "or all false", expr: `count < 3 or name == "bob"`},
+		{name: "not", expr: `not count < 3`, want: true},
+		{name: "nil operand", expr: `missing == nil`, want: true},
+		{name: "true literal", expr: `true`, want: true},
+		{name: "false literal", expr: `false`},
+		{name: "string literal", expr: `name == 'alice'`, want: true},
+		{name: "body operand", expr: `_body == "payload"`, want: true},
+		{name: "missing operand", expr: `missing_value == "x"`},
+		{name: "non-numeric comparison", expr: `name > 3`},
+		{name: "unknown operand", expr: `unknown == "x"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := evaluateTemplateCondition(test.expr, ctx); got != test.want {
+				t.Fatalf("evaluateTemplateCondition(%q) = %t, want %t", test.expr, got, test.want)
+			}
+		})
+	}
+}
+
+func TestTemplateStringLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		expr string
+		want string
+		ok   bool
+	}{
+		{name: "double quoted", expr: `"hello"`, want: "hello", ok: true},
+		{name: "single quoted", expr: `'hello'`, want: "hello", ok: true},
+		{name: "escaped newline", expr: `"a\nb"`, want: "a\nb", ok: true},
+		{name: "escaped quote", expr: `"a\"b"`, want: `a"b`, ok: true},
+		{name: "escaped backslash", expr: `"a\\b"`, want: `a\b`, ok: true},
+		{name: "bell escape", expr: `"a\ab"`, want: "a\ab", ok: true},
+		{name: "backspace", expr: `"a\bb"`, want: "a\bb", ok: true},
+		{name: "form feed", expr: `"a\fb"`, want: "a\fb", ok: true},
+		{name: "carriage return", expr: `"a\rb"`, want: "a\rb", ok: true},
+		{name: "tab", expr: `"a\tb"`, want: "a\tb", ok: true},
+		{name: "vertical tab", expr: `"a\vb"`, want: "a\vb", ok: true},
+		{name: "unknown escape", expr: `"a\zb"`},
+		{name: "unterminated escape", expr: `"a\`},
+		{name: "too short", expr: `"`},
+		{name: "unquoted", expr: "hello"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := templateStringLiteral(test.expr)
+			if ok != test.ok || got != test.want {
+				t.Fatalf("templateStringLiteral(%q) = %q/%t, want %q/%t", test.expr, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}

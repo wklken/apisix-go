@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,9 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/etcd"
+	"github.com/wklken/apisix-go/pkg/store"
+	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 )
 
 func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
@@ -412,5 +416,242 @@ func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
 	}
 	if cfg.Address() != "0.0.0.0:19091" {
 		t.Fatalf("Address() = %q, want 0.0.0.0:19091", cfg.Address())
+	}
+}
+
+func TestMatchesSNI(t *testing.T) {
+	tests := []struct {
+		name       string
+		snis       []string
+		serverName string
+		want       bool
+	}{
+		{
+			name:       "exact case-insensitive",
+			snis:       []string{"Api.Example.Test"},
+			serverName: "api.example.test",
+			want:       true,
+		},
+		{name: "wildcard", snis: []string{"*.example.test"}, serverName: "a.example.test", want: true},
+		{name: "wildcard does not match bare domain", snis: []string{"*.example.test"}, serverName: "example.test"},
+		{name: "unrelated host", snis: []string{"api.example.test"}, serverName: "other.example.test"},
+		{name: "empty SNI", snis: []string{"api.example.test"}, serverName: ""},
+		{
+			name:       "whitespace trimmed",
+			snis:       []string{"  api.example.test  "},
+			serverName: "api.example.test",
+			want:       true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := matchesSNI(test.snis, test.serverName); got != test.want {
+				t.Fatalf("matchesSNI(%v, %q) = %t, want %t", test.snis, test.serverName, got, test.want)
+			}
+		})
+	}
+}
+
+func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+
+	config.GlobalConfig = nil
+	if frontendHTTP2Enabled() {
+		t.Fatal("frontendHTTP2Enabled() = true without config")
+	}
+	if frontendPlainHTTP2Enabled() {
+		t.Fatal("frontendPlainHTTP2Enabled() = true without config")
+	}
+	if got := configuredTLSListenAddresses(); got != nil {
+		t.Fatalf("configuredTLSListenAddresses() = %#v, want nil without config", got)
+	}
+
+	config.GlobalConfig = &config.Config{}
+	if frontendHTTP2Enabled() {
+		t.Fatal("frontendHTTP2Enabled() = true with default config")
+	}
+	if frontendPlainHTTP2Enabled() {
+		t.Fatal("frontendPlainHTTP2Enabled() = true with default config")
+	}
+}
+
+func TestEtcdTLSRequiredForCertKeyAndSNI(t *testing.T) {
+	verify := true
+	settings := config.EtcdTLS{Verify: &verify}
+	endpoints := []string{"http://127.0.0.1:2379"}
+	if etcdTLSRequired(endpoints, settings) {
+		t.Fatal("etcdTLSRequired() = true with only verification configured")
+	}
+
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{Cert: "cert.pem"}) {
+		t.Fatal("etcdTLSRequired() = false with a client certificate")
+	}
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{Key: "key.pem"}) {
+		t.Fatal("etcdTLSRequired() = false with a client key")
+	}
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{SNI: "etcd.example.test"}) {
+		t.Fatal("etcdTLSRequired() = false with an SNI override")
+	}
+}
+
+func TestServerShutdownClosesEtcdClient(t *testing.T) {
+	runtime := &fakeStreamRuntime{}
+	server := &Server{
+		server:        &http.Server{},
+		routes:        newRouteHandler(http.NotFoundHandler(), nil),
+		streamRuntime: runtime,
+		etcdClient:    &etcd.ConfigClient{},
+	}
+
+	if err := server.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+	if !runtime.closed {
+		t.Fatal("stream runtime was not closed on shutdown")
+	}
+}
+
+func TestLogStreamResultReportsErrorsAndCompletions(t *testing.T) {
+	logStreamResult(streamruntime.Result{
+		RouteID:  "route-1",
+		Protocol: "tcp",
+		Remote:   "192.0.2.1:5000",
+		Err:      errors.New("connection reset"),
+	})
+	logStreamResult(streamruntime.Result{
+		RouteID:  "route-2",
+		Protocol: "tcp",
+		Remote:   "192.0.2.2:5000",
+		ClientID: "client-7",
+	})
+}
+
+func TestSendReloadEventBuffersAndCoalesces(t *testing.T) {
+	server := &Server{reloadEventChan: make(chan struct{}, 1)}
+
+	server.SendReloadEvent()
+	server.SendReloadEvent()
+	select {
+	case <-server.reloadEventChan:
+	default:
+		t.Fatal("SendReloadEvent() did not buffer a reload event")
+	}
+	select {
+	case <-server.reloadEventChan:
+		t.Fatal("SendReloadEvent() buffered more than one coalesced event")
+	default:
+	}
+}
+
+func TestListenReloadEventReturnsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server := &Server{reloadEventChan: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		server.listenReloadEvent(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("listenReloadEvent() did not return after context cancellation")
+	}
+}
+
+func TestConfiguredListenAddressesUsesNodeListen(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = nil
+	if got := configuredListenAddresses(); !reflect.DeepEqual(got, []string{":8080"}) {
+		t.Fatalf("configuredListenAddresses() = %#v, want default :8080", got)
+	}
+
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+		NodeListen: []config.NodeListen{{Ip: "127.0.0.1", Port: 9080}},
+	}}
+	if got := configuredListenAddresses(); !reflect.DeepEqual(got, []string{"127.0.0.1:9080"}) {
+		t.Fatalf("configuredListenAddresses() = %#v, want node listen address", got)
+	}
+}
+
+func TestPluginConfiguredConsultsEnabledPlugins(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = nil
+	if pluginConfigured("node-status") {
+		t.Fatal("pluginConfigured() = true without config")
+	}
+
+	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
+	if !pluginConfigured("node-status") {
+		t.Fatal("pluginConfigured() = false for an enabled plugin")
+	}
+	if pluginConfigured("prometheus") {
+		t.Fatal("pluginConfigured() = true for a disabled plugin")
+	}
+}
+
+func TestRouteEventBucket(t *testing.T) {
+	if _, ok := routeEventBucket(nil); ok {
+		t.Fatal("routeEventBucket(nil) = ok, want missing bucket")
+	}
+	if bucket, ok := routeEventBucket(&store.Event{Key: []byte("/apisix/routes/route-1")}); !ok || bucket != "routes" {
+		t.Fatalf("routeEventBucket() = %q/%t, want routes/true", bucket, ok)
+	}
+	if _, ok := routeEventBucket(&store.Event{Key: []byte("short")}); ok {
+		t.Fatal("routeEventBucket(short key) = ok, want missing bucket")
+	}
+}
+
+func TestHandleStoreEventUpdateDispatchesByBucket(t *testing.T) {
+	var httpCalls, streamCalls int
+	httpEvent := &store.Event{Key: []byte("/apisix/routes/route-1")}
+	streamEvent := &store.Event{Key: []byte("/apisix/stream_routes/stream-1")}
+
+	handleStoreEventUpdate(httpEvent, func() { httpCalls++ }, func() { streamCalls++ })
+	handleStoreEventUpdate(streamEvent, func() { httpCalls++ }, func() { streamCalls++ })
+	handleStoreEventUpdate(nil, func() { httpCalls++ }, func() { streamCalls++ })
+
+	if httpCalls != 1 || streamCalls != 1 {
+		t.Fatalf("http/stream calls = %d/%d, want 1/1", httpCalls, streamCalls)
+	}
+}
+
+func TestFrontendTLSConfigDefaultsWithoutHTTP2(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = nil
+
+	tlsConfig := frontendTLSConfig()
+	if !reflect.DeepEqual(tlsConfig.NextProtos, []string{"http/1.1"}) {
+		t.Fatalf("NextProtos = %v, want only http/1.1", tlsConfig.NextProtos)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
+	}
+}
+
+func TestNormalizeRequestPathShortCircuitsAndPreservesTrailingSlash(t *testing.T) {
+	sameRequest := httptest.NewRequest(http.MethodGet, "/plain", nil)
+	var served *http.Request
+	handler := normalizeRequestPath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = r
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), sameRequest)
+	if served != sameRequest {
+		t.Fatal("normalizeRequestPath() cloned an already-clean request")
+	}
+
+	var gotPath string
+	handler = normalizeRequestPath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/trailing/", nil))
+	if gotPath != "/trailing/" {
+		t.Fatalf("path = %q, want preserved trailing slash", gotPath)
 	}
 }

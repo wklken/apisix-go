@@ -149,3 +149,30 @@ func kafkaTestFrame(payload []byte) []byte {
 	copy(frame[4:], payload)
 	return frame
 }
+
+func TestRoundTripRejectsCanceledContextAndInvalidFrame(t *testing.T) {
+	transport := NewTransport(TransportOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := transport.RoundTrip(ctx, "kafka://127.0.0.1:9092", kafkaTestFrame([]byte("request"))); err == nil {
+		t.Fatal("RoundTrip() error = nil with a canceled context")
+	}
+	if _, err := transport.RoundTrip(context.Background(), "kafka://127.0.0.1:9092", []byte{0x00, 0x01}); err == nil {
+		t.Fatal("RoundTrip() error = nil with an invalid frame")
+	}
+}
+
+func TestKafkaTargetAddressValidation(t *testing.T) {
+	if _, err := kafkaTargetAddress(""); err == nil {
+		t.Fatal("kafkaTargetAddress(empty) error = nil")
+	}
+	if _, err := kafkaTargetAddress("kafka://host:9092/path"); err == nil {
+		t.Fatal("kafkaTargetAddress(path) error = nil")
+	}
+	if _, err := kafkaTargetAddress("kafka://host:9092?query=1"); err == nil {
+		t.Fatal("kafkaTargetAddress(query) error = nil")
+	}
+	if got, err := kafkaTargetAddress("127.0.0.1:9092"); err != nil || got != "127.0.0.1:9092" {
+		t.Fatalf("kafkaTargetAddress(plain) = %q/%v, want passthrough", got, err)
+	}
+}

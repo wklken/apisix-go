@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -150,5 +151,169 @@ func TestPostInitPreservesExplicitZeroExpires(t *testing.T) {
 
 	if got := p.expires(); got != 0 {
 		t.Fatalf("expires = %d, want explicit zero preserved", got)
+	}
+}
+
+func TestCheckCSRFTokenValidationTable(t *testing.T) {
+	key := "secret"
+	now := time.Now().Unix()
+	valid := csrfToken{Random: 0.25, Expires: now, Sign: genSign(0.25, now, key)}
+	validBody, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("marshal valid token: %v", err)
+	}
+
+	expired := csrfToken{Random: 0.5, Expires: now - 7300, Sign: genSign(0.5, now-7300, key)}
+	expiredBody, err := json.Marshal(expired)
+	if err != nil {
+		t.Fatalf("marshal expired token: %v", err)
+	}
+
+	wrongKey := csrfToken{Random: 0.75, Expires: now, Sign: genSign(0.75, now, "other-key")}
+	wrongKeyBody, err := json.Marshal(wrongKey)
+	if err != nil {
+		t.Fatalf("marshal wrong-signature token: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		token     string
+		key       string
+		expires   int64
+		wantValid bool
+	}{
+		{
+			name:      "valid signature",
+			token:     base64.StdEncoding.EncodeToString(validBody),
+			key:       key,
+			expires:   7200,
+			wantValid: true,
+		},
+		{name: "invalid base64", token: "!!!not-base64!!!", key: key, expires: 7200},
+		{name: "invalid json", token: base64.StdEncoding.EncodeToString([]byte("{not json")), key: key, expires: 7200},
+		{name: "expired timestamp", token: base64.StdEncoding.EncodeToString(expiredBody), key: key, expires: 7200},
+		{name: "wrong signature", token: base64.StdEncoding.EncodeToString(wrongKeyBody), key: key, expires: 7200},
+		{
+			name:      "expires zero bypass",
+			token:     base64.StdEncoding.EncodeToString(expiredBody),
+			key:       key,
+			expires:   0,
+			wantValid: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := checkCSRFToken(test.token, test.key, test.expires); got != test.wantValid {
+				t.Fatalf("checkCSRFToken() = %t, want %t", got, test.wantValid)
+			}
+		})
+	}
+}
+
+func TestHandlerValidPostRefreshesCookie(t *testing.T) {
+	p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
+	token := genCSRFToken("secret")
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/post", nil)
+	request.Header.Set("csrf-token", token)
+	request.AddCookie(&http.Cookie{Name: "csrf-token", Value: token})
+
+	called := false
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	if !called || response.Code != http.StatusNoContent {
+		t.Fatalf("called/status = %t/%d, want true/204", called, response.Code)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie count = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != "csrf-token" || cookie.Path != "/" || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie = %#v, want name csrf-token, path /, SameSite Lax", cookie)
+	}
+}
+
+func TestHandlerRejectsInvalidRequestsWithJSONErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		cookie   string
+		wantBody string
+	}{
+		{name: "missing cookie", header: "token", wantBody: `{"error_msg":"no csrf cookie"}`},
+		{
+			name:     "mismatch",
+			header:   "header-token",
+			cookie:   "cookie-token",
+			wantBody: `{"error_msg":"csrf token mismatch"}`,
+		},
+		{
+			name:     "invalid signature",
+			header:   "forged",
+			cookie:   "forged",
+			wantBody: `{"error_msg":"Failed to verify the csrf token signature"}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
+			request := httptest.NewRequest(http.MethodPost, "http://example.com/post", nil)
+			request.Header.Set("csrf-token", test.header)
+			if test.cookie != "" {
+				request.AddCookie(&http.Cookie{Name: "csrf-token", Value: test.cookie})
+			}
+
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Fatal("next handler should not run for an invalid token")
+			})).ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", response.Code)
+			}
+			if got := strings.TrimSpace(response.Body.String()); got != test.wantBody {
+				t.Fatalf("body = %q, want %q", got, test.wantBody)
+			}
+		})
+	}
+}
+
+func TestHandlerSafeMethodsSetNewCookieAndContinue(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
+			called := false
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, httptest.NewRequest(method, "http://example.com/safe", nil))
+
+			if !called || response.Code != http.StatusNoContent {
+				t.Fatalf("called/status = %t/%d, want true/204", called, response.Code)
+			}
+			cookies := response.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].Name != "csrf-token" {
+				t.Fatalf("cookies = %#v, want one refreshed csrf-token cookie", cookies)
+			}
+		})
+	}
+}
+
+func TestPluginConfigDefaultsAndIdentity(t *testing.T) {
+	p := newTestPlugin(t, Config{Key: "secret"})
+	if got := p.Config(); got != &p.config {
+		t.Fatal("Config() does not return the plugin config pointer")
+	}
+	if p.config.Name != "apisix-csrf-token" {
+		t.Fatalf("default name = %q, want apisix-csrf-token", p.config.Name)
+	}
+	if p.expires() != defaultCSRFExpires {
+		t.Fatalf("default expires = %d, want %d", p.expires(), defaultCSRFExpires)
 	}
 }

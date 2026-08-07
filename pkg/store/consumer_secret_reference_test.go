@@ -103,3 +103,23 @@ func TestResolveSecretReferenceErrorsDoNotExposeEnvironmentValue(t *testing.T) {
 		t.Fatalf("ResolveSecretReference() error exposed secret value: %v", err)
 	}
 }
+
+func TestResolveConsumerSecretValuePassesThroughNonReferences(t *testing.T) {
+	consumerStore := &Store{}
+	value, err := consumerStore.resolveConsumerSecretValue(map[string]any{
+		"plain":  "value",
+		"count":  3,
+		"list":   []any{"a", "b"},
+		"nested": map[string]any{"inner": true},
+	})
+	if err != nil {
+		t.Fatalf("resolveConsumerSecretValue() error = %v", err)
+	}
+	typed := value.(map[string]any)
+	if typed["plain"] != "value" || typed["count"] != 3 {
+		t.Fatalf("resolved = %#v", typed)
+	}
+	if _, err := consumerStore.resolveConsumerSecretValue("$env://MISSING_KEY"); err == nil {
+		t.Fatal("resolveConsumerSecretValue(missing env secret) error = nil")
+	}
+}

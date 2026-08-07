@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -194,4 +195,81 @@ func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
 	if !reflect.DeepEqual(diagnostics, []string{"first", "second"}) {
 		t.Fatalf("diagnostics = %v, want [first second]", diagnostics)
 	}
+}
+
+func TestTypedContextGettersReturnValuesAndZeroOnMismatch(t *testing.T) {
+	now := time.Date(2026, time.August, 7, 9, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	ctx = withTestValue(ctx, "string", "value")
+	ctx = withTestValue(ctx, "int", 7)
+	ctx = withTestValue(ctx, "int64", int64(8))
+	ctx = withTestValue(ctx, "bool", true)
+	ctx = withTestValue(ctx, "bytes", []byte("raw"))
+	ctx = withTestValue(ctx, "map-string-string", map[string]string{"k": "v"})
+	ctx = withTestValue(ctx, "map-string-any", map[string]any{"k": 1})
+	ctx = withTestValue(ctx, "slice-string", []string{"a", "b"})
+	ctx = withTestValue(ctx, "time", now)
+	ctx = withTestValue(ctx, "duration", 5*time.Second)
+
+	if got := GetString(ctx, "string"); got != "value" {
+		t.Fatalf("GetString() = %q", got)
+	}
+	if got := GetInt(ctx, "int"); got != 7 {
+		t.Fatalf("GetInt() = %d", got)
+	}
+	if got := GetInt64(ctx, "int64"); got != 8 {
+		t.Fatalf("GetInt64() = %d", got)
+	}
+	if got := GetBool(ctx, "bool"); !got {
+		t.Fatal("GetBool() = false")
+	}
+	if got := GetBytes(ctx, "bytes"); string(got) != "raw" {
+		t.Fatalf("GetBytes() = %q", got)
+	}
+	if got := GetMapStringString(ctx, "map-string-string"); got["k"] != "v" {
+		t.Fatalf("GetMapStringString() = %v", got)
+	}
+	if got := GetMapStringAny(ctx, "map-string-any"); got["k"] != 1 {
+		t.Fatalf("GetMapStringAny() = %v", got)
+	}
+	if got := GetSliceString(ctx, "slice-string"); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("GetSliceString() = %v", got)
+	}
+	if got := GetTime(ctx, "time"); !got.Equal(now) {
+		t.Fatalf("GetTime() = %v", got)
+	}
+	if got := GetDuration(ctx, "duration"); got != 5*time.Second {
+		t.Fatalf("GetDuration() = %v", got)
+	}
+
+	mismatch := withTestValue(context.Background(), "int", "not-an-int")
+	if got := GetInt(mismatch, "int"); got != 0 {
+		t.Fatalf("GetInt(type mismatch) = %d, want 0", got)
+	}
+	if got := GetString(context.Background(), "absent"); got != "" {
+		t.Fatalf("GetString(absent) = %q, want empty", got)
+	}
+	if got := GetDuration(mismatch, "int"); got != 0 {
+		t.Fatalf("GetDuration(type mismatch) = %v, want 0", got)
+	}
+}
+
+func TestWithConsumerPluginOverridesScopesNames(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	if ConsumerPluginOverrides(request, "key-auth") {
+		t.Fatal("override present without WithConsumerPluginOverrides")
+	}
+
+	request = WithConsumerPluginOverrides(request, map[string]struct{}{"key-auth": {}})
+	if !ConsumerPluginOverrides(request, "key-auth") {
+		t.Fatal("override missing after WithConsumerPluginOverrides")
+	}
+	if ConsumerPluginOverrides(request, "jwt-auth") {
+		t.Fatal("override present for an unlisted plugin")
+	}
+}
+
+//nolint:staticcheck // the production getters look up plain string keys
+func withTestValue(parent context.Context, key string, value any) context.Context {
+	return context.WithValue(parent, key, value)
 }

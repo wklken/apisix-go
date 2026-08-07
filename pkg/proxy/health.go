@@ -359,7 +359,7 @@ func nonNegativeInt(value any, field string) (int, error) {
 	case uint32:
 		result = int(typed)
 	case uint64:
-		if uint64(int(typed)) != typed {
+		if typed > uint64(^uint(0)>>1) {
 			return 0, fmt.Errorf("%s is out of range", field)
 		}
 		result = int(typed)

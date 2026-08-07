@@ -72,6 +72,32 @@ func (p fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
 	return &redis.PoolStats{Hits: p.hits.Load()}
 }
 
+type fakeSlidingRedisClient struct {
+	getResult  *redis.StringCmd
+	evalResult *redis.Cmd
+	getKey     string
+	evalScript string
+	evalKeys   []string
+	evalArgs   []any
+}
+
+func (c *fakeSlidingRedisClient) Get(_ context.Context, key string) *redis.StringCmd {
+	c.getKey = key
+	return c.getResult
+}
+
+func (c *fakeSlidingRedisClient) Eval(
+	_ context.Context,
+	script string,
+	keys []string,
+	args ...any,
+) *redis.Cmd {
+	c.evalScript = script
+	c.evalKeys = append([]string(nil), keys...)
+	c.evalArgs = append([]any(nil), args...)
+	return c.evalResult
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -1969,5 +1995,316 @@ func TestRedisConfigStringRoundTrips(t *testing.T) {
 	serialized := config.String()
 	if !strings.Contains(serialized, "redis.example.test") {
 		t.Fatalf("String() = %q, want serialized config", serialized)
+	}
+}
+
+func TestRedisSlidingWindowCheckAndIncrementDecodesProtocolResponse(t *testing.T) {
+	client := &fakeSlidingRedisClient{
+		getResult: redis.NewStringResult("", redis.Nil),
+		evalResult: redis.NewCmdResult([]any{
+			int64(1), "4", []byte("2"),
+		}, nil),
+	}
+	store := newRedisSlidingWindowStore(client)
+
+	accepted, current, previous, err := store.checkAndIncrement(
+		context.Background(),
+		"current-window",
+		"previous-window",
+		2,
+		10,
+		time.Minute,
+		30*time.Second,
+		90*time.Second,
+		time.Unix(100, 0),
+	)
+	if err != nil {
+		t.Fatalf("checkAndIncrement() error = %v", err)
+	}
+	if !accepted || current != 4 || previous != 2 {
+		t.Fatalf("checkAndIncrement() = %t/%d/%d, want true/4/2", accepted, current, previous)
+	}
+	if client.getKey != "previous-window" || !slices.Equal(client.evalKeys, []string{"current-window"}) {
+		t.Fatalf("Redis keys = %q/%v, want previous-window/[current-window]", client.getKey, client.evalKeys)
+	}
+	if client.evalScript != redisSlidingCheckAndIncrementScript {
+		t.Fatal("checkAndIncrement() used the wrong Redis script")
+	}
+	if len(client.evalArgs) != 6 || client.evalArgs[0] != int64(2) || client.evalArgs[5] != int64(0) {
+		t.Fatalf("Redis args = %#v, want cost 2 and missing previous count 0", client.evalArgs)
+	}
+}
+
+func TestRedisSlidingWindowCheckAndIncrementRejectsWithoutLosingCounts(t *testing.T) {
+	client := &fakeSlidingRedisClient{
+		getResult:  redis.NewStringResult("7", nil),
+		evalResult: redis.NewCmdResult([]any{int64(0), int64(10), int64(7)}, nil),
+	}
+	store := newRedisSlidingWindowStore(client)
+
+	accepted, current, previous, err := store.checkAndIncrement(
+		context.Background(), "current", "previous", 3, 10, time.Minute, 20*time.Second, 80*time.Second, time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("checkAndIncrement() error = %v", err)
+	}
+	if accepted || current != 10 || previous != 7 {
+		t.Fatalf("checkAndIncrement() = %t/%d/%d, want false/10/7", accepted, current, previous)
+	}
+}
+
+func TestRedisSlidingWindowCheckAndIncrementFailsClosedOnBackendAndProtocolErrors(t *testing.T) {
+	backendErr := errors.New("redis unavailable")
+	tests := []struct {
+		name       string
+		getResult  *redis.StringCmd
+		evalResult *redis.Cmd
+		want       string
+	}{
+		{
+			name:       "get error",
+			getResult:  redis.NewStringResult("", backendErr),
+			evalResult: redis.NewCmdResult(nil, nil),
+			want:       "redis unavailable",
+		},
+		{
+			name:       "eval error",
+			getResult:  redis.NewStringResult("0", nil),
+			evalResult: redis.NewCmdResult(nil, backendErr),
+			want:       "redis unavailable",
+		},
+		{
+			name:       "wrong response length",
+			getResult:  redis.NewStringResult("0", nil),
+			evalResult: redis.NewCmdResult([]any{int64(1), int64(2)}, nil),
+			want:       "has 2 elements, want 3",
+		},
+		{
+			name:       "invalid accepted flag",
+			getResult:  redis.NewStringResult("0", nil),
+			evalResult: redis.NewCmdResult([]any{true, int64(2), int64(1)}, nil),
+			want:       "decode accepted flag",
+		},
+		{
+			name:       "invalid current count",
+			getResult:  redis.NewStringResult("0", nil),
+			evalResult: redis.NewCmdResult([]any{int64(1), true, int64(1)}, nil),
+			want:       "decode current count",
+		},
+		{
+			name:       "invalid previous count",
+			getResult:  redis.NewStringResult("0", nil),
+			evalResult: redis.NewCmdResult([]any{int64(1), int64(2), true}, nil),
+			want:       "decode previous count",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newRedisSlidingWindowStore(&fakeSlidingRedisClient{
+				getResult:  test.getResult,
+				evalResult: test.evalResult,
+			})
+			accepted, current, previous, err := store.checkAndIncrement(
+				context.Background(),
+				"current",
+				"previous",
+				1,
+				10,
+				time.Minute,
+				30*time.Second,
+				time.Minute,
+				time.Now(),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("checkAndIncrement() error = %v, want containing %q", err, test.want)
+			}
+			if accepted || current != 0 || previous != 0 {
+				t.Fatalf("failed check result = %t/%d/%d, want zero values", accepted, current, previous)
+			}
+		})
+	}
+}
+
+func TestRedisSlidingWindowIncrementUsesExpiryAndPropagatesErrors(t *testing.T) {
+	client := &fakeSlidingRedisClient{evalResult: redis.NewCmdResult(int64(9), nil)}
+	store := newRedisSlidingWindowStore(client)
+	count, err := store.increment(context.Background(), "window", 3, 90*time.Second, time.Now())
+	if err != nil || count != 9 {
+		t.Fatalf("increment() = %d/%v, want 9/nil", count, err)
+	}
+	if client.evalScript != redisSlidingIncrementScript || !slices.Equal(client.evalKeys, []string{"window"}) {
+		t.Fatalf("increment Redis call = %q/%v", client.evalScript, client.evalKeys)
+	}
+	if len(client.evalArgs) != 2 || client.evalArgs[0] != int64(3) || client.evalArgs[1] != int64(90) {
+		t.Fatalf("increment Redis args = %#v, want delta 3 and expiry 90", client.evalArgs)
+	}
+
+	backendErr := errors.New("redis unavailable")
+	store = newRedisSlidingWindowStore(&fakeSlidingRedisClient{evalResult: redis.NewCmdResult(nil, backendErr)})
+	if _, err := store.increment(
+		context.Background(),
+		"window",
+		1,
+		time.Minute,
+		time.Now(),
+	); !errors.Is(
+		err,
+		backendErr,
+	) {
+		t.Fatalf("increment() error = %v, want %v", err, backendErr)
+	}
+}
+
+func TestRedisIntegerAcceptsRedisWireRepresentations(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  int64
+	}{
+		{name: "integer", value: int64(7), want: 7},
+		{name: "string", value: "8", want: 8},
+		{name: "bytes", value: []byte("9"), want: 9},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := redisInteger(test.value)
+			if err != nil || got != test.want {
+				t.Fatalf("redisInteger(%T) = %d/%v, want %d/nil", test.value, got, err, test.want)
+			}
+		})
+	}
+	for _, value := range []any{"not-an-integer", []byte("also-invalid"), true} {
+		if _, err := redisInteger(value); err == nil {
+			t.Fatalf("redisInteger(%T) error = nil", value)
+		}
+	}
+}
+
+func TestLimiterFactoriesCacheStaticLimitsAndIsolateDynamicLimits(t *testing.T) {
+	fixed := &Plugin{config: Config{Policy: "local"}}
+	first, err := fixed.limiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("limiterFor(first) error = %v", err)
+	}
+	second, err := fixed.limiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("limiterFor(second) error = %v", err)
+	}
+	other, err := fixed.limiterFor(20, 60)
+	if err != nil {
+		t.Fatalf("limiterFor(other) error = %v", err)
+	}
+	if first != second || first == other {
+		t.Fatalf("static limiter identities = %p, %p, %p", first, second, other)
+	}
+
+	dynamic := &Plugin{config: Config{Policy: "local"}, dynamicLimits: true}
+	dynamicFirst, err := dynamic.limiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("dynamic limiterFor(first) error = %v", err)
+	}
+	dynamicSecond, err := dynamic.limiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("dynamic limiterFor(second) error = %v", err)
+	}
+	if dynamicFirst == dynamicSecond {
+		t.Fatal("dynamic limiterFor() reused a limiter with request-resolved limits")
+	}
+
+	sliding := &Plugin{config: Config{Policy: "local"}}
+	slidingFirst, err := sliding.slidingLimiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("slidingLimiterFor(first) error = %v", err)
+	}
+	slidingSecond, err := sliding.slidingLimiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("slidingLimiterFor(second) error = %v", err)
+	}
+	slidingOther, err := sliding.slidingLimiterFor(20, 60)
+	if err != nil {
+		t.Fatalf("slidingLimiterFor(other) error = %v", err)
+	}
+	if slidingFirst != slidingSecond || slidingFirst == slidingOther {
+		t.Fatalf("static sliding limiter identities = %p, %p, %p", slidingFirst, slidingSecond, slidingOther)
+	}
+
+	dynamicSliding := &Plugin{config: Config{Policy: "local"}, dynamicLimits: true}
+	dynamicSlidingFirst, err := dynamicSliding.slidingLimiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("dynamic slidingLimiterFor(first) error = %v", err)
+	}
+	dynamicSlidingSecond, err := dynamicSliding.slidingLimiterFor(10, 60)
+	if err != nil {
+		t.Fatalf("dynamic slidingLimiterFor(second) error = %v", err)
+	}
+	if dynamicSlidingFirst == dynamicSlidingSecond {
+		t.Fatal("dynamic slidingLimiterFor() reused a limiter with request-resolved limits")
+	}
+}
+
+func TestSlidingStoreConstructorsCoverConfiguredPolicies(t *testing.T) {
+	falseValue := false
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{name: "local", config: Config{Policy: "local"}},
+		{
+			name: "redis",
+			config: Config{Policy: "redis", Redis: RedisConfig{
+				RedisHost: "127.0.0.1", RedisPort: 6379, RedisSSL: &falseValue, RedisSSLVerify: &falseValue,
+			}},
+		},
+		{
+			name: "redis cluster",
+			config: Config{Policy: "redis-cluster", RedisCluster: RedisClusterConfig{
+				RedisClusterName: "coverage-cluster", RedisClusterNodes: []string{"127.0.0.1:7000"},
+				RedisClusterSSL: &falseValue, RedisClusterSSLVerify: &falseValue,
+			}},
+		},
+		{
+			name: "redis sentinel",
+			config: Config{
+				Policy: "redis-sentinel", RedisMasterName: "coverage-master",
+				RedisSentinels: []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := &Plugin{config: test.config}
+			if _, err := plugin.newSlidingStore(); err != nil {
+				t.Fatalf("newSlidingStore() error = %v", err)
+			}
+		})
+	}
+
+	plugin := &Plugin{config: Config{Policy: "unsupported"}}
+	if _, err := plugin.newSlidingStore(); err == nil {
+		t.Fatal("newSlidingStore(unsupported) error = nil")
+	}
+}
+
+func TestDelayedSyncerFactoryReusesLimitConfigurationAndStopClearsState(t *testing.T) {
+	plugin := &Plugin{config: Config{Policy: "local", SyncInterval: 0.1}}
+	first, err := plugin.delayedSyncerFor(10, 60)
+	if err != nil {
+		t.Fatalf("delayedSyncerFor(first) error = %v", err)
+	}
+	second, err := plugin.delayedSyncerFor(10, 60)
+	if err != nil {
+		t.Fatalf("delayedSyncerFor(second) error = %v", err)
+	}
+	other, err := plugin.delayedSyncerFor(20, 60)
+	if err != nil {
+		t.Fatalf("delayedSyncerFor(other) error = %v", err)
+	}
+	if first != second || first == other {
+		t.Fatalf("delayed syncer identities = %p, %p, %p", first, second, other)
+	}
+	plugin.Stop()
+	if plugin.delayedByKey != nil || plugin.delayed != nil {
+		t.Fatalf("Stop() retained delayed state: %#v, %#v", plugin.delayedByKey, plugin.delayed)
 	}
 }

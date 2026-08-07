@@ -624,6 +624,155 @@ func TestStandaloneConfigFile(t *testing.T) {
 	if got, want := StandaloneConfigFile("json"), "conf/apisix.json"; got != want {
 		t.Fatalf("StandaloneConfigFile(json) = %q, want %q", got, want)
 	}
+	if got := StandaloneConfigFile("unsupported"); got != "" {
+		t.Fatalf("StandaloneConfigFile(unsupported) = %q, want empty", got)
+	}
+}
+
+func TestStandaloneReloadResultReportsAffectedSubsystems(t *testing.T) {
+	if (StandaloneReloadResult{}).AffectsHTTPRoutes() || (StandaloneReloadResult{}).AffectsStreams() {
+		t.Fatal("empty reload result reported affected resources")
+	}
+	if !(StandaloneReloadResult{ChangedHTTPRouteBuckets: []string{"routes"}}).AffectsHTTPRoutes() {
+		t.Fatal("HTTP bucket change was not reported")
+	}
+	if !(StandaloneReloadResult{ChangedStreamBuckets: []string{"stream_routes"}}).AffectsStreams() {
+		t.Fatal("stream bucket change was not reported")
+	}
+}
+
+func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		content   string
+		wantError string
+	}{
+		{
+			name:      "unsupported provider",
+			provider:  "toml",
+			content:   "",
+			wantError: "unsupported standalone config provider",
+		},
+		{name: "invalid JSON", provider: "json", content: `{`, wantError: "parse standalone JSON config"},
+		{
+			name:      "section is not array",
+			provider:  "json",
+			content:   `{"routes":{}}`,
+			wantError: "decode standalone routes",
+		},
+		{name: "resource missing ID", provider: "json", content: `{"routes":[{"uri":"/"}]}`, wantError: "missing id"},
+		{name: "invalid YAML", provider: "yaml", content: "routes: [\n#END", wantError: "parse standalone YAML config"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "apisix."+test.provider)
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatalf("write standalone fixture: %v", err)
+			}
+			_, err := readStandaloneSnapshot(path, test.provider)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+
+	_, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
+	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
+		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
+	}
+}
+
+func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
+	tests := []struct {
+		name      string
+		bucket    string
+		raw       string
+		wantError string
+	}{
+		{name: "malformed resource", bucket: "routes", raw: `{`, wantError: "invalid character"},
+		{name: "empty ID", bucket: "routes", raw: `{"id":""}`, wantError: "id is empty"},
+		{name: "object ID", bucket: "routes", raw: `{"id":{}}`, wantError: "id must be a string or number"},
+		{
+			name:      "invalid plugins",
+			bucket:    "routes",
+			raw:       `{"id":"route-a","plugins":"invalid"}`,
+			wantError: "decode plugins",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := normalizeStandaloneResource(test.bucket, json.RawMessage(test.raw))
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("normalizeStandaloneResource() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+
+	id, encoded, err := normalizeStandaloneResource("routes", json.RawMessage(`{"id":42,"uri":"/number"}`))
+	if err != nil {
+		t.Fatalf("normalizeStandaloneResource(number ID) error = %v", err)
+	}
+	if id != "42" || !strings.Contains(string(encoded), `"id":"42"`) {
+		t.Fatalf("normalized number ID = %q, %s", id, encoded)
+	}
+
+	id, encoded, err = normalizeStandaloneResource("consumers", json.RawMessage(`{"username":"alice","id":"ignored"}`))
+	if err != nil {
+		t.Fatalf("normalizeStandaloneResource(consumer) error = %v", err)
+	}
+	if id != "alice" || !strings.Contains(string(encoded), `"username":"alice"`) {
+		t.Fatalf("normalized consumer = %q, %s", id, encoded)
+	}
+}
+
+func TestStandaloneProviderFromPath(t *testing.T) {
+	for path, want := range map[string]string{
+		"conf/apisix.yaml": "yaml",
+		"conf/apisix.JSON": "json",
+		"conf/apisix":      "",
+	} {
+		if got := standaloneProviderFromPath(path); got != want {
+			t.Fatalf("standaloneProviderFromPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestPluginMetadataYAMLRoundTrip(t *testing.T) {
+	metadata := &PluginMetadata{ID: "prometheus"}
+	metadata.Raw = []byte(`{"prefer_name":true}`)
+	encoded, err := metadata.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML() error = %v", err)
+	}
+	fields, ok := encoded.(map[string]any)
+	if !ok || fields["id"] != "prometheus" || fields["prefer_name"] != true {
+		t.Fatalf("MarshalYAML() = %#v", encoded)
+	}
+
+	var decoded PluginMetadata
+	err = decoded.UnmarshalYAML(func(value any) error {
+		fields := value.(*map[string]any)
+		*fields = map[string]any{"id": "prometheus", "prefer_name": true}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UnmarshalYAML() error = %v", err)
+	}
+	if decoded.ID != "prometheus" || !strings.Contains(string(decoded.Raw), `"prefer_name":true`) {
+		t.Fatalf("UnmarshalYAML() = ID %q, raw %s", decoded.ID, decoded.Raw)
+	}
+
+	err = decoded.UnmarshalYAML(func(value any) error {
+		fields := value.(*map[string]any)
+		*fields = map[string]any{"id": 123}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "ID field is not string") {
+		t.Fatalf("UnmarshalYAML(non-string ID) error = %v", err)
+	}
 }
 
 type standaloneEvent struct {

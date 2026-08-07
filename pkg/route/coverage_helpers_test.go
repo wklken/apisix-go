@@ -1,11 +1,39 @@
 package route
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
+
+type routeHealthRecorder struct {
+	tcpCalls int
+	timeout  bool
+}
+
+func (*routeHealthRecorder) ReportHTTP(string, int) {}
+
+func (r *routeHealthRecorder) ReportTCPFailure(_ string, timeout bool) {
+	r.tcpCalls++
+	r.timeout = timeout
+}
+
+type routeNetError struct {
+	timeout bool
+}
+
+func (e routeNetError) Error() string { return "upstream network failure" }
+func (e routeNetError) Timeout() bool { return e.timeout }
+func (routeNetError) Temporary() bool { return false }
 
 func TestParsePluginPriority(t *testing.T) {
 	tests := []struct {
@@ -62,5 +90,80 @@ func TestBatchRequestsURIResolvesConfiguredValue(t *testing.T) {
 	}
 	if got := batchRequestsURI(); got != "/internal/batch" {
 		t.Fatalf("batchRequestsURI() = %q, want configured URI", got)
+	}
+}
+
+func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantStatus   int
+		wantTCPCalls int
+		wantTimeout  bool
+		message      string
+	}{
+		{
+			name:         "timeout",
+			err:          routeNetError{timeout: true},
+			wantStatus:   http.StatusGatewayTimeout,
+			wantTCPCalls: 1,
+			wantTimeout:  true,
+			message:      "upstream network failure",
+		},
+		{
+			name:         "network",
+			err:          routeNetError{},
+			wantStatus:   http.StatusBadGateway,
+			wantTCPCalls: 1,
+			message:      "upstream network failure",
+		},
+		{name: "eof", err: io.EOF, wantStatus: http.StatusBadGateway, wantTCPCalls: 1, message: "EOF"},
+		{name: "canceled", err: context.Canceled, wantStatus: StatusClientClosedRequest, message: "context canceled"},
+		{
+			name:         "unexpected eof",
+			err:          io.ErrUnexpectedEOF,
+			wantStatus:   StatusClientClosedRequest,
+			wantTCPCalls: 1,
+			message:      "unexpected EOF",
+		},
+		{
+			name:         "generic",
+			err:          errors.New("upstream failed"),
+			wantStatus:   http.StatusInternalServerError,
+			wantTCPCalls: 1,
+			message:      "upstream failed",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reporter := &routeHealthRecorder{}
+			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+			request = apisixctx.WithRequestVars(request)
+			request = pxy.WithHealthReporter(request, reporter)
+			pxy.SetSelectedTarget(request, "http://upstream.test:80")
+			response := httptest.NewRecorder()
+
+			newErrorHandler()(response, request, test.err)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+			if !strings.Contains(response.Body.String(), test.message) {
+				t.Fatalf("body = %q, want message %q", response.Body.String(), test.message)
+			}
+			if got := apisixctx.GetRequestVar(request, "$response_source"); got != "apisix" {
+				t.Fatalf("$response_source = %v, want apisix", got)
+			}
+			if reporter.tcpCalls != test.wantTCPCalls || reporter.timeout != test.wantTimeout {
+				t.Fatalf(
+					"TCP report = %d/%t, want %d/%t",
+					reporter.tcpCalls,
+					reporter.timeout,
+					test.wantTCPCalls,
+					test.wantTimeout,
+				)
+			}
+		})
 	}
 }

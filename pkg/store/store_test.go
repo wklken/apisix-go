@@ -133,6 +133,76 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	}
 }
 
+func TestEventHooksObserveCommittedRouteMutationsBeforeSyncReturns(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/hook-order.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	storage := &Store{
+		events:         make(chan *Event),
+		db:             db,
+		consumerKV:     map[string][]byte{},
+		consumerToKeys: map[string][]string{},
+	}
+	storage.InitBuckets()
+	observations := make(chan string, 2)
+	storage.AddEventUpdateHook(func(event *Event) {
+		observations <- fmt.Sprintf("%s:%s", event.Type, storage.GetFromBucket("routes", []byte("route-1")))
+	})
+	storage.Start()
+	t.Cleanup(storage.Stop)
+
+	storage.events <- &Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/routes/route-1"),
+		Value: []byte(`{"id":"route-1"}`),
+	}
+	storage.Sync()
+	storage.events <- &Event{Type: EventTypeDelete, Key: []byte("/apisix/routes/route-1")}
+	storage.Sync()
+
+	if got := <-observations; got != `PUT:{"id":"route-1"}` {
+		t.Fatalf("PUT hook observation = %q, want committed route", got)
+	}
+	if got := <-observations; got != "DELETE:" {
+		t.Fatalf("DELETE hook observation = %q, want removed route", got)
+	}
+}
+
+func TestFailedRouteMutationDoesNotTriggerReloadHook(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/hook-failure.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	storage := &Store{
+		events:         make(chan *Event),
+		db:             db,
+		consumerKV:     map[string][]byte{},
+		consumerToKeys: map[string][]string{},
+	}
+	storage.InitBuckets()
+	if err := db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("routes")) }); err != nil {
+		t.Fatalf("delete routes bucket: %v", err)
+	}
+	hooks := make(chan struct{}, 1)
+	storage.AddEventUpdateHook(func(*Event) { hooks <- struct{}{} })
+	storage.Start()
+	t.Cleanup(storage.Stop)
+
+	storage.events <- &Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/routes/route-1"),
+		Value: []byte(`{"id":"route-1"}`),
+	}
+	storage.Sync()
+
+	select {
+	case <-hooks:
+		t.Fatal("failed route mutation triggered a reload hook")
+	default:
+	}
+}
+
 func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 	const eventCount = 64
 	db, err := bolt.Open(t.TempDir()+"/buffered-store.db", 0o600, nil)

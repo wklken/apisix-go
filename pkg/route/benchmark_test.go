@@ -126,11 +126,19 @@ func benchmarkRouteDispatch(b *testing.B, kind, result string, routeCount int) {
 	var request *http.Request
 	switch {
 	case kind == "static" && result == "match":
-		request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://apisix.benchmark/routes/%04d", routeCount-1), nil)
+		request = httptest.NewRequest(
+			http.MethodGet,
+			fmt.Sprintf("http://apisix.benchmark/routes/%04d", routeCount-1),
+			nil,
+		)
 	case kind == "static" && result == "miss":
 		request = httptest.NewRequest(http.MethodGet, "http://apisix.benchmark/routes/9999", nil)
 	case kind == "embedded-wildcard" && result == "match":
-		request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://apisix.benchmark/articles/some-slug/suffix-%04d", routeCount-1), nil)
+		request = httptest.NewRequest(
+			http.MethodGet,
+			fmt.Sprintf("http://apisix.benchmark/articles/some-slug/suffix-%04d", routeCount-1),
+			nil,
+		)
 	default:
 		request = httptest.NewRequest(http.MethodGet, "http://apisix.benchmark/articles/some-slug/suffix-missing", nil)
 	}

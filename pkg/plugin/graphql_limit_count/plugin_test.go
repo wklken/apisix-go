@@ -1,6 +1,7 @@
 package graphql_limit_count
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -744,6 +746,92 @@ type fakeRedisLimiter struct {
 	reset     int64
 	allowed   bool
 	err       error
+}
+
+type scriptedRedisClient struct {
+	redis.UniversalClient
+	result any
+	err    error
+	keys   []string
+	args   []any
+}
+
+func (f *scriptedRedisClient) Eval(_ context.Context, _ string, keys []string, args ...any) *redis.Cmd {
+	f.keys = append([]string(nil), keys...)
+	f.args = append([]any(nil), args...)
+	return redis.NewCmdResult(f.result, f.err)
+}
+
+func TestRedisCountLimiterDecodesAtomicAdmissionResponse(t *testing.T) {
+	client := &scriptedRedisClient{result: []any{int64(1), "7", uint64(30)}}
+	limiter := &redisCountLimiter{client: client, namespace: "route-a"}
+	req := httptest.NewRequest(http.MethodPost, "/graphql", nil)
+
+	remaining, reset, allowed, err := limiter.incoming(req, "client-a", 3, 10, 60)
+	if err != nil {
+		t.Fatalf("incoming() error = %v", err)
+	}
+	if remaining != 7 || reset != 30 || !allowed {
+		t.Fatalf("incoming() = remaining %d, reset %d, allowed %t", remaining, reset, allowed)
+	}
+	if len(client.keys) != 1 || client.keys[0] != "plugin-graphql-limit-count:route-a:client-a" {
+		t.Fatalf("Eval keys = %#v", client.keys)
+	}
+	wantArgs := []any{int64(3), int64(10), int64(60)}
+	if len(client.args) != len(wantArgs) {
+		t.Fatalf("Eval args = %#v, want %#v", client.args, wantArgs)
+	}
+	for i := range wantArgs {
+		if client.args[i] != wantArgs[i] {
+			t.Fatalf("Eval arg %d = %#v, want %#v", i, client.args[i], wantArgs[i])
+		}
+	}
+}
+
+func TestRedisCountLimiterFailsClosedOnBackendAndProtocolErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		result any
+		err    error
+	}{
+		{name: "backend error", err: errors.New("redis unavailable")},
+		{name: "wrong result type", result: "invalid"},
+		{name: "wrong result length", result: []any{1, 2}},
+		{name: "invalid allowed", result: []any{[]byte("1"), 2, 3}},
+		{name: "invalid remaining", result: []any{1, "invalid", 3}},
+		{name: "invalid reset", result: []any{1, 2, nil}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limiter := &redisCountLimiter{client: &scriptedRedisClient{result: test.result, err: test.err}}
+			_, _, _, err := limiter.incoming(httptest.NewRequest(http.MethodPost, "/graphql", nil), "key", 1, 2, 3)
+			if err == nil {
+				t.Fatal("incoming() error = nil")
+			}
+		})
+	}
+}
+
+func TestRedisIntRejectsOverflowAndInvalidWireValues(t *testing.T) {
+	for _, test := range []struct {
+		value any
+		want  int64
+		ok    bool
+	}{
+		{value: int(1), want: 1, ok: true},
+		{value: int64(2), want: 2, ok: true},
+		{value: uint64(3), want: 3, ok: true},
+		{value: "4", want: 4, ok: true},
+		{value: "invalid"},
+		{value: []byte("5")},
+		{value: ^uint64(0)},
+	} {
+		got, ok := redisInt(test.value)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("redisInt(%#v) = %d, %t; want %d, %t", test.value, got, ok, test.want, test.ok)
+		}
+	}
 }
 
 func (f *fakeRedisLimiter) incoming(

@@ -830,6 +830,9 @@ func redisInt(value any) (int64, bool) {
 	case int64:
 		return v, true
 	case uint64:
+		if v > uint64(1<<63-1) {
+			return 0, false
+		}
 		return int64(v), true
 	case string:
 		parsed, err := strconv.ParseInt(v, 10, 64)

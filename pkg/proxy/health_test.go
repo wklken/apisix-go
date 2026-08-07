@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +165,171 @@ func TestWithHealthReporterDisabledAllocatesNothing(t *testing.T) {
 	})
 	if allocations != 0 {
 		t.Fatalf("disabled WithHealthReporter allocations = %v, want 0", allocations)
+	}
+}
+
+func TestNewUpstreamLoadBalanceEnablesPassiveHealthOnlyWhenConfigured(t *testing.T) {
+	servers := map[string]int{"http://one.example:80": 1}
+	withoutPassive, err := NewUpstreamLoadBalance(servers, map[string]any{"active": map[string]any{}})
+	if err != nil {
+		t.Fatalf("NewUpstreamLoadBalance(active) error = %v", err)
+	}
+	if _, ok := withoutPassive.(*HealthAwareLoadBalance); ok {
+		t.Fatal("active-only checks unexpectedly enabled passive health state")
+	}
+
+	withPassive, err := NewUpstreamLoadBalance(servers, map[string]any{"passive": map[string]any{}})
+	if err != nil {
+		t.Fatalf("NewUpstreamLoadBalance(passive) error = %v", err)
+	}
+	if _, ok := withPassive.(*HealthAwareLoadBalance); !ok {
+		t.Fatalf("passive checks returned %T, want *HealthAwareLoadBalance", withPassive)
+	}
+}
+
+func TestPassiveHealthConfigParsesOfficialNumericShapes(t *testing.T) {
+	config, err := parsePassiveHealthConfig(map[string]any{
+		"passive": map[string]any{
+			"type": "HTTPS",
+			"healthy": map[string]any{
+				"http_statuses": []int{200, 204},
+			},
+			"unhealthy": map[string]any{
+				"http_statuses": []any{int16(429), float64(500)},
+				"http_failures": uint8(3),
+				"tcp_failures":  int64(4),
+				"timeouts":      uint32(5),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parsePassiveHealthConfig() error = %v", err)
+	}
+	if config.Type != "https" || config.HTTPFailures != 3 || config.TCPFailures != 4 || config.Timeouts != 5 {
+		t.Fatalf("parsed passive config = %#v", config)
+	}
+	for _, status := range []int{200, 204} {
+		if _, ok := config.HealthyStatuses[status]; !ok {
+			t.Fatalf("healthy status %d missing from %#v", status, config.HealthyStatuses)
+		}
+	}
+	for _, status := range []int{429, 500} {
+		if _, ok := config.UnhealthyStatuses[status]; !ok {
+			t.Fatalf("unhealthy status %d missing from %#v", status, config.UnhealthyStatuses)
+		}
+	}
+}
+
+func TestPassiveHealthConfigRejectsMalformedFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		passive   any
+		wantError string
+	}{
+		{name: "passive not object", passive: "enabled", wantError: "checks.passive must be an object"},
+		{name: "type not string", passive: map[string]any{"type": 1}, wantError: "type must be a string"},
+		{name: "unsupported type", passive: map[string]any{"type": "udp"}, wantError: "is unsupported"},
+		{name: "healthy not object", passive: map[string]any{"healthy": "yes"}, wantError: "healthy must be an object"},
+		{
+			name:      "healthy statuses not array",
+			passive:   map[string]any{"healthy": map[string]any{"http_statuses": "200"}},
+			wantError: "must be an array",
+		},
+		{
+			name:      "status not integer",
+			passive:   map[string]any{"healthy": map[string]any{"http_statuses": []any{"200"}}},
+			wantError: "must be an integer",
+		},
+		{
+			name:      "status out of HTTP range",
+			passive:   map[string]any{"healthy": map[string]any{"http_statuses": []any{99}}},
+			wantError: "between 100 and 599",
+		},
+		{
+			name:      "unhealthy not object",
+			passive:   map[string]any{"unhealthy": "yes"},
+			wantError: "unhealthy must be an object",
+		},
+		{
+			name:      "negative threshold",
+			passive:   map[string]any{"unhealthy": map[string]any{"timeouts": -1}},
+			wantError: "must be non-negative",
+		},
+		{
+			name:      "fractional threshold",
+			passive:   map[string]any{"unhealthy": map[string]any{"timeouts": 1.5}},
+			wantError: "must be an integer",
+		},
+		{
+			name:      "overflowing threshold",
+			passive:   map[string]any{"unhealthy": map[string]any{"timeouts": uint64(math.MaxUint64)}},
+			wantError: "is out of range",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parsePassiveHealthConfig(map[string]any{"passive": test.passive})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("parsePassiveHealthConfig() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestHealthAwareLoadBalanceResetsFailuresAndIgnoresUnknownTargets(t *testing.T) {
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{"http://one.example:80": 1},
+		map[string]any{"passive": map[string]any{
+			"healthy": map[string]any{"http_statuses": []any{204}},
+			"unhealthy": map[string]any{
+				"http_statuses": []any{500},
+				"http_failures": 2,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+	target := lb.Next()
+	lb.ReportHTTP(target, 500)
+	lb.ReportHTTP(target, 204)
+	lb.ReportHTTP(target, 500)
+	if !lb.IsHealthy(target) {
+		t.Fatal("healthy status did not reset the accumulated HTTP failure")
+	}
+	lb.ReportHTTP("unknown", 500)
+	lb.ReportTCPFailure("unknown", false)
+	if lb.IsHealthy("unknown") {
+		t.Fatal("unknown target was reported as healthy")
+	}
+
+	empty, err := NewHealthAwareLoadBalance(nil, map[string]any{"passive": map[string]any{}})
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance(empty) error = %v", err)
+	}
+	if got := empty.Next(); got != "" {
+		t.Fatalf("empty Next() = %q, want empty target", got)
+	}
+}
+
+func TestTCPPassiveHealthIgnoresHTTPOutcomes(t *testing.T) {
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{"tcp://one.example:9000": 1},
+		map[string]any{"passive": map[string]any{
+			"type": "tcp",
+			"unhealthy": map[string]any{
+				"http_statuses": []any{500},
+				"http_failures": 1,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+	target := lb.Next()
+	lb.ReportHTTP(target, 500)
+	if !lb.IsHealthy(target) {
+		t.Fatal("HTTP outcome quarantined a TCP passive-health target")
 	}
 }

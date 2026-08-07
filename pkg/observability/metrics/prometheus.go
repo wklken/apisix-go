@@ -1,15 +1,20 @@
 package metrics
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 var initOnce sync.Once
@@ -49,6 +54,41 @@ const (
 type prometheusExtraLabel struct {
 	Name     string
 	Variable string
+}
+
+// ExportServerConfig describes an owned prometheus export HTTP server.
+type ExportServerConfig struct {
+	Enabled bool
+	URI     string
+	Address string
+}
+
+// StartExportServer binds and serves the prometheus export endpoint and
+// returns the owned server plus its bound address. The caller must stop the
+// returned server during its shutdown path; Stop releases the listener.
+func StartExportServer(cfg ExportServerConfig) (*http.Server, net.Addr, error) {
+	if !cfg.Enabled {
+		return nil, nil, nil
+	}
+	mux := http.NewServeMux()
+	mux.Handle(cfg.URI, promhttp.Handler())
+	exportServer := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	listener, err := net.Listen("tcp", cfg.Address)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen prometheus export address %q: %w", cfg.Address, err)
+	}
+	go func() {
+		if err := exportServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Errorf("prometheus export server stopped: %s", err)
+		}
+	}()
+	return exportServer, listener.Addr(), nil
 }
 
 type HTTPRequestMetrics struct {

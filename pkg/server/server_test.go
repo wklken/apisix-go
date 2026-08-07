@@ -544,6 +544,25 @@ func TestServerShutdownClosesEtcdClient(t *testing.T) {
 	}
 }
 
+func TestServerShutdownCallsOtelShutdownOnce(t *testing.T) {
+	otelCalls := 0
+	server := &Server{
+		server: &http.Server{},
+		routes: newRouteHandler(http.NotFoundHandler(), nil),
+		otelShutdown: func(ctx context.Context) error {
+			otelCalls++
+			return nil
+		},
+	}
+
+	if err := server.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+	if otelCalls != 1 {
+		t.Fatalf("otel shutdown calls = %d, want exactly 1", otelCalls)
+	}
+}
+
 func TestLogStreamResultReportsErrorsAndCompletions(t *testing.T) {
 	logStreamResult(streamruntime.Result{
 		RouteID:  "route-1",

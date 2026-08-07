@@ -2,7 +2,7 @@ package otel
 
 import (
 	"context"
-	"log"
+	"fmt"
 
 	"go.opentelemetry.io/otel"
 	stdout "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -12,25 +12,26 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
-func init() {
-	// initialize trace provider
-	tp := InitTracerProvider("apisix-go")
-	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Printf("Error shutting down tracer provider: %v", err)
-		}
-	}()
-	// set global tracer provider & text propagators
-	otel.SetTracerProvider(tp)
+// Init installs the global tracer provider and text propagators and returns
+// an idempotent shutdown function owned by the caller. The old init() used a
+// deferred Shutdown that ran while init returned, leaving a dead batcher as
+// the global provider; shutdown must be driven by the process owner instead.
+func Init(serviceName string) (func(context.Context) error, error) {
+	provider, err := InitTracerProvider(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
 	)
+	return provider.Shutdown, nil
 }
 
-func InitTracerProvider(serviceName string) *sdktrace.TracerProvider {
+func InitTracerProvider(serviceName string) (*sdktrace.TracerProvider, error) {
 	exporter, err := stdout.New(stdout.WithPrettyPrint())
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("create trace exporter: %w", err)
 	}
 	res, err := resource.New(
 		context.Background(),
@@ -40,11 +41,11 @@ func InitTracerProvider(serviceName string) *sdktrace.TracerProvider {
 		),
 	)
 	if err != nil {
-		log.Fatalf("unable to initialize resource due: %v", err)
+		return nil, fmt.Errorf("initialize resource: %w", err)
 	}
 	return sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
-	)
+	), nil
 }

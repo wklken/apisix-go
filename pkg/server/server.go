@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -23,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/observability/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -51,6 +51,9 @@ type Server struct {
 	storage           *store.Store
 	etcdClient        *etcd.ConfigClient
 	standaloneWatcher *config.StandaloneFileWatcher
+
+	prometheusServer *http.Server
+	otelShutdown     func(context.Context) error
 }
 
 func NewServer() (*Server, error) {
@@ -70,6 +73,10 @@ func NewServer() (*Server, error) {
 		handler = node_status.Track(handler)
 	}
 	addrs := configuredListenAddresses()
+	otelShutdown, err := otel.Init("apisix-go")
+	if err != nil {
+		return nil, fmt.Errorf("initialize tracing: %w", err)
+	}
 	return &Server{
 		addr:            addrs[0],
 		addrs:           addrs,
@@ -78,6 +85,7 @@ func NewServer() (*Server, error) {
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
+		otelShutdown:    otelShutdown,
 	}, nil
 }
 
@@ -318,21 +326,37 @@ func initialRouteHandler(handler *chi.Mux) http.Handler {
 }
 
 func (s *Server) shutdown(ctx context.Context) error {
-	if err := s.server.Shutdown(ctx); err != nil {
-		return err
+	var errs []error
+	httpErr := s.server.Shutdown(ctx)
+	if httpErr != nil {
+		errs = append(errs, fmt.Errorf("stop HTTP server: %w", httpErr))
+	} else {
+		// HTTP quiescence reached, so no in-flight request can block the
+		// graceful route drain; a timed-out HTTP shutdown skips the drain and
+		// the command's exit releases stragglers.
+		s.routes.Close()
 	}
 	if s.streamRuntime != nil {
 		if err := s.streamRuntime.Close(ctx); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
 	}
-	s.routes.Close()
+	if s.prometheusServer != nil {
+		if err := s.prometheusServer.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop prometheus export server: %w", err))
+		}
+	}
+	if s.otelShutdown != nil {
+		if err := s.otelShutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop tracing: %w", err))
+		}
+	}
 	if s.etcdClient != nil {
 		if err := s.etcdClient.Close(); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("close etcd client: %w", err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Server) startStreamProxy(ctx context.Context) {
@@ -364,7 +388,7 @@ func (s *Server) startStreamProxy(ctx context.Context) {
 }
 
 // startPrometheusExportServer starts the prometheus export server when the
-// plugin is enabled. Task 2 makes it an owned lifecycle resource.
+// plugin is enabled and retains it as an owned lifecycle resource.
 func (s *Server) startPrometheusExportServer() error {
 	if config.GlobalConfig == nil {
 		return nil
@@ -375,16 +399,15 @@ func (s *Server) startPrometheusExportServer() error {
 		}
 		metrics.Init()
 		exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
-		if !exportConfig.Enabled {
-			return nil
+		exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
+			Enabled: exportConfig.Enabled,
+			URI:     exportConfig.ExportURI,
+			Address: exportConfig.Address(),
+		})
+		if err != nil {
+			return fmt.Errorf("start prometheus export server: %w", err)
 		}
-		go func(exportConfig prometheusExportServerConfig) {
-			mux := chi.NewRouter()
-			mux.Get(exportConfig.ExportURI, promhttp.Handler().ServeHTTP)
-			if err := http.ListenAndServe(exportConfig.Address(), mux); err != nil {
-				logger.Errorf("prometheus export server stopped: %s", err)
-			}
-		}(exportConfig)
+		s.prometheusServer = exporter
 		return nil
 	}
 	return nil

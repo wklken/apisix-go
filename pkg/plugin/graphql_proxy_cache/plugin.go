@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 	proxy_cache "github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -416,7 +417,7 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 }
 
 func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter) {
-	varyHeaders, cacheable := parseVaryHeader(recorder.Header())
+	varyHeaders, cacheable := cacheutil.ParseVaryHeader(recorder.Header())
 	if !cacheable {
 		return
 	}
@@ -425,7 +426,7 @@ func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedRespo
 		ttl = diskResponseTTL(recorder.Header(), ttl, p.now())
 	}
 	entry := cacheEntry{
-		header:   cloneHeader(recorder.Header()),
+		header:   cacheutil.CloneHeader(recorder.Header()),
 		body:     append([]byte(nil), recorder.Body()...),
 		status:   recorder.StatusCode(),
 		storedAt: p.now(),
@@ -460,7 +461,7 @@ func (p *Plugin) storageKey(r *http.Request, key string) string {
 	if !ok || len(index.headers) == 0 {
 		return key
 	}
-	return key + "::" + varySignature(index.headers, r)
+	return key + "::" + cacheutil.VarySignature(index.headers, r)
 }
 
 func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []string) (string, []string) {
@@ -481,7 +482,7 @@ func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []st
 	}
 
 	var staleKeys []string
-	if hadIndex && !sameStringSlice(index.headers, varyHeaders) {
+	if hadIndex && !slices.Equal(index.headers, varyHeaders) {
 		staleKeys = varyStorageKeys(index)
 		for _, staleKey := range staleKeys {
 			delete(p.entries, staleKey)
@@ -494,7 +495,7 @@ func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []st
 			storageKeys: make(map[string]struct{}),
 		}
 	}
-	storageKey := key + "::" + varySignature(varyHeaders, r)
+	storageKey := key + "::" + cacheutil.VarySignature(varyHeaders, r)
 	index.storageKeys[storageKey] = struct{}{}
 	p.vary[key] = index
 	delete(p.entries, key)
@@ -533,7 +534,7 @@ func (p *Plugin) cacheKey(r *http.Request, body []byte) string {
 
 func sharedCacheEntry(entry cacheEntry) proxy_cache.SharedCacheEntry {
 	return proxy_cache.SharedCacheEntry{
-		Header:    cloneHeader(entry.header),
+		Header:    cacheutil.CloneHeader(entry.header),
 		Body:      append([]byte(nil), entry.body...),
 		Status:    entry.status,
 		StoredAt:  entry.storedAt,
@@ -544,7 +545,7 @@ func sharedCacheEntry(entry cacheEntry) proxy_cache.SharedCacheEntry {
 
 func localCacheEntry(entry proxy_cache.SharedCacheEntry) cacheEntry {
 	return cacheEntry{
-		header:    cloneHeader(entry.Header),
+		header:    cacheutil.CloneHeader(entry.Header),
 		body:      append([]byte(nil), entry.Body...),
 		status:    entry.Status,
 		storedAt:  entry.StoredAt,
@@ -725,61 +726,4 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 	w.Header().Set(cacheKeyHeader, cacheKey)
 	w.WriteHeader(entry.status)
 	_, _ = w.Write(entry.body)
-}
-
-func cloneHeader(header http.Header) http.Header {
-	cloned := make(http.Header, len(header))
-	for field, values := range header {
-		cloned[field] = append([]string(nil), values...)
-	}
-	return cloned
-}
-
-func parseVaryHeader(header http.Header) ([]string, bool) {
-	values := header.Values("Vary")
-	if len(values) == 0 {
-		return nil, true
-	}
-
-	seen := make(map[string]struct{})
-	var headers []string
-	for _, value := range values {
-		for part := range strings.SplitSeq(value, ",") {
-			name := strings.ToLower(strings.TrimSpace(part))
-			if name == "" {
-				continue
-			}
-			if name == "*" {
-				return nil, false
-			}
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			headers = append(headers, name)
-		}
-	}
-	sort.Strings(headers)
-	return headers, true
-}
-
-func varySignature(headers []string, r *http.Request) string {
-	values := make([]string, 0, len(headers))
-	for _, header := range headers {
-		values = append(values, r.Header.Get(header))
-	}
-	sum := md5.Sum([]byte(strings.Join(values, "\x00")))
-	return hex.EncodeToString(sum[:])
-}
-
-func sameStringSlice(a []string, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

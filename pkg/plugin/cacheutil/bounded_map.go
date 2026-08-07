@@ -143,6 +143,13 @@ func (m *BoundedTTLMap[V]) Delete(key string) {
 	delete(m.entries, key)
 }
 
+// PurgeExpired evicts every expired entry and returns how many were removed.
+func (m *BoundedTTLMap[V]) PurgeExpired() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.evictExpiredLocked(m.now())
+}
+
 // Len returns the number of entries currently held.
 func (m *BoundedTTLMap[V]) Len() int {
 	m.mu.Lock()
@@ -150,9 +157,11 @@ func (m *BoundedTTLMap[V]) Len() int {
 	return len(m.entries)
 }
 
-// evictExpiredLocked removes heap roots that are stale or expired. When it
-// returns, the heap root is a live, unexpired entry.
-func (m *BoundedTTLMap[V]) evictExpiredLocked(now time.Time) {
+// evictExpiredLocked removes heap roots that are stale or expired and returns
+// how many live entries were evicted. When it returns, the heap root is a
+// live, unexpired entry.
+func (m *BoundedTTLMap[V]) evictExpiredLocked(now time.Time) int {
+	evicted := 0
 	for m.order.Len() > 0 {
 		top := m.order[0]
 		live, ok := m.entries[top.key]
@@ -161,9 +170,11 @@ func (m *BoundedTTLMap[V]) evictExpiredLocked(now time.Time) {
 			continue
 		}
 		if now.Before(top.expiresAt) {
-			return
+			return evicted
 		}
 		heap.Pop(&m.order)
 		delete(m.entries, top.key)
+		evicted++
 	}
+	return evicted
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -23,10 +24,22 @@ type Plugin struct {
 	config Config
 
 	client   *http.Client
-	sessions map[string]sessionData
-	mu       sync.Mutex
+	sessions *cacheutil.BoundedTTLMap[sessionData]
 	newState func() string
+	now      func() time.Time
+
+	cleanupStop chan struct{}
+	cleanupDone chan struct{}
+	stopOnce    sync.Once
 }
+
+// sessionCleanupInterval drives the periodic purge of expired sessions; tests
+// shorten it to exercise cleanup with a fake clock.
+var sessionCleanupInterval = time.Minute
+
+// defaultMaxSessions bounds the number of concurrently live sessions; the
+// earliest expiring sessions are evicted once the bound is hit.
+const defaultMaxSessions = 10000
 
 const (
 	priority = 2559
@@ -89,13 +102,52 @@ func (p *Plugin) PostInit() error {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
 	if p.sessions == nil {
-		p.sessions = make(map[string]sessionData)
+		p.sessions = cacheutil.NewBoundedTTLMap[sessionData](
+			defaultMaxSessions,
+			func() time.Time { return p.now() },
+		)
 	}
 	if p.newState == nil {
 		p.newState = randomState
 	}
+	if p.now == nil {
+		p.now = time.Now
+	}
+	p.startSessionCleanup()
 
 	return nil
+}
+
+func (p *Plugin) startSessionCleanup() {
+	if p.cleanupStop != nil {
+		return
+	}
+	p.cleanupStop = make(chan struct{})
+	p.cleanupDone = make(chan struct{})
+	interval := sessionCleanupInterval
+	go func() {
+		defer close(p.cleanupDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.sessions.PurgeExpired()
+			case <-p.cleanupStop:
+				return
+			}
+		}
+	}()
+}
+
+func (p *Plugin) Stop() {
+	p.stopOnce.Do(func() {
+		if p.cleanupStop != nil {
+			close(p.cleanupStop)
+			<-p.cleanupDone
+			p.cleanupStop = nil
+		}
+	})
 }
 
 func (p *Plugin) Config() any {
@@ -156,7 +208,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	session.AccessToken = accessToken
 	session.ClientID = p.config.ClientID
-	session.ExpiresAt = time.Now().Add(time.Duration(lifetime) * time.Second)
+	session.ExpiresAt = p.now().Add(time.Duration(lifetime) * time.Second)
 	p.saveSession(sessionID, session)
 	p.setSessionCookie(w, sessionID, time.Duration(lifetime)*time.Second)
 	http.Redirect(w, r, session.OriginalURI, http.StatusFound)
@@ -168,7 +220,7 @@ func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 	p.saveSession(sessionID, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
-		ExpiresAt:   time.Now().Add(10 * time.Minute),
+		ExpiresAt:   p.now().Add(10 * time.Minute),
 	})
 	p.setSessionCookie(w, sessionID, 10*time.Minute)
 
@@ -192,7 +244,7 @@ func (p *Plugin) authenticated(r *http.Request) bool {
 	return ok &&
 		session.AccessToken != "" &&
 		session.ClientID == p.config.ClientID &&
-		time.Now().Before(session.ExpiresAt)
+		p.now().Before(session.ExpiresAt)
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, error) {
@@ -236,22 +288,15 @@ func (p *Plugin) getSession(sessionID string) (sessionData, bool) {
 	if sessionID == "" {
 		return sessionData{}, false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	session, ok := p.sessions[sessionID]
-	if !ok || time.Now().After(session.ExpiresAt) {
-		delete(p.sessions, sessionID)
+	session, ok := p.sessions.Get(sessionID)
+	if !ok {
 		return sessionData{}, false
 	}
 	return session, true
 }
 
 func (p *Plugin) saveSession(sessionID string, session sessionData) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.sessions[sessionID] = session
+	p.sessions.Set(sessionID, session, session.ExpiresAt.Sub(p.now()))
 }
 
 func (p *Plugin) setSessionCookie(w http.ResponseWriter, sessionID string, lifetime time.Duration) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -236,7 +237,13 @@ func (u *Upstream) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(raw.Nodes, &nodeMap); err != nil {
 		return err
 	}
-	for addr, weight := range nodeMap {
+	addresses := make([]string, 0, len(nodeMap))
+	for addr := range nodeMap {
+		addresses = append(addresses, addr)
+	}
+	sort.Strings(addresses)
+	for _, addr := range addresses {
+		weight := nodeMap[addr]
 		host, port := splitAddr(addr)
 		u.Nodes = append(u.Nodes, Node{
 			Host:      host,

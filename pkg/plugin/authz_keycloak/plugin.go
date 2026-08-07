@@ -612,7 +612,7 @@ func (p *Plugin) serviceAccountCacheKey(endpoint string) string {
 		p.config.RefreshTokenExpiresLeeway,
 		p.tlsTrustIdentity,
 	)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
+	return base.Sha256Hex(identity)
 }
 
 func loadSharedServiceAccountToken(cacheKey string, now time.Time) (tokenCache, bool) {
@@ -714,7 +714,7 @@ func (p *Plugin) discover() (discoveryData, error) {
 
 func (p *Plugin) discoveryCacheKey() string {
 	identity := p.config.Discovery + "\x00" + p.tlsTrustIdentity
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
+	return base.Sha256Hex(identity)
 }
 
 func resolveDiscoveredEndpoint(discoveryEndpoint string, endpoint string) (string, error) {

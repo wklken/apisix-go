@@ -2,7 +2,6 @@ package authz_casdoor
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -104,7 +103,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == callbackPath(p.config.CallbackURL) {
+		if r.URL.Path == base.CallbackPath(p.config.CallbackURL) {
 			p.handleCallback(w, r)
 			return
 		}
@@ -265,18 +264,7 @@ func (p *Plugin) setSessionCookie(w http.ResponseWriter, sessionID string, lifet
 }
 
 func (p *Plugin) cookieName() string {
-	return "authz_casdoor_session_" + sha256Hex(p.config.ClientID)
-}
-
-func callbackPath(callbackURL string) string {
-	parsed, err := url.Parse(callbackURL)
-	if err != nil || !parsed.IsAbs() {
-		return callbackURL
-	}
-	if parsed.Path == "" {
-		return "/"
-	}
-	return parsed.Path
+	return "authz_casdoor_session_" + base.Sha256Hex(p.config.ClientID)
 }
 
 func cookieValue(r *http.Request, name string) string {
@@ -285,11 +273,6 @@ func cookieValue(r *http.Request, name string) string {
 		return ""
 	}
 	return cookie.Value
-}
-
-func sha256Hex(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
 }
 
 func randomState() string {

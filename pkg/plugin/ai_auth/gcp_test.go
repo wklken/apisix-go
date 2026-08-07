@@ -169,8 +169,13 @@ func TestGCPTokenSourceFailsClosedOnTokenEndpointError(t *testing.T) {
 		request,
 		GCPConfig{ServiceAccountJSON: string(serviceAccount)},
 	)
-	if err == nil || !strings.Contains(err.Error(), "status 401") {
-		t.Fatalf("Apply() error = %v, want token endpoint status", err)
+	if err == nil {
+		t.Fatal("Apply() error = nil, want token endpoint rejection")
+	}
+	for _, fragment := range []string{"request GCP access token", "401 Unauthorized", "denied"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("Apply() error = %q, want fragment %q", err, fragment)
+		}
 	}
 	if authorization := request.Header.Get("Authorization"); authorization != "" {
 		t.Fatalf("Authorization = %q, want no provider credential after token failure", authorization)

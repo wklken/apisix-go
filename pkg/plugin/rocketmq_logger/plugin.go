@@ -17,7 +17,6 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -233,6 +232,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.UseTLS {
 		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
 	}
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if err := validateBodyExpressions("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
 		return err
 	}
@@ -402,31 +402,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 }
 
 func encodeRocketMQBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
-	if rawEntries, ok := originLogEntries(entries); ok {
-		if batchMaxSize == 1 && len(rawEntries) == 1 {
-			return []byte(rawEntries[0]), nil
-		}
-		return json.Marshal(rawEntries)
-	}
-	if batchMaxSize == 1 && len(entries) == 1 {
-		return json.Marshal(entries[0])
-	}
-	return json.Marshal(entries)
-}
-
-func originLogEntries(entries []map[string]any) ([]string, bool) {
-	if len(entries) == 0 {
-		return nil, false
-	}
-	rawEntries := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		raw, ok := entry[originLogKey].(string)
-		if !ok {
-			return nil, false
-		}
-		rawEntries = append(rawEntries, raw)
-	}
-	return rawEntries, true
+	return base.EncodeLogBatch(entries, batchMaxSize, originLogKey)
 }
 
 func buildOriginRequestLog(r *http.Request, requestBody string, includeReqBody bool) string {

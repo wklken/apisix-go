@@ -229,6 +229,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}
@@ -393,19 +394,8 @@ func resolveSyslogLogFormat(
 	request accessRequest,
 	format map[string]any,
 ) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
-		fields[key] = resolveSyslogLogFormatNode(r, request, value)
-	}
-	return fields
-}
-
-func resolveSyslogLogFormatNode(r *http.Request, request accessRequest, value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return resolveSyslogLogFormat(r, request, typed)
-	case string:
-		switch typed {
+	return base.ResolveLogFormat(format, func(value string) any {
+		switch value {
 		case "$host":
 			return request.Host
 		case "$remote_addr":
@@ -415,11 +405,9 @@ func resolveSyslogLogFormatNode(r *http.Request, request accessRequest, value an
 		case "$upstream_addr":
 			return base.UpstreamAddress(r)
 		default:
-			return apisixlog.GetField(r, typed)
+			return apisixlog.GetField(r, value)
 		}
-	default:
-		return typed
-	}
+	})
 }
 
 func (p *Plugin) Send(log map[string]any) {

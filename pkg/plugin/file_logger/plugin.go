@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -163,6 +162,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr, p.config.Match)
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if p.config.Path == "" {
 		p.config.Path = metadata.Path
@@ -351,13 +351,13 @@ func defaultLogFields(
 			"url":         request.scheme + "://" + request.host + request.uri,
 			"uri":         request.uri,
 			"method":      request.method,
-			"headers":     logValues(request.headers),
-			"querystring": logValues(http.Header(request.query)),
+			"headers":     base.CollapseHeaderValues(request.headers),
+			"querystring": base.CollapseHeaderValues(http.Header(request.query)),
 			"size":        request.size,
 		},
 		"response": map[string]any{
 			"status":  metrics.Code,
-			"headers": logValues(responseHeaders),
+			"headers": base.CollapseHeaderValues(responseHeaders),
 			"size":    metrics.Written,
 		},
 		"server": map[string]any{
@@ -389,22 +389,9 @@ func resolveLogFormat(
 	request requestSnapshot,
 	status int,
 ) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
-		fields[key] = resolveLogFormatNode(value, r, request, status)
-	}
-	return fields
-}
-
-func resolveLogFormatNode(value any, r *http.Request, request requestSnapshot, status int) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return resolveLogFormat(typed, r, request, status)
-	case string:
-		return resolveLogValue(typed, r, request, status)
-	default:
-		return typed
-	}
+	return base.ResolveLogFormat(format, func(value string) any {
+		return resolveLogValue(value, r, request, status)
+	})
 }
 
 func resolveLogValue(value string, r *http.Request, request requestSnapshot, status int) any {
@@ -447,19 +434,6 @@ func resolvedUpstream(r *http.Request) string {
 		return host
 	}
 	return net.JoinHostPort(host, port)
-}
-
-func logValues(values http.Header) map[string]any {
-	result := make(map[string]any, len(values))
-	for key, entries := range values {
-		key = strings.ToLower(key)
-		if len(entries) == 1 {
-			result[key] = entries[0]
-		} else {
-			result[key] = append([]string(nil), entries...)
-		}
-	}
-	return result
 }
 
 type appendFileWriteSyncer struct {

@@ -169,6 +169,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
 	}
@@ -272,20 +273,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 type accessRequest = base.AccessLogRequest
 
 func resolveUDPLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
+	return base.ResolveStringLogFormat(format, func(value string) any {
 		switch value {
 		case "$host":
-			fields[key] = request.Host
+			return request.Host
 		case "$remote_addr":
-			fields[key] = request.ClientIP
+			return request.ClientIP
 		case "$time_iso8601":
-			fields[key] = request.Started.Format(time.RFC3339)
+			return request.Started.Format(time.RFC3339)
 		default:
-			fields[key] = apisixlog.GetField(r, value)
+			return apisixlog.GetField(r, value)
 		}
-	}
-	return fields
+	})
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -309,17 +308,13 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 }
 
 func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
-	if batchMaxSize == 1 && len(entries) == 1 {
-		body, err := json.Marshal(entries[0])
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal udp log entry: %w", err)
-		}
-		return body, nil
-	}
-
-	body, err := json.Marshal(entries)
+	body, err := base.EncodeLogBatch(entries, batchMaxSize, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal udp log entries: %w", err)
+		entryLabel := "entries"
+		if batchMaxSize == 1 && len(entries) == 1 {
+			entryLabel = "entry"
+		}
+		return nil, fmt.Errorf("failed to marshal udp log %s: %w", entryLabel, err)
 	}
 	return body, nil
 }

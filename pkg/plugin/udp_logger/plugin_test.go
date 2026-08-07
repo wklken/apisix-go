@@ -15,6 +15,32 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+func TestEncodeBatchPreservesUDPMarshalErrorContext(t *testing.T) {
+	badEntry := map[string]any{"bad": make(chan int)}
+	tests := []struct {
+		name         string
+		entries      []map[string]any
+		batchMaxSize int
+		want         string
+	}{
+		{name: "single", entries: []map[string]any{badEntry}, batchMaxSize: 1, want: "failed to marshal udp log entry"},
+		{
+			name:         "batch",
+			entries:      []map[string]any{badEntry},
+			batchMaxSize: 2,
+			want:         "failed to marshal udp log entries",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := encodeBatch(tt.entries, tt.batchMaxSize)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("encodeBatch() error = %v, want %q context", err, tt.want)
+			}
+		})
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 

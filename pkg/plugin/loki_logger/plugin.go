@@ -244,6 +244,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if p.config.EndpointURI == "" {
 		p.config.EndpointURI = "/loki/api/v1/push"
 	}
@@ -397,13 +398,13 @@ func (p *Plugin) defaultLogFields(
 			"url":         fullRequestURL(r),
 			"uri":         r.URL.RequestURI(),
 			"method":      r.Method,
-			"headers":     logValues(r.Header),
-			"querystring": logValues(http.Header(r.URL.Query())),
+			"headers":     base.CollapseHeaderValues(r.Header),
+			"querystring": base.CollapseHeaderValues(http.Header(r.URL.Query())),
 			"size":        requestSize,
 		},
 		"response": map[string]any{
 			"status":  status,
-			"headers": logValues(responseHeaders),
+			"headers": base.CollapseHeaderValues(responseHeaders),
 			"size":    responseSize,
 		},
 		"server": map[string]any{
@@ -439,19 +440,6 @@ func fullRequestURL(r *http.Request) string {
 		scheme = forwarded
 	}
 	return scheme + "://" + r.Host + r.URL.RequestURI()
-}
-
-func logValues(values http.Header) map[string]any {
-	result := make(map[string]any, len(values))
-	for key, entries := range values {
-		name := strings.ToLower(key)
-		if len(entries) == 1 {
-			result[name] = entries[0]
-			continue
-		}
-		result[name] = append([]string(nil), entries...)
-	}
-	return result
 }
 
 func numericRequestVar(r *http.Request, name string) float64 {

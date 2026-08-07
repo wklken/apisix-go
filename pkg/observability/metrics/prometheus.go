@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -393,12 +394,12 @@ func prometheusVariable(r *http.Request, entry HTTPRequestMetrics, variable stri
 	case "$request_method":
 		return r.Method
 	case "$status":
-		return fmt.Sprint(entry.Status)
+		return strconv.Itoa(entry.Status)
 	case "$upstream_addr":
 		return entry.Node
 	case "$upstream_status":
 		if entry.UpstreamLatency > 0 {
-			return fmt.Sprint(entry.Status)
+			return strconv.Itoa(entry.Status)
 		}
 	}
 	return ""

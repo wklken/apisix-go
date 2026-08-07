@@ -166,12 +166,20 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := randomState(rand.Reader)
 	if err != nil {
-		http.Error(w, util.BuildMessageResponse("failed to generate authorization state"), http.StatusInternalServerError)
+		http.Error(
+			w,
+			util.BuildMessageResponse("failed to generate authorization state"),
+			http.StatusInternalServerError,
+		)
 		return
 	}
 	state, err := p.newState()
 	if err != nil {
-		http.Error(w, util.BuildMessageResponse("failed to generate authorization state"), http.StatusInternalServerError)
+		http.Error(
+			w,
+			util.BuildMessageResponse("failed to generate authorization state"),
+			http.StatusInternalServerError,
+		)
 		return
 	}
 	p.saveSession(sessionID, sessionData{

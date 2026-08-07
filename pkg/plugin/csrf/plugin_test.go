@@ -217,8 +217,18 @@ func TestCheckCSRFTokenValidationTable(t *testing.T) {
 		{name: "invalid json", token: base64.StdEncoding.EncodeToString([]byte("{not json")), key: key, expires: 7200},
 		{name: "expired timestamp", token: base64.StdEncoding.EncodeToString(expiredBody), key: key, expires: 7200},
 		{name: "wrong signature", token: base64.StdEncoding.EncodeToString(wrongKeyBody), key: key, expires: 7200},
-		{name: "wrong signature shorter", token: base64.StdEncoding.EncodeToString(shortSignBody), key: key, expires: 7200},
-		{name: "wrong signature longer", token: base64.StdEncoding.EncodeToString(longSignBody), key: key, expires: 7200},
+		{
+			name:    "wrong signature shorter",
+			token:   base64.StdEncoding.EncodeToString(shortSignBody),
+			key:     key,
+			expires: 7200,
+		},
+		{
+			name:    "wrong signature longer",
+			token:   base64.StdEncoding.EncodeToString(longSignBody),
+			key:     key,
+			expires: 7200,
+		},
 		{
 			name:      "expires zero bypass",
 			token:     base64.StdEncoding.EncodeToString(expiredBody),

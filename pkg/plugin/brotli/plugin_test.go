@@ -367,7 +367,7 @@ type fakeCapabilityWriter struct {
 }
 
 func (w *fakeCapabilityWriter) Header() http.Header { return make(http.Header) }
-func (w *fakeCapabilityWriter) WriteHeader(int)      {}
+func (w *fakeCapabilityWriter) WriteHeader(int)     {}
 func (w *fakeCapabilityWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }

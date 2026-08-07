@@ -15,13 +15,12 @@ import (
 )
 
 type fakeCapabilityWriter struct {
-	flushes  int
-	hijacks  int
-	flushErr error
+	flushes int
+	hijacks int
 }
 
 func (w *fakeCapabilityWriter) Header() http.Header { return make(http.Header) }
-func (w *fakeCapabilityWriter) WriteHeader(int)      {}
+func (w *fakeCapabilityWriter) WriteHeader(int)     {}
 func (w *fakeCapabilityWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
@@ -40,7 +39,7 @@ func TestMaybeCompressResponseWriterPreservesCapabilities(t *testing.T) {
 		minLength:      1,
 	}
 
-	http.NewResponseController(wrapper).Flush()
+	_ = http.NewResponseController(wrapper).Flush()
 	if fake.flushes != 1 {
 		t.Fatalf("flushes = %d, want 1 reached through the wrapper", fake.flushes)
 	}

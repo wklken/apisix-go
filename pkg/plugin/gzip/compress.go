@@ -151,10 +151,12 @@ type maybeCompressResponseWriter struct {
 	minLength    int
 }
 
-var _ http.ResponseWriter = (*maybeCompressResponseWriter)(nil)
-var _ http.Flusher = (*maybeCompressResponseWriter)(nil)
-var _ http.Hijacker = (*maybeCompressResponseWriter)(nil)
-var _ interface{ Unwrap() http.ResponseWriter } = (*maybeCompressResponseWriter)(nil)
+var (
+	_ http.ResponseWriter                       = (*maybeCompressResponseWriter)(nil)
+	_ http.Flusher                              = (*maybeCompressResponseWriter)(nil)
+	_ http.Hijacker                             = (*maybeCompressResponseWriter)(nil)
+	_ interface{ Unwrap() http.ResponseWriter } = (*maybeCompressResponseWriter)(nil)
+)
 
 func (w *maybeCompressResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter

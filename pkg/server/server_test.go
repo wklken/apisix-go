@@ -414,3 +414,69 @@ func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
 		t.Fatalf("Address() = %q, want 0.0.0.0:19091", cfg.Address())
 	}
 }
+
+func TestMatchesSNI(t *testing.T) {
+	tests := []struct {
+		name       string
+		snis       []string
+		serverName string
+		want       bool
+	}{
+		{name: "exact case-insensitive", snis: []string{"Api.Example.Test"}, serverName: "api.example.test", want: true},
+		{name: "wildcard", snis: []string{"*.example.test"}, serverName: "a.example.test", want: true},
+		{name: "wildcard does not match bare domain", snis: []string{"*.example.test"}, serverName: "example.test"},
+		{name: "unrelated host", snis: []string{"api.example.test"}, serverName: "other.example.test"},
+		{name: "empty SNI", snis: []string{"api.example.test"}, serverName: ""},
+		{name: "whitespace trimmed", snis: []string{"  api.example.test  "}, serverName: "api.example.test", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := matchesSNI(test.snis, test.serverName); got != test.want {
+				t.Fatalf("matchesSNI(%v, %q) = %t, want %t", test.snis, test.serverName, got, test.want)
+			}
+		})
+	}
+}
+
+func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+
+	config.GlobalConfig = nil
+	if frontendHTTP2Enabled() {
+		t.Fatal("frontendHTTP2Enabled() = true without config")
+	}
+	if frontendPlainHTTP2Enabled() {
+		t.Fatal("frontendPlainHTTP2Enabled() = true without config")
+	}
+	if got := configuredTLSListenAddresses(); got != nil {
+		t.Fatalf("configuredTLSListenAddresses() = %#v, want nil without config", got)
+	}
+
+	config.GlobalConfig = &config.Config{}
+	if frontendHTTP2Enabled() {
+		t.Fatal("frontendHTTP2Enabled() = true with default config")
+	}
+	if frontendPlainHTTP2Enabled() {
+		t.Fatal("frontendPlainHTTP2Enabled() = true with default config")
+	}
+}
+
+func TestEtcdTLSRequiredForCertKeyAndSNI(t *testing.T) {
+	verify := true
+	settings := config.EtcdTLS{Verify: &verify}
+	endpoints := []string{"http://127.0.0.1:2379"}
+	if etcdTLSRequired(endpoints, settings) {
+		t.Fatal("etcdTLSRequired() = true with only verification configured")
+	}
+
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{Cert: "cert.pem"}) {
+		t.Fatal("etcdTLSRequired() = false with a client certificate")
+	}
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{Key: "key.pem"}) {
+		t.Fatal("etcdTLSRequired() = false with a client key")
+	}
+	if !etcdTLSRequired(endpoints, config.EtcdTLS{SNI: "etcd.example.test"}) {
+		t.Fatal("etcdTLSRequired() = false with an SNI override")
+	}
+}

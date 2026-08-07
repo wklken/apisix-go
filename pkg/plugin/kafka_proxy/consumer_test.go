@@ -270,3 +270,34 @@ func kafkaFixtureCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	}
 	return cert, roots
 }
+
+func TestKafkaConsumerRejectsInvalidFetchInputs(t *testing.T) {
+	consumer, err := newKafkaConsumer(context.Background(), []string{"kafka://127.0.0.1:1"}, ConsumerOptions{})
+	if err != nil {
+		t.Fatalf("newKafkaConsumer() error = %v", err)
+	}
+	if _, err := consumer.Fetch(context.Background(), "", 0, 0); err == nil {
+		t.Fatal("Fetch() error = nil, want empty topic rejection")
+	}
+	if _, err := consumer.Fetch(context.Background(), "topic", -1, 0); err == nil {
+		t.Fatal("Fetch() error = nil, want negative partition rejection")
+	}
+	if _, err := consumer.Fetch(context.Background(), "topic", 0, -1); err == nil {
+		t.Fatal("Fetch() error = nil, want negative offset rejection")
+	}
+}
+
+func TestKafkaConsumerRejectsMissingBrokersAndUnsupportedSchemes(t *testing.T) {
+	if _, err := newKafkaConsumer(context.Background(), nil, ConsumerOptions{}); err == nil {
+		t.Fatal("newKafkaConsumer() error = nil with no brokers")
+	}
+
+	consumer, err := newKafkaConsumer(context.Background(), []string{"kafkas://127.0.0.1:9093"}, ConsumerOptions{})
+	if err != nil {
+		t.Fatalf("newKafkaConsumer() error = %v", err)
+	}
+	_, err = consumer.Fetch(context.Background(), "topic", 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "unsupported kafka target scheme") {
+		t.Fatalf("Fetch() error = %v, want unsupported scheme rejection", err)
+	}
+}

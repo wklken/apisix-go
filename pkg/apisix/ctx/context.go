@@ -439,8 +439,8 @@ func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 // only the reader's typed error is needed here.
 type bodyLimitResponseWriter struct{}
 
-func (bodyLimitResponseWriter) Header() http.Header { return http.Header{} }
-func (bodyLimitResponseWriter) WriteHeader(int)     {}
+func (bodyLimitResponseWriter) Header() http.Header         { return http.Header{} }
+func (bodyLimitResponseWriter) WriteHeader(int)             {}
 func (bodyLimitResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 func readBoundedBody(r *http.Request, max int64) ([]byte, error) {

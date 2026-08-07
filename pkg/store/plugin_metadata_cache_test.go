@@ -46,7 +46,9 @@ func TestGetValidatedPluginMetadataPreservesLastGoodAndClearsOnDeletion(t *testi
 		db:                      db,
 		validatedPluginMetadata: newValidatedPluginMetadataCache(),
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 
 	writePluginMetadataForTest(t, storage, []byte(`{"max_body_size":128}`))
 	var target struct {
@@ -110,7 +112,9 @@ func TestGetValidatedPluginMetadataRejectsOutOfOrderPublication(t *testing.T) {
 		db:                      db,
 		validatedPluginMetadata: newValidatedPluginMetadataCache(),
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 
 	validate := func(metadata map[string]any) error {
 		value, _ := metadata["max_body_size"].(float64)

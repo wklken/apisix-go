@@ -130,10 +130,10 @@ type bodyIsolatingAuthPlugin struct {
 	config *bodyIsolatingAuthConfig
 }
 
-func (p *bodyIsolatingAuthPlugin) Init() error                    { return nil }
-func (p *bodyIsolatingAuthPlugin) PostInit() error                { return nil }
-func (p *bodyIsolatingAuthPlugin) Config() any                    { return p.config }
-func (p *bodyIsolatingAuthPlugin) GetSchema() string              { return "" }
+func (p *bodyIsolatingAuthPlugin) Init() error                            { return nil }
+func (p *bodyIsolatingAuthPlugin) PostInit() error                        { return nil }
+func (p *bodyIsolatingAuthPlugin) Config() any                            { return p.config }
+func (p *bodyIsolatingAuthPlugin) GetSchema() string                      { return "" }
 func (p *bodyIsolatingAuthPlugin) Handler(next http.Handler) http.Handler { return next }
 
 func TestConfiguredBodyIsolationDispatchesByInterface(t *testing.T) {

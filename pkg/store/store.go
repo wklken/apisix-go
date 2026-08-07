@@ -47,8 +47,8 @@ type Store struct {
 
 // should it be global store?
 var (
-	globalStoreMu sync.Mutex
-	s             *Store
+	globalStoreMu     sync.Mutex
+	s                 *Store
 	errBucketNotFound = errors.New("bucket not found")
 )
 

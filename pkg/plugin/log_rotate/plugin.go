@@ -31,9 +31,9 @@ type Plugin struct {
 	// rotate is the rotation seam run by the background worker.
 	rotate func(time.Time) error
 
-	trigger chan struct{}
-	stop    chan struct{}
-	done    chan struct{}
+	trigger  chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
 	stopOnce sync.Once
 }
 

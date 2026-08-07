@@ -64,7 +64,9 @@ func TestPrepareConsumerSnapshotRejectsNonStringJWEKey(t *testing.T) {
 		consumerToKeys: map[string][]string{},
 		consumerValues: map[string]resource.Consumer{},
 	}
-	value := []byte(`{"username":"jwe-user","plugins":{"jwe-decrypt":{"key":123,"secret":"01234567890123456789012345678901"}}}`)
+	value := []byte(
+		`{"username":"jwe-user","plugins":{"jwe-decrypt":{"key":123,"secret":"01234567890123456789012345678901"}}}`,
+	)
 
 	snapshot, err := storage.prepareConsumerSnapshot([]byte("jwe-user"), value)
 	if err == nil {

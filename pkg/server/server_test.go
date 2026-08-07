@@ -501,7 +501,7 @@ func TestStartReturnsListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("occupy listener: %v", err)
 	}
-	defer occupied.Close()
+	defer func() { _ = occupied.Close() }()
 	address := occupied.Addr().String()
 
 	server := &Server{
@@ -509,10 +509,8 @@ func TestStartReturnsListenError(t *testing.T) {
 		addrs:  []string{address},
 		server: newConfiguredHTTPServer(http.NotFoundHandler()),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- server.startHTTPListeners(ctx) }()
+	go func() { done <- server.startHTTPListeners(t.Context()) }()
 
 	select {
 	case err := <-done:

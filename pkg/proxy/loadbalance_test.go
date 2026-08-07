@@ -67,6 +67,7 @@ func (w *writeRecordingResponseWriter) WriteHeader(status int) {
 		w.status = status
 	}
 }
+
 func (w *writeRecordingResponseWriter) Write(body []byte) (int, error) {
 	w.writes++
 	if w.status == 0 {

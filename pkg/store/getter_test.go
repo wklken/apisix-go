@@ -158,7 +158,9 @@ func seededGetterStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	storage := &Store{db: db, consumerValues: map[string]resource.Consumer{}}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 
 	seed := map[string]map[string]string{
 		"routes":          {"route-1": `{"id":"route-1","uri":"/orders"}`},

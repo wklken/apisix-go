@@ -40,7 +40,7 @@ type Plugin struct {
 
 	// spKeyPair and spIDPMetadata are the config-derived immutable parts of
 	// the service provider, parsed once in PostInit instead of per request.
-	spKeyPair    *samlKeyPair
+	spKeyPair     *samlKeyPair
 	spIDPMetadata *saml.EntityDescriptor
 }
 

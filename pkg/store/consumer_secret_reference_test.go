@@ -2,11 +2,11 @@ package store
 
 import (
 	"io"
-	"sync/atomic"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/json"

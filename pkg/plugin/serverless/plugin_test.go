@@ -1,11 +1,11 @@
 package serverless
 
 import (
-	"sync"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -215,7 +215,7 @@ func TestServerlessCompilesFunctionsOnceOutsideRequestPath(t *testing.T) {
 func TestServerlessConcurrentRequestsDoNotRecompile(t *testing.T) {
 	before := compileFunctionCount.Load()
 	p := newTestPlugin(t, NewPreFunction(), Config{
-		Phase:    "access",
+		Phase:     "access",
 		Functions: []string{`return function() ngx.say("ok") end`},
 	})
 

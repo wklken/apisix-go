@@ -1,12 +1,12 @@
 package serverless
 
 import (
-	"sync/atomic"
 	"bytes"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"

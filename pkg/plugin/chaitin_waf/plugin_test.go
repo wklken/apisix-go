@@ -2,15 +2,15 @@ package chaitin_waf
 
 import (
 	"bytes"
-	"net"
-	"sync"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -362,9 +362,9 @@ func nodeFromURL(t *testing.T, rawURL string) Node {
 }
 
 var (
-	chaitinMetadataOnce    sync.Once
-	chaitinMetadataStore   *store.Store
-	chaitinMetadataEvents  chan *store.Event
+	chaitinMetadataOnce   sync.Once
+	chaitinMetadataStore  *store.Store
+	chaitinMetadataEvents chan *store.Event
 )
 
 func putChaitinMetadata(t *testing.T, nodes []any) {

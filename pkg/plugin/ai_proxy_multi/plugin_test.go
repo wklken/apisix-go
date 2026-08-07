@@ -1500,7 +1500,7 @@ func (c *countingRoundTripper) CloseIdleConnections() {
 func healthProbeConfig(endpoint string) Config {
 	return Config{Instances: []Instance{
 		{
-			Name:     "probe", Provider: "openai-compatible", Priority: 0, Weight: 1,
+			Name: "probe", Provider: "openai-compatible", Priority: 0, Weight: 1,
 			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer probe"}},
 			Override: Override{Endpoint: endpoint},
 			Checks: &HealthChecks{Active: ActiveHealthCheck{

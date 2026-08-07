@@ -1,7 +1,6 @@
 package error_log_logger
 
 import (
-	"sync"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -14,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"

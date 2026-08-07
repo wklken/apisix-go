@@ -3,8 +3,8 @@ package redirect
 import (
 	"io"
 	"net/http"
-	"strings"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"

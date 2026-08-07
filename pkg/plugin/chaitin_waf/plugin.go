@@ -29,11 +29,11 @@ type Plugin struct {
 
 	// metaMu guards the instance-owned plugin_metadata cache; the effective
 	// configuration is rebuilt only when the metadata bytes change.
-	metaMu      sync.Mutex
-	metaRaw     []byte
-	metaCfg     effectiveConfig
-	metaValid   bool
-	metaBuilds  int
+	metaMu     sync.Mutex
+	metaRaw    []byte
+	metaCfg    effectiveConfig
+	metaValid  bool
+	metaBuilds int
 }
 
 const (

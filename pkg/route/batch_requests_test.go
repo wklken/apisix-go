@@ -2,12 +2,12 @@ package route
 
 import (
 	"context"
-	"sync/atomic"
-	"time"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"

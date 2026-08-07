@@ -35,7 +35,12 @@ func (s *localFixedWindowStore) Get(ctx context.Context, key string, rate limite
 	return s.increment(key, 1, rate)
 }
 
-func (s *localFixedWindowStore) Increment(ctx context.Context, key string, count int64, rate limiter.Rate) (limiter.Context, error) {
+func (s *localFixedWindowStore) Increment(
+	ctx context.Context,
+	key string,
+	count int64,
+	rate limiter.Rate,
+) (limiter.Context, error) {
 	return s.increment(key, count, rate)
 }
 

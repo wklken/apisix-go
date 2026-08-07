@@ -1,8 +1,6 @@
 package openid_connect
 
 import (
-	"sync"
-	"sync/atomic"
 	"context"
 	"crypto"
 	"crypto/hmac"
@@ -18,6 +16,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2101,9 +2101,9 @@ func TestProviderClientReusedAcrossRequestsPreservesJWKSCache(t *testing.T) {
 		TokenSigningAlgValuesExpected: "RS256",
 	})
 	token := signRS256WithKid(t, privateKey, "kid-a", map[string]any{
-		"iss":   idp.URL,
-		"sub":   "alice",
-		"exp":   timeNowUnix() + 3600,
+		"iss": idp.URL,
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
 	})
 
 	for i := 0; i < 3; i++ {
@@ -2126,7 +2126,7 @@ func TestProviderClientConcurrentFirstUseBuildsOnce(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                "http://" + r.Host,
+			"issuer":                 "http://" + r.Host,
 			"authorization_endpoint": "http://" + r.Host + "/authorize",
 			"token_endpoint":         "http://" + r.Host + "/token",
 		})
@@ -2184,10 +2184,16 @@ func TestProviderClientDiffersAcrossPluginInstances(t *testing.T) {
 	t.Cleanup(secondIDP.Close)
 
 	first := newTestPlugin(t, Config{
-		ClientID: "apisix", Discovery: firstIDP.URL + "/.well-known/openid-configuration", BearerOnly: true, UseJWKS: true,
+		ClientID:   "apisix",
+		Discovery:  firstIDP.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		UseJWKS:    true,
 	})
 	second := newTestPlugin(t, Config{
-		ClientID: "apisix", Discovery: secondIDP.URL + "/.well-known/openid-configuration", BearerOnly: true, UseJWKS: true,
+		ClientID:   "apisix",
+		Discovery:  secondIDP.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		UseJWKS:    true,
 	})
 	firstClient, err := first.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
 	if err != nil {

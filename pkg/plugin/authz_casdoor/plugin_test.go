@@ -310,11 +310,9 @@ func TestCasdoorSessionConcurrentLookupAndSave(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 200; j++ {
+	for range 8 {
+		wg.Go(func() {
+			for j := range 200 {
 				id := fmt.Sprintf("sid-%d", j)
 				p.saveSession(id, sessionData{
 					ExpiresAt: time.Now().Add(time.Hour),
@@ -324,7 +322,7 @@ func TestCasdoorSessionConcurrentLookupAndSave(t *testing.T) {
 					t.Errorf("concurrent lookup lost session %s", id)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

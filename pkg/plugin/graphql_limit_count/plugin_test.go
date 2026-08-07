@@ -856,7 +856,7 @@ func TestGraphqlLimitCountLocalCountersEvictOldestAndExpired(t *testing.T) {
 	p := newTestPlugin(t, Config{Count: 100, TimeWindow: 60, Policy: "local"})
 	p.now = func() time.Time { return base }
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		remaining, _, allowed, err := p.incoming(nil, "user-"+strconv.Itoa(i), 1, 100, 60)
 		if err != nil {
 			t.Fatalf("incoming user-%d: %v", i, err)

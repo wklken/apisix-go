@@ -2106,7 +2106,7 @@ func TestProviderClientReusedAcrossRequestsPreservesJWKSCache(t *testing.T) {
 		"exp": timeNowUnix() + 3600,
 	})
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rr := httptest.NewRecorder()
@@ -2143,17 +2143,15 @@ func TestProviderClientConcurrentFirstUseBuildsOnce(t *testing.T) {
 	const workers = 8
 	results := make([]*providerClient, workers)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+	for i := range workers {
+		wg.Go(func() {
 			client, err := p.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
 			if err != nil {
 				t.Errorf("providerClient() error = %v", err)
 				return
 			}
 			results[i] = client
-		}(i)
+		})
 	}
 	wg.Wait()
 

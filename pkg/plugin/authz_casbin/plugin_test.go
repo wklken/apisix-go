@@ -312,10 +312,8 @@ func TestConcurrentEnforceWhilePolicyReloads(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -330,11 +328,11 @@ func TestConcurrentEnforceWhilePolicyReloads(t *testing.T) {
 					continue
 				}
 			}
-		}()
+		})
 	}
 
 	// Reload the policy while requests authorize concurrently.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		putCasbinMetadata(t, testModel, "p, alice, /orders/123, GET\np, bob, /orders/123, GET")
 		putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
 	}

@@ -661,10 +661,8 @@ func TestServiceProviderConcurrentRequestsShareParsedState(t *testing.T) {
 	p := newTestPlugin(t, cfg)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			sp, err := p.serviceProvider(httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
 			if err != nil {
 				t.Errorf("serviceProvider() error = %v", err)
@@ -673,7 +671,7 @@ func TestServiceProviderConcurrentRequestsShareParsedState(t *testing.T) {
 			if sp.Key == nil || sp.Certificate == nil || sp.IDPMetadata == nil {
 				t.Error("serviceProvider returned incomplete parsed state")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

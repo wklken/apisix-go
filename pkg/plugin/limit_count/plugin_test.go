@@ -2319,7 +2319,7 @@ func TestLimitCountLocalStoreEvictsOldestAndExpired(t *testing.T) {
 	store := newLocalFixedWindowStore(func() time.Time { return now }, defaultLocalStoreCapacity)
 	rate := limiter.Rate{Period: 60 * time.Second, Limit: 100}
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		ctx, err := store.Increment(context.Background(), "key-"+strconv.Itoa(i), 1, rate)
 		if err != nil {
 			t.Fatalf("increment key-%d: %v", i, err)

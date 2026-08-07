@@ -452,10 +452,8 @@ func TestHandlerConcurrentRequestsShareStableMetadata(t *testing.T) {
 	p := newTestPlugin(t, Config{Mode: "block"})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/check", nil)
 			rr := httptest.NewRecorder()
 			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -464,7 +462,7 @@ func TestHandlerConcurrentRequestsShareStableMetadata(t *testing.T) {
 			if rr.Code != http.StatusNoContent {
 				t.Errorf("concurrent request code = %d, want 204", rr.Code)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

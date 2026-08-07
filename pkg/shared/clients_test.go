@@ -10,22 +10,22 @@ import (
 )
 
 func TestSharedClientAcquireReleaseAndFinalClose(t *testing.T) {
-	var creates int32
-	var closes int32
+	var creates atomic.Int32
+	var closes atomic.Int32
 	key := "plugin-a:uid-1"
 	create := func() (any, error) {
-		atomic.AddInt32(&creates, 1)
-		return &httpClientStub{id: int(atomic.LoadInt32(&creates))}, nil
+		creates.Add(1)
+		return &httpClientStub{id: int(creates.Load())}, nil
 	}
 	closeFn := func(v any) {
-		atomic.AddInt32(&closes, 1)
+		closes.Add(1)
 	}
 
 	first, releaseFirst, err := AcquireClient(key, create, closeFn)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
-	if got := atomic.LoadInt32(&creates); got != 1 {
+	if got := creates.Load(); got != 1 {
 		t.Fatalf("creates after first acquire = %d, want 1", got)
 	}
 
@@ -33,7 +33,7 @@ func TestSharedClientAcquireReleaseAndFinalClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second acquire: %v", err)
 	}
-	if got := atomic.LoadInt32(&creates); got != 1 {
+	if got := creates.Load(); got != 1 {
 		t.Fatalf("creates after second acquire = %d, want 1 (reuse)", got)
 	}
 	if first != second {
@@ -41,12 +41,12 @@ func TestSharedClientAcquireReleaseAndFinalClose(t *testing.T) {
 	}
 
 	releaseFirst()
-	if got := atomic.LoadInt32(&closes); got != 0 {
+	if got := closes.Load(); got != 0 {
 		t.Fatalf("close after releasing one of two refs = %d, want 0", got)
 	}
 
 	releaseSecond()
-	if got := atomic.LoadInt32(&closes); got != 1 {
+	if got := closes.Load(); got != 1 {
 		t.Fatalf("close after final release = %d, want 1", got)
 	}
 
@@ -54,7 +54,7 @@ func TestSharedClientAcquireReleaseAndFinalClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-acquire after close: %v", err)
 	}
-	if got := atomic.LoadInt32(&creates); got != 2 {
+	if got := creates.Load(); got != 2 {
 		t.Fatalf("creates after recreation = %d, want 2", got)
 	}
 	if recreated == first {
@@ -63,11 +63,11 @@ func TestSharedClientAcquireReleaseAndFinalClose(t *testing.T) {
 }
 
 func TestSharedClientDoubleReleaseClosesOnce(t *testing.T) {
-	var closes int32
+	var closes atomic.Int32
 	_, release, err := AcquireClient("plugin-b:uid-2", func() (any, error) {
 		return &httpClientStub{}, nil
 	}, func(v any) {
-		atomic.AddInt32(&closes, 1)
+		closes.Add(1)
 	})
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -75,7 +75,7 @@ func TestSharedClientDoubleReleaseClosesOnce(t *testing.T) {
 
 	release()
 	release()
-	if got := atomic.LoadInt32(&closes); got != 1 {
+	if got := closes.Load(); got != 1 {
 		t.Fatalf("close calls after double release = %d, want 1", got)
 	}
 }
@@ -113,24 +113,22 @@ func TestSharedClientDistinctKeysKeepDistinctTypes(t *testing.T) {
 
 func TestSharedClientConcurrentAcquireRelease(t *testing.T) {
 	const workers = 16
-	var creates int32
-	var closes int32
+	var creates atomic.Int32
+	var closes atomic.Int32
 	key := "plugin-e:uid-5"
 
 	start := make(chan struct{})
 	acquired := make(chan struct{})
 	releases := make(chan func(), workers)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			<-start
 			_, release, err := AcquireClient(key, func() (any, error) {
-				atomic.AddInt32(&creates, 1)
+				creates.Add(1)
 				return &httpClientStub{}, nil
 			}, func(v any) {
-				atomic.AddInt32(&closes, 1)
+				closes.Add(1)
 			})
 			if err != nil {
 				t.Errorf("concurrent acquire: %v", err)
@@ -138,11 +136,11 @@ func TestSharedClientConcurrentAcquireRelease(t *testing.T) {
 			}
 			releases <- release
 			acquired <- struct{}{}
-		}()
+		})
 	}
 
 	close(start)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		<-acquired
 	}
 	close(releases)
@@ -151,10 +149,10 @@ func TestSharedClientConcurrentAcquireRelease(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := atomic.LoadInt32(&creates); got != 1 {
+	if got := creates.Load(); got != 1 {
 		t.Fatalf("creates across %d concurrent acquires = %d, want 1", workers, got)
 	}
-	if got := atomic.LoadInt32(&closes); got != 1 {
+	if got := closes.Load(); got != 1 {
 		t.Fatalf("closes after all concurrent releases = %d, want 1", got)
 	}
 }

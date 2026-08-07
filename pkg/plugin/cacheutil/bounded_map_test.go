@@ -31,7 +31,7 @@ func TestBoundedTTLMapEvictsOldestAtCapacity(t *testing.T) {
 	now := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
 	m := NewBoundedTTLMap[int](3, func() time.Time { return now })
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		m.Set("k-"+strconv.Itoa(i), i, time.Minute)
 	}
 	if got := m.Len(); got != 3 {
@@ -62,16 +62,14 @@ func TestBoundedTTLMapMutatePreservesConcurrentIncrements(t *testing.T) {
 
 	const workers = 32
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
+	for range workers {
+		wg.Go(func() {
+			for range 100 {
 				m.Mutate("counter", func(value int, _ time.Time) (int, time.Duration, bool) {
 					return value + 1, time.Minute, true
 				})
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

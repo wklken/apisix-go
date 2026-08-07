@@ -546,7 +546,7 @@ func TestLimitReqLocalBucketsEvictOldestAndExpired(t *testing.T) {
 	p := newTestPlugin(t, Config{Rate: 10, Burst: 20, Policy: "local"})
 	p.now = func() time.Time { return base }
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		_, allowed, err := p.incomingWithConsumer("user-"+strconv.Itoa(i), "")
 		if err != nil {
 			t.Fatalf("incoming user-%d: %v", i, err)

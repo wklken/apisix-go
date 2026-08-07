@@ -155,7 +155,7 @@ func TestResolveVaultSecretReusesClientAndCachesSuccess(t *testing.T) {
 		t.Fatalf("store Vault config: %v", err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		got, err := consumerStore.resolveVaultSecret("vault/test1", "foo/passwd")
 		if err != nil {
 			t.Fatalf("resolveVaultSecret attempt %d: %v", i+1, err)

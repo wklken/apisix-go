@@ -199,7 +199,7 @@ func TestServerlessCompilesFunctionsOnceOutsideRequestPath(t *testing.T) {
 		t.Fatalf("compilations during PostInit = %d, want 2", compiledDuringInit)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})
@@ -220,17 +220,15 @@ func TestServerlessConcurrentRequestsDoNotRecompile(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 			})
 			if res.Code != http.StatusOK {
 				t.Errorf("concurrent request code = %d, want 200", res.Code)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if got := compileFunctionCount.Load() - before; got != 1 {

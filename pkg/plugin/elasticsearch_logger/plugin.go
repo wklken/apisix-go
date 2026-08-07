@@ -2,6 +2,7 @@ package elasticsearch_logger
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"math/rand"
@@ -179,6 +180,14 @@ type Plugin struct {
 
 	versionMu sync.Mutex
 	esVersion string
+
+	clientMu sync.Mutex
+	clients  map[string]*esClientRef
+}
+
+type esClientRef struct {
+	client  *elasticsearch.Client
+	release func()
 }
 
 var randomEndpointIndex = rand.Intn
@@ -393,6 +402,15 @@ func (p *Plugin) endpointAddr() string {
 }
 
 func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, error) {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+	if p.clients == nil {
+		p.clients = make(map[string]*esClientRef)
+	}
+	if ref := p.clients[endpoint]; ref != nil {
+		return ref.client, nil
+	}
+
 	username := ""
 	password := ""
 	if p.config.Auth != nil {
@@ -419,7 +437,33 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 
 	clientUID := shared.NewConfigUID()
 	clientUID.Add(endpoint, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
-	return shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client), nil
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, clientUID),
+		func() (any, error) { return c, nil },
+		func(v any) { _ = v.(*elasticsearch.Client).Close(context.Background()) },
+	)
+	if err != nil {
+		return nil, err
+	}
+	client := value.(*elasticsearch.Client)
+	p.clients[endpoint] = &esClientRef{client: client, release: release}
+	return client, nil
+}
+
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+
+	p.clientMu.Lock()
+	refs := make([]*esClientRef, 0, len(p.clients))
+	for _, ref := range p.clients {
+		refs = append(refs, ref)
+	}
+	p.clients = nil
+	p.clientMu.Unlock()
+
+	for _, ref := range refs {
+		ref.release()
+	}
 }
 
 func (p *Plugin) bulkBodyEntries(entries []map[string]any) ([]byte, error) {

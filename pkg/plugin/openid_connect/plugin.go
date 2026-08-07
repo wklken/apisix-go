@@ -52,6 +52,8 @@ type Plugin struct {
 	httpsProxy          *url.URL
 	noProxy             []string
 
+	clientRelease func()
+
 	mu              sync.Mutex
 	discovery       discoveryData
 	discoveryLoaded bool
@@ -663,11 +665,27 @@ func (p *Plugin) configureRedisSessionStore() error {
 		}
 	}
 	client := redis.NewClient(options)
-	p.sessionStore = &redisSessionStore{
-		client: shared.LoadOrStoreClient(name+"-session", configUID, client).(*redis.Client),
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name+"-session", configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return err
 	}
+	p.sessionStore = &redisSessionStore{
+		client: value.(*redis.Client),
+	}
+	p.clientRelease = release
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Config() any {

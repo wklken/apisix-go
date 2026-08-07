@@ -27,6 +27,8 @@ type Plugin struct {
 
 	client *resty.Client
 
+	clientRelease func()
+
 	sampleRandom func() float64
 
 	reportMu    sync.Mutex
@@ -136,7 +138,16 @@ func (p *Plugin) PostInit() error {
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddr)
 	client := resty.New()
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	return nil
 }
@@ -288,6 +299,10 @@ func (p *Plugin) Stop() {
 	p.stopped = true
 	p.reportMu.Unlock()
 	p.Flush()
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) flushSegments() {

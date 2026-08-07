@@ -35,6 +35,8 @@ type Plugin struct {
 	maxSize      int
 	routeID      string
 	metadata     Metadata
+
+	clientRelease func()
 }
 
 const (
@@ -413,6 +415,13 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
+}
+
 func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
 	p.routeID = route.ID
 }
@@ -748,8 +757,16 @@ func (p *Plugin) newRedisLimiter() countLimiter {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
 	}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return redis.NewClient(options), nil },
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
 }
 
 func (p *Plugin) newRedisClusterLimiter() countLimiter {
@@ -780,8 +797,16 @@ func (p *Plugin) newRedisClusterLimiter() countLimiter {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisClusterSSLVerify}
 	}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClusterClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return redis.NewClusterClient(options), nil },
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
 }
 
 func (l *redisCountLimiter) incoming(

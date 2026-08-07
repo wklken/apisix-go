@@ -26,6 +26,8 @@ type Plugin struct {
 
 	client         *resty.Client
 	logFormatExtra map[string]string
+
+	clientRelease func()
 }
 
 const (
@@ -293,7 +295,16 @@ func (p *Plugin) PostInit() error {
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Timeout) * time.Millisecond)
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SSLVerify})
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
@@ -316,6 +327,14 @@ func (p *Plugin) PostInit() error {
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

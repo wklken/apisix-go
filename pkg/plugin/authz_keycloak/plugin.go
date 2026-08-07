@@ -28,6 +28,8 @@ type Plugin struct {
 
 	client *resty.Client
 
+	clientRelease func()
+
 	mu                  sync.Mutex
 	discovery           discoveryData
 	discoveryExpiresAt  time.Time
@@ -291,9 +293,25 @@ func (p *Plugin) PostInit() error {
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Timeout) * time.Millisecond)
 	client.SetTransport(transport)
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Config() any {

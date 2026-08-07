@@ -25,6 +25,8 @@ type Plugin struct {
 
 	client *resty.Client
 	now    func() time.Time
+
+	clientRelease func()
 }
 
 const (
@@ -290,7 +292,16 @@ func (p *Plugin) PostInit() error {
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Timeout) * time.Millisecond)
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !*p.config.SSLVerify})
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	p.BatchProcessor = base.NewBatchProcessor("lago logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
@@ -300,6 +311,14 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

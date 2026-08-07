@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -732,7 +733,7 @@ func TestWindowResetsAfterTimeWindow(t *testing.T) {
 
 func resetGroupCountersForTest() {
 	groupCounters.Lock()
-	groupCounters.entries = map[string]*counter{}
+	groupCounters.entries = nil
 	groupCounters.Unlock()
 	graphqlLimitCountGroups.Lock()
 	graphqlLimitCountGroups.entries = map[string]string{}
@@ -844,4 +845,55 @@ func (f *fakeRedisLimiter) incoming(
 	f.key = key
 	f.cost = cost
 	return f.remaining, f.reset, f.allowed, f.err
+}
+
+func TestGraphqlLimitCountLocalCountersEvictOldestAndExpired(t *testing.T) {
+	original := defaultLocalCountersCapacity
+	defaultLocalCountersCapacity = 4
+	t.Cleanup(func() { defaultLocalCountersCapacity = original })
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	p := newTestPlugin(t, Config{Count: 100, TimeWindow: 60, Policy: "local"})
+	p.now = func() time.Time { return base }
+
+	for i := 0; i < 6; i++ {
+		remaining, _, allowed, err := p.incoming(nil, "user-"+strconv.Itoa(i), 1, 100, 60)
+		if err != nil {
+			t.Fatalf("incoming user-%d: %v", i, err)
+		}
+		if !allowed || remaining != 99 {
+			t.Fatalf("incoming user-%d remaining = %d allowed = %t, want 99/true", i, remaining, allowed)
+		}
+	}
+
+	// Active keys preserve their counters: user-2 now consumed twice. Checked
+	// before touching user-0, whose re-insertion would evict the oldest
+	// remaining live entry (user-2) at capacity.
+	remaining, _, allowed, err := p.incoming(nil, "user-2", 1, 100, 60)
+	if err != nil {
+		t.Fatalf("incoming user-2: %v", err)
+	}
+	if !allowed || remaining != 98 {
+		t.Fatalf("active key user-2 remaining = %d allowed = %t, want 98/true", remaining, allowed)
+	}
+
+	// Capacity 4 was exceeded, so the two oldest counters were evicted and
+	// user-0 restarts from a fresh counter.
+	remaining, _, allowed, err = p.incoming(nil, "user-0", 1, 100, 60)
+	if err != nil {
+		t.Fatalf("incoming user-0 after eviction: %v", err)
+	}
+	if !allowed || remaining != 99 {
+		t.Fatalf("evicted key user-0 remaining = %d allowed = %t, want 99/true", remaining, allowed)
+	}
+
+	// Advancing past the time window expires user-5 and resets its counter.
+	p.now = func() time.Time { return base.Add(2 * time.Minute) }
+	remaining, _, allowed, err = p.incoming(nil, "user-5", 1, 100, 60)
+	if err != nil {
+		t.Fatalf("incoming user-5 after expiry: %v", err)
+	}
+	if !allowed || remaining != 99 {
+		t.Fatalf("expired key user-5 remaining = %d allowed = %t, want 99/true", remaining, allowed)
+	}
 }

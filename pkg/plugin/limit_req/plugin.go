@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -26,14 +27,20 @@ type Plugin struct {
 	config Config
 
 	mu      sync.Mutex
-	buckets map[string]*bucket
+	buckets *cacheutil.BoundedTTLMap[*bucket]
 	now     func() time.Time
+
+	bucketTTL time.Duration
 
 	redisLimiter reqLimiter
 	routeID      string
 
 	clientRelease func()
 }
+
+// defaultLocalBucketsCapacity bounds the number of in-memory local-policy
+// buckets; the earliest expiring buckets are evicted once the bound is hit.
+var defaultLocalBucketsCapacity = 10000
 
 const (
 	priority = 1001
@@ -205,7 +212,7 @@ type bucket struct {
 
 type bucketStore struct {
 	mu      sync.Mutex
-	buckets map[string]*bucket
+	buckets *cacheutil.BoundedTTLMap[*bucket]
 }
 
 type reqLimiter interface {
@@ -349,11 +356,15 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.buckets == nil {
-		p.buckets = make(map[string]*bucket)
+		p.buckets = cacheutil.NewBoundedTTLMap[*bucket](
+			defaultLocalBucketsCapacity,
+			func() time.Time { return p.now() },
+		)
 	}
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.bucketTTL = max(time.Duration(math.Ceil((p.config.Burst+1)/p.config.Rate))*time.Second, time.Second)
 
 	return nil
 }
@@ -428,20 +439,22 @@ func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Dur
 	}
 
 	mu := &p.mu
-	buckets := p.buckets
+	var buckets *cacheutil.BoundedTTLMap[*bucket]
 	if consumerName != "" {
 		store := p.consumerBucketStore()
 		mu = &store.mu
 		buckets = store.buckets
+	} else {
+		buckets = p.buckets
 	}
 	mu.Lock()
 	defer mu.Unlock()
 
 	now := p.now()
-	b, ok := buckets[key]
+	b, ok := buckets.Get(key)
 	if !ok {
 		b = &bucket{last: now}
-		buckets[key] = b
+		buckets.Set(key, b, p.bucketTTL)
 	}
 
 	elapsed := now.Sub(b.last).Seconds()
@@ -465,7 +478,12 @@ func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Dur
 func (p *Plugin) consumerBucketStore() *bucketStore {
 	uid := shared.NewConfigUID()
 	uid.Add(p.config.Rate, p.config.Burst, p.config.Key, p.config.KeyType)
-	created := &bucketStore{buckets: make(map[string]*bucket)}
+	created := &bucketStore{
+		buckets: cacheutil.NewBoundedTTLMap[*bucket](
+			defaultLocalBucketsCapacity,
+			func() time.Time { return p.now() },
+		),
+	}
 	actual, _ := consumerBucketStores.LoadOrStore(uid.String(), created)
 	return actual.(*bucketStore)
 }

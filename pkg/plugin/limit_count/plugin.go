@@ -14,7 +14,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
-	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -788,7 +787,7 @@ func (p *Plugin) registerGroup() error {
 	}
 	limitCountGroups.entries[p.config.Group] = limitCountGroup{
 		fingerprint: string(fingerprint),
-		store:       memory.NewStore(),
+		store:       newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity),
 	}
 	return nil
 }
@@ -796,7 +795,7 @@ func (p *Plugin) registerGroup() error {
 func (p *Plugin) localStore() limiter.Store {
 	if p.config.Group == "" {
 		if p.localLimiterStore == nil {
-			p.localLimiterStore = memory.NewStore()
+			p.localLimiterStore = newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity)
 		}
 		return p.localLimiterStore
 	}

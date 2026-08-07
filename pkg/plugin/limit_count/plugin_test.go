@@ -2308,3 +2308,53 @@ func TestDelayedSyncerFactoryReusesLimitConfigurationAndStopClearsState(t *testi
 		t.Fatalf("Stop() retained delayed state: %#v, %#v", plugin.delayedByKey, plugin.delayed)
 	}
 }
+
+func TestLimitCountLocalStoreEvictsOldestAndExpired(t *testing.T) {
+	original := defaultLocalStoreCapacity
+	defaultLocalStoreCapacity = 4
+	t.Cleanup(func() { defaultLocalStoreCapacity = original })
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	now := base
+	store := newLocalFixedWindowStore(func() time.Time { return now }, defaultLocalStoreCapacity)
+	rate := limiter.Rate{Period: 60 * time.Second, Limit: 100}
+
+	for i := 0; i < 6; i++ {
+		ctx, err := store.Increment(context.Background(), "key-"+strconv.Itoa(i), 1, rate)
+		if err != nil {
+			t.Fatalf("increment key-%d: %v", i, err)
+		}
+		if ctx.Remaining != 99 {
+			t.Fatalf("increment key-%d remaining = %d, want 99", i, ctx.Remaining)
+		}
+	}
+
+	// Capacity 4 was exceeded, so the two oldest counters were evicted and
+	// key-0 restarts from a fresh counter.
+	ctx, err := store.Peek(context.Background(), "key-0", rate)
+	if err != nil {
+		t.Fatalf("peek key-0 after eviction: %v", err)
+	}
+	if ctx.Remaining != 100 {
+		t.Fatalf("evicted key-0 remaining = %d, want 100", ctx.Remaining)
+	}
+
+	// Active keys preserve their counters: key-2 was incremented once.
+	ctx, err = store.Peek(context.Background(), "key-2", rate)
+	if err != nil {
+		t.Fatalf("peek key-2: %v", err)
+	}
+	if ctx.Remaining != 99 {
+		t.Fatalf("active key-2 remaining = %d, want 99", ctx.Remaining)
+	}
+
+	// Advancing past the window expires key-5 and resets its counter.
+	now = base.Add(2 * time.Minute)
+	ctx, err = store.Peek(context.Background(), "key-5", rate)
+	if err != nil {
+		t.Fatalf("peek key-5 after expiry: %v", err)
+	}
+	if ctx.Remaining != 100 {
+		t.Fatalf("expired key-5 remaining = %d, want 100", ctx.Remaining)
+	}
+}

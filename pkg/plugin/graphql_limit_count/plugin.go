@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -28,7 +29,7 @@ type Plugin struct {
 	config Config
 
 	mu       sync.Mutex
-	counters map[string]*counter
+	counters *cacheutil.BoundedTTLMap[*counter]
 	now      func() time.Time
 
 	redisLimiter countLimiter
@@ -38,6 +39,10 @@ type Plugin struct {
 
 	clientRelease func()
 }
+
+// defaultLocalCountersCapacity bounds the number of in-memory local-policy
+// counters; the earliest expiring counters are evicted once the bound is hit.
+var defaultLocalCountersCapacity = 10000
 
 const (
 	priority = 1004
@@ -255,8 +260,8 @@ type counter struct {
 
 var groupCounters = struct {
 	sync.Mutex
-	entries map[string]*counter
-}{entries: map[string]*counter{}}
+	entries *cacheutil.BoundedTTLMap[*counter]
+}{}
 
 var graphqlLimitCountGroups = struct {
 	sync.Mutex
@@ -400,7 +405,10 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	if p.counters == nil {
-		p.counters = make(map[string]*counter)
+		p.counters = cacheutil.NewBoundedTTLMap[*counter](
+			defaultLocalCountersCapacity,
+			func() time.Time { return p.now() },
+		)
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -681,6 +689,12 @@ func (p *Plugin) incoming(
 	if p.config.Group != "" {
 		groupCounters.Lock()
 		defer groupCounters.Unlock()
+		if groupCounters.entries == nil {
+			groupCounters.entries = cacheutil.NewBoundedTTLMap[*counter](
+				defaultLocalCountersCapacity,
+				time.Now,
+			)
+		}
 		return incomingLocal(
 			groupCounters.entries,
 			p.counterNamespace()+":"+key,
@@ -697,7 +711,7 @@ func (p *Plugin) incoming(
 }
 
 func incomingLocal(
-	counters map[string]*counter,
+	counters *cacheutil.BoundedTTLMap[*counter],
 	key string,
 	cost int64,
 	count int64,
@@ -705,10 +719,10 @@ func incomingLocal(
 	now time.Time,
 ) (int64, int64, bool, error) {
 	counterKey := fmt.Sprintf("%d:%d:%s", count, timeWindow, key)
-	c, ok := counters[counterKey]
-	if !ok || !now.Before(c.resetAt) {
+	c, ok := counters.Get(counterKey)
+	if !ok {
 		c = &counter{resetAt: now.Add(time.Duration(timeWindow) * time.Second)}
-		counters[counterKey] = c
+		counters.Set(counterKey, c, time.Duration(timeWindow)*time.Second)
 	}
 
 	reset := max(int64(c.resetAt.Sub(now).Seconds()), 0)

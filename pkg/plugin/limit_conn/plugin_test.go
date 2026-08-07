@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -1233,9 +1234,9 @@ func TestRedisConnIntRejectsOverflowAndInvalidWireValues(t *testing.T) {
 		{value: []byte("5")},
 		{value: ^uint64(0)},
 	} {
-		got, ok := redisInt(test.value)
+		got, ok := limitbase.RedisInt(test.value)
 		if got != test.want || ok != test.ok {
-			t.Fatalf("redisInt(%#v) = %d, %t; want %d, %t", test.value, got, ok, test.want, test.ok)
+			t.Fatalf("limitbase.RedisInt(%#v) = %d, %t; want %d, %t", test.value, got, ok, test.want, test.ok)
 		}
 	}
 }

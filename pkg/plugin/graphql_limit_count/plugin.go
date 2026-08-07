@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
@@ -505,7 +506,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					int64(depth),
 					count,
 					timeWindow,
-					ruleQuotaHeaders(rule, i),
+					limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i),
 				) {
 					return
 				}
@@ -543,48 +544,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			int64(depth),
 			count,
 			timeWindow,
-			defaultQuotaHeaders(p.metadata),
+			limitbase.DefaultQuotaHeaders(p.metadata.LimitHeader, p.metadata.RemainingHeader, p.metadata.ResetHeader),
 		) {
 			return
 		}
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
-}
-
-type quotaHeaders struct {
-	limit     string
-	remaining string
-	reset     string
-}
-
-func defaultQuotaHeaders(metadata Metadata) quotaHeaders {
-	if metadata.LimitHeader == "" {
-		metadata.LimitHeader = "X-RateLimit-Limit"
-	}
-	if metadata.RemainingHeader == "" {
-		metadata.RemainingHeader = "X-RateLimit-Remaining"
-	}
-	if metadata.ResetHeader == "" {
-		metadata.ResetHeader = "X-RateLimit-Reset"
-	}
-	return quotaHeaders{
-		limit:     metadata.LimitHeader,
-		remaining: metadata.RemainingHeader,
-		reset:     metadata.ResetHeader,
-	}
-}
-
-func ruleQuotaHeaders(rule Rule, index int) quotaHeaders {
-	prefix := rule.HeaderPrefix
-	if prefix == "" {
-		prefix = strconv.Itoa(index + 1)
-	}
-	return quotaHeaders{
-		limit:     "X-" + prefix + "-RateLimit-Limit",
-		remaining: "X-" + prefix + "-RateLimit-Remaining",
-		reset:     "X-" + prefix + "-RateLimit-Reset",
-	}
 }
 
 func (p *Plugin) applyLimit(
@@ -594,7 +560,7 @@ func (p *Plugin) applyLimit(
 	cost int64,
 	count int64,
 	timeWindow int64,
-	headers quotaHeaders,
+	headers limitbase.QuotaHeaders,
 ) bool {
 	remaining, reset, allowed, err := p.incoming(r, key, cost, count, timeWindow)
 	if err != nil {
@@ -605,9 +571,9 @@ func (p *Plugin) applyLimit(
 		return false
 	}
 	if *p.config.ShowLimitQuotaHeader {
-		w.Header().Set(headers.limit, strconv.FormatInt(count, 10))
-		w.Header().Set(headers.remaining, strconv.FormatInt(remaining, 10))
-		w.Header().Set(headers.reset, strconv.FormatInt(reset, 10))
+		w.Header().Set(headers.Limit, strconv.FormatInt(count, 10))
+		w.Header().Set(headers.Remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Set(headers.Reset, strconv.FormatInt(reset, 10))
 	}
 	if allowed {
 		return true
@@ -807,39 +773,20 @@ func (l *redisCountLimiter) incoming(
 	if !ok || len(values) != 3 {
 		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count result: %v", result)
 	}
-	allowed, ok := redisInt(values[0])
+	allowed, ok := limitbase.RedisInt(values[0])
 	if !ok {
 		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count allowed value: %v", values[0])
 	}
-	remaining, ok := redisInt(values[1])
+	remaining, ok := limitbase.RedisInt(values[1])
 	if !ok {
 		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count remaining value: %v", values[1])
 	}
-	reset, ok := redisInt(values[2])
+	reset, ok := limitbase.RedisInt(values[2])
 	if !ok {
 		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count reset value: %v", values[2])
 	}
 
 	return remaining, reset, allowed == 1, nil
-}
-
-func redisInt(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint64:
-		if v > uint64(1<<63-1) {
-			return 0, false
-		}
-		return int64(v), true
-	case string:
-		parsed, err := strconv.ParseInt(v, 10, 64)
-		return parsed, err == nil
-	default:
-		return 0, false
-	}
 }
 
 func validateStaticLimitValue(value any, name string) error {

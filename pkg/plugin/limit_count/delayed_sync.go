@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samber/lo"
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/wklken/apisix-go/pkg/logger"
 )
@@ -176,7 +177,7 @@ func (s *delayedSyncer) flushNow(ctx context.Context, _ time.Time) error {
 	clear(s.retry)
 	s.mu.Unlock()
 
-	err := s.flushKeys(ctx, uniqueStrings(keys), true)
+	err := s.flushKeys(ctx, lo.Uniq(keys), true)
 
 	s.mu.Lock()
 	for key := range s.retryNext {
@@ -242,22 +243,9 @@ func (s *delayedSyncer) drainQueue() []string {
 		case key := <-s.queue:
 			keys = append(keys, key)
 		default:
-			return uniqueStrings(keys)
+			return lo.Uniq(keys)
 		}
 	}
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	unique := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		unique = append(unique, value)
-	}
-	return unique
 }
 
 func (s *delayedSyncer) Stop() {

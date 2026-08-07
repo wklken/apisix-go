@@ -165,7 +165,8 @@ func handleBatchRequest(
 
 	var decoded any
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
+		// Do not echo the request body back to the client through the error.
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err)
 	}
 	pipelinePresent, err := validateDecodedRequestTypes(decoded)
 	if err != nil {
@@ -320,6 +321,12 @@ func validMethod(method string) bool {
 	}
 }
 
+// pipelineResult carries one completed subrequest response out of its worker
+// goroutine.
+type pipelineResult struct {
+	response PipelineResponse
+}
+
 func dispatchPipelineRequest(
 	dispatcher http.Handler,
 	outer *http.Request,
@@ -327,6 +334,8 @@ func dispatchPipelineRequest(
 	item PipelineRequest,
 	timeout time.Duration,
 ) (PipelineResponse, bool) {
+	// The subrequest context derives from the incoming request so canceling
+	// the parent cancels every subrequest.
 	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
 	var cancel func()
 	if timeout > 0 {
@@ -354,33 +363,35 @@ func dispatchPipelineRequest(
 	}
 
 	recorder := httptest.NewRecorder()
-	done := make(chan struct{}, 1)
+	done := make(chan pipelineResult, 1)
 	go func() {
 		dispatcher.ServeHTTP(recorder, req)
-		done <- struct{}{}
+		result := recorder.Result()
+		body, err := io.ReadAll(result.Body)
+		_ = result.Body.Close()
+		resp := PipelineResponse{
+			Status:  result.StatusCode,
+			Reason:  http.StatusText(result.StatusCode),
+			Headers: flattenHeaders(result.Header),
+		}
+		if err == nil && len(body) > 0 {
+			resp.Body = string(body)
+		}
+		done <- pipelineResult{response: resp}
 	}()
 
 	select {
 	case <-ctx.Done():
+		// Wait for the worker so it cannot pile up after the response is
+		// sent; the subrequest context is already canceled.
+		<-done
 		return timeoutResponse(), true
-	case <-done:
+	case result := <-done:
 		if ctx.Err() != nil {
 			return timeoutResponse(), true
 		}
+		return result.response, false
 	}
-	result := recorder.Result()
-	defer func() { _ = result.Body.Close() }()
-
-	body, err := io.ReadAll(result.Body)
-	resp := PipelineResponse{
-		Status:  result.StatusCode,
-		Reason:  http.StatusText(result.StatusCode),
-		Headers: flattenHeaders(result.Header),
-	}
-	if err == nil && len(body) > 0 {
-		resp.Body = string(body)
-	}
-	return resp, false
 }
 
 type contextWithoutValues struct {

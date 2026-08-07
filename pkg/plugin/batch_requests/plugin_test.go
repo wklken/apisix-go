@@ -1,6 +1,7 @@
 package batch_requests
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -424,11 +425,13 @@ func TestHandlerAppliesPipelineHostHeader(t *testing.T) {
 	}
 }
 
-func TestHandlerTimeoutDoesNotWaitForUncooperativeDispatcher(t *testing.T) {
-	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
-	dispatcher := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		<-block
+func TestHandlerTimeoutJoinsCancellationAwareDispatcher(t *testing.T) {
+	entered := make(chan struct{})
+	exited := make(chan struct{})
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+		close(exited)
 	})
 	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
@@ -442,9 +445,85 @@ func TestHandlerTimeoutDoesNotWaitForUncooperativeDispatcher(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("handler elapsed = %s, want bounded timeout", elapsed)
 	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("dispatcher never entered")
+	}
+	select {
+	case <-exited:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("dispatcher worker was not joined after the timeout canceled its context")
+	}
 	responses := decodePipelineResponses(t, res.Body.String())
 	if responses[0].Status != http.StatusGatewayTimeout {
 		t.Fatalf("pipeline status = %d, want 504", responses[0].Status)
+	}
+	if responses[0].Body != "" {
+		t.Fatalf("pipeline body = %q, want internal error text discarded", responses[0].Body)
+	}
+}
+
+func TestHandlerParentCancellationCancelsSubrequestsAndJoinsWorkers(t *testing.T) {
+	var started atomic.Int32
+	var exited atomic.Int32
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started.Add(1)
+		<-r.Context().Done()
+		exited.Add(1)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [
+			{"path": "/slow-1"},
+			{"path": "/slow-2"},
+			{"path": "/slow-3"}
+		]
+	}`))
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	res := httptest.NewRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(res, req)
+		close(served)
+	}()
+
+	// Subrequests run one at a time; cancel while the first is in flight.
+	deadline := time.Now().Add(2 * time.Second)
+	for started.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("first subrequest never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch handler did not return after parent cancellation")
+	}
+
+	if got := exited.Load(); got != 1 {
+		t.Fatalf("joined subrequest workers = %d, want the single in-flight worker", got)
+	}
+	if got := started.Load(); got != 1 {
+		t.Fatalf("started subrequests = %d, want the pipeline to stop after cancellation", got)
+	}
+	var responses []PipelineResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &responses); err != nil {
+		t.Fatalf("decode batch response: %v, body=%q", err, res.Body.String())
+	}
+	if len(responses) != 1 {
+		t.Fatalf("responses length = %d, want 1", len(responses))
+	}
+	if responses[0].Status != http.StatusGatewayTimeout {
+		t.Fatalf("response status = %d, want 504", responses[0].Status)
+	}
+	if responses[0].Body != "" {
+		t.Fatalf("response body = %q, want internal error text discarded", responses[0].Body)
 	}
 }
 

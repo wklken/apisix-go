@@ -1,7 +1,9 @@
 package redirect
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"net/http/httptest"
 	"testing"
 
@@ -257,5 +259,28 @@ func TestHandlerTrustsForwardedHTTPSAndFallsThrough(t *testing.T) {
 
 	if !called || res.Code != http.StatusNoContent {
 		t.Fatalf("forwarded HTTPS called=%v status=%d, want fallthrough 204", called, res.Code)
+	}
+}
+
+func TestHandlerDoesNotConsumeRequestBodyWithoutBodyDerivedOptions(t *testing.T) {
+	// regex_uri that does not match falls through to the next handler, which
+	// must still see the original request body untouched.
+	p := newTestPlugin(t, Config{RegexUri: []string{`^/moved`, "/$1"}})
+
+	var downstreamBody string
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("downstream read body: %v", err)
+		}
+		downstreamBody = string(body)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", strings.NewReader(`{"payload":"x"}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if downstreamBody != `{"payload":"x"}` {
+		t.Fatalf("downstream body = %q, want the untouched request body", downstreamBody)
 	}
 }

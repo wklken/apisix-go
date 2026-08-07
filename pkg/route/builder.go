@@ -1380,10 +1380,15 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		return buildKafkaPubSubProxyHandlerStrict(upstream, nil)
 	}
 
-	// FIXME: do service discovery here
-	lb, err := pxy.NewUpstreamLoadBalance(servers, upstream.Checks)
-	if err != nil {
-		return nil, fmt.Errorf("build upstream load balancer: %w", err)
+	// Never construct an empty round-robin picker: without nodes, target
+	// selection reports a classified director error unless traffic-split
+	// supplies an override for the request.
+	var lb pxy.LoadBalancer
+	if len(servers) > 0 {
+		lb, err = pxy.NewUpstreamLoadBalance(servers, upstream.Checks)
+		if err != nil {
+			return nil, fmt.Errorf("build upstream load balancer: %w", err)
+		}
 	}
 
 	director := func(req *http.Request) {
@@ -1401,10 +1406,19 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
-		} else {
-			if err := applyUpstreamTargetCompiled(req, lb, upstream, originalHost, compiledTargets); err != nil {
-				panic("parse host fail, invalid target")
-			}
+		} else if lb == nil {
+			*req = *withDirectorError(req, errEmptyUpstream)
+			req.URL.Scheme = ""
+			req.URL.Host = ""
+			return
+		} else if err := applyUpstreamTargetCompiled(req, lb, upstream, originalHost, compiledTargets); err != nil {
+			// The reverse-proxy error handler classifies the stored
+			// director error; invalidate the URL so RoundTrip cannot
+			// dial the client's original host.
+			*req = *withDirectorError(req, err)
+			req.URL.Scheme = ""
+			req.URL.Host = ""
+			return
 		}
 		applyFinalProxyRewrite(req)
 
@@ -1475,10 +1489,10 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = pxy.WithHealthReporter(r, healthReporter(lb))
-		if serveDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
+		if lb != nil && serveDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
 			return
 		}
-		if serveHTTPDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
+		if lb != nil && serveHTTPDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
@@ -1878,9 +1892,30 @@ func attachHTTPRetriesCompiled(
 		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
 			return false
 		}
+		// A later transport failure must not report a stale director error
+		// from an earlier attempt.
+		*retry = *withDirectorError(retry, nil)
 		applyFinalProxyRewrite(retry)
 		return true
 	})
+}
+
+type directorErrorContextKey struct{}
+
+// errEmptyUpstream is reported by the director when a route has no upstream
+// nodes and no traffic-split override selected a target.
+var errEmptyUpstream = errors.New("upstream has no configured nodes")
+
+func withDirectorError(request *http.Request, err error) *http.Request {
+	return request.WithContext(context.WithValue(request.Context(), directorErrorContextKey{}, err))
+}
+
+func requestDirectorError(request *http.Request) error {
+	if request == nil {
+		return nil
+	}
+	err, _ := request.Context().Value(directorErrorContextKey{}).(error)
+	return err
 }
 
 func applyUpstreamTargetCompiled(
@@ -2069,7 +2104,12 @@ func newErrorHandler() pxy.ErrorHandler {
 
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
-		if !errors.Is(err, context.Canceled) {
+		if directorErr := requestDirectorError(r); directorErr != nil {
+			// The director failed target selection before RoundTrip; classify
+			// it as an upstream failure instead of a client cancellation.
+			err = directorErr
+			status = http.StatusBadGateway
+		} else if !errors.Is(err, context.Canceled) {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				pxy.ReportTCPFailureOutcome(r, true)
 			} else {

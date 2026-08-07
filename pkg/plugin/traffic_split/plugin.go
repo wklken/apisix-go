@@ -722,14 +722,7 @@ func splitAddr(addr string) (string, int) {
 	return addr, 0
 }
 
-func loadUpstreamByID(id string) (upstream *Upstream, err error) {
-	defer func() {
-		if recover() != nil {
-			upstream = nil
-			err = store.ErrNotFound
-		}
-	}()
-
+func loadUpstreamByID(id string) (*Upstream, error) {
 	stored, err := store.GetUpstream(id)
 	if err != nil {
 		return nil, err

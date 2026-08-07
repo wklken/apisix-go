@@ -16,6 +16,9 @@ var ErrNotFound = fmt.Errorf("not found")
 // FIXME: add a cache layer here, if the source data changed, del the cache at the same time
 
 func GetPluginMetadata(id string, v any) error {
+	if s == nil {
+		return ErrNotFound
+	}
 	config := s.GetFromBucket("plugin_metadata", []byte(id))
 	return decodePluginMetadata(config, id, v)
 }
@@ -40,6 +43,9 @@ func decodePluginMetadata(config []byte, id string, v any) error {
 }
 
 func GetUpstream(id string) (resource.Upstream, error) {
+	if s == nil {
+		return resource.Upstream{}, ErrNotFound
+	}
 	config := s.GetFromBucket("upstreams", util.StringToBytes(id))
 	if config == nil {
 		return resource.Upstream{}, ErrNotFound
@@ -61,6 +67,9 @@ func GetSSL(id string) (resource.SSL, error) {
 }
 
 func GetStreamRoute(id string) (resource.StreamRoute, error) {
+	if s == nil {
+		return resource.StreamRoute{}, ErrNotFound
+	}
 	config := s.GetFromBucket("stream_routes", util.StringToBytes(id))
 	if config == nil {
 		return resource.StreamRoute{}, ErrNotFound
@@ -70,6 +79,9 @@ func GetStreamRoute(id string) (resource.StreamRoute, error) {
 }
 
 func GetService(id string) (resource.Service, error) {
+	if s == nil {
+		return resource.Service{}, ErrNotFound
+	}
 	config := s.GetFromBucket("services", util.StringToBytes(id))
 	if config == nil {
 		return resource.Service{}, ErrNotFound
@@ -79,6 +91,9 @@ func GetService(id string) (resource.Service, error) {
 }
 
 func GetConsumer(id string) (resource.Consumer, error) {
+	if s == nil {
+		return resource.Consumer{}, ErrNotFound
+	}
 	s.consumerMu.RLock()
 	consumer, ok := s.consumerValues[id]
 	s.consumerMu.RUnlock()
@@ -94,6 +109,9 @@ func GetConsumer(id string) (resource.Consumer, error) {
 }
 
 func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
+	if s == nil {
+		return resource.ConsumerGroup{}, ErrNotFound
+	}
 	config := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
 	if config == nil {
 		return resource.ConsumerGroup{}, ErrNotFound
@@ -103,6 +121,9 @@ func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
 }
 
 func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
+	if s == nil {
+		return resource.PluginConfigRule{}, ErrNotFound
+	}
 	config := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
 	if config == nil {
 		return resource.PluginConfigRule{}, ErrNotFound
@@ -112,6 +133,9 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 }
 
 func GetProto(id string) (resource.Proto, error) {
+	if s == nil {
+		return resource.Proto{}, ErrNotFound
+	}
 	config := s.GetFromBucket("protos", util.StringToBytes(id))
 	if config == nil {
 		return resource.Proto{}, ErrNotFound
@@ -121,6 +145,9 @@ func GetProto(id string) (resource.Proto, error) {
 }
 
 func ListRoutes() ([]resource.Route, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
 	var routes []resource.Route
 	data := s.GetBucketData("routes")
 	for _, d := range data {
@@ -144,6 +171,9 @@ func routeIDForDecodeError(config []byte) string {
 }
 
 func ListStreamRoutes() ([]resource.StreamRoute, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
 	var routes []resource.StreamRoute
 	data := s.GetBucketData("stream_routes")
 	for _, d := range data {
@@ -157,6 +187,9 @@ func ListStreamRoutes() ([]resource.StreamRoute, error) {
 }
 
 func ListSSLs() ([]resource.SSL, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
 	data := s.GetBucketData("ssls")
 	ssls := make([]resource.SSL, 0, len(data))
 	for _, value := range data {
@@ -170,6 +203,9 @@ func ListSSLs() ([]resource.SSL, error) {
 }
 
 func ListGlobalRules() ([]resource.GlobalRule, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
 	var rules []resource.GlobalRule
 	data := s.GetBucketData("global_rules")
 	for _, d := range data {
@@ -302,6 +338,9 @@ func ParseProto(config []byte) (resource.Proto, error) {
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {
+	if s == nil {
+		return resource.Consumer{}, ErrNotFound
+	}
 	return s.getConsumerByPluginKey(pluginName, key)
 }
 

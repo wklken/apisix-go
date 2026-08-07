@@ -131,7 +131,7 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limits, err := loader()
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+			_ = util.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
 			})
 			return
@@ -143,10 +143,10 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWriter, r *http.Request) {
 	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
 	if err != nil {
-		writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+		_ = util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, responses)
+	_ = util.WriteJSON(w, http.StatusOK, responses)
 }
 
 func handleBatchRequest(
@@ -437,10 +437,4 @@ func mergeHeaders(outer http.Header, common map[string]string, item map[string]s
 		headers.Set("X-Real-IP", remoteIP)
 	}
 	return headers
-}
-
-func writeJSON(w http.ResponseWriter, statusCode int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(value)
 }

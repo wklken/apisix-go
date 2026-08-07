@@ -26,3 +26,7 @@ func WriteJSON(w http.ResponseWriter, status int, value any) error {
 	_, _ = w.Write(body)
 	return nil
 }
+
+func WriteJSONMessage(w http.ResponseWriter, status int, message string) error {
+	return WriteJSON(w, status, map[string]string{"message": message})
+}

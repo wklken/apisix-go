@@ -3,6 +3,7 @@ package node_status
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -31,6 +32,12 @@ func TestTrackReportsServerWideRequestCounters(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/apisix/status", nil))
+	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if strings.HasSuffix(recorder.Body.String(), "\n") {
+		t.Fatalf("body has trailing newline: %q", recorder.Body.String())
+	}
 	var response Response
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode status response: %v", err)

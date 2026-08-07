@@ -116,12 +116,19 @@ func convertURI(uri string) (string, error) {
 	return "", fmt.Errorf("not supported uri: %s", uri)
 }
 
-func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Handler) error {
-	return registerRouteWithHosts(mux, methods, uri, nil, handler)
+type routeRegistrar struct {
+	mux         *chi.Mux
+	dispatchers map[string]*wildcardDispatcher
 }
 
-func registerRouteWithHosts(
-	mux *chi.Mux,
+func newRouteRegistrar(mux *chi.Mux) *routeRegistrar {
+	return &routeRegistrar{
+		mux:         mux,
+		dispatchers: make(map[string]*wildcardDispatcher),
+	}
+}
+
+func (r *routeRegistrar) registerRouteWithHosts(
 	methods []string,
 	uri string,
 	hosts []string,
@@ -132,11 +139,11 @@ func registerRouteWithHosts(
 		return err
 	}
 	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
-		registerWildcardRoute(mux, methods, converted, uri, hosts, handler)
+		r.registerWildcardRoute(methods, converted, uri, hosts, handler)
 		return nil
 	}
 	if len(methods) == 0 {
-		mux.Handle(converted, handler)
+		r.mux.Handle(converted, handler)
 		return nil
 	}
 	for _, method := range methods {
@@ -145,7 +152,7 @@ func registerRouteWithHosts(
 			continue
 		}
 		logger.Debugf("add route: %s %s", method, converted)
-		mux.Method(method, converted, handler)
+		r.mux.Method(method, converted, handler)
 	}
 	return nil
 }
@@ -159,21 +166,23 @@ type wildcardRoute struct {
 }
 
 type wildcardDispatcher struct {
-	buckets [2][3][2][]wildcardRoute // embedded, host rank, exact method
+	prefix           string
+	buckets          [2][3][2][]wildcardRoute // embedded, host rank, exact method
+	embeddedSuffixes [3][2]map[string][]int   // host rank, exact method, suffix
 }
 
-func registerWildcardRoute(
-	mux *chi.Mux,
+func (r *routeRegistrar) registerWildcardRoute(
 	methods []string,
 	converted string,
 	pattern string,
 	hosts []string,
 	handler http.Handler,
 ) {
-	dispatcher := existingWildcardDispatcher(mux, converted)
+	dispatcher := r.dispatchers[converted]
 	if dispatcher == nil {
-		dispatcher = &wildcardDispatcher{}
-		mux.Handle(converted, dispatcher)
+		dispatcher = &wildcardDispatcher{prefix: strings.TrimSuffix(converted, "*")}
+		r.mux.Handle(converted, dispatcher)
+		r.dispatchers[converted] = dispatcher
 	}
 
 	embedded := strings.Contains(pattern, "/*/")
@@ -213,9 +222,7 @@ func (d *wildcardDispatcher) add(route wildcardRoute) {
 		methodIndex = 1
 	}
 	if len(route.hosts) == 0 {
-		d.buckets[embeddedIndex][0][methodIndex] = append(
-			d.buckets[embeddedIndex][0][methodIndex], route,
-		)
+		d.addToBucket(embeddedIndex, 0, methodIndex, route)
 		return
 	}
 	hasExact := false
@@ -228,29 +235,31 @@ func (d *wildcardDispatcher) add(route wildcardRoute) {
 		}
 	}
 	if hasExact {
-		d.buckets[embeddedIndex][2][methodIndex] = append(
-			d.buckets[embeddedIndex][2][methodIndex], route,
-		)
+		d.addToBucket(embeddedIndex, 2, methodIndex, route)
 	}
 	if hasWildcard {
-		d.buckets[embeddedIndex][1][methodIndex] = append(
-			d.buckets[embeddedIndex][1][methodIndex], route,
-		)
+		d.addToBucket(embeddedIndex, 1, methodIndex, route)
 	}
 }
 
-func existingWildcardDispatcher(mux *chi.Mux, pattern string) *wildcardDispatcher {
-	for _, route := range mux.Routes() {
-		if route.Pattern != pattern {
-			continue
-		}
-		for _, handler := range route.Handlers {
-			if dispatcher, ok := handler.(*wildcardDispatcher); ok {
-				return dispatcher
-			}
-		}
+func (d *wildcardDispatcher) addToBucket(
+	embeddedIndex int,
+	hostRank int,
+	methodIndex int,
+	route wildcardRoute,
+) {
+	bucket := &d.buckets[embeddedIndex][hostRank][methodIndex]
+	*bucket = append(*bucket, route)
+	if !route.embedded {
+		return
 	}
-	return nil
+	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
+	if suffixes == nil {
+		suffixes = make(map[string][]int)
+		d.embeddedSuffixes[hostRank][methodIndex] = suffixes
+	}
+	suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
+	suffixes[suffix] = append(suffixes[suffix], len(*bucket)-1)
 }
 
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -259,6 +268,23 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 	for embeddedIndex := range 2 {
 		for _, hostRank := range []int{2, 1, 0} {
 			for methodIndex := range 2 {
+				if embeddedIndex == 0 {
+					if len(d.embeddedSuffixes[hostRank][methodIndex]) == 0 {
+						continue
+					}
+					route, matched, matchedPath, matchedHost := d.matchEmbeddedRoute(
+						request,
+						hostRank,
+						methodIndex,
+					)
+					pathMatched = pathMatched || matchedPath
+					hostMatched = hostMatched || matchedHost
+					if matched {
+						route.handler.ServeHTTP(writer, request)
+						return
+					}
+					continue
+				}
 				for _, route := range slices.Backward(d.buckets[embeddedIndex][hostRank][methodIndex]) {
 					if !matchesRoutePath(route.pattern, request.URL.Path) {
 						continue
@@ -283,6 +309,56 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 		return
 	}
 	http.NotFound(writer, request)
+}
+
+func (d *wildcardDispatcher) matchEmbeddedRoute(
+	request *http.Request,
+	hostRank int,
+	methodIndex int,
+) (wildcardRoute, bool, bool, bool) {
+	bucket := d.buckets[0][hostRank][methodIndex]
+	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
+	requestPath := request.URL.Path
+	if len(requestPath) <= len(d.prefix) || !strings.HasPrefix(requestPath, d.prefix) {
+		return wildcardRoute{}, false, false, false
+	}
+
+	bestIndex := -1
+	pathMatched := false
+	hostMatched := false
+	for searchFrom := len(d.prefix); searchFrom < len(requestPath); {
+		relativeSlash := strings.IndexByte(requestPath[searchFrom:], '/')
+		if relativeSlash < 0 {
+			break
+		}
+		suffixStart := searchFrom + relativeSlash
+		suffix := requestPath[suffixStart:]
+		indexes := suffixes[suffix]
+		if len(indexes) > 0 && len(requestPath) > len(d.prefix)+len(suffix) {
+			pathMatched = true
+			for _, routeIndex := range slices.Backward(indexes) {
+				if routeIndex <= bestIndex {
+					break
+				}
+				route := bucket[routeIndex]
+				if routeHostRank(route.hosts, request.Host) != hostRank {
+					continue
+				}
+				hostMatched = true
+				if (methodIndex == 0 && route.method != request.Method) ||
+					(methodIndex == 1 && route.method != "*") {
+					continue
+				}
+				bestIndex = routeIndex
+				break
+			}
+		}
+		searchFrom = suffixStart + 1
+	}
+	if bestIndex < 0 {
+		return wildcardRoute{}, false, pathMatched, hostMatched
+	}
+	return bucket[bestIndex], true, pathMatched, hostMatched
 }
 
 func matchesRoutePath(pattern string, requestPath string) bool {
@@ -389,6 +465,7 @@ func (b *Builder) Build() *chi.Mux {
 	}
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
+	registrar := newRouteRegistrar(mux)
 
 	for _, r := range routes {
 		// parse route
@@ -413,7 +490,7 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
-			if err = registerRouteWithHosts(mux, methods, uri, r.Hosts, handler); err != nil {
+			if err = registrar.registerRouteWithHosts(methods, uri, r.Hosts, handler); err != nil {
 				logger.Warnf("convert uri fail: %v", err)
 				continue
 			}

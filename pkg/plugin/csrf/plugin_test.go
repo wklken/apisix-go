@@ -40,10 +40,10 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
-		t.Fatalf("Content-Type = %q, want application/json", got)
+	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q, want application/json with UTF-8 charset", got)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"error_msg":"no csrf token in headers"}` {
+	if got := rr.Body.String(); got != `{"error_msg":"no csrf token in headers"}` {
 		t.Fatalf("body = %q, want APISIX csrf error JSON", got)
 	}
 }

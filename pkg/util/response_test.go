@@ -33,6 +33,22 @@ func TestWriteJSONDoesNotCommitHeaderWhenMarshalFails(t *testing.T) {
 	}
 }
 
+func TestWriteJSONMessageWritesCanonicalMessageObject(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	if err := WriteJSONMessage(recorder, http.StatusBadRequest, "bad <input> & retry"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := recorder.Body.String(); got != `{"message":"bad \u003cinput\u003e \u0026 retry"}` {
+		t.Fatalf("body = %q", got)
+	}
+}
+
 func TestBuildMessageResponse(t *testing.T) {
 	if got := BuildMessageResponse("not found"); got != "{\"message\":\"not found\"}" {
 		t.Fatalf("BuildMessageResponse() = %q", got)

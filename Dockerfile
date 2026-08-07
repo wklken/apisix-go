@@ -22,7 +22,7 @@ RUN mkdir -p /usr/local/apisix/logs/
 
 WORKDIR /usr/local/apisix
 
-COPY conf/config*.yaml /usr/local/apisix/conf/
+COPY conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/
 
 COPY --from=builder /apisix /usr/bin/apisix
 

@@ -1,7 +1,6 @@
 package authz_keycloak
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -20,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -309,7 +309,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		token := fetchJWTToken(r)
 		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Missing JWT token in request"})
+			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing JWT token in request")
 			return
 		}
 
@@ -765,28 +765,28 @@ func (p *Plugin) isPasswordGrantRequest(r *http.Request) bool {
 func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "Failed to get request body."})
+		_ = util.WriteJSONMessage(w, http.StatusServiceUnavailable, "Failed to get request body.")
 		return
 	}
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "Failed to get request body."})
+		_ = util.WriteJSONMessage(w, http.StatusServiceUnavailable, "Failed to get request body.")
 		return
 	}
 	username := values.Get("username")
 	if username == "" {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "username is missing."})
+		_ = util.WriteJSONMessage(w, http.StatusUnprocessableEntity, "username is missing.")
 		return
 	}
 	password := values.Get("password")
 	if password == "" {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "password is missing."})
+		_ = util.WriteJSONMessage(w, http.StatusUnprocessableEntity, "password is missing.")
 		return
 	}
 
 	endpoint, err := p.tokenEndpoint()
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": err.Error()})
+		_ = util.WriteJSONMessage(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 
@@ -802,7 +802,7 @@ func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.
 		SetBody(form.Encode()).
 		Post(endpoint)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Accessing token endpoint URL failed."})
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Accessing token endpoint URL failed.")
 		return
 	}
 
@@ -839,14 +839,4 @@ func scopedPermissions(permissions []string, method string, useMethodScope bool)
 		out = append(out, permission+"#"+method)
 	}
 	return out
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(value); err != nil {
-		return
-	}
-	_, _ = w.Write(buf.Bytes())
 }

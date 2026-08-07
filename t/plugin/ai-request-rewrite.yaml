@@ -204,7 +204,7 @@ cases:
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
         output:
           status: 500
-          headers: {Content-Type: {equals: application/json}}
+          headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
           body: {json_equals: '{"message":"LLM service returned error status: 401"}'}
           logs: {matches: 'LLM service returned error status: 401'}
 
@@ -313,7 +313,7 @@ cases:
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
         output:
           status: 500
-          headers: {Content-Type: {equals: application/json}}
+          headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
           body: {json_equals: '{"message":"LLM service returned error status: 401"}'}
           logs: {matches: 'LLM service returned error status: 401'}
 
@@ -353,7 +353,7 @@ cases:
             input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
             output:
               status: 500
-              headers: {Content-Type: {equals: application/json}}
+              headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
               body: {json_equals: '{"message":"LLM service returned error status: 400"}'}
               logs: {matches: 'LLM service returned error status: 400'}
       - name: internal-server-error
@@ -389,7 +389,7 @@ cases:
             input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
             output:
               status: 500
-              headers: {Content-Type: {equals: application/json}}
+              headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
               body: {json_equals: '{"message":"LLM service returned error status: 500"}'}
               logs: {matches: 'LLM service returned error status: 500'}
 
@@ -526,7 +526,7 @@ cases:
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}}
         output:
           status: 400
-          headers: {Content-Type: {equals: application/json}}
+          headers: {Content-Type: {equals: 'application/json; charset=UTF-8'}}
           body: {json_equals: '{"message":"missing request body"}'}
           logs: {matches: 'missing request body'}
 

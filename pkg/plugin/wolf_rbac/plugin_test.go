@@ -189,7 +189,10 @@ func TestHandlerRejectsMissingAndInvalidToken(t *testing.T) {
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token status = %d, want 401", missing.Code)
 	}
-	if !strings.Contains(missing.Body.String(), "Missing rbac token") {
+	if got := missing.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("missing token Content-Type = %q", got)
+	}
+	if got := missing.Body.String(); got != `{"message":"Missing rbac token in request"}` {
 		t.Fatalf("missing token body = %q", missing.Body.String())
 	}
 

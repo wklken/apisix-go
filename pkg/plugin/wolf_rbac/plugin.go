@@ -128,26 +128,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rawToken := fetchRBACToken(r)
 		if rawToken == "" {
-			writeJSONError(w, http.StatusUnauthorized, "Missing rbac token in request")
+			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
 			return
 		}
 
 		token, err := parseRBACToken(rawToken)
 		if err != nil {
-			writeJSONError(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
+			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
 			return
 		}
 
 		consumer, cfg, err := p.consumerByAppID(token.AppID)
 		if err != nil {
 			logger.Errorf("consumer [%s] not found", token.AppID)
-			writeJSONError(w, http.StatusUnauthorized, "Invalid appid in rbac token")
+			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Invalid appid in rbac token")
 			return
 		}
 
 		status, reason, userInfo, err := p.checkPermission(r, cfg, token)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo)
@@ -156,7 +156,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				reason = http.StatusText(status)
 			}
 			logger.Errorf("wolf-rbac permission denied, status:%d, reason:%s", status, reason)
-			writeJSONError(w, status, reason)
+			_ = util.WriteJSONMessage(w, status, reason)
 			return
 		}
 
@@ -348,39 +348,27 @@ func (cfg consumerConfig) headerPrefix() string {
 	return cfg.HeaderPrefix
 }
 
-func writeJSONError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = projectjson.NewEncoder(w).Encode(map[string]any{"message": message})
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = projectjson.NewEncoder(w).Encode(value)
-}
-
 func (p *Plugin) handleLogin(w http.ResponseWriter, r *http.Request) {
 	args, err := requestArguments(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 	appid, _ := args["appid"].(string)
 	if appid == "" {
-		writeJSONError(w, http.StatusBadRequest, "appid is missing")
+		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid is missing")
 		return
 	}
 	_, cfg, err := p.consumerByAppID(appid)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "appid not found")
+		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid not found")
 		return
 	}
 	response, err := p.requestWolf(r, cfg, http.MethodPost, "/wolf/rbac/login.rest", "", args)
 	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	_ = util.WriteJSON(w, http.StatusOK, map[string]any{
 		"rbac_token": "V1#" + appid + "#" + response.Data.Token,
 		"user_info":  response.Data.UserInfo,
 	})
@@ -389,7 +377,7 @@ func (p *Plugin) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	args, err := requestArguments(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 	_, cfg, token, ok := p.publicAPIToken(w, r)
@@ -400,7 +388,7 @@ func (p *Plugin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": "success to change password"})
+	_ = util.WriteJSON(w, http.StatusOK, map[string]any{"message": "success to change password"})
 }
 
 func (p *Plugin) handleUserInfo(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +400,7 @@ func (p *Plugin) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	if !writeWolfPublicFailure(w, response, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user_info": response.Data.UserInfo})
+	_ = util.WriteJSON(w, http.StatusOK, map[string]any{"user_info": response.Data.UserInfo})
 }
 
 func (p *Plugin) publicAPIToken(
@@ -421,17 +409,17 @@ func (p *Plugin) publicAPIToken(
 ) (resource.Consumer, consumerConfig, rbacToken, bool) {
 	rawToken := fetchRBACToken(r)
 	if rawToken == "" {
-		writeJSONError(w, http.StatusUnauthorized, "Missing rbac token in request")
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
 	}
 	token, err := parseRBACToken(rawToken)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
 	}
 	consumer, cfg, err := p.consumerByAppID(token.AppID)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "appid not found")
+		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid not found")
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
 	}
 	return consumer, cfg, token, true
@@ -449,12 +437,12 @@ type wolfPublicResponse struct {
 func writeWolfPublicFailure(w http.ResponseWriter, response wolfPublicResponse, err error) bool {
 	if err != nil {
 		logger.Errorf("request to wolf-server failed: %s", err)
-		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+		_ = util.WriteJSONMessage(w, http.StatusInternalServerError, "request to wolf-server failed!")
 		return false
 	}
 	if !response.OK {
 		logger.Errorf("request to wolf-server failed! reason: %s", response.Reason)
-		writeJSONError(w, http.StatusOK, "request to wolf-server failed!")
+		_ = util.WriteJSONMessage(w, http.StatusOK, "request to wolf-server failed!")
 		return false
 	}
 	return true

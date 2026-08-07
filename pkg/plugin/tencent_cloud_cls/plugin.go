@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
@@ -378,7 +377,8 @@ func (p *Plugin) endpointURL() string {
 }
 
 func (p *Plugin) authorization() string {
-	signTime := fmt.Sprintf("%d;%d", p.now().Unix(), p.now().Unix()+authExpireSeconds)
+	now := p.now()
+	signTime := fmt.Sprintf("%d;%d", now.Unix(), now.Unix()+authExpireSeconds)
 	httpRequestInfo := fmt.Sprintf("%s\n%s\n%s\n%s\n", "post", clsAPIPath, "", "")
 	stringToSign := fmt.Sprintf("%s\n%s\n%s\n", "sha1", signTime, sha1Hex([]byte(httpRequestInfo)))
 	signKey := hmacSHA1Hex([]byte(p.config.SecretKey), []byte(signTime))
@@ -421,7 +421,7 @@ func (p *Plugin) buildBatchPayload(logs []map[string]any) []byte {
 	if len(group) == 0 {
 		return nil
 	}
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+	if hostname := base.Hostname(); hostname != "" {
 		group = appendStringField(group, 4, hostname)
 	}
 	return appendBytesField(nil, 1, group)

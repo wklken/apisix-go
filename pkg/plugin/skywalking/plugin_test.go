@@ -285,3 +285,68 @@ func TestNestedSkyWalkingHandlersTraceRequestOnce(t *testing.T) {
 		t.Fatalf("reported segments = %d, want one trace when route and global rule both enable skywalking", got)
 	}
 }
+
+func TestReportWindowBoundsQueuedSegments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	for range maxPendingSkyWalkingSegments + 10 {
+		p.reportSegment(skywalkingSegment{TraceID: "trace"})
+	}
+
+	p.reportMu.Lock()
+	queued := len(p.segments)
+	dropped := p.dropped
+	p.reportMu.Unlock()
+
+	if queued != maxPendingSkyWalkingSegments {
+		t.Fatalf("queued segments = %d, want the bounded window of %d", queued, maxPendingSkyWalkingSegments)
+	}
+	if dropped < 10 {
+		t.Fatalf("dropped segments = %d, want the overflow beyond the window counted", dropped)
+	}
+}
+
+func TestFailedFlushRequeuesSegmentsForRetry(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	reported := make(chan []map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var segments []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&segments); err != nil {
+			t.Fatalf("decode skywalking segments: %v", err)
+		}
+		reported <- segments
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	p.reportSegment(skywalkingSegment{TraceID: "trace-a"})
+
+	p.Flush()
+	p.reportMu.Lock()
+	queued := len(p.segments)
+	p.reportMu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queued segments after failed flush = %d, want the segment requeued for retry", queued)
+	}
+
+	fail.Store(false)
+	p.Flush()
+	select {
+	case segments := <-reported:
+		if len(segments) != 1 || segments[0]["traceId"] != "trace-a" {
+			t.Fatalf("retried segments = %#v, want the requeued segment", segments)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retried SkyWalking report")
+	}
+}

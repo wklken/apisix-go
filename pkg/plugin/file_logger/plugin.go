@@ -341,8 +341,8 @@ func defaultLogFields(
 	metrics httpsnoop.Metrics,
 	started time.Time,
 ) map[string]any {
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
+	hostname := base.Hostname()
+	if hostname == "" {
 		hostname = "unknown"
 	}
 	latency := float64(time.Since(started).Microseconds()) / 1000

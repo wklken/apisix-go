@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -748,4 +749,52 @@ func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
 	if !strings.Contains(entry.Message, "2") {
 		t.Fatalf("drop diagnostic = %q, want the dropped remainder count", entry.Message)
 	}
+}
+
+func TestAuthorizationSignTimeUsesSingleTimestamp(t *testing.T) {
+	p := &Plugin{config: Config{SecretID: "secret-id", SecretKey: "secret-key"}}
+	calls := 0
+	p.now = func() time.Time {
+		calls++
+		if calls > 1 {
+			return time.Unix(1710000001, 0)
+		}
+		return time.Unix(1710000000, 0)
+	}
+
+	auth := p.authorization()
+
+	start, end, ok := signTimeWindow(auth)
+	if !ok {
+		t.Fatalf("authorization = %q, want q-sign-time=start;end", auth)
+	}
+	if end-start != authExpireSeconds {
+		t.Fatalf("sign time window = %d seconds, want exactly %d", end-start, authExpireSeconds)
+	}
+	if calls != 1 {
+		t.Fatalf("now() called %d times, want exactly once per signature", calls)
+	}
+}
+
+func signTimeWindow(auth string) (int64, int64, bool) {
+	for _, part := range strings.Split(auth, "&") {
+		value, ok := strings.CutPrefix(part, "q-sign-time=")
+		if !ok {
+			continue
+		}
+		start, end, ok := strings.Cut(value, ";")
+		if !ok {
+			return 0, 0, false
+		}
+		startTime, err := strconv.ParseInt(start, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		endTime, err := strconv.ParseInt(end, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		return startTime, endTime, true
+	}
+	return 0, 0, false
 }

@@ -336,6 +336,11 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 		return 0, fmt.Errorf("clickhouse-logger endpoint is empty")
 	}
 
+	body, err := p.buildInsertBody(entries, batchMaxSize)
+	if err != nil {
+		return 0, err
+	}
+
 	resp, err := p.client.R().
 		SetHeaders(map[string]string{
 			"Content-Type":          "application/json",
@@ -343,7 +348,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 			"X-ClickHouse-Key":      p.config.Password,
 			"X-ClickHouse-Database": p.config.Database,
 		}).
-		SetBody(p.buildInsertBody(entries, batchMaxSize)).
+		SetBody(body).
 		Post(endpoint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to ClickHouse endpoint %s: %w", endpoint, err)
@@ -361,24 +366,24 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	return 0, nil
 }
 
-func (p *Plugin) buildInsertBody(entries []map[string]any, batchMaxSize int) string {
+func (p *Plugin) buildInsertBody(entries []map[string]any, batchMaxSize int) (string, error) {
 	if batchMaxSize == 1 && len(entries) == 1 {
 		payload, err := json.Marshal(entries[0])
 		if err != nil {
-			payload = []byte(`{}`)
+			return "", fmt.Errorf("failed to marshal clickhouse log entry: %w", err)
 		}
-		return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + string(payload)
+		return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + string(payload), nil
 	}
 
 	rows := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		payload, err := json.Marshal(entry)
 		if err != nil {
-			payload = []byte(`{}`)
+			return "", fmt.Errorf("failed to marshal clickhouse log entry: %w", err)
 		}
 		rows = append(rows, string(payload))
 	}
-	return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + strings.Join(rows, " ")
+	return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + strings.Join(rows, " "), nil
 }
 
 func (p *Plugin) endpointURL() string {

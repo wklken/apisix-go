@@ -514,9 +514,8 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 
 	hostname, _ := log[logglyHostField].(string)
 	if hostname == "" {
-		var err error
-		hostname, err = os.Hostname()
-		if err != nil || hostname == "" {
+		hostname = base.Hostname()
+		if hostname == "" {
 			hostname = "-"
 		}
 	}

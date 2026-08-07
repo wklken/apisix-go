@@ -740,6 +740,9 @@ func (s *countingTCPListener) acceptCount() int {
 func (s *countingTCPListener) payload(index int) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.payloads) {
+		return ""
+	}
 	return string(s.payloads[index])
 }
 

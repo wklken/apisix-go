@@ -13,6 +13,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.yaml.in/yaml/v3"
@@ -143,17 +144,17 @@ func (w *StandaloneFileWatcher) SetReloadCallback(callback func(StandaloneReload
 func (w *StandaloneFileWatcher) Watch() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
 		return
 	}
 	if err := watcher.Add(filepath.Dir(w.path)); err != nil {
 		_ = watcher.Close()
-		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
 		return
 	}
 	result, err := w.ReloadSnapshot()
 	if err != nil {
-		fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
 	}
 	w.notifyReload(result, err)
 
@@ -174,14 +175,14 @@ func (w *StandaloneFileWatcher) Watch() {
 				}
 				result, err := w.ReloadSnapshot()
 				if err != nil {
-					fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+					logger.Errorf("reload standalone config %q failed: %s", w.path, err)
 				}
 				w.notifyReload(result, err)
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+				logger.Errorf("watch standalone config %q failed: %s", w.path, err)
 			}
 		}
 	}()
@@ -207,7 +208,7 @@ func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id strin
 func InitStandaloneFileWatcher(path string, events chan *store.Event) {
 	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
 	if err := watcher.Reload(); err != nil {
-		fmt.Printf("load standalone config %q failed: %s\n", path, err)
+		logger.Errorf("load standalone config %q failed: %s", path, err)
 		return
 	}
 	watcher.Watch()
@@ -216,7 +217,7 @@ func InitStandaloneFileWatcher(path string, events chan *store.Event) {
 func ReadAndReload(path string, events chan *store.Event) {
 	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
 	if err := watcher.Reload(); err != nil {
-		fmt.Printf("load standalone config %q failed: %s\n", path, err)
+		logger.Errorf("load standalone config %q failed: %s", path, err)
 	}
 }
 

@@ -1,7 +1,6 @@
 package api_breaker
 
 import (
-	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -214,7 +213,7 @@ func (p *Plugin) shouldBreak() bool {
 		return false
 	}
 	seconds := breakerSeconds(p.unhealthyCount, *p.config.Unhealthy.Failures, p.config.MaxBreakerSec)
-	logger.Info(fmt.Sprintf("breaker_time: %d", seconds))
+	logger.Debugf("breaker_time: %d", seconds)
 	return !p.now().After(p.lastUnhealthyTime.Add(time.Duration(seconds) * time.Second))
 }
 

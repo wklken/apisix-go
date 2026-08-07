@@ -131,9 +131,11 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limits, err := loader()
 		if err != nil {
-			_ = util.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
+			if writeErr := util.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
-			})
+			}); writeErr != nil {
+				logger.Debugf("failed to write batch-requests error response: %s", writeErr)
+			}
 			return
 		}
 		serveBatchRequest(dispatcher, limits, w, r)
@@ -143,10 +145,14 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWriter, r *http.Request) {
 	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
 	if err != nil {
-		_ = util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+		if writeErr := util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()}); writeErr != nil {
+			logger.Debugf("failed to write batch-requests error response: %s", writeErr)
+		}
 		return
 	}
-	_ = util.WriteJSON(w, http.StatusOK, responses)
+	if writeErr := util.WriteJSON(w, http.StatusOK, responses); writeErr != nil {
+		logger.Debugf("failed to write batch-requests response: %s", writeErr)
+	}
 }
 
 func handleBatchRequest(

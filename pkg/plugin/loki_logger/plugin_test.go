@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,10 +72,13 @@ func TestBuildPayloadUsesLokiStreamShape(t *testing.T) {
 		},
 	})
 
-	payload := p.buildPayload(map[string]any{
+	payload, err := p.buildPayload(map[string]any{
 		"path":   "/orders",
 		"status": 201,
 	})
+	if err != nil {
+		t.Fatalf("buildPayload() error = %v", err)
+	}
 
 	if len(payload.Streams) != 1 {
 		t.Fatalf("streams = %d, want 1", len(payload.Streams))
@@ -110,11 +114,14 @@ func TestBuildBatchPayloadGroupsEntriesByResolvedLabels(t *testing.T) {
 		},
 	})
 
-	payload := p.buildBatchPayload([]map[string]any{
+	payload, err := p.buildBatchPayload([]map[string]any{
 		{"http_x_service_name": "svc-alpha", "request_headers_x_service_name": "svc-alpha"},
 		{"http_x_service_name": "svc-beta", "request_headers_x_service_name": "svc-beta"},
 		{"http_x_service_name": "", "request_headers_x_service_name": ""},
 	})
+	if err != nil {
+		t.Fatalf("buildBatchPayload() error = %v", err)
+	}
 
 	if len(payload.Streams) != 3 {
 		t.Fatalf("streams = %d, want one stream per resolved label set", len(payload.Streams))
@@ -370,8 +377,14 @@ func TestBuildBatchPayloadPreservesEnvelopeAcrossBuilds(t *testing.T) {
 		},
 	}
 
-	first := p.buildPayload(entry)
-	second := p.buildPayload(entry)
+	first, err := p.buildPayload(entry)
+	if err != nil {
+		t.Fatalf("buildPayload() error = %v", err)
+	}
+	second, err := p.buildPayload(entry)
+	if err != nil {
+		t.Fatalf("buildPayload() error = %v", err)
+	}
 	for index, payload := range []lokiPayload{first, second} {
 		if len(payload.Streams) != 1 || payload.Streams[0].Stream["service"] != "svc-alpha" {
 			t.Fatalf("payload %d streams = %#v, want private svc-alpha labels", index+1, payload.Streams)
@@ -896,4 +909,13 @@ func extractLokiStreamEntry(t *testing.T, stream map[string]any, index int) map[
 		t.Fatalf("decode stream entry: %v", err)
 	}
 	return entry
+}
+
+func TestBuildBatchPayloadSurfacesMarshalError(t *testing.T) {
+	p := newTestPlugin(t, Config{EndpointAddrs: []string{"http://127.0.0.1:3100"}})
+
+	_, err := p.buildBatchPayload([]map[string]any{{"bad": make(chan int)}})
+	if err == nil || !strings.Contains(err.Error(), "marshal") {
+		t.Fatalf("buildBatchPayload() error = %v, want marshal failure surfaced", err)
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -387,8 +386,8 @@ func (p *Plugin) defaultLogFields(
 	if apisixLatency < 0 {
 		apisixLatency = 0
 	}
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
+	hostname := base.Hostname()
+	if hostname == "" {
 		hostname = "unknown"
 	}
 	requestSize := max(r.ContentLength, 0)
@@ -508,9 +507,13 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	}
 
 	endpoint := p.endpointURL()
+	payload, err := p.buildBatchPayload(entries)
+	if err != nil {
+		return 0, err
+	}
 	resp, err := p.client.R().
 		SetHeaders(p.headers()).
-		SetBody(p.buildBatchPayload(entries)).
+		SetBody(payload).
 		Post(endpoint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to Loki endpoint %s: %w", endpoint, err)
@@ -528,11 +531,11 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	return 0, nil
 }
 
-func (p *Plugin) buildPayload(log map[string]any) lokiPayload {
+func (p *Plugin) buildPayload(log map[string]any) (lokiPayload, error) {
 	return p.buildBatchPayload([]map[string]any{log})
 }
 
-func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
+func (p *Plugin) buildBatchPayload(entries []map[string]any) (lokiPayload, error) {
 	streams := make([]lokiStream, 0, len(entries))
 	streamIndex := make(map[string]int, len(entries))
 	for _, queuedEntry := range entries {
@@ -547,14 +550,14 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 
 		body, err := json.Marshal(logEntry)
 		if err != nil {
-			body = []byte(`{}`)
+			return lokiPayload{}, fmt.Errorf("failed to marshal loki log entry: %w", err)
 		}
 		if labels == nil {
 			labels = p.resolveLabels(logEntry)
 		}
 		labelKey, err := json.Marshal(labels)
 		if err != nil {
-			labelKey = []byte{}
+			return lokiPayload{}, fmt.Errorf("failed to marshal loki labels: %w", err)
 		}
 		index, ok := streamIndex[string(labelKey)]
 		if !ok {
@@ -564,7 +567,7 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 		}
 		streams[index].Values = append(streams[index].Values, [2]string{logTime, string(body)})
 	}
-	return lokiPayload{Streams: streams}
+	return lokiPayload{Streams: streams}, nil
 }
 
 func wrapLokiEntry(fields map[string]any, requestStart time.Time, labels map[string]string) map[string]any {

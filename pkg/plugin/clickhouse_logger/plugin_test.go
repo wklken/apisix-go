@@ -171,10 +171,13 @@ func TestBuildInsertBodyUsesJSONEachRow(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
-	body := p.buildInsertBody([]map[string]any{{
+	body, err := p.buildInsertBody([]map[string]any{{
 		"path":   "/orders",
 		"status": 201,
 	}}, 1)
+	if err != nil {
+		t.Fatalf("buildInsertBody() error = %v", err)
+	}
 
 	if !strings.HasPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ") {
 		t.Fatalf("body = %q, want ClickHouse INSERT JSONEachRow prefix", body)
@@ -644,4 +647,16 @@ func encryptClickHouseTestValue(t *testing.T, key string, value string) string {
 	ciphertext := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
 	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func TestBuildInsertBodySurfacesMarshalError(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		LogTable:      "apisix_logs",
+	})
+
+	_, err := p.buildInsertBody([]map[string]any{{"bad": make(chan int)}}, 1)
+	if err == nil || !strings.Contains(err.Error(), "marshal") {
+		t.Fatalf("buildInsertBody() error = %v, want marshal failure surfaced", err)
+	}
 }

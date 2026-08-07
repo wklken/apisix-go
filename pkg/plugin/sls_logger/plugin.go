@@ -351,8 +351,8 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 		payload = []byte(`{}`)
 	}
 
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
+	hostname := base.Hostname()
+	if hostname == "" {
 		hostname = "-"
 	}
 

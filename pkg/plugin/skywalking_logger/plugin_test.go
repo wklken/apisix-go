@@ -79,10 +79,13 @@ func TestBuildEntryUsesSkyWalkingLogShape(t *testing.T) {
 		IncludeRespBody:     true,
 	})
 
-	entry := p.buildEntry(map[string]any{
+	entry, err := p.buildEntry(map[string]any{
 		"path":                     "/orders",
 		internalSkyWalkingEndpoint: "/orders",
 	})
+	if err != nil {
+		t.Fatalf("buildEntry() error = %v", err)
+	}
 
 	if entry.Service != "gateway" {
 		t.Fatalf("service = %q, want gateway", entry.Service)
@@ -536,5 +539,14 @@ func TestHandlerCustomFormatResolvesAPISIXValuesAndRouteIdentity(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SkyWalking custom-format delivery")
+	}
+}
+
+func TestBuildEntrySurfacesMarshalError(t *testing.T) {
+	p := newTestPlugin(t, Config{ServiceName: "gateway"})
+
+	_, err := p.buildEntry(map[string]any{"bad": make(chan int)})
+	if err == nil || !strings.Contains(err.Error(), "marshal") {
+		t.Fatalf("buildEntry() error = %v, want marshal failure surfaced", err)
 	}
 }

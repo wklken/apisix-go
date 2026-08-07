@@ -18,6 +18,12 @@ var accessLogHostname = sync.OnceValue(func() string {
 	return hostname
 })
 
+// Hostname returns the process hostname, cached once per process so logger
+// transports never re-read it per entry.
+func Hostname() string {
+	return accessLogHostname()
+}
+
 // AccessLogRequest is the captured request snapshot shared by the
 // access-log style logger plugins.
 type AccessLogRequest struct {

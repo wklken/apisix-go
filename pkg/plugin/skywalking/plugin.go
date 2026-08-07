@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +32,7 @@ type Plugin struct {
 	reportTimer *time.Timer
 	reportWG    sync.WaitGroup
 	segments    []skywalkingSegment
+	dropped     int
 	stopped     bool
 }
 
@@ -41,6 +41,12 @@ const (
 	name     = "skywalking"
 
 	componentIDAPISIX = 6002
+
+	// maxPendingSkyWalkingSegments bounds the queued segment window so a
+	// failing collector cannot grow memory without limit.
+	maxPendingSkyWalkingSegments = 1000
+
+	skywalkingReportTimeout = 5 * time.Second
 )
 
 const schema = `
@@ -136,6 +142,7 @@ func (p *Plugin) PostInit() error {
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddr)
 	client := resty.New()
+	client.SetTimeout(skywalkingReportTimeout)
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	return nil
@@ -267,15 +274,18 @@ func (p *Plugin) buildSegment(
 
 func (p *Plugin) reportSegment(segment skywalkingSegment) {
 	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
 	if p.stopped {
-		p.reportMu.Unlock()
+		return
+	}
+	if len(p.segments) >= maxPendingSkyWalkingSegments {
+		p.dropped++
 		return
 	}
 	p.segments = append(p.segments, segment)
 	if p.reportTimer == nil {
 		p.reportTimer = time.AfterFunc(time.Duration(p.config.ReportInterval)*time.Second, p.flushSegments)
 	}
-	p.reportMu.Unlock()
 }
 
 func (p *Plugin) Flush() {
@@ -312,10 +322,37 @@ func (p *Plugin) flushSegments() {
 		Post(p.endpointURL())
 	if err != nil {
 		logger.Errorf("failed to report SkyWalking segment to %s: %s", p.endpointURL(), err)
+		p.requeueSegments(segments)
 		return
 	}
 	if resp.StatusCode() < http.StatusOK || resp.StatusCode() >= http.StatusMultipleChoices {
 		logger.Errorf("SkyWalking endpoint returned status code [%d], body [%s]", resp.StatusCode(), resp.String())
+		p.requeueSegments(segments)
+	}
+}
+
+// requeueSegments returns failed segments to the bounded window and
+// reschedules the report timer; segments that no longer fit are dropped.
+func (p *Plugin) requeueSegments(segments []skywalkingSegment) {
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
+	if p.stopped {
+		p.dropped += len(segments)
+		return
+	}
+	space := maxPendingSkyWalkingSegments - len(p.segments)
+	kept := len(segments)
+	if kept > space {
+		kept = space
+	}
+	if kept > 0 {
+		p.segments = append(segments[:kept], p.segments...)
+	}
+	if dropped := len(segments) - kept; dropped > 0 {
+		p.dropped += dropped
+	}
+	if p.reportTimer == nil && len(p.segments) > 0 {
+		p.reportTimer = time.AfterFunc(time.Duration(p.config.ReportInterval)*time.Second, p.flushSegments)
 	}
 }
 
@@ -327,11 +364,10 @@ func (p *Plugin) serviceInstanceName() string {
 	if p.config.ServiceInstanceName != "$hostname" {
 		return p.config.ServiceInstanceName
 	}
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		return "$hostname"
+	if hostname := base.Hostname(); hostname != "" {
+		return hostname
 	}
-	return hostname
+	return "$hostname"
 }
 
 func parseSW8(header string) (sw8Context, bool) {

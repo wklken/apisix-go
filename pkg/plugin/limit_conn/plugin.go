@@ -416,7 +416,10 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.config.RejectedMsg != "" {
-		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		body, err := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		if err != nil {
+			return fmt.Errorf("limit-conn failed to marshal rejected_msg: %w", err)
+		}
 		p.config.rejectBody = util.BytesToString(body)
 	}
 
@@ -514,7 +517,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
-		logger.Infof("limit key: %sroute", key)
+		logger.Debugf("limit key: %s", key)
 		conn, burst, err := p.resolveLimits(r)
 		if err != nil {
 			if *p.config.AllowDegradation {

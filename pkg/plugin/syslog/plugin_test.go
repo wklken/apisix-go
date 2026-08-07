@@ -1171,3 +1171,38 @@ func mustAtoi(t *testing.T, value string) int {
 	}
 	return n
 }
+
+func TestUnmarshalJSONPreservesExplicitFieldPresence(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{
+		"host": "127.0.0.1",
+		"port": 514,
+		"retry_delay": 0,
+		"log_format": {"method": "$request_method"},
+		"log_format_extra": {"host": "$host"}
+	}`), &cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if cfg.RetryDelay != 0 || !cfg.retryDelaySet {
+		t.Fatalf("retry_delay = %d, set = %v, want explicit zero preserved", cfg.RetryDelay, cfg.retryDelaySet)
+	}
+	if cfg.LogFormat["method"] != "$request_method" || !cfg.logFormatSet {
+		t.Fatalf("log_format = %#v, set = %v, want decoded and present", cfg.LogFormat, cfg.logFormatSet)
+	}
+	if cfg.LogFormatExtra["host"] != "$host" || !cfg.logFormatExtraSet {
+		t.Fatalf("log_format_extra = %#v, set = %v, want decoded and present", cfg.LogFormatExtra, cfg.logFormatExtraSet)
+	}
+}
+
+func TestUnmarshalJSONDetectsAbsentFields(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"host": "127.0.0.1", "port": 514}`), &cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if cfg.retryDelaySet || cfg.logFormatSet || cfg.logFormatExtraSet {
+		t.Fatalf("absent fields reported present: retry_delay=%v log_format=%v log_format_extra=%v",
+			cfg.retryDelaySet, cfg.logFormatSet, cfg.logFormatExtraSet)
+	}
+}

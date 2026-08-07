@@ -37,6 +37,17 @@ import (
 type Plugin struct {
 	base.BasePlugin
 	config Config
+
+	// spKeyPair and spIDPMetadata are the config-derived immutable parts of
+	// the service provider, parsed once in PostInit instead of per request.
+	spKeyPair    *samlKeyPair
+	spIDPMetadata *saml.EntityDescriptor
+}
+
+// samlKeyPair is the parsed SP certificate and private key.
+type samlKeyPair struct {
+	cert *x509.Certificate
+	key  crypto.Signer
 }
 
 const (
@@ -167,6 +178,44 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	if p.config.AuthProtocolBindingMethod == "" {
 		p.config.AuthProtocolBindingMethod = "HTTP-Redirect"
+	}
+
+	cert, key, err := parseKeyPair(p.config.SPCert, p.config.SPPrivateKey)
+	if err != nil {
+		return fmt.Errorf("parse SP key pair: %w", err)
+	}
+	p.spKeyPair = &samlKeyPair{cert: cert, key: key}
+	p.spIDPMetadata = &saml.EntityDescriptor{
+		EntityID: p.config.idpEntityID(),
+		IDPSSODescriptors: []saml.IDPSSODescriptor{
+			{
+				SSODescriptor: saml.SSODescriptor{
+					RoleDescriptor: saml.RoleDescriptor{
+						ProtocolSupportEnumeration: "urn:oasis:names:tc:SAML:2.0:protocol",
+						KeyDescriptors: []saml.KeyDescriptor{
+							{
+								Use: "signing",
+								KeyInfo: saml.KeyInfo{
+									X509Data: saml.X509Data{
+										X509Certificates: []saml.X509Certificate{
+											{Data: certificateData(p.config.IDPCert)},
+										},
+									},
+								},
+							},
+						},
+					},
+					SingleLogoutServices: []saml.Endpoint{
+						{Binding: saml.HTTPRedirectBinding, Location: p.config.IDPURI},
+						{Binding: saml.HTTPPostBinding, Location: p.config.IDPURI},
+					},
+				},
+				SingleSignOnServices: []saml.Endpoint{
+					{Binding: saml.HTTPRedirectBinding, Location: p.config.IDPURI},
+					{Binding: saml.HTTPPostBinding, Location: p.config.IDPURI},
+				},
+			},
+		},
 	}
 
 	return nil
@@ -491,10 +540,6 @@ func (p *Plugin) validateLogoutResponse(
 }
 
 func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error) {
-	cert, key, err := parseKeyPair(p.config.SPCert, p.config.SPPrivateKey)
-	if err != nil {
-		return nil, err
-	}
 	acsURL, err := absoluteURL(r, p.config.LoginCallbackURI)
 	if err != nil {
 		return nil, err
@@ -504,46 +549,13 @@ func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error)
 		return nil, err
 	}
 
-	idpMetadata := &saml.EntityDescriptor{
-		EntityID: p.config.idpEntityID(),
-		IDPSSODescriptors: []saml.IDPSSODescriptor{
-			{
-				SSODescriptor: saml.SSODescriptor{
-					RoleDescriptor: saml.RoleDescriptor{
-						ProtocolSupportEnumeration: "urn:oasis:names:tc:SAML:2.0:protocol",
-						KeyDescriptors: []saml.KeyDescriptor{
-							{
-								Use: "signing",
-								KeyInfo: saml.KeyInfo{
-									X509Data: saml.X509Data{
-										X509Certificates: []saml.X509Certificate{
-											{Data: certificateData(p.config.IDPCert)},
-										},
-									},
-								},
-							},
-						},
-					},
-					SingleLogoutServices: []saml.Endpoint{
-						{Binding: saml.HTTPRedirectBinding, Location: p.config.IDPURI},
-						{Binding: saml.HTTPPostBinding, Location: p.config.IDPURI},
-					},
-				},
-				SingleSignOnServices: []saml.Endpoint{
-					{Binding: saml.HTTPRedirectBinding, Location: p.config.IDPURI},
-					{Binding: saml.HTTPPostBinding, Location: p.config.IDPURI},
-				},
-			},
-		},
-	}
-
 	return &saml.ServiceProvider{
 		EntityID:          p.config.SPIssuer,
-		Key:               key,
-		Certificate:       cert,
+		Key:               p.spKeyPair.key,
+		Certificate:       p.spKeyPair.cert,
 		AcsURL:            *acsURL,
 		SloURL:            *sloURL,
-		IDPMetadata:       idpMetadata,
+		IDPMetadata:       p.spIDPMetadata,
 		SignatureMethod:   rsaSHA256Method,
 		AuthnNameIDFormat: saml.UnspecifiedNameIDFormat,
 		LogoutBindings:    []string{saml.HTTPRedirectBinding, saml.HTTPPostBinding},

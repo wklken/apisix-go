@@ -57,6 +57,9 @@ type Plugin struct {
 	mu              sync.Mutex
 	discovery       discoveryData
 	discoveryLoaded bool
+
+	providerMu sync.Mutex
+	provider   *providerClient
 }
 
 const (

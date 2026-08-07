@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -655,7 +656,243 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
+
 	return p
+}
+
+// countingTCPListener accepts connections indefinitely, records every byte
+// received per connection, and can break the newest connection with a RST so
+// the client observes a broken pipe deterministically.
+type countingTCPListener struct {
+	ln       net.Listener
+	mu       sync.Mutex
+	accepted int
+	payloads [][]byte
+	conns    []net.Conn
+}
+
+func newCountingTCPListener(t *testing.T) *countingTCPListener {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	server := &countingTCPListener{ln: ln}
+	t.Cleanup(func() {
+		_ = ln.Close()
+		server.mu.Lock()
+		for _, conn := range server.conns {
+			_ = conn.Close()
+		}
+		server.mu.Unlock()
+	})
+	go server.acceptLoop()
+	return server
+}
+
+func (s *countingTCPListener) acceptLoop() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		index := len(s.conns)
+		s.conns = append(s.conns, conn)
+		s.accepted++
+		s.mu.Unlock()
+		go s.readLoop(index, conn)
+	}
+}
+
+func (s *countingTCPListener) readLoop(index int, conn net.Conn) {
+	buf := make([]byte, 4096)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := conn.Read(buf)
+		if n > 0 {
+			s.mu.Lock()
+			for len(s.payloads) <= index {
+				s.payloads = append(s.payloads, nil)
+			}
+			payload := append([]byte(nil), s.payloads[index]...)
+			s.payloads[index] = append(payload, buf[:n]...)
+			s.mu.Unlock()
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *countingTCPListener) addr() string {
+	return s.ln.Addr().String()
+}
+
+func (s *countingTCPListener) acceptCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accepted
+}
+
+func (s *countingTCPListener) payload(index int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.payloads[index])
+}
+
+func (s *countingTCPListener) breakNewestConnection() {
+	s.mu.Lock()
+	conn := s.conns[len(s.conns)-1]
+	s.mu.Unlock()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0)
+	}
+	_ = conn.Close()
+}
+
+func TestSendBatchReusesConnectionAndRedialsOnce(t *testing.T) {
+	server := newCountingTCPListener(t)
+	host, port := splitAddr(t, server.addr())
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 1000})
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch #1 error = %v", err)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+		t.Fatalf("SendBatch #2 error = %v", err)
+	}
+	waitForTCP(t, func() bool {
+		return server.acceptCount() == 1 && strings.Contains(server.payload(0), `"route_id":"r2"`)
+	})
+	if got := server.acceptCount(); got != 1 {
+		t.Fatalf("connections after two batches = %d, want 1 reused connection", got)
+	}
+
+	server.breakNewestConnection()
+	// Read once so the client socket has processed the RST before the next
+	// send; the read returns the reset error deterministically.
+	p.connMu.Lock()
+	conn := p.conn
+	p.connMu.Unlock()
+	if conn != nil {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = conn.Read(make([]byte, 16))
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r3"}}, 1); err == nil {
+		t.Fatal("SendBatch #3 error = nil on a broken connection")
+	}
+	if got := server.acceptCount(); got != 1 {
+		t.Fatalf("connections after failed batch = %d, want no redial until the next send", got)
+	}
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r4"}}, 1); err != nil {
+		t.Fatalf("SendBatch #4 error = %v, want redial delivery", err)
+	}
+	waitForTCP(t, func() bool { return server.acceptCount() == 2 && strings.Contains(server.payload(1), `"route_id":"r4"`) })
+	if got := server.acceptCount(); got != 2 {
+		t.Fatalf("connections after redial = %d, want exactly 2", got)
+	}
+
+	if payload := server.payload(0); !strings.Contains(payload, `"route_id":"r1"`) ||
+		!strings.Contains(payload, `"route_id":"r2"`) {
+		t.Fatalf("first connection payload = %q, want both reused batches", payload)
+	}
+	if payload := server.payload(1); !strings.Contains(payload, `"route_id":"r4"`) {
+		t.Fatalf("redial connection payload = %q, want the post-redial batch", payload)
+	}
+}
+
+func waitForTCP(t *testing.T, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for tcp transport condition")
+}
+
+// shortWriteConn delivers at most one byte per Write call so a transport that
+// assumes a single full write truncates the payload, and records deadline
+// calls for observability.
+type shortWriteConn struct {
+	net.Conn
+	writeDeadline time.Time
+	readDeadline  time.Time
+}
+
+func (c *shortWriteConn) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return c.Conn.Write(p[:1])
+}
+
+func (c *shortWriteConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func (c *shortWriteConn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
+	return c.Conn.SetReadDeadline(t)
+}
+
+func TestSendBatchRetriesShortWritesToCompletion(t *testing.T) {
+	server := newCountingTCPListener(t)
+
+	raw, err := net.Dial("tcp", server.addr())
+	if err != nil {
+		t.Fatalf("dial listener: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+
+	p := newTestPlugin(t, Config{Host: "unused", Port: 1, Timeout: 1000})
+	conn := &shortWriteConn{Conn: raw}
+	p.connMu.Lock()
+	p.conn = conn
+	p.connMu.Unlock()
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "short"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	want := `{"route_id":"short"}`
+	waitForTCP(t, func() bool { return server.payload(0) == want })
+	if got := server.payload(0); got != want {
+		t.Fatalf("received payload = %q, want full %q despite short writes", got, want)
+	}
+	if conn.writeDeadline.IsZero() {
+		t.Fatal("write deadline was not set per send")
+	}
+	if conn.readDeadline.IsZero() {
+		t.Fatal("read deadline was not set per send")
+	}
+}
+
+func TestStopClosesActiveConnection(t *testing.T) {
+	server := newCountingTCPListener(t)
+	host, port := splitAddr(t, server.addr())
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 1000})
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	p.Stop()
+	p.connMu.Lock()
+	conn := p.conn
+	p.connMu.Unlock()
+	if conn != nil {
+		t.Fatal("Stop() left the active connection open")
+	}
 }
 
 func startTCPServer(t *testing.T) (string, <-chan string) {

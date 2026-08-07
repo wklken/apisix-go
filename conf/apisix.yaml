@@ -1,0 +1,12 @@
+routes:
+  - id: quickstart
+    uri: /hello
+    plugins:
+      proxy-rewrite:
+        uri: /anything/hello
+    upstream:
+      nodes:
+        "httpbingo.org:443": 1
+      type: roundrobin
+      scheme: https
+#END

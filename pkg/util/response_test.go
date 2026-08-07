@@ -32,3 +32,42 @@ func TestWriteJSONDoesNotCommitHeaderWhenMarshalFails(t *testing.T) {
 		t.Fatalf("response committed on marshal error: status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestBuildMessageResponse(t *testing.T) {
+	if got := BuildMessageResponse("not found"); got != "{\"message\":\"not found\"}" {
+		t.Fatalf("BuildMessageResponse() = %q", got)
+	}
+}
+
+func TestParseRoundTripsAndRejectsBadInput(t *testing.T) {
+	type target struct {
+		Count int `json:"count"`
+	}
+	var parsed target
+	if err := Parse(map[string]any{"count": 2}, &parsed); err != nil {
+		t.Fatalf("Parse(valid) error = %v", err)
+	}
+	if parsed.Count != 2 {
+		t.Fatalf("parsed count = %d, want 2", parsed.Count)
+	}
+
+	if err := Parse(func() {}, &target{}); err == nil {
+		t.Fatal("Parse(unsupported source) error = nil")
+	}
+	if err := Parse(map[string]any{"count": "two"}, &target{}); err == nil {
+		t.Fatal("Parse(type mismatch) error = nil")
+	}
+}
+
+func TestValidateAcceptsAndRejectsConfig(t *testing.T) {
+	schema := "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}},\"required\":[\"count\"]}"
+	if err := Validate(map[string]any{"count": 2}, schema); err != nil {
+		t.Fatalf("Validate(valid) error = %v", err)
+	}
+	if err := Validate(map[string]any{"count": "two"}, schema); err == nil {
+		t.Fatal("Validate(invalid) error = nil")
+	}
+	if err := Validate(nil, "{"); err == nil {
+		t.Fatal("Validate(broken schema) error = nil")
+	}
+}

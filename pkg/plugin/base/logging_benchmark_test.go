@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	brotli "github.com/andybalholm/brotli"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 // Benchmark corpus for request-body capture and shared response-body capture
@@ -268,4 +269,33 @@ func compressBenchmarkBrotli(b *testing.B, payload []byte) []byte {
 		b.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// BenchmarkLoggerObserver measures the logging fast path under three
+// configurations: a disabled runtime level, an enabled level with no
+// registered observers, and an enabled level with one observer. The
+// formatted-message path (Infof) is exercised because it dominates the
+// observer-side work in request handling.
+func BenchmarkLoggerObserver(b *testing.B) {
+	b.Run("level-disabled", func(b *testing.B) {
+		if err := logger.ConfigureLevel("error"); err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+		benchmarkLoggerObserverFormatting(b)
+	})
+	b.Run("enabled-zero-observers", func(b *testing.B) {
+		benchmarkLoggerObserverFormatting(b)
+	})
+	b.Run("enabled-one-observer", func(b *testing.B) {
+		stop := logger.ReplaceObserver("logger-observer-benchmark", func(logger.Entry) {})
+		b.Cleanup(stop)
+		benchmarkLoggerObserverFormatting(b)
+	})
+}
+
+func benchmarkLoggerObserverFormatting(b *testing.B) {
+	for b.Loop() {
+		logger.Infof("request uri=%s status=%d", "/hello", 200)
+	}
 }

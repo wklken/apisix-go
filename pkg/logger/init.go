@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,6 +35,9 @@ type observerRegistry struct {
 	mu         sync.RWMutex
 	generation uint64
 	entries    map[string]observer
+	// count mirrors len(entries) so the hot path can skip observer work with
+	// one atomic load instead of taking the registry lock.
+	count atomic.Int64
 }
 
 func init() {
@@ -80,8 +84,14 @@ func Info(msg string, fields ...zap.Field) {
 }
 
 func Infof(template string, args ...any) {
-	sugarLogger.Infof(template, args)
-	notifyObservers(zapcore.InfoLevel, fmt.Sprintf(template, args...))
+	if !runtimeLevel.Enabled(zapcore.InfoLevel) && observers.count.Load() == 0 {
+		return
+	}
+	// Format once and hand the result to both zap and the observers so the
+	// formatted message is produced a single time.
+	message := fmt.Sprintf(template, args...)
+	sugarLogger.Info(message)
+	notifyObservers(zapcore.InfoLevel, message)
 }
 
 func Warn(msg string, fields ...zap.Field) {
@@ -90,8 +100,12 @@ func Warn(msg string, fields ...zap.Field) {
 }
 
 func Warnf(template string, args ...any) {
-	sugarLogger.Warnf(template, args)
-	notifyObservers(zapcore.WarnLevel, fmt.Sprintf(template, args...))
+	if !runtimeLevel.Enabled(zapcore.WarnLevel) && observers.count.Load() == 0 {
+		return
+	}
+	message := fmt.Sprintf(template, args...)
+	sugarLogger.Warn(message)
+	notifyObservers(zapcore.WarnLevel, message)
 }
 
 func Error(msg string, fields ...zap.Field) {
@@ -100,8 +114,12 @@ func Error(msg string, fields ...zap.Field) {
 }
 
 func Errorf(template string, args ...any) {
-	sugarLogger.Errorf(template, args...)
-	notifyObservers(zapcore.ErrorLevel, fmt.Sprintf(template, args...))
+	if !runtimeLevel.Enabled(zapcore.ErrorLevel) && observers.count.Load() == 0 {
+		return
+	}
+	message := fmt.Sprintf(template, args...)
+	sugarLogger.Error(message)
+	notifyObservers(zapcore.ErrorLevel, message)
 }
 
 func Debug(msg string, fields ...zap.Field) {
@@ -110,8 +128,12 @@ func Debug(msg string, fields ...zap.Field) {
 }
 
 func Debugf(template string, args ...any) {
-	sugarLogger.Debugf(template, args...)
-	notifyObservers(zapcore.DebugLevel, fmt.Sprintf(template, args...))
+	if !runtimeLevel.Enabled(zapcore.DebugLevel) && observers.count.Load() == 0 {
+		return
+	}
+	message := fmt.Sprintf(template, args...)
+	sugarLogger.Debug(message)
+	notifyObservers(zapcore.DebugLevel, message)
 }
 
 func Fatal(msg string, fields ...zap.Field) {
@@ -131,10 +153,18 @@ func ReplaceObserver(name string, notify func(Entry)) func() {
 	observers.mu.Lock()
 	observers.generation++
 	generation := observers.generation
+	_, existed := observers.entries[name]
 	if notify == nil {
 		delete(observers.entries, name)
 	} else {
 		observers.entries[name] = observer{generation: generation, notify: notify}
+	}
+	if existed != (notify != nil) {
+		if notify == nil {
+			observers.count.Add(-1)
+		} else {
+			observers.count.Add(1)
+		}
 	}
 	observers.mu.Unlock()
 
@@ -144,6 +174,7 @@ func ReplaceObserver(name string, notify func(Entry)) func() {
 			observers.mu.Lock()
 			if current, ok := observers.entries[name]; ok && current.generation == generation {
 				delete(observers.entries, name)
+				observers.count.Add(-1)
 			}
 			observers.mu.Unlock()
 		})
@@ -151,7 +182,7 @@ func ReplaceObserver(name string, notify func(Entry)) func() {
 }
 
 func notifyObservers(level zapcore.Level, message string) {
-	if !runtimeLevel.Enabled(level) {
+	if !runtimeLevel.Enabled(level) || observers.count.Load() == 0 {
 		return
 	}
 	levelName := level.CapitalString()

@@ -67,6 +67,9 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
 	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("ssl_verify = %v, want secure default true", p.config.SSLVerify)
+	}
 }
 
 func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
@@ -145,6 +148,63 @@ func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
 	}
 }
 
+func TestSendMessageTLSVerifyDefaultsOn(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		Timeout:         1000,
+	})
+
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case message := <-received:
+		t.Fatalf("default TLS verification accepted self-signed certificate: %q", message)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestSendMessageAllowsExplicitTLSVerifyOff(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	verify := false
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		SSLVerify:       &verify,
+		Timeout:         1000,
+	})
+
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case message := <-received:
+		if !strings.Contains(message, `"path":"/orders"`) {
+			t.Fatalf("message = %q, want JSON log payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TLS log message with explicit ssl_verify=false")
+	}
+}
+
 func TestSendWritesTLSMessage(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
@@ -159,6 +219,7 @@ func TestSendWritesTLSMessage(t *testing.T) {
 		Logstore:        "store-a",
 		AccessKeyID:     "id",
 		AccessKeySecret: "secret",
+		SSLVerify:       tlsVerifyOff(),
 		Timeout:         1000,
 	})
 
@@ -191,6 +252,7 @@ func TestHandlerBatchesSLSMessages(t *testing.T) {
 		Logstore:        "store-a",
 		AccessKeyID:     "id",
 		AccessKeySecret: "secret",
+		SSLVerify:       tlsVerifyOff(),
 		Timeout:         1000,
 		BatchMaxSize:    2,
 	})
@@ -228,6 +290,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		Logstore:         "store-a",
 		AccessKeyID:      "id",
 		AccessKeySecret:  "secret",
+		SSLVerify:        tlsVerifyOff(),
 		Timeout:          1000,
 		IncludeReqBody:   true,
 		IncludeRespBody:  true,
@@ -295,6 +358,7 @@ func TestHandlerDefaultAccessLogIncludesRequestResponseAndRouteID(t *testing.T) 
 		Logstore:        "store-a",
 		AccessKeyID:     "id",
 		AccessKeySecret: "secret",
+		SSLVerify:       tlsVerifyOff(),
 		Timeout:         1000,
 		BatchMaxSize:    1,
 	})
@@ -348,6 +412,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		Logstore:            "store-a",
 		AccessKeyID:         "id",
 		AccessKeySecret:     "secret",
+		SSLVerify:           tlsVerifyOff(),
 		Timeout:             1000,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
@@ -403,6 +468,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		Logstore:            "store-a",
 		AccessKeyID:         "id",
 		AccessKeySecret:     "secret",
+		SSLVerify:           tlsVerifyOff(),
 		Timeout:             1000,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
@@ -607,6 +673,11 @@ func testCertificate(t *testing.T) tls.Certificate {
 		t.Fatalf("load key pair: %v", err)
 	}
 	return cert
+}
+
+func tlsVerifyOff() *bool {
+	verify := false
+	return &verify
 }
 
 func mustAtoi(t *testing.T, value string) int {

@@ -52,6 +52,10 @@ const schema = `
     "access_key_secret": {
       "type": "string"
     },
+    "ssl_verify": {
+      "type": "boolean",
+      "default": true
+    },
     "timeout": {
       "type": "integer",
       "minimum": 1,
@@ -144,6 +148,7 @@ type Config struct {
 	Logstore        string            `json:"logstore"`
 	AccessKeyID     string            `json:"access_key_id"`
 	AccessKeySecret string            `json:"access_key_secret"`
+	SSLVerify       *bool             `json:"ssl_verify,omitempty"`
 	Timeout         int               `json:"timeout,omitempty"`
 	LogFormat       map[string]string `json:"log_format,omitempty"`
 
@@ -184,6 +189,10 @@ func (p *Plugin) PostInit() error {
 	}
 	p.config.AccessKeySecret = resolved
 
+	if p.config.SSLVerify == nil {
+		verify := true
+		p.config.SSLVerify = &verify
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 5000
 	}
@@ -333,7 +342,14 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 
 func (p *Plugin) sendMessage(message string) error {
 	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
-	conn, err := tls.DialWithDialer(dialer, "tcp", p.addr, &tls.Config{InsecureSkipVerify: true})
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: p.config.Host,
+	}
+	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
+		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicit APISIX-compatible operator opt-out
+	}
+	conn, err := tls.DialWithDialer(dialer, "tcp", p.addr, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, err)
 	}

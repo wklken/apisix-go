@@ -15,6 +15,8 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -81,6 +83,90 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitDispatchesConfiguredBodyConfigs(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey", "query": "api_key"}},
+			{"hmac-auth": {
+				"access_key":            "route-ak",
+				"secret_key":            "route-sk",
+				"validate_request_body": true,
+				"max_req_body_size":     4096,
+			}},
+		},
+	})
+
+	if len(p.auths) != 2 {
+		t.Fatalf("configured auth plugins = %d, want 2", len(p.auths))
+	}
+	keyAuth, ok := p.auths[0].plugin.Config().(*key_auth.Config)
+	if !ok {
+		t.Fatalf("first auth config = %T, want *key_auth.Config", p.auths[0].plugin.Config())
+	}
+	if keyAuth.Header != "apikey" || keyAuth.Query != "api_key" {
+		t.Fatalf("key-auth config = %#v, want the route-level header/query", keyAuth)
+	}
+	hmacAuth, ok := p.auths[1].plugin.Config().(*hmac_auth.Config)
+	if !ok {
+		t.Fatalf("second auth config = %T, want *hmac_auth.Config", p.auths[1].plugin.Config())
+	}
+	if !hmacAuth.ValidateRequestBody || hmacAuth.MaxReqBodySize != 4096 {
+		t.Fatalf("hmac-auth config = %#v, want the route-level body validation", hmacAuth)
+	}
+}
+
+type bodyIsolatingAuthConfig struct {
+	ValidateRequestBody bool
+	MaxReqBodySize      int64
+}
+
+func (c *bodyIsolatingAuthConfig) BodyIsolation() (bool, int64) {
+	return c.ValidateRequestBody, c.MaxReqBodySize
+}
+
+type bodyIsolatingAuthPlugin struct {
+	config *bodyIsolatingAuthConfig
+}
+
+func (p *bodyIsolatingAuthPlugin) Init() error                    { return nil }
+func (p *bodyIsolatingAuthPlugin) PostInit() error                { return nil }
+func (p *bodyIsolatingAuthPlugin) Config() any                    { return p.config }
+func (p *bodyIsolatingAuthPlugin) GetSchema() string              { return "" }
+func (p *bodyIsolatingAuthPlugin) Handler(next http.Handler) http.Handler { return next }
+
+func TestConfiguredBodyIsolationDispatchesByInterface(t *testing.T) {
+	auth := configuredAuth{
+		name: "body-aware",
+		plugin: &bodyIsolatingAuthPlugin{config: &bodyIsolatingAuthConfig{
+			ValidateRequestBody: true,
+			MaxReqBodySize:      128,
+		}},
+	}
+	original := httptest.NewRequest(http.MethodPost, "http://example.test/login", strings.NewReader("payload"))
+	probe := original.Clone(original.Context())
+
+	state := auth.isolateRequestBody(original, probe)
+	if state == nil {
+		t.Fatal("isolateRequestBody() = nil, want interface-dispatched body isolation")
+	}
+
+	consumed, err := io.ReadAll(probe.Body)
+	if err != nil {
+		t.Fatalf("read probe body: %v", err)
+	}
+	if string(consumed) != "payload" {
+		t.Fatalf("probe body = %q, want payload", consumed)
+	}
+	state.restore(original)
+	restored, err := io.ReadAll(original.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(restored) != "payload" {
+		t.Fatalf("restored body = %q, want the original payload intact", restored)
+	}
 }
 
 func TestHandlerAllowsRequestWhenAnyAuthPluginSucceeds(t *testing.T) {

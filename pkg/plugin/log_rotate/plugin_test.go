@@ -27,6 +27,52 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestLogRotateDoesNotBlockRequest(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	rotateStarted := make(chan struct{})
+	releaseRotation := make(chan struct{})
+	p.now = func() time.Time { return time.Now() }
+	p.rotate = func(time.Time) error {
+		close(rotateStarted)
+		<-releaseRotation
+		return nil
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	response := httptest.NewRecorder()
+
+	requestDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, request)
+		close(requestDone)
+	}()
+
+	select {
+	case <-rotateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background rotation did not start")
+	}
+	select {
+	case <-requestDone:
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("request blocked on log rotation")
+	}
+	close(releaseRotation)
+}
+
 func TestRotateByMaxSizeRenamesLogsAndRecreatesCurrentFiles(t *testing.T) {
 	dir := t.TempDir()
 	access := filepath.Join(dir, "access.log")

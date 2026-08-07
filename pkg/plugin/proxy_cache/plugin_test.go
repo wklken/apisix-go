@@ -1417,8 +1417,8 @@ func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {
 	if !found || expired || loaded.Header.Get("X-Origin") != "upstream" || string(loaded.Body) != "disk-body" {
 		t.Fatalf("Load() = %#v, found %t, expired %t", loaded, found, expired)
 	}
-	if loaded.Status != http.StatusOK || loaded.StoredAt != now || loaded.TTL != time.Minute ||
-		loaded.ExpiresAt != now.Add(time.Minute) {
+	if loaded.Status != http.StatusOK || !loaded.StoredAt.Equal(now) || loaded.TTL != time.Minute ||
+		!loaded.ExpiresAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("loaded metadata = %#v, want stored metadata", loaded)
 	}
 	if !store.Delete("cache-key") || store.Delete("cache-key") {

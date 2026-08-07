@@ -134,6 +134,100 @@ func TestAllowedIPFallsThrough(t *testing.T) {
 	}
 }
 
+func TestWhitelistSupportsIPv4AndIPv6Definitions(t *testing.T) {
+	tests := []struct {
+		name       string
+		definition string
+		remoteAddr string
+	}{
+		{
+			name:       "IPv4 CIDR",
+			definition: "192.0.2.9/24",
+			remoteAddr: "192.0.2.10:12345",
+		},
+		{
+			name:       "IPv6 address",
+			definition: "2001:db8::9",
+			remoteAddr: "[2001:db8::9]:12345",
+		},
+		{
+			name:       "IPv6 CIDR",
+			definition: "2001:db8::/32",
+			remoteAddr: "[2001:db8:1::9]:12345",
+		},
+		{
+			name:       "IPv4-mapped IPv6 address",
+			definition: "192.0.2.9",
+			remoteAddr: "[::ffff:192.0.2.9]:12345",
+		},
+		{
+			name:       "IPv4 CIDR with IPv4-mapped IPv6 address",
+			definition: "192.0.2.0/24",
+			remoteAddr: "[::ffff:192.0.2.9]:12345",
+		},
+		{
+			name:       "IPv4-mapped IPv6 CIDR with IPv4 address",
+			definition: "::ffff:192.0.2.0/120",
+			remoteAddr: "192.0.2.9:12345",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Whitelist: []string{test.definition}})
+			req := httptest.NewRequest(http.MethodGet, "/ip", nil)
+			req.RemoteAddr = test.remoteAddr
+
+			rr := httptest.NewRecorder()
+			called := false
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if !called {
+				t.Fatal("next handler was not called")
+			}
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+			}
+		})
+	}
+}
+
+func TestBlacklistAllowsAddressOutsideDefinitions(t *testing.T) {
+	p := newTestPlugin(t, Config{Blacklist: []string{"192.0.2.0/24"}})
+	req := httptest.NewRequest(http.MethodGet, "/ip", nil)
+	req.RemoteAddr = "198.51.100.9:12345"
+
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
+func TestIPMatcherDoesNotAllocateForExactAddress(t *testing.T) {
+	p := newTestPlugin(t, Config{Whitelist: []string{"192.0.2.9"}})
+
+	allocations := testing.AllocsPerRun(1000, func() {
+		if !p.filter.Allowed("192.0.2.9") {
+			t.Fatal("configured address should be allowed")
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("allocations per exact address match = %v, want 0", allocations)
+	}
+}
+
 func newTestPlugin(t *testing.T, config Config) *Plugin {
 	t.Helper()
 

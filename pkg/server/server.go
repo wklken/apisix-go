@@ -58,7 +58,10 @@ type Server struct {
 
 func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
-	storage := store.NewStore("apisix-go-store.db", events)
+	storage, err := store.GetStore("apisix-go-store.db", events)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
 	var trustedAddresses []string

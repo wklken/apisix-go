@@ -4,10 +4,100 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestOpenErrorForMissingDatabaseDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "store.db")
+	storage, err := Open(path, make(chan *Event))
+	if err == nil {
+		t.Fatal("Open() error = nil for an unopenable database path")
+	}
+	if storage != nil {
+		t.Fatal("Open() returned a store together with an error")
+	}
+}
+
+func TestTransactionErrorAfterDatabaseClose(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/closed.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	storage := &Store{db: db}
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close test database: %v", err)
+	}
+
+	if value, err := storage.GetFromBucket("routes", []byte("route-1")); err == nil {
+		t.Fatalf("GetFromBucket() = %q, nil; want the closed-database error", value)
+	}
+	if data, err := storage.GetBucketData("routes"); err == nil {
+		t.Fatalf("GetBucketData() = %v, nil; want the closed-database error", data)
+	}
+}
+
+func TestConcurrentStopIsIdempotent(t *testing.T) {
+	storage, err := Open(t.TempDir()+"/concurrent-stop.db", make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+
+	var group sync.WaitGroup
+	group.Add(2)
+	stopErrors := make([]error, 2)
+	for index := range 2 {
+		go func() {
+			defer group.Done()
+			stopErrors[index] = storage.Stop()
+		}()
+	}
+	group.Wait()
+	for index, stopErr := range stopErrors {
+		if stopErr != nil {
+			t.Fatalf("Stop() #%d error = %v, want nil", index, stopErr)
+		}
+	}
+}
+
+func TestEventDuringStopDoesNotPanic(t *testing.T) {
+	events := make(chan *Event)
+	storage, err := Open(t.TempDir()+"/event-during-stop.db", events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+
+	stopProducers := storage.stopProducers
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		for {
+			select {
+			case events <- &Event{Type: EventTypePut, Key: []byte("/apisix/routes/route-1"), Value: []byte(`{"id":"route-1"}`)}:
+			case <-stopProducers:
+				return
+			}
+		}
+	}()
+
+	if err := storage.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-producerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("event producer did not stop after Store.Stop")
+	}
+}
 
 func TestGetFromBucketReturnsCopyStableAcrossDatabaseGrowth(t *testing.T) {
 	db, err := bolt.Open(t.TempDir()+"/copy.db", 0o600, nil)
@@ -21,7 +111,9 @@ func TestGetFromBucketReturnsCopyStableAcrossDatabaseGrowth(t *testing.T) {
 	})
 
 	storage := &Store{db: db}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 
 	key := []byte("route-1")
 	want := bytes.Repeat([]byte("r"), 64<<10)
@@ -31,7 +123,10 @@ func TestGetFromBucketReturnsCopyStableAcrossDatabaseGrowth(t *testing.T) {
 		t.Fatalf("store route: %v", err)
 	}
 
-	got := storage.GetFromBucket("routes", key)
+	got, err := storage.GetFromBucket("routes", key)
+	if err != nil {
+		t.Fatalf("GetFromBucket() error = %v", err)
+	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("GetFromBucket() returned unexpected %d-byte value", len(got))
 	}
@@ -78,7 +173,9 @@ func TestGetBucketDataReturnsCopies(t *testing.T) {
 	})
 
 	storage := &Store{db: db}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 
 	key := []byte("route-1")
 	want := bytes.Repeat([]byte("r"), 64<<10)
@@ -88,7 +185,10 @@ func TestGetBucketDataReturnsCopies(t *testing.T) {
 		t.Fatalf("store route: %v", err)
 	}
 
-	got := storage.GetBucketData("routes")
+	got, err := storage.GetBucketData("routes")
+	if err != nil {
+		t.Fatalf("GetBucketData() error = %v", err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("GetBucketData() returned %d values, want 1", len(got))
 	}
@@ -117,9 +217,11 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	storage.events <- &Event{
 		Type:  EventTypePut,
@@ -128,7 +230,11 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	}
 	storage.Sync()
 
-	if got := storage.GetFromBucket("routes", []byte("route-1")); got == nil {
+	got, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("GetFromBucket() error = %v", err)
+	}
+	if got == nil {
 		t.Fatal("Sync() returned before the route event was stored")
 	}
 }
@@ -144,13 +250,16 @@ func TestEventHooksObserveCommittedRouteMutationsBeforeSyncReturns(t *testing.T)
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	observations := make(chan string, 2)
 	storage.AddEventUpdateHook(func(event *Event) {
-		observations <- fmt.Sprintf("%s:%s", event.Type, storage.GetFromBucket("routes", []byte("route-1")))
+		stored, _ := storage.GetFromBucket("routes", []byte("route-1"))
+		observations <- fmt.Sprintf("%s:%s", event.Type, stored)
 	})
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	storage.events <- &Event{
 		Type:  EventTypePut,
@@ -180,14 +289,16 @@ func TestFailedRouteMutationDoesNotTriggerReloadHook(t *testing.T) {
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	if err := db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("routes")) }); err != nil {
 		t.Fatalf("delete routes bucket: %v", err)
 	}
 	hooks := make(chan struct{}, 1)
 	storage.AddEventUpdateHook(func(*Event) { hooks <- struct{}{} })
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	storage.events <- &Event{
 		Type:  EventTypePut,
@@ -216,7 +327,9 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	for index := range eventCount {
 		id := fmt.Sprintf("route-%d", index)
 		events <- &Event{
@@ -226,12 +339,16 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 		}
 	}
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	storage.Sync()
 	for index := range eventCount {
 		id := fmt.Sprintf("route-%d", index)
-		if got := storage.GetFromBucket("routes", []byte(id)); got == nil {
+		got, err := storage.GetFromBucket("routes", []byte(id))
+		if err != nil {
+			t.Fatalf("GetFromBucket() error = %v", err)
+		}
+		if got == nil {
 			t.Fatalf("Sync() returned before buffered event %q was stored", id)
 		}
 	}
@@ -285,7 +402,9 @@ func TestGetBucketDataReturnsCopiesOutsideReadTransaction(t *testing.T) {
 	})
 
 	storage := &Store{db: db}
-	storage.InitBuckets()
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	want := bytes.Repeat([]byte("r"), 64<<10)
 	if err := db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("routes")).Put([]byte("route-1"), want)
@@ -293,7 +412,10 @@ func TestGetBucketDataReturnsCopiesOutsideReadTransaction(t *testing.T) {
 		t.Fatalf("store route: %v", err)
 	}
 
-	got := storage.GetBucketData("routes")
+	got, err := storage.GetBucketData("routes")
+	if err != nil {
+		t.Fatalf("GetBucketData() error = %v", err)
+	}
 	if len(got) != 1 || !bytes.Equal(got[0], want) {
 		t.Fatalf("GetBucketData() = %d values, want one copied route", len(got))
 	}

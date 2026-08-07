@@ -19,7 +19,10 @@ func GetPluginMetadata(id string, v any) error {
 	if s == nil {
 		return ErrNotFound
 	}
-	config := s.GetFromBucket("plugin_metadata", []byte(id))
+	config, err := s.GetFromBucket("plugin_metadata", []byte(id))
+	if err != nil {
+		return err
+	}
 	return decodePluginMetadata(config, id, v)
 }
 
@@ -46,7 +49,10 @@ func GetUpstream(id string) (resource.Upstream, error) {
 	if s == nil {
 		return resource.Upstream{}, ErrNotFound
 	}
-	config := s.GetFromBucket("upstreams", util.StringToBytes(id))
+	config, err := s.GetFromBucket("upstreams", util.StringToBytes(id))
+	if err != nil {
+		return resource.Upstream{}, err
+	}
 	if config == nil {
 		return resource.Upstream{}, ErrNotFound
 	}
@@ -58,7 +64,10 @@ func GetSSL(id string) (resource.SSL, error) {
 	if s == nil {
 		return resource.SSL{}, ErrNotFound
 	}
-	config := s.GetFromBucket("ssls", util.StringToBytes(id))
+	config, err := s.GetFromBucket("ssls", util.StringToBytes(id))
+	if err != nil {
+		return resource.SSL{}, err
+	}
 	if config == nil {
 		return resource.SSL{}, ErrNotFound
 	}
@@ -70,7 +79,10 @@ func GetStreamRoute(id string) (resource.StreamRoute, error) {
 	if s == nil {
 		return resource.StreamRoute{}, ErrNotFound
 	}
-	config := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	config, err := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	if err != nil {
+		return resource.StreamRoute{}, err
+	}
 	if config == nil {
 		return resource.StreamRoute{}, ErrNotFound
 	}
@@ -82,7 +94,10 @@ func GetService(id string) (resource.Service, error) {
 	if s == nil {
 		return resource.Service{}, ErrNotFound
 	}
-	config := s.GetFromBucket("services", util.StringToBytes(id))
+	config, err := s.GetFromBucket("services", util.StringToBytes(id))
+	if err != nil {
+		return resource.Service{}, err
+	}
 	if config == nil {
 		return resource.Service{}, ErrNotFound
 	}
@@ -100,7 +115,10 @@ func GetConsumer(id string) (resource.Consumer, error) {
 	if ok {
 		return consumer, nil
 	}
-	config := s.GetFromBucket("consumers", util.StringToBytes(id))
+	config, err := s.GetFromBucket("consumers", util.StringToBytes(id))
+	if err != nil {
+		return resource.Consumer{}, err
+	}
 	if config == nil {
 		return resource.Consumer{}, ErrNotFound
 	}
@@ -112,7 +130,10 @@ func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
 	if s == nil {
 		return resource.ConsumerGroup{}, ErrNotFound
 	}
-	config := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
+	config, err := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
+	if err != nil {
+		return resource.ConsumerGroup{}, err
+	}
 	if config == nil {
 		return resource.ConsumerGroup{}, ErrNotFound
 	}
@@ -124,7 +145,10 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 	if s == nil {
 		return resource.PluginConfigRule{}, ErrNotFound
 	}
-	config := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
+	config, err := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
+	if err != nil {
+		return resource.PluginConfigRule{}, err
+	}
 	if config == nil {
 		return resource.PluginConfigRule{}, ErrNotFound
 	}
@@ -136,7 +160,10 @@ func GetProto(id string) (resource.Proto, error) {
 	if s == nil {
 		return resource.Proto{}, ErrNotFound
 	}
-	config := s.GetFromBucket("protos", util.StringToBytes(id))
+	config, err := s.GetFromBucket("protos", util.StringToBytes(id))
+	if err != nil {
+		return resource.Proto{}, err
+	}
 	if config == nil {
 		return resource.Proto{}, ErrNotFound
 	}
@@ -148,8 +175,11 @@ func ListRoutes() ([]resource.Route, error) {
 	if s == nil {
 		return nil, ErrNotFound
 	}
+	data, err := s.GetBucketData("routes")
+	if err != nil {
+		return nil, err
+	}
 	var routes []resource.Route
-	data := s.GetBucketData("routes")
 	for _, d := range data {
 		r, err := ParseRoute(d)
 		if err != nil {
@@ -174,8 +204,11 @@ func ListStreamRoutes() ([]resource.StreamRoute, error) {
 	if s == nil {
 		return nil, ErrNotFound
 	}
+	data, err := s.GetBucketData("stream_routes")
+	if err != nil {
+		return nil, err
+	}
 	var routes []resource.StreamRoute
-	data := s.GetBucketData("stream_routes")
 	for _, d := range data {
 		route, err := ParseStreamRoute(d)
 		if err != nil {
@@ -190,7 +223,10 @@ func ListSSLs() ([]resource.SSL, error) {
 	if s == nil {
 		return nil, ErrNotFound
 	}
-	data := s.GetBucketData("ssls")
+	data, err := s.GetBucketData("ssls")
+	if err != nil {
+		return nil, err
+	}
 	ssls := make([]resource.SSL, 0, len(data))
 	for _, value := range data {
 		ssl, err := ParseSSL(value)
@@ -206,8 +242,11 @@ func ListGlobalRules() ([]resource.GlobalRule, error) {
 	if s == nil {
 		return nil, ErrNotFound
 	}
+	data, err := s.GetBucketData("global_rules")
+	if err != nil {
+		return nil, err
+	}
 	var rules []resource.GlobalRule
-	data := s.GetBucketData("global_rules")
 	for _, d := range data {
 		r, err := ParseGlobalRule(d)
 		if err != nil {

@@ -26,7 +26,11 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		testStore = store.NewStore(t.TempDir()+"/basic-auth.db", testEvents)
+		var err error
+		testStore, err = store.GetStore(t.TempDir()+"/basic-auth.db", testEvents)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
 		testStore.Start()
 	})
 }

@@ -248,9 +248,12 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 
 func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	events := make(chan *store.Event)
-	storage := store.NewStore(t.TempDir()+"/reload.db", events)
+	storage, err := store.Open(t.TempDir()+"/reload.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	put := func(bucket string, id string, value []byte) {
 		event := store.NewEvent()

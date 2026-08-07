@@ -280,7 +280,10 @@ func putCasbinMetadata(t *testing.T, modelText, policyText string) {
 	t.Helper()
 	metadataStoreOnce.Do(func() {
 		metadataStoreEvents = make(chan *store.Event, 8)
-		s := store.NewStore(t.TempDir()+"/authz-casbin.db", metadataStoreEvents)
+		s, err := store.GetStore(t.TempDir()+"/authz-casbin.db", metadataStoreEvents)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
 		s.Start()
 	})
 

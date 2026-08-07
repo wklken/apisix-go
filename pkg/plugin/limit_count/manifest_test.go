@@ -262,7 +262,12 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 		}
 		position := cursor[testCase.Source.File]
 		if position >= len(numbers) {
-			t.Fatalf("case %d %q has more cases than declared test_numbers for %q", i+1, testCase.Name, testCase.Source.File)
+			t.Fatalf(
+				"case %d %q has more cases than declared test_numbers for %q",
+				i+1,
+				testCase.Name,
+				testCase.Source.File,
+			)
 		}
 		want := numbers[position]
 		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {

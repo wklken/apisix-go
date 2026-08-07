@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {

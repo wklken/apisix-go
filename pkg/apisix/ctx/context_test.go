@@ -200,16 +200,16 @@ func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
 func TestTypedContextGettersReturnValuesAndZeroOnMismatch(t *testing.T) {
 	now := time.Date(2026, time.August, 7, 9, 0, 0, 0, time.UTC)
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "string", "value")
-	ctx = context.WithValue(ctx, "int", 7)
-	ctx = context.WithValue(ctx, "int64", int64(8))
-	ctx = context.WithValue(ctx, "bool", true)
-	ctx = context.WithValue(ctx, "bytes", []byte("raw"))
-	ctx = context.WithValue(ctx, "map-string-string", map[string]string{"k": "v"})
-	ctx = context.WithValue(ctx, "map-string-any", map[string]any{"k": 1})
-	ctx = context.WithValue(ctx, "slice-string", []string{"a", "b"})
-	ctx = context.WithValue(ctx, "time", now)
-	ctx = context.WithValue(ctx, "duration", 5*time.Second)
+	ctx = withTestValue(ctx, "string", "value")
+	ctx = withTestValue(ctx, "int", 7)
+	ctx = withTestValue(ctx, "int64", int64(8))
+	ctx = withTestValue(ctx, "bool", true)
+	ctx = withTestValue(ctx, "bytes", []byte("raw"))
+	ctx = withTestValue(ctx, "map-string-string", map[string]string{"k": "v"})
+	ctx = withTestValue(ctx, "map-string-any", map[string]any{"k": 1})
+	ctx = withTestValue(ctx, "slice-string", []string{"a", "b"})
+	ctx = withTestValue(ctx, "time", now)
+	ctx = withTestValue(ctx, "duration", 5*time.Second)
 
 	if got := GetString(ctx, "string"); got != "value" {
 		t.Fatalf("GetString() = %q", got)
@@ -242,7 +242,7 @@ func TestTypedContextGettersReturnValuesAndZeroOnMismatch(t *testing.T) {
 		t.Fatalf("GetDuration() = %v", got)
 	}
 
-	mismatch := context.WithValue(context.Background(), "int", "not-an-int")
+	mismatch := withTestValue(context.Background(), "int", "not-an-int")
 	if got := GetInt(mismatch, "int"); got != 0 {
 		t.Fatalf("GetInt(type mismatch) = %d, want 0", got)
 	}
@@ -267,4 +267,9 @@ func TestWithConsumerPluginOverridesScopesNames(t *testing.T) {
 	if ConsumerPluginOverrides(request, "jwt-auth") {
 		t.Fatal("override present for an unlisted plugin")
 	}
+}
+
+//nolint:staticcheck // the production getters look up plain string keys
+func withTestValue(parent context.Context, key string, value any) context.Context {
+	return context.WithValue(parent, key, value)
 }

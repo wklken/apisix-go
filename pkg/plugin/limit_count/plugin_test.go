@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -1900,4 +1901,73 @@ func resetLimitCountGroupsForTest() {
 	limitCountGroups.Lock()
 	limitCountGroups.entries = map[string]limitCountGroup{}
 	limitCountGroups.Unlock()
+}
+
+func TestStaticLimitValue(t *testing.T) {
+	if _, _, err := staticLimitValue(nil, "count"); err == nil {
+		t.Fatal("staticLimitValue(nil) error = nil, want required field error")
+	}
+	if value, ok, err := staticLimitValue("$request_method", "count"); err != nil || ok || value != 0 {
+		t.Fatalf("staticLimitValue(expression) = %d/%t/%v, want unresolved", value, ok, err)
+	}
+	if value, ok, err := staticLimitValue("42", "count"); err != nil || !ok || value != 42 {
+		t.Fatalf("staticLimitValue(string) = %d/%t/%v, want 42/true", value, ok, err)
+	}
+	if value, ok, err := staticLimitValue(int64(7), "count"); err != nil || !ok || value != 7 {
+		t.Fatalf("staticLimitValue(int64) = %d/%t/%v, want 7/true", value, ok, err)
+	}
+	if _, _, err := staticLimitValue("not-a-number", "count"); err == nil {
+		t.Fatal("staticLimitValue(invalid) error = nil")
+	}
+}
+
+func TestNumericLimitValue(t *testing.T) {
+	if value, err := numericLimitValue(3, "count"); err != nil || value != 3 {
+		t.Fatalf("numericLimitValue(int) = %d/%v, want 3", value, err)
+	}
+	if value, err := numericLimitValue(int64(4), "count"); err != nil || value != 4 {
+		t.Fatalf("numericLimitValue(int64) = %d/%v, want 4", value, err)
+	}
+	if value, err := numericLimitValue(json.Number("5"), "count"); err != nil || value != 5 {
+		t.Fatalf("numericLimitValue(json.Number) = %d/%v, want 5", value, err)
+	}
+	if _, err := numericLimitValue(1.5, "count"); err == nil {
+		t.Fatal("numericLimitValue(fractional) error = nil")
+	}
+	if _, err := numericLimitValue(true, "count"); err == nil {
+		t.Fatal("numericLimitValue(wrong type) error = nil")
+	}
+	if _, err := numericLimitValue(int64(-1), "count"); err == nil {
+		t.Fatal("numericLimitValue(negative) error = nil")
+	}
+	if _, err := numericLimitValue(float64(maxSafeInteger)+1, "count"); err == nil {
+		t.Fatal("numericLimitValue(overflow) error = nil")
+	}
+}
+
+func TestResolveLimitValueExpressions(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/orders", nil)
+	request.Header.Set("Content-Length", "7")
+
+	if value, err := resolveLimitValue(request, int64(10), "count"); err != nil || value != 10 {
+		t.Fatalf("resolveLimitValue(int) = %d/%v, want 10", value, err)
+	}
+	if value, err := resolveLimitValue(request, "${content_length ?? 33}", "count"); err != nil || value != 7 {
+		t.Fatalf("resolveLimitValue(default expr) = %d/%v, want 7", value, err)
+	}
+	noHeaderRequest := httptest.NewRequest(http.MethodPost, "http://example.test/orders", nil)
+	if value, err := resolveLimitValue(noHeaderRequest, "${content_length ?? 33}", "count"); err != nil || value != 33 {
+		t.Fatalf("resolveLimitValue(default fallback) = %d/%v, want 33", value, err)
+	}
+	if value, err := resolveLimitValue(request, "$content_length", "count"); err != nil || value != 7 {
+		t.Fatalf("resolveLimitValue(var expr) = %d/%v, want 7", value, err)
+	}
+}
+
+func TestRedisConfigStringRoundTrips(t *testing.T) {
+	config := RedisConfig{RedisHost: "redis.example.test", RedisPort: 6379}
+	serialized := config.String()
+	if !strings.Contains(serialized, "redis.example.test") {
+		t.Fatalf("String() = %q, want serialized config", serialized)
+	}
 }

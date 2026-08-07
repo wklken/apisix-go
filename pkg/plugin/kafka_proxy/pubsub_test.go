@@ -98,7 +98,12 @@ type fakeKafkaConsumer struct {
 	fetchErr   error
 }
 
-func (f *fakeKafkaConsumer) ListOffset(_ context.Context, topic string, partition int32, timestamp int64) (int64, error) {
+func (f *fakeKafkaConsumer) ListOffset(
+	_ context.Context,
+	topic string,
+	partition int32,
+	timestamp int64,
+) (int64, error) {
 	f.topics = append(f.topics, topic)
 	f.partitions = append(f.partitions, partition)
 	f.positions = append(f.positions, timestamp)
@@ -108,7 +113,12 @@ func (f *fakeKafkaConsumer) ListOffset(_ context.Context, topic string, partitio
 	return f.listOffset, nil
 }
 
-func (f *fakeKafkaConsumer) Fetch(_ context.Context, topic string, partition int32, offset int64) ([]KafkaMessage, error) {
+func (f *fakeKafkaConsumer) Fetch(
+	_ context.Context,
+	topic string,
+	partition int32,
+	offset int64,
+) ([]KafkaMessage, error) {
 	f.topics = append(f.topics, topic)
 	f.partitions = append(f.partitions, partition)
 	f.positions = append(f.positions, offset)
@@ -144,7 +154,12 @@ func TestDispatchPubSubRequest(t *testing.T) {
 		}
 		if len(consumer.topics) != 1 || consumer.topics[0] != "orders" ||
 			consumer.partitions[0] != 2 || consumer.positions[0] != -1 {
-			t.Fatalf("consumer call = %v/%v/%v, want orders/2/-1", consumer.topics, consumer.partitions, consumer.positions)
+			t.Fatalf(
+				"consumer call = %v/%v/%v, want orders/2/-1",
+				consumer.topics,
+				consumer.partitions,
+				consumer.positions,
+			)
 		}
 	})
 
@@ -165,13 +180,21 @@ func TestDispatchPubSubRequest(t *testing.T) {
 	})
 
 	t.Run("empty command rejected", func(t *testing.T) {
-		if _, err := dispatchPubSubRequest(context.Background(), &fakeKafkaConsumer{}, PubSubRequest{Command: CmdEmpty}); err == nil {
+		if _, err := dispatchPubSubRequest(
+			context.Background(),
+			&fakeKafkaConsumer{},
+			PubSubRequest{Command: CmdEmpty},
+		); err == nil {
 			t.Fatal("dispatchPubSubRequest() error = nil for an empty command")
 		}
 	})
 
 	t.Run("unsupported command rejected", func(t *testing.T) {
-		if _, err := dispatchPubSubRequest(context.Background(), &fakeKafkaConsumer{}, PubSubRequest{Command: PubSubCommand(99)}); err == nil {
+		if _, err := dispatchPubSubRequest(
+			context.Background(),
+			&fakeKafkaConsumer{},
+			PubSubRequest{Command: PubSubCommand(99)},
+		); err == nil {
 			t.Fatal("dispatchPubSubRequest() error = nil for an unsupported command")
 		}
 	})
@@ -220,7 +243,12 @@ func TestPubSubErrorMessage(t *testing.T) {
 		err     error
 		want    string
 	}{
-		{name: "auth", command: CmdKafkaFetch, err: kafka.SASLAuthenticationFailed, want: "Kafka authentication failed"},
+		{
+			name:    "auth",
+			command: CmdKafkaFetch,
+			err:     kafka.SASLAuthenticationFailed,
+			want:    "Kafka authentication failed",
+		},
 		{name: "list offset", command: CmdKafkaListOffset, err: errors.New("boom"), want: "Kafka list offset failed"},
 		{name: "fetch", command: CmdKafkaFetch, err: errors.New("boom"), want: "Kafka fetch failed"},
 		{name: "default", command: CmdPing, err: errors.New("boom"), want: "Kafka PubSub command failed"},
@@ -256,10 +284,19 @@ func TestPubSubCodecRejectsMalformedWire(t *testing.T) {
 			_, err := ParsePubSubResponse(data)
 			return err
 		}},
-		{name: "multiple responses", data: append(mustMarshalPubSubResponse(t, PubSubResponse{Kind: RespPong, State: []byte("x")}), 0x82, 0x02, 0x00), parse: func(data []byte) error {
-			_, err := ParsePubSubResponse(data)
-			return err
-		}},
+		{
+			name: "multiple responses",
+			data: append(
+				mustMarshalPubSubResponse(t, PubSubResponse{Kind: RespPong, State: []byte("x")}),
+				0x82,
+				0x02,
+				0x00,
+			),
+			parse: func(data []byte) error {
+				_, err := ParsePubSubResponse(data)
+				return err
+			},
+		},
 		{name: "invalid response kind", data: []byte{0x96, 0x02, 0x00}, parse: func(data []byte) error {
 			_, err := ParsePubSubResponse(data)
 			return err
@@ -281,4 +318,86 @@ func mustMarshalPubSubResponse(t *testing.T, response PubSubResponse) []byte {
 		t.Fatalf("MarshalPubSubResponse() error = %v", err)
 	}
 	return data
+}
+
+func TestParseRequestCommandPingStateAndFetchFields(t *testing.T) {
+	request, err := ParsePubSubRequest(mustMarshalPubSubRequest(t, PubSubRequest{
+		Sequence: 1, Command: CmdPing, State: []byte("session"),
+	}))
+	if err != nil {
+		t.Fatalf("ParsePubSubRequest(ping) error = %v", err)
+	}
+	if request.Command != CmdPing || !bytes.Equal(request.State, []byte("session")) {
+		t.Fatalf("request = %#v, want ping with state", request)
+	}
+
+	if _, err := ParsePubSubRequest([]byte{0x8a, 0x02, 0x02, 0x08, 0x01}); err == nil {
+		t.Fatal("ParsePubSubRequest() error = nil, want wrong topic wire type rejection")
+	}
+}
+
+func mustMarshalPubSubRequest(t *testing.T, request PubSubRequest) []byte {
+	t.Helper()
+	data, err := MarshalPubSubRequest(request)
+	if err != nil {
+		t.Fatalf("MarshalPubSubRequest() error = %v", err)
+	}
+	return data
+}
+
+func TestParsePubSubResponseKinds(t *testing.T) {
+	errorWire, err := MarshalPubSubResponse(PubSubResponse{Kind: RespError, Code: 502, Message: "boom"})
+	if err != nil {
+		t.Fatalf("MarshalPubSubResponse(error) error = %v", err)
+	}
+	decoded, err := ParsePubSubResponse(errorWire)
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse(error) error = %v", err)
+	}
+	if decoded.Kind != RespError || decoded.Code != 502 || decoded.Message != "boom" {
+		t.Fatalf("decoded error = %#v, want code 502 message boom", decoded)
+	}
+
+	pongWire, err := MarshalPubSubResponse(PubSubResponse{Kind: RespPong, State: []byte("state")})
+	if err != nil {
+		t.Fatalf("MarshalPubSubResponse(pong) error = %v", err)
+	}
+	decoded, err = ParsePubSubResponse(pongWire)
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse(pong) error = %v", err)
+	}
+	if decoded.Kind != RespPong || !bytes.Equal(decoded.State, []byte("state")) {
+		t.Fatalf("decoded pong = %#v, want echoed state", decoded)
+	}
+
+	offsetWire, err := MarshalPubSubResponse(PubSubResponse{Kind: RespKafkaListOffset, Offset: 33})
+	if err != nil {
+		t.Fatalf("MarshalPubSubResponse(offset) error = %v", err)
+	}
+	decoded, err = ParsePubSubResponse(offsetWire)
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse(offset) error = %v", err)
+	}
+	if decoded.Kind != RespKafkaListOffset || decoded.Offset != 33 {
+		t.Fatalf("decoded offset = %#v, want 33", decoded)
+	}
+}
+
+func TestParsePubSubResponseRejectsInvalidFields(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "error code wrong wire type", data: []byte{0xfa, 0x01, 0x02, 0x0a, 0x00}},
+		{name: "response field 2 for pong", data: []byte{0x82, 0x02, 0x02, 0x12, 0x00}},
+		{name: "pong state wrong wire type", data: []byte{0x82, 0x02, 0x02, 0x08, 0x01}},
+		{name: "kafka message wrong wire type", data: []byte{0x8a, 0x02, 0x02, 0x08, 0x01}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ParsePubSubResponse(test.data); err == nil {
+				t.Fatalf("ParsePubSubResponse(%x) error = nil", test.data)
+			}
+		})
+	}
 }

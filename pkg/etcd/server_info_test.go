@@ -154,3 +154,42 @@ func TestServerInfoReporterStartRejectsNilProviderAndProviderErrors(t *testing.T
 		t.Fatalf("Put calls = %d, want none before a successful report", client.putCount)
 	}
 }
+
+func TestStartServerInfoReporterRejectsUninitializedClientAndEmptyNodeID(t *testing.T) {
+	if _, err := (&ConfigClient{}).StartServerInfoReporter(
+		context.Background(),
+		"node-a",
+		60*time.Second,
+		nil,
+	); err == nil {
+		t.Fatal("StartServerInfoReporter() error = nil with uninitialized client")
+	}
+
+	client := &ConfigClient{client: &clientv3.Client{}}
+	if _, err := client.StartServerInfoReporter(context.Background(), "  ", 60*time.Second, nil); err == nil {
+		t.Fatal("StartServerInfoReporter() error = nil with empty node ID")
+	}
+}
+
+func TestServerInfoReporterRejectsEmptyLeaseAndGrantError(t *testing.T) {
+	client := &fakeServerInfoLeaseClient{nextLeaseID: 0}
+	reporter := newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 60*time.Second)
+	if err := reporter.Report(context.Background(), []byte(`{"id":"node-a"}`)); err == nil {
+		t.Fatal("Report() error = nil with an empty lease ID")
+	}
+
+	client = &fakeServerInfoLeaseClient{nextLeaseID: 42, grantErr: errors.New("grant denied")}
+	reporter = newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 60*time.Second)
+	if err := reporter.Report(context.Background(), []byte(`{"id":"node-a"}`)); err == nil {
+		t.Fatal("Report() error = nil when granting fails")
+	}
+
+	client = &fakeServerInfoLeaseClient{nextLeaseID: 42, putErr: errors.New("put denied")}
+	reporter = newServerInfoReporter(client, "/apisix/data_plane/server_info/node-a", 60*time.Second)
+	if err := reporter.Report(context.Background(), []byte(`{"id":"node-a"}`)); err == nil {
+		t.Fatal("Report() error = nil when putting fails")
+	}
+	if client.grantCount != 1 {
+		t.Fatalf("Grant calls = %d, want one lease attempt before put failure", client.grantCount)
+	}
+}

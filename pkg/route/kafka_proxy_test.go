@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/segmentio/kafka-go"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -239,6 +241,20 @@ func TestNormalizeKafkaSSLID(t *testing.T) {
 		{name: "fraction", value: 1.5, wantErr: true},
 		{name: "empty", value: " ", wantErr: true},
 		{name: "unsupported", value: true, wantErr: true},
+		{name: "json number", value: json.Number("3"), want: "3"},
+		{name: "float32", value: float32(5), want: "5"},
+		{name: "int", value: 6, want: "6"},
+		{name: "int8", value: int8(7), want: "7"},
+		{name: "int16", value: int16(8), want: "8"},
+		{name: "int32", value: int32(9), want: "9"},
+		{name: "int64", value: int64(10), want: "10"},
+		{name: "uint", value: uint(11), want: "11"},
+		{name: "uint8", value: uint8(12), want: "12"},
+		{name: "uint16", value: uint16(13), want: "13"},
+		{name: "uint32", value: uint32(14), want: "14"},
+		{name: "uint64", value: uint64(15), want: "15"},
+		{name: "nan float", value: math.NaN(), wantErr: true},
+		{name: "inf float", value: math.Inf(1), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

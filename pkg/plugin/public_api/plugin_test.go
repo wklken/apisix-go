@@ -33,13 +33,19 @@ func TestPublicAPIHandlerDispatch(t *testing.T) {
 	t.Cleanup(ResetRegistryForTest)
 
 	tests := []struct {
-		name      string
-		configURI string
+		name       string
+		configURI  string
 		requestURI string
-		wantPath  string
-		wantCode  int
+		wantPath   string
+		wantCode   int
 	}{
-		{name: "configured override", configURI: "/internal/status", requestURI: "/public", wantPath: "/internal/status", wantCode: http.StatusNoContent},
+		{
+			name:       "configured override",
+			configURI:  "/internal/status",
+			requestURI: "/public",
+			wantPath:   "/internal/status",
+			wantCode:   http.StatusNoContent,
+		},
 		{name: "incoming path fallback", requestURI: "/public", wantPath: "/public", wantCode: http.StatusNoContent},
 		{name: "unregistered", requestURI: "/missing", wantCode: http.StatusNotFound},
 	}
@@ -59,8 +65,15 @@ func TestPublicAPIHandlerDispatch(t *testing.T) {
 			if response.Code != test.wantCode {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantCode)
 			}
-			if test.wantCode == http.StatusNoContent && (seenPath != test.wantPath || request.URL.Path != test.requestURI) {
-				t.Fatalf("seen/original = %q/%q, want %q/%q", seenPath, request.URL.Path, test.wantPath, test.requestURI)
+			if test.wantCode == http.StatusNoContent &&
+				(seenPath != test.wantPath || request.URL.Path != test.requestURI) {
+				t.Fatalf(
+					"seen/original = %q/%q, want %q/%q",
+					seenPath,
+					request.URL.Path,
+					test.wantPath,
+					test.requestURI,
+				)
 			}
 		})
 	}

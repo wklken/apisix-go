@@ -18,7 +18,14 @@ func TestClientControlHandlerBodyLimits(t *testing.T) {
 		wantNext   bool
 	}{
 		{name: "disabled", body: "payload", wantStatus: http.StatusNoContent, wantBody: "payload", wantNext: true},
-		{name: "within limit", limit: 7, body: "payload", wantStatus: http.StatusNoContent, wantBody: "payload", wantNext: true},
+		{
+			name:       "within limit",
+			limit:      7,
+			body:       "payload",
+			wantStatus: http.StatusNoContent,
+			wantBody:   "payload",
+			wantNext:   true,
+		},
 		{name: "over limit", limit: 3, body: "payload", wantStatus: http.StatusRequestEntityTooLarge},
 	}
 	for _, test := range tests {

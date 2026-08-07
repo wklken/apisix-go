@@ -41,7 +41,15 @@ func TestPluginInitMetadata(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if plugin.Name != name || plugin.Priority != priority || plugin.Schema != schema {
-		t.Fatalf("metadata = %q/%d/%q, want %q/%d/%q", plugin.Name, plugin.Priority, plugin.Schema, name, priority, schema)
+		t.Fatalf(
+			"metadata = %q/%d/%q, want %q/%d/%q",
+			plugin.Name,
+			plugin.Priority,
+			plugin.Schema,
+			name,
+			priority,
+			schema,
+		)
 	}
 }
 
@@ -124,5 +132,15 @@ func TestReportTTLValue(t *testing.T) {
 				t.Fatalf("reportTTLValue(%v) = %d/%t, want %d/%t", test.in, got, ok, test.want, test.ok)
 			}
 		})
+	}
+}
+
+func TestPluginPostInitSucceeds(t *testing.T) {
+	plugin := &Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
 	}
 }

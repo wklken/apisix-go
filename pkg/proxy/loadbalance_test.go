@@ -10,14 +10,14 @@ func TestNewWeightedRRLoadBalanceFirstPickIsDeterministic(t *testing.T) {
 	}
 
 	first := ""
-	for i := 0; i < 50; i++ {
+	for iteration := range 50 {
 		lb := NewWeightedRRLoadBalance(servers)
 		got := lb.Next()
 		if first == "" {
 			first = got
 		}
 		if got != first {
-			t.Fatalf("iteration %d: Next() = %q, want stable first pick %q", i, got, first)
+			t.Fatalf("iteration %d: Next() = %q, want stable first pick %q", iteration, got, first)
 		}
 	}
 	if first != "traffic-split-0-0" {

@@ -141,7 +141,12 @@ func TestNodeWeightPresence(t *testing.T) {
 	}{
 		{name: "omitted weight", json: `{"host":"httpbin.example.test","port":80}`, wantConfigured: false},
 		{name: "explicit zero", json: `{"host":"httpbin.example.test","port":80,"weight":0}`, wantConfigured: true},
-		{name: "positive weight", json: `{"host":"httpbin.example.test","port":80,"weight":5}`, wantWeight: 5, wantConfigured: true},
+		{
+			name:           "positive weight",
+			json:           `{"host":"httpbin.example.test","port":80,"weight":5}`,
+			wantWeight:     5,
+			wantConfigured: true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -150,7 +155,13 @@ func TestNodeWeightPresence(t *testing.T) {
 				t.Fatalf("json.Unmarshal() error = %v", err)
 			}
 			if node.Weight != test.wantWeight || node.WeightConfigured() != test.wantConfigured {
-				t.Fatalf("weight/configured = %d/%t, want %d/%t", node.Weight, node.WeightConfigured(), test.wantWeight, test.wantConfigured)
+				t.Fatalf(
+					"weight/configured = %d/%t, want %d/%t",
+					node.Weight,
+					node.WeightConfigured(),
+					test.wantWeight,
+					test.wantConfigured,
+				)
 			}
 		})
 	}

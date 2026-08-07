@@ -111,3 +111,9 @@ func (r *fakeStreamRuntime) Close(context.Context) error {
 	r.closed = true
 	return nil
 }
+
+func TestStreamProxyModeEnabledWithoutConfig(t *testing.T) {
+	if streamProxyModeEnabled(nil) {
+		t.Fatal("streamProxyModeEnabled(nil) = true, want false")
+	}
+}

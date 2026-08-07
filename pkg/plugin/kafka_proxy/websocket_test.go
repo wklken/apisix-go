@@ -3,13 +3,17 @@ package kafka_proxy
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func validWebSocketUpgradeRequest() *http.Request {
@@ -111,8 +115,16 @@ func TestWriteKafkaPayloadRejectsMalformedFrames(t *testing.T) {
 	}{
 		{name: "empty payload", payload: nil, want: "empty Kafka WebSocket message"},
 		{name: "incomplete header", payload: []byte{0x00, 0x00}, want: "incomplete frame header"},
-		{name: "oversized declared frame", payload: []byte{0x00, 0x00, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04}, want: "exceeds max frame size"},
-		{name: "incomplete body", payload: []byte{0x00, 0x00, 0x00, 0x08, 0x01, 0x02}, want: "incomplete frame payload"},
+		{
+			name:    "oversized declared frame",
+			payload: []byte{0x00, 0x00, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04},
+			want:    "exceeds max frame size",
+		},
+		{
+			name:    "incomplete body",
+			payload: []byte{0x00, 0x00, 0x00, 0x08, 0x01, 0x02},
+			want:    "incomplete frame payload",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -144,5 +156,174 @@ func TestWriteKafkaPayloadFailsOnPeerClosure(t *testing.T) {
 
 	if err := writeKafkaPayload(t.Context(), client, kafkaTestFrame([]byte("data")), 1024, time.Second); err == nil {
 		t.Fatal("writeKafkaPayload() error = nil after peer closed")
+	}
+}
+
+func TestWebSocketBridgeNormalClose(t *testing.T) {
+	plain := context.Background()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "nil error", ctx: plain, want: true},
+		{name: "eof", ctx: plain, err: io.EOF, want: true},
+		{name: "closed network", ctx: plain, err: net.ErrClosed, want: true},
+		{name: "canceled with canceled context", ctx: canceled, err: context.Canceled, want: true},
+		{
+			name: "closed connection with canceled context",
+			ctx:  canceled,
+			err:  errors.New("use of closed network connection"),
+			want: true,
+		},
+		{name: "canceled without canceled context", ctx: plain, err: context.Canceled},
+		{name: "ordinary error without cancellation", ctx: plain, err: errors.New("boom")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := websocketBridgeNormalClose(test.ctx, test.err); got != test.want {
+				t.Fatalf("websocketBridgeNormalClose() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestServeWebSocketRejectsNonUpgradeRequests(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/kafka", nil)
+	response := httptest.NewRecorder()
+	err := ServeWebSocket(response, request, "kafka://127.0.0.1:9092", TransportOptions{})
+	if !errors.Is(err, ErrWebSocketUpgradeRequired) {
+		t.Fatalf("ServeWebSocket() error = %v, want ErrWebSocketUpgradeRequired", err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://example.test/kafka", nil)
+	err = ServePubSubWebSocket(response, request, []string{"kafka://127.0.0.1:9092"}, TransportOptions{}, nil)
+	if !errors.Is(err, ErrWebSocketUpgradeRequired) {
+		t.Fatalf("ServePubSubWebSocket() error = %v, want ErrWebSocketUpgradeRequired", err)
+	}
+}
+
+func TestServePubSubWebSocketFullLoop(t *testing.T) {
+	served := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served <- ServePubSubWebSocket(w, r, []string{"kafka://127.0.0.1:9092"}, TransportOptions{}, func(
+			context.Context,
+			[]string,
+			ConsumerOptions,
+		) (KafkaConsumer, error) {
+			return &fakeKafkaConsumer{messages: []KafkaMessage{{Offset: 7, Value: []byte("value")}}}, nil
+		})
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/pubsub", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	pingWire := mustMarshalPubSubRequest(t, PubSubRequest{Sequence: 1, Command: CmdPing, State: []byte("s")})
+	if err := conn.WriteMessage(websocket.BinaryMessage, pingWire); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read pong: %v", err)
+	}
+	pong, err := ParsePubSubResponse(payload)
+	if err != nil {
+		t.Fatalf("parse pong: %v", err)
+	}
+	if pong.Kind != RespPong || pong.Sequence != 1 || !bytes.Equal(pong.State, []byte("s")) {
+		t.Fatalf("pong = %#v, want echoed ping state", pong)
+	}
+
+	fetchWire := mustMarshalPubSubRequest(t, PubSubRequest{
+		Sequence: 2, Command: CmdKafkaFetch, Topic: "orders", Partition: 0, Position: 0,
+	})
+	if err := conn.WriteMessage(websocket.BinaryMessage, fetchWire); err != nil {
+		t.Fatalf("write fetch: %v", err)
+	}
+	_, payload, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read fetch response: %v", err)
+	}
+	fetchResponse, err := ParsePubSubResponse(payload)
+	if err != nil {
+		t.Fatalf("parse fetch response: %v", err)
+	}
+	if fetchResponse.Kind != RespKafkaFetch || len(fetchResponse.Messages) != 1 ||
+		fetchResponse.Messages[0].Offset != 7 {
+		t.Fatalf("fetch response = %#v, want one message at offset 7", fetchResponse)
+	}
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x08}); err != nil {
+		t.Fatalf("write malformed request: %v", err)
+	}
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("ReadMessage() error = nil after malformed request, want close frame")
+	}
+	_ = conn.Close()
+	if err := <-served; err == nil {
+		t.Fatal("ServePubSubWebSocket() error = nil for a malformed request")
+	}
+}
+
+func echoKafkaFrame(conn net.Conn) {
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return
+	}
+	payload := make([]byte, binary.BigEndian.Uint32(header[:]))
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return
+	}
+	frame := append(header[:], payload...)
+	_, _ = conn.Write(frame)
+}
+
+func TestServeWebSocketBridgesRawFrames(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	defer func() { _ = backend.Close() }()
+	go func() {
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		echoKafkaFrame(conn)
+	}()
+
+	served := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served <- ServeWebSocket(w, r, "kafka://"+backend.Addr().String(), TransportOptions{})
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/kafka", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	frame := kafkaTestFrame([]byte("echo-this"))
+	if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read echoed frame: %v", err)
+	}
+	if !bytes.Equal(payload, frame) {
+		t.Fatalf("echoed payload = %x, want %x", payload, frame)
+	}
+	_ = conn.Close()
+	if err := <-served; err != nil {
+		t.Fatalf("ServeWebSocket() error = %v", err)
 	}
 }

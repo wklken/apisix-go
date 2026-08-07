@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,7 +197,10 @@ func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
 	response := clientv3.WatchResponse{
 		Header: etcdserverpb.ResponseHeader{Revision: 14},
 		Events: []*clientv3.Event{
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/a"), Value: []byte(`{"id":"a"}`), ModRevision: 12}},
+			{
+				Type: mvccpb.PUT,
+				Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/routes/a"), Value: []byte(`{"id":"a"}`), ModRevision: 12},
+			},
 			{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/b"), ModRevision: 13}},
 		},
 	}
@@ -290,5 +294,78 @@ func TestFetchAllWithoutRetryPropagatesSnapshotError(t *testing.T) {
 	}
 	if loads.Load() != 1 {
 		t.Fatalf("snapshot loads = %d, want exactly one without retry", loads.Load())
+	}
+}
+
+func TestNewConfigClientDelegatesToWithOptions(t *testing.T) {
+	client, err := NewConfigClient([]string{"http://127.0.0.1:2379"}, "", "", "/apisix", nil)
+	if err != nil {
+		t.Fatalf("NewConfigClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	if client.prefix != "/apisix" || client.startupRetry != 0 {
+		t.Fatalf("prefix/startupRetry = %q/%d, want /apisix/0", client.prefix, client.startupRetry)
+	}
+	if client.openWatch == nil || client.loadSnapshot == nil {
+		t.Fatal("NewConfigClient() did not install watch and snapshot hooks")
+	}
+}
+
+func TestNewConfigClientWithOptionsAppliesDefaults(t *testing.T) {
+	client, err := NewConfigClientWithOptions(
+		[]string{"http://127.0.0.1:2379"},
+		"",
+		"",
+		"/apisix",
+		nil,
+		ClientOptions{},
+	)
+	if err != nil {
+		t.Fatalf("NewConfigClientWithOptions() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if client.requestTimeout != 5*time.Second {
+		t.Fatalf("requestTimeout = %s, want default 5s", client.requestTimeout)
+	}
+}
+
+func TestWatchRetryDelayBounded(t *testing.T) {
+	if got := watchRetryDelay(0); got != 100*time.Millisecond {
+		t.Fatalf("watchRetryDelay(0) = %s, want 100ms", got)
+	}
+	if got := watchRetryDelay(6); got != 5*time.Second {
+		t.Fatalf("watchRetryDelay(6) = %s, want capped 5s", got)
+	}
+}
+
+func TestApplySnapshotRejectsMissingHeader(t *testing.T) {
+	client := &ConfigClient{events: make(chan *store.Event, 1)}
+	if err := client.applySnapshot(context.Background(), nil); err == nil {
+		t.Fatal("applySnapshot(nil) error = nil, want missing header rejection")
+	}
+}
+
+func TestSendEventHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := &ConfigClient{events: make(chan *store.Event)}
+	if client.sendEvent(ctx, store.EventTypePut, []byte("k"), []byte("v")) {
+		t.Fatal("sendEvent() = true with a canceled context")
+	}
+}
+
+func TestNewTLSConfigLoadsCertificateAndRejectsMissingFiles(t *testing.T) {
+	certDir := t.TempDir()
+	certPath := certDir + "/cert.pem"
+	keyPath := certDir + "/key.pem"
+	if err := os.WriteFile(certPath, []byte("not a cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewTLSConfig(certPath, keyPath, "", nil); err == nil {
+		t.Fatal("NewTLSConfig(invalid cert files) error = nil")
 	}
 }

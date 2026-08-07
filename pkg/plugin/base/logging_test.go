@@ -398,3 +398,199 @@ func TestNewBatchProcessorDeliversPushedEntry(t *testing.T) {
 		t.Fatalf("delivered message = %v, want hello", got)
 	}
 }
+
+func TestCompareNumber(t *testing.T) {
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		op    string
+		want  bool
+	}{
+		{name: "greater", left: "3", right: "2", op: ">", want: true},
+		{name: "not greater", left: "2", right: "3", op: ">"},
+		{name: "greater or equal", left: "3", right: "3", op: ">=", want: true},
+		{name: "less", left: "2", right: "3", op: "<", want: true},
+		{name: "less or equal", left: "3", right: "3", op: "<=", want: true},
+		{name: "invalid left", left: "x", right: "3", op: ">"},
+		{name: "invalid right", left: "3", right: "x", op: ">"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := compareNumber(test.left, test.right, func(a, b float64) bool {
+				switch test.op {
+				case ">":
+					return a > b
+				case ">=":
+					return a >= b
+				case "<":
+					return a < b
+				default:
+					return a <= b
+				}
+			})
+			if got != test.want {
+				t.Fatalf("compareNumber(%q, %q) = %t, want %t", test.left, test.right, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNestedLogMapReturnsExistingOrCreates(t *testing.T) {
+	fields := map[string]any{"existing": map[string]any{"k": "v"}}
+	if got := NestedLogMap(fields, "existing"); got["k"] != "v" {
+		t.Fatalf("NestedLogMap(existing) = %v, want existing map", got)
+	}
+	created := NestedLogMap(fields, "created")
+	created["new"] = 1
+	if fields["created"].(map[string]any)["new"] != 1 {
+		t.Fatal("NestedLogMap() did not install the created map into fields")
+	}
+}
+
+func TestRequestVarResolvesExpressionVariables(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://api.example.test:8443/orders?q=blue", nil)
+	request.RemoteAddr = "192.0.2.20:1234"
+	request.Header.Set("X-Custom", "custom-value")
+
+	if got := RequestVar(request, "$status", 201); got != "201" {
+		t.Fatalf("status = %q, want 201", got)
+	}
+	if got := RequestVar(request, "$status_code", 0); got != "<nil>" {
+		t.Fatalf("status_code without context = %q, want <nil>", got)
+	}
+	if got := RequestVar(request, "$uri", 0); got != "/orders" {
+		t.Fatalf("uri = %q, want /orders", got)
+	}
+	if got := RequestVar(request, "$request_uri", 0); got != "/orders?q=blue" {
+		t.Fatalf("request_uri = %q, want /orders?q=blue", got)
+	}
+	if got := RequestVar(request, "$method", 0); got != http.MethodPost {
+		t.Fatalf("method = %q, want POST", got)
+	}
+	if got := RequestVar(request, "$host", 0); got != "api.example.test:8443" {
+		t.Fatalf("host = %q", got)
+	}
+	if got := RequestVar(request, "$scheme", 0); got != "https" {
+		t.Fatalf("scheme = %q, want https", got)
+	}
+	request.Header.Set("X-Forwarded-Proto", "http")
+	if got := RequestVar(request, "$scheme", 0); got != "http" {
+		t.Fatalf("scheme with X-Forwarded-Proto = %q, want http", got)
+	}
+	if got := RequestVar(request, "$remote_addr", 0); got != "192.0.2.20" {
+		t.Fatalf("remote_addr = %q, want 192.0.2.20", got)
+	}
+	if got := RequestVar(request, "$arg_q", 0); got != "blue" {
+		t.Fatalf("arg_q = %q, want blue", got)
+	}
+	if got := RequestVar(request, "$http_x_custom", 0); got != "custom-value" {
+		t.Fatalf("http_x_custom = %q, want custom-value", got)
+	}
+	if got := RequestVar(request, "$unknown_var", 0); got != "" {
+		t.Fatalf("unknown var = %q, want empty", got)
+	}
+}
+
+func TestResponseRecorderStatusAndBodyAccessors(t *testing.T) {
+	recorder := NewResponseRecorder(httptest.NewRecorder(), 1024)
+	if recorder.StatusCode() != 0 || recorder.HasBody() {
+		t.Fatal("fresh recorder reports status or body")
+	}
+	recorder.WriteHeader(http.StatusAccepted)
+	if recorder.StatusCode() != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", recorder.StatusCode())
+	}
+	_, _ = recorder.Write([]byte("payload"))
+	if !recorder.HasBody() || recorder.Body() != "payload" {
+		t.Fatalf("body = %q/%t, want payload/true", recorder.Body(), recorder.HasBody())
+	}
+}
+
+func TestDecodeResponseBody(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	_, _ = writer.Write([]byte("gzip-payload"))
+	_ = writer.Close()
+
+	if got := decodeResponseBody(compressed.Bytes(), "gzip"); got != "gzip-payload" {
+		t.Fatalf("gzip decode = %q, want gzip-payload", got)
+	}
+	if got := decodeResponseBody(compressed.Bytes(), "unknown"); got != compressed.String() {
+		t.Fatal("unknown encoding must pass through unchanged")
+	}
+	if got := decodeResponseBody([]byte("not gzip"), "gzip"); got != "not gzip" {
+		t.Fatalf("invalid gzip = %q, want raw bytes", got)
+	}
+	if got := decodeResponseBody([]byte("plain"), "identity"); got != "plain" {
+		t.Fatalf("identity decode = %q, want plain", got)
+	}
+}
+
+func TestResponseWriterWrapsSharedCapture(t *testing.T) {
+	recorder := NewSharedResponseRecorder(httptest.NewRecorder())
+	_, _ = recorder.Write([]byte("captured"))
+
+	direct := &SharedResponseRecorder{
+		ResponseWriter: recorder,
+		capture:        recorder.sharedCapture(),
+		forwardOnly:    true,
+	}
+	if !responseWriterWrapsSharedCapture(direct, recorder.sharedCapture()) {
+		t.Fatal("responseWriterWrapsSharedCapture() = false for a direct wrapper")
+	}
+	unwrapped := &wrappedWriter{ResponseWriter: recorder}
+	if !responseWriterWrapsSharedCapture(unwrapped, recorder.sharedCapture()) {
+		t.Fatal("responseWriterWrapsSharedCapture() = false through an unwrap chain")
+	}
+	if responseWriterWrapsSharedCapture(httptest.NewRecorder(), recorder.sharedCapture()) {
+		t.Fatal("responseWriterWrapsSharedCapture() = true for an unrelated writer")
+	}
+}
+
+type wrappedWriter struct {
+	http.ResponseWriter
+}
+
+func (w *wrappedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func TestSharedResponseRecorderBodyAccessors(t *testing.T) {
+	recorder := NewSharedResponseRecorder(httptest.NewRecorder())
+	if recorder.HasBody() || len(recorder.BodyBytes()) != 0 {
+		t.Fatal("fresh recorder reports a body")
+	}
+	recorder.WriteHeader(http.StatusCreated)
+	_, _ = recorder.Write([]byte("payload"))
+
+	if recorder.StatusCode() != http.StatusCreated {
+		t.Fatalf("status = %d, want first status 201", recorder.StatusCode())
+	}
+	if !recorder.HasBody() || recorder.Body() != "payload" {
+		t.Fatalf("body = %q/%t", recorder.Body(), recorder.HasBody())
+	}
+	if got := recorder.BodyTruncated(3); got != "pay" {
+		t.Fatalf("BodyTruncated(3) = %q, want pay", got)
+	}
+	if got := recorder.BodyDecoded(0, "identity"); got != "payload" {
+		t.Fatalf("BodyDecoded(identity) = %q, want payload", got)
+	}
+	if got := recorder.BodyDecoded(0, ""); got != "payload" {
+		t.Fatalf("BodyDecoded(empty) = %q, want payload", got)
+	}
+}
+
+func TestUpdateSharedResponseCaptureLimit(t *testing.T) {
+	capture := &sharedResponseCapture{maxBytes: 100}
+	updateSharedResponseCaptureLimit(capture, 50)
+	if capture.maxBytes != 100 {
+		t.Fatalf("maxBytes = %d, want existing larger limit kept", capture.maxBytes)
+	}
+	updateSharedResponseCaptureLimit(capture, 200)
+	if capture.maxBytes != 200 {
+		t.Fatalf("maxBytes = %d, want larger limit adopted", capture.maxBytes)
+	}
+	updateSharedResponseCaptureLimit(capture, 0)
+	if capture.maxBytes != 0 {
+		t.Fatalf("maxBytes = %d, want unlimited when a limit is zero", capture.maxBytes)
+	}
+}

@@ -301,3 +301,26 @@ func TestKafkaConsumerRejectsMissingBrokersAndUnsupportedSchemes(t *testing.T) {
 		t.Fatalf("Fetch() error = %v, want unsupported scheme rejection", err)
 	}
 }
+
+func TestKafkaConsumerRejectsUnsupportedListOffsetTimestamp(t *testing.T) {
+	consumer, err := newKafkaConsumer(context.Background(), []string{"kafka://127.0.0.1:1"}, ConsumerOptions{})
+	if err != nil {
+		t.Fatalf("newKafkaConsumer() error = %v", err)
+	}
+	if _, err := consumer.ListOffset(context.Background(), "topic", 0, -3); err == nil {
+		t.Fatal("ListOffset() error = nil, want unsupported timestamp rejection")
+	}
+}
+
+func TestKafkaConsumerFetchFailsOnUnreachableBroker(t *testing.T) {
+	consumer, err := newKafkaConsumer(context.Background(), []string{"kafka://127.0.0.1:1"}, ConsumerOptions{
+		ConnectTimeout: 200 * time.Millisecond,
+		ReadTimeout:    200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("newKafkaConsumer() error = %v", err)
+	}
+	if _, err := consumer.Fetch(context.Background(), "topic", 0, 0); err == nil {
+		t.Fatal("Fetch() error = nil, want unreachable broker failure")
+	}
+}

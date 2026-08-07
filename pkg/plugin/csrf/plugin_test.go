@@ -182,12 +182,24 @@ func TestCheckCSRFTokenValidationTable(t *testing.T) {
 		expires   int64
 		wantValid bool
 	}{
-		{name: "valid signature", token: base64.StdEncoding.EncodeToString(validBody), key: key, expires: 7200, wantValid: true},
+		{
+			name:      "valid signature",
+			token:     base64.StdEncoding.EncodeToString(validBody),
+			key:       key,
+			expires:   7200,
+			wantValid: true,
+		},
 		{name: "invalid base64", token: "!!!not-base64!!!", key: key, expires: 7200},
 		{name: "invalid json", token: base64.StdEncoding.EncodeToString([]byte("{not json")), key: key, expires: 7200},
 		{name: "expired timestamp", token: base64.StdEncoding.EncodeToString(expiredBody), key: key, expires: 7200},
 		{name: "wrong signature", token: base64.StdEncoding.EncodeToString(wrongKeyBody), key: key, expires: 7200},
-		{name: "expires zero bypass", token: base64.StdEncoding.EncodeToString(expiredBody), key: key, expires: 0, wantValid: true},
+		{
+			name:      "expires zero bypass",
+			token:     base64.StdEncoding.EncodeToString(expiredBody),
+			key:       key,
+			expires:   0,
+			wantValid: true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -234,8 +246,18 @@ func TestHandlerRejectsInvalidRequestsWithJSONErrors(t *testing.T) {
 		wantBody string
 	}{
 		{name: "missing cookie", header: "token", wantBody: `{"error_msg":"no csrf cookie"}`},
-		{name: "mismatch", header: "header-token", cookie: "cookie-token", wantBody: `{"error_msg":"csrf token mismatch"}`},
-		{name: "invalid signature", header: "forged", cookie: "forged", wantBody: `{"error_msg":"Failed to verify the csrf token signature"}`},
+		{
+			name:     "mismatch",
+			header:   "header-token",
+			cookie:   "cookie-token",
+			wantBody: `{"error_msg":"csrf token mismatch"}`,
+		},
+		{
+			name:     "invalid signature",
+			header:   "forged",
+			cookie:   "forged",
+			wantBody: `{"error_msg":"Failed to verify the csrf token signature"}`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

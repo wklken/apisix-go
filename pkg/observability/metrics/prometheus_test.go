@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 )
 
 func TestPrometheusMetricConfigDefaults(t *testing.T) {
@@ -125,21 +126,21 @@ func TestPrometheusMetricConfigKeepsDefaultsForInvalidBuckets(t *testing.T) {
 func installMetricVectors(t *testing.T, prefix string) func() {
 	t.Helper()
 	old := struct {
-		connections           *prometheus.GaugeVec
-		requests              prometheus.Gauge
-		etcdReachable         prometheus.Gauge
-		hostInfo              *prometheus.GaugeVec
-		etcdModifyIndexed     *prometheus.GaugeVec
-		upstreamStatus        *prometheus.GaugeVec
-		httpStatus            *prometheus.CounterVec
-		httpLatency           *prometheus.HistogramVec
-		bandwidth             *prometheus.CounterVec
-		batchProcessEntries   *prometheus.GaugeVec
-		llmLatency            *prometheus.HistogramVec
-		llmPromptTokens       *prometheus.CounterVec
-		llmCompletionTokens   *prometheus.CounterVec
-		llmActiveConnections  *prometheus.GaugeVec
-		extraLabels           map[string][]prometheusExtraLabel
+		connections          *prometheus.GaugeVec
+		requests             prometheus.Gauge
+		etcdReachable        prometheus.Gauge
+		hostInfo             *prometheus.GaugeVec
+		etcdModifyIndexed    *prometheus.GaugeVec
+		upstreamStatus       *prometheus.GaugeVec
+		httpStatus           *prometheus.CounterVec
+		httpLatency          *prometheus.HistogramVec
+		bandwidth            *prometheus.CounterVec
+		batchProcessEntries  *prometheus.GaugeVec
+		llmLatency           *prometheus.HistogramVec
+		llmPromptTokens      *prometheus.CounterVec
+		llmCompletionTokens  *prometheus.CounterVec
+		llmActiveConnections *prometheus.GaugeVec
+		extraLabels          map[string][]prometheusExtraLabel
 	}{
 		Connections, Requests, EtcdReachable, HostInfo, EtcdModifyIndexed, UpstreamStatus,
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries,
@@ -153,9 +154,38 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 	}
 	t.Cleanup(restore)
 
-	httpLabels := []string{"code", "route", "matched_uri", "matched_host", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model", "response_source"}
-	commonLabels := []string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"}
-	llmLabels := []string{"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model"}
+	httpLabels := []string{
+		"code",
+		"route",
+		"matched_uri",
+		"matched_host",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+		"response_source",
+	}
+	commonLabels := []string{
+		"type",
+		"route",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	}
+	llmLabels := []string{
+		"route_id",
+		"service_id",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	}
 	prometheusExtraLabels = nil
 	Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: prefix + "http_requests_total"})
 	HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "http_status"}, httpLabels)
@@ -163,7 +193,10 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 	Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "bandwidth"}, commonLabels)
 	LLMLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "llm_latency"}, llmLabels)
 	LLMPromptTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "llm_prompt_tokens"}, llmLabels)
-	LLMCompletionTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "llm_completion_tokens"}, llmLabels)
+	LLMCompletionTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: prefix + "llm_completion_tokens"},
+		llmLabels,
+	)
 	return restore
 }
 
@@ -173,11 +206,17 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 	install := func() {
 		Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_enable_requests"})
 		HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_status"}, []string{"code"})
-		HttpLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_enable_latency"}, []string{"type"})
+		HttpLatency = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Name: "test_enable_latency"},
+			[]string{"type"},
+		)
 		Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_bw"}, []string{"type"})
 		LLMLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_enable_llm_lat"}, []string{"type"})
 		LLMPromptTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_prompt"}, []string{"type"})
-		LLMCompletionTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_complete"}, []string{"type"})
+		LLMCompletionTokens = prometheus.NewCounterVec(
+			prometheus.CounterOpts{Name: "test_enable_complete"},
+			[]string{"type"},
+		)
 	}
 	nilAll := func() {
 		Requests, HttpStatus, HttpLatency, Bandwidth = nil, nil, nil, nil
@@ -190,12 +229,24 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 	}
 	for _, single := range []func(){
 		func() { Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_one_requests"}) },
-		func() { HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_status"}, []string{"code"}) },
-		func() { HttpLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_one_latency"}, []string{"type"}) },
-		func() { Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_bw"}, []string{"type"}) },
-		func() { LLMLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_one_llm"}, []string{"type"}) },
-		func() { LLMPromptTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_prompt"}, []string{"type"}) },
-		func() { LLMCompletionTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_complete"}, []string{"type"}) },
+		func() {
+			HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_status"}, []string{"code"})
+		},
+		func() {
+			HttpLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_one_latency"}, []string{"type"})
+		},
+		func() {
+			Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_bw"}, []string{"type"})
+		},
+		func() {
+			LLMLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "test_one_llm"}, []string{"type"})
+		},
+		func() {
+			LLMPromptTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_prompt"}, []string{"type"})
+		},
+		func() {
+			LLMCompletionTokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_complete"}, []string{"type"})
+		},
 	} {
 		nilAll()
 		single()
@@ -364,4 +415,53 @@ func TestSetBatchProcessEntriesNilAndSet(t *testing.T) {
 		t.Fatalf("batch entries = %v, want 5", got)
 	}
 	_ = restore
+}
+
+func TestInitInstallsVectorsAndEnablement(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{
+		PluginAttr: map[string]map[string]any{
+			"prometheus": {"metric_prefix": "unit_"},
+		},
+	}
+
+	Init()
+	Init()
+
+	if !HTTPRequestMetricsEnabled() {
+		t.Fatal("HTTPRequestMetricsEnabled() = false after Init()")
+	}
+	if Requests == nil || HttpStatus == nil || HttpLatency == nil || Bandwidth == nil {
+		t.Fatal("Init() did not install all HTTP metric vectors")
+	}
+	if LLMLatency == nil || LLMPromptTokens == nil || LLMCompletionTokens == nil {
+		t.Fatal("Init() did not install all LLM metric vectors")
+	}
+}
+
+func TestPrometheusVariableBoundedFallbacks(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://api.example.test/orders", nil)
+	request.Host = "api.example.test"
+	entry := HTTPRequestMetrics{Status: 201, Node: "10.0.0.8", UpstreamLatency: 25}
+
+	tests := map[string]string{
+		"$status":           "201",
+		"$upstream_addr":    "10.0.0.8",
+		"$upstream_status":  "201",
+		"$host":             "api.example.test",
+		"$uri":              "/orders",
+		"$request_method":   "POST",
+		"$unknown_variable": "",
+	}
+	for variable, want := range tests {
+		if got := prometheusVariable(request, entry, variable); got != want {
+			t.Fatalf("prometheusVariable(%q) = %q, want %q", variable, got, want)
+		}
+	}
+
+	noUpstream := HTTPRequestMetrics{Status: 201, Node: "10.0.0.8"}
+	if got := prometheusVariable(request, noUpstream, "$upstream_status"); got != "" {
+		t.Fatalf("$upstream_status without upstream = %q, want empty", got)
+	}
 }

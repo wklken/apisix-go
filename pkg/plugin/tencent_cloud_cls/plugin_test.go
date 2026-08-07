@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -652,4 +653,99 @@ func encryptTencentCLSTestValue(t *testing.T, key string, value string) string {
 	ciphertext := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
 	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func waitCLSEntry(t *testing.T, entries <-chan logger.Entry, substring string) logger.Entry {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case entry := <-entries:
+			if strings.Contains(entry.Message, substring) {
+				return entry
+			}
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	t.Fatalf("timed out waiting for cls diagnostic containing %q", substring)
+	return logger.Entry{}
+}
+
+func TestBuildBatchPayloadReportsTruncatedFieldCount(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	big := strings.Repeat("v", maxSingleValueSize+10)
+	payload := p.buildBatchPayload([]map[string]any{{"big": big}})
+	if len(payload) == 0 {
+		t.Fatal("buildBatchPayload() = nil, want a payload despite truncation")
+	}
+
+	entry := waitCLSEntry(t, entries, "truncated")
+	if !strings.Contains(entry.Message, "1") {
+		t.Fatalf("truncation diagnostic = %q, want the truncated field count", entry.Message)
+	}
+}
+
+func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	// Six 1MB values in one entry exceed the 5MB group limit and must be
+	// reported as a dropped entry rather than sent.
+	huge := map[string]any{}
+	for i := range 6 {
+		huge["f"+string(rune('a'+i))] = strings.Repeat("v", maxSingleValueSize)
+	}
+	payload := p.buildBatchPayload([]map[string]any{huge})
+	if len(payload) != 0 {
+		t.Fatalf("buildBatchPayload() = %d bytes, want empty payload for an over-limit entry", len(payload))
+	}
+
+	entry := waitCLSEntry(t, entries, "dropped")
+	if !strings.Contains(entry.Message, "1") {
+		t.Fatalf("drop diagnostic = %q, want the dropped entry count", entry.Message)
+	}
+}
+
+func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	// Six 1MB entries exceed the 5MB group limit; the last two are dropped
+	// and the remaining batch is still sent.
+	big := strings.Repeat("v", maxSingleValueSize)
+	logs := make([]map[string]any, 0, 6)
+	for range 6 {
+		logs = append(logs, map[string]any{"v": big})
+	}
+	payload := p.buildBatchPayload(logs)
+	if len(payload) == 0 {
+		t.Fatal("buildBatchPayload() = nil, want the accepted entries' payload")
+	}
+
+	entry := waitCLSEntry(t, entries, "dropped")
+	if !strings.Contains(entry.Message, "2") {
+		t.Fatalf("drop diagnostic = %q, want the dropped remainder count", entry.Message)
+	}
 }

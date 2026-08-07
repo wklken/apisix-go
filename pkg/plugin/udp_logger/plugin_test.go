@@ -2,6 +2,7 @@ package udp_logger
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -568,6 +569,92 @@ func startUDPServer(t *testing.T) (string, <-chan string) {
 	}()
 
 	return conn.LocalAddr().String(), received
+}
+
+func TestSendBatchRejectsOversizeDatagram(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 9, Timeout: 1})
+
+	entry := map[string]any{"big": strings.Repeat("x", 70*1024)}
+	_, err := p.SendBatch([]map[string]any{entry}, 1)
+
+	var oversize *payloadTooLargeError
+	if !errors.As(err, &oversize) {
+		t.Fatalf("SendBatch() error = %v, want payloadTooLargeError", err)
+	}
+	if oversize.size <= oversize.limit {
+		t.Fatalf("oversize error = %+v, want size above the datagram limit", oversize)
+	}
+}
+
+// failingConn fails every write so the write-error diagnostic is exercised
+// deterministically.
+type failingConn struct{}
+
+func (failingConn) Read([]byte) (int, error)      { return 0, io.EOF }
+func (failingConn) Write([]byte) (int, error)     { return 0, errors.New("write failed") }
+func (failingConn) Close() error                  { return nil }
+func (failingConn) LocalAddr() net.Addr           { return nil }
+func (failingConn) RemoteAddr() net.Addr          { return nil }
+func (failingConn) SetDeadline(time.Time) error   { return nil }
+func (failingConn) SetReadDeadline(time.Time) error { return nil }
+func (failingConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestSendBatchReportsWriteFailure(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 9, Timeout: 1})
+	p.conn = failingConn{}
+
+	_, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1)
+	if err == nil || !strings.Contains(err.Error(), "failed to send log message") {
+		t.Fatalf("SendBatch() error = %v, want write failure diagnostic", err)
+	}
+}
+
+func TestSendBatchDeliversOneDatagram(t *testing.T) {
+	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve udp addr: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	datagrams := make(chan []byte, 4)
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			datagrams <- append([]byte(nil), buf[:n]...)
+		}
+	}()
+
+	host, port, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 3})
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	select {
+	case datagram := <-datagrams:
+		if !strings.Contains(string(datagram), `"route_id":"r1"`) {
+			t.Fatalf("datagram = %q, want the encoded batch", datagram)
+		}
+		select {
+		case extra := <-datagrams:
+			t.Fatalf("received a second datagram %q, want exactly one", extra)
+		case <-time.After(150 * time.Millisecond):
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UDP datagram")
+	}
 }
 
 func mustAtoi(t *testing.T, value string) int {

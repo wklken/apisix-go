@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/server"
 
@@ -62,6 +61,29 @@ func Execute() {
 	}
 }
 
+func startupConfigSummary(cfg *config.Config) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	configProvider := strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleTraditional.ConfigProvider))
+	if configProvider == "" {
+		configProvider = strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleDataPlane.ConfigProvider))
+	}
+	if configProvider == "" {
+		configProvider = strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleControlPlane.ConfigProvider))
+	}
+	return map[string]any{
+		"debug":             cfg.Debug,
+		"role":              cfg.Deployment.Role,
+		"config_provider":   configProvider,
+		"node_listen":       cfg.Apisix.ListenAddresses(),
+		"enabled_plugins":   len(cfg.Plugins),
+		"etcd_endpoints":    len(cfg.Deployment.Etcd.Host),
+		"enabled_ssl":       cfg.Apisix.Ssl.Enable,
+		"admin_api_version": cfg.Deployment.Admin.AdminAPIVersion,
+	}
+}
+
 func Start() {
 	fmt.Println("It's apisix")
 
@@ -77,14 +99,7 @@ func Start() {
 		logger.Fatalf("configure logger: %s", err)
 	}
 
-	fmt.Printf("global config: %+v\n", globalConfig)
-	b, _ := json.Marshal(globalConfig)
-	fmt.Println("global config json:", string(b))
-
-	if globalConfig.Debug {
-		fmt.Println(viper.AllSettings())
-		fmt.Println(globalConfig)
-	}
+	logger.Infof("startup config summary: %v", startupConfigSummary(globalConfig))
 
 	logger.Info("Starting server")
 	server, err := server.NewServer()

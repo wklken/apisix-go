@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 
-	"github.com/jpillora/ipfilter"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -16,8 +16,14 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	filter *ipfilter.IPFilter
+	filter *ipMatcher
 	body   string
+}
+
+type ipMatcher struct {
+	addresses      map[netip.Addr]struct{}
+	prefixes       []netip.Prefix
+	allowedOnMatch bool
 }
 
 const (
@@ -101,27 +107,23 @@ func (p *Plugin) PostInit() error {
 	if p.config.ResponseCode == 0 {
 		p.config.ResponseCode = http.StatusForbidden
 	}
-	if err := validateIPDefinitions(p.config.Whitelist); err != nil {
+	whitelist, err := newIPMatcher(p.config.Whitelist, true)
+	if err != nil {
 		return fmt.Errorf("invalid whitelist: %w", err)
 	}
-	if err := validateIPDefinitions(p.config.Blacklist); err != nil {
+	blacklist, err := newIPMatcher(p.config.Blacklist, false)
+	if err != nil {
 		return fmt.Errorf("invalid blacklist: %w", err)
 	}
 	body, _ := json.Marshal(map[string]string{"message": p.config.Message})
 	p.body = util.BytesToString(body)
 
 	if len(p.config.Whitelist) > 0 {
-		p.filter = ipfilter.New(ipfilter.Options{
-			AllowedIPs:     p.config.Whitelist,
-			BlockByDefault: true,
-		})
+		p.filter = whitelist
 	}
 
 	if len(p.config.Blacklist) > 0 {
-		p.filter = ipfilter.New(ipfilter.Options{
-			BlockedIPs:     p.config.Blacklist,
-			BlockByDefault: false,
-		})
+		p.filter = blacklist
 	}
 
 	return nil
@@ -150,14 +152,51 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func validateIPDefinitions(definitions []string) error {
+func newIPMatcher(definitions []string, allowedOnMatch bool) (*ipMatcher, error) {
+	matcher := &ipMatcher{
+		addresses:      make(map[netip.Addr]struct{}, len(definitions)),
+		prefixes:       make([]netip.Prefix, 0, len(definitions)),
+		allowedOnMatch: allowedOnMatch,
+	}
 	for _, definition := range definitions {
-		if net.ParseIP(definition) != nil {
+		if address, err := netip.ParseAddr(definition); err == nil && address.Zone() == "" {
+			matcher.addresses[address.Unmap()] = struct{}{}
 			continue
 		}
-		if _, _, err := net.ParseCIDR(definition); err != nil {
-			return fmt.Errorf("%q is not an IP address or CIDR", definition)
+		prefix, err := netip.ParsePrefix(definition)
+		if err != nil || prefix.Addr().Zone() != "" {
+			return nil, fmt.Errorf("%q is not an IP address or CIDR", definition)
+		}
+		matcher.prefixes = append(matcher.prefixes, prefix.Masked())
+	}
+	return matcher, nil
+}
+
+func (m *ipMatcher) Allowed(value string) bool {
+	address, err := netip.ParseAddr(value)
+	if err != nil || address.Zone() != "" {
+		return false
+	}
+	if _, ok := m.addresses[address.Unmap()]; ok {
+		return m.allowedOnMatch
+	}
+	for _, prefix := range m.prefixes {
+		if prefixContains(prefix, address) {
+			return m.allowedOnMatch
 		}
 	}
-	return nil
+	return !m.allowedOnMatch
+}
+
+func prefixContains(prefix netip.Prefix, address netip.Addr) bool {
+	if prefix.Contains(address) {
+		return true
+	}
+	if address.Is4In6() {
+		return prefix.Contains(address.Unmap())
+	}
+	if address.Is4() {
+		return prefix.Contains(netip.AddrFrom16(address.As16()))
+	}
+	return false
 }

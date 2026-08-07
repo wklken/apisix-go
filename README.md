@@ -4,6 +4,23 @@ This is an [apache/apisix](https://github.com/apache/apisix) Data Plane(DP) impl
 
 This project is still under development and NOT READY FOR PRODUCTION!
 
+## Quick start
+
+Start `apisix-go` in standalone mode with the included example configuration:
+
+```bash
+source .envrc && go run . -c conf/config-example.yaml
+```
+
+In another terminal, send a request through the gateway:
+
+```bash
+curl http://127.0.0.1:9080/hello
+```
+
+The example route in [`conf/apisix.yaml`](conf/apisix.yaml) proxies the request
+to the public `httpbingo.org` echo service. Stop the gateway with `Ctrl-C`.
+
 ## APISIX 3.17 parity status
 
 The current Go-native parity baseline registers 100 of the 104 APISIX 3.17 default plugins (96.2%). The checklist tracks 89 plugins at the current supported monitoring level and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations—`ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`—depend on external plugin runners or Lua/OpenResty features.

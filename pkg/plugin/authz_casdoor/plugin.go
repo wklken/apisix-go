@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +26,7 @@ type Plugin struct {
 	client   *http.Client
 	sessions map[string]sessionData
 	mu       sync.Mutex
-	newState func() string
+	newState func() (string, error)
 }
 
 const (
@@ -92,7 +93,7 @@ func (p *Plugin) PostInit() error {
 		p.sessions = make(map[string]sessionData)
 	}
 	if p.newState == nil {
-		p.newState = randomState
+		p.newState = func() (string, error) { return randomState(rand.Reader) }
 	}
 
 	return nil
@@ -163,8 +164,16 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
-	sessionID := randomState()
-	state := p.newState()
+	sessionID, err := randomState(rand.Reader)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("failed to generate authorization state"), http.StatusInternalServerError)
+		return
+	}
+	state, err := p.newState()
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("failed to generate authorization state"), http.StatusInternalServerError)
+		return
+	}
 	p.saveSession(sessionID, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
@@ -292,10 +301,10 @@ func sha256Hex(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func randomState() string {
+func randomState(reader io.Reader) (string, error) {
 	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return hex.EncodeToString([]byte(time.Now().String()))
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return "", fmt.Errorf("generate authorization state: %w", err)
 	}
-	return hex.EncodeToString(raw)
+	return hex.EncodeToString(raw), nil
 }

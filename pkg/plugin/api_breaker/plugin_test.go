@@ -167,8 +167,9 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 	})
 	t.Cleanup(stop)
 
+	failures := 2
 	p := newTestPlugin(t, Config{
-		Unhealthy:     UnHealthCheck{Failures: pointerTo(2)},
+		Unhealthy:     UnHealthCheck{Failures: &failures},
 		MaxBreakerSec: 300,
 	})
 	p.unhealthyCount = 2
@@ -193,8 +194,4 @@ func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("breaker_time not logged at debug level")
 	}
-}
-
-func pointerTo(value int) *int {
-	return &value
 }

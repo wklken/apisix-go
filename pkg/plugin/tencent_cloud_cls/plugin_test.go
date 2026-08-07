@@ -777,7 +777,7 @@ func TestAuthorizationSignTimeUsesSingleTimestamp(t *testing.T) {
 }
 
 func signTimeWindow(auth string) (int64, int64, bool) {
-	for _, part := range strings.Split(auth, "&") {
+	for part := range strings.SplitSeq(auth, "&") {
 		value, ok := strings.CutPrefix(part, "q-sign-time=")
 		if !ok {
 			continue

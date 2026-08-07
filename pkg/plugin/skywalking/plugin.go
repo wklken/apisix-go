@@ -341,10 +341,7 @@ func (p *Plugin) requeueSegments(segments []skywalkingSegment) {
 		return
 	}
 	space := maxPendingSkyWalkingSegments - len(p.segments)
-	kept := len(segments)
-	if kept > space {
-		kept = space
-	}
+	kept := min(len(segments), space)
 	if kept > 0 {
 		p.segments = append(segments[:kept], p.segments...)
 	}

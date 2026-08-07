@@ -1,9 +1,11 @@
-BINARY_NAME=apisix
+BINARY_NAME ?= apisix
+BINARY_PATH ?= .cache/out/$(BINARY_NAME)
+CACHE_BIN ?= $(if $(GOBIN),$(GOBIN),.cache/bin)
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
 BENCHSTAT_VERSION ?= v0.0.0-20260709024250-82a0b07e230d
 BENCH_DIR ?= .cache/bench
-BENCHSTAT ?= .cache/bin/benchstat
+BENCHSTAT ?= $(CACHE_BIN)/benchstat
 BENCH_PACKAGES ?= ./pkg/json ./pkg/plugin/base ./pkg/proxy ./pkg/route
 BENCH_CORPUS_FILES ?= pkg/json/benchmark_test.go \
 	pkg/plugin/base/logging_benchmark_test.go \
@@ -39,7 +41,8 @@ lint:
 
 .PHONY: build
 build:
-	go build -o ${BINARY_NAME}
+	mkdir -p $(dir $(BINARY_PATH))
+	go build -o $(BINARY_PATH)
 
 .PHONY: test
 test:
@@ -58,20 +61,52 @@ test-integration:
 
 .PHONY: serve
 serve: build
-	./apisix
+	$(BINARY_PATH)
 
 .PHONY: live
 live:
 	go run github.com/cosmtrek/air@v1.51.0 \
-        --build.cmd "make build" --build.bin "./${BINARY_NAME}" --build.delay "100" \
-        --build.exclude_dir "" \
-        --build.include_ext "go, tpl, tmpl, html, css, scss, js, ts, sql, jpeg, jpg, gif, png, bmp, svg, webp, ico" \
-        --misc.clean_on_exit "true"
+		--build.cmd "make build" --build.bin "$(BINARY_PATH)" --build.delay "100" \
+		--build.exclude_dir "" \
+		--build.include_ext "go, tpl, tmpl, html, css, scss, js, ts, sql, jpeg, jpg, gif, png, bmp, svg, webp, ico" \
+		--misc.clean_on_exit "true"
+
+.PHONY: cache-layout-test
+cache-layout-test:
+	bash scripts/cache_layout_test.sh
+
+.PHONY: cache-status
+cache-status:
+	@test -n "$(APISIX_GO_SHARED_CACHE)" || \
+		(printf 'source .envrc before running cache-status\n' >&2; exit 1)
+	@printf 'shared cache: %s\n' "$(APISIX_GO_SHARED_CACHE)"
+	@printf 'local cache:  %s/.cache\n' "$(CURDIR)"
+	@printf 'GOMODCACHE:   %s\n' "$(GOMODCACHE)"
+	@printf 'GOCACHE:      %s\n' "$(GOCACHE)"
+	@printf 'GOBIN:        %s\n' "$(GOBIN)"
+	@du -sh "$(APISIX_GO_SHARED_CACHE)" .cache 2>/dev/null || true
+
+.PHONY: clean
+clean:
+	rm -f "$(BINARY_PATH)" ./apisix
+
+.PHONY: cache-clean-local
+cache-clean-local: clean
+	@if [ -d .cache/go-mod ]; then chmod -R u+w .cache/go-mod; fi
+	rm -rf \
+		.cache/tmp \
+		.cache/telemetry \
+		.cache/out \
+		.cache/go \
+		.cache/go-build \
+		.cache/go-mod \
+		.cache/bin \
+		.cache/golangci-lint
 
 .PHONY: init-bench
 init-bench:
-	GOBIN=$(CURDIR)/.cache/bin go install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
-	go version -m $(BENCHSTAT)
+	GOBIN="$(CACHE_BIN)" go install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
+	go version -m "$(BENCHSTAT)"
 
 .PHONY: benchmark-runner-test
 benchmark-runner-test:

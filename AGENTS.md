@@ -19,12 +19,12 @@ Key runtime pieces:
 
 ## Setup Commands
 
-- Use Go 1.26 as the project target from `go.mod`. Run `source .envrc` before Go commands; it keeps the toolchain, caches, temporary files, and installed binaries under the ignored checkout-local `.cache/` directory and does not depend on GVM or a user-level Go environment file.
+- Use Go 1.26 as the project target from `go.mod`. Run `source .envrc` before Go commands; it shares downloaded toolchains, modules, build cache, and installed tools across this repository's worktrees while keeping mutable task outputs inside the active worktree. It does not depend on GVM or a user-level Go environment file.
 - Download dependencies after sourcing `.envrc`: `source .envrc && go mod download`.
 - Install the golangci-lint linter and formatter: `make init`.
 - Do not run `make dep` casually. It runs `go mod tidy` and `go mod vendor`; use it only when dependency or vendoring changes are intentional.
 
-### Checkout-local Go cache
+### Worktree-aware Go cache
 
 Run these commands from the repository root in every new shell:
 
@@ -34,21 +34,28 @@ go version
 go test ./... -count=1
 ```
 
-`.envrc` creates and uses these ignored paths under `.cache/`:
+`.envrc` derives the shared root from Git's common directory, so every linked
+worktree for this repository resolves the same `<main-checkout>/.cache/shared`
+path. Content-addressed/download state is shared; task outputs remain isolated:
 
-| Purpose | Environment variable | Checkout path |
-|---|---|---|
-| Go toolchain/module downloads | `GOMODCACHE` | `.cache/go-mod` |
-| Build cache | `GOCACHE` | `.cache/go-build` |
-| Go workspace/bin directory | `GOPATH` / `GOBIN` | `.cache/go` / `.cache/bin` |
-| Temporary build/test files | `GOTMPDIR` / `TMPDIR` | `.cache/tmp` |
-| Test telemetry | `TEST_TELEMETRY_DIR` | `.cache/telemetry` |
+| Scope | Purpose | Environment variable | Path |
+|---|---|---|---|
+| Shared | Go toolchain/module downloads | `GOMODCACHE` | `<main-checkout>/.cache/shared/go-mod` |
+| Shared | Build cache | `GOCACHE` | `<main-checkout>/.cache/shared/go-build` |
+| Shared | Go workspace/bin directory | `GOPATH` / `GOBIN` | `<main-checkout>/.cache/shared/go` / `<main-checkout>/.cache/shared/bin` |
+| Shared | golangci-lint cache | `GOLANGCI_LINT_CACHE` | `<main-checkout>/.cache/shared/golangci-lint` |
+| Worktree-local | Temporary build/test files | `GOTMPDIR` / `TMPDIR` | `.cache/tmp` |
+| Worktree-local | Test telemetry | `TEST_TELEMETRY_DIR` | `.cache/telemetry` |
+| Worktree-local | Application binary | `BINARY_PATH` | `.cache/out/apisix` |
+| Worktree-local | Benchmarks and coverage | `BENCH_DIR` / test flags | `.cache/bench` / `.cache/coverage` |
 
-`source .envrc` is required for the current shell; `direnv allow` is not required. Do not run `go`, `go test`, `go build`, or `make` in a fresh shell before sourcing it, otherwise Go may fall back to user-level caches such as macOS `/private` paths and trigger unnecessary permission prompts. Verify the active paths with `env | rg '^(GOPATH|GOBIN|GOCACHE|GOMODCACHE|GOTMPDIR|TMPDIR|TEST_TELEMETRY_DIR)='`. The cache is disposable: stop running Go processes, remove `.cache/` if a clean re-download is needed, then run `source .envrc` again. Never commit `.cache/`.
+`source .envrc` is required for the current shell; `direnv allow` is not required. Do not run `go`, `go test`, `go build`, or `make` in a fresh shell before sourcing it, otherwise Go may fall back to user-level caches such as macOS `/private` paths and trigger unnecessary permission prompts. Verify the active paths with `make cache-status` or `env | rg '^(APISIX_GO_ROOT|APISIX_GO_SHARED_CACHE|GOPATH|GOBIN|GOCACHE|GOMODCACHE|GOLANGCI_LINT_CACHE|GOTMPDIR|TMPDIR|TEST_TELEMETRY_DIR)='`.
+
+Do not remove the main checkout's entire `.cache/`: it contains the shared cache and may be in use by other agents. `make clean` removes only the active worktree's application binary. After stopping the agent using a worktree, `make cache-clean-local` removes that worktree's temp/output directories and pre-migration duplicated Go/linter caches while preserving benchmark evidence, coverage, fixtures, and the shared cache. Stop all repository agents before manually clearing the exact shared path printed by `make cache-status`. Never commit `.cache/`.
 
 ## Development Workflow
 
-- Build the binary: `make build`. This writes `./apisix`, which is ignored by git and should not be committed.
+- Build the binary: `make build`. This writes the worktree-local `.cache/out/apisix`, which is ignored by Git and can be removed with `make clean`.
 - Run the server after building: `make serve`.
 - Run with live rebuilds: `make live`. This uses `github.com/cosmtrek/air@v1.51.0`.
 - Run a specific config manually: `go run . -c conf/config.yaml`.
@@ -63,7 +70,7 @@ go test ./... -count=1
 - The repository contains focused unit, route-chain, protocol-fixture, and lifecycle tests across the supported plugin surface; `go test ./...` is the full repository gate, not only a compile smoke check.
 - For concurrency-sensitive changes, run the focused race gate as well, for example `source .envrc && go test -race ./pkg/etcd ./pkg/plugin/server_info ./pkg/server -count=1`.
 - Run a build smoke check for code changes: `source .envrc && make build`.
-- The Makefile has no `test` target; `make lint` runs golangci-lint with the repository configuration.
+- `make test` runs `./cmd/... ./pkg/...` only; it intentionally excludes the real-process `t/plugin` suite and does not replace the full repository gate. `make lint` runs golangci-lint with the repository configuration.
 - If a check already fails before your change, record the exact package, file, line, and message. Do not report a skipped or failing check as passing.
 - For docs-only changes, a markdown/diff review is enough unless the documented commands themselves changed.
 
@@ -133,7 +140,7 @@ Correctness:
 
 ## Pull Request Guidelines
 
-- Before committing code changes, run `go test ./...` and `make build`, then clean generated artifacts such as `./apisix` unless they are intentionally part of the task.
+- Before committing code changes, run `go test ./...` and `make build`, then run `make clean` unless the worktree-local binary is intentionally needed.
 - For docs-only changes, do not run broad mutating commands.
 - Keep dependency changes explicit: explain why `go.mod`, `go.sum`, or vendored files changed.
 - Report verification honestly, including pre-existing failures and commands not run.

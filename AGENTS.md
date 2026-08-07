@@ -31,7 +31,7 @@ Run these commands from the repository root in every new shell:
 ```bash
 source .envrc
 go version
-go test ./... -count=1
+make cache-status
 ```
 
 `.envrc` derives the shared root from Git's common directory, so every linked
@@ -65,12 +65,14 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared cache
 
 ## Testing Instructions
 
-- Run the full repository gate with the checkout-local runtime: `source .envrc && go test ./... -count=1`.
-- Run a package subset: `go test ./pkg/plugin/redirect` or `go test ./pkg/...`.
-- The repository contains focused unit, route-chain, protocol-fixture, and lifecycle tests across the supported plugin surface; `go test ./...` is the full repository gate, not only a compile smoke check.
+- Repository-specific rule: verification is impact-scoped. This overrides generic instructions to run all existing tests, `make test`, or `go test ./...` after every code change.
+- Derive the smallest credible test set from the changed packages, imports, call sites, and behavior. Start with an exact test such as `source .envrc && go test ./pkg/plugin/redirect -run '^TestHandlerRedirectsWithRegexURI$' -count=1`, then expand only to directly affected package tests when needed.
+- Do not use `go test ./...`, `go test ./pkg/...`, or `make test` as routine validation. Run a repository-wide aggregation only when the user explicitly requests it or the change itself affects repository-wide test/build infrastructure and no narrower check can prove correctness.
+- Run `t/plugin` only when the change affects a specific integration manifest, the integration harness, or behavior that lacks a narrower test seam. Select the exact affected case, for example `source .envrc && go test ./t/plugin -run '^TestPluginIntegration/request-id/default-uuid-v4$' -count=1`; do not run `make test-integration` or the whole `t/plugin` package by default.
+- Run only one real-process `t/plugin` command at a time because its cases use shared resources and fixed ports. Do not interrupt a relevant active run solely because it is slow when the process and its output/profile are still making progress.
 - For concurrency-sensitive changes, run the focused race gate as well, for example `source .envrc && go test -race ./pkg/etcd ./pkg/plugin/server_info ./pkg/server -count=1`.
 - Run a build smoke check for code changes: `source .envrc && make build`.
-- `make test` runs `./cmd/... ./pkg/...` only; it intentionally excludes the real-process `t/plugin` suite and does not replace the full repository gate. `make lint` runs golangci-lint with the repository configuration.
+- `make test` runs the broad `./cmd/... ./pkg/...` unit-test aggregation, while `make test-integration` runs the real-process `t/plugin` suite. Both are opt-in broad gates under the rule above. `make lint` runs golangci-lint with the repository configuration.
 - If a check already fails before your change, record the exact package, file, line, and message. Do not report a skipped or failing check as passing.
 - For docs-only changes, a markdown/diff review is enough unless the documented commands themselves changed.
 
@@ -98,7 +100,7 @@ Acceptance contract:
 
 Correctness:
 
-- Focused tests, relevant race tests, `go test ./... -count=1 -p=1`, `make lint`, and `make build` remain mandatory.
+- Run the focused tests and relevant race tests for the changed benchmark or production path, plus `make lint` and `make build`. Do not add `go test ./...` or unrelated `t/plugin` cases to performance verification.
 
 ## Code Style
 
@@ -140,7 +142,7 @@ Correctness:
 
 ## Pull Request Guidelines
 
-- Before committing code changes, run `go test ./...` and `make build`, then run `make clean` unless the worktree-local binary is intentionally needed.
+- Before committing code changes, run the impact-scoped tests required by Testing Instructions and `make build`, then run `make clean` unless the worktree-local binary is intentionally needed. Do not substitute a full repository or `t/plugin` aggregation.
 - For docs-only changes, do not run broad mutating commands.
 - Keep dependency changes explicit: explain why `go.mod`, `go.sum`, or vendored files changed.
 - Report verification honestly, including pre-existing failures and commands not run.

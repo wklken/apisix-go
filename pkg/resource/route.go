@@ -3,6 +3,7 @@ package resource
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -87,7 +88,13 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		*/
 		var nodes map[string]int
 		if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
-			for host, weight := range nodes {
+			addresses := make([]string, 0, len(nodes))
+			for host := range nodes {
+				addresses = append(addresses, host)
+			}
+			sort.Strings(addresses)
+			for _, host := range addresses {
+				weight := nodes[host]
 				host, port := parseNodeAddress(host)
 
 				s.Nodes = append(s.Nodes, Node{

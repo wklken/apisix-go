@@ -76,6 +76,25 @@ func TestUpstreamUnmarshalDefaultsHTTPAndSplitsNodeAddress(t *testing.T) {
 	}
 }
 
+func TestUpstreamUnmarshalSortsMapNodesByAddress(t *testing.T) {
+	const config = `{"nodes":{"z.example.com:8080":1,"a.example.com:8080":1,"m.example.com:8080":1}}`
+	const want = "a.example.com,m.example.com,z.example.com"
+
+	for range 20 {
+		var upstream Upstream
+		if err := json.Unmarshal([]byte(config), &upstream); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+		hosts := make([]string, 0, len(upstream.Nodes))
+		for _, node := range upstream.Nodes {
+			hosts = append(hosts, node.Host)
+		}
+		if got := strings.Join(hosts, ","); got != want {
+			t.Fatalf("upstream node order = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestUpstreamUnmarshalParsesBracketedIPv6Node(t *testing.T) {
 	var upstream Upstream
 	if err := json.Unmarshal([]byte(`{

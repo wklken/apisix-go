@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/justinas/alice"
@@ -376,7 +375,6 @@ func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	chain := alice.New(base.WithTransformPipeline(transformCount))
 	// chain = chain.Append(Recoverer)
 	for _, plugin := range plugins {
-		fmt.Println("plugin name:", plugin.GetName(), "priority:", plugin.GetPriority())
 		chain = chain.Append(plugin.Handler)
 	}
 

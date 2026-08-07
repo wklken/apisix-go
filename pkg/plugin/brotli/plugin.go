@@ -2,6 +2,7 @@ package brotli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	brotlienc "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -75,10 +77,22 @@ const schema = `
     },
     "vary": {
       "type": "boolean"
+    },
+    "max_response_size": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 10485760,
+      "description": "Maximum response body size in bytes accepted for compression; larger responses pass through uncompressed. 0 disables the bound."
     }
   }
 }
 `
+
+const (
+	// defaultMaxResponseSize bounds the buffered compression input so a
+	// large download cannot be double-buffered without limit.
+	defaultMaxResponseSize = 10 * 1024 * 1024
+)
 
 type Config struct {
 	Types       []string `json:"types,omitempty"`
@@ -90,6 +104,9 @@ type Config struct {
 	HTTPVersion *float64 `json:"http_version,omitempty"`
 	Vary        *bool    `json:"vary,omitempty"`
 
+	// MaxResponseSize caps the response body accepted for compression.
+	MaxResponseSize *int64 `json:"max_response_size,omitempty"`
+
 	contentTypes map[string]struct{}
 	wildcardType bool
 	httpVersion  string
@@ -97,26 +114,28 @@ type Config struct {
 
 func (c *Config) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Types       json.RawMessage `json:"types"`
-		MinLength   *int            `json:"min_length"`
-		Mode        *int            `json:"mode"`
-		CompLevel   *int            `json:"comp_level"`
-		LGWin       *int            `json:"lgwin"`
-		LGBlock     *int            `json:"lgblock"`
-		HTTPVersion *float64        `json:"http_version"`
-		Vary        *bool           `json:"vary"`
+		Types           json.RawMessage `json:"types"`
+		MinLength       *int            `json:"min_length"`
+		Mode            *int            `json:"mode"`
+		CompLevel       *int            `json:"comp_level"`
+		LGWin           *int            `json:"lgwin"`
+		LGBlock         *int            `json:"lgblock"`
+		HTTPVersion     *float64        `json:"http_version"`
+		Vary            *bool           `json:"vary"`
+		MaxResponseSize *int64          `json:"max_response_size"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*c = Config{
-		MinLength:   raw.MinLength,
-		Mode:        raw.Mode,
-		CompLevel:   raw.CompLevel,
-		LGWin:       raw.LGWin,
-		LGBlock:     raw.LGBlock,
-		HTTPVersion: raw.HTTPVersion,
-		Vary:        raw.Vary,
+		MinLength:       raw.MinLength,
+		Mode:            raw.Mode,
+		CompLevel:       raw.CompLevel,
+		LGWin:           raw.LGWin,
+		LGBlock:         raw.LGBlock,
+		HTTPVersion:     raw.HTTPVersion,
+		Vary:            raw.Vary,
+		MaxResponseSize: raw.MaxResponseSize,
 	}
 	if len(raw.Types) == 0 || string(raw.Types) == "null" {
 		return nil
@@ -164,6 +183,10 @@ func (p *Plugin) PostInit() error {
 		value := 1.1
 		p.config.HTTPVersion = &value
 	}
+	if p.config.MaxResponseSize == nil {
+		value := int64(defaultMaxResponseSize)
+		p.config.MaxResponseSize = &value
+	}
 	p.config.httpVersion = fmt.Sprintf("%g", *p.config.HTTPVersion)
 	p.config.contentTypes = make(map[string]struct{}, len(p.config.Types))
 	for _, contentType := range p.config.Types {
@@ -190,7 +213,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 		if p.shouldCompressResponse(recorder) {
-			p.compressResponse(recorder)
+			if err := p.compressResponse(recorder); err != nil {
+				logger.Errorf("brotli compress response fail: %s", err)
+			}
 		}
 		writeCompressedResponse(w, recorder)
 	})
@@ -261,13 +286,26 @@ func (p *Plugin) shouldCompressResponse(resp *base.BufferedResponseWriter) bool 
 	return true
 }
 
-func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) {
+// compressResponse replaces the buffered body with its brotli encoding. It
+// returns a controlled error when the body exceeds max_response_size so
+// oversized responses pass through uncompressed instead of growing without
+// bound; below the cap headers and compression behavior are preserved.
+func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) error {
+	limit := *p.config.MaxResponseSize
+	body := resp.Body()
+	if limit > 0 && int64(len(body)) > limit {
+		return fmt.Errorf(
+			"response body of %d bytes exceeds max_response_size %d",
+			len(body),
+			limit,
+		)
+	}
 	var compressed bytes.Buffer
 	writer := brotlienc.NewWriterOptions(&compressed, p.writerOptions())
-	_, writeErr := writer.Write(resp.Body())
+	_, writeErr := writer.Write(body)
 	closeErr := writer.Close()
 	if writeErr != nil || closeErr != nil {
-		return
+		return errors.Join(writeErr, closeErr)
 	}
 
 	resp.SetBody(compressed.Bytes())
@@ -281,6 +319,7 @@ func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) {
 		}
 	}
 	weakenETag(resp.Header())
+	return nil
 }
 
 func (p *Plugin) writerOptions() brotlienc.WriterOptions {

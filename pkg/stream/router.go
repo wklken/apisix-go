@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +21,12 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-const defaultStreamConnectTimeout = 5 * time.Second
+const (
+	defaultStreamConnectTimeout = 5 * time.Second
+	// defaultStreamIdleTimeout bounds an idle bridge direction when the
+	// route does not configure an upstream read timeout.
+	defaultStreamIdleTimeout = 60 * time.Second
+)
 
 var ErrNoStreamRoute = errors.New("no matching stream route")
 
@@ -254,7 +260,16 @@ func (e routeEntry) rawServe(ctx context.Context, client net.Conn, peer string) 
 		_ = client.Close()
 		return "", "tcp", err
 	}
-	return "", "tcp", bridge(ctx, client, upstream)
+	return "", "tcp", bridge(ctx, client, upstream, e.streamIdleTimeout())
+}
+
+// streamIdleTimeout is the per-direction idle bound for the stream bridge:
+// the route's upstream read timeout when configured, else the default.
+func (e routeEntry) streamIdleTimeout() time.Duration {
+	if e.route.Upstream.Timeout.Read > 0 {
+		return time.Duration(e.route.Upstream.Timeout.Read) * time.Second
+	}
+	return defaultStreamIdleTimeout
 }
 
 func (e routeEntry) dial(ctx context.Context, key string) (net.Conn, error) {
@@ -351,7 +366,10 @@ func routeSpecificity(route resource.StreamRoute) int {
 	return score
 }
 
-func bridge(ctx context.Context, client net.Conn, upstream net.Conn) error {
+// bridge pumps bytes between the client and upstream connections until both
+// directions finish. Every copy operation carries an idle deadline that is
+// refreshed on progress, so a silent peer cannot hold the bridge open.
+func bridge(ctx context.Context, client net.Conn, upstream net.Conn, idle time.Duration) error {
 	if upstream == nil {
 		_ = client.Close()
 		return fmt.Errorf("stream upstream connection is nil")
@@ -362,8 +380,8 @@ func bridge(ctx context.Context, client net.Conn, upstream net.Conn) error {
 	defer func() { _ = upstream.Close() }()
 
 	results := make(chan error, 2)
-	go copyDirection(upstream, client, results)
-	go copyDirection(client, upstream, results)
+	go copyDirection(upstream, client, results, idle)
+	go copyDirection(client, upstream, results, idle)
 	first := <-results
 	_ = client.Close()
 	_ = upstream.Close()
@@ -377,9 +395,35 @@ func bridge(ctx context.Context, client net.Conn, upstream net.Conn) error {
 	return normalizeCopyError(second)
 }
 
-func copyDirection(dst net.Conn, src net.Conn, results chan<- error) {
-	_, err := io.Copy(dst, src)
-	results <- err
+func copyDirection(dst net.Conn, src net.Conn, results chan<- error, idle time.Duration) {
+	results <- copyWithIdleDeadline(dst, src, idle)
+}
+
+// copyWithIdleDeadline copies from src to dst in bounded chunks, refreshing
+// the read and write deadlines before every operation so progress resets the
+// idle timer.
+func copyWithIdleDeadline(dst net.Conn, src net.Conn, idle time.Duration) error {
+	if idle <= 0 {
+		idle = defaultStreamIdleTimeout
+	}
+	buffer := make([]byte, 32*1024)
+	for {
+		if err := src.SetReadDeadline(time.Now().Add(idle)); err != nil {
+			return err
+		}
+		if err := dst.SetWriteDeadline(time.Now().Add(idle)); err != nil {
+			return err
+		}
+		read, readErr := src.Read(buffer)
+		if read > 0 {
+			if _, writeErr := dst.Write(buffer[:read]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func closeOnContextDone(ctx context.Context, conns ...net.Conn) func() {
@@ -397,7 +441,11 @@ func closeOnContextDone(ctx context.Context, conns ...net.Conn) func() {
 }
 
 func normalizeCopyError(err error) error {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return nil
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return nil
 	}
 	message := strings.ToLower(err.Error())

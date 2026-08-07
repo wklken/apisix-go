@@ -1,7 +1,10 @@
 package route
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,5 +97,40 @@ func TestErrorHandlerClassifiesDirectorErrorOnce(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), directorErr.Error()) {
 		t.Fatalf("body = %q, want the classified director error", response.Body.String())
+	}
+}
+
+func TestErrorHandlerClassifiesWrappedErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{
+			name:       "wrapped upstream EOF",
+			err:        fmt.Errorf("read response body: %w", io.EOF),
+			wantStatus: http.StatusBadGateway,
+		},
+		{
+			name:       "wrapped client cancellation",
+			err:        fmt.Errorf("copy response body: %w", context.Canceled),
+			wantStatus: StatusClientClosedRequest,
+		},
+		{
+			name:       "wrapped unexpected EOF",
+			err:        fmt.Errorf("copy request body: %w", io.ErrUnexpectedEOF),
+			wantStatus: StatusClientClosedRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+			response := httptest.NewRecorder()
+			newErrorHandler()(response, request, test.err)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+		})
 	}
 }

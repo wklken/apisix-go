@@ -309,6 +309,31 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	}
 }
 
+func TestReloadSkipsWhenContextCancelled(t *testing.T) {
+	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Handler", "last-good")
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		routes:  newRouteHandler(oldHandler, nil),
+		storage: &store.Store{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server.reload(ctx)
+
+	response := httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status after cancelled reload = %d, want the retained handler", response.Code)
+	}
+	if got := response.Header().Get("X-Handler"); got != "last-good" {
+		t.Fatalf("handler marker after cancelled reload = %q, want last-good", got)
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

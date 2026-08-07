@@ -3,11 +3,14 @@ package id
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gofrs/uuid"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 func TestGetUsesConfiguredApisixID(t *testing.T) {
@@ -86,5 +89,37 @@ func TestGetPersistsGeneratedID(t *testing.T) {
 	generatedID = ""
 	if second := Get(); second != first {
 		t.Fatalf("reloaded uid = %q, want %q", second, first)
+	}
+}
+
+func TestGetLogsPersistFailure(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	oldPath := uidFilePath
+	t.Cleanup(func() {
+		config.GlobalConfig = oldConfig
+		uidFilePath = oldPath
+		generatedOnce = sync.Once{}
+		generatedID = ""
+	})
+
+	config.GlobalConfig = nil
+	uidFilePath = filepath.Join(t.TempDir(), "missing", "apisix.uid")
+	generatedOnce = sync.Once{}
+	generatedID = ""
+
+	observed := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver("id-persist", func(entry logger.Entry) { observed <- entry })
+	t.Cleanup(stop)
+
+	if got := Get(); got == "" {
+		t.Fatal("Get() generated an empty id")
+	}
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, "persist generated apisix id") {
+			t.Fatalf("observed log = %q, want persist failure context", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("uid persist failure was not logged")
 	}
 }

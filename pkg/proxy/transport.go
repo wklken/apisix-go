@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"golang.org/x/net/http2"
 )
 
@@ -117,7 +118,9 @@ func NewTransport(t TransportOption) *http.Transport {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: t.insecureSkipVerify},
 	}
 
-	_ = http2.ConfigureTransport(tr)
+	if err := http2.ConfigureTransport(tr); err != nil {
+		logger.Errorf("configure HTTP/2 transport fail, upstream requests fall back to HTTP/1.1: %s", err)
+	}
 
 	return tr
 }

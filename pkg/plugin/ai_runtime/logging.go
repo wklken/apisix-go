@@ -5,6 +5,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
@@ -33,7 +34,9 @@ func RegisterLogging(
 	}
 
 	var decoded map[string]any
-	_ = json.Unmarshal(requestBody, &decoded)
+	if err := json.Unmarshal(requestBody, &decoded); err != nil {
+		logger.Errorf("decode AI request body for $llm_request logging fail: %s", err)
+	}
 	apisixctx.RegisterRequestVar(r, "$llm_request", map[string]any{
 		"messages": ai_protocols.RequestContent(protocol, decoded),
 		"stream":   ai_protocols.IsStreaming(protocol, decoded),

@@ -318,12 +318,7 @@ func loadMetadata() (metadata Metadata, configured bool) {
 	return metadata, true
 }
 
-func safeGetPluginMetadata(id string, target any) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = store.ErrNotFound
-		}
-	}()
+func safeGetPluginMetadata(id string, target any) error {
 	return store.GetPluginMetadata(id, target)
 }
 

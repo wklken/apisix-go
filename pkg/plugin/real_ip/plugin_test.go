@@ -168,6 +168,17 @@ func TestCookieSourceSetsRealIP(t *testing.T) {
 	}
 }
 
+func TestRemoteAddressSourceIgnoresMalformedRemoteAddr(t *testing.T) {
+	p := newTestPlugin(t, Config{Source: "remote_addr"})
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	request.RemoteAddr = "not-an-address"
+
+	if got := p.sourceValue(request); got != "" {
+		t.Fatalf("sourceValue() = %q, want empty for a malformed remote address", got)
+	}
+}
+
 func TestSourceRejectsOutOfRangePort(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "arg_realip"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip?realip=203.0.113.20:70000", nil)

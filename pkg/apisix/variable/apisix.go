@@ -23,7 +23,11 @@ var ApisixVars = map[string]struct{}{
 func GetApisixVar(r *http.Request, key string) any {
 	switch key {
 	case "$matched_uri":
-		return chi.RouteContext(r.Context()).RoutePattern()
+		routeContext := chi.RouteContext(r.Context())
+		if routeContext == nil {
+			return ""
+		}
+		return routeContext.RoutePattern()
 	default:
 		return ctx.GetApisixVar(r, key)
 

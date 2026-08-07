@@ -262,17 +262,20 @@ func (c *ConfigClient) Close() error {
 func (c *ConfigClient) FetchAll() error {
 	var err error
 	for attempt := 0; attempt <= c.startupRetry; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+		loadCtx, loadCancel := context.WithTimeout(context.Background(), c.requestTimeout)
 		var resp *clientv3.GetResponse
-		resp, err = c.loadSnapshot(ctx)
-		cancel()
-		if err == nil {
-			logger.Info("got response")
-			return c.applySnapshot(context.Background(), resp)
+		resp, err = c.loadSnapshot(loadCtx)
+		loadCancel()
+		if err != nil {
+			if attempt < c.startupRetry {
+				time.Sleep(100 * time.Millisecond)
+			}
+			continue
 		}
-		if attempt < c.startupRetry {
-			time.Sleep(100 * time.Millisecond)
-		}
+		logger.Info("got response")
+		snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), c.requestTimeout)
+		defer snapshotCancel()
+		return c.applySnapshot(snapshotCtx, resp)
 	}
 	return err
 }

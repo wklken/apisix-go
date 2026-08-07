@@ -318,6 +318,9 @@ func GetApisixVar(r *http.Request, key string) any {
 
 func RegisterApisixVar(r *http.Request, key string, val any) {
 	vars := GetApisixVars(r)
+	if vars == nil {
+		return
+	}
 	vars[key] = val
 	state := GetRequestState(r)
 	if state == nil {

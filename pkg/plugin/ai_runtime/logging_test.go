@@ -3,10 +3,13 @@ package ai_runtime
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
@@ -39,5 +42,28 @@ func TestRegisterLoggingBuildsSummaryAndPayloads(t *testing.T) {
 	}
 	if got := apisixlog.GetField(req, "$llm_summary"); got == "" {
 		t.Fatal("logger variable lookup did not expose $llm_summary")
+	}
+}
+
+func TestRegisterLoggingLogsDecodeFailureOnce(t *testing.T) {
+	observed := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver("ai-logging-decode", func(entry logger.Entry) { observed <- entry })
+	t.Cleanup(stop)
+
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	RegisterLogging(req, false, true, ai_protocols.OpenAIChat, []byte("not-json"))
+
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, "decode AI request body") {
+			t.Fatalf("observed log = %q, want decode failure context", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AI request body decode failure was not logged")
+	}
+	select {
+	case entry := <-observed:
+		t.Fatalf("decode failure logged more than once: %q", entry.Message)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

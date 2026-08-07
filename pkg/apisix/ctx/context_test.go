@@ -96,6 +96,11 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	}
 }
 
+func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	RegisterApisixVar(req, "$route_id", "route-1")
+}
+
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {
 	original := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	trusted := WithTrustedProxy(original)

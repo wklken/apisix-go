@@ -441,6 +441,13 @@ func TestTracerProviderExportsOTLPHTTPWithConfiguredHeaders(t *testing.T) {
 	}
 }
 
+func TestSafeGetPluginMetadataReturnsStoreError(t *testing.T) {
+	var stored Metadata
+	if err := safeGetPluginMetadata(name, &stored); err == nil {
+		t.Fatal("safeGetPluginMetadata() error = nil without a store")
+	}
+}
+
 func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	oldConfig := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = oldConfig })

@@ -960,13 +960,19 @@ func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
 	var body []byte
 	contentType := "text/plain; charset=utf-8"
 	if object, ok := value.(map[string]any); ok {
-		body, _ = json.Marshal(object)
-		contentType = "application/json"
+		if encoded, err := json.Marshal(object); err == nil {
+			body = encoded
+			contentType = "application/json"
+		}
 	} else if text, ok := value.(string); ok {
 		body = []byte(text)
-	} else {
-		body, _ = json.Marshal(value)
+	} else if encoded, err := json.Marshal(value); err == nil {
+		body = encoded
 		contentType = "application/json"
+	}
+	if body == nil {
+		logger.Errorf("marshal metadata error response fail, falling back to text: %v", value)
+		body = []byte(fmt.Sprintf("%v", value))
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -2127,12 +2133,10 @@ func newErrorHandler() pxy.ErrorHandler {
 				status = http.StatusBadGateway
 			}
 		} else {
-			switch err {
-			case io.EOF:
+			switch {
+			case errors.Is(err, io.EOF):
 				status = http.StatusBadGateway
-			case context.Canceled:
-				status = StatusClientClosedRequest
-			case io.ErrUnexpectedEOF:
+			case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
 				status = StatusClientClosedRequest
 			}
 		}

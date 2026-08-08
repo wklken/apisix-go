@@ -153,11 +153,7 @@ func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
 	return c.applySnapshot(ctx, response)
 }
 
-func (c *ConfigClient) Watch(contexts ...context.Context) {
-	ctx := context.Background()
-	if len(contexts) > 0 && contexts[0] != nil {
-		ctx = contexts[0]
-	}
+func (c *ConfigClient) Watch(ctx context.Context) {
 	revision := c.lastRevision + 1
 	retry := 0
 	for ctx.Err() == nil {

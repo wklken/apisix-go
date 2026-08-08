@@ -54,6 +54,28 @@ func TestNewTLSConfigHonorsVerificationAndSNI(t *testing.T) {
 	}
 }
 
+func TestWatchStartsAtRevisionAfterLastKnown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &ConfigClient{
+		prefix:    "/apisix",
+		events:    make(chan *store.Event, 1),
+		knownKeys: make(map[string]struct{}),
+	}
+	var openedRevision int64
+	client.openWatch = func(_ context.Context, revision int64) clientv3.WatchChan {
+		openedRevision = revision
+		cancel()
+		stream := make(chan clientv3.WatchResponse)
+		close(stream)
+		return stream
+	}
+
+	client.Watch(ctx)
+	if openedRevision != 1 {
+		t.Fatalf("watch opened at revision %d, want 1", openedRevision)
+	}
+}
+
 func TestWatchReconcilesSnapshotAfterUnexpectedClosure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan *store.Event, 4)

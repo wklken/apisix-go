@@ -26,6 +26,14 @@ type Plugin struct {
 	client *http.Client
 	picker nodePicker
 	match  []*pluginexpr.Expression
+
+	// metaMu guards the instance-owned plugin_metadata cache; the effective
+	// configuration is rebuilt only when the metadata bytes change.
+	metaMu     sync.Mutex
+	metaRaw    []byte
+	metaCfg    effectiveConfig
+	metaValid  bool
+	metaBuilds int
 }
 
 const (
@@ -322,6 +330,35 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 }
 
 func (p *Plugin) effectiveConfig() effectiveConfig {
+	raw, err := store.GetPluginMetadataRaw(name)
+	if err != nil {
+		raw = nil
+	}
+
+	p.metaMu.Lock()
+	if p.metaValid && bytes.Equal(p.metaRaw, raw) {
+		cfg := p.metaCfg
+		p.metaMu.Unlock()
+		return cfg
+	}
+	p.metaMu.Unlock()
+
+	cfg := p.buildEffectiveConfig()
+
+	p.metaMu.Lock()
+	if p.metaValid && bytes.Equal(p.metaRaw, raw) {
+		cfg = p.metaCfg
+	} else {
+		p.metaRaw = append([]byte(nil), raw...)
+		p.metaCfg = cfg
+		p.metaValid = true
+		p.metaBuilds++
+	}
+	p.metaMu.Unlock()
+	return cfg
+}
+
+func (p *Plugin) buildEffectiveConfig() effectiveConfig {
 	metadata := p.loadMetadata()
 	cfg := effectiveConfig{
 		Mode:   "monitor",
@@ -342,11 +379,6 @@ func (p *Plugin) effectiveConfig() effectiveConfig {
 }
 
 func (p *Plugin) loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
 	var raw map[string]any
 	if err := store.GetPluginMetadata(name, &raw); err != nil {
 		return Metadata{}

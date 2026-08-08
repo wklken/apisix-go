@@ -1,10 +1,13 @@
 package route
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -119,5 +122,63 @@ func TestBatchRequestsRejectsInvalidBody(t *testing.T) {
 	}
 	if !strings.Contains(body["error_msg"], "pipeline") {
 		t.Fatalf("error_msg = %q, want pipeline validation error", body["error_msg"])
+	}
+}
+
+func TestBatchRequestsParentCancellationStopsPipeline(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	t.Cleanup(func() {
+		config.GlobalConfig = oldConfig
+	})
+	config.GlobalConfig = &config.Config{Plugins: []string{"batch-requests"}}
+
+	var started atomic.Int32
+	mux := chi.NewRouter()
+	mux.Get("/slow", func(w http.ResponseWriter, r *http.Request) {
+		started.Add(1)
+		<-r.Context().Done()
+	})
+	registerExtraRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
+		"pipeline": [
+			{"path": "/slow"},
+			{"path": "/slow"}
+		]
+	}`))
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	res := httptest.NewRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(res, req)
+		close(served)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for started.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("first pipeline request never reached the route")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch endpoint did not return after parent cancellation")
+	}
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%s", res.Code, res.Body.String())
+	}
+	var body []map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body) != 1 || body[0]["status"] != float64(http.StatusGatewayTimeout) {
+		t.Fatalf("pipeline responses = %#v, want one 504 for the canceled request", body)
 	}
 }

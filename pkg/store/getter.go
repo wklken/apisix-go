@@ -26,6 +26,16 @@ func GetPluginMetadata(id string, v any) error {
 	return decodePluginMetadata(config, id, v)
 }
 
+// GetPluginMetadataRaw returns the raw plugin_metadata bytes for id, or nil
+// when the metadata is absent. It is intended for change detection; callers
+// still decode with GetPluginMetadata when a change is observed.
+func GetPluginMetadataRaw(id string) ([]byte, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.GetFromBucket("plugin_metadata", []byte(id))
+}
+
 func decodePluginMetadata(config []byte, id string, v any) error {
 	keyring, enabled := data_encryption.Keyring()
 	if !enabled || !data_encryption.HasEncryptedPluginMetadata(id) {

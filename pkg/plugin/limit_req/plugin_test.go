@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -534,4 +535,55 @@ func (f *fakeRedisLimiter) incoming(key string, rate float64, burst float64) (ti
 	f.rate = rate
 	f.burst = burst
 	return f.delay, f.allowed, f.err
+}
+
+func TestLimitReqLocalBucketsEvictOldestAndExpired(t *testing.T) {
+	original := defaultLocalBucketsCapacity
+	defaultLocalBucketsCapacity = 4
+	t.Cleanup(func() { defaultLocalBucketsCapacity = original })
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	p := newTestPlugin(t, Config{Rate: 10, Burst: 20, Policy: "local"})
+	p.now = func() time.Time { return base }
+
+	for i := range 6 {
+		_, allowed, err := p.incomingWithConsumer("user-"+strconv.Itoa(i), "")
+		if err != nil {
+			t.Fatalf("incoming user-%d: %v", i, err)
+		}
+		if !allowed {
+			t.Fatalf("incoming user-%d not allowed", i)
+		}
+	}
+
+	// Active keys preserve their counters: user-2 already consumed once.
+	// Checked before touching user-0, whose re-insertion would evict the
+	// oldest remaining live bucket (user-2) at capacity.
+	delay, _, err := p.incomingWithConsumer("user-2", "")
+	if err != nil {
+		t.Fatalf("incoming user-2: %v", err)
+	}
+	if delay <= 0 {
+		t.Fatalf("active key user-2 lost its counter, delay = %v", delay)
+	}
+
+	// Capacity 4 was exceeded, so the two oldest buckets were evicted and
+	// user-0 restarts from a fresh counter.
+	delay, _, err = p.incomingWithConsumer("user-0", "")
+	if err != nil {
+		t.Fatalf("incoming user-0 after eviction: %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("evicted key user-0 delay = %v, want 0", delay)
+	}
+
+	// Advancing past the bucket TTL expires user-5 and resets its counter.
+	p.now = func() time.Time { return base.Add(time.Hour) }
+	delay, _, err = p.incomingWithConsumer("user-5", "")
+	if err != nil {
+		t.Fatalf("incoming user-5 after expiry: %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("expired key user-5 delay = %v, want 0", delay)
+	}
 }

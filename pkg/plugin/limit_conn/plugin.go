@@ -32,6 +32,8 @@ type Plugin struct {
 	redisLimiter connLimiter
 	routeID      string
 	limitScope   string
+
+	clientRelease func()
 }
 
 const (
@@ -446,6 +448,13 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -830,8 +839,18 @@ func (p *Plugin) newRedisLimiter() connLimiter {
 		p.config.RedisKeepaliveTimeout,
 		p.config.RedisKeepalivePool,
 	)
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(p.redisConnConfig().Options())).(redis.UniversalClient)
-	return p.newRedisConnLimiter(client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) {
+			return redis.NewClient(p.redisConnConfig().Options()), nil
+		},
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return p.newRedisConnLimiter(value.(redis.UniversalClient))
 }
 
 func (p *Plugin) redisConnConfig() base.RedisConnConfig {
@@ -861,12 +880,18 @@ func (p *Plugin) newRedisClusterLimiter() connLimiter {
 		p.config.RedisKeepaliveTimeout,
 		p.config.RedisKeepalivePool,
 	)
-	client := shared.LoadOrStoreClient(
-		name,
-		configUID,
-		redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
-	).(redis.UniversalClient)
-	return p.newRedisConnLimiter(client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) {
+			return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
+		},
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return p.newRedisConnLimiter(value.(redis.UniversalClient))
 }
 
 func (p *Plugin) newRedisConnLimiter(client redis.UniversalClient) connLimiter {

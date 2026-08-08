@@ -26,6 +26,8 @@ type Plugin struct {
 
 	client *resty.Client
 
+	clientRelease func()
+
 	sampleRandom func() (float64, error)
 }
 
@@ -141,9 +143,25 @@ func (p *Plugin) PostInit() error {
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Endpoint)
 	client := resty.New()
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

@@ -27,6 +27,8 @@ type Plugin struct {
 
 	client         *resty.Client
 	logFormatExtra map[string]string
+
+	clientRelease func()
 }
 
 const (
@@ -227,7 +229,16 @@ func (p *Plugin) PostInit() error {
 	if p.config.Endpoint.Channel != "" {
 		client.SetHeader("X-Splunk-Request-Channel", p.config.Endpoint.Channel)
 	}
-	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return client, nil },
+		shared.CloseRestyClient,
+	)
+	if err != nil {
+		return err
+	}
+	p.client = value.(*resty.Client)
+	p.clientRelease = release
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	switch {
@@ -255,6 +266,14 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

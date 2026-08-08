@@ -2,11 +2,14 @@ package authz_casdoor
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -21,6 +24,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -233,4 +237,92 @@ func findSessionCookie(cookies []*http.Cookie) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+func TestCasdoorSessionsExpireWithoutReads(t *testing.T) {
+	original := sessionCleanupInterval
+	sessionCleanupInterval = 10 * time.Millisecond
+	t.Cleanup(func() { sessionCleanupInterval = original })
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: "secret-a",
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	p.now = func() time.Time { return base }
+
+	p.saveSession("sid-expired", sessionData{ExpiresAt: base.Add(30 * time.Second)})
+	p.saveSession("sid-live", sessionData{ExpiresAt: base.Add(2 * time.Hour)})
+
+	// Advance the clock past the first session's expiry without reading it.
+	p.now = func() time.Time { return base.Add(time.Minute) }
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.sessions.Len() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := p.sessions.Len(); got != 1 {
+		t.Fatalf("live sessions after periodic cleanup = %d, want 1", got)
+	}
+	if _, ok := p.sessions.Get("sid-expired"); ok {
+		t.Fatal("expired session still readable after cleanup")
+	}
+	if _, ok := p.getSession("sid-expired"); ok {
+		t.Fatal("expired session still returned by getSession")
+	}
+	if _, ok := p.getSession("sid-live"); !ok {
+		t.Fatal("live session was removed by cleanup")
+	}
+}
+
+func TestCasdoorStopJoinsCleanupAndIsIdempotent(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: "secret-a",
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+	done := p.cleanupDone
+
+	p.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup goroutine did not join after Stop")
+	}
+
+	p.Stop()
+	p.Stop()
+}
+
+func TestCasdoorSessionConcurrentLookupAndSave(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: "secret-a",
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for j := range 200 {
+				id := fmt.Sprintf("sid-%d", j)
+				p.saveSession(id, sessionData{
+					ExpiresAt: time.Now().Add(time.Hour),
+					State:     "state-" + id,
+				})
+				if _, ok := p.getSession(id); !ok {
+					t.Errorf("concurrent lookup lost session %s", id)
+				}
+			}
+		})
+	}
+	wg.Wait()
 }

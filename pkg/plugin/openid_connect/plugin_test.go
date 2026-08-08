@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2063,4 +2065,177 @@ func verifyClientAssertionSignature(raw string, publicKey *rsa.PublicKey) bool {
 		return publicKey, nil
 	})
 	return err == nil
+}
+
+func TestProviderClientReusedAcrossRequestsPreservesJWKSCache(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	var jwksRequests atomic.Int32
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":   "http://" + r.Host,
+				"jwks_uri": "http://" + r.Host + "/jwks",
+			})
+		case "/jwks":
+			jwksRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"keys": []any{rsaJWK(&privateKey.PublicKey, "kid-a")},
+			})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:                      "apisix",
+		Discovery:                     idp.URL + "/.well-known/openid-configuration",
+		BearerOnly:                    true,
+		UseJWKS:                       true,
+		TokenSigningAlgValuesExpected: "RS256",
+	})
+	token := signRS256WithKid(t, privateKey, "kid-a", map[string]any{
+		"iss": idp.URL,
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
+	})
+
+	for i := range 3 {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("request %d status = %d, want 204; body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if got := jwksRequests.Load(); got != 1 {
+		t.Fatalf("JWKS fetches across three requests = %d, want the provider key set reused", got)
+	}
+}
+
+func TestProviderClientConcurrentFirstUseBuildsOnce(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 "http://" + r.Host,
+			"authorization_endpoint": "http://" + r.Host + "/authorize",
+			"token_endpoint":         "http://" + r.Host + "/token",
+		})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  idp.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		UseJWKS:    true,
+	})
+
+	const workers = 8
+	results := make([]*providerClient, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Go(func() {
+			client, err := p.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+			if err != nil {
+				t.Errorf("providerClient() error = %v", err)
+				return
+			}
+			results[i] = client
+		})
+	}
+	wg.Wait()
+
+	for i, client := range results {
+		if client == nil {
+			t.Fatalf("worker %d produced no provider", i)
+		}
+		if client != results[0] {
+			t.Fatalf("worker %d built a different provider", i)
+		}
+	}
+}
+
+func TestProviderClientDiffersAcrossPluginInstances(t *testing.T) {
+	firstIDP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer": "http://first.example.com", "authorization_endpoint": "http://first.example.com/a",
+			"token_endpoint": "http://first.example.com/t",
+		})
+	}))
+	t.Cleanup(firstIDP.Close)
+	secondIDP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer": "http://second.example.com", "authorization_endpoint": "http://second.example.com/a",
+			"token_endpoint": "http://second.example.com/t",
+		})
+	}))
+	t.Cleanup(secondIDP.Close)
+
+	first := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  firstIDP.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		UseJWKS:    true,
+	})
+	second := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  secondIDP.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		UseJWKS:    true,
+	})
+	firstClient, err := first.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+	if err != nil {
+		t.Fatalf("first providerClient() error = %v", err)
+	}
+	secondClient, err := second.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+	if err != nil {
+		t.Fatalf("second providerClient() error = %v", err)
+	}
+	if firstClient == secondClient {
+		t.Fatal("distinct plugin configurations shared one provider")
+	}
+}
+
+func TestProviderClientRetriesAfterDiscoveryFailure(t *testing.T) {
+	var attempts atomic.Int32
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, "temporary", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer": "http://" + r.Host, "authorization_endpoint": "http://" + r.Host + "/a",
+			"token_endpoint": "http://" + r.Host + "/t",
+		})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID: "apisix", Discovery: idp.URL + "/.well-known/openid-configuration", BearerOnly: true, UseJWKS: true,
+	})
+
+	if _, err := p.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil)); err == nil {
+		t.Fatal("providerClient() error = nil after discovery failure, want error")
+	}
+	first, err := p.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+	if err != nil {
+		t.Fatalf("providerClient() after recovery error = %v", err)
+	}
+	second, err := p.providerClient(httptest.NewRequest(http.MethodGet, "http://example.com/x", nil))
+	if err != nil {
+		t.Fatalf("providerClient() second call error = %v", err)
+	}
+	if first != second {
+		t.Fatal("providerClient() rebuilt the provider after a successful discovery")
+	}
 }

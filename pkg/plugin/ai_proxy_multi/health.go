@@ -63,6 +63,7 @@ type healthProbeResult struct {
 
 func (p *Plugin) initHealthStates() {
 	p.health = make(map[int]*instanceHealthState)
+	p.healthClients = make(map[int]*http.Client)
 	for index := range p.config.Instances {
 		instance := &p.config.Instances[index]
 		if instance.Checks == nil {
@@ -70,6 +71,43 @@ func (p *Plugin) initHealthStates() {
 		}
 		applyHealthDefaults(&instance.Checks.Active)
 		p.health[index] = &instanceHealthState{healthy: true}
+		check := instance.Checks.Active
+		if check.Type == "http" || check.Type == "https" {
+			p.healthClients[index] = newHealthCheckClient(check)
+		}
+	}
+}
+
+// newHealthCheckClient builds one HTTP client for an immutable health-check
+// configuration so repeated probes reuse the transport instead of cloning
+// http.DefaultTransport per probe.
+func newHealthCheckClient(check ActiveHealthCheck) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if check.Type == "https" && check.HTTPSVerifyCertificate != nil && !*check.HTTPSVerifyCertificate {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
+	timeout := time.Duration(check.Timeout * float64(time.Second))
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}
+}
+
+func (p *Plugin) healthClient(index int) *http.Client {
+	return p.healthClients[index]
+}
+
+func (p *Plugin) Stop() {
+	p.healthMu.Lock()
+	clients := make([]*http.Client, 0, len(p.healthClients))
+	for _, client := range p.healthClients {
+		clients = append(clients, client)
+	}
+	p.healthClients = nil
+	p.healthMu.Unlock()
+
+	for _, client := range clients {
+		client.CloseIdleConnections()
 	}
 }
 
@@ -133,14 +171,15 @@ func (p *Plugin) refreshHealth(ctx context.Context) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			result := p.probeInstance(ctx, p.config.Instances[index])
+			result := p.probeInstance(ctx, index)
 			p.recordProbeResult(index, result, p.healthNow())
 		}(index)
 	}
 	wait.Wait()
 }
 
-func (p *Plugin) probeInstance(ctx context.Context, instance Instance) healthProbeResult {
+func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult {
+	instance := p.config.Instances[index]
 	check := instance.Checks.Active
 	timeout := time.Duration(check.Timeout * float64(time.Second))
 	if timeout <= 0 {
@@ -175,11 +214,7 @@ func (p *Plugin) probeInstance(ctx context.Context, instance Instance) healthPro
 			request.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
 		}
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if check.Type == "https" && check.HTTPSVerifyCertificate != nil && !*check.HTTPSVerifyCertificate {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
-	response, err := (&http.Client{Transport: transport}).Do(request)
+	response, err := p.healthClient(index).Do(request)
 	if err != nil {
 		return healthProbeResult{err: err, timeout: probeContext.Err() == context.DeadlineExceeded}
 	}

@@ -5,16 +5,23 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync/atomic"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	lua "github.com/yuin/gopher-lua"
+	lua_parse "github.com/yuin/gopher-lua/parse"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
+
+	// compiled holds the immutable precompiled function chunks, parsed once
+	// in PostInit instead of on every request.
+	compiled []*lua.FunctionProto
 }
 
 const (
@@ -85,9 +92,14 @@ func (p *Plugin) PostInit() error {
 		p.config.Phase = "access"
 	}
 	for _, fn := range p.config.Functions {
-		if err := validateFunction(fn); err != nil {
+		proto, err := compileFunction(fn)
+		if err != nil {
 			return err
 		}
+		if err := validateFunctionProto(proto); err != nil {
+			return err
+		}
+		p.compiled = append(p.compiled, proto)
 	}
 
 	return nil
@@ -131,8 +143,8 @@ func (p *Plugin) runFunctions(r *http.Request, resp *base.BufferedResponseWriter
 	runner := newLuaRunner(r, resp)
 	defer runner.close()
 
-	for _, source := range p.config.Functions {
-		fn, err := runner.loadFunction(source)
+	for _, proto := range p.compiled {
+		fn, err := runner.loadFunction(proto)
 		if err != nil {
 			return luaResult{}, err
 		}
@@ -149,11 +161,32 @@ func (p *Plugin) runFunctions(r *http.Request, resp *base.BufferedResponseWriter
 	return runner.collect(), nil
 }
 
-func validateFunction(source string) error {
+// compileFunctionCount counts Lua chunk compilations; requests must never
+// recompile the static configured functions.
+var compileFunctionCount atomic.Int32
+
+// compileFunction parses and compiles a Lua source chunk into an immutable
+// prototype shared by every per-request Lua state.
+func compileFunction(source string) (*lua.FunctionProto, error) {
+	compileFunctionCount.Add(1)
+	chunk, err := lua_parse.Parse(strings.NewReader(source), "serverless")
+	if err != nil {
+		return nil, fmt.Errorf("failed to loadstring: %w", err)
+	}
+	proto, err := lua.Compile(chunk, "serverless")
+	if err != nil {
+		return nil, fmt.Errorf("failed to loadstring: %w", err)
+	}
+	return proto, nil
+}
+
+// validateFunctionProto executes the precompiled chunk in a scratch state to
+// confirm it evaluates to a Lua function.
+func validateFunctionProto(proto *lua.FunctionProto) error {
 	runner := newLuaRunner(nil, nil)
 	defer runner.close()
 
-	_, err := runner.loadFunction(source)
+	_, err := runner.loadFunction(proto)
 	return err
 }
 
@@ -196,8 +229,10 @@ func (r *luaRunner) close() {
 	r.state.Close()
 }
 
-func (r *luaRunner) loadFunction(source string) (lua.LValue, error) {
-	if err := r.state.DoString(source); err != nil {
+func (r *luaRunner) loadFunction(proto *lua.FunctionProto) (lua.LValue, error) {
+	r.state.Push(r.state.NewFunctionFromProto(proto))
+	if err := r.state.PCall(0, lua.MultRet, nil); err != nil {
+		r.state.SetTop(0)
 		return lua.LNil, fmt.Errorf("failed to loadstring: %w", err)
 	}
 	if r.state.GetTop() == 0 {

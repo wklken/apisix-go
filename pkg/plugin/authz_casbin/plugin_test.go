@@ -308,3 +308,37 @@ func putCasbinMetadata(t *testing.T, modelText, policyText string) {
 	}
 	t.Fatal("timed out waiting for authz-casbin plugin metadata")
 }
+
+func TestConcurrentEnforceWhilePolicyReloads(t *testing.T) {
+	putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
+	p := newTestPlugin(t, Config{Username: "X-User"})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 4 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				enforcer, err := p.currentEnforcer()
+				if err != nil {
+					continue
+				}
+				if _, err := enforcer.Enforce("alice", "/orders/123", "GET"); err != nil {
+					continue
+				}
+			}
+		})
+	}
+
+	// Reload the policy while requests authorize concurrently.
+	for range 5 {
+		putCasbinMetadata(t, testModel, "p, alice, /orders/123, GET\np, bob, /orders/123, GET")
+		putCasbinMetadata(t, testModel, `p, alice, /orders/123, GET`)
+	}
+	close(stop)
+	wg.Wait()
+}

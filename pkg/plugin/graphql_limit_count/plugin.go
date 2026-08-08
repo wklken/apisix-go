@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -29,14 +30,20 @@ type Plugin struct {
 	config Config
 
 	mu       sync.Mutex
-	counters map[string]*counter
+	counters *cacheutil.BoundedTTLMap[*counter]
 	now      func() time.Time
 
 	redisLimiter countLimiter
 	maxSize      int
 	routeID      string
 	metadata     Metadata
+
+	clientRelease func()
 }
+
+// defaultLocalCountersCapacity bounds the number of in-memory local-policy
+// counters; the earliest expiring counters are evicted once the bound is hit.
+var defaultLocalCountersCapacity = 10000
 
 const (
 	priority = 1004
@@ -254,8 +261,8 @@ type counter struct {
 
 var groupCounters = struct {
 	sync.Mutex
-	entries map[string]*counter
-}{entries: map[string]*counter{}}
+	entries *cacheutil.BoundedTTLMap[*counter]
+}{}
 
 var graphqlLimitCountGroups = struct {
 	sync.Mutex
@@ -399,7 +406,10 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	if p.counters == nil {
-		p.counters = make(map[string]*counter)
+		p.counters = cacheutil.NewBoundedTTLMap[*counter](
+			defaultLocalCountersCapacity,
+			func() time.Time { return p.now() },
+		)
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -412,6 +422,13 @@ func (p *Plugin) PostInit() error {
 		p.metadata = base.LoadPluginMetadata[Metadata]("limit-count")
 	}
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	if p.clientRelease != nil {
+		p.clientRelease()
+		p.clientRelease = nil
+	}
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
@@ -638,6 +655,12 @@ func (p *Plugin) incoming(
 	if p.config.Group != "" {
 		groupCounters.Lock()
 		defer groupCounters.Unlock()
+		if groupCounters.entries == nil {
+			groupCounters.entries = cacheutil.NewBoundedTTLMap[*counter](
+				defaultLocalCountersCapacity,
+				time.Now,
+			)
+		}
 		return incomingLocal(
 			groupCounters.entries,
 			p.counterNamespace()+":"+key,
@@ -654,7 +677,7 @@ func (p *Plugin) incoming(
 }
 
 func incomingLocal(
-	counters map[string]*counter,
+	counters *cacheutil.BoundedTTLMap[*counter],
 	key string,
 	cost int64,
 	count int64,
@@ -662,10 +685,10 @@ func incomingLocal(
 	now time.Time,
 ) (int64, int64, bool, error) {
 	counterKey := fmt.Sprintf("%d:%d:%s", count, timeWindow, key)
-	c, ok := counters[counterKey]
-	if !ok || !now.Before(c.resetAt) {
+	c, ok := counters.Get(counterKey)
+	if !ok {
 		c = &counter{resetAt: now.Add(time.Duration(timeWindow) * time.Second)}
-		counters[counterKey] = c
+		counters.Set(counterKey, c, time.Duration(timeWindow)*time.Second)
 	}
 
 	reset := max(int64(c.resetAt.Sub(now).Seconds()), 0)
@@ -714,8 +737,16 @@ func (p *Plugin) newRedisLimiter() countLimiter {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
 	}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return redis.NewClient(options), nil },
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
 }
 
 func (p *Plugin) newRedisClusterLimiter() countLimiter {
@@ -746,8 +777,16 @@ func (p *Plugin) newRedisClusterLimiter() countLimiter {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisClusterSSLVerify}
 	}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClusterClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		func() (any, error) { return redis.NewClusterClient(options), nil },
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil
+	}
+	p.clientRelease = release
+	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
 }
 
 func (l *redisCountLimiter) incoming(

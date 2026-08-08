@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -635,4 +636,59 @@ func findSetCookie(cookies []*http.Cookie, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+func TestServiceProviderReusesParsedKeyPairForRepeatedRequests(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+
+	first, err := p.serviceProvider(httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+	if err != nil {
+		t.Fatalf("serviceProvider(first) error = %v", err)
+	}
+	second, err := p.serviceProvider(httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+	if err != nil {
+		t.Fatalf("serviceProvider(second) error = %v", err)
+	}
+	if first.Certificate != second.Certificate {
+		t.Fatal("serviceProvider re-parsed the SP certificate per request")
+	}
+	if first.Key != second.Key {
+		t.Fatal("serviceProvider re-parsed the SP private key per request")
+	}
+	if first.IDPMetadata != second.IDPMetadata {
+		t.Fatal("serviceProvider rebuilt the IdP metadata per request")
+	}
+}
+
+func TestPostInitRejectsInvalidSPKeyPair(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.SPPrivateKey = "not-a-valid-key"
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid SP key pair rejection")
+	}
+}
+
+func TestServiceProviderConcurrentRequestsShareParsedState(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			sp, err := p.serviceProvider(httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+			if err != nil {
+				t.Errorf("serviceProvider() error = %v", err)
+				return
+			}
+			if sp.Key == nil || sp.Certificate == nil || sp.IDPMetadata == nil {
+				t.Error("serviceProvider returned incomplete parsed state")
+			}
+		})
+	}
+	wg.Wait()
 }

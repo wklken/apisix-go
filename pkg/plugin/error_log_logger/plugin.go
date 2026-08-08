@@ -217,6 +217,7 @@ type kafkaMessage struct {
 
 type kafkaSender interface {
 	Send(ctx context.Context, message kafkaMessage) error
+	Close() error
 }
 
 type kafkaGoSender struct {
@@ -328,6 +329,11 @@ func (p *Plugin) Stop() {
 		}
 		if p.BatchProcessor != nil {
 			p.BatchProcessor.Stop()
+		}
+		if p.kafkaSender != nil {
+			if err := p.kafkaSender.Close(); err != nil {
+				logger.Errorf("failed to close error-log-logger kafka writer: %s", err)
+			}
 		}
 	})
 }
@@ -638,6 +644,10 @@ func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {
 		Key:   message.Key,
 		Value: message.Value,
 	})
+}
+
+func (s *kafkaGoSender) Close() error {
+	return s.writer.Close()
 }
 
 type skywalkingLogEntry struct {

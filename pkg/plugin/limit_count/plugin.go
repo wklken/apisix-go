@@ -14,7 +14,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
-	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -43,6 +42,9 @@ type Plugin struct {
 	routeID           string
 	localLimiterStore limiter.Store
 	dynamicLimits     bool
+
+	clientMu       sync.Mutex
+	clientReleases []func()
 }
 
 const (
@@ -783,7 +785,7 @@ func (p *Plugin) registerGroup() error {
 	}
 	limitCountGroups.entries[p.config.Group] = limitCountGroup{
 		fingerprint: string(fingerprint),
-		store:       memory.NewStore(),
+		store:       newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity),
 	}
 	return nil
 }
@@ -791,7 +793,7 @@ func (p *Plugin) registerGroup() error {
 func (p *Plugin) localStore() limiter.Store {
 	if p.config.Group == "" {
 		if p.localLimiterStore == nil {
-			p.localLimiterStore = memory.NewStore()
+			p.localLimiterStore = newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity)
 		}
 		return p.localLimiterStore
 	}
@@ -895,10 +897,17 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		configUID := shared.NewConfigUID()
 		configUID.Add(p.config.Redis.String())
 		c := redis.NewClient(p.redisConnConfig().Options())
-		client := shared.LoadOrStoreClient(name, configUID, c).(*redis.Client)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) { return c, nil },
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.Client)
+		p.trackClientRelease(release)
 
-		// BREAKPOINT: add redis into docker-compose, then test it
-		var err error
 		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
 			Prefix:   "limit-count",
 			MaxRetry: 3,
@@ -920,13 +929,19 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 			p.config.RedisCluster.RedisKeepaliveTimeout,
 			p.config.RedisCluster.RedisKeepalivePool,
 		)
-		client := shared.LoadOrStoreClient(
-			name,
-			configUID,
-			redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
-		).(*redis.ClusterClient)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) {
+				return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
+			},
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.ClusterClient)
+		p.trackClientRelease(release)
 
-		var err error
 		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
 			Prefix:   "limit-count",
 			MaxRetry: 3,
@@ -947,12 +962,19 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 			p.config.SentinelUsername,
 			p.config.SentinelPassword,
 		)
-		client := shared.LoadOrStoreClient(
-			name,
-			configUID,
-			redis.NewFailoverClient(p.redisSentinelOptions()),
-		).(*redis.Client)
-		var err error
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) {
+				return redis.NewFailoverClient(p.redisSentinelOptions()), nil
+			},
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.Client)
+		p.trackClientRelease(release)
+
 		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
 			Prefix:   "limit-count",
 			MaxRetry: 3,
@@ -1382,11 +1404,18 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 	case "redis":
 		configUID := shared.NewConfigUID()
 		configUID.Add(p.config.Redis.String())
-		client := shared.LoadOrStoreClient(
-			name,
-			configUID,
-			redis.NewClient(p.redisConnConfig().Options()),
-		).(*redis.Client)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) {
+				return redis.NewClient(p.redisConnConfig().Options()), nil
+			},
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.Client)
+		p.trackClientRelease(release)
 		return newRedisSlidingWindowStore(client), nil
 	case "redis-cluster":
 		configUID := shared.NewConfigUID()
@@ -1400,11 +1429,18 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 			p.config.RedisCluster.RedisKeepaliveTimeout,
 			p.config.RedisCluster.RedisKeepalivePool,
 		)
-		client := shared.LoadOrStoreClient(
-			name,
-			configUID,
-			redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()),
-		).(*redis.ClusterClient)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) {
+				return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
+			},
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.ClusterClient)
+		p.trackClientRelease(release)
 		return newRedisSlidingWindowStore(client), nil
 	case "redis-sentinel":
 		configUID := shared.NewConfigUID()
@@ -1419,11 +1455,18 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 			p.config.SentinelUsername,
 			p.config.SentinelPassword,
 		)
-		client := shared.LoadOrStoreClient(
-			name,
-			configUID,
-			redis.NewFailoverClient(p.redisSentinelOptions()),
-		).(*redis.Client)
+		value, release, err := shared.AcquireClient(
+			shared.ClientKey(name, configUID),
+			func() (any, error) {
+				return redis.NewFailoverClient(p.redisSentinelOptions()), nil
+			},
+			shared.CloseRedisClient,
+		)
+		if err != nil {
+			return nil, err
+		}
+		client := value.(*redis.Client)
+		p.trackClientRelease(release)
 		return newRedisSlidingWindowStore(client), nil
 	default:
 		return nil, fmt.Errorf("unsupported sliding-window policy %q", p.config.Policy)
@@ -1654,6 +1697,12 @@ func (p *Plugin) runDelayedLimit(
 	return true
 }
 
+func (p *Plugin) trackClientRelease(release func()) {
+	p.clientMu.Lock()
+	p.clientReleases = append(p.clientReleases, release)
+	p.clientMu.Unlock()
+}
+
 func (p *Plugin) Stop() {
 	p.limiterMu.Lock()
 	syncers := make([]*delayedSyncer, 0, len(p.delayedByKey)+1)
@@ -1669,6 +1718,14 @@ func (p *Plugin) Stop() {
 
 	for _, syncer := range syncers {
 		syncer.Stop()
+	}
+
+	p.clientMu.Lock()
+	releases := append([]func(){}, p.clientReleases...)
+	p.clientReleases = nil
+	p.clientMu.Unlock()
+	for _, release := range releases {
+		release()
 	}
 }
 

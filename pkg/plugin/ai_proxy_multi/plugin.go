@@ -44,6 +44,8 @@ type Plugin struct {
 	healthMu  sync.Mutex
 	health    map[int]*instanceHealthState
 	healthNow func() time.Time
+
+	healthClients map[int]*http.Client
 }
 
 type gcpTokenApplier interface {

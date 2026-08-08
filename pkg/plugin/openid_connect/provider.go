@@ -60,11 +60,29 @@ func newProviderClient(ctx context.Context, doc discoveryData, cfg Config, httpC
 }
 
 func (p *Plugin) providerClient(r *http.Request) (*providerClient, error) {
+	p.providerMu.Lock()
+	if p.provider != nil {
+		client := p.provider
+		p.providerMu.Unlock()
+		return client, nil
+	}
+	p.providerMu.Unlock()
+
 	discovery, err := p.discoveryDoc()
 	if err != nil {
 		return nil, err
 	}
-	return newProviderClient(r.Context(), discovery, p.config, p.client), nil
+	// The provider is built once per plugin instance so the verifier keeps
+	// its JWKS remote-key-set cache instead of refetching keys per request.
+	client := newProviderClient(context.Background(), discovery, p.config, p.client)
+
+	p.providerMu.Lock()
+	if p.provider == nil {
+		p.provider = client
+	}
+	client = p.provider
+	p.providerMu.Unlock()
+	return client, nil
 }
 
 // tokenResponseFromOAuth2 converts an oauth2 token into the APISIX session

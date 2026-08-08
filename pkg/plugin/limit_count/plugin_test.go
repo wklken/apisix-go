@@ -2309,3 +2309,150 @@ func TestDelayedSyncerFactoryReusesLimitConfigurationAndStopClearsState(t *testi
 		t.Fatalf("Stop() retained delayed state: %#v, %#v", plugin.delayedByKey, plugin.delayed)
 	}
 }
+
+func TestLimitCountLocalStoreEvictsOldestAndExpired(t *testing.T) {
+	original := defaultLocalStoreCapacity
+	defaultLocalStoreCapacity = 4
+	t.Cleanup(func() { defaultLocalStoreCapacity = original })
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	now := base
+	store := newLocalFixedWindowStore(func() time.Time { return now }, defaultLocalStoreCapacity)
+	rate := limiter.Rate{Period: 60 * time.Second, Limit: 100}
+
+	for i := range 6 {
+		ctx, err := store.Increment(context.Background(), "key-"+strconv.Itoa(i), 1, rate)
+		if err != nil {
+			t.Fatalf("increment key-%d: %v", i, err)
+		}
+		if ctx.Remaining != 99 {
+			t.Fatalf("increment key-%d remaining = %d, want 99", i, ctx.Remaining)
+		}
+	}
+
+	// Capacity 4 was exceeded, so the two oldest counters were evicted and
+	// key-0 restarts from a fresh counter.
+	ctx, err := store.Peek(context.Background(), "key-0", rate)
+	if err != nil {
+		t.Fatalf("peek key-0 after eviction: %v", err)
+	}
+	if ctx.Remaining != 100 {
+		t.Fatalf("evicted key-0 remaining = %d, want 100", ctx.Remaining)
+	}
+
+	// Active keys preserve their counters: key-2 was incremented once.
+	ctx, err = store.Peek(context.Background(), "key-2", rate)
+	if err != nil {
+		t.Fatalf("peek key-2: %v", err)
+	}
+	if ctx.Remaining != 99 {
+		t.Fatalf("active key-2 remaining = %d, want 99", ctx.Remaining)
+	}
+
+	// Advancing past the window expires key-5 and resets its counter.
+	now = base.Add(2 * time.Minute)
+	ctx, err = store.Peek(context.Background(), "key-5", rate)
+	if err != nil {
+		t.Fatalf("peek key-5 after expiry: %v", err)
+	}
+	if ctx.Remaining != 100 {
+		t.Fatalf("expired key-5 remaining = %d, want 100", ctx.Remaining)
+	}
+}
+
+type blockingDelayedSyncBackend struct {
+	block map[string]chan struct{}
+}
+
+func (b *blockingDelayedSyncBackend) sync(
+	_ context.Context,
+	key string,
+	delta int64,
+	_ time.Time,
+) (int64, time.Duration, error) {
+	if ch := b.block[key]; ch != nil {
+		<-ch
+	}
+	return 100 - delta, time.Minute, nil
+}
+
+func TestDelayedSyncBlockedRedisDoesNotBlockUnrelatedKeyMutation(t *testing.T) {
+	backend := &blockingDelayedSyncBackend{}
+	syncer := newDelayedSyncer(backend, 100, time.Minute, time.Hour, 100)
+	defer syncer.Stop()
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	if _, _, err := syncer.incoming(context.Background(), "slow-key", 1, base); err != nil {
+		t.Fatalf("incoming slow-key: %v", err)
+	}
+
+	// Arm the block only after the pending delta is seeded so the flush
+	// (not the seeding) is the Redis call that stalls.
+	backend.block = map[string]chan struct{}{"slow-key": make(chan struct{})}
+	flushDone := make(chan struct{})
+	go func() {
+		_ = syncer.flushNow(context.Background(), base.Add(time.Second))
+		close(flushDone)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// An unrelated key mutation must complete while the slow flush is in
+	// flight.
+	unrelated := make(chan error, 1)
+	go func() {
+		_, _, err := syncer.incoming(context.Background(), "other-key", 1, base.Add(time.Second))
+		unrelated <- err
+	}()
+	select {
+	case err := <-unrelated:
+		if err != nil {
+			t.Fatalf("unrelated key mutation error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("unrelated key mutation blocked by a slow Redis flush")
+	}
+
+	close(backend.block["slow-key"])
+	select {
+	case <-flushDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush did not complete after the blocked Redis call returned")
+	}
+}
+
+func TestDelayedSyncConcurrentMutationDuringFlushIsNotLost(t *testing.T) {
+	backend := &blockingDelayedSyncBackend{}
+	syncer := newDelayedSyncer(backend, 100, time.Minute, time.Hour, 100)
+	defer syncer.Stop()
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	if _, _, err := syncer.incoming(context.Background(), "contended", 1, base); err != nil {
+		t.Fatalf("incoming contended: %v", err)
+	}
+
+	// Hold the backend so the flush is stuck while a concurrent mutation
+	// lands.
+	backend.block = map[string]chan struct{}{"contended": make(chan struct{})}
+	flushDone := make(chan struct{})
+	go func() {
+		_ = syncer.flushNow(context.Background(), base.Add(time.Second))
+		close(flushDone)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	if _, _, err := syncer.incoming(context.Background(), "contended", 2, base.Add(time.Second)); err != nil {
+		t.Fatalf("concurrent incoming: %v", err)
+	}
+	close(backend.block["contended"])
+	<-flushDone
+
+	syncer.mu.Lock()
+	state := syncer.states["contended"]
+	localDelta := state.localDelta
+	syncer.mu.Unlock()
+	// The flush synced the snapshot delta 1; the concurrent delta 2 must
+	// remain pending so it is not lost.
+	if localDelta != 2 {
+		t.Fatalf("localDelta after concurrent flush = %d, want the concurrent mutation 2 preserved", localDelta)
+	}
+}

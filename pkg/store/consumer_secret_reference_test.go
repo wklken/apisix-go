@@ -1,10 +1,12 @@
 package store
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -122,4 +124,56 @@ func TestResolveConsumerSecretValuePassesThroughNonReferences(t *testing.T) {
 	if _, err := consumerStore.resolveConsumerSecretValue("$env://MISSING_KEY"); err == nil {
 		t.Fatal("resolveConsumerSecretValue(missing env secret) error = nil")
 	}
+}
+
+func TestResolveVaultSecretReusesClientAndCachesSuccess(t *testing.T) {
+	var requests atomic.Int32
+	var deadlineCalls atomic.Int32
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if _, ok := req.Context().Deadline(); ok {
+			deadlineCalls.Add(1)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"passwd":"bar"}}`)),
+		}, nil
+	})
+
+	consumerStore := newConsumerSnapshotStore(t)
+	consumerStore.vaultClient = &http.Client{Transport: transport}
+	config, err := json.Marshal(vaultSecretConfig{
+		URI: "http://vault.example.invalid", Prefix: "kv/apisix", Token: "root",
+	})
+	if err != nil {
+		t.Fatalf("encode Vault config: %v", err)
+	}
+	if err := consumerStore.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("secrets")).Put([]byte("vault/test1"), config)
+	}); err != nil {
+		t.Fatalf("store Vault config: %v", err)
+	}
+
+	for i := range 3 {
+		got, err := consumerStore.resolveVaultSecret("vault/test1", "foo/passwd")
+		if err != nil {
+			t.Fatalf("resolveVaultSecret attempt %d: %v", i+1, err)
+		}
+		if got != "bar" {
+			t.Fatalf("resolveVaultSecret attempt %d = %q, want bar", i+1, got)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("Vault transport requests = %d, want a single fetch reused by the cache", got)
+	}
+	if got := deadlineCalls.Load(); got != 1 {
+		t.Fatalf("Vault requests with a deadline context = %d, want 1", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

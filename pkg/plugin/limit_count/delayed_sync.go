@@ -202,27 +202,54 @@ func (s *delayedSyncer) flushAllDirty(ctx context.Context) error {
 }
 
 func (s *delayedSyncer) flushKeys(ctx context.Context, keys []string, retryFailures bool) error {
+	type pendingMutation struct {
+		delta         int64
+		reservationAt time.Time
+	}
+	// Snapshot the pending deltas under the lock, then release it for the
+	// Redis I/O so a slow backend never blocks unrelated key mutations.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var firstErr error
+	pending := make(map[string]pendingMutation, len(keys))
 	for _, key := range keys {
 		state := s.states[key]
 		if state == nil || state.localDelta == 0 {
 			continue
 		}
-		delta := state.localDelta
-		remaining, _, err := s.backend.sync(ctx, key, delta, state.reservationAt)
+		pending[key] = pendingMutation{delta: state.localDelta, reservationAt: state.reservationAt}
+	}
+	s.mu.Unlock()
+
+	var firstErr error
+	for key, mutation := range pending {
+		remaining, _, err := s.backend.sync(ctx, key, mutation.delta, mutation.reservationAt)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			if retryFailures {
+				s.mu.Lock()
 				s.retryNext[key] = struct{}{}
+				s.mu.Unlock()
 			}
 			continue
 		}
-		state.remoteRemaining = remaining
-		state.localDelta = 0
+		s.mu.Lock()
+		state := s.states[key]
+		if state != nil {
+			state.remoteRemaining = remaining
+			switch {
+			case state.localDelta == mutation.delta:
+				// No concurrent mutation landed while the sync was in
+				// flight; the pending delta was fully synced.
+				state.localDelta = 0
+			case state.localDelta > mutation.delta:
+				// Concurrent mutations landed while the sync was in flight;
+				// only the snapshotted delta was synced, keep the rest
+				// pending so nothing is lost or double-counted.
+				state.localDelta -= mutation.delta
+			}
+		}
+		s.mu.Unlock()
 	}
 	return firstErr
 }

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -589,12 +590,148 @@ func TestMetadataSchemaRejectsMissingSink(t *testing.T) {
 }
 
 type fakeKafkaSender struct {
-	messages []kafkaMessage
+	mu         sync.Mutex
+	messages   []kafkaMessage
+	closeCalls int
+	closeErr   error
+	blockSend  chan struct{}
 }
 
 func (f *fakeKafkaSender) Send(_ context.Context, message kafkaMessage) error {
+	f.mu.Lock()
 	f.messages = append(f.messages, message)
+	f.mu.Unlock()
+	if f.blockSend != nil {
+		<-f.blockSend
+	}
 	return nil
+}
+
+func (f *fakeKafkaSender) Close() error {
+	f.mu.Lock()
+	f.closeCalls++
+	f.mu.Unlock()
+	return f.closeErr
+}
+
+func (f *fakeKafkaSender) messagesCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.messages)
+}
+
+func (f *fakeKafkaSender) closeCallsCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeCalls
+}
+
+func TestStopUnregistersObserverAndClosesKafkaWriterOnce(t *testing.T) {
+	captured := make(chan logger.Entry, 8)
+	stopCapture := logger.ReplaceObserver("error-log-logger-close-test", func(entry logger.Entry) {
+		captured <- entry
+	})
+	t.Cleanup(stopCapture)
+
+	sender := &fakeKafkaSender{closeErr: fmt.Errorf("kafka close boom")}
+	p := newTestPlugin(t, Config{
+		Kafka: &KafkaConfig{
+			Brokers:    []KafkaBroker{{Host: "127.0.0.1", Port: 9092}},
+			KafkaTopic: "apisix-error-logs",
+		},
+		Level:           "WARN",
+		BatchMaxSize:    1,
+		BufferDuration:  60,
+		InactiveTimeout: 60,
+	})
+	p.kafkaSender = sender
+
+	p.StartObserving()
+	logger.Warn("delivered before stop")
+	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "first delivery")
+
+	p.Stop()
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("kafka writer close calls = %d, want 1", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		select {
+		case entry := <-captured:
+			if strings.Contains(entry.Message, "kafka close boom") {
+				goto closeErrorLogged
+			}
+		case <-time.After(time.Until(deadline)):
+			t.Fatal("timed out waiting for the kafka close error log")
+		}
+	}
+closeErrorLogged:
+
+	// The observer was unregistered: nothing is delivered after Stop.
+	logger.Warn("delivered after stop")
+	time.Sleep(100 * time.Millisecond)
+	if got := sender.messagesCount(); got != 1 {
+		t.Fatalf("deliveries after Stop = %d, want the single pre-stop delivery", got)
+	}
+
+	// Stop is idempotent: the writer is closed exactly once.
+	p.Stop()
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("kafka writer close calls after second Stop = %d, want 1", got)
+	}
+}
+
+func TestStopWaitsForInflightKafkaSendBeforeClosing(t *testing.T) {
+	sender := &fakeKafkaSender{blockSend: make(chan struct{})}
+	p := newTestPlugin(t, Config{
+		Kafka: &KafkaConfig{
+			Brokers:    []KafkaBroker{{Host: "127.0.0.1", Port: 9092}},
+			KafkaTopic: "apisix-error-logs",
+		},
+		Level:           "WARN",
+		BatchMaxSize:    1,
+		BufferDuration:  60,
+		InactiveTimeout: 60,
+	})
+	p.kafkaSender = sender
+
+	p.StartObserving()
+	logger.Warn("in-flight send")
+	waitFor(t, func() bool { return sender.messagesCount() == 1 }, "send in flight")
+
+	stopped := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopped)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if got := sender.closeCallsCount(); got != 0 {
+		t.Fatalf("kafka writer closed while a send was in flight, close calls = %d", got)
+	}
+
+	close(sender.blockSend)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Stop after the in-flight send completed")
+	}
+	if got := sender.closeCallsCount(); got != 1 {
+		t.Fatalf("kafka writer close calls = %d, want 1 after join", got)
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
 }
 
 func encryptErrorLoggerTestValue(t *testing.T, key string, value string) string {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1476,4 +1477,142 @@ func assertUsageRequestVars(t *testing.T, req *http.Request, wantRawPrompt float
 	if !ok || normalized["total_tokens"] != wantNormalizedTotal {
 		t.Fatalf("$ai_token_usage = %#v, want total_tokens %d", normalized, wantNormalizedTotal)
 	}
+}
+
+type countingRoundTripper struct {
+	requests atomic.Int32
+	closed   atomic.Int32
+	base     http.RoundTripper
+}
+
+func (c *countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.requests.Add(1)
+	return c.base.RoundTrip(req)
+}
+
+func (c *countingRoundTripper) CloseIdleConnections() {
+	c.closed.Add(1)
+	if closeable, ok := c.base.(interface{ CloseIdleConnections() }); ok {
+		closeable.CloseIdleConnections()
+	}
+}
+
+func healthProbeConfig(endpoint string) Config {
+	return Config{Instances: []Instance{
+		{
+			Name: "probe", Provider: "openai-compatible", Priority: 0, Weight: 1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer probe"}},
+			Override: Override{Endpoint: endpoint},
+			Checks: &HealthChecks{Active: ActiveHealthCheck{
+				Type:     "http",
+				HTTPPath: "/health",
+				Timeout:  1,
+			}},
+		},
+	}}
+}
+
+func TestHealthProbeReusesClientForRepeatedProbes(t *testing.T) {
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	client := p.healthClients[0]
+	if client == nil {
+		t.Fatal("no health-check client was built for the configured instance")
+	}
+	counting := &countingRoundTripper{base: client.Transport}
+	client.Transport = counting
+
+	ctx := context.Background()
+	for range 3 {
+		result := p.probeInstance(ctx, 0)
+		if result.err != nil || result.status != http.StatusOK {
+			t.Fatalf("probe = %+v, want status 200", result)
+		}
+	}
+	if p.healthClients[0] != client {
+		t.Fatal("health-check client was rebuilt between probes")
+	}
+	if got := counting.requests.Load(); got != 3 {
+		t.Fatalf("transport requests across three probes = %d, want 3 through the shared client", got)
+	}
+}
+
+func TestHealthStopClosesIdleConnectionsOnConfigReplacement(t *testing.T) {
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	first := newTestPlugin(t, healthProbeConfig(server.URL))
+	counting := &countingRoundTripper{base: first.healthClients[0].Transport}
+	first.healthClients[0].Transport = counting
+	_ = first.probeInstance(context.Background(), 0)
+
+	// Configuration replacement stops the old plugin instance and closes the
+	// idle connections of its probe client.
+	first.Stop()
+	if got := counting.closed.Load(); got != 1 {
+		t.Fatalf("probe transport idle-connection closes = %d, want 1 on Stop", got)
+	}
+
+	replacement := newTestPlugin(t, healthProbeConfig(server.URL))
+	if replacement.healthClients[0] == first.healthClients[0] {
+		t.Fatal("replacement configuration reused the closed probe client")
+	}
+	result := replacement.probeInstance(context.Background(), 0)
+	if result.err != nil || result.status != http.StatusOK {
+		t.Fatalf("replacement probe = %+v, want status 200", result)
+	}
+}
+
+func TestHealthProbeHonorsConfiguredTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	config := healthProbeConfig(server.URL)
+	config.Instances[0].Checks.Active.Timeout = 0.05
+	p := newTestPlugin(t, config)
+
+	start := time.Now()
+	result := p.probeInstance(context.Background(), 0)
+	elapsed := time.Since(start)
+	if !result.timeout {
+		t.Fatalf("probe result = %+v, want a timeout", result)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("probe elapsed = %s, want the configured timeout to bound the probe", elapsed)
+	}
+}
+
+func TestHealthProbeConcurrentProbesAreRaceFree(t *testing.T) {
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			result := p.probeInstance(ctx, 0)
+			if result.err != nil || result.status != http.StatusOK {
+				t.Errorf("concurrent probe = %+v, want status 200", result)
+			}
+		})
+	}
+	wg.Wait()
 }

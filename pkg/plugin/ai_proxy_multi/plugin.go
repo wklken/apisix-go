@@ -38,8 +38,9 @@ type Plugin struct {
 	client    *http.Client
 	mu        sync.Mutex
 	nextSlot  map[int]int
-	weighted  map[int][]int
+	selection map[int]*weightSelection
 	priority  []int
+	instances map[string]int
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
 	healthMu  sync.Mutex
@@ -61,6 +62,16 @@ type Plugin struct {
 
 type gcpTokenApplier interface {
 	Apply(context.Context, *http.Client, *http.Request, ai_auth.GCPConfig) error
+}
+
+// weightSelection is the O(1)-lookup weighted index built at configuration
+// publication: cumulative weight boundaries over distinct instance IDs. A slot
+// in [0, total) maps to an instance via binary search without expanding a
+// repeated-provider slice.
+type weightSelection struct {
+	total      int
+	cumulative []int
+	ids        []int
 }
 
 type preparedInstanceRequest struct {
@@ -571,11 +582,18 @@ func (p *Plugin) PostInit() error {
 		p.config.SSLVerify = &sslVerify
 	}
 
-	p.weighted = make(map[int][]int)
+	p.selection = make(map[int]*weightSelection)
 	p.priority = p.priority[:0]
 	p.nextSlot = make(map[int]int)
+	p.instances = make(map[string]int)
 	for i := range p.config.Instances {
 		instance := &p.config.Instances[i]
+		if instance.Name != "" {
+			// First occurrence wins, matching the previous linear scan.
+			if _, exists := p.instances[instance.Name]; !exists {
+				p.instances[instance.Name] = i
+			}
+		}
 		if instance.Weight == 0 {
 			continue
 		}
@@ -605,12 +623,17 @@ func (p *Plugin) PostInit() error {
 				)
 			}
 		}
-		if _, ok := p.weighted[instance.Priority]; !ok {
+		if _, ok := p.selection[instance.Priority]; !ok {
 			p.priority = append(p.priority, instance.Priority)
 		}
-		for range instance.Weight {
-			p.weighted[instance.Priority] = append(p.weighted[instance.Priority], i)
+		sel := p.selection[instance.Priority]
+		if sel == nil {
+			sel = &weightSelection{}
+			p.selection[instance.Priority] = sel
 		}
+		sel.total += instance.Weight
+		sel.cumulative = append(sel.cumulative, sel.total)
+		sel.ids = append(sel.ids, i)
 	}
 	if len(p.priority) == 0 {
 		return fmt.Errorf("at least one instance must have weight greater than 0")
@@ -826,12 +849,8 @@ func (p *Plugin) registerLogging(r *http.Request, protocol ai_protocols.Protocol
 }
 
 func (p *Plugin) instanceIndex(name string) (int, bool) {
-	for i := range p.config.Instances {
-		if p.config.Instances[i].Name == name {
-			return i, true
-		}
-	}
-	return 0, false
+	index, ok := p.instances[name]
+	return index, ok
 }
 
 func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Document, ai_protocols.Protocol, error) {
@@ -1200,21 +1219,34 @@ func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Prot
 }
 
 func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
-	if len(p.priority) == 0 {
+	priorities := p.priority
+	if len(priorities) == 0 {
 		return 0, false
 	}
 
-	starts := make(map[int]int, len(p.priority))
-	for _, priority := range p.priority {
-		weighted := p.weighted[priority]
-		starts[priority] = p.nextWeightedSlot(r, priority, len(weighted))
+	// Advance each priority's rotation slot exactly once per pick, then reuse
+	// the starts across the healthy and fallback passes.
+	starts := make([]int, len(priorities))
+	for i, priority := range priorities {
+		sel := p.selection[priority]
+		if sel == nil || sel.total == 0 {
+			starts[i] = -1
+			continue
+		}
+		starts[i] = p.nextWeightedSlot(r, priority, sel.total)
 	}
 	for _, requireHealthy := range []bool{true, false} {
-		for _, priority := range p.priority {
-			weighted := p.weighted[priority]
-			start := starts[priority]
-			for offset := range len(weighted) {
-				index := weighted[(start+offset)%len(weighted)]
+		for i, priority := range priorities {
+			sel := p.selection[priority]
+			if starts[i] < 0 {
+				continue
+			}
+			// Walk distinct instances in weight order starting at the slot's
+			// instance; the weight run of a rejected instance is skipped in
+			// one step instead of one slot at a time.
+			first := weightInstanceAtSlot(sel, starts[i])
+			for offset := range len(sel.ids) {
+				index := sel.ids[(first+offset)%len(sel.ids)]
 				if !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
 					return index, true
 				}
@@ -1222,6 +1254,19 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// weightInstanceAtSlot maps a slot in [0, sel.total) to the index of its
+// distinct instance. When every instance has weight 1 the cumulative array is
+// the identity and the slot itself is the instance (O(1)); otherwise a binary
+// search over cumulative weights resolves the slot.
+func weightInstanceAtSlot(sel *weightSelection, slot int) int {
+	if sel.total == len(sel.ids) {
+		return slot
+	}
+	return sort.Search(len(sel.cumulative), func(i int) bool {
+		return sel.cumulative[i] > slot
+	})
 }
 
 func (p *Plugin) nextWeightedSlot(r *http.Request, priority int, size int) int {

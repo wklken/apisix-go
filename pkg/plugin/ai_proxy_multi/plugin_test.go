@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1860,5 +1861,143 @@ func TestProviderBodyUnchangedReturnsOriginalBodyBytes(t *testing.T) {
 	}
 	if got := document.Raw["model"]; got != "caller-model" {
 		t.Fatalf("client model = %v, want caller-model", got)
+	}
+}
+
+func TestWeightSelectionHonorsConfiguredWeightsWithoutExpansion(t *testing.T) {
+	instances := make([]Instance, 0, 3)
+	for i, weight := range []int{1, 3, 6} {
+		instances = append(instances, Instance{
+			Name:     "weighted-" + strconv.Itoa(i),
+			Provider: "openai-compatible",
+			Weight:   weight,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+		})
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	sel := p.selection[0]
+	if sel == nil {
+		t.Fatal("no weight selection index for priority 0")
+	}
+	// The index must stay compact: cumulative weights over distinct IDs, not
+	// an expanded repeated-provider slice.
+	if len(sel.ids) != 3 || len(sel.cumulative) != 3 {
+		t.Fatalf(
+			"selection index = %d ids, %d cumulative, want 3 each (no expansion)",
+			len(sel.ids),
+			len(sel.cumulative),
+		)
+	}
+	if sel.total != 10 {
+		t.Fatalf("total weight = %d, want 10", sel.total)
+	}
+	wantCumulative := []int{1, 4, 10}
+	for i, want := range wantCumulative {
+		if sel.cumulative[i] != want {
+			t.Fatalf("cumulative[%d] = %d, want %d", i, sel.cumulative[i], want)
+		}
+	}
+
+	// Property: every slot maps to the configured instance; the mapping is a
+	// permutation of the distinct IDs in weight order.
+	slotInstances := make(map[int]int)
+	for slot := range sel.total {
+		slotInstances[weightInstanceAtSlot(sel, slot)]++
+	}
+	wantSlots := []int{1, 3, 6}
+	for i, want := range wantSlots {
+		if slotInstances[i] != want {
+			t.Fatalf("instance %d received %d slots, want weight %d", i, slotInstances[i], want)
+		}
+	}
+}
+
+func TestPickInstanceDistributesByWeightOverManyPicks(t *testing.T) {
+	instances := make([]Instance, 0, 2)
+	for i, weight := range []int{1, 3} {
+		instances = append(instances, Instance{
+			Name:     "weighted-" + strconv.Itoa(i),
+			Provider: "openai-compatible",
+			Weight:   weight,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+		})
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	const picks = 4000
+	counts := make(map[int]int)
+	for range picks {
+		index, ok := p.pickInstance(nil, nil)
+		if !ok {
+			t.Fatal("pickInstance() = false, want an instance")
+		}
+		counts[index]++
+	}
+	// With weights 1:3 the heavier instance must receive ~3x the picks within
+	// a generous tolerance; round-robin over the slot table enforces the exact
+	// ratio over a full cycle.
+	if counts[0] < picks/5 || counts[1] < 3*picks/5 {
+		t.Fatalf("pick distribution = %#v over %d picks, want ~1:3", counts, picks)
+	}
+}
+
+func TestInstanceIndexResolvesByNameAndMissingIDs(t *testing.T) {
+	instances := []Instance{
+		{
+			Name:     "first",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1"},
+		},
+		{
+			Name:     "second",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v2"},
+		},
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	if index, ok := p.instanceIndex("first"); !ok || index != 0 {
+		t.Fatalf("instanceIndex(first) = (%d, %v), want (0, true)", index, ok)
+	}
+	if index, ok := p.instanceIndex("second"); !ok || index != 1 {
+		t.Fatalf("instanceIndex(second) = (%d, %v), want (1, true)", index, ok)
+	}
+	if _, ok := p.instanceIndex("missing"); ok {
+		t.Fatal("instanceIndex(missing) = ok, want false")
+	}
+	if _, ok := p.instanceIndex(""); ok {
+		t.Fatal("instanceIndex(empty) = ok, want false")
+	}
+}
+
+func TestInstanceIndexDuplicateNamesKeepFirstOccurrence(t *testing.T) {
+	instances := []Instance{
+		{
+			Name:     "dup",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1"},
+		},
+		{
+			Name:     "dup",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v2"},
+		},
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	index, ok := p.instanceIndex("dup")
+	if !ok || index != 0 {
+		t.Fatalf("instanceIndex(dup) = (%d, %v), want first occurrence (0, true)", index, ok)
 	}
 }

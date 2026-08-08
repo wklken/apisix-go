@@ -33,7 +33,9 @@ func AsAnyMap(value any) (map[string]any, bool) {
 }
 
 // MergeBodyMap merges override into dst, cloning override values. It reports
-// whether any value in dst actually changed.
+// whether any value in dst actually changed. Nested maps are cloned before
+// recursion so a shallow-copied dst never mutates maps it shares with another
+// document.
 func MergeBodyMap(dst map[string]any, override map[string]any, force bool) bool {
 	changed := false
 	for key, overrideValue := range override {
@@ -41,7 +43,9 @@ func MergeBodyMap(dst map[string]any, override map[string]any, force bool) bool 
 		currentMap, currentIsMap := AsAnyMap(currentValue)
 		overrideMap, overrideIsMap := AsAnyMap(overrideValue)
 		if exists && currentIsMap && overrideIsMap {
-			if MergeBodyMap(currentMap, overrideMap, force) {
+			cloned := CloneJSONValue(currentMap).(map[string]any)
+			dst[key] = cloned
+			if MergeBodyMap(cloned, overrideMap, force) {
 				changed = true
 			}
 			continue

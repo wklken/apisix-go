@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -372,6 +373,7 @@ type realtimeResponseWriter struct {
 
 	status       int
 	content      strings.Builder
+	contentRunes int
 	pending      string
 	lastModerate time.Time
 	blocked      bool
@@ -408,10 +410,12 @@ func (w *realtimeResponseWriter) Write(body []byte) (int, error) {
 		return w.ResponseWriter.Write(body)
 	}
 
-	w.content.WriteString(w.extractContent(body))
+	extracted := w.extractContent(body)
+	w.content.WriteString(extracted)
+	w.contentRunes += utf8.RuneCountInString(extracted)
 	finalPacket := isFinalSSEPacket(body)
 	now := w.plugin.streamNow()
-	cacheFull := len([]rune(w.content.String())) >= w.plugin.config.StreamCheckCacheSize
+	cacheFull := w.contentRunes >= w.plugin.config.StreamCheckCacheSize
 	intervalElapsed := now.Sub(w.lastModerate) >=
 		time.Duration(w.plugin.config.StreamCheckInterval*float64(time.Second))
 	if w.content.Len() > 0 && (cacheFull || intervalElapsed || finalPacket) {
@@ -432,7 +436,9 @@ func (w *realtimeResponseWriter) Flush() {
 
 func (w *realtimeResponseWriter) Close() {
 	if w.pending != "" {
-		w.content.WriteString(extractSSEText(w.protocol, []byte(w.pending+"\n")))
+		flushed := extractSSEText(w.protocol, []byte(w.pending+"\n"))
+		w.content.WriteString(flushed)
+		w.contentRunes += utf8.RuneCountInString(flushed)
 		w.pending = ""
 	}
 	if !w.blocked && w.status < http.StatusBadRequest && w.content.Len() > 0 {
@@ -455,6 +461,7 @@ func (w *realtimeResponseWriter) extractContent(body []byte) string {
 func (w *realtimeResponseWriter) moderate() bool {
 	content := w.content.String()
 	w.content.Reset()
+	w.contentRunes = 0
 	code, message, _ := w.plugin.moderateContent(
 		w.request,
 		content,

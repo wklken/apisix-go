@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -1009,7 +1010,7 @@ func (p *Plugin) prepareInstanceRequest(
 		prepared.providerDocument = providerDocument
 		return prepared, err
 	}
-	clientBody := ai_common.CloneJSONValue(document.Raw).(map[string]any)
+	clientBody := maps.Clone(document.Raw)
 	for key, value := range instance.Options {
 		clientBody[key] = ai_common.CloneJSONValue(value)
 	}
@@ -1044,7 +1045,11 @@ func (p *Plugin) providerBody(
 	protocol ai_protocols.Protocol,
 	instance Instance,
 ) ([]byte, ai_protocols.Document, error) {
-	bodyTab := ai_common.CloneJSONValue(document.Raw).(map[string]any)
+	// Copy only the mutated request fields: a shallow top-level copy isolates
+	// the provider document from the shared client document, and nested maps
+	// are cloned on write (MergeBodyMap, bedrock inference config) instead of
+	// deep-copying the whole payload on every request.
+	bodyTab := maps.Clone(document.Raw)
 	changed := false
 	for key, value := range instance.Options {
 		if !ai_common.JSONValueEqual(bodyTab[key], value) {
@@ -1175,6 +1180,11 @@ func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Prot
 				inferenceConfig = make(map[string]any)
 				body["inferenceConfig"] = inferenceConfig
 				changed = true
+			} else {
+				// clone-on-write: never mutate a nested map shared with the
+				// client document under a shallow top-level copy
+				inferenceConfig = ai_common.CloneJSONValue(inferenceConfig).(map[string]any)
+				body["inferenceConfig"] = inferenceConfig
 			}
 			if !ai_common.JSONValueEqual(inferenceConfig["maxTokens"], instance.Override.LLMOptions.MaxTokens) {
 				changed = true

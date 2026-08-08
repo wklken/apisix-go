@@ -173,3 +173,72 @@ func encodeTestAWSEventStreamMessage(t *testing.T, name string, payload string) 
 }
 
 var _ io.Writer = (*failingWriter)(nil)
+
+// chunkedReader returns body in fixed-size pieces so forwarders exercise
+// partial-line and split-UTF-8 boundaries the same way network writes do.
+type chunkedReader struct {
+	body string
+	size int
+	at   int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.at >= len(r.body) {
+		return 0, io.EOF
+	}
+	end := min(r.at+r.size, len(r.body))
+	n := copy(p, r.body[r.at:end])
+	r.at += n
+	return n, nil
+}
+
+func TestForwardSSEIsPartitionInvariant(t *testing.T) {
+	body := "data: {\"id\":\"1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"你好, \"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"world\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
+
+	whole := httptest.NewRecorder()
+	if _, err := ForwardSSE(whole, strings.NewReader(body), ai_protocols.OpenAIChat, 0); err != nil {
+		t.Fatalf("ForwardSSE(whole) error = %v", err)
+	}
+
+	for _, size := range []int{1, 3, 7, 13} {
+		rr := httptest.NewRecorder()
+		usage, err := ForwardSSE(rr, &chunkedReader{body: body, size: size}, ai_protocols.OpenAIChat, 0)
+		if err != nil {
+			t.Fatalf("ForwardSSE(chunk=%d) error = %v", size, err)
+		}
+		if rr.Body.String() != whole.Body.String() {
+			t.Fatalf("chunk=%d output = %q, want %q", size, rr.Body.String(), whole.Body.String())
+		}
+		if usage.Text != "你好, world" {
+			t.Fatalf("chunk=%d usage.Text = %q, want %q", size, usage.Text, "你好, world")
+		}
+	}
+}
+
+func TestForwardAnthropicIsPartitionInvariant(t *testing.T) {
+	body := "data: {\"id\":\"chat-1\",\"model\":\"gpt-4\",\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	whole := httptest.NewRecorder()
+	if _, err := ForwardOpenAIAsAnthropicSSE(whole, strings.NewReader(body), 0, nil); err != nil {
+		t.Fatalf("ForwardOpenAIAsAnthropicSSE(whole) error = %v", err)
+	}
+
+	for _, size := range []int{1, 5, 11} {
+		rr := httptest.NewRecorder()
+		usage, err := ForwardOpenAIAsAnthropicSSE(rr, &chunkedReader{body: body, size: size}, 0, nil)
+		if err != nil {
+			t.Fatalf("ForwardOpenAIAsAnthropicSSE(chunk=%d) error = %v", size, err)
+		}
+		if rr.Body.String() != whole.Body.String() {
+			t.Fatalf("chunk=%d output = %q, want %q", size, rr.Body.String(), whole.Body.String())
+		}
+		if usage.Text != "你好" {
+			t.Fatalf("chunk=%d usage.Text = %q, want %q", size, usage.Text, "你好")
+		}
+	}
+}

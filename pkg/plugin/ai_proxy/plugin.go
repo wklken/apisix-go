@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -837,7 +838,7 @@ func (p *Plugin) finalProviderBody(
 	if p.config.Provider != "bedrock" || protocol != ai_protocols.BedrockConverse {
 		return body, nil
 	}
-	decoded := ai_common.CloneJSONValue(document.Raw).(map[string]any)
+	decoded := maps.Clone(document.Raw)
 	delete(decoded, "model")
 	delete(decoded, "stream")
 	encoded, err := json.Marshal(decoded)

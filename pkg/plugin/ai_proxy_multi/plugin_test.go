@@ -2,8 +2,8 @@ package ai_proxy_multi
 
 import (
 	"context"
-	"errors"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -1763,7 +1763,11 @@ func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
 		{
 			name: "streamed oversized",
 			request: func() *http.Request {
-				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"too-large"}`))
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/v1/chat/completions",
+					strings.NewReader(`{"model":"too-large"}`),
+				)
 				req.ContentLength = -1
 				return req
 			}(),
@@ -1808,5 +1812,53 @@ func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
 	})).ServeHTTP(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("handler status = %d, want 413", rr.Code)
+	}
+}
+
+func TestProviderBodyCopiesOnlyMutatedRequestFields(t *testing.T) {
+	p := newTestPlugin(t, Config{Instances: []Instance{{Name: "one", Weight: 1}}})
+
+	document := ai_protocols.Document{Raw: map[string]any{
+		"model":    "caller-model",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}}
+	instance := Instance{Name: "one", Provider: "openai-compatible", Options: map[string]any{"model": "gpt-4"}}
+
+	_, providerDocument, err := p.providerBody(nil, document, ai_protocols.OpenAIChat, instance)
+	if err != nil {
+		t.Fatalf("providerBody() error = %v", err)
+	}
+
+	if got := providerDocument.Raw["model"]; got != "gpt-4" {
+		t.Fatalf("provider model = %v, want gpt-4", got)
+	}
+	// The shared client document must never be mutated by the provider copy.
+	if got := document.Raw["model"]; got != "caller-model" {
+		t.Fatalf("client model = %v, want caller-model; client document mutated", got)
+	}
+}
+
+func TestProviderBodyUnchangedReturnsOriginalBodyBytes(t *testing.T) {
+	p := newTestPlugin(t, Config{Instances: []Instance{{Name: "one", Weight: 1}}})
+
+	const raw = `{"model":"caller-model","messages":[{"role":"user","content":"hello"}]}`
+	document := ai_protocols.Document{Raw: map[string]any{
+		"model":    "caller-model",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}}
+	instance := Instance{Name: "one", Provider: "openai-compatible"}
+
+	body, providerDocument, err := p.providerBody([]byte(raw), document, ai_protocols.OpenAIChat, instance)
+	if err != nil {
+		t.Fatalf("providerBody() error = %v", err)
+	}
+	if string(body) != raw {
+		t.Fatalf("provider body = %q, want exact raw bytes", body)
+	}
+	if got := providerDocument.Raw["model"]; got != "caller-model" {
+		t.Fatalf("provider model = %v, want caller-model", got)
+	}
+	if got := document.Raw["model"]; got != "caller-model" {
+		t.Fatalf("client model = %v, want caller-model", got)
 	}
 }

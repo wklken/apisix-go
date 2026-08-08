@@ -187,6 +187,40 @@ func TestNewUpstreamLoadBalanceEnablesPassiveHealthOnlyWhenConfigured(t *testing
 	}
 }
 
+func TestPassiveHealthConfigDefaultsForNilOrEmptyChecks(t *testing.T) {
+	for name, checks := range map[string]map[string]any{
+		"nil checks":      nil,
+		"empty checks":    {},
+		"passive nil":     {"passive": nil},
+		"passive missing": {"healthy": map[string]any{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config, err := parsePassiveHealthConfig(checks)
+			if err != nil {
+				t.Fatalf("parsePassiveHealthConfig() error = %v", err)
+			}
+			want := PassiveHealthConfig{
+				Type:              "http",
+				HTTPFailures:      5,
+				TCPFailures:       2,
+				Timeouts:          7,
+				HealthyStatuses:   defaultHealthyStatuses(),
+				UnhealthyStatuses: map[int]struct{}{429: {}, 500: {}, 503: {}},
+			}
+			if config.Type != want.Type || config.HTTPFailures != want.HTTPFailures ||
+				config.TCPFailures != want.TCPFailures || config.Timeouts != want.Timeouts {
+				t.Fatalf("parsePassiveHealthConfig() = %#v, want defaults %#v", config, want)
+			}
+			if len(config.HealthyStatuses) != len(want.HealthyStatuses) {
+				t.Fatalf("healthy statuses = %#v, want %#v", config.HealthyStatuses, want.HealthyStatuses)
+			}
+			if len(config.UnhealthyStatuses) != len(want.UnhealthyStatuses) {
+				t.Fatalf("unhealthy statuses = %#v, want %#v", config.UnhealthyStatuses, want.UnhealthyStatuses)
+			}
+		})
+	}
+}
+
 func TestPassiveHealthConfigParsesOfficialNumericShapes(t *testing.T) {
 	config, err := parsePassiveHealthConfig(map[string]any{
 		"passive": map[string]any{

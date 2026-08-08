@@ -243,17 +243,28 @@ func DecryptPluginConfigs(configs map[string]any, keyring []string) {
 		return
 	}
 	resolver := NewResolver(true, keyring)
-	for name, fields := range pluginFields {
-		config, ok := configs[name].(map[string]any)
-		if !ok {
+	for name, config := range configs {
+		DecryptPluginConfigWithResolver(config, name, resolver)
+	}
+}
+
+// DecryptPluginConfigWithResolver decrypts the registered encrypted fields of
+// a single plugin configuration. Callers that iterate a resource's plugin map
+// reuse one resolver across plugins instead of copying the keyring per call.
+func DecryptPluginConfigWithResolver(config any, pluginName string, resolver Resolver) {
+	fields, ok := pluginFields[pluginName]
+	if !ok {
+		return
+	}
+	pluginConfig, ok := config.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, field := range fields {
+		if IsStrictPluginField(pluginName, field) {
 			continue
 		}
-		for _, field := range fields {
-			if IsStrictPluginField(name, field) {
-				continue
-			}
-			decryptField(config, field, resolver)
-		}
+		decryptField(pluginConfig, field, resolver)
 	}
 }
 

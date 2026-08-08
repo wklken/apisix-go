@@ -108,6 +108,57 @@ func TestHandlerRendersNestedAndIndexedJSONValues(t *testing.T) {
 	}
 }
 
+func TestRenderStringExpandsPlaceholdersAndPreservesUnknownKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		values map[string]any
+		want   string
+	}{
+		{
+			name:   "no placeholders returned unchanged",
+			text:   "plain message",
+			values: map[string]any{"prompt": "ignored"},
+			want:   "plain message",
+		},
+		{
+			name:   "missing key replaced with empty string",
+			text:   "Hello {{missing}}.",
+			values: map[string]any{"prompt": "hello"},
+			want:   "Hello .",
+		},
+		{
+			name:   "present string and number values",
+			text:   "{{prompt}} in {{depth}} steps",
+			values: map[string]any{"prompt": "quick sort", "depth": 2},
+			want:   "quick sort in 2 steps",
+		},
+		{
+			name: "nested and indexed paths",
+			text: "{{user.profile.name}} item {{items[1].name}}",
+			values: map[string]any{
+				"user":  map[string]any{"profile": map[string]any{"name": "Ada"}},
+				"items": []any{map[string]any{"name": "first"}, map[string]any{"name": "second"}},
+			},
+			want: "Ada item second",
+		},
+		{
+			name:   "mixed known and unknown keys",
+			text:   "{{known}}/{{unknown}}/{{known}}",
+			values: map[string]any{"known": "x"},
+			want:   "x//x",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := renderString(test.text, test.values); got != test.want {
+				t.Fatalf("renderString(%q) = %q, want %q", test.text, got, test.want)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsMissingTemplateName(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Templates: []NamedTemplate{

@@ -26,7 +26,7 @@ var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 
 
 var (
 	Connections           *prometheus.GaugeVec
-	Requests              prometheus.Gauge
+	Requests              prometheus.Counter
 	EtcdReachable         prometheus.Gauge
 	HostInfo              *prometheus.GaugeVec
 	EtcdModifyIndexed     *prometheus.GaugeVec
@@ -127,8 +127,8 @@ func initMetrics() {
 	)
 
 	// pkg/plugin/request_context/plugin.go
-	Requests = prometheus.NewGauge(
-		prometheus.GaugeOpts{
+	Requests = prometheus.NewCounter(
+		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "http_requests_total",
 			Help: "The total number of client requests since APISIX started",
 		},

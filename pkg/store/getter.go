@@ -370,11 +370,10 @@ func decryptPluginConfigs(configs map[string]resource.PluginConfig) {
 	if !enabled {
 		return
 	}
-	values := make(map[string]any, len(configs))
-	for name, value := range configs {
-		values[name] = value
+	resolver := data_encryption.NewResolver(true, keyring)
+	for name, config := range configs {
+		data_encryption.DecryptPluginConfigWithResolver(config, name, resolver)
 	}
-	data_encryption.DecryptPluginConfigs(values, keyring)
 }
 
 func ParseProto(config []byte) (resource.Proto, error) {

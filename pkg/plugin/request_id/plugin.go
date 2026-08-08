@@ -187,6 +187,10 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 	return util.BytesToString(id)
 }
 
+// uuidv7ID generates a UUIDv7 with strict per-instance monotonic ordering.
+// gofrs/uuid.NewV7 is intentionally not used: it does not expose the 22-bit
+// monotonic sequence with the clock-rollback and overflow handling this
+// plugin relies on for lexicographically ordered request IDs.
 func (p *Plugin) uuidv7ID() string {
 	p.uuidv7Mu.Lock()
 	defer p.uuidv7Mu.Unlock()

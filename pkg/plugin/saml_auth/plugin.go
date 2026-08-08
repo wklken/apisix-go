@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"compress/flate"
 	"crypto"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -185,7 +183,7 @@ func (c Config) idpEntityID() string {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == callbackPath(p.config.LogoutCallbackURI) {
+		if r.URL.Path == base.CallbackPath(p.config.LogoutCallbackURI) {
 			switch {
 			case r.FormValue("SAMLRequest") != "":
 				p.handleLogoutRequest(w, r)
@@ -197,12 +195,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.URL.Path == callbackPath(p.config.LogoutURI) {
+		if r.URL.Path == base.CallbackPath(p.config.LogoutURI) {
 			p.logout(w, r)
 			return
 		}
 
-		if r.URL.Path == callbackPath(p.config.LoginCallbackURI) && r.FormValue("SAMLResponse") != "" {
+		if r.URL.Path == base.CallbackPath(p.config.LoginCallbackURI) && r.FormValue("SAMLResponse") != "" {
 			p.handleCallback(w, r)
 			return
 		}
@@ -592,7 +590,7 @@ func (p *Plugin) requestCookie(stateID string, state requestState) (*http.Cookie
 	}
 	return &http.Cookie{
 		Name:     requestCookieName(p.sessionFingerprint(), stateID),
-		Value:    p.signValue(payload),
+		Value:    base.SignRawSessionValue(payload, p.config.Secret),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
@@ -609,7 +607,7 @@ func (p *Plugin) requestState(r *http.Request, stateID string) (requestState, bo
 	if err != nil || cookie.Value == "" {
 		return requestState{}, false
 	}
-	payload, ok := p.verifySignedValue(cookie.Value)
+	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
 	if !ok {
 		return requestState{}, false
 	}
@@ -630,7 +628,7 @@ func (p *Plugin) logoutCookie(stateID string, state logoutState) (*http.Cookie, 
 	}
 	return &http.Cookie{
 		Name:     logoutCookieName(p.sessionFingerprint(), stateID),
-		Value:    p.signValue(payload),
+		Value:    base.SignRawSessionValue(payload, p.config.Secret),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
@@ -647,7 +645,7 @@ func (p *Plugin) logoutState(r *http.Request, stateID string) (logoutState, bool
 	if err != nil || cookie.Value == "" {
 		return logoutState{}, false
 	}
-	payload, ok := p.verifySignedValue(cookie.Value)
+	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
 	if !ok {
 		return logoutState{}, false
 	}
@@ -666,7 +664,7 @@ func (p *Plugin) sessionUser(r *http.Request) (externalUser, bool) {
 	if err != nil || cookie.Value == "" {
 		return externalUser{}, false
 	}
-	payload, ok := p.verifySignedValue(cookie.Value)
+	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
 	if !ok {
 		return externalUser{}, false
 	}
@@ -690,7 +688,7 @@ func (p *Plugin) sessionCookie(user externalUser) (*http.Cookie, error) {
 	}
 	return &http.Cookie{
 		Name:     sessionCookieName(p.sessionFingerprint()),
-		Value:    p.signValue(payload),
+		Value:    base.SignRawSessionValue(payload, p.config.Secret),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
@@ -719,38 +717,6 @@ func (p *Plugin) attachUser(r *http.Request, user externalUser) {
 	if vars := apisixctx.GetApisixVars(r); vars != nil {
 		vars["$external_user"] = user
 	}
-}
-
-func (p *Plugin) signValue(payload []byte) string {
-	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, []byte(p.config.Secret))
-	mac.Write(payload)
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return encodedPayload + "." + signature
-}
-
-func (p *Plugin) verifySignedValue(signed string) ([]byte, bool) {
-	dot := strings.Index(signed, ".")
-	if dot <= 0 {
-		return nil, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(signed[:dot])
-	if err != nil {
-		return nil, false
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(signed[dot+1:])
-	if err != nil {
-		return nil, false
-	}
-
-	for _, secret := range append([]string{p.config.Secret}, p.config.SecretFallbacks...) {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write(payload)
-		if subtle.ConstantTimeCompare(signature, mac.Sum(nil)) == 1 {
-			return payload, true
-		}
-	}
-	return nil, false
 }
 
 func (p *Plugin) sessionFingerprint() string {
@@ -820,17 +786,6 @@ func absoluteURL(r *http.Request, rawURL string) (*url.URL, error) {
 		rawURL = "/" + rawURL
 	}
 	return url.Parse(scheme + "://" + r.Host + rawURL)
-}
-
-func callbackPath(callbackURI string) string {
-	parsed, err := url.Parse(callbackURI)
-	if err != nil || !parsed.IsAbs() {
-		return callbackURI
-	}
-	if parsed.Path == "" {
-		return "/"
-	}
-	return parsed.Path
 }
 
 func safeRedirect(uri string) bool {

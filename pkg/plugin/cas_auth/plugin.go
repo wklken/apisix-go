@@ -2,11 +2,6 @@ package cas_auth
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -205,13 +200,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.Method == http.MethodGet && r.URL.Path == callbackPath(p.config.CASCallbackURI) &&
+		if r.Method == http.MethodGet && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) &&
 			r.URL.Query().Get("ticket") != "" {
 			p.validateWithCAS(w, r, r.URL.Query().Get("ticket"))
 			return
 		}
 
-		if r.Method == http.MethodPost && r.URL.Path == callbackPath(p.config.CASCallbackURI) {
+		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
 			if p.handleIDPLogout(r) {
 				w.WriteHeader(http.StatusOK)
 				return
@@ -257,10 +252,7 @@ func (p *Plugin) handleIDPLogout(r *http.Request) bool {
 
 func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {
 	originalURI := r.URL.RequestURI()
-	signed, err := p.signValue(originalURI)
-	if err == nil {
-		p.setCookie(w, requestURICookie, signed)
-	}
+	p.setCookie(w, requestURICookie, base.SignRawSessionValue([]byte(originalURI), p.config.Cookie.Secret))
 
 	values := url.Values{}
 	values.Set("service", p.serviceURL(r))
@@ -268,7 +260,10 @@ func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) validateWithCAS(w http.ResponseWriter, r *http.Request, ticket string) {
-	requestURI := p.verifyValue(cookieValue(r, requestURICookie))
+	requestURI := ""
+	if decoded, ok := base.VerifyRawSessionValue(cookieValue(r, requestURICookie), p.config.Cookie.Secret, nil); ok {
+		requestURI = string(decoded)
+	}
 	if !safeRedirect(requestURI) {
 		http.Error(w, util.BuildMessageResponse("invalid callback state"), http.StatusUnauthorized)
 		return
@@ -358,7 +353,7 @@ func (p *Plugin) serviceURL(r *http.Request) string {
 }
 
 func (p *Plugin) sessionOptions() sessionOptions {
-	fingerprint := sha256Hex(p.config.IDPURI + "|" + p.config.CASCallbackURI)
+	fingerprint := base.Sha256Hex(p.config.IDPURI + "|" + p.config.CASCallbackURI)
 	return sessionOptions{
 		cookieName:  sessionPrefix + fingerprint,
 		fingerprint: fingerprint,
@@ -407,39 +402,6 @@ func (p *Plugin) deleteCookie(w http.ResponseWriter, name string) {
 	})
 }
 
-func (p *Plugin) signValue(value string) (string, error) {
-	mac := hmac.New(sha256.New, []byte(p.config.Cookie.Secret))
-	if _, err := mac.Write([]byte(value)); err != nil {
-		return "", err
-	}
-	payload := base64.RawURLEncoding.EncodeToString([]byte(value))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return payload + "." + signature, nil
-}
-
-func (p *Plugin) verifyValue(signed string) string {
-	dot := strings.Index(signed, ".")
-	if dot <= 0 {
-		return ""
-	}
-	value, err := base64.RawURLEncoding.DecodeString(signed[:dot])
-	if err != nil {
-		return ""
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(signed[dot+1:])
-	if err != nil {
-		return ""
-	}
-
-	mac := hmac.New(sha256.New, []byte(p.config.Cookie.Secret))
-	mac.Write(value)
-	expected := mac.Sum(nil)
-	if subtle.ConstantTimeCompare(signature, expected) != 1 {
-		return ""
-	}
-	return string(value)
-}
-
 func parseCASUser(body []byte) string {
 	decoder := xml.NewDecoder(strings.NewReader(string(body)))
 	inSuccess := false
@@ -467,17 +429,6 @@ func parseCASUser(body []byte) string {
 			}
 		}
 	}
-}
-
-func callbackPath(callbackURI string) string {
-	parsed, err := url.Parse(callbackURI)
-	if err != nil || !parsed.IsAbs() {
-		return callbackURI
-	}
-	if parsed.Path == "" {
-		return "/"
-	}
-	return parsed.Path
 }
 
 func isAbsoluteCallback(callbackURI string) bool {
@@ -522,9 +473,4 @@ func localXMLName(name xml.Name) string {
 		return name.Local
 	}
 	return name.Space
-}
-
-func sha256Hex(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
 }

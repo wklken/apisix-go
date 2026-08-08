@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -413,28 +415,25 @@ func TestSafeRedirectMatrix(t *testing.T) {
 
 func TestSignedStateRoundTripAndTamperMatrix(t *testing.T) {
 	p := newTestPlugin(t, Config{Cookie: CookieConfig{Secret: "0123456789abcdef0123456789abcdef"}})
-	signed, err := p.signValue("/foo?bar=baz")
-	if err != nil {
-		t.Fatalf("signValue() error = %v", err)
-	}
-	if got := p.verifyValue(signed); got != "/foo?bar=baz" {
-		t.Fatalf("verifyValue(roundtrip) = %q", got)
+	signed := base.SignRawSessionValue([]byte("/foo?bar=baz"), p.config.Cookie.Secret)
+	decoded, ok := base.VerifyRawSessionValue(signed, p.config.Cookie.Secret, nil)
+	if !ok || string(decoded) != "/foo?bar=baz" {
+		t.Fatalf("raw session roundtrip = %q, %t; want /foo?bar=baz, true", decoded, ok)
 	}
 
 	tampered := signed[:len(signed)-1] + "A"
 	if tampered == signed {
 		tampered = signed[:len(signed)-1] + "B"
 	}
-	if got := p.verifyValue(tampered); got != "" {
-		t.Fatalf("verifyValue(tampered) = %q, want empty", got)
+	if _, ok := base.VerifyRawSessionValue(tampered, p.config.Cookie.Secret, nil); ok {
+		t.Fatal("VerifyRawSessionValue(tampered) = true, want false")
 	}
-	wrongSecret := newTestPlugin(t, Config{Cookie: CookieConfig{Secret: strings.Repeat("X", 32)}})
-	if got := wrongSecret.verifyValue(signed); got != "" {
-		t.Fatalf("verifyValue(wrong secret) = %q, want empty", got)
+	if _, ok := base.VerifyRawSessionValue(signed, strings.Repeat("X", 32), nil); ok {
+		t.Fatal("VerifyRawSessionValue(wrong secret) = true, want false")
 	}
 	for _, malformed := range []string{"", "no-dot-here", "abc.def"} {
-		if got := p.verifyValue(malformed); got != "" {
-			t.Fatalf("verifyValue(%q) = %q, want empty", malformed, got)
+		if _, ok := base.VerifyRawSessionValue(malformed, p.config.Cookie.Secret, nil); ok {
+			t.Fatalf("VerifyRawSessionValue(%q) = true, want false", malformed)
 		}
 	}
 }
@@ -449,8 +448,8 @@ func TestCallbackPathMatrix(t *testing.T) {
 		"https://app.example.com/cb#fragment":  "/cb",
 	}
 	for callback, want := range tests {
-		if got := callbackPath(callback); got != want {
-			t.Errorf("callbackPath(%q) = %q, want %q", callback, got, want)
+		if got := base.CallbackPath(callback); got != want {
+			t.Errorf("base.CallbackPath(%q) = %q, want %q", callback, got, want)
 		}
 	}
 }

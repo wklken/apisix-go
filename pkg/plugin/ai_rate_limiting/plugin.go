@@ -3,6 +3,7 @@ package ai_rate_limiting
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -443,7 +444,8 @@ func (p *Plugin) refreshConfigIdentity() {
 		p.configIdentity = ""
 		return
 	}
-	p.configIdentity = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	sum := sha256.Sum256(encoded)
+	p.configIdentity = hex.EncodeToString(sum[:])
 }
 
 func (p *Plugin) Stop() {

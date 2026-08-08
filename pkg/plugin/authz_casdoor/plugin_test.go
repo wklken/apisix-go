@@ -2,7 +2,6 @@ package authz_casdoor
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,58 +9,15 @@ import (
 	"testing"
 )
 
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
-
-func TestRandomStateReturnsErrorForFailingReader(t *testing.T) {
-	state, err := randomState(failingReader{})
-	if err == nil {
-		t.Fatal("randomState() error = nil, want failure")
-	}
-	if state != "" {
-		t.Fatalf("randomState() = %q, want empty state on failure", state)
-	}
-	if !strings.Contains(err.Error(), "random unavailable") {
-		t.Fatalf("randomState() error = %v, want failing reader wrapped", err)
-	}
-}
-
-func TestAuthorizeFailsClosedWhenRandomUnavailable(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		EndpointAddr: "https://door.example.com",
-		ClientID:     "client-a",
-		ClientSecret: "secret-a",
-		CallbackURL:  "https://gateway.example.com/callback",
-	})
-	p.newState = func() (string, error) { return "", errors.New("random unavailable") }
-
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rr.Code)
-	}
-	if location := rr.Header().Get("Location"); location != "" {
-		t.Fatalf("Location = %q, want no redirect when randomness fails", location)
-	}
-	if cookie := findSessionCookie(rr.Result().Cookies()); cookie != nil {
-		t.Fatalf("session cookie set despite randomness failure: %#v", cookie)
-	}
-}
-
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.newState = func() (string, error) { return "state-1", nil }
+	p.newState = func() string { return "state-1" }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	p.newState = func() (string, error) { return "state-1", nil }
+	p.newState = func() string { return "state-1" }
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}

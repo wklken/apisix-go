@@ -2,11 +2,9 @@ package authz_casdoor
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,7 +24,7 @@ type Plugin struct {
 	client   *http.Client
 	sessions map[string]sessionData
 	mu       sync.Mutex
-	newState func() (string, error)
+	newState func() string
 }
 
 const (
@@ -93,7 +91,7 @@ func (p *Plugin) PostInit() error {
 		p.sessions = make(map[string]sessionData)
 	}
 	if p.newState == nil {
-		p.newState = func() (string, error) { return randomState(rand.Reader) }
+		p.newState = randomState
 	}
 
 	return nil
@@ -105,7 +103,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == callbackPath(p.config.CallbackURL) {
+		if r.URL.Path == base.CallbackPath(p.config.CallbackURL) {
 			p.handleCallback(w, r)
 			return
 		}
@@ -164,24 +162,8 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
-	sessionID, err := randomState(rand.Reader)
-	if err != nil {
-		http.Error(
-			w,
-			util.BuildMessageResponse("failed to generate authorization state"),
-			http.StatusInternalServerError,
-		)
-		return
-	}
-	state, err := p.newState()
-	if err != nil {
-		http.Error(
-			w,
-			util.BuildMessageResponse("failed to generate authorization state"),
-			http.StatusInternalServerError,
-		)
-		return
-	}
+	sessionID := randomState()
+	state := p.newState()
 	p.saveSession(sessionID, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
@@ -282,18 +264,7 @@ func (p *Plugin) setSessionCookie(w http.ResponseWriter, sessionID string, lifet
 }
 
 func (p *Plugin) cookieName() string {
-	return "authz_casdoor_session_" + sha256Hex(p.config.ClientID)
-}
-
-func callbackPath(callbackURL string) string {
-	parsed, err := url.Parse(callbackURL)
-	if err != nil || !parsed.IsAbs() {
-		return callbackURL
-	}
-	if parsed.Path == "" {
-		return "/"
-	}
-	return parsed.Path
+	return "authz_casdoor_session_" + base.Sha256Hex(p.config.ClientID)
 }
 
 func cookieValue(r *http.Request, name string) string {
@@ -304,15 +275,10 @@ func cookieValue(r *http.Request, name string) string {
 	return cookie.Value
 }
 
-func sha256Hex(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
-func randomState(reader io.Reader) (string, error) {
+func randomState() string {
 	raw := make([]byte, 16)
-	if _, err := io.ReadFull(reader, raw); err != nil {
-		return "", fmt.Errorf("generate authorization state: %w", err)
+	if _, err := rand.Read(raw); err != nil {
+		return hex.EncodeToString([]byte(time.Now().String()))
 	}
-	return hex.EncodeToString(raw), nil
+	return hex.EncodeToString(raw)
 }

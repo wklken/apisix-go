@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,6 +247,131 @@ func TestDiskLookupRemovesExpiredEntry(t *testing.T) {
 	}
 	if _, err := os.Stat(entryPath); !os.IsNotExist(err) {
 		t.Fatalf("expired entry stat error = %v, want file removed", err)
+	}
+}
+
+func TestForgetDiskEntryTracksReplacedEntry(t *testing.T) {
+	p := &Plugin{
+		entries:       map[string]cacheEntry{},
+		diskEntryKeys: map[string]string{},
+		diskRoot:      t.TempDir(),
+		lock:          &sync.RWMutex{},
+	}
+	key := "replace-key"
+	first := cacheEntry{status: http.StatusOK, storedAt: time.Now(), expiresAt: time.Now().Add(time.Hour)}
+	if err := p.persistEntry(key, first); err != nil {
+		t.Fatalf("persist first entry: %v", err)
+	}
+	p.entries[key] = first
+	second := cacheEntry{status: http.StatusCreated, storedAt: time.Now(), expiresAt: time.Now().Add(2 * time.Hour)}
+	if err := p.persistEntry(key, second); err != nil {
+		t.Fatalf("persist replacement entry: %v", err)
+	}
+	p.entries[key] = second
+
+	path := p.entryPath(key)
+	p.forgetDiskEntryLocked(path)
+	if _, ok := p.entries[key]; ok {
+		t.Fatal("replaced entry was not forgotten")
+	}
+	if _, ok := p.diskEntryKeys[path]; ok {
+		t.Fatal("disk entry key index was not cleared on forget")
+	}
+}
+
+func TestDiskPurgeClearsDiskEntryIndex(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "disk-purge-idx", DiskPath: root}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-purge-idx", CacheTTL: 60})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("response"))
+	}))
+	_ = performRequest(t, handler, http.MethodGet, "/purge-idx", nil)
+	if len(p.diskEntryKeys) == 0 {
+		t.Fatal("disk entry index is empty after storing response")
+	}
+	purge := performRequest(t, handler, purgeMethod, "/purge-idx", nil)
+	if purge.Code != http.StatusOK {
+		t.Fatalf("PURGE status = %d, want 200", purge.Code)
+	}
+	if len(p.diskEntryKeys) != 0 {
+		t.Fatalf("disk entry index entries after PURGE = %d, want 0", len(p.diskEntryKeys))
+	}
+}
+
+func TestDiskLookupExpiredClearsDiskEntryIndex(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "disk-expired-idx", DiskPath: root}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-expired-idx", CacheTTL: 60})
+	req := httptest.NewRequest(http.MethodGet, "/expired-idx", nil)
+	key := p.cacheKey(req)
+	path := p.entryPath(key)
+	if err := p.persistEntry(key, cacheEntry{
+		header:    make(http.Header),
+		body:      []byte("expired"),
+		status:    http.StatusOK,
+		storedAt:  time.Now().Add(-2 * time.Minute),
+		ttl:       time.Minute,
+		expiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("persist expired entry: %v", err)
+	}
+	if _, ok := p.diskEntryKeys[path]; !ok {
+		t.Fatal("disk entry index missing after persist")
+	}
+	if _, status := p.lookup(req, key); status != "EXPIRED" {
+		t.Fatalf("lookup status = %q, want EXPIRED", status)
+	}
+	if _, ok := p.diskEntryKeys[path]; ok {
+		t.Fatal("disk entry index not cleared on expiry")
+	}
+}
+
+func TestConcurrentDiskForgetKeepsIndexConsistent(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "disk-race", DiskPath: root, DiskSize: "2K"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "disk", CacheZone: "disk-race", CacheTTL: 60})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 2048)))
+	}))
+
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := range 30 {
+				req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/race-%d-%d", worker, j), nil)
+				handler.ServeHTTP(httptest.NewRecorder(), req)
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	for path, key := range p.diskEntryKeys {
+		if _, ok := p.entries[key]; !ok {
+			t.Fatalf("index path %q -> key %q has no matching in-memory entry", path, key)
+		}
+		if p.entryPath(key) != path {
+			t.Fatalf("index path %q -> key %q path mismatch", path, key)
+		}
 	}
 }
 

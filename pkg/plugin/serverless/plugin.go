@@ -11,6 +11,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/luautil"
 	lua "github.com/yuin/gopher-lua"
 	lua_parse "github.com/yuin/gopher-lua/parse"
 )
@@ -319,7 +320,7 @@ func (r *luaRunner) persistContext() {
 	if externalUser == lua.LNil {
 		return
 	}
-	apisixctx.RegisterApisixVar(r.req, "$external_user", luaValueToGo(externalUser))
+	apisixctx.RegisterApisixVar(r.req, "$external_user", luautil.LuaValueToGo(externalUser))
 }
 
 func (r *luaRunner) registerNgx() {
@@ -412,11 +413,11 @@ func (r *luaRunner) registerCJSON() {
 				l.RaiseError("%s", err.Error())
 				return 0
 			}
-			l.Push(goValueToLua(l, v))
+			l.Push(luautil.GoValueToLua(l, v))
 			return 1
 		}))
 		mod.RawSetString("encode", l.NewFunction(func(l *lua.LState) int {
-			data, err := json.Marshal(luaValueToGo(l.Get(1)))
+			data, err := json.Marshal(luautil.LuaValueToGo(l.Get(1)))
 			if err != nil {
 				l.RaiseError("%s", err.Error())
 				return 0
@@ -484,7 +485,7 @@ func (r *luaRunner) collect() luaResult {
 		result.status = status
 	}
 	if header, ok := ngx.RawGetString("header").(*lua.LTable); ok {
-		result.header = luaTableToHeader(header)
+		result.header = luautil.LuaTableToHeader(header)
 	}
 	if arg, ok := ngx.RawGetString("arg").(*lua.LTable); ok {
 		body := luaValueToString(arg.RawGetInt(1))
@@ -554,7 +555,7 @@ func luaValueToStatus(value lua.LValue) (int, bool) {
 
 func luaValueToBody(value lua.LValue) []byte {
 	if value.Type() == lua.LTTable {
-		data, err := json.Marshal(luaValueToGo(value))
+		data, err := json.Marshal(luautil.LuaValueToGo(value))
 		if err == nil {
 			return data
 		}
@@ -586,84 +587,6 @@ func stringSliceToLuaTable(l *lua.LState, values []string) *lua.LTable {
 		t.RawSetInt(i+1, lua.LString(value))
 	}
 	return t
-}
-
-func luaTableToHeader(t *lua.LTable) http.Header {
-	header := http.Header{}
-	t.ForEach(func(key lua.LValue, value lua.LValue) {
-		field := luaValueToString(key)
-		if field == "" {
-			return
-		}
-		if value.Type() == lua.LTTable {
-			value.(*lua.LTable).ForEach(func(_ lua.LValue, item lua.LValue) {
-				header.Add(field, luaValueToString(item))
-			})
-			return
-		}
-		header.Set(field, luaValueToString(value))
-	})
-	return header
-}
-
-func goValueToLua(l *lua.LState, value any) lua.LValue {
-	switch v := value.(type) {
-	case nil:
-		return lua.LNil
-	case map[string]any:
-		t := l.NewTable()
-		for key, item := range v {
-			t.RawSetString(key, goValueToLua(l, item))
-		}
-		return t
-	case []any:
-		t := l.NewTable()
-		for i, item := range v {
-			t.RawSetInt(i+1, goValueToLua(l, item))
-		}
-		return t
-	case string:
-		return lua.LString(v)
-	case float64:
-		return lua.LNumber(v)
-	case bool:
-		return lua.LBool(v)
-	default:
-		return lua.LString(fmt.Sprint(v))
-	}
-}
-
-func luaValueToGo(value lua.LValue) any {
-	switch v := value.(type) {
-	case lua.LString:
-		return string(v)
-	case lua.LNumber:
-		return float64(v)
-	case lua.LBool:
-		return bool(v)
-	case *lua.LTable:
-		return luaTableToGo(v)
-	case *lua.LNilType:
-		return nil
-	default:
-		return value.String()
-	}
-}
-
-func luaTableToGo(t *lua.LTable) any {
-	if isArrayTable(t) {
-		values := make([]any, 0, t.Len())
-		for i := 1; i <= t.Len(); i++ {
-			values = append(values, luaValueToGo(t.RawGetInt(i)))
-		}
-		return values
-	}
-
-	values := map[string]any{}
-	t.ForEach(func(key lua.LValue, value lua.LValue) {
-		values[luaValueToString(key)] = luaValueToGo(value)
-	})
-	return values
 }
 
 func isArrayTable(t *lua.LTable) bool {

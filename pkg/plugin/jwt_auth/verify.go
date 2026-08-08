@@ -2,10 +2,11 @@ package jwt_auth
 
 import (
 	"fmt"
-	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"strings"
 	"time"
+
+	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func verifyToken(

@@ -3,12 +3,6 @@ package rocketmq_logger
 import (
 	"context"
 	"fmt"
-	"github.com/felixge/httpsnoop"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
-	"github.com/wklken/apisix-go/pkg/logger"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"net"
 	"net/http"
 	"regexp"
@@ -16,6 +10,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/felixge/httpsnoop"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
 type Plugin struct {

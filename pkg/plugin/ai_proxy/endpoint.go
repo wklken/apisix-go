@@ -2,8 +2,9 @@ package ai_proxy
 
 import (
 	"fmt"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"net/url"
+
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 func (p *Plugin) endpoint(protocol ai_protocols.Protocol, body []byte) (string, error) {

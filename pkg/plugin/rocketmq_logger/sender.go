@@ -3,10 +3,11 @@ package rocketmq_logger
 import (
 	"context"
 	"fmt"
+	"time"
+
 	rocketmq "github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 	"github.com/apache/rocketmq-client-go/v2/producer"
-	"time"
 )
 
 type rocketmqMessage struct {

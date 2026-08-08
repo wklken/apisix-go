@@ -2,8 +2,6 @@ package ai_proxy_multi
 
 import (
 	"fmt"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"hash/fnv"
 	"net"
 	"net/http"
@@ -11,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
 func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {

@@ -2,10 +2,11 @@ package ai_proxy_multi
 
 import (
 	"fmt"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"net/http"
 	"strconv"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func registerUpstreamTargetVars(r *http.Request, upstream *http.Request) {

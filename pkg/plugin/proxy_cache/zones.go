@@ -4,15 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 )
 
 type cacheEntry struct {

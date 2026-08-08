@@ -398,17 +398,49 @@ func TestExprMatchedTruthTable(t *testing.T) {
 		{name: "regex positive mismatch", expressions: []any{[]any{"$http_x_trace_id", "~", "^xyz"}}, want: false},
 		{name: "regex negation match", expressions: []any{[]any{"$http_x_trace_id", "!~", "^xyz"}}, want: true},
 		{name: "regex negation mismatch", expressions: []any{[]any{"$http_x_trace_id", "!~", "^abc"}}, want: false},
-		{name: "unknown flat operator", expressions: []any{[]any{"$arg_id", "==", "42"}, "XOR", []any{"$uri", "==", "/"}}, want: false},
-		{name: "unknown nested operator", expressions: [][]any{{"$arg_id", "==", "42"}, {"XOR"}, {"$uri", "==", "/"}}, want: false},
+		{
+			name:        "unknown flat operator",
+			expressions: []any{[]any{"$arg_id", "==", "42"}, "XOR", []any{"$uri", "==", "/"}},
+			want:        false,
+		},
+		{
+			name:        "unknown nested operator",
+			expressions: [][]any{{"$arg_id", "==", "42"}, {"XOR"}, {"$uri", "==", "/"}},
+			want:        false,
+		},
 		{name: "malformed condition", expressions: []any{"$uri"}, want: false},
-		{name: "or combines alternatives", expressions: []any{[]any{"$arg_id", "==", "7"}, "OR", []any{"$arg_id", "==", "42"}}, want: true},
-		{name: "and requires both", expressions: []any{[]any{"$arg_id", "==", "42"}, "AND", []any{"$uri", "==", "/missing"}}, want: false},
-		{name: "leading operator before first operand", expressions: []any{"OR", []any{"$arg_id", "==", "42"}}, want: true},
-		{name: "chained or resets to and", expressions: []any{[]any{"$arg_id", "==", "42"}, "OR", []any{"$arg_id", "==", "7"}, "AND", []any{"$uri", "==", "/items"}}, want: true},
+		{
+			name:        "or combines alternatives",
+			expressions: []any{[]any{"$arg_id", "==", "7"}, "OR", []any{"$arg_id", "==", "42"}},
+			want:        true,
+		},
+		{
+			name:        "and requires both",
+			expressions: []any{[]any{"$arg_id", "==", "42"}, "AND", []any{"$uri", "==", "/missing"}},
+			want:        false,
+		},
+		{
+			name:        "leading operator before first operand",
+			expressions: []any{"OR", []any{"$arg_id", "==", "42"}},
+			want:        true,
+		},
+		{
+			name: "chained or resets to and",
+			expressions: []any{
+				[]any{"$arg_id", "==", "42"},
+				"OR",
+				[]any{"$arg_id", "==", "7"},
+				"AND",
+				[]any{"$uri", "==", "/items"},
+			},
+			want: true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			PrepareExprRegexps(test.expressions)
+			if err := PrepareExprRegexps(test.expressions); err != nil {
+				t.Fatalf("PrepareExprRegexps() error = %v", err)
+			}
 			if got := ExprMatched(r, test.expressions, 0); got != test.want {
 				t.Fatalf("ExprMatched() = %t, want %t", got, test.want)
 			}

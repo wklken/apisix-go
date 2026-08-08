@@ -4,14 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 )
 
 func (p *Plugin) startDiskCleanup() {

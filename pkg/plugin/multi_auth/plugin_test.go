@@ -581,7 +581,11 @@ func TestProbeWriterMatchesAppendFailureTruncation(t *testing.T) {
 	appendFailureDiagnostic(&buffer, message)
 
 	if writer.body.String() != buffer.String() {
-		t.Fatalf("probe writer diagnostic = %q, append diagnostic = %q, want identical bounded output", writer.body.String(), buffer.String())
+		t.Fatalf(
+			"probe writer diagnostic = %q, append diagnostic = %q, want identical bounded output",
+			writer.body.String(),
+			buffer.String(),
+		)
 	}
 }
 

@@ -3,7 +3,6 @@ package ai_request_rewrite
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -439,13 +439,7 @@ func appendProviderPath(endpoint string, providerPath string) (string, error) {
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
-	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
-	if p.config.Keepalive != nil && !*p.config.Keepalive {
-		transport.DisableKeepAlives = true
-	}
-	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
+	ai_common.ApplyTransportKeepalive(transport, p.config.KeepalivePool, p.config.KeepaliveTimeout, p.config.Keepalive)
+	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

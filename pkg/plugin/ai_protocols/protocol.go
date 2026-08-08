@@ -3,7 +3,6 @@ package ai_protocols
 import (
 	"fmt"
 	"maps"
-	"math"
 	"strings"
 
 	"github.com/gofrs/uuid"
@@ -486,20 +485,20 @@ func ExtractResponseMetadataDocument(protocol Protocol, document Document) Respo
 	usage, _ := document.Raw["usage"].(map[string]any)
 	switch protocol {
 	case OpenAIResponses:
-		metadata.PromptTokens = numericUsage(usage["input_tokens"])
-		metadata.CompletionTokens = numericUsage(usage["output_tokens"])
+		metadata.PromptTokens = NumericUsage(usage["input_tokens"], true)
+		metadata.CompletionTokens = NumericUsage(usage["output_tokens"], true)
 	case OpenAIEmbeddings:
-		metadata.PromptTokens = numericUsage(usage["prompt_tokens"])
+		metadata.PromptTokens = NumericUsage(usage["prompt_tokens"], true)
 		metadata.CompletionTokens = 0
 	case AnthropicMessages:
-		metadata.PromptTokens = numericUsage(usage["input_tokens"])
-		metadata.CompletionTokens = numericUsage(usage["output_tokens"])
+		metadata.PromptTokens = NumericUsage(usage["input_tokens"], true)
+		metadata.CompletionTokens = NumericUsage(usage["output_tokens"], true)
 	case BedrockConverse:
-		metadata.PromptTokens = numericUsage(usage["inputTokens"])
-		metadata.CompletionTokens = numericUsage(usage["outputTokens"])
+		metadata.PromptTokens = NumericUsage(usage["inputTokens"], true)
+		metadata.CompletionTokens = NumericUsage(usage["outputTokens"], true)
 	default:
-		metadata.PromptTokens = numericUsage(usage["prompt_tokens"])
-		metadata.CompletionTokens = numericUsage(usage["completion_tokens"])
+		metadata.PromptTokens = NumericUsage(usage["prompt_tokens"], true)
+		metadata.CompletionTokens = NumericUsage(usage["completion_tokens"], true)
 	}
 	return metadata
 }
@@ -512,7 +511,7 @@ func chatMessages(body map[string]any) []Message {
 			continue
 		}
 		if content := textContent(message["content"], true); content != "" {
-			messages = append(messages, Message{Role: stringValue(message["role"]), Content: content})
+			messages = append(messages, Message{Role: StringValue(message["role"]), Content: content})
 		}
 	}
 	return messages
@@ -532,11 +531,11 @@ func responseMessages(body map[string]any) []Message {
 			case string:
 				messages = append(messages, Message{Role: "user", Content: typed})
 			case map[string]any:
-				role := stringValue(typed["role"])
+				role := StringValue(typed["role"])
 				if role == "" {
 					role = "user"
 				}
-				if content := stringValue(firstNonNil(typed["content"], typed["text"])); content != "" {
+				if content := StringValue(firstNonNil(typed["content"], typed["text"])); content != "" {
 					messages = append(messages, Message{Role: role, Content: content})
 				}
 			}
@@ -556,7 +555,7 @@ func anthropicMessages(body map[string]any) []Message {
 			continue
 		}
 		if content := textContent(message["content"], true); content != "" {
-			messages = append(messages, Message{Role: stringValue(message["role"]), Content: content})
+			messages = append(messages, Message{Role: StringValue(message["role"]), Content: content})
 		}
 	}
 	return messages
@@ -573,7 +572,7 @@ func bedrockMessages(body map[string]any) []Message {
 			continue
 		}
 		if content := textContent(message["content"], false); content != "" {
-			messages = append(messages, Message{Role: stringValue(message["role"]), Content: content})
+			messages = append(messages, Message{Role: StringValue(message["role"]), Content: content})
 		}
 	}
 	return messages
@@ -674,11 +673,6 @@ func joinMessageContent(messages []Message) string {
 	}), "\n")
 }
 
-func stringValue(value any) string {
-	result, _ := value.(string)
-	return result
-}
-
 func firstNonNil(values ...any) any {
 	for _, value := range values {
 		if value != nil {
@@ -694,17 +688,4 @@ func responseID() string {
 		return ""
 	}
 	return value.String()
-}
-
-func numericUsage(value any) int64 {
-	switch typed := value.(type) {
-	case float64:
-		return int64(math.Round(typed))
-	case int64:
-		return typed
-	case int:
-		return int64(typed)
-	default:
-		return -1
-	}
 }

@@ -19,6 +19,21 @@ type Usage struct {
 	CompletionTokens int64
 	ToolCalls        int64
 	HasToolCalls     bool
+
+	textBuilder strings.Builder
+}
+
+// AppendText accumulates chunk text into Text without re-copying the
+// accumulated prefix on every chunk.
+func (u *Usage) AppendText(text string) {
+	if text == "" {
+		return
+	}
+	if u.textBuilder.Len() == 0 && u.Text != "" {
+		u.textBuilder.WriteString(u.Text)
+	}
+	u.textBuilder.WriteString(text)
+	u.Text = u.textBuilder.String()
 }
 
 func ForwardSSE(
@@ -53,10 +68,10 @@ func ForwardSSE(
 		}
 	}
 	if usage.PromptTokens < 0 {
-		usage.PromptTokens = numericUsage(usage.Raw["prompt_tokens"])
+		usage.PromptTokens = ai_protocols.NumericUsage(usage.Raw["prompt_tokens"], false)
 	}
 	if usage.CompletionTokens < 0 {
-		usage.CompletionTokens = numericUsage(usage.Raw["completion_tokens"])
+		usage.CompletionTokens = ai_protocols.NumericUsage(usage.Raw["completion_tokens"], false)
 	}
 	return usage, nil
 }
@@ -77,7 +92,7 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 	if model, ok := event["model"].(string); ok {
 		usage.Model = model
 	}
-	usage.Text += ai_protocols.ExtractStreamEventText(protocol, event)
+	usage.AppendText(ai_protocols.ExtractStreamEventText(protocol, event))
 	switch protocol {
 	case ai_protocols.OpenAIResponses:
 		response, _ := event["response"].(map[string]any)
@@ -141,12 +156,12 @@ func mergeOpenAIUsage(usage *Usage, value any, responses bool) {
 		}
 	}
 	if responses {
-		usage.PromptTokens = numericUsage(raw["input_tokens"])
-		usage.CompletionTokens = numericUsage(raw["output_tokens"])
+		usage.PromptTokens = ai_protocols.NumericUsage(raw["input_tokens"], false)
+		usage.CompletionTokens = ai_protocols.NumericUsage(raw["output_tokens"], false)
 		return
 	}
-	usage.PromptTokens = numericUsage(raw["prompt_tokens"])
-	usage.CompletionTokens = numericUsage(raw["completion_tokens"])
+	usage.PromptTokens = ai_protocols.NumericUsage(raw["prompt_tokens"], false)
+	usage.CompletionTokens = ai_protocols.NumericUsage(raw["completion_tokens"], false)
 }
 
 func mergeAnthropicUsage(usage *Usage, value any) {
@@ -155,31 +170,18 @@ func mergeAnthropicUsage(usage *Usage, value any) {
 		return
 	}
 	mergeRaw(usage.Raw, raw)
-	if value := numericUsage(raw["input_tokens"]); value >= 0 {
+	if value := ai_protocols.NumericUsage(raw["input_tokens"], false); value >= 0 {
 		usage.PromptTokens = value
 	}
-	if value := numericUsage(raw["output_tokens"]); value >= 0 {
+	if value := ai_protocols.NumericUsage(raw["output_tokens"], false); value >= 0 {
 		usage.CompletionTokens = value
 	}
 }
 
 func mergeRaw(dst map[string]any, src map[string]any) {
 	for key, value := range src {
-		if numericUsage(value) >= 0 {
+		if ai_protocols.NumericUsage(value, false) >= 0 {
 			dst[key] = value
 		}
-	}
-}
-
-func numericUsage(value any) int64 {
-	switch typed := value.(type) {
-	case float64:
-		return int64(typed)
-	case int64:
-		return typed
-	case int:
-		return int64(typed)
-	default:
-		return -1
 	}
 }

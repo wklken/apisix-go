@@ -2,12 +2,8 @@
 package ai_common
 
 import (
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
-
-	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 // CloneJSONValue deep-clones a JSON-decoded value.
@@ -64,43 +60,6 @@ func CopyForwardHeaders(dst, src http.Header) {
 			dst.Add(field, value)
 		}
 	}
-}
-
-// AppendProtocolEndpoint appends the protocol-specific path to an
-// OpenAI-compatible endpoint.
-func AppendProtocolEndpoint(endpoint string, protocol ai_protocols.Protocol) (string, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse OpenAI-compatible endpoint: %w", err)
-	}
-	switch strings.TrimRight(parsed.Path, "/") {
-	case "", "/v1":
-		parsed.Path = protocol.Endpoint
-	default:
-		return endpoint, nil
-	}
-	return parsed.String(), nil
-}
-
-// AppendBedrockEndpoint appends the model path to a Bedrock endpoint.
-func AppendBedrockEndpoint(endpoint string, model string, streaming bool) (string, error) {
-	if model == "" {
-		return "", fmt.Errorf("bedrock requires options.model or request body model")
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse Bedrock endpoint: %w", err)
-	}
-	if parsed.Path != "" && parsed.Path != "/" {
-		return endpoint, nil
-	}
-	suffix := "/converse"
-	if streaming {
-		suffix = "/converse-stream"
-	}
-	parsed.Path = "/model/" + model + suffix
-	parsed.RawPath = "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + suffix
-	return parsed.String(), nil
 }
 
 // ProviderUsesOpenAIChat reports whether the provider speaks the OpenAI chat

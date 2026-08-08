@@ -11,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 var ErrNoStreamOutput = errors.New("streaming response completed without producing any output")
@@ -116,8 +117,8 @@ func (s *anthropicStreamState) convertChunk(
 		s.mergeUsage(usage)
 	}
 	if streamError, ok := chunk["error"].(map[string]any); ok {
-		errorType := stringValue(streamError["type"])
-		message := stringValue(streamError["message"])
+		errorType := ai_protocols.StringValue(streamError["type"])
+		message := ai_protocols.StringValue(streamError["message"])
 		logger.Warnf("Anthropic SSE error: type=%s, message=%s", errorType, message)
 		s.done = true
 		return []anthropicSSEEvent{newAnthropicSSEEvent("error", map[string]any{
@@ -138,7 +139,7 @@ func (s *anthropicStreamState) convertChunk(
 	events := make([]anthropicSSEEvent, 0)
 	if !s.started {
 		s.started = true
-		s.usage.Model = stringValue(chunk["model"])
+		s.usage.Model = ai_protocols.StringValue(chunk["model"])
 		events = append(events, newAnthropicSSEEvent("message_start", map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
@@ -148,7 +149,9 @@ func (s *anthropicStreamState) convertChunk(
 		}))
 	}
 	delta, _ := choice["delta"].(map[string]any)
-	if reasoning := stringValue(firstValue(delta["reasoning_content"], delta["reasoning"])); reasoning != "" {
+	if reasoning := ai_protocols.StringValue(
+		firstValue(delta["reasoning_content"], delta["reasoning"]),
+	); reasoning != "" {
 		events = append(events, s.ensureBlock("thinking", map[string]any{
 			"type": "thinking", "thinking": "",
 		})...)
@@ -157,8 +160,8 @@ func (s *anthropicStreamState) convertChunk(
 			"delta": map[string]any{"type": "thinking_delta", "thinking": reasoning},
 		}))
 	}
-	if text := stringValue(delta["content"]); text != "" {
-		s.usage.Text += text
+	if text := ai_protocols.StringValue(delta["content"]); text != "" {
+		s.usage.AppendText(text)
 		events = append(events, s.ensureBlock("text", map[string]any{"type": "text", "text": ""})...)
 		events = append(events, newAnthropicSSEEvent("content_block_delta", map[string]any{
 			"type": "content_block_delta", "index": s.currentBlock,
@@ -179,18 +182,21 @@ func (s *anthropicStreamState) convertChunk(
 			s.currentBlock = contentIndex
 			s.hasCurrentBlock = true
 			s.currentBlockType = "tool_use"
-			name := stringValue(function["name"])
+			name := ai_protocols.StringValue(function["name"])
 			if original := toolNameMap[name]; original != "" {
 				name = original
 			}
 			events = append(events, newAnthropicSSEEvent("content_block_start", map[string]any{
 				"type": "content_block_start", "index": contentIndex,
 				"content_block": map[string]any{
-					"type": "tool_use", "id": stringValue(toolCall["id"]), "name": name, "input": map[string]any{},
+					"type":  "tool_use",
+					"id":    ai_protocols.StringValue(toolCall["id"]),
+					"name":  name,
+					"input": map[string]any{},
 				},
 			}))
 		}
-		if arguments := stringValue(function["arguments"]); arguments != "" {
+		if arguments := ai_protocols.StringValue(function["arguments"]); arguments != "" {
 			events = append(events, newAnthropicSSEEvent("content_block_delta", map[string]any{
 				"type": "content_block_delta", "index": contentIndex,
 				"delta": map[string]any{"type": "input_json_delta", "partial_json": arguments},
@@ -269,9 +275,9 @@ func (s *anthropicStreamState) flushPendingStop() []anthropicSSEEvent {
 
 func (s *anthropicStreamState) mergeUsage(raw map[string]any) {
 	maps.Copy(s.usage.Raw, raw)
-	s.usage.PromptTokens = numericUsage(raw["prompt_tokens"])
-	s.usage.CompletionTokens = numericUsage(raw["completion_tokens"])
-	if model := stringValue(raw["model"]); model != "" {
+	s.usage.PromptTokens = ai_protocols.NumericUsage(raw["prompt_tokens"], false)
+	s.usage.CompletionTokens = ai_protocols.NumericUsage(raw["completion_tokens"], false)
+	if model := ai_protocols.StringValue(raw["model"]); model != "" {
 		s.usage.Model = model
 	}
 }
@@ -281,12 +287,12 @@ func (s *anthropicStreamState) anthropicUsage() map[string]any {
 	completion := max(s.usage.CompletionTokens, 0)
 	usage := map[string]any{"input_tokens": prompt, "output_tokens": completion}
 	if details, ok := s.usage.Raw["prompt_tokens_details"].(map[string]any); ok {
-		cached := numericUsage(details["cached_tokens"])
+		cached := ai_protocols.NumericUsage(details["cached_tokens"], false)
 		if cached > 0 {
 			usage["input_tokens"] = maxInt64(0, prompt-cached)
 			usage["cache_read_input_tokens"] = cached
 		}
-		if created := numericUsage(details["cache_creation_input_tokens"]); created >= 0 {
+		if created := ai_protocols.NumericUsage(details["cache_creation_input_tokens"], false); created >= 0 {
 			usage["cache_creation_input_tokens"] = created
 		}
 	}
@@ -323,7 +329,7 @@ func anthropicFinishReason(reason string) string {
 }
 
 func normalizeFinishReason(value any) string {
-	reason := strings.TrimSpace(stringValue(value))
+	reason := strings.TrimSpace(ai_protocols.StringValue(value))
 	if reason == "null" {
 		return ""
 	}
@@ -344,13 +350,8 @@ func asSlice(value any) []any {
 	return values
 }
 
-func stringValue(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
 func numericValue(value any) int64 {
-	if parsed := numericUsage(value); parsed >= 0 {
+	if parsed := ai_protocols.NumericUsage(value, false); parsed >= 0 {
 		return parsed
 	}
 	return 0

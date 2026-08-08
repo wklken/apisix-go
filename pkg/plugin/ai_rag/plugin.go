@@ -2,12 +2,12 @@ package ai_rag
 
 import (
 	"bytes"
-	"crypto/tls"
 	"io"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -298,8 +298,6 @@ func writePlainResponse(w http.ResponseWriter, status int, body string) {
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
+	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

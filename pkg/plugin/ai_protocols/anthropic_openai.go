@@ -122,7 +122,7 @@ func ConvertOpenAIChatToAnthropic(body []byte, model string, toolNameMap map[str
 	choice, _ := choices[0].(map[string]any)
 	message, _ := choice["message"].(map[string]any)
 	content := make([]any, 0)
-	if reasoning := stringValue(firstNonNil(message["reasoning_content"], message["reasoning"])); reasoning != "" {
+	if reasoning := StringValue(firstNonNil(message["reasoning_content"], message["reasoning"])); reasoning != "" {
 		content = append(content, map[string]any{
 			"type": "thinking", "thinking": reasoning, "signature": "",
 		})
@@ -149,14 +149,14 @@ func ConvertOpenAIChatToAnthropic(body []byte, model string, toolNameMap map[str
 			}
 		}
 		content = append(content, map[string]any{
-			"type": "tool_use", "id": stringValue(toolCall["id"]), "name": name, "input": input,
+			"type": "tool_use", "id": StringValue(toolCall["id"]), "name": name, "input": input,
 		})
 	}
 	if len(content) == 0 {
 		content = append(content, map[string]any{"type": "text", "text": ""})
 	}
 	if model == "" {
-		model = stringValue(response["model"])
+		model = StringValue(response["model"])
 	}
 	converted := map[string]any{
 		"id":          response["id"],
@@ -164,7 +164,7 @@ func ConvertOpenAIChatToAnthropic(body []byte, model string, toolNameMap map[str
 		"role":        "assistant",
 		"model":       model,
 		"content":     content,
-		"stop_reason": anthropicStopReason(stringValue(choice["finish_reason"])),
+		"stop_reason": anthropicStopReason(StringValue(choice["finish_reason"])),
 		"usage":       anthropicUsage(response["usage"]),
 	}
 	return marshalConvertedAnthropicResponse(converted)
@@ -287,7 +287,7 @@ func convertAnthropicSystem(system any) map[string]any {
 	for _, rawBlock := range blocks {
 		block, _ := rawBlock.(map[string]any)
 		if block["type"] == "text" {
-			content.WriteString(stripAnthropicBillingCCH(stringValue(block["text"])))
+			content.WriteString(stripAnthropicBillingCCH(StringValue(block["text"])))
 		}
 	}
 	if content.Len() == 0 {
@@ -322,7 +322,7 @@ func convertAnthropicTools(value any) ([]any, map[string]string) {
 	used := make(map[string]bool)
 	for _, rawTool := range rawTools {
 		tool, _ := rawTool.(map[string]any)
-		if isAnthropicBuiltinTool(stringValue(tool["type"])) {
+		if isAnthropicBuiltinTool(StringValue(tool["type"])) {
 			continue
 		}
 		original, _ := tool["name"].(string)
@@ -390,7 +390,7 @@ func convertAnthropicToolResult(value any) any {
 	for _, rawBlock := range blocks {
 		block, _ := rawBlock.(map[string]any)
 		if block["type"] == "text" {
-			text := stringValue(block["text"])
+			text := StringValue(block["text"])
 			texts = append(texts, text)
 			parts = append(parts, map[string]any{"type": "text", "text": text})
 		} else if media := convertAnthropicMedia(block); media != nil {
@@ -409,7 +409,7 @@ func textFromOpenAIContentParts(parts []any) string {
 	for _, rawPart := range parts {
 		part, _ := rawPart.(map[string]any)
 		if part["type"] == "text" {
-			text.WriteString(stringValue(part["text"]))
+			text.WriteString(StringValue(part["text"]))
 		}
 	}
 	return text.String()
@@ -433,7 +433,7 @@ func convertAnthropicThinking(dst map[string]any, value any, outputConfig any) {
 	case "adaptive":
 		effort := ""
 		if config, ok := outputConfig.(map[string]any); ok {
-			effort = stringValue(config["effort"])
+			effort = StringValue(config["effort"])
 		}
 		if effort == "" {
 			effort = "medium"
@@ -503,7 +503,7 @@ func normalizeStrictSchema(value any) any {
 	if !ok {
 		return value
 	}
-	if stringValue(object["type"]) != "object" {
+	if StringValue(object["type"]) != "object" {
 		normalized := make(map[string]any, len(object))
 		for key, child := range object {
 			normalized[key] = normalizeStrictSchema(child)
@@ -521,7 +521,7 @@ func normalizeStrictSchema(value any) any {
 			required = append(required, name)
 		}
 		slices.SortFunc(required, func(a, b any) int {
-			return strings.Compare(stringValue(a), stringValue(b))
+			return strings.Compare(StringValue(a), StringValue(b))
 		})
 		normalized["required"] = required
 	} else if _, ok := object["required"]; !ok {
@@ -563,10 +563,10 @@ func convertOpenAIError(value any) map[string]any {
 	message := ""
 	switch typed := value.(type) {
 	case map[string]any:
-		if candidate := stringValue(firstNonNil(typed["type"], typed["code"])); candidate != "" {
+		if candidate := StringValue(firstNonNil(typed["type"], typed["code"])); candidate != "" {
 			errorType = candidate
 		}
-		message = stringValue(typed["message"])
+		message = StringValue(typed["message"])
 	case string:
 		message = typed
 	}

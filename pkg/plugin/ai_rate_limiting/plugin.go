@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -833,7 +834,7 @@ func (p *Plugin) responseTokenCost(body []byte) int64 {
 		return p.expressionCost(decoded.Usage)
 	}
 
-	value := numericUsage(decoded.Usage[p.config.LimitStrategy])
+	value := ai_protocols.NumericUsage(decoded.Usage[p.config.LimitStrategy], true)
 	if value < 0 {
 		return 0
 	}
@@ -847,7 +848,7 @@ func (p *Plugin) responseTokenCostForRequest(r *http.Request, body []byte) int64
 		}
 	}
 	if usage, ok := apisixctx.GetRequestVar(r, "$ai_token_usage").(map[string]any); ok {
-		if value := numericUsage(usage[p.config.LimitStrategy]); value > 0 {
+		if value := ai_protocols.NumericUsage(usage[p.config.LimitStrategy], true); value > 0 {
 			return value
 		}
 	}
@@ -888,19 +889,6 @@ func numericExpressionValue(value any) float64 {
 		return float64(typed)
 	case int64:
 		return float64(typed)
-	default:
-		return 0
-	}
-}
-
-func numericUsage(value any) int64 {
-	switch typed := value.(type) {
-	case float64:
-		return int64(math.Round(typed))
-	case int64:
-		return typed
-	case int:
-		return int64(typed)
 	default:
 		return 0
 	}

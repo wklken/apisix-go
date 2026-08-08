@@ -3,7 +3,6 @@ package ai_proxy_multi
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -970,7 +970,7 @@ func registerUpstreamResponseVars(r *http.Request, status int, elapsed time.Dura
 	if apisixctx.GetRequestVars(r) == nil {
 		return
 	}
-	apisixctx.RegisterRequestVar(r, "$upstream_status", fmt.Sprintf("%d", status))
+	apisixctx.RegisterRequestVar(r, "$upstream_status", strconv.Itoa(status))
 	registerUpstreamResponseTime(r, elapsed)
 	apisixctx.RegisterRequestVar(r, "$upstream_response_length", responseLength)
 }
@@ -995,7 +995,7 @@ func (p *Plugin) prepareInstanceRequest(
 		clientProtocol:   protocol,
 		providerProtocol: protocol,
 	}
-	if protocol != ai_protocols.AnthropicMessages || !ai_common.ProviderUsesOpenAIChat(instance.Provider) {
+	if protocol != ai_protocols.AnthropicMessages || !ai_protocols.ProviderUsesOpenAIChat(instance.Provider) {
 		providerBody, providerDocument, err := p.providerBody(body, document, protocol, instance)
 		prepared.providerBody = providerBody
 		prepared.providerDocument = providerDocument
@@ -1084,24 +1084,13 @@ func requestBodyOverride(values map[string]any, protocol ai_protocols.Protocol) 
 	if override, ok := ai_common.AsAnyMap(values[protocol.OverrideKey]); ok {
 		return override
 	}
-	if hasProtocolRequestBodyOverride(values) {
+	if ai_common.HasProtocolRequestBodyOverride(values) {
 		return nil
 	}
 	if protocol != ai_protocols.OpenAIChat {
 		return nil
 	}
 	return values
-}
-
-func hasProtocolRequestBodyOverride(values map[string]any) bool {
-	for key := range values {
-		switch key {
-		case "openai-chat", "openai-responses", "openai-embeddings", "anthropic-messages",
-			"bedrock-converse", "passthrough":
-			return true
-		}
-	}
-	return false
 }
 
 func (p *Plugin) applyProviderBodyRules(body map[string]any, instance Instance) {
@@ -1364,10 +1353,10 @@ func (p *Plugin) endpoint(
 			return instance.Override.Endpoint, nil
 		}
 		if instance.Provider == "openai-compatible" || instance.Provider == "openai" {
-			return ai_common.AppendProtocolEndpoint(instance.Override.Endpoint, protocol)
+			return ai_protocols.AppendProtocolEndpoint(instance.Override.Endpoint, protocol)
 		}
 		if instance.Provider == "bedrock" {
-			return ai_common.AppendBedrockEndpoint(
+			return ai_protocols.AppendBedrockEndpoint(
 				instance.Override.Endpoint,
 				instanceModelDocument(instance, document),
 				document.IsStreaming(protocol),
@@ -1391,7 +1380,7 @@ func (p *Plugin) endpoint(
 		return "https://api.anthropic.com" + protocol.Endpoint, nil
 	case "bedrock":
 		region, _ := instance.ProviderConf["region"].(string)
-		return ai_common.AppendBedrockEndpoint(
+		return ai_protocols.AppendBedrockEndpoint(
 			"https://bedrock-runtime."+region+".amazonaws.com",
 			instanceModelDocument(instance, document),
 			document.IsStreaming(protocol),
@@ -1541,32 +1530,7 @@ func registerStreamingLLMRequestVars(
 	if apisixctx.GetRequestVars(r) == nil {
 		return
 	}
-	apisixctx.RegisterRequestVar(r, "$request_type", "ai_stream")
-	if model := requestDocument.Model(); model != "" {
-		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
-	}
-	if usage.Model != "" {
-		apisixctx.RegisterRequestVar(r, "$llm_model", usage.Model)
-	}
-	if usage.PromptTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", usage.PromptTokens)
-	}
-	if usage.CompletionTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", usage.CompletionTokens)
-	}
-	if len(usage.Raw) > 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_raw_usage", usage.Raw)
-	}
-	if usage.Text != "" {
-		apisixctx.RegisterRequestVar(r, "$llm_response_text", usage.Text)
-	}
-	if usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
-			"prompt_tokens":     usage.PromptTokens,
-			"completion_tokens": usage.CompletionTokens,
-			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
-		})
-	}
+	ai_stream.RegisterStreamingLLMRequestVars(r, requestDocument, usage)
 }
 
 func registerLLMRequestVars(
@@ -1579,61 +1543,12 @@ func registerLLMRequestVars(
 		return
 	}
 
-	metadata := ai_protocols.ExtractResponseMetadataDocument(protocol, responseDocument)
-	if responseDocument.Raw != nil {
-		apisixctx.RegisterRequestVar(
-			r,
-			"$llm_response_text",
-			ai_protocols.ExtractResponseText(protocol, responseDocument.Raw),
-		)
-	}
-
-	apisixctx.RegisterRequestVar(r, "$request_type", protocol.RequestType)
-	if requestModel := requestDocument.Model(); requestModel != "" {
-		apisixctx.RegisterRequestVar(r, "$request_llm_model", requestModel)
-	}
-	if metadata.Model != "" {
-		apisixctx.RegisterRequestVar(r, "$llm_model", metadata.Model)
-	}
-	if metadata.PromptTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", metadata.PromptTokens)
-	}
-	if metadata.CompletionTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", metadata.CompletionTokens)
-	}
-	registerUsageContextDocumentVars(r, responseDocument, metadata.PromptTokens, metadata.CompletionTokens)
-}
-
-func registerUsageContextDocumentVars(
-	r *http.Request,
-	document ai_protocols.Document,
-	promptTokens int64,
-	completionTokens int64,
-) {
-	usage, _ := document.Raw["usage"].(map[string]any)
-	if usage == nil {
-		return
-	}
-	apisixctx.RegisterRequestVar(r, "$llm_raw_usage", usage)
-	if promptTokens < 0 || completionTokens < 0 {
-		return
-	}
-	apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
-		"prompt_tokens":     promptTokens,
-		"completion_tokens": completionTokens,
-		"total_tokens":      promptTokens + completionTokens,
-	})
+	ai_protocols.RegisterLLMRequestVars(r, requestDocument, protocol, responseDocument)
 }
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
-	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
-	if p.config.Keepalive != nil && !*p.config.Keepalive {
-		transport.DisableKeepAlives = true
-	}
-	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
+	ai_common.ApplyTransportKeepalive(transport, p.config.KeepalivePool, p.config.KeepaliveTimeout, p.config.Keepalive)
+	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

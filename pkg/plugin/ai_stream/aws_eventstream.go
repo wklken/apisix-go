@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 const maxAWSEventStreamFrameSize = 16 * 1024 * 1024
@@ -71,7 +72,7 @@ func mergeBedrockEventStreamUsage(usage *Usage, message eventstream.Message) boo
 			} `json:"delta"`
 		}
 		if json.Unmarshal(message.Payload, &content) == nil {
-			usage.Text += content.Delta.Text
+			usage.AppendText(content.Delta.Text)
 		}
 		return false
 	}
@@ -88,7 +89,7 @@ func mergeBedrockEventStreamUsage(usage *Usage, message eventstream.Message) boo
 		return true
 	}
 	maps.Copy(usage.Raw, metadata.Usage)
-	usage.PromptTokens = numericUsage(metadata.Usage["inputTokens"])
-	usage.CompletionTokens = numericUsage(metadata.Usage["outputTokens"])
+	usage.PromptTokens = ai_protocols.NumericUsage(metadata.Usage["inputTokens"], false)
+	usage.CompletionTokens = ai_protocols.NumericUsage(metadata.Usage["outputTokens"], false)
 	return true
 }

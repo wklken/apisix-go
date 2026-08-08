@@ -2,7 +2,6 @@ package ai_aws_content_moderation
 
 import (
 	"bytes"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -373,8 +373,6 @@ func (p *Plugin) endpoint() string {
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if p.config.Comprehend.SSLVerify != nil && !*p.config.Comprehend.SSLVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
+	ai_common.ApplyTransportSSLVerify(transport, p.config.Comprehend.SSLVerify)
 	return transport
 }

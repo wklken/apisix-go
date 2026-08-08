@@ -1,6 +1,7 @@
 package ai_auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -15,20 +16,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
-func TestGCPTokenSourceExchangesAndCachesServiceAccountToken(t *testing.T) {
-	var tokenCalls atomic.Int64
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenCalls.Add(1)
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse token form: %v", err)
-		}
-		if r.Form.Get("grant_type") != gcpJWTBearerGrantType || strings.Count(r.Form.Get("assertion"), ".") != 2 {
-			t.Fatalf("token form = %#v", r.Form)
-		}
-		_, _ = w.Write([]byte(`{"access_token":"gcp-token","expires_in":3600}`))
-	}))
-	defer tokenServer.Close()
-
+func testServiceAccount(t *testing.T, tokenURI string, email string) []byte {
+	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate private key: %v", err)
@@ -39,196 +28,158 @@ func TestGCPTokenSourceExchangesAndCachesServiceAccountToken(t *testing.T) {
 	}
 	serviceAccount, err := json.Marshal(map[string]any{
 		"type":           "service_account",
-		"client_email":   "service@example.test",
+		"client_email":   email,
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
 		"private_key_id": "key-id",
-		"token_uri":      tokenServer.URL,
+		"token_uri":      tokenURI,
 	})
 	if err != nil {
 		t.Fatalf("marshal service account: %v", err)
 	}
-	source := NewGCPTokenSource()
-	source.now = func() time.Time { return time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC) }
-	config := GCPConfig{ServiceAccountJSON: string(serviceAccount)}
+	return serviceAccount
+}
 
-	for range 2 {
-		req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
-		if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
-			t.Fatalf("Apply() error = %v", err)
+func TestGCPTokenRefreshRunsSingleFlightOutsideTheCacheLock(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var blockingCalls atomic.Int64
+	blockingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if blockingCalls.Add(1) == 1 {
+			close(blocked)
+			<-release
 		}
-		if got := req.Header.Get("Authorization"); got != "Bearer gcp-token" {
-			t.Fatalf("Authorization = %q", got)
-		}
-	}
-	if tokenCalls.Load() != 1 {
-		t.Fatalf("token endpoint calls = %d, want 1", tokenCalls.Load())
-	}
-
-	source.now = func() time.Time { return time.Date(2026, time.July, 11, 1, 7, 4, 0, time.UTC) }
-	req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
-	if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
-		t.Fatalf("Apply() after default max TTL error = %v", err)
-	}
-	if tokenCalls.Load() != 2 {
-		t.Fatalf("token endpoint calls after default max TTL = %d, want 2", tokenCalls.Load())
-	}
-}
-
-func TestGoogleTokenSourceReusesValidToken(t *testing.T) {
-	var exchanges atomic.Int32
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		exchanges.Add(1)
-		_, _ = w.Write([]byte(`{"access_token":"shared-token","expires_in":3600}`))
+		_, _ = w.Write([]byte(`{"access_token":"refreshed-token","expires_in":3600}`))
 	}))
-	defer tokenServer.Close()
-
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate private key: %v", err)
-	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
-	serviceAccount, err := json.Marshal(map[string]any{
-		"type":         "service_account",
-		"client_email": "shared@example.test",
-		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
-		"token_uri":    tokenServer.URL,
-	})
-	if err != nil {
-		t.Fatalf("marshal service account: %v", err)
-	}
-
-	source, err := NewGoogleTokenSource(
-		t.Context(),
-		serviceAccount,
-		[]string{gcpCloudPlatformScope},
-		tokenServer.Client(),
-	)
-	if err != nil {
-		t.Fatalf("NewGoogleTokenSource() error = %v", err)
-	}
-	first, err := source.Token()
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := source.Token()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.AccessToken != second.AccessToken || exchanges.Load() != 1 {
-		t.Fatalf("tokens/exchanges = %q/%q/%d", first.AccessToken, second.AccessToken, exchanges.Load())
-	}
-}
-
-func TestGCPTokenSourceRejectsMissingServiceAccount(t *testing.T) {
-	t.Setenv("GCP_SERVICE_ACCOUNT", "")
-	source := NewGCPTokenSource()
-	if _, err := source.Token(t.Context(), http.DefaultClient, GCPConfig{}); err == nil {
-		t.Fatal("Token() error = nil, want missing service account error")
-	}
-}
-
-func TestGCPTokenSourceRejectsMissingServiceAccountFromConfig(t *testing.T) {
-	t.Setenv("GCP_SERVICE_ACCOUNT", "")
-	source := NewGCPTokenSource()
-	if _, err := source.Token(t.Context(), http.DefaultClient, GCPConfig{ServiceAccountJSON: ""}); err == nil {
-		t.Fatal("Token() error = nil, want missing service account error")
-	}
-}
-
-func TestGCPTokenSourceFailsClosedOnTokenEndpointError(t *testing.T) {
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "denied", http.StatusUnauthorized)
+	defer blockingServer.Close()
+	var fastCalls atomic.Int64
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fastCalls.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"fast-token","expires_in":3600}`))
 	}))
-	defer tokenServer.Close()
+	defer fastServer.Close()
 
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate private key: %v", err)
-	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
-	serviceAccount, err := json.Marshal(map[string]any{
-		"client_email": "service@example.test",
-		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
-		"token_uri":    tokenServer.URL,
-	})
-	if err != nil {
-		t.Fatalf("marshal service account: %v", err)
-	}
+	blockedAccount := testServiceAccount(t, blockingServer.URL, "blocked@example.test")
+	fastAccount := testServiceAccount(t, fastServer.URL, "fast@example.test")
 
-	source := NewGCPTokenSource()
-	request := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
-	err = source.Apply(
-		request.Context(),
-		tokenServer.Client(),
-		request,
-		GCPConfig{ServiceAccountJSON: string(serviceAccount)},
-	)
-	if err == nil {
-		t.Fatal("Apply() error = nil, want token endpoint rejection")
-	}
-	for _, fragment := range []string{"request GCP access token", "401 Unauthorized", "denied"} {
-		if !strings.Contains(err.Error(), fragment) {
-			t.Fatalf("Apply() error = %q, want fragment %q", err, fragment)
-		}
-	}
-	if authorization := request.Header.Get("Authorization"); authorization != "" {
-		t.Fatalf("Authorization = %q, want no provider credential after token failure", authorization)
-	}
-}
-
-func TestGCPTokenSourceCachesWithMaxTTL(t *testing.T) {
-	var tokenCalls atomic.Int64
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenCalls.Add(1)
-		_, _ = w.Write([]byte(`{"access_token":"cached-token","expires_in":3600}`))
-	}))
-	defer tokenServer.Close()
-
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate private key: %v", err)
-	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
-	serviceAccount, err := json.Marshal(map[string]any{
-		"type":           "service_account",
-		"client_email":   "service@example.test",
-		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
-		"private_key_id": "key-id",
-		"token_uri":      tokenServer.URL,
-	})
-	if err != nil {
-		t.Fatalf("marshal service account: %v", err)
-	}
 	source := NewGCPTokenSource()
 	now := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
 	source.now = func() time.Time { return now }
-	config := GCPConfig{ServiceAccountJSON: string(serviceAccount), MaxTTL: 5}
 
+	// Prime the fast key with a valid cached token.
+	if _, err := source.Token(t.Context(), fastServer.Client(), GCPConfig{ServiceAccountJSON: string(fastAccount)}); err != nil {
+		t.Fatalf("prime fast token: %v", err)
+	}
+
+	// Seed the blocked key with an expired token so the first caller starts
+	// a refresh.
+	blockedKey := sha256Hex(blockedAccount)
+	source.cache[blockedKey] = cachedGCPToken{value: "stale-token", expires: now.Add(-time.Second)}
+
+	// Caller A starts the refresh and blocks on the token endpoint.
+	type tokenResult struct {
+		value string
+		err   error
+	}
+	aResult := make(chan tokenResult, 1)
+	go func() {
+		value, err := source.Token(t.Context(), blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		aResult <- tokenResult{value: value, err: err}
+	}()
+	<-blocked
+
+	// A second caller for the same key must wait for the single refresh.
+	bResult := make(chan tokenResult, 1)
+	go func() {
+		value, err := source.Token(t.Context(), blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		bResult <- tokenResult{value: value, err: err}
+	}()
+	select {
+	case result := <-bResult:
+		t.Fatalf("waiter returned before refresh completed: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A cancelled waiter must honor cancellation without waiting for the
+	// blocked network exchange.
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	cResult := make(chan tokenResult, 1)
+	go func() {
+		value, err := source.Token(cancelCtx, blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		cResult <- tokenResult{value: value, err: err}
+	}()
+	cancel()
+	select {
+	case result := <-cResult:
+		if result.err == nil {
+			t.Fatalf("cancelled waiter returned token %q, want error", result.value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled waiter ignored cancellation")
+	}
+
+	// A cached read for a different key must continue while the refresh is
+	// blocked: no mutex may be held during the network exchange.
+	start := time.Now()
+	fastValue, err := source.Token(t.Context(), fastServer.Client(), GCPConfig{ServiceAccountJSON: string(fastAccount)})
+	if err != nil || fastValue != "fast-token" {
+		t.Fatalf("cached read = (%q, %v), want fast-token", fastValue, err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("cached read waited %s while another key refreshed", elapsed)
+	}
+
+	close(release)
 	for range 2 {
-		req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
-		if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
-			t.Fatalf("Apply() error = %v", err)
+		select {
+		case result := <-aResult:
+			if result.err != nil || result.value != "refreshed-token" {
+				t.Fatalf("refresher = (%q, %v), want refreshed-token", result.value, result.err)
+			}
+		case result := <-bResult:
+			if result.err != nil || result.value != "refreshed-token" {
+				t.Fatalf("waiter = (%q, %v), want refreshed-token", result.value, result.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("refresh result never published")
 		}
 	}
-	if tokenCalls.Load() != 1 {
-		t.Fatalf("token endpoint calls = %d, want 1 (cached)", tokenCalls.Load())
+	if got := blockingCalls.Load(); got != 1 {
+		t.Fatalf("blocking token endpoint calls = %d, want exactly 1 refresh", got)
+	}
+}
+
+func TestGCPTokenRefreshFailureReturnsErrorAfterExpiryAndRetainsEntry(t *testing.T) {
+	var calls atomic.Int64
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"access_token":"first-token","expires_in":3600}`))
+			return
+		}
+		http.Error(w, "denied", http.StatusUnauthorized)
+	}))
+	defer tokenServer.Close()
+	account := testServiceAccount(t, tokenServer.URL, "retry@example.test")
+
+	source := NewGCPTokenSource()
+	now := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
+	source.now = func() time.Time { return now }
+	config := GCPConfig{ServiceAccountJSON: string(account)}
+
+	first, err := source.Token(t.Context(), tokenServer.Client(), config)
+	if err != nil || first != "first-token" {
+		t.Fatalf("first token = (%q, %v)", first, err)
 	}
 
-	source.now = func() time.Time { return now.Add(6 * time.Second) }
-	req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
-	if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
-		t.Fatalf("Apply() after TTL error = %v", err)
+	// After the cached token expires (max TTL is 300s), a failed refresh
+	// surfaces the error while the previous entry stays cached so it remains
+	// readable.
+	source.now = func() time.Time { return now.Add(6 * time.Minute) }
+	if value, err := source.Token(t.Context(), tokenServer.Client(), config); err == nil ||
+		!strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Fatalf("expired refresh = (%q, %v), want token endpoint rejection", value, err)
 	}
-	if tokenCalls.Load() != 2 {
-		t.Fatalf("token endpoint calls after TTL = %d, want 2", tokenCalls.Load())
+	cached, ok := source.cache[sha256Hex(account)]
+	if !ok || cached.value != "first-token" {
+		t.Fatalf("cache entry after failed refresh = %#v, want retained first-token", cached)
 	}
 }

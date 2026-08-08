@@ -28,14 +28,24 @@ type GCPConfig struct {
 }
 
 type GCPTokenSource struct {
-	mu    sync.Mutex
-	cache map[string]cachedGCPToken
-	now   func() time.Time
+	mu       sync.Mutex
+	cache    map[string]cachedGCPToken
+	inflight map[string]*gcpTokenRefresh
+	now      func() time.Time
 }
 
 type cachedGCPToken struct {
 	value   string
 	expires time.Time
+}
+
+// gcpTokenRefresh coordinates one in-flight token exchange so concurrent
+// callers wait for a single refresh instead of serializing network I/O under
+// the cache lock.
+type gcpTokenRefresh struct {
+	done  chan struct{}
+	value string
+	err   error
 }
 
 type gcpServiceAccount struct {
@@ -83,7 +93,11 @@ func NewGoogleTokenSource(
 }
 
 func NewGCPTokenSource() *GCPTokenSource {
-	return &GCPTokenSource{cache: make(map[string]cachedGCPToken), now: time.Now}
+	return &GCPTokenSource{
+		cache:    make(map[string]cachedGCPToken),
+		inflight: make(map[string]*gcpTokenRefresh),
+		now:      time.Now,
+	}
 }
 
 func (s *GCPTokenSource) Apply(
@@ -118,17 +132,54 @@ func (s *GCPTokenSource) Token(ctx context.Context, client *http.Client, config 
 	cacheKey := sha256Hex([]byte(serviceAccountJSON))
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
 	if cached, ok := s.cache[cacheKey]; ok && now.Before(cached.expires) {
+		s.mu.Unlock()
 		return cached.value, nil
 	}
-	token, err := s.exchangeToken(ctx, client, []byte(serviceAccountJSON), config, now)
-	if err != nil {
-		return "", err
+	if refresh, ok := s.inflight[cacheKey]; ok {
+		s.mu.Unlock()
+		select {
+		case <-refresh.done:
+			if refresh.err != nil {
+				return "", refresh.err
+			}
+			return refresh.value, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
-	s.cache[cacheKey] = cachedGCPToken{value: token.AccessToken, expires: token.Expiry}
-	return token.AccessToken, nil
+	refresh := &gcpTokenRefresh{done: make(chan struct{})}
+	s.inflight[cacheKey] = refresh
+	s.mu.Unlock()
+
+	// The token exchange performs network I/O and must never run while the
+	// cache lock is held.
+	token, err := s.exchangeToken(ctx, client, []byte(serviceAccountJSON), config, now)
+
+	s.mu.Lock()
+	switch {
+	case err == nil:
+		cached := cachedGCPToken{value: token.AccessToken, expires: token.Expiry}
+		s.cache[cacheKey] = cached
+		refresh.value = cached.value
+	default:
+		// Keep the previous valid token until its expiry; refresh errors
+		// only surface once even that token is stale.
+		if cached, ok := s.cache[cacheKey]; ok && s.now().Before(cached.expires) {
+			refresh.value = cached.value
+		} else {
+			refresh.err = err
+		}
+	}
+	delete(s.inflight, cacheKey)
+	s.mu.Unlock()
+	close(refresh.done)
+
+	if refresh.err != nil {
+		return "", refresh.err
+	}
+	return refresh.value, nil
 }
 
 func (s *GCPTokenSource) exchangeToken(

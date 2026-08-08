@@ -1499,32 +1499,19 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// }
 	}
 
-	//	    "timeout": {                          # Set the upstream timeout for connecting, sending and receiving messages of the route.
-	//	        "connect": 3,
-	//	        "send": 3,
-	//	        "read": 3
-	//	    },
-	// 	WithResponseHeaderTimeout(responseHeaderTimeout).
-	// 	Build()
-
+	timeouts := resolveUpstreamTimeouts(r.Timeout, upstream.Timeout)
 	opt := (&pxy.TransportOptionBuilder{}).
+		WithDialTimeout(timeouts.connect).
+		WithResponseHeaderTimeout(timeouts.responseHeader).
 		WithIdleConnTimeout(30 * time.Second).
-		WithInsecureSkipVerify(true)
-
-	// NOTE: cant set the timeout here, the openresty timeouts not match the golang timeouts
-	// if r.Timeout.Connect > 0 {
-	// 	connectTimeout := time.Duration(r.Timeout.Connect) * time.Second
-	// 	opt = opt.WithDialTimeout(connectTimeout)
-	// }
-
-	// responseHeaderTimeout := time.Duration(timeout) * time.Second
-
+		WithInsecureSkipVerify(upstreamTLSInsecureSkipVerify(upstream))
 	var transport http.RoundTripper = pxy.NewTransport(opt.Build())
+	transport = pxy.NewProgressTimeoutTransport(transport, timeouts.send, timeouts.read)
 	if strings.EqualFold(scheme, "grpc") {
 		transport = &http2.Transport{
 			AllowHTTP: true,
 			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, address)
+				return (&net.Dialer{Timeout: timeouts.connect}).DialContext(ctx, network, address)
 			},
 		}
 	}

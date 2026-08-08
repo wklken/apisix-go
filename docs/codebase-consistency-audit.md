@@ -350,9 +350,17 @@
 | 114 插件 PostInit 默认值模式 ~131 处 | 无代码:单行 `if x == ""` 模式,`lo.Ternary` 收益有限,记录 |
 | base.WriteJSONMessage 与 dubbo_proxy writeDubboError 逐字相同 | 已修复:dubbo 共享包统一 `dubbo.WriteError`(经 util.WriteJSONMessage)— PR #48(单元 9,head `2a21ffa`) |
 
-### 未合并 PR 状态(合入后本台账自动闭合)
+### 合入状态(2026-08-08 全部合入)
 
-PR #45(单元 6,head `8bee5ec`)、#46(单元 7,head `1c361ae`)、#47(单元 8,head `ec3cd42`)、#48(单元 9,head `2a21ffa`)、#49(单元 10d,head `f2db5f8`)、#50(单元 10a,head `6c66c00`)、#51(单元 10c,head `569415a`)、#52(单元 10b,head `0ca0e24`)、#53(单元 11,head `521cb38`)。
+全部 10 个单元 PR 已合入 master(`eee869e`):#45(单元 6)、#46(单元 7)、#47(单元 8)、#48(单元 9)、#49(单元 10d)、#50(单元 10a)、#51(单元 10c)、#52(单元 10b)、#53(单元 11)、#54(单元 12)。此前各 PR 的 head SHA 见对应 PR 记录。
+
+### 合入后修复(2026-08-08)
+
+| 问题 | 修复 |
+|---|---|
+| 合并产物:`pkg/plugin/base/request.go` 丢失 `fmt` import(单元 6 新增 `ReadRequestBodyLimited` 使用 `fmt.Errorf`,单元 10a 移除了 import;合入后 master 无法编译) | PR #56(与并行分支 `2c01168` 同款一行修复,先合先得) |
+| 合并产物:`pkg/server/server.go` `startPrometheusExportServer` 重复 `return nil`(单元 10b,不可达代码) | PR #56 |
+| mcp_bridge SSE flake(`unexpected EOF while reading SSE event`,CI 偶发,~1/600):会话收割 goroutine 在 stdout/stderr scanner 读完管道前调用 `cmd.Wait()`,管道关闭丢弃了快退出子进程的缓冲输出 | PR #56:先 `wg.Wait()` 再 `cmd.Wait()`;会话 ctx 与请求 ctx 解耦;请求 ctx 取消时排空缓冲事件;新增 200 次迭代回归测试(负载下 3000 次迭代验证通过) |
 
 ### 已知既有失败(非本次整改引入,基线上复现)
 

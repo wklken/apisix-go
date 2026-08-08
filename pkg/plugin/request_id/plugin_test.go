@@ -2,8 +2,11 @@ package request_id
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -219,4 +222,134 @@ func newTestPlugin(t *testing.T, config Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
+}
+
+func TestKSUIDHasFixedLengthAndAlphabet(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "ksuid"})
+	id, err := p.ksuidID(rand.Reader)
+	if err != nil {
+		t.Fatalf("ksuidID() error = %v", err)
+	}
+	if len(id) != 27 {
+		t.Fatalf("ksuid length = %d, want 27", len(id))
+	}
+	for _, ch := range id {
+		if !strings.ContainsRune(ksuidAlphabet, ch) {
+			t.Fatalf("ksuid contains out-of-alphabet char %q", ch)
+		}
+	}
+}
+
+func TestKSUIDCarriesRecentTimestampPrefix(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "ksuid"})
+	before := time.Now().Unix()
+	id, err := p.ksuidID(rand.Reader)
+	if err != nil {
+		t.Fatalf("ksuidID() error = %v", err)
+	}
+	// decode base62 back to bytes
+	value := new(big.Int)
+	base := big.NewInt(62)
+	for _, ch := range id {
+		value.Mul(value, base)
+		value.Add(value, big.NewInt(int64(strings.IndexRune(ksuidAlphabet, ch))))
+	}
+	raw = value.Bytes()
+	if len(raw) < 4 {
+		t.Fatalf("decoded ksuid too short: %x", raw)
+	}
+	offset := binary.BigEndian.Uint32(raw[:4])
+	epoch := int64(offset) + ksuidEpochSeconds
+	if epoch < before-5 || epoch > time.Now().Unix()+5 {
+		t.Fatalf("ksuid timestamp = %d, want within the current window", epoch)
+	}
+}
+
+func TestKSUIDIsUniqueAcrossCalls(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "ksuid"})
+	seen := make(map[string]struct{}, 100)
+	for range 100 {
+		id, err := p.ksuidID(rand.Reader)
+		if err != nil {
+			t.Fatalf("ksuidID() error = %v", err)
+		}
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate ksuid %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
+func TestKSUIDEncodingIsDeterministic(t *testing.T) {
+	input := []byte{
+		0x00,
+		0x01,
+		0x02,
+		0x03,
+		0x04,
+		0x05,
+		0x06,
+		0x07,
+		0x08,
+		0x09,
+		0x0a,
+		0x0b,
+		0x0c,
+		0x0d,
+		0x0e,
+		0x0f,
+		0x10,
+		0x11,
+		0x12,
+		0x13,
+	}
+	first := encodeBase62(input)
+	second := encodeBase62(input)
+	if first != second {
+		t.Fatalf("encodeBase62 not deterministic: %q vs %q", first, second)
+	}
+	if len(first) != 27 {
+		t.Fatalf("encodeBase62 length = %d, want 27", len(first))
+	}
+}
+
+func TestRangeIDUsesCustomAlphabetAndLength(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Algorithm: "range_id",
+		RangeID:   RangeID{Length: 8, CharSet: "ABC"},
+	})
+	id := p.rangeID("ABC", 8)
+	if len(id) != 8 {
+		t.Fatalf("range id length = %d, want 8", len(id))
+	}
+	for _, ch := range id {
+		if !strings.ContainsRune("ABC", ch) {
+			t.Fatalf("range id contains out-of-alphabet char %q", ch)
+		}
+	}
+}
+
+func TestRangeIDDefaultsAreAppliedBeforeGeneration(t *testing.T) {
+	// The schema requires char_set minLength 6 and length minimum 6, and
+	// PostInit defaults empty values, so the handler can never observe an
+	// invalid range_id configuration.
+	p := newTestPlugin(t, Config{
+		Algorithm: "range_id",
+		RangeID:   RangeID{},
+	})
+	if p.config.RangeID.Length != 16 {
+		t.Fatalf("default range_id length = %d, want 16", p.config.RangeID.Length)
+	}
+	if len(p.config.RangeID.CharSet) < 6 {
+		t.Fatalf("default range_id char_set = %q, want at least 6 chars", p.config.RangeID.CharSet)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if got := request.Header.Get(p.config.HeaderName); len(got) != 16 {
+		t.Fatalf("generated range id length = %d, want 16", len(got))
+	}
 }

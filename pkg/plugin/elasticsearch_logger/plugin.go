@@ -500,7 +500,8 @@ func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 		},
 	}
 	if version := p.elasticsearchVersion(); version == "6" || version == "5" {
-		action["index"].(map[string]any)["_type"] = "_doc"
+		indexAction := action["index"].(map[string]any)
+		indexAction["_type"] = "_doc"
 	}
 
 	actionLine, err := json.Marshal(action)

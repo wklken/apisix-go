@@ -160,3 +160,34 @@ func TestConvertAnthropicResponseFormatNonObjectSchemas(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertAnthropicMessageSingleTextPartExtractsText(t *testing.T) {
+	converted, err := convertAnthropicMessage("assistant", []any{
+		map[string]any{"type": "text", "text": "single text part"},
+	})
+	if err != nil {
+		t.Fatalf("convertAnthropicMessage() error = %v", err)
+	}
+	if len(converted) != 1 {
+		t.Fatalf("converted = %v, want one message", converted)
+	}
+	message := converted[0].(map[string]any)
+	if got := message["content"]; got != "single text part" {
+		t.Fatalf("content = %v, want extracted text", got)
+	}
+}
+
+func TestConvertAnthropicMessageMultipleTextPartsKeepParts(t *testing.T) {
+	converted, err := convertAnthropicMessage("user", []any{
+		map[string]any{"type": "text", "text": "first"},
+		map[string]any{"type": "text", "text": "second"},
+	})
+	if err != nil {
+		t.Fatalf("convertAnthropicMessage() error = %v", err)
+	}
+	message := converted[0].(map[string]any)
+	parts, ok := message["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content = %v, want two parts", message["content"])
+	}
+}

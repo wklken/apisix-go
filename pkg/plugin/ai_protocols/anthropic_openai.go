@@ -241,7 +241,8 @@ func convertAnthropicMessage(role string, content any) ([]any, error) {
 	} else if role == "user" {
 		message["content"] = contentParts
 	} else if len(contentParts) == 1 {
-		message["content"] = contentParts[0].(map[string]any)["text"]
+		part := contentParts[0].(map[string]any)
+		message["content"] = part["text"]
 	} else if len(contentParts) > 1 {
 		message["content"] = textFromOpenAIContentParts(contentParts)
 	} else {

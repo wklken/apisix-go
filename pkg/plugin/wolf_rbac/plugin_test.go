@@ -483,3 +483,42 @@ func performRequest(t *testing.T, p *Plugin, token string) *httptest.ResponseRec
 	})).ServeHTTP(rr, req)
 	return rr
 }
+
+func TestSetUserHeadersRejectsUnsupportedIdentityFieldTypes(t *testing.T) {
+	plugin := &Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if err := plugin.setUserHeaders(w, r, "X-", map[string]any{
+		"id": map[string]any{"nested": true}, "username": "alice",
+	}); err == nil {
+		t.Fatal("setUserHeaders() with map id = nil error, want unsupported-type error")
+	}
+
+	if err := plugin.setUserHeaders(w, r, "X-", map[string]any{
+		"id": []any{"1"}, "username": "alice",
+	}); err == nil {
+		t.Fatal("setUserHeaders() with slice id = nil error, want unsupported-type error")
+	}
+}
+
+func TestSetUserHeadersAcceptsScalarIdentityFields(t *testing.T) {
+	plugin := &Plugin{}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if err := plugin.setUserHeaders(w, r, "X-", map[string]any{
+		"id": int64(7), "username": "alice", "nickname": "ali",
+	}); err != nil {
+		t.Fatalf("setUserHeaders() error = %v", err)
+	}
+	if got := w.Header().Get("X-UserId"); got != "7" {
+		t.Fatalf("X-UserId = %q, want 7", got)
+	}
+	if got := w.Header().Get("X-Username"); got != "alice" {
+		t.Fatalf("X-Username = %q", got)
+	}
+	if got := w.Header().Get("X-Nickname"); got != "ali" {
+		t.Fatalf("X-Nickname = %q", got)
+	}
+}

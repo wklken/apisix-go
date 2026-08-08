@@ -1535,8 +1535,13 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		if lb != nil && serveHTTPDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
 			return
 		}
-		if err := bufferRequestBodyIfNeeded(r); err != nil {
-			_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+		if err := bufferRequestBodyIfNeeded(w, r); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
+			} else {
+				_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+			}
 			return
 		}
 		r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
@@ -1880,10 +1885,12 @@ func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
 	return reporter
 }
 
-func bufferRequestBodyIfNeeded(r *http.Request) error {
+func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
 	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
+	limit := proxy_control.GetRequestBufferingLimit(r)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

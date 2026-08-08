@@ -297,7 +297,9 @@ func (s *Server) Start(ctx context.Context) error {
 	logger.Info("build the routes")
 	initialReloadGeneration := reloadGeneration.Load()
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
-	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
+	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
+		return err
+	}
 	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	s.startStreamProxy(ctx)
 	if s.standaloneWatcher != nil {
@@ -322,11 +324,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.shutdown(ctx)
 }
 
-func initialRouteHandler(handler *chi.Mux) http.Handler {
-	if handler == nil {
-		return http.NotFoundHandler()
+type strictRouteBuilder interface {
+	BuildStrict() (*chi.Mux, error)
+	Stop()
+}
+
+func buildAndInstallInitialRoutes(routes *routeHandler, builder strictRouteBuilder) error {
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		builder.Stop()
+		return fmt.Errorf("build initial routes: %w", err)
 	}
-	return handler
+	routes.Replace(handler, builder.Stop)
+	return nil
 }
 
 func (s *Server) shutdown(ctx context.Context) error {

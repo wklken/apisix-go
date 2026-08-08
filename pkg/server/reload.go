@@ -147,9 +147,9 @@ func (s *Server) reload(ctx context.Context) {
 		}
 	}()
 
-	handler := builder.Build()
-	if handler == nil {
-		logger.Error("reload built a nil route handler; keeping the current handler")
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		logger.Errorf("reload routes fail, keeping the current handler: %s", err)
 		return
 	}
 	s.routes.Replace(handler, builder.Stop)

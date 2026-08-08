@@ -462,15 +462,21 @@ func (b *Builder) Stop() {
 }
 
 func (b *Builder) Build() *chi.Mux {
-	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
-		logger.Errorf("validate proxy-cache zone registry fail: %s", err)
+	mux, err := b.BuildStrict()
+	if err != nil {
+		logger.Errorf("build routes fail: %s", err)
 		return nil
 	}
+	return mux
+}
 
+func (b *Builder) BuildStrict() (*chi.Mux, error) {
+	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
+		return nil, fmt.Errorf("validate proxy-cache zone registry: %w", err)
+	}
 	snapshot, err := store.GetConfigSnapshot()
 	if err != nil {
-		logger.Errorf("list routes fail: %s", err)
-		return nil
+		return nil, fmt.Errorf("get config snapshot: %w", err)
 	}
 	b.snapshot = snapshot
 	b.compiledSchemas = make(map[string]*util.CompiledSchema)
@@ -479,53 +485,32 @@ func (b *Builder) Build() *chi.Mux {
 		b.compiledSchemas = nil
 	}()
 
-	routes := snapshot.Routes()
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
 	registrar := newRouteRegistrar(mux)
-
-	for _, r := range routes {
-		// parse route
-		// methods, uris, handler, err := b.parseRouteConfig(r)
-		uris := r.Uris
-		if len(uris) == 0 && r.Uri != "" {
-			uris = append(uris, r.Uri)
+	for _, routeResource := range snapshot.Routes() {
+		handler, buildErr := b.buildHandlerStrict(routeResource)
+		if buildErr != nil {
+			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
 		}
-
-		methods := r.Methods
-		handler, err := b.buildHandlerStrict(r)
-		if err != nil {
-			logger.Errorf("build route %s fail: %s", r.ID, err)
-			return nil
+		uris := routeResource.Uris
+		if len(uris) == 0 && routeResource.Uri != "" {
+			uris = []string{routeResource.Uri}
 		}
-
-		// if err != nil {
-		// 	// log error
-		// 	logger.Errorf("err: %s", err)
-		// 	continue
-		// }
-		logger.Infof("methods: %v, uris: %v", methods, uris)
-		// add route to mux
 		for _, uri := range uris {
-			if err = registrar.registerRouteWithHosts(methods, uri, r.Hosts, handler); err != nil {
-				logger.Warnf("convert uri fail: %v", err)
-				continue
+			if registerErr := registrar.registerRouteWithHosts(routeResource.Methods, uri, routeResource.Hosts, handler); registerErr != nil {
+				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
 			}
 		}
 	}
-	globalRules := snapshot.GlobalRules()
-	notFoundHandler, err := b.buildGlobalNotFoundHandler(globalRules)
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules())
 	if err != nil {
-		logger.Errorf("build global not found handler fail: %s", err)
-		return nil
+		return nil, fmt.Errorf("build global not found handler: %w", err)
 	}
 	mux.NotFound(notFoundHandler.ServeHTTP)
-
-	// add extra route
 	registerExtraRoutes(mux)
 	b.configureGlobalErrorLogObserver()
-
-	return mux
+	return mux, nil
 }
 
 func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {

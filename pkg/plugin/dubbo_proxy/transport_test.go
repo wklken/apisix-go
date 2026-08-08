@@ -15,6 +15,7 @@ import (
 
 	"github.com/apache/dubbo-go-hessian2"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/dubbo"
 )
 
 func TestBuildDubboRequestEncodesHTTPContextMap(t *testing.T) {
@@ -215,7 +216,7 @@ func TestPostInitLoadsDubboMultiplexLimit(t *testing.T) {
 }
 
 func TestTargetLimiterHonorsContextCancellation(t *testing.T) {
-	first, release := acquireTargetSlot(context.Background(), "127.0.0.1:1", 1)
+	first, release := dubbo.AcquireTargetSlot(context.Background(), "127.0.0.1:1", 1)
 	if !first {
 		t.Fatal("first target slot acquisition failed")
 	}
@@ -223,7 +224,7 @@ func TestTargetLimiterHonorsContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if acquired, _ := acquireTargetSlot(ctx, "127.0.0.1:1", 1); acquired {
+	if acquired, _ := dubbo.AcquireTargetSlot(ctx, "127.0.0.1:1", 1); acquired {
 		t.Fatal("second target slot acquisition succeeded while limit was full")
 	}
 }

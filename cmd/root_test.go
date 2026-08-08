@@ -17,7 +17,7 @@ func TestStartHasNoDebugBannerPrint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read root.go: %v", err)
 	}
-	for _, line := range strings.Split(string(source), "\n") {
+	for line := range strings.SplitSeq(string(source), "\n") {
 		if strings.Contains(line, `fmt.Println("It's apisix")`) {
 			t.Fatalf("stray debug banner print remains in root.go: %q", line)
 		}

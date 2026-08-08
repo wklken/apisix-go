@@ -353,9 +353,7 @@ func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -364,7 +362,7 @@ func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
 					server.reload(context.Background())
 				}
 			}
-		}()
+		})
 	}
 	for range 500 {
 		response := httptest.NewRecorder()

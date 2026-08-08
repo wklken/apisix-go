@@ -8,10 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"github.com/redis/go-redis/v9"
-	"github.com/wklken/apisix-go/pkg/json"
 	"net/http"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 type sessionData struct {

@@ -86,13 +86,11 @@ func TestTrackConcurrentIncrementDecrement(t *testing.T) {
 	const requestsPerWorker = 100
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range requestsPerWorker {
 				handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders", nil))
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

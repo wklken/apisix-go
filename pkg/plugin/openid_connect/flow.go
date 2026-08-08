@@ -12,15 +12,16 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
-	"golang.org/x/oauth2"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
+	"golang.org/x/oauth2"
 )
 
 func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next http.Handler) {

@@ -2,13 +2,6 @@ package limit_conn
 
 import (
 	"fmt"
-	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
-	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
-	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/util"
 	"math"
 	"net"
 	"net/http"
@@ -16,6 +9,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {

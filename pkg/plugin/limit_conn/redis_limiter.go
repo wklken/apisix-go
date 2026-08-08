@@ -3,14 +3,15 @@ package limit_conn
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"strings"
-	"sync"
-	"time"
 )
 
 type redisConnLimiter struct {

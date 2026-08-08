@@ -3,7 +3,6 @@ package traffic_label
 import (
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -116,8 +115,6 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
-
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -228,7 +225,7 @@ func applyAction(r *http.Request, action Action) {
 }
 
 func resolveValue(r *http.Request, value string) string {
-	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return pluginexpr.String(pluginexpr.RequestValue(r, strings.TrimPrefix(variable, "$")))
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return pluginexpr.String(pluginexpr.RequestValue(r, name))
 	})
 }

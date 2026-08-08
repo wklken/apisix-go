@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cast"
@@ -159,7 +160,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if retPort == nil || *retPort == 443 || *retPort <= 0 || *retPort > 65535 {
 				url = "https://" + urlHostname(host) + path
 			} else {
-				url = fmt.Sprintf("https://%s%s", net.JoinHostPort(requestHostname(r), fmt.Sprint(*retPort)), path)
+				url = "https://" + net.JoinHostPort(requestHostname(r), strconv.Itoa(*retPort)) + path
 			}
 
 			var retCode int

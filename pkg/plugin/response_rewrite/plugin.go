@@ -487,11 +487,9 @@ func expressionString(value any) string {
 	}
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
-
 func resolveValue(r *http.Request, resp *base.BufferedResponseWriter, value string) string {
-	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return responseVar(r, resp, strings.TrimPrefix(variable, "$"))
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return responseVar(r, resp, name)
 	})
 }
 
@@ -510,22 +508,11 @@ func responseValue(r *http.Request, resp *base.BufferedResponseWriter, name stri
 			prefix = "upstream_http_"
 		}
 		header := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
-		return headerValue(resp.Header(), header)
+		return pluginexpr.HeaderValue(resp.Header(), header)
 	case name == "body_bytes_sent" || name == "bytes_sent":
 		return len(resp.Body())
 	}
 	return pluginexpr.RequestValue(r, name)
-}
-
-func headerValue(header http.Header, name string) any {
-	values := header.Values(name)
-	if len(values) == 0 {
-		return ""
-	}
-	if len(values) == 1 {
-		return values[0]
-	}
-	return values
 }
 
 func writeRewrittenResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {

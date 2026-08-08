@@ -2,7 +2,8 @@ package base
 
 import (
 	"crypto/tls"
-	"fmt"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,7 +21,7 @@ type RedisConnConfig struct {
 // in milliseconds, matching the rate-limit plugin configuration.
 func (c RedisConnConfig) Options() *redis.Options {
 	options := &redis.Options{
-		Addr:         fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Addr:         net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		Username:     c.Username,
 		Password:     c.Password,
 		DB:           c.Database,

@@ -253,7 +253,7 @@ func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
 		Vars: map[string]any{
 			"server_addr": "",
 			"server_port": "",
-			"remote_addr": remoteAddr(r),
+			"remote_addr": base.RemoteIP(r.RemoteAddr),
 			"remote_port": remotePort(r),
 			"timestamp":   time.Now().Unix(),
 		},
@@ -402,14 +402,6 @@ func queryArgs(values url.Values) map[string]any {
 		query[key] = current
 	}
 	return query
-}
-
-func remoteAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func remotePort(r *http.Request) string {

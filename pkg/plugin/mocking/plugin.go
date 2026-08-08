@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -287,10 +286,8 @@ func numberValue(value any) (float64, bool) {
 	}
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
-
 func resolveValue(r *http.Request, value string) string {
-	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return base.RequestVar(r, name, 0)
 	})
 }

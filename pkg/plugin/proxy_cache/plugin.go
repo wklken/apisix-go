@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1565,11 +1564,7 @@ func requestVar(r *http.Request, name string) string {
 		}
 		return "http"
 	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
+		return base.RemoteIP(r.RemoteAddr)
 	case name == "consumer_name":
 		if value, ok := apisixctx.GetApisixVar(r, "$consumer_name").(string); ok {
 			return value

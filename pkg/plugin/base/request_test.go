@@ -1,55 +1,114 @@
 package base
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestReplaceRequestBody(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", nil)
-
-	const newBody = `{"role":"user","content":"hello"}`
-	ReplaceRequestBody(r, []byte(newBody))
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		t.Fatalf("read replaced body: %v", err)
-	}
-	if got := string(body); got != newBody {
-		t.Fatalf("Body = %q, want %q", got, newBody)
-	}
-
-	if got := r.ContentLength; got != int64(len(newBody)) {
-		t.Fatalf("ContentLength = %d, want %d", got, len(newBody))
-	}
-	if got := r.Header.Get("Content-Length"); got != fmt.Sprint(len(newBody)) {
-		t.Fatalf("Content-Length header = %q, want %q", got, fmt.Sprint(len(newBody)))
-	}
-
-	refreshed, err := r.GetBody()
-	if err != nil {
-		t.Fatalf("GetBody() error = %v", err)
-	}
-	refreshedBody, err := io.ReadAll(refreshed)
-	if err != nil {
-		t.Fatalf("read GetBody content: %v", err)
-	}
-	if got := string(refreshedBody); got != newBody {
-		t.Fatalf("GetBody content = %q, want %q", got, newBody)
+func TestReadRequestBodyLimited(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		maxSize int
+		want    string
+		errText string
+	}{
+		{name: "under limit", body: `{"query":"{a}"}`, maxSize: 100, want: `{"query":"{a}"}`},
+		{name: "exactly at limit", body: "12345", maxSize: 5, want: "12345"},
+		{
+			name:    "over limit",
+			body:    "123456",
+			maxSize: 5,
+			want:    "123456",
+			errText: "graphql request body exceeds maximum size 5",
+		},
+		{name: "empty body", body: "", maxSize: 5},
 	}
 
-	secondRefresh, err := r.GetBody()
-	if err != nil {
-		t.Fatalf("second GetBody() error = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(tt.body))
+
+			got, err := ReadRequestBodyLimited(req, tt.maxSize)
+			if tt.errText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errText) {
+					t.Fatalf("ReadRequestBodyLimited() error = %v, want substring %q", err, tt.errText)
+				}
+			} else if err != nil {
+				t.Fatalf("ReadRequestBodyLimited() error = %v", err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("ReadRequestBodyLimited() = %q, want %q", got, tt.want)
+			}
+
+			restored, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read restored body: %v", err)
+			}
+			if string(restored) != tt.body {
+				t.Fatalf("restored body = %q, want %q", restored, tt.body)
+			}
+		})
 	}
-	secondBody, err := io.ReadAll(secondRefresh)
-	if err != nil {
-		t.Fatalf("read second GetBody content: %v", err)
+}
+
+func TestReadRequestBodyLimitedNilAndNoBody(t *testing.T) {
+	for name, req := range map[string]*http.Request{
+		"nil body":    {Body: nil},
+		"http NoBody": {Body: http.NoBody},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := ReadRequestBodyLimited(req, 10)
+			if err != nil {
+				t.Fatalf("ReadRequestBodyLimited() error = %v", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("ReadRequestBodyLimited() = %q, want empty", got)
+			}
+		})
 	}
-	if got := string(secondBody); got != newBody {
-		t.Fatalf("second GetBody content = %q, want %q", got, newBody)
+}
+
+func TestResolveRequestVariables(t *testing.T) {
+	lookup := map[string]string{
+		"remote_addr": "192.0.2.1",
+		"http_host":   "example.com",
+	}
+
+	got := ResolveRequestVariables("$remote_addr:$http_host", func(name string) string {
+		return lookup[name]
+	})
+	if want := "192.0.2.1:example.com"; got != want {
+		t.Fatalf("ResolveRequestVariables() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRequestVariablesMissingAndLiteral(t *testing.T) {
+	got := ResolveRequestVariables("$missing /static/$path", func(string) string {
+		return ""
+	})
+	if want := " /static/"; got != want {
+		t.Fatalf("ResolveRequestVariables() = %q, want %q", got, want)
+	}
+
+	if got := ResolveRequestVariables("plain text", func(string) string { return "x" }); got != "plain text" {
+		t.Fatalf("ResolveRequestVariables(no variables) = %q, want input", got)
+	}
+}
+
+func TestResolveRequestVariablesRespectsVariableNaming(t *testing.T) {
+	var seen []string
+	got := ResolveRequestVariables("$remote_addr-${unsupported-$uri}", func(name string) string {
+		seen = append(seen, name)
+		return ""
+	})
+	if len(seen) != 2 || seen[0] != "remote_addr" || seen[1] != "uri" {
+		t.Fatalf("resolved names = %v, want [remote_addr uri]", seen)
+	}
+	if want := "-${unsupported-}"; got != want {
+		t.Fatalf("ResolveRequestVariables() = %q, want %q", got, want)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -216,7 +217,7 @@ func configuredTLSListenAddresses() []string {
 		if host == "" {
 			host = "0.0.0.0"
 		}
-		addresses = append(addresses, net.JoinHostPort(host, fmt.Sprintf("%d", listener.Port)))
+		addresses = append(addresses, net.JoinHostPort(host, strconv.Itoa(listener.Port)))
 	}
 	return addresses
 }
@@ -840,5 +841,5 @@ func newPrometheusExportServerConfig(attr map[string]any) prometheusExportServer
 }
 
 func (c prometheusExportServerConfig) Address() string {
-	return fmt.Sprintf("%s:%d", c.ExportIP, c.ExportPort)
+	return net.JoinHostPort(c.ExportIP, strconv.Itoa(c.ExportPort))
 }

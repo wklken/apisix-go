@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -301,7 +302,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			UpstreamLatency:    upstreamLatency,
 			HasUpstreamLatency: hasUpstreamLatency,
 			ApisixLatency:      apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
-			IngressSize:        requestSize(r),
+			IngressSize:        util.RequestSize(r),
 			EgressSize:         captured.Written,
 			Status:             captured.Code,
 			RouteID:            apisixStringVar(r, "$route_id"),
@@ -361,7 +362,7 @@ func (p *Plugin) send(entry metricEntry) error {
 }
 
 func (p *Plugin) dogstatsdAddr() string {
-	return net.JoinHostPort(p.metadata.Host, fmt.Sprint(p.metadata.Port))
+	return net.JoinHostPort(p.metadata.Host, strconv.Itoa(p.metadata.Port))
 }
 
 func (p *Plugin) dial() (net.Conn, error) {
@@ -513,13 +514,6 @@ func apisixLatency(total int64, upstream int64) int64 {
 		return 0
 	}
 	return total - upstream
-}
-
-func requestSize(r *http.Request) int64 {
-	if r.ContentLength > 0 {
-		return r.ContentLength
-	}
-	return 0
 }
 
 func requestScheme(r *http.Request) string {

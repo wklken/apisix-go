@@ -24,6 +24,23 @@ func ReadRequestBody(r *http.Request) ([]byte, error) {
 	return body, err
 }
 
+// ReadRequestBodyLimited reads and restores the request body while rejecting
+// bodies larger than maxSize with a size-exceeded error.
+func ReadRequestBodyLimited(r *http.Request, maxSize int) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSize)+1))
+	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err == nil && len(body) > maxSize {
+		err = fmt.Errorf("graphql request body exceeds maximum size %d", maxSize)
+	}
+	return body, err
+}
+
 func ReplaceRequestBody(r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.GetBody = func() (io.ReadCloser, error) {

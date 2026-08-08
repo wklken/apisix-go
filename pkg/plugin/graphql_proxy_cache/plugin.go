@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -318,7 +317,7 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 		return []byte(r.URL.RawQuery), query, true
 	}
 
-	body, err := readBody(r, p.maxSize)
+	body, err := base.ReadRequestBodyLimited(r, p.maxSize)
 	if err != nil || len(bytes.TrimSpace(body)) == 0 {
 		http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
 		return nil, "", false
@@ -597,21 +596,6 @@ func (p *Plugin) configFingerprint() string {
 func apisixVarString(r *http.Request, name string) string {
 	value, _ := apisixctx.GetApisixVar(r, name).(string)
 	return value
-}
-
-func readBody(r *http.Request, maxSize int) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSize)+1))
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err == nil && len(body) > maxSize {
-		err = fmt.Errorf("graphql request body exceeds maximum size %d", maxSize)
-	}
-	return body, err
 }
 
 func PurgeHandler(w http.ResponseWriter, r *http.Request) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -16,13 +17,14 @@ import (
 
 	"github.com/casbin/govaluate"
 	"github.com/redis/go-redis/v9"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
 type Plugin struct {
@@ -304,7 +306,7 @@ func (p *Plugin) PostInit() error {
 			return err
 		}
 		p.redis = redis.NewClient(&redis.Options{
-			Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+			Addr:         net.JoinHostPort(p.config.RedisHost, strconv.Itoa(p.config.RedisPort)),
 			Username:     p.config.RedisUsername,
 			Password:     password,
 			DB:           p.config.RedisDatabase,
@@ -319,7 +321,7 @@ func (p *Plugin) PostInit() error {
 		}
 		addresses := make([]string, 0, len(p.config.RedisSentinels))
 		for _, sentinel := range p.config.RedisSentinels {
-			addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
+			addresses = append(addresses, net.JoinHostPort(sentinel.Host, strconv.Itoa(sentinel.Port)))
 		}
 		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
 		if err != nil {

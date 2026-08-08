@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -463,7 +464,7 @@ func (p *Plugin) sendToTCP(lines []string) error {
 	if cfg == nil {
 		return fmt.Errorf("missing tcp config")
 	}
-	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	timeout := time.Duration(p.config.Timeout) * time.Second
 
 	var conn net.Conn
@@ -632,7 +633,7 @@ func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
 func (p *Plugin) kafkaBrokerAddresses() []string {
 	addresses := make([]string, 0, len(p.config.Kafka.Brokers))
 	for _, broker := range p.config.Kafka.Brokers {
-		addresses = append(addresses, net.JoinHostPort(broker.Host, fmt.Sprint(broker.Port)))
+		addresses = append(addresses, net.JoinHostPort(broker.Host, strconv.Itoa(broker.Port)))
 	}
 	sort.Strings(addresses)
 	return addresses

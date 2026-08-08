@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/oauth2"
 )
 
@@ -666,7 +667,7 @@ func (p *Plugin) defaultLogFields(r *http.Request, recorder *responseRecorder, l
 		defaultEntryMarker:        true,
 		defaultRequestMethodField: r.Method,
 		defaultRequestURLField:    requestURL(r),
-		defaultRequestSizeField:   requestSize(r),
+		defaultRequestSizeField:   util.RequestSize(r),
 		defaultStatusField:        recorder.status,
 		defaultResponseSizeField:  recorder.size,
 		defaultUserAgentField:     r.UserAgent(),
@@ -697,13 +698,6 @@ func requestURL(r *http.Request) string {
 		host = r.URL.Host
 	}
 	return scheme + "://" + host + r.URL.RequestURI()
-}
-
-func requestSize(r *http.Request) int64 {
-	if r.ContentLength > 0 {
-		return r.ContentLength
-	}
-	return 0
 }
 
 func isDefaultEntry(log map[string]any) bool {

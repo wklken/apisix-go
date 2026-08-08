@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -219,10 +217,8 @@ func varsMatch(r *http.Request, exprs []*pluginexpr.Expression) bool {
 	return false
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
-
 func resolveValue(r *http.Request, value string) string {
-	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return pluginexpr.String(pluginexpr.RequestValue(r, strings.TrimPrefix(variable, "$")))
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return pluginexpr.String(pluginexpr.RequestValue(r, name))
 	})
 }

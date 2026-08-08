@@ -7,6 +7,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -85,7 +86,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			Node:            node,
 			RequestLatency:  latency,
 			UpstreamLatency: upstreamLatency,
-			IngressBytes:    requestSize(r),
+			IngressBytes:    util.RequestSize(r),
 			EgressBytes:     captured.Written,
 		})
 
@@ -132,11 +133,4 @@ func requestInt64Var(r *http.Request, key string) int64 {
 	default:
 		return 0
 	}
-}
-
-func requestSize(r *http.Request) int64 {
-	if r.ContentLength > 0 {
-		return r.ContentLength
-	}
-	return 0
 }

@@ -704,3 +704,36 @@ func TestNormalizeRequestPathShortCircuitsAndPreservesTrailingSlash(t *testing.T
 		t.Fatalf("path = %q, want preserved trailing slash", gotPath)
 	}
 }
+
+func TestStartPrometheusExportServerWithDuplicatePluginNames(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+	config.GlobalConfig = &config.Config{
+		Plugins: []string{"prometheus", "prometheus"},
+		PluginAttr: map[string]map[string]any{
+			"prometheus": {"enable_export_server": false},
+		},
+	}
+
+	s := &Server{}
+	if err := s.startPrometheusExportServer(); err != nil {
+		t.Fatalf("startPrometheusExportServer() error = %v", err)
+	}
+	if s.prometheusServer != nil {
+		t.Fatal("export server started while disabled")
+	}
+}
+
+func TestStartPrometheusExportServerWithoutPrometheus(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+	config.GlobalConfig = &config.Config{Plugins: []string{"limit-req"}}
+
+	s := &Server{}
+	if err := s.startPrometheusExportServer(); err != nil {
+		t.Fatalf("startPrometheusExportServer() error = %v", err)
+	}
+	if s.prometheusServer != nil {
+		t.Fatal("export server started without prometheus plugin")
+	}
+}

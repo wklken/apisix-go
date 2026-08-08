@@ -306,8 +306,8 @@ func (p *Plugin) recordProbeResult(index int, result healthProbeResult, now time
 		return
 	}
 	check := p.config.Instances[index].Checks.Active
-	success := result.err == nil && containsStatus(check.Healthy.HTTPStatuses, result.status)
-	failure := result.err != nil || containsStatus(check.Unhealthy.HTTPStatuses, result.status)
+	success := result.err == nil && slices.Contains(check.Healthy.HTTPStatuses, result.status)
+	failure := result.err != nil || slices.Contains(check.Unhealthy.HTTPStatuses, result.status)
 	if success {
 		state.successes++
 		state.httpFailures, state.tcpFailures, state.timeouts = 0, 0, 0
@@ -341,8 +341,4 @@ func (p *Plugin) instanceHealthy(index int) bool {
 	defer p.healthMu.Unlock()
 	state := p.health[index]
 	return state == nil || state.healthy
-}
-
-func containsStatus(statuses []int, status int) bool {
-	return slices.Contains(statuses, status)
 }

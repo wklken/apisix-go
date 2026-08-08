@@ -1330,10 +1330,8 @@ func fallbackStrategyHas(strategy any, name string) bool {
 			return true
 		}
 	case []any:
-		for _, value := range values {
-			if value == name {
-				return true
-			}
+		if slices.ContainsFunc(values, func(value any) bool { return value == name }) {
+			return true
 		}
 	}
 	return false

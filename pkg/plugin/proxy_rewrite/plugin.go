@@ -162,16 +162,18 @@ func (p *Plugin) PostInit() error {
 	}
 	p.config.regexURIPairs = p.config.regexURIPairs[:0]
 	for i := 0; i < len(p.config.RegexURI); i += 2 {
-		pattern, err := regexp.Compile(p.config.RegexURI[i])
+		patternSource := p.config.RegexURI[i]
+		replacement := p.config.RegexURI[i+1]
+		pattern, err := regexp.Compile(patternSource)
 		if err != nil {
-			return fmt.Errorf("invalid regex_uri pattern %q: %w", p.config.RegexURI[i], err)
+			return fmt.Errorf("invalid regex_uri pattern %q: %w", patternSource, err)
 		}
-		if err := validateRegexReplacement(p.config.RegexURI[i+1]); err != nil {
-			return fmt.Errorf("invalid regex_uri replacement %q: %w", p.config.RegexURI[i+1], err)
+		if err := validateRegexReplacement(replacement); err != nil {
+			return fmt.Errorf("invalid regex_uri replacement %q: %w", replacement, err)
 		}
 		p.config.regexURIPairs = append(p.config.regexURIPairs, regexURIPair{
 			pattern:     pattern,
-			replacement: p.config.RegexURI[i+1],
+			replacement: replacement,
 		})
 	}
 	if err := p.config.Headers.validate(); err != nil {

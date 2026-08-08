@@ -217,13 +217,13 @@ func (p *Plugin) observeStatus(status int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
-	case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
+	case slices.Contains(p.config.Unhealthy.HTTPStatuses, status):
 		p.unhealthyCount++
 		p.healthyCount = 0
 		if p.unhealthyCount%*p.config.Unhealthy.Failures == 0 {
 			p.lastUnhealthyTime = p.now()
 		}
-	case containsStatus(p.config.Healthy.HTTPStatuses, status):
+	case slices.Contains(p.config.Healthy.HTTPStatuses, status):
 		if p.unhealthyCount == 0 {
 			return
 		}
@@ -249,10 +249,6 @@ func breakerSeconds(unhealthyCount, failures, maximum int) int {
 		return maximum
 	}
 	return seconds
-}
-
-func containsStatus(statuses []int, status int) bool {
-	return slices.Contains(statuses, status)
 }
 
 func resolveHeaderValue(r *http.Request, value string) string {

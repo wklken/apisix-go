@@ -397,23 +397,21 @@ func (s *Server) startPrometheusExportServer() error {
 	if config.GlobalConfig == nil {
 		return nil
 	}
-	for _, plugin := range config.GlobalConfig.Plugins {
-		if plugin != "prometheus" {
-			continue
-		}
-		metrics.Init()
-		exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
-		exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
-			Enabled: exportConfig.Enabled,
-			URI:     exportConfig.ExportURI,
-			Address: exportConfig.Address(),
-		})
-		if err != nil {
-			return fmt.Errorf("start prometheus export server: %w", err)
-		}
-		s.prometheusServer = exporter
+	if !slices.Contains(config.GlobalConfig.Plugins, "prometheus") {
 		return nil
 	}
+	metrics.Init()
+	exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
+	exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
+		Enabled: exportConfig.Enabled,
+		URI:     exportConfig.ExportURI,
+		Address: exportConfig.Address(),
+	})
+	if err != nil {
+		return fmt.Errorf("start prometheus export server: %w", err)
+	}
+	s.prometheusServer = exporter
+	return nil
 	return nil
 }
 

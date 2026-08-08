@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1290,11 +1289,14 @@ func (p *Plugin) cleanupDiskLocked(now time.Time) {
 	if p.diskSize <= 0 || total <= p.diskSize {
 		return
 	}
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].vary != files[j].vary {
-			return !files[i].vary
+	slices.SortFunc(files, func(a, b diskCacheFile) int {
+		if a.vary != b.vary {
+			if !a.vary {
+				return -1
+			}
+			return 1
 		}
-		return files[i].modTime.Before(files[j].modTime)
+		return a.modTime.Compare(b.modTime)
 	})
 	for _, file := range files {
 		if total <= p.diskSize {

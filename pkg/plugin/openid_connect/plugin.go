@@ -1656,10 +1656,8 @@ func audienceMatchesClientID(value any, clientID string) bool {
 	case string:
 		return typed == clientID
 	case []any:
-		for _, item := range typed {
-			if item == clientID {
-				return true
-			}
+		if slices.ContainsFunc(typed, func(item any) bool { return item == clientID }) {
+			return true
 		}
 	case []string:
 		if slices.Contains(typed, clientID) {

@@ -24,6 +24,7 @@ type Plugin struct {
 	config Config
 
 	client *http.Client
+	opts   sessionOptions
 }
 
 const (
@@ -174,6 +175,7 @@ func (p *Plugin) PostInit() error {
 	if parsed, err := url.Parse(p.config.IDPURI); err == nil && parsed.Scheme == "http" {
 		logger.Warn("Using cas-auth idp_uri with no TLS is a security risk")
 	}
+	p.opts = p.buildSessionOptions()
 
 	return nil
 }
@@ -353,6 +355,12 @@ func (p *Plugin) serviceURL(r *http.Request) string {
 }
 
 func (p *Plugin) sessionOptions() sessionOptions {
+	return p.opts
+}
+
+// buildSessionOptions derives the cookie name and fingerprint from the static
+// configuration; called once at PostInit instead of on every request.
+func (p *Plugin) buildSessionOptions() sessionOptions {
 	fingerprint := base.Sha256Hex(p.config.IDPURI + "|" + p.config.CASCallbackURI)
 	return sessionOptions{
 		cookieName:  sessionPrefix + fingerprint,

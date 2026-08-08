@@ -1,6 +1,7 @@
 package proxy_mirror
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -30,4 +31,41 @@ func BenchmarkVerifiedHotPath(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkStaticConfigPath measures per-request mirror request preparation
+// with a valid static configuration. The request path must reuse compiled
+// config instead of rebuilding it per request.
+func BenchmarkStaticConfigPath(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	p := &Plugin{config: Config{
+		Host:        upstream.URL,
+		Path:        "/mirror",
+		SampleRatio: 1,
+	}}
+	if err := p.Init(); err != nil {
+		b.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		b.Fatalf("PostInit() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/original", nil)
+	req.Header.Set("Content-Type", "application/json")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		built, err := p.buildMirrorRequest(req, nil)
+		if err != nil {
+			b.Fatalf("buildMirrorRequest() error = %v", err)
+		}
+		if built == nil {
+			b.Fatal("buildMirrorRequest() returned nil request")
+		}
+	}
 }

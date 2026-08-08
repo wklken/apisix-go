@@ -45,6 +45,8 @@ type Plugin struct {
 	maxSize   int
 	routeID   string
 	serviceID string
+
+	configFingerprintValue string
 }
 
 const (
@@ -150,6 +152,7 @@ func (p *Plugin) PostInit() error {
 	if err := proxy_cache.ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy); err != nil {
 		return err
 	}
+	p.configFingerprintValue = p.buildConfigFingerprint()
 	p.entries = make(map[string]cacheEntry)
 	p.vary = make(map[string]varyIndex)
 	if p.now == nil {
@@ -583,6 +586,10 @@ func diskResponseTTL(header http.Header, fallback time.Duration, now time.Time) 
 }
 
 func (p *Plugin) configFingerprint() string {
+	return p.configFingerprintValue
+}
+
+func (p *Plugin) buildConfigFingerprint() string {
 	return fmt.Sprintf(
 		"%s:%s:%d:%t:%t",
 		p.config.CacheStrategy,

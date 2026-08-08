@@ -7,8 +7,9 @@ import (
 )
 
 type (
-	RawMessage = gojson.RawMessage
-	Number     = gojson.Number
+	RawMessage  = gojson.RawMessage
+	Number      = gojson.Number
+	Unmarshaler = gojson.Unmarshaler
 )
 
 type Decoder interface {

@@ -2,13 +2,14 @@ package util
 
 import (
 	"encoding"
-	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/wklken/apisix-go/pkg/json"
 )
 
 // Parse converts source (typically a decoded JSON map) into dest using typed

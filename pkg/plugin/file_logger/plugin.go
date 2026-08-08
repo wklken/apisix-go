@@ -162,7 +162,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr, p.config.Match)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr, p.config.Match,
+	); err != nil {
+		return err
+	}
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if p.config.Path == "" {
 		p.config.Path = metadata.Path

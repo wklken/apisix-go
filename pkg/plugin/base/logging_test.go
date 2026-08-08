@@ -312,7 +312,9 @@ func TestExprMatchedSupportsBothPluginExpressionShapes(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			PrepareExprRegexps(test.expressions)
+			if err := PrepareExprRegexps(test.expressions); err != nil {
+				t.Fatalf("PrepareExprRegexps() error = %v", err)
+			}
 			if !ExprMatched(r, test.expressions, 0) {
 				t.Fatalf("ExprMatched() = false, want true")
 			}
@@ -329,7 +331,9 @@ func TestPrepareExprRegexpsSupportsBothRegexOperators(t *testing.T) {
 		[]any{"$http_x_trace_id", "!~", "^xyz"},
 	}
 
-	PrepareExprRegexps(expressions)
+	if err := PrepareExprRegexps(expressions); err != nil {
+		t.Fatalf("PrepareExprRegexps() error = %v", err)
+	}
 	if _, ok := preparedExprRegexps.Load("^abc-[0-9]+$"); !ok {
 		t.Fatal("PrepareExprRegexps() did not cache the configured pattern")
 	}
@@ -338,17 +342,30 @@ func TestPrepareExprRegexpsSupportsBothRegexOperators(t *testing.T) {
 	}
 }
 
-func TestPrepareExprRegexpsPreservesInvalidPatternBehavior(t *testing.T) {
+func TestPrepareExprRegexpsFailsInvalidPattern(t *testing.T) {
+	invalid := []any{[]any{"$uri", "~", "["}}
+	valid := []any{[]any{"$uri", "~", "^/hello"}}
+	if err := PrepareExprRegexps(invalid); err == nil {
+		t.Fatal("PrepareExprRegexps(invalid pattern) error = nil")
+	}
+	if err := PrepareExprRegexps(valid); err != nil {
+		t.Fatalf("PrepareExprRegexps(valid) error = %v", err)
+	}
+	if err := PrepareExprRegexps(valid, invalid); err == nil {
+		t.Fatal("PrepareExprRegexps(valid, invalid) error = nil")
+	}
+}
+
+func TestExprMatchedUnpreparedPatternRetainsNoMatchBehavior(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	match := []any{[]any{"$uri", "~", "["}}
-	notMatch := []any{[]any{"$uri", "!~", "["}}
-	PrepareExprRegexps(match, notMatch)
+	match := []any{[]any{"$uri", "~", "^/never-prepared$"}}
+	notMatch := []any{[]any{"$uri", "!~", "^/never-prepared$"}}
 
 	if ExprMatched(r, match, 0) {
-		t.Fatal("invalid positive regex matched, want false")
+		t.Fatal("unprepared positive regex matched, want false")
 	}
 	if !ExprMatched(r, notMatch, 0) {
-		t.Fatal("invalid negative regex did not match, want existing true behavior")
+		t.Fatal("unprepared negative regex did not match, want existing true behavior")
 	}
 }
 
@@ -489,6 +506,31 @@ func TestNestedLogMapReturnsExistingOrCreates(t *testing.T) {
 	created["new"] = 1
 	if fields["created"].(map[string]any)["new"] != 1 {
 		t.Fatal("NestedLogMap() did not install the created map into fields")
+	}
+}
+
+func TestRequestHeaderValueMatchesHeaderGet(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Trace-Id", "abc-123")
+	request.Header.Set("X-Simple", "simple-value")
+
+	for name, want := range map[string]string{
+		"X-Trace-Id": "abc-123",
+		"x-trace-id": "abc-123",
+		"X-trace-Id": "abc-123",
+		"X-Simple":   "simple-value",
+		"x_simple":   "simple-value",
+		"X-Missing":  "",
+		"":           "",
+	} {
+		if got := requestHeaderValue(request.Header, name); got != want {
+			t.Fatalf("requestHeaderValue(%q) = %q, want %q", name, got, want)
+		}
+	}
+
+	longName := strings.Repeat("X", 200)
+	if got := requestHeaderValue(request.Header, longName); got != request.Header.Get(longName) {
+		t.Fatalf("requestHeaderValue(long) = %q, want Header.Get = %q", got, request.Header.Get(longName))
 	}
 }
 

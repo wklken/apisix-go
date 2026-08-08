@@ -195,7 +195,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	); err != nil {
+		return err
+	}
 	keyring, enabled := data_encryption.Keyring()
 	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SecretKey)
 	if err != nil {

@@ -57,7 +57,7 @@ source .envrc
 go test ./...
 ```
 
-The main checkout's `.cache/shared/` directory holds one copy of Go toolchains, modules, build cache, and installed development tools for all linked worktrees. Each worktree keeps temporary files, telemetry, benchmark/coverage evidence, and the `make build` output (`.cache/out/apisix`) in its own `.cache/`. All of these paths are ignored by Git, so normal tests and builds do not write to user-level `/private` or home-directory caches. Run `make cache-status` to inspect the resolved paths, `make clean` to remove the local application binary, or `make cache-clean-local` after stopping an agent to remove that worktree's pre-migration duplicate Go caches.
+The main checkout's `.cache/shared/` directory holds one copy of Go toolchains, modules, build cache, and installed development tools for all linked worktrees. Each worktree keeps temporary files, telemetry, benchmark/coverage evidence, and the `make build` output (`.cache/out/apisix`, set by `.envrc` via `BINARY_PATH`) in its own `.cache/`. Without `.envrc`, a plain `make build` writes `./apisix` at the repo root. All of these paths are ignored by Git, so normal tests and builds do not write to user-level `/private` or home-directory caches. Run `make cache-status` to inspect the resolved paths, `make clean` to remove the local application binary, or `make cache-clean-local` after stopping an agent to remove that worktree's pre-migration duplicate Go caches.
 
 ## Plugin support
 

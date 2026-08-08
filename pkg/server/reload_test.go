@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -332,6 +333,48 @@ func TestReloadSkipsWhenContextCancelled(t *testing.T) {
 	if got := response.Header().Get("X-Handler"); got != "last-good" {
 		t.Fatalf("handler marker after cancelled reload = %q, want last-good", got)
 	}
+}
+
+func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/concurrent-reload.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		storage: storage,
+		routes:  newRouteHandler(nil, nil),
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					server.reload(context.Background())
+				}
+			}
+		}()
+	}
+	for range 500 {
+		response := httptest.NewRecorder()
+		server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
+		if response.Code == http.StatusInternalServerError {
+			t.Fatalf("request failed with %d while reloads were in flight", response.Code)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func equalStrings(left, right []string) bool {

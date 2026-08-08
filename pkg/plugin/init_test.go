@@ -1,7 +1,10 @@
 package plugin
 
 import (
+	"net/http"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 // pluginNameAliases maps registry keys to the plugin names they register,
@@ -45,5 +48,32 @@ func TestNewReturnsRegisteredPlugin(t *testing.T) {
 		if got := New(name); got == nil {
 			t.Fatalf("New(%q) = nil, want a plugin", name)
 		}
+	}
+}
+
+type chainTestPlugin struct {
+	base.BasePlugin
+}
+
+func (p *chainTestPlugin) Init() error     { return nil }
+func (p *chainTestPlugin) PostInit() error { return nil }
+func (p *chainTestPlugin) Handler(next http.Handler) http.Handler {
+	return next
+}
+func (p *chainTestPlugin) Config() any { return nil }
+
+func TestBuildPluginChainDoesNotMutateCallerSlice(t *testing.T) {
+	low := &chainTestPlugin{}
+	low.Name = "low"
+	low.SetPriority(10)
+	high := &chainTestPlugin{}
+	high.Name = "high"
+	high.SetPriority(100)
+
+	plugins := []Plugin{low, high}
+	BuildPluginChain(plugins...)
+
+	if plugins[0] != low || plugins[1] != high {
+		t.Fatalf("BuildPluginChain mutated the caller slice: got [%s %s], want [low high]", plugins[0].GetName(), plugins[1].GetName())
 	}
 }

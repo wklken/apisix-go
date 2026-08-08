@@ -335,7 +335,12 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 		return false
 	}
 	if segments[0].recursive {
-		return maskJSONRecursive(node, segments, rule)
+		segment := segments[0]
+		segment.recursive = false
+		remaining := make([]pathSegment, len(segments))
+		copy(remaining, segments)
+		remaining[0] = segment
+		return maskJSONRecursive(node, remaining, rule)
 	}
 	segment := segments[0]
 	if segment.name == "" {
@@ -407,16 +412,7 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 	return maskJSONNode(value, segments[1:], rule)
 }
 
-func maskJSONRecursive(node any, segments []pathSegment, rule MaskRule) bool {
-	if len(segments) == 0 {
-		return false
-	}
-	segment := segments[0]
-	segment.recursive = false
-	remaining := make([]pathSegment, len(segments))
-	copy(remaining, segments)
-	remaining[0] = segment
-
+func maskJSONRecursive(node any, remaining []pathSegment, rule MaskRule) bool {
 	masked := false
 	switch typed := node.(type) {
 	case map[string]any:
@@ -424,16 +420,16 @@ func maskJSONRecursive(node any, segments []pathSegment, rule MaskRule) bool {
 			masked = true
 		}
 		for _, value := range typed {
-			if maskJSONRecursive(value, segments, rule) {
+			if maskJSONRecursive(value, remaining, rule) {
 				masked = true
 			}
 		}
 	case []any:
-		if segment.name == "" && maskJSONNode(typed, remaining, rule) {
+		if remaining[0].name == "" && maskJSONNode(typed, remaining, rule) {
 			masked = true
 		}
 		for _, value := range typed {
-			if maskJSONRecursive(value, segments, rule) {
+			if maskJSONRecursive(value, remaining, rule) {
 				masked = true
 			}
 		}

@@ -24,6 +24,9 @@ type Plugin struct {
 	config    Config
 	client    *http.Client
 	h2cClient *http.Client
+	// baseURL is the parsed mirror host, reused per request; requests copy
+	// it instead of reparsing the static configuration.
+	baseURL *url.URL
 }
 
 const (
@@ -93,6 +96,9 @@ func (p *Plugin) PostInit() error {
 				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
 			},
 		},
+	}
+	if baseURL, err := url.Parse(p.config.Host); err == nil {
+		p.baseURL = baseURL
 	}
 
 	return nil
@@ -164,9 +170,15 @@ func (p *Plugin) buildMirrorRequest(r *http.Request, body []byte) (*http.Request
 }
 
 func (p *Plugin) mirrorURL(r *http.Request) (string, error) {
-	hostURL, err := url.Parse(p.config.Host)
-	if err != nil {
-		return "", err
+	var hostURL url.URL
+	if p.baseURL != nil {
+		hostURL = *p.baseURL
+	} else {
+		parsed, err := url.Parse(p.config.Host)
+		if err != nil {
+			return "", err
+		}
+		hostURL = *parsed
 	}
 
 	mirrorPath, rawQuery := r.URL.Path, r.URL.RawQuery

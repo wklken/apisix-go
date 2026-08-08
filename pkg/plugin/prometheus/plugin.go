@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -59,6 +60,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
+// scrapeHandler is built once and reused for every scrape; building it per
+// request is pure setup cost on the metrics endpoint.
+var scrapeHandler = sync.OnceValue(promhttp.Handler)
+
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	promhttp.Handler().ServeHTTP(w, r)
+	scrapeHandler().ServeHTTP(w, r)
 }

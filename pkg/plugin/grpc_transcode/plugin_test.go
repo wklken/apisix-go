@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
@@ -1432,3 +1433,50 @@ func unframeGRPCMessageForTest(t *testing.T, frame []byte) []byte {
 }
 
 var _ = protoregistry.NotFound
+
+func TestLoadBindingRefetchesOnProtoGenerationChange(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.GetStore(t.TempDir()+"/grpc-generation.db", events)
+	if err != nil {
+		t.Fatalf("get store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	content := testDescriptorContent(t)
+	putProto := func() {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/protos/echo-proto")
+		event.Value = []byte(`{"id":"echo-proto","content":"` + content + `"}`)
+		events <- event
+		storage.Sync()
+	}
+	putProto()
+
+	p := newTestPlugin(t, Config{
+		ProtoID: "echo-proto",
+		Service: "echo.EchoService",
+		Method:  "Echo",
+	})
+	first, err := p.loadBinding()
+	if err != nil {
+		t.Fatalf("first loadBinding() error = %v", err)
+	}
+	second, err := p.loadBinding()
+	if err != nil {
+		t.Fatalf("second loadBinding() error = %v", err)
+	}
+	if first != second {
+		t.Fatal("loadBinding() returned different bindings without a proto change")
+	}
+
+	putProto()
+	third, err := p.loadBinding()
+	if err != nil {
+		t.Fatalf("loadBinding() after proto change error = %v", err)
+	}
+	if third == nil {
+		t.Fatal("loadBinding() after proto change returned nil")
+	}
+}

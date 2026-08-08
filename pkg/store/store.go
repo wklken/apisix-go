@@ -58,9 +58,13 @@ type Store struct {
 
 	// configSnapshot is the published immutable route-build generation
 	// (routes, global rules, plugin metadata), rebuilt once per bucket change.
-	configSnapshot     atomic.Pointer[ConfigSnapshot]
+	configSnapshot      atomic.Pointer[ConfigSnapshot]
 	configSnapshotDirty atomic.Bool
 	configSnapshotMu    sync.Mutex
+
+	// protosGeneration increments on every protos bucket change so consumers
+	// can detect proto resource updates without re-reading the bucket.
+	protosGeneration atomic.Int64
 }
 
 // should it be global store?
@@ -341,6 +345,9 @@ func (s *Store) processEvent(event *Event) {
 	}
 	if processed && (bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata") {
 		s.configSnapshotDirty.Store(true)
+	}
+	if processed && bucket == "protos" {
+		s.protosGeneration.Add(1)
 	}
 	if processed && (IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket)) {
 		s.triggerEventUpdateHooks(event)

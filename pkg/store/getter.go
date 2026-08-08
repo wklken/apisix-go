@@ -725,3 +725,13 @@ func metadataIDForDecodeError(config []byte) string {
 	}
 	return "unknown"
 }
+
+// ProtoGeneration returns a counter that increments on every protos bucket
+// change. Consumers can compare it against the generation they loaded from to
+// skip re-reading the bucket when no proto resource changed.
+func ProtoGeneration() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.protosGeneration.Load()
+}

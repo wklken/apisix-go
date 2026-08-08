@@ -132,6 +132,8 @@ type pluginMetadata struct {
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
+// Plugin implements the udp-logger plugin, delivering access log entries to
+// a UDP socket through the shared batch processor.
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
@@ -141,11 +143,12 @@ type Plugin struct {
 	conn net.Conn
 }
 
+// Config carries the udp-logger plugin configuration.
 type Config struct {
 	Host                string            `json:"host"`
 	Port                int               `json:"port"`
-	Timeout             int               `json:"timeout,omitempty"`    // 使用指针以区分默认值和未设置
-	LogFormat           map[string]string `json:"log_format,omitempty"` // 使用指针类型以便跳过默认空值
+	Timeout             int               `json:"timeout,omitempty"`
+	LogFormat           map[string]string `json:"log_format,omitempty"`
 	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
 	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
@@ -163,10 +166,12 @@ type Config struct {
 	addr string
 }
 
+// Config returns the plugin configuration.
 func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// Init registers the plugin schema and initializes the buffered send path.
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -178,6 +183,8 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// PostInit resolves expression regexps and applies defaults, metadata, and
+// the batch processor.
 func (p *Plugin) PostInit() error {
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
@@ -230,6 +237,8 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+// Handler logs the request after the downstream response completes, honoring
+// the configured body capture expressions.
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
@@ -301,6 +310,7 @@ func resolveUDPLogFormat(r *http.Request, request accessRequest, format map[stri
 	})
 }
 
+// Send marshals and delivers a single log entry over UDP.
 func (p *Plugin) Send(log map[string]any) {
 	logMessage, err := json.Marshal(log)
 	if err != nil {
@@ -313,6 +323,7 @@ func (p *Plugin) Send(log map[string]any) {
 	}
 }
 
+// SendBatch delivers an encoded log batch over UDP.
 func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := encodeBatch(entries, batchMaxSize)
 	if err != nil {

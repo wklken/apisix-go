@@ -150,7 +150,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo)
+		if err := p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo); err != nil {
+			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		if status != http.StatusOK {
 			if reason == "" {
 				reason = http.StatusText(status)
@@ -289,16 +292,25 @@ func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
 	return &client
 }
 
-func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix string, userInfo map[string]any) {
+func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix string, userInfo map[string]any) error {
 	if len(userInfo) == 0 {
-		return
+		return nil
 	}
 
-	userID := fmt.Sprint(userInfo["id"])
-	username := fmt.Sprint(userInfo["username"])
+	userID, err := identityFieldString(userInfo["id"], "id")
+	if err != nil {
+		return err
+	}
+	username, err := identityFieldString(userInfo["username"], "username")
+	if err != nil {
+		return err
+	}
 	nickname := username
 	if userInfo["nickname"] != nil {
-		nickname = fmt.Sprint(userInfo["nickname"])
+		nickname, err = identityFieldString(userInfo["nickname"], "nickname")
+		if err != nil {
+			return err
+		}
 	}
 	escapedNickname := url.QueryEscape(nickname)
 
@@ -310,6 +322,20 @@ func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix s
 	for key, value := range headers {
 		w.Header().Set(key, value)
 		r.Header.Set(key, value)
+	}
+	return nil
+}
+
+func identityFieldString(value any, name string) (string, error) {
+	switch v := value.(type) {
+	case string:
+		return v, nil
+	case nil:
+		return "", nil
+	case int, int64, uint64, float64:
+		return fmt.Sprint(v), nil
+	default:
+		return "", fmt.Errorf("wolf-rbac userinfo field %q has unsupported type %T", name, value)
 	}
 }
 

@@ -85,13 +85,14 @@ func TestSignAWSRequestWithOptionsReproducesComprehendSigning(t *testing.T) {
 		AccessKeyID:     "AKIDEXAMPLE",
 		SecretAccessKey: "secret",
 	}, SignAWSRequestOptions{
-		Region:           "us-east-1",
-		Service:          "comprehend",
-		SetSecurityToken: true,
-		CanonicalHeaders: []string{"content-type", "host", "x-amz-date", "x-amz-target"},
-		HeaderValue:      strings.TrimSpace,
-		CanonicalURI:     CanonicalURIPlain,
-		CanonicalQuery:   CanonicalQueryRaw,
+		Region:                 "us-east-1",
+		Service:                "comprehend",
+		SetSecurityToken:       true,
+		DisableURIPathEscaping: true,
+		CanonicalHeaders:       []string{"content-type", "host", "x-amz-date", "x-amz-target"},
+		HeaderValue:            strings.TrimSpace,
+		CanonicalURI:           CanonicalURIPlain,
+		CanonicalQuery:         CanonicalQueryRaw,
 	}, now)
 	if err != nil {
 		t.Fatalf("SignAWSRequestWithOptions() error = %v", err)
@@ -199,5 +200,75 @@ func TestCanonicalRequestComponentsMatchAPISIXNormalization(t *testing.T) {
 		"Signature=9987dd8aba430aa60259a131a13d37a02b0645e88d1fdc68845c647db8e18c39"
 	if got := req.Header.Get("Authorization"); got != wantAuth {
 		t.Fatalf("Authorization = %q, want %q", got, wantAuth)
+	}
+}
+
+func TestSignAWSRequestProviderFunctionShapes(t *testing.T) {
+	body := []byte(`{"model":"claude"}`)
+	now := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
+	newRequest := func() *http.Request {
+		req, err := http.NewRequest(
+			http.MethodGet,
+			"https://bedrock-runtime.us-east-1.amazonaws.com/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123%3Aapplication-inference-profile%2Ftest/converse",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+
+	shapes := []struct {
+		name   string
+		opts   SignAWSRequestOptions
+		signed bool
+	}{
+		{
+			name: "default signer",
+			opts: SignAWSRequestOptions{
+				Region: "us-east-1", Service: "bedrock", IncludePayloadHash: true, SetSecurityToken: true,
+			},
+			signed: true,
+		},
+		{
+			name: "plain uri canonicalizer",
+			opts: SignAWSRequestOptions{
+				Region: "us-east-1", Service: "bedrock", IncludePayloadHash: true, SetSecurityToken: true,
+				DisableURIPathEscaping: true, CanonicalURI: CanonicalURIPlain,
+			},
+			signed: true,
+		},
+		{
+			name: "cleaned uri canonicalizer",
+			opts: SignAWSRequestOptions{
+				Region: "us-east-1", Service: "bedrock", IncludePayloadHash: true, SetSecurityToken: true,
+				CanonicalURI: CanonicalURICleaned,
+			},
+			signed: true,
+		},
+	}
+	signatures := make(map[string]string, len(shapes))
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			req := newRequest()
+			err := SignAWSRequestWithOptions(req, body, AWSConfig{
+				AccessKeyID: "AKIDEXAMPLE", SecretAccessKey: "secret",
+			}, shape.opts, now)
+			if err != nil {
+				t.Fatalf("SignAWSRequestWithOptions() error = %v", err)
+			}
+			authorization := req.Header.Get("Authorization")
+			if !strings.HasPrefix(authorization, "AWS4-HMAC-SHA256 ") {
+				t.Fatalf("Authorization = %q, want AWS4 signature", authorization)
+			}
+			signatures[shape.name] = authorization
+		})
+	}
+	if signatures["default signer"] == signatures["plain uri canonicalizer"] {
+		t.Fatal("default and plain-uri shapes signed the same path")
+	}
+	if signatures["plain uri canonicalizer"] == signatures["cleaned uri canonicalizer"] {
+		t.Fatal("plain-uri and cleaned-uri shapes signed the same path")
 	}
 }

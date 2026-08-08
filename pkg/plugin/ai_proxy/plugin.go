@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +63,10 @@ const (
 	name     = "ai-proxy"
 )
 
-var errInvalidClientRequest = errors.New("invalid client request")
+var (
+	errInvalidClientRequest = errors.New("invalid client request")
+	errRequestBodyTooLarge  = errors.New("request body exceeds max_req_body_size")
+)
 
 const schema = `
 {
@@ -378,7 +379,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		body, document, protocol, err := p.readJSONDocument(r)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "max_req_body_size") {
+			if errors.Is(err, errRequestBodyTooLarge) {
 				status = http.StatusRequestEntityTooLarge
 				logger.Errorf("failed to read request body: %v", err)
 			}
@@ -577,9 +578,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		)
 	}
 	if r.ContentLength > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
-			"request body exceeds max_req_body_size",
-		)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 
 	reader := io.LimitReader(r.Body, p.config.MaxReqBodySize+1)
@@ -595,9 +594,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("could not get body: %w", err)
 	}
 	if int64(len(body)) > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
-			"request body exceeds max_req_body_size",
-		)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
@@ -611,21 +608,36 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		)
 	}
 	bodyTab := document.Raw
-	originalBody := ai_common.CloneJSONValue(bodyTab).(map[string]any)
+	changed := false
 	protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 	if err != nil {
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, err
 	}
-	maps.Copy(bodyTab, ai_common.CloneJSONValue(p.config.Options).(map[string]any))
-	if protocol != ai_protocols.AnthropicMessages || !ai_protocols.ProviderUsesOpenAIChat(p.config.Provider) {
-		p.applyLLMOptions(bodyTab, protocol)
-		if document.IsStreaming(protocol) && protocol == ai_protocols.OpenAIChat {
-			bodyTab["stream_options"] = map[string]any{"include_usage": true}
+	for key, value := range p.config.Options {
+		if !ai_common.JSONValueEqual(bodyTab[key], value) {
+			changed = true
 		}
-		p.applyRequestBodyOverride(bodyTab, protocol)
-		p.applyProviderBodyRules(bodyTab)
+		bodyTab[key] = ai_common.CloneJSONValue(value)
 	}
-	if reflect.DeepEqual(originalBody, bodyTab) {
+	if protocol != ai_protocols.AnthropicMessages || !ai_protocols.ProviderUsesOpenAIChat(p.config.Provider) {
+		if p.applyLLMOptions(bodyTab, protocol) {
+			changed = true
+		}
+		if document.IsStreaming(protocol) && protocol == ai_protocols.OpenAIChat {
+			streamOptions := map[string]any{"include_usage": true}
+			if !ai_common.JSONValueEqual(bodyTab["stream_options"], streamOptions) {
+				changed = true
+			}
+			bodyTab["stream_options"] = streamOptions
+		}
+		if p.applyRequestBodyOverride(bodyTab, protocol) {
+			changed = true
+		}
+		if p.applyProviderBodyRules(bodyTab) {
+			changed = true
+		}
+	}
+	if !changed {
 		return body, document, protocol, nil
 	}
 
@@ -639,13 +651,13 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 	return rewritten, document, protocol, nil
 }
 
-func (p *Plugin) applyRequestBodyOverride(body map[string]any, protocol ai_protocols.Protocol) {
+func (p *Plugin) applyRequestBodyOverride(body map[string]any, protocol ai_protocols.Protocol) bool {
 	override := p.requestBodyOverride(protocol)
 	if len(override) == 0 {
-		return
+		return false
 	}
 	force := p.config.Override.RequestBodyForceOverride != nil && *p.config.Override.RequestBodyForceOverride
-	ai_common.MergeBodyMap(body, override, force)
+	return ai_common.MergeBodyMap(body, override, force)
 }
 
 func (p *Plugin) requestBodyOverride(protocol ai_protocols.Protocol) map[string]any {
@@ -664,53 +676,75 @@ func (p *Plugin) requestBodyOverride(protocol ai_protocols.Protocol) map[string]
 	return p.config.Override.RequestBody
 }
 
-func (p *Plugin) applyProviderBodyRules(body map[string]any) {
+func (p *Plugin) applyProviderBodyRules(body map[string]any) bool {
 	if p.config.Provider == "azure-openai" {
-		delete(body, "model")
+		if _, ok := body["model"]; ok {
+			delete(body, "model")
+			return true
+		}
 	}
+	return false
 }
 
-func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Protocol) {
+func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Protocol) bool {
 	if p.config.Override.LLMOptions.MaxTokens == 0 {
-		return
+		return false
 	}
 	if protocol == ai_protocols.OpenAIEmbeddings {
-		return
+		return false
+	}
+	changed := false
+	set := func(key string, value any) {
+		if !ai_common.JSONValueEqual(body[key], value) {
+			changed = true
+		}
+		body[key] = value
+	}
+	remove := func(key string) {
+		if _, ok := body[key]; ok {
+			delete(body, key)
+			changed = true
+		}
 	}
 	switch p.config.Provider {
 	case "openai":
 		switch protocol {
 		case ai_protocols.OpenAIChat:
-			body["max_completion_tokens"] = p.config.Override.LLMOptions.MaxTokens
-			delete(body, "max_tokens")
+			set("max_completion_tokens", p.config.Override.LLMOptions.MaxTokens)
+			remove("max_tokens")
 		case ai_protocols.OpenAIResponses:
-			body["max_output_tokens"] = p.config.Override.LLMOptions.MaxTokens
+			set("max_output_tokens", p.config.Override.LLMOptions.MaxTokens)
 		}
 	case "openai-compatible":
 		switch protocol {
 		case ai_protocols.OpenAIChat:
-			body["max_tokens"] = p.config.Override.LLMOptions.MaxTokens
+			set("max_tokens", p.config.Override.LLMOptions.MaxTokens)
 		case ai_protocols.OpenAIResponses:
-			body["max_output_tokens"] = p.config.Override.LLMOptions.MaxTokens
+			set("max_output_tokens", p.config.Override.LLMOptions.MaxTokens)
 		}
 	case "gemini", "vertex-ai":
 		if protocol == ai_protocols.OpenAIChat {
-			body["max_completion_tokens"] = p.config.Override.LLMOptions.MaxTokens
+			set("max_completion_tokens", p.config.Override.LLMOptions.MaxTokens)
 		}
 	case "bedrock":
 		if protocol == ai_protocols.BedrockConverse {
-			inferenceConfig, _ := body["inferenceConfig"].(map[string]any)
-			if inferenceConfig == nil {
+			inferenceConfig, ok := body["inferenceConfig"].(map[string]any)
+			if !ok {
 				inferenceConfig = make(map[string]any)
 				body["inferenceConfig"] = inferenceConfig
+				changed = true
+			}
+			if !ai_common.JSONValueEqual(inferenceConfig["maxTokens"], p.config.Override.LLMOptions.MaxTokens) {
+				changed = true
 			}
 			inferenceConfig["maxTokens"] = p.config.Override.LLMOptions.MaxTokens
 		}
 	default:
 		if protocol == ai_protocols.OpenAIChat {
-			body["max_tokens"] = p.config.Override.LLMOptions.MaxTokens
+			set("max_tokens", p.config.Override.LLMOptions.MaxTokens)
 		}
 	}
+	return changed
 }
 
 func (p *Plugin) buildProviderRequest(

@@ -2,9 +2,7 @@ package api_breaker
 
 import (
 	"net/http"
-	"regexp"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -177,8 +175,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
-
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -260,7 +256,7 @@ func containsStatus(statuses []int, status int) bool {
 }
 
 func resolveHeaderValue(r *http.Request, value string) string {
-	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return base.RequestVar(r, name, 0)
 	})
 }

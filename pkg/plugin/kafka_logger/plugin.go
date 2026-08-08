@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,11 +16,12 @@ import (
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -621,7 +623,7 @@ func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
 func (p *Plugin) brokerAddresses() []string {
 	addresses := make([]string, 0, len(p.config.Brokers)+len(p.config.BrokerList))
 	for _, broker := range p.config.Brokers {
-		addresses = append(addresses, net.JoinHostPort(broker.Host, fmt.Sprint(broker.Port)))
+		addresses = append(addresses, net.JoinHostPort(broker.Host, strconv.Itoa(broker.Port)))
 	}
 
 	keys := make([]string, 0, len(p.config.BrokerList))
@@ -630,7 +632,7 @@ func (p *Plugin) brokerAddresses() []string {
 	}
 	sort.Strings(keys)
 	for _, host := range keys {
-		addresses = append(addresses, net.JoinHostPort(host, fmt.Sprint(p.config.BrokerList[host])))
+		addresses = append(addresses, net.JoinHostPort(host, strconv.Itoa(p.config.BrokerList[host])))
 	}
 
 	return addresses

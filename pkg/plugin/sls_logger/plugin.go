@@ -6,16 +6,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -215,7 +217,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
-	p.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
+	p.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
@@ -277,7 +279,7 @@ func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.He
 	requestHeaders := headerFields(r.Header)
 	requestHeaders["host"] = r.Host
 	return map[string]any{
-		"client_ip": requestClientIP(r),
+		"client_ip": base.RemoteIP(r.RemoteAddr),
 		"request": map[string]any{
 			"method":      r.Method,
 			"uri":         r.URL.RequestURI(),
@@ -315,14 +317,6 @@ func queryFields(r *http.Request) map[string]any {
 		}
 	}
 	return fields
-}
-
-func requestClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func (p *Plugin) Send(log map[string]any) {

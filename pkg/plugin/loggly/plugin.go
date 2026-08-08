@@ -7,17 +7,19 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -424,7 +426,7 @@ func (p *Plugin) dial() (net.Conn, error) {
 	}
 	return net.DialTimeout(
 		"udp",
-		fmt.Sprintf("%s:%d", p.config.Host, p.config.Port),
+		net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port)),
 		time.Duration(p.config.Timeout)*time.Millisecond,
 	)
 }

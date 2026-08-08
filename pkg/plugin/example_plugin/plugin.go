@@ -1,8 +1,9 @@
 package example_plugin
 
 import (
-	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -95,7 +96,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.config.IP != "" {
 			r = traffic_split.WithOverride(r, &traffic_split.Override{
 				Scheme: "http",
-				Host:   fmt.Sprintf("%s:%d", p.config.IP, p.config.Port),
+				Host:   net.JoinHostPort(p.config.IP, strconv.Itoa(p.config.Port)),
 			})
 		}
 		next.ServeHTTP(w, r)

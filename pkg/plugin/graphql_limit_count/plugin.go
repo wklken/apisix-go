@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -610,7 +609,7 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 		return "", false
 	}
 
-	body, err := readBody(r, p.maxSize)
+	body, err := base.ReadRequestBodyLimited(r, p.maxSize)
 	if err != nil || len(bytes.TrimSpace(body)) == 0 {
 		http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
 		return "", false
@@ -721,7 +720,7 @@ func (p *Plugin) newRedisLimiter() countLimiter {
 	)
 
 	options := &redis.Options{
-		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+		Addr:         net.JoinHostPort(p.config.RedisHost, strconv.Itoa(p.config.RedisPort)),
 		Username:     p.config.RedisUsername,
 		Password:     p.config.RedisPassword,
 		DB:           p.config.RedisDatabase,
@@ -918,21 +917,6 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		return value
 	}
 	return requestVar(r, "remote_addr")
-}
-
-func readBody(r *http.Request, maxSize int) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSize)+1))
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err == nil && len(body) > maxSize {
-		err = fmt.Errorf("graphql request body exceeds maximum size %d", maxSize)
-	}
-	return body, err
 }
 
 func requestVar(r *http.Request, key string) string {

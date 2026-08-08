@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -47,7 +48,7 @@ func newSyslogTransport(config Config) (*syslogTransport, error) {
 		return nil, errors.New(`"flush_limit" should be < "drop_limit"`)
 	}
 	if config.addr == "" {
-		config.addr = net.JoinHostPort(config.Host, fmt.Sprint(config.Port))
+		config.addr = net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	}
 	return &syslogTransport{
 		config: config,

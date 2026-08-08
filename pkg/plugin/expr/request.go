@@ -8,6 +8,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func RequestValue(r *http.Request, name string) any {
@@ -40,11 +41,7 @@ func RequestValue(r *http.Request, name string) any {
 		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
 			return value
 		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
+		return base.RemoteIP(r.RemoteAddr)
 	case name == "remote_port":
 		if value := apisixctx.GetString(r.Context(), "remote_port"); value != "" {
 			return value
@@ -61,7 +58,7 @@ func RequestValue(r *http.Request, name string) any {
 		return ""
 	case strings.HasPrefix(name, "http_"):
 		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return requestHeaderValue(r.Header, header)
+		return HeaderValue(r.Header, header)
 	}
 
 	key := "$" + name
@@ -81,7 +78,10 @@ func String(value any) string {
 	return stringValue(value)
 }
 
-func requestHeaderValue(header http.Header, name string) any {
+// HeaderValue returns the single header value when exactly one exists, the
+// value slice for repeated headers, and an empty string when the header is
+// absent.
+func HeaderValue(header http.Header, name string) any {
 	values := header.Values(name)
 	if len(values) == 0 {
 		return ""

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -13,9 +14,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	limiter "github.com/ulule/limiter/v3"
-	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -24,6 +22,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
+
+	limiter "github.com/ulule/limiter/v3"
+	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 type Plugin struct {
@@ -1006,7 +1008,7 @@ func (p *Plugin) redisConnConfig() base.RedisConnConfig {
 func (p *Plugin) redisSentinelOptions() *redis.FailoverOptions {
 	addresses := make([]string, 0, len(p.config.RedisSentinels))
 	for _, sentinel := range p.config.RedisSentinels {
-		addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
+		addresses = append(addresses, net.JoinHostPort(sentinel.Host, strconv.Itoa(sentinel.Port)))
 	}
 	return &redis.FailoverOptions{
 		MasterName:       p.config.RedisMasterName,

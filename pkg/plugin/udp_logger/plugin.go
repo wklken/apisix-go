@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 const (
@@ -210,7 +212,7 @@ func (p *Plugin) PostInit() error {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
+	p.config.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
 	p.BatchProcessor = base.NewBatchProcessor("udp logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,

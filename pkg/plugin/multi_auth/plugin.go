@@ -204,6 +204,15 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	}
 }
 
+// truncateAuthDiagnostic appends message to buffer without a separator,
+// keeping the combined diagnostic within the byte limit.
+func truncateAuthDiagnostic(buffer *bytes.Buffer, message string) {
+	remaining := maxFailureDiagnosticBytes - buffer.Len()
+	if remaining > 0 {
+		_, _ = buffer.WriteString(message[:min(len(message), remaining)])
+	}
+}
+
 func appendFailureDiagnostic(buffer *bytes.Buffer, message string) {
 	message = strings.TrimSpace(message)
 	if message == "" || buffer.Len() >= maxFailureDiagnosticBytes {
@@ -214,10 +223,7 @@ func appendFailureDiagnostic(buffer *bytes.Buffer, message string) {
 		separator := "; "
 		_, _ = buffer.WriteString(separator[:min(len(separator), remaining)])
 	}
-	remaining := maxFailureDiagnosticBytes - buffer.Len()
-	if remaining > 0 {
-		_, _ = buffer.WriteString(message[:min(len(message), remaining)])
-	}
+	truncateAuthDiagnostic(buffer, message)
 }
 
 func (a configuredAuth) isolateRequestBody(original *http.Request, probe *http.Request) *probeBodyState {
@@ -289,10 +295,7 @@ func (w *probeResponseWriter) Write(body []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	remaining := maxFailureDiagnosticBytes - w.body.Len()
-	if remaining > 0 {
-		_, _ = w.body.Write(body[:min(len(body), remaining)])
-	}
+	truncateAuthDiagnostic(&w.body, string(body))
 	return len(body), nil
 }
 

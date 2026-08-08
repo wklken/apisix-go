@@ -1,6 +1,7 @@
 package multi_auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -520,6 +521,67 @@ func TestProbeResponseWriterBoundsFailureDiagnostic(t *testing.T) {
 	}
 	if writer.body.Len() != maxFailureDiagnosticBytes {
 		t.Fatalf("captured diagnostic bytes = %d, want %d", writer.body.Len(), maxFailureDiagnosticBytes)
+	}
+}
+
+func TestFailureDiagnosticTruncationBoundaries(t *testing.T) {
+	const limit = maxFailureDiagnosticBytes
+	long := strings.Repeat("x", limit+1024)
+
+	t.Run("below limit", func(t *testing.T) {
+		var buffer bytes.Buffer
+		appendFailureDiagnostic(&buffer, "short")
+		if got := buffer.String(); got != "short" {
+			t.Fatalf("diagnostic = %q, want short", got)
+		}
+	})
+	t.Run("exactly at limit", func(t *testing.T) {
+		var buffer bytes.Buffer
+		appendFailureDiagnostic(&buffer, long[:limit])
+		if buffer.Len() != limit {
+			t.Fatalf("diagnostic bytes = %d, want %d", buffer.Len(), limit)
+		}
+	})
+	t.Run("above limit single message", func(t *testing.T) {
+		var buffer bytes.Buffer
+		appendFailureDiagnostic(&buffer, long)
+		if buffer.Len() != limit {
+			t.Fatalf("diagnostic bytes = %d, want %d", buffer.Len(), limit)
+		}
+	})
+	t.Run("above limit across messages", func(t *testing.T) {
+		var buffer bytes.Buffer
+		appendFailureDiagnostic(&buffer, strings.Repeat("a", limit/2))
+		appendFailureDiagnostic(&buffer, strings.Repeat("b", limit/2+64))
+		if buffer.Len() != limit {
+			t.Fatalf("diagnostic bytes = %d, want %d", buffer.Len(), limit)
+		}
+	})
+	t.Run("separator split point", func(t *testing.T) {
+		var buffer bytes.Buffer
+		appendFailureDiagnostic(&buffer, strings.Repeat("a", limit-1))
+		appendFailureDiagnostic(&buffer, "b")
+		if buffer.Len() != limit {
+			t.Fatalf("diagnostic bytes = %d, want %d", buffer.Len(), limit)
+		}
+		if got := buffer.String(); !strings.HasSuffix(got, ";") {
+			t.Fatalf("diagnostic = %q, want it to end at the separator split point", got)
+		}
+	})
+}
+
+func TestProbeWriterMatchesAppendFailureTruncation(t *testing.T) {
+	message := strings.Repeat("y", maxFailureDiagnosticBytes-10)
+
+	writer := &probeResponseWriter{header: http.Header{}}
+	if _, err := writer.Write([]byte(message)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	var buffer bytes.Buffer
+	appendFailureDiagnostic(&buffer, message)
+
+	if writer.body.String() != buffer.String() {
+		t.Fatalf("probe writer diagnostic = %q, append diagnostic = %q, want identical bounded output", writer.body.String(), buffer.String())
 	}
 }
 

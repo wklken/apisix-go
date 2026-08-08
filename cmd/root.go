@@ -92,8 +92,6 @@ func startupConfigSummary(cfg *config.Config) map[string]any {
 }
 
 func Start() error {
-	fmt.Println("It's apisix")
-
 	// FIXME: merge config.yaml and config-default.yaml
 	// load global config
 	if cfgFile != "" {

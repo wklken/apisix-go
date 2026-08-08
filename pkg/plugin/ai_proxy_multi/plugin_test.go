@@ -579,6 +579,18 @@ func TestHandlerSkipsActivelyUnhealthyHigherPriorityInstance(t *testing.T) {
 		},
 	}})
 
+	// Probes run on the plugin-owned refresher, so the request itself must
+	// not be the probe trigger: wake a refresh and wait for the published
+	// snapshot to record the unhealthy instance before selecting.
+	p.refreshHealth(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for p.instanceHealthy(0) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if p.instanceHealthy(0) {
+		t.Fatal("health snapshot never recorded the failing probe")
+	}
+
 	body := serveChat(t, p, "")
 	if highProviderCalls.Load() != 0 || lowProviderCalls.Load() != 1 || !strings.Contains(body, `"instance":"low"`) {
 		t.Fatalf(
@@ -1615,4 +1627,118 @@ func TestHealthProbeConcurrentProbesAreRaceFree(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestHealthDueCheckDoesNotDelaySelection(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		close(probeStarted)
+		<-releaseProbe
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	blocked := time.Now().Add(time.Hour)
+	p.health[0].nextCheck = blocked.Add(-time.Hour)
+
+	p.refreshHealth(context.Background())
+	<-probeStarted
+
+	// While the blocking probe is in flight, selection must use the last
+	// snapshot and must not wait for the probe to finish.
+	start := time.Now()
+	index, ok := p.pickInstance(nil, nil)
+	if !ok || index != 0 {
+		t.Fatalf("pickInstance = (%d, %v), want instance 0", index, ok)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("selection waited %s for the in-flight probe", elapsed)
+	}
+	if !p.instanceHealthy(0) {
+		t.Fatal("stale-but-valid health became unreadable during refresh")
+	}
+
+	close(releaseProbe)
+	p.Stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for probeCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if probeCalls.Load() != 1 {
+		t.Fatalf("probe calls = %d, want exactly 1", probeCalls.Load())
+	}
+}
+
+func TestHealthConcurrentWakesRunOnlyOneRefreshPass(t *testing.T) {
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			p.refreshHealth(context.Background())
+		})
+	}
+	wg.Wait()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for probeCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("probe calls after 16 concurrent wakes = %d, want exactly 1", got)
+	}
+	p.Stop()
+}
+
+func TestHealthStopJoinsInFlightRefresh(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		close(probeStarted)
+		<-releaseProbe
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+	p.refreshHealth(context.Background())
+	<-probeStarted
+
+	// Stop must join the refresher: it cannot return while the in-flight
+	// probe is still blocked, and no probe can start afterwards.
+	stopped := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the probe was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseProbe)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not join the refresher after the probe completed")
+	}
+	p.Stop()
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("probe calls after Stop = %d, want exactly 1", got)
+	}
 }

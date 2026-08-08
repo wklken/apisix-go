@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -46,6 +47,16 @@ type Plugin struct {
 	healthNow func() time.Time
 
 	healthClients map[int]*http.Client
+
+	healthStart    sync.Once
+	healthStopOnce sync.Once
+	stoppedHealth  atomic.Bool
+	wakeHealth     chan struct{}
+	stopHealth     chan struct{}
+	healthDone     chan struct{}
+	healthCtx      context.Context
+	healthCancel   context.CancelFunc
+	snapshot       atomic.Pointer[healthSnapshot]
 }
 
 type gcpTokenApplier interface {

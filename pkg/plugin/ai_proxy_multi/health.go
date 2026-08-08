@@ -52,7 +52,12 @@ type instanceHealthState struct {
 	tcpFailures  int
 	timeouts     int
 	nextCheck    time.Time
-	checking     bool
+}
+
+// healthSnapshot is an immutable view of the latest probe results. Requests
+// read it without locking and never wait for an in-flight probe.
+type healthSnapshot struct {
+	healthy []bool
 }
 
 type healthProbeResult struct {
@@ -76,6 +81,22 @@ func (p *Plugin) initHealthStates() {
 			p.healthClients[index] = newHealthCheckClient(check)
 		}
 	}
+	p.publishHealthSnapshot()
+}
+
+// publishHealthSnapshot publishes the current probe state as an immutable
+// snapshot. Instances without health checks are always healthy. It is called
+// only by the plugin-owned refresher (and once at initialization), so no lock
+// is required.
+func (p *Plugin) publishHealthSnapshot() {
+	healthy := make([]bool, len(p.config.Instances))
+	for index := range healthy {
+		healthy[index] = true
+	}
+	for index, state := range p.health {
+		healthy[index] = state.healthy
+	}
+	p.snapshot.Store(&healthSnapshot{healthy: healthy})
 }
 
 // newHealthCheckClient builds one HTTP client for an immutable health-check
@@ -98,17 +119,28 @@ func (p *Plugin) healthClient(index int) *http.Client {
 }
 
 func (p *Plugin) Stop() {
-	p.healthMu.Lock()
-	clients := make([]*http.Client, 0, len(p.healthClients))
-	for _, client := range p.healthClients {
-		clients = append(clients, client)
-	}
-	p.healthClients = nil
-	p.healthMu.Unlock()
+	p.healthStopOnce.Do(func() {
+		p.stoppedHealth.Store(true)
+		if p.stopHealth != nil {
+			close(p.stopHealth)
+			<-p.healthDone
+		}
+		if p.healthCancel != nil {
+			p.healthCancel()
+		}
 
-	for _, client := range clients {
-		client.CloseIdleConnections()
-	}
+		p.healthMu.Lock()
+		clients := make([]*http.Client, 0, len(p.healthClients))
+		for _, client := range p.healthClients {
+			clients = append(clients, client)
+		}
+		p.healthClients = nil
+		p.healthMu.Unlock()
+
+		for _, client := range clients {
+			client.CloseIdleConnections()
+		}
+	})
 }
 
 func applyHealthDefaults(check *ActiveHealthCheck) {
@@ -154,17 +186,56 @@ func applyHealthDefaults(check *ActiveHealthCheck) {
 	}
 }
 
-func (p *Plugin) refreshHealth(ctx context.Context) {
+// refreshHealth wakes the plugin-owned refresher and returns immediately.
+// Probes never run on the request goroutine; selection reads the last
+// published snapshot. The request context is intentionally not used for
+// probes: they are bound to the plugin lifecycle instead.
+func (p *Plugin) refreshHealth(_ context.Context) {
+	p.wakeHealthRefresh()
+}
+
+// wakeHealthRefresh starts the single refresher on first use and wakes it for
+// one refresh pass. Wakes coalesce: concurrent requests never start more than
+// one probe cycle.
+func (p *Plugin) wakeHealthRefresh() {
+	if p.stoppedHealth.Load() {
+		return
+	}
+	p.healthStart.Do(func() {
+		p.healthCtx, p.healthCancel = context.WithCancel(context.Background())
+		p.wakeHealth = make(chan struct{}, 1)
+		p.stopHealth = make(chan struct{})
+		p.healthDone = make(chan struct{})
+		go p.healthLoop()
+	})
+	select {
+	case p.wakeHealth <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Plugin) healthLoop() {
+	defer close(p.healthDone)
+	for {
+		select {
+		case <-p.stopHealth:
+			return
+		case <-p.wakeHealth:
+		}
+		p.refreshHealthPass(p.healthCtx)
+	}
+}
+
+// refreshHealthPass probes every instance whose next check is due, records
+// the results, and publishes one immutable snapshot.
+func (p *Plugin) refreshHealthPass(ctx context.Context) {
 	now := p.healthNow()
 	due := make([]int, 0)
-	p.healthMu.Lock()
 	for index, state := range p.health {
-		if !state.checking && !now.Before(state.nextCheck) {
-			state.checking = true
+		if !now.Before(state.nextCheck) {
 			due = append(due, index)
 		}
 	}
-	p.healthMu.Unlock()
 
 	var wait sync.WaitGroup
 	for _, index := range due {
@@ -176,6 +247,7 @@ func (p *Plugin) refreshHealth(ctx context.Context) {
 		}(index)
 	}
 	wait.Wait()
+	p.publishHealthSnapshot()
 }
 
 func (p *Plugin) probeInstance(ctx context.Context, index int) healthProbeResult {
@@ -299,8 +371,6 @@ func instanceHealthBaseURL(instance Instance) (*url.URL, error) {
 }
 
 func (p *Plugin) recordProbeResult(index int, result healthProbeResult, now time.Time) {
-	p.healthMu.Lock()
-	defer p.healthMu.Unlock()
 	state := p.health[index]
 	if state == nil {
 		return
@@ -333,12 +403,17 @@ func (p *Plugin) recordProbeResult(index int, result healthProbeResult, now time
 		interval = check.Unhealthy.Interval
 	}
 	state.nextCheck = now.Add(time.Duration(interval) * time.Second)
-	state.checking = false
 }
 
+// instanceHealthy reads the last published snapshot; stale-but-valid health
+// stays readable while a refresh is in flight.
 func (p *Plugin) instanceHealthy(index int) bool {
-	p.healthMu.Lock()
-	defer p.healthMu.Unlock()
-	state := p.health[index]
-	return state == nil || state.healthy
+	snapshot := p.snapshot.Load()
+	if snapshot == nil {
+		return true
+	}
+	if index < 0 || index >= len(snapshot.healthy) {
+		return true
+	}
+	return snapshot.healthy[index]
 }

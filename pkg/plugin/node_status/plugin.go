@@ -63,6 +63,7 @@ func Track(next http.Handler) http.Handler {
 		totalRequests.Add(1)
 		activeRequests.Add(1)
 		defer func() {
+			// atomic.Uint64 has no Sub; wrapping subtraction decrements the active count.
 			activeRequests.Add(^uint64(0))
 			handledRequests.Add(1)
 		}()
@@ -75,10 +76,10 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	resp := Response{
 		ID: apisixid.Get(),
 		Status: map[string]string{
-			"active":   formatUint(activeRequests.Load()),
-			"accepted": formatUint(acceptedRequests.Load()),
-			"handled":  formatUint(handledRequests.Load()),
-			"total":    formatUint(totalRequests.Load()),
+			"active":   stringUint(activeRequests.Load()),
+			"accepted": stringUint(acceptedRequests.Load()),
+			"handled":  stringUint(handledRequests.Load()),
+			"total":    stringUint(totalRequests.Load()),
 			"reading":  "0",
 			"writing":  "0",
 			"waiting":  "0",
@@ -86,10 +87,6 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = util.WriteJSON(w, http.StatusOK, resp)
-}
-
-func formatUint(v uint64) string {
-	return stringUint(v)
 }
 
 func stringUint(v uint64) string {

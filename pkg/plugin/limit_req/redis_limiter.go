@@ -3,14 +3,15 @@ package limit_req
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
+	"time"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"math"
-	"strings"
-	"time"
 )
 
 type redisReqLimiter struct {

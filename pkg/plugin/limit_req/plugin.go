@@ -2,6 +2,12 @@ package limit_req
 
 import (
 	"fmt"
+	"math"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -11,11 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
-	"math"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
 )
 
 type Plugin struct {

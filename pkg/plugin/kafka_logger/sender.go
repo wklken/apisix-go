@@ -3,15 +3,16 @@ package kafka_logger
 import (
 	"context"
 	"fmt"
-	kafka "github.com/segmentio/kafka-go"
-	sasl "github.com/segmentio/kafka-go/sasl"
-	plain "github.com/segmentio/kafka-go/sasl/plain"
-	scram "github.com/segmentio/kafka-go/sasl/scram"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	kafka "github.com/segmentio/kafka-go"
+	sasl "github.com/segmentio/kafka-go/sasl"
+	plain "github.com/segmentio/kafka-go/sasl/plain"
+	scram "github.com/segmentio/kafka-go/sasl/scram"
 )
 
 type kafkaMessage struct {

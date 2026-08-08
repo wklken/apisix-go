@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -419,13 +418,14 @@ func (p *Plugin) encodeBatch(entries []map[string]any) ([]byte, error) {
 			return nil, fmt.Errorf("failed to marshal Splunk HEC event: %w", err)
 		}
 		body.Write(event)
+		body.WriteByte('\n')
 	}
 	return body.Bytes(), nil
 }
 
 func (p *Plugin) buildEvent(log map[string]any) splunkEvent {
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
+	hostname := base.Hostname()
+	if hostname == "" {
 		hostname = "-"
 	}
 

@@ -300,6 +300,17 @@ func (p *Plugin) PostInit() error {
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
+	// Version detection runs once per stable config at initialization, reusing
+	// the pooled client instead of building a transport per attempt.
+	if endpoint := p.endpointAddr(); endpoint != "" {
+		client, err := p.clientForEndpoint(endpoint)
+		if err != nil {
+			logger.Errorf("failed to create Elasticsearch client: %s", err)
+		} else {
+			p.fetchAndUpdateVersion(client)
+		}
+	}
+
 	return nil
 }
 
@@ -370,7 +381,6 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
-	p.fetchAndUpdateVersion(endpoint)
 
 	body, err := p.bulkBodyEntries(entries)
 	if err != nil {
@@ -510,14 +520,14 @@ func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 	return body, nil
 }
 
-func (p *Plugin) fetchAndUpdateVersion(endpoint string) {
+func (p *Plugin) fetchAndUpdateVersion(client *elasticsearch.Client) {
 	p.versionMu.Lock()
 	defer p.versionMu.Unlock()
 	if p.esVersion != "" {
 		return
 	}
 
-	version, err := p.getMajorVersion(endpoint)
+	version, err := p.getMajorVersion(client)
 	if err != nil {
 		logger.Errorf("failed to get Elasticsearch version: %s", err)
 		return
@@ -531,35 +541,16 @@ func (p *Plugin) elasticsearchVersion() string {
 	return p.esVersion
 }
 
-func (p *Plugin) getMajorVersion(endpoint string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	if p.config.Auth != nil {
-		req.SetBasicAuth(p.config.Auth.Username, p.config.Auth.Password)
-	}
-	for key, value := range p.config.Headers {
-		req.Header.Set(key, value)
-	}
-
-	client := &http.Client{
-		Timeout: time.Duration(p.config.Timeout) * time.Second,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout: time.Duration(p.config.Timeout) * time.Second,
-			}).DialContext,
-			ResponseHeaderTimeout: time.Duration(p.config.Timeout) * time.Second,
-			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !*p.config.SslVerify},
-		},
-	}
-	resp, err := client.Do(req)
+func (p *Plugin) getMajorVersion(client *elasticsearch.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
+	defer cancel()
+	resp, err := client.Info(client.Info.WithContext(ctx))
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("server returned status: %d", resp.StatusCode)
+	if resp.IsError() {
+		return "", fmt.Errorf("server returned status: %s", resp.Status())
 	}
 
 	var body struct {

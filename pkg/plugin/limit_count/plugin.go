@@ -1147,7 +1147,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					continue
 				}
 				key = p.consumerScopedKey(r, key)
-				logger.Infof("limit key: %s", key)
+				logger.Debugf("limit key: %s", key)
 				count, timeWindow, err := p.resolveRuleLimit(r, rule)
 				if err != nil {
 					if *p.config.AllowDegradation {

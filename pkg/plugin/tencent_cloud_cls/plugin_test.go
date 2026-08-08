@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -652,4 +654,147 @@ func encryptTencentCLSTestValue(t *testing.T, key string, value string) string {
 	ciphertext := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
 	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func waitCLSEntry(t *testing.T, entries <-chan logger.Entry, substring string) logger.Entry {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case entry := <-entries:
+			if strings.Contains(entry.Message, substring) {
+				return entry
+			}
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	t.Fatalf("timed out waiting for cls diagnostic containing %q", substring)
+	return logger.Entry{}
+}
+
+func TestBuildBatchPayloadReportsTruncatedFieldCount(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	big := strings.Repeat("v", maxSingleValueSize+10)
+	payload := p.buildBatchPayload([]map[string]any{{"big": big}})
+	if len(payload) == 0 {
+		t.Fatal("buildBatchPayload() = nil, want a payload despite truncation")
+	}
+
+	entry := waitCLSEntry(t, entries, "truncated")
+	if !strings.Contains(entry.Message, "1") {
+		t.Fatalf("truncation diagnostic = %q, want the truncated field count", entry.Message)
+	}
+}
+
+func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	// Six 1MB values in one entry exceed the 5MB group limit and must be
+	// reported as a dropped entry rather than sent.
+	huge := map[string]any{}
+	for i := range 6 {
+		huge["f"+string(rune('a'+i))] = strings.Repeat("v", maxSingleValueSize)
+	}
+	payload := p.buildBatchPayload([]map[string]any{huge})
+	if len(payload) != 0 {
+		t.Fatalf("buildBatchPayload() = %d bytes, want empty payload for an over-limit entry", len(payload))
+	}
+
+	entry := waitCLSEntry(t, entries, "dropped")
+	if !strings.Contains(entry.Message, "1") {
+		t.Fatalf("drop diagnostic = %q, want the dropped entry count", entry.Message)
+	}
+}
+
+func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stop)
+
+	p := &Plugin{}
+	p.applyDefaults()
+
+	// Six 1MB entries exceed the 5MB group limit; the last two are dropped
+	// and the remaining batch is still sent.
+	big := strings.Repeat("v", maxSingleValueSize)
+	logs := make([]map[string]any, 0, 6)
+	for range 6 {
+		logs = append(logs, map[string]any{"v": big})
+	}
+	payload := p.buildBatchPayload(logs)
+	if len(payload) == 0 {
+		t.Fatal("buildBatchPayload() = nil, want the accepted entries' payload")
+	}
+
+	entry := waitCLSEntry(t, entries, "dropped")
+	if !strings.Contains(entry.Message, "2") {
+		t.Fatalf("drop diagnostic = %q, want the dropped remainder count", entry.Message)
+	}
+}
+
+func TestAuthorizationSignTimeUsesSingleTimestamp(t *testing.T) {
+	p := &Plugin{config: Config{SecretID: "secret-id", SecretKey: "secret-key"}}
+	calls := 0
+	p.now = func() time.Time {
+		calls++
+		if calls > 1 {
+			return time.Unix(1710000001, 0)
+		}
+		return time.Unix(1710000000, 0)
+	}
+
+	auth := p.authorization()
+
+	start, end, ok := signTimeWindow(auth)
+	if !ok {
+		t.Fatalf("authorization = %q, want q-sign-time=start;end", auth)
+	}
+	if end-start != authExpireSeconds {
+		t.Fatalf("sign time window = %d seconds, want exactly %d", end-start, authExpireSeconds)
+	}
+	if calls != 1 {
+		t.Fatalf("now() called %d times, want exactly once per signature", calls)
+	}
+}
+
+func signTimeWindow(auth string) (int64, int64, bool) {
+	for part := range strings.SplitSeq(auth, "&") {
+		value, ok := strings.CutPrefix(part, "q-sign-time=")
+		if !ok {
+			continue
+		}
+		start, end, ok := strings.Cut(value, ";")
+		if !ok {
+			return 0, 0, false
+		}
+		startTime, err := strconv.ParseInt(start, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		endTime, err := strconv.ParseInt(end, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		return startTime, endTime, true
+	}
+	return 0, 0, false
 }

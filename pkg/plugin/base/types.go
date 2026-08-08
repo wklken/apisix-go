@@ -1,11 +1,11 @@
 package base
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
@@ -167,11 +167,11 @@ func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
 	case p.FireChan <- entry: // try and put into chan, if fail will to default
 	default:
 		if p.AsyncBlock {
-			fmt.Println("the log buffered chan is full! will block")
+			logger.Warn("the log buffered chan is full! will block")
 			p.FireChan <- entry // Blocks the goroutine because buffer is full.
 			return nil
 		}
-		fmt.Println("the log buffered chan is full! will drop")
+		logger.Warn("the log buffered chan is full! will drop")
 		// Drop message by default.
 	}
 	return nil

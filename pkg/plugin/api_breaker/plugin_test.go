@@ -3,8 +3,11 @@ package api_breaker
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -151,5 +154,44 @@ func TestHandlerUsesExponentialBreakerWindowCappedByConfiguration(t *testing.T) 
 	request(500)
 	if upstreamCalls != 4 {
 		t.Fatalf("upstream calls = %d, want 4", upstreamCalls)
+	}
+}
+
+func TestBreakerTimeLogIsDebugLevel(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	entries := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "breaker_time") {
+			entries <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	failures := 2
+	p := newTestPlugin(t, Config{
+		Unhealthy:     UnHealthCheck{Failures: &failures},
+		MaxBreakerSec: 300,
+	})
+	p.unhealthyCount = 2
+	p.lastUnhealthyTime = time.Now()
+
+	_ = p.shouldBreak()
+	select {
+	case entry := <-entries:
+		t.Fatalf("breaker_time logged at info level: %q", entry.Message)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("configure debug level: %v", err)
+	}
+	_ = p.shouldBreak()
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "breaker_time") {
+			t.Fatalf("debug entry = %q, want breaker_time", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("breaker_time not logged at debug level")
 	}
 }

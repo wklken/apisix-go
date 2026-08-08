@@ -2456,3 +2456,56 @@ func TestDelayedSyncConcurrentMutationDuringFlushIsNotLost(t *testing.T) {
 		t.Fatalf("localDelta after concurrent flush = %d, want the concurrent mutation 2 preserved", localDelta)
 	}
 }
+
+func TestLimitKeyLogIsDebugLevel(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	entries := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "limit key:") {
+			entries <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	p := newTestPlugin(t, Config{
+		RejectedCode: http.StatusServiceUnavailable,
+		Rules: []Rule{{
+			Key:        "${http_user}",
+			Count:      "${http_count ?? 2}",
+			TimeWindow: 60,
+		}},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("User", "jack")
+	request.Header.Set("Count", "5")
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	select {
+	case entry := <-entries:
+		t.Fatalf("limit key logged at info level: %q", entry.Message)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("configure debug level: %v", err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("User", "jack")
+	request.Header.Set("Count", "5")
+	response = httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "jack") {
+			t.Fatalf("debug entry = %q, want the resolved limit key", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("limit key not logged at debug level")
+	}
+}

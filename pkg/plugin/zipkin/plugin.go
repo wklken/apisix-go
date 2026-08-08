@@ -17,6 +17,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -24,16 +25,23 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client *resty.Client
+	client    *resty.Client
+	processor *logger_batch.Processor
 
 	clientRelease func()
 
 	sampleRandom func() (float64, error)
+
+	reportTimeout     time.Duration
+	maxPendingEntries int
 }
 
 const (
 	priority = 12011
 	name     = "zipkin"
+
+	defaultReportTimeout     = 5 * time.Second
+	defaultMaxPendingEntries = 100
 )
 
 const schema = `
@@ -81,19 +89,6 @@ type b3Context struct {
 	Sampled      string
 }
 
-type zipkinSpan struct {
-	TraceID        string            `json:"traceId"`
-	Name           string            `json:"name"`
-	ParentID       string            `json:"parentId,omitempty"`
-	ID             string            `json:"id"`
-	Kind           string            `json:"kind,omitempty"`
-	Timestamp      int64             `json:"timestamp"`
-	Duration       int64             `json:"duration"`
-	LocalEndpoint  zipkinEndpoint    `json:"localEndpoint"`
-	RemoteEndpoint *zipkinEndpoint   `json:"remoteEndpoint,omitempty"`
-	Tags           map[string]string `json:"tags,omitempty"`
-}
-
 type zipkinEndpoint struct {
 	ServiceName string `json:"serviceName"`
 	IPv4        string `json:"ipv4,omitempty"`
@@ -139,10 +134,20 @@ func (p *Plugin) PostInit() error {
 	if p.sampleRandom == nil {
 		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
 	}
+	if p.reportTimeout <= 0 {
+		p.reportTimeout = defaultReportTimeout
+	}
+	if p.maxPendingEntries <= 0 {
+		p.maxPendingEntries = defaultMaxPendingEntries
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Endpoint)
 	client := resty.New()
+	client.SetTimeout(p.reportTimeout)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: p.reportTimeout}).DialContext
+	client.SetTransport(transport)
 	value, release, err := shared.AcquireClient(
 		shared.ClientKey(name, configUID),
 		func() (any, error) { return client, nil },
@@ -154,10 +159,23 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
+	p.processor = logger_batch.New(logger_batch.Config{
+		Name:              "zipkin span reporter",
+		BatchMaxSize:      1,
+		MaxRetryCount:     0,
+		RetryDelay:        logger_batch.DefaultRetryDelay,
+		BufferDuration:    logger_batch.DefaultBufferDuration,
+		InactiveTimeout:   logger_batch.DefaultInactiveTimeout,
+		MaxPendingEntries: p.maxPendingEntries,
+	}, p.deliverSpans)
+
 	return nil
 }
 
 func (p *Plugin) Stop() {
+	if p.processor != nil {
+		p.processor.Stop()
+	}
 	if p.clientRelease != nil {
 		p.clientRelease()
 		p.clientRelease = nil
@@ -211,7 +229,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if ctx.Sampled == "1" {
-			p.reportSpan(p.buildSpan(ctx, r, recorder.status, start, time.Since(start)))
+			if !p.processor.Push(p.buildSpan(ctx, r, recorder.status, start, time.Since(start))) {
+				logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
+			}
 		}
 	}
 	return http.HandlerFunc(fn)
@@ -332,7 +352,7 @@ func (p *Plugin) buildSpan(
 	status int,
 	start time.Time,
 	duration time.Duration,
-) zipkinSpan {
+) map[string]any {
 	serverAddr := p.config.ServerAddr
 	if serverAddr == "" {
 		serverAddr = requestServerAddr(r)
@@ -361,36 +381,61 @@ func (p *Plugin) buildSpan(
 		tags["error"] = "true"
 	}
 
-	return zipkinSpan{
-		TraceID:   ctx.TraceID,
-		Name:      "apisix.request",
-		ParentID:  ctx.ParentSpanID,
-		ID:        ctx.SpanID,
-		Kind:      "SERVER",
-		Timestamp: start.UnixNano() / int64(time.Microsecond),
-		Duration:  duration.Nanoseconds() / int64(time.Microsecond),
-		LocalEndpoint: zipkinEndpoint{
-			ServiceName: p.config.ServiceName,
-			IPv4:        serverAddr,
-			Port:        requestServerPort(r),
-		},
-		RemoteEndpoint: remoteEndpoint,
-		Tags:           tags,
+	localEndpoint := map[string]any{"serviceName": p.config.ServiceName}
+	if serverAddr != "" {
+		localEndpoint["ipv4"] = serverAddr
 	}
+	if port := requestServerPort(r); port != 0 {
+		localEndpoint["port"] = port
+	}
+
+	span := map[string]any{
+		"traceId":       ctx.TraceID,
+		"name":          "apisix.request",
+		"id":            ctx.SpanID,
+		"kind":          "SERVER",
+		"timestamp":     start.UnixNano() / int64(time.Microsecond),
+		"duration":      duration.Nanoseconds() / int64(time.Microsecond),
+		"localEndpoint": localEndpoint,
+		"tags":          tags,
+	}
+	if ctx.ParentSpanID != "" {
+		span["parentId"] = ctx.ParentSpanID
+	}
+	if remoteEndpoint != nil {
+		endpoint := map[string]any{}
+		if remoteEndpoint.IPv6 != "" {
+			endpoint["ipv6"] = remoteEndpoint.IPv6
+		} else if remoteEndpoint.IPv4 != "" {
+			endpoint["ipv4"] = remoteEndpoint.IPv4
+		}
+		if remoteEndpoint.Port != 0 {
+			endpoint["port"] = remoteEndpoint.Port
+		}
+		span["remoteEndpoint"] = endpoint
+	}
+
+	return span
 }
 
-func (p *Plugin) reportSpan(span zipkinSpan) {
+// deliverSpans posts enqueued spans to the Zipkin collector. Delivery
+// failures are returned to the batch processor for accounting and never
+// alter the proxied response.
+func (p *Plugin) deliverSpans(entries []map[string]any, batchMaxSize int) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
 	resp, err := p.client.R().
 		SetHeader("Content-Type", "application/json").
-		SetBody([]zipkinSpan{span}).
+		SetBody(entries).
 		Post(p.config.Endpoint)
 	if err != nil {
-		logger.Errorf("failed to report zipkin span to %s: %s", p.config.Endpoint, err)
-		return
+		return 0, err
 	}
 	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		logger.Errorf("zipkin endpoint returned status code [%d], body [%s]", resp.StatusCode(), resp.String())
+		return 0, fmt.Errorf("zipkin endpoint returned status code [%d]", resp.StatusCode())
 	}
+	return 0, nil
 }
 
 func randomHex(reader io.Reader, n int) (string, error) {

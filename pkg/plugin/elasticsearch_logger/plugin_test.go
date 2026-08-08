@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -733,5 +734,34 @@ func TestResolveIndexVariableReferencesMatchesAPISIXTemplateContract(t *testing.
 	const want = `plain-logs.example--fallback--anonymous--\$host-${}`
 	if got != want {
 		t.Fatalf("resolved index = %q, want %q", got, want)
+	}
+}
+
+func TestVersionDetectionRunsOncePerStableConfig(t *testing.T) {
+	var versionGets atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			if versionGets.Add(1) == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		Timeout:       10,
+	})
+	p.Send(map[string]any{"path": "/a"})
+	p.Send(map[string]any{"path": "/b"})
+
+	if got := versionGets.Load(); got != 1 {
+		t.Fatalf("version detection requests = %d, want 1 per stable config", got)
 	}
 }

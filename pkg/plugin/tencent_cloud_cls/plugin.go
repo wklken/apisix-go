@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
@@ -398,7 +397,8 @@ func (p *Plugin) endpointURL() string {
 }
 
 func (p *Plugin) authorization() string {
-	signTime := fmt.Sprintf("%d;%d", p.now().Unix(), p.now().Unix()+authExpireSeconds)
+	now := p.now()
+	signTime := fmt.Sprintf("%d;%d", now.Unix(), now.Unix()+authExpireSeconds)
 	httpRequestInfo := fmt.Sprintf("%s\n%s\n%s\n%s\n", "post", clsAPIPath, "", "")
 	stringToSign := fmt.Sprintf("%s\n%s\n%s\n", "sha1", signTime, sha1Hex([]byte(httpRequestInfo)))
 	signKey := hmacSHA1Hex([]byte(p.config.SecretKey), []byte(signTime))
@@ -416,23 +416,32 @@ func (p *Plugin) authorization() string {
 func (p *Plugin) buildBatchPayload(logs []map[string]any) []byte {
 	group := []byte(nil)
 	totalSize := 0
-	for _, logEntry := range logs {
-		contents, size := normalizeLog(logEntry, p.config.GlobalTag)
+	truncatedValues := 0
+	droppedEntries := 0
+	for i, logEntry := range logs {
+		contents, size, truncated := normalizeLog(logEntry, p.config.GlobalTag)
+		truncatedValues += truncated
 		if size > maxLogGroupValueSize {
-			logger.Errorf("Tencent Cloud CLS log size is over 5MB, dropped")
+			droppedEntries++
 			continue
 		}
 		totalSize += size
 		if totalSize > maxLogGroupValueSize {
-			logger.Errorf("Tencent Cloud CLS batch size is over 5MB, dropped")
+			droppedEntries += len(logs) - i
 			break
 		}
 		group = appendBytesField(group, 1, appendLog(nil, p.now().UnixMilli(), contents))
 	}
+	if truncatedValues > 0 {
+		logger.Warnf("Tencent Cloud CLS truncated %d field value(s) over the 1MB single-value limit", truncatedValues)
+	}
+	if droppedEntries > 0 {
+		logger.Errorf("Tencent Cloud CLS dropped %d log(s) over the 5MB limit", droppedEntries)
+	}
 	if len(group) == 0 {
 		return nil
 	}
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+	if hostname := base.Hostname(); hostname != "" {
 		group = appendStringField(group, 4, hostname)
 	}
 	return appendBytesField(nil, 1, group)
@@ -443,13 +452,15 @@ type clsContent struct {
 	value string
 }
 
-func normalizeLog(log map[string]any, globalTag map[string]string) ([]clsContent, int) {
+func normalizeLog(log map[string]any, globalTag map[string]string) ([]clsContent, int, int) {
 	contents := make([]clsContent, 0, len(log)+len(globalTag))
 	size := 4
+	truncated := 0
 	for key, value := range log {
 		normalized := normalizeValue(value)
 		if len(normalized) > maxSingleValueSize {
 			normalized = normalized[:maxSingleValueSize]
+			truncated++
 		}
 		contents = append(contents, clsContent{key: key, value: normalized})
 		size += len(key) + len(normalized)
@@ -458,7 +469,7 @@ func normalizeLog(log map[string]any, globalTag map[string]string) ([]clsContent
 		contents = append(contents, clsContent{key: key, value: value})
 		size += len(key) + len(value)
 	}
-	return contents, size
+	return contents, size, truncated
 }
 
 func normalizeValue(value any) string {

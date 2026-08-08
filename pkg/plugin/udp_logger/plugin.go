@@ -18,6 +18,10 @@ const (
 	priority = 400
 	name     = "udp-logger"
 	version  = "apisix-go"
+
+	// maxUDPDatagramSize is the largest IPv4 UDP payload that fits in a
+	// single datagram without IP fragmentation.
+	maxUDPDatagramSize = 65507
 )
 
 const schema = `
@@ -129,6 +133,10 @@ type pluginMetadata struct {
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
+
+	// conn is a test seam for deterministic write-failure coverage; the
+	// production path always dials a fresh socket per batch.
+	conn net.Conn
 }
 
 type Config struct {
@@ -319,19 +327,39 @@ func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 	return body, nil
 }
 
+// payloadTooLargeError reports an encoded batch that cannot fit in one UDP
+// datagram; the batch processor accounts it as a failed delivery.
+type payloadTooLargeError struct {
+	size  int
+	limit int
+}
+
+func (e *payloadTooLargeError) Error() string {
+	return fmt.Sprintf("udp log payload of %d bytes exceeds the %d-byte datagram limit", e.size, e.limit)
+}
+
 func (p *Plugin) sendBody(body []byte) error {
-	conn, err := p.dial()
-	if err != nil {
-		return fmt.Errorf(
-			"failed to connect to udp server: host[%s] port[%d]: %w",
-			p.config.Host,
-			p.config.Port,
-			err,
-		)
+	if len(body) > maxUDPDatagramSize {
+		return &payloadTooLargeError{size: len(body), limit: maxUDPDatagramSize}
+	}
+
+	conn := p.conn
+	if conn == nil {
+		var err error
+		conn, err = p.dial()
+		if err != nil {
+			return fmt.Errorf(
+				"failed to connect to udp server: host[%s] port[%d]: %w",
+				p.config.Host,
+				p.config.Port,
+				err,
+			)
+		}
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err = conn.Write(body); err != nil {
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Second))
+	if _, err := conn.Write(body); err != nil {
 		return fmt.Errorf("failed to send log message: %s in udp-logger", err)
 	}
 	return nil

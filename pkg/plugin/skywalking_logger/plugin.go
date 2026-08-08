@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -338,7 +337,11 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	_ = batchMaxSize
 
 	endpoint := p.endpointURL()
-	resp, err := p.client.R().SetBody(p.buildEntries(entries)).Post(endpoint)
+	entriesPayload, err := p.buildEntries(entries)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := p.client.R().SetBody(entriesPayload).Post(endpoint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to SkyWalking endpoint %s: %w", endpoint, err)
 	}
@@ -355,15 +358,19 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	return 0, nil
 }
 
-func (p *Plugin) buildEntries(logs []map[string]any) []skyWalkingEntry {
+func (p *Plugin) buildEntries(logs []map[string]any) ([]skyWalkingEntry, error) {
 	entries := make([]skyWalkingEntry, 0, len(logs))
 	for _, logEntry := range logs {
-		entries = append(entries, p.buildEntry(logEntry))
+		entry, err := p.buildEntry(logEntry)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
 	}
-	return entries
+	return entries, nil
 }
 
-func (p *Plugin) buildEntry(log map[string]any) skyWalkingEntry {
+func (p *Plugin) buildEntry(log map[string]any) (skyWalkingEntry, error) {
 	payload := make(map[string]any, len(log))
 	for key, value := range log {
 		if key == internalSkyWalkingEndpoint || key == internalSkyWalkingTraceContext {
@@ -374,7 +381,7 @@ func (p *Plugin) buildEntry(log map[string]any) skyWalkingEntry {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		body = []byte(`{}`)
+		return skyWalkingEntry{}, fmt.Errorf("failed to marshal skywalking log entry: %w", err)
 	}
 
 	entry := skyWalkingEntry{
@@ -390,7 +397,7 @@ func (p *Plugin) buildEntry(log map[string]any) skyWalkingEntry {
 	if trace, ok := log[internalSkyWalkingTraceContext].(*traceContext); ok {
 		entry.TraceContext = trace
 	}
-	return entry
+	return entry, nil
 }
 
 func endpointFromLog(log map[string]any) string {
@@ -404,11 +411,10 @@ func (p *Plugin) serviceInstanceName() string {
 	if p.config.ServiceInstanceName != "$hostname" {
 		return p.config.ServiceInstanceName
 	}
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		return "$hostname"
+	if hostname := base.Hostname(); hostname != "" {
+		return hostname
 	}
-	return hostname
+	return "$hostname"
 }
 
 func (p *Plugin) endpointURL() string {

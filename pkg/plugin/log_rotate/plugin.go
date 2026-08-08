@@ -70,16 +70,23 @@ type Config struct {
 
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type configAlias Config
-	var decoded configAlias
-	if err := json.Unmarshal(data, &decoded); err != nil {
+
+	var parsed struct {
+		configAlias
+		MaxKept json.RawMessage `json:"max_kept"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+	*c = Config(parsed.configAlias)
+	if len(parsed.MaxKept) > 0 {
+		c.maxKeptConfigured = true
+		if string(parsed.MaxKept) != "null" {
+			if err := json.Unmarshal(parsed.MaxKept, &c.MaxKept); err != nil {
+				return err
+			}
+		}
 	}
-	*c = Config(decoded)
-	_, c.maxKeptConfigured = fields["max_kept"]
 	return nil
 }
 

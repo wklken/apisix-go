@@ -371,8 +371,9 @@ func TestSendBatchPostsConcatenatedSplunkHECEvents(t *testing.T) {
 		if !strings.Contains(body, `"path":"/a"`) || !strings.Contains(body, `"path":"/b"`) {
 			t.Fatalf("body = %q, want both Splunk events", body)
 		}
-		if strings.Contains(body, "\n") || strings.HasPrefix(body, "[") {
-			t.Fatalf("body = %q, want concatenated JSON event objects", body)
+		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+		if len(lines) != 2 || !strings.HasPrefix(body, "{") || !strings.HasSuffix(body, "\n") {
+			t.Fatalf("body = %q, want two newline-separated Splunk HEC events", body)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Splunk HEC batch request")

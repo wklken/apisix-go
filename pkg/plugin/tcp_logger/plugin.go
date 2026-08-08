@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -136,6 +137,12 @@ type Plugin struct {
 	config Config
 
 	logFormat map[string]any
+
+	// connMu serializes sends so batches share one connection and never
+	// interleave on the stream. The connection is closed and re-dialed on any
+	// write failure.
+	connMu sync.Mutex
+	conn   net.Conn
 }
 
 type Config struct {
@@ -166,16 +173,22 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config Config
 
-	var parsed config
+	var parsed struct {
+		config
+		RetryDelay json.RawMessage `json:"retry_delay"`
+	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+	*c = Config(parsed.config)
+	if len(parsed.RetryDelay) > 0 {
+		c.retryDelaySet = true
+		if string(parsed.RetryDelay) != "null" {
+			if err := json.Unmarshal(parsed.RetryDelay, &c.RetryDelay); err != nil {
+				return err
+			}
+		}
 	}
-	*c = Config(parsed)
-	_, c.retryDelaySet = fields["retry_delay"]
 	return nil
 }
 
@@ -357,21 +370,51 @@ func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 }
 
 func (p *Plugin) sendBody(body []byte) error {
-	conn, err := p.dial()
-	if err != nil {
-		return fmt.Errorf(
-			"failed to connect to TCP server: host[%s] port[%d]: %w",
-			p.config.Host,
-			p.config.Port,
-			err,
-		)
-	}
-	defer func() { _ = conn.Close() }()
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
 
-	if _, err = conn.Write(body); err != nil {
-		return fmt.Errorf("failed to send log message: %s in tcp-logger", err)
+	conn := p.conn
+	if conn == nil {
+		var err error
+		conn, err = p.dial()
+		if err != nil {
+			return fmt.Errorf(
+				"failed to connect to TCP server: host[%s] port[%d]: %w",
+				p.config.Host,
+				p.config.Port,
+				err,
+			)
+		}
+		p.conn = conn
+	}
+
+	deadline := time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)
+	_ = conn.SetWriteDeadline(deadline)
+	_ = conn.SetReadDeadline(deadline)
+
+	written := 0
+	for written < len(body) {
+		n, err := conn.Write(body[written:])
+		written += n
+		if err != nil {
+			_ = conn.Close()
+			p.conn = nil
+			return fmt.Errorf("failed to send log message: %s in tcp-logger", err)
+		}
 	}
 	return nil
+}
+
+// Stop drains the batch processor first, then closes the shared connection.
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+
+	p.connMu.Lock()
+	if p.conn != nil {
+		_ = p.conn.Close()
+		p.conn = nil
+	}
+	p.connMu.Unlock()
 }
 
 func (p *Plugin) dial() (net.Conn, error) {

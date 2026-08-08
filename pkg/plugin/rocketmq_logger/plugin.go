@@ -494,15 +494,8 @@ func (s *rocketmqClientSender) Send(ctx context.Context, message rocketmqMessage
 		msg.WithKeys([]string{message.Key})
 	}
 
-	result := make(chan error, 1)
-	go func() {
-		_, err := s.producer.SendSync(ctx, msg)
-		result <- err
-	}()
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// SendSync is context-aware: its timeout/cancellation owns termination, so
+	// no wrapper goroutine is needed and none can outlive the send.
+	_, err := s.producer.SendSync(ctx, msg)
+	return err
 }

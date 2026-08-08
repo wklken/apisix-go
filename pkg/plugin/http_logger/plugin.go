@@ -179,16 +179,22 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config Config
 
-	var parsed config
+	var parsed struct {
+		config
+		RetryDelay json.RawMessage `json:"retry_delay"`
+	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
 	}
-	var fields map[string]any
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+	*c = Config(parsed.config)
+	if len(parsed.RetryDelay) > 0 {
+		c.retryDelaySet = true
+		if string(parsed.RetryDelay) != "null" {
+			if err := json.Unmarshal(parsed.RetryDelay, &c.RetryDelay); err != nil {
+				return err
+			}
+		}
 	}
-	*c = Config(parsed)
-	_, c.retryDelaySet = fields["retry_delay"]
 	return nil
 }
 

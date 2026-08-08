@@ -63,6 +63,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -289,5 +290,103 @@ func TestB3SampledZeroSkipsReport(t *testing.T) {
 	case <-reported:
 		t.Fatal("unexpected Zipkin report for sampled=0")
 	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// newReporterTestPlugin builds a plugin whose span delivery is bounded and
+// fast-failing so the async-reporter tests are deterministic.
+func newReporterTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+
+	p := &Plugin{
+		config:            cfg,
+		reportTimeout:     300 * time.Millisecond,
+		maxPendingEntries: 2,
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	return p
+}
+
+func TestReporterAsyncDeliveryDoesNotBlockRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newReporterTestPlugin(t, Config{
+		Endpoint:    server.URL,
+		SampleRatio: 1,
+	})
+
+	start := time.Now()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})).ServeHTTP(rr, req)
+	elapsed := time.Since(start)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("request took %v, want completion without waiting for span delivery", elapsed)
+	}
+}
+
+func TestReporterQueueSaturationIsObservable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newReporterTestPlugin(t, Config{
+		Endpoint:    server.URL,
+		SampleRatio: 1,
+	})
+
+	for range 4 {
+		p.processor.Push(map[string]any{"name": "apisix.request"})
+	}
+
+	stats := p.processor.Stats()
+	if stats.Dropped < 1 {
+		t.Fatalf("saturation was not observable: stats = %+v, want dropped >= 1", stats)
+	}
+}
+
+func TestReporterStopDrainsOrTimesOutDeterministically(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newReporterTestPlugin(t, Config{
+		Endpoint:    server.URL,
+		SampleRatio: 1,
+	})
+
+	p.processor.Push(map[string]any{"name": "apisix.request"})
+
+	start := time.Now()
+	p.Stop()
+	elapsed := time.Since(start)
+
+	if elapsed >= 2*time.Second {
+		t.Fatalf("Stop took %v, want bounded by the report timeout", elapsed)
+	}
+	stats := p.processor.Stats()
+	if stats.FailedDrops != 1 {
+		t.Fatalf("stats = %+v, want the timed-out delivery counted as a failed drop", stats)
 	}
 }

@@ -1259,3 +1259,54 @@ func (f *fakeRedisConnLimiter) leaving(key string, _ *time.Duration) error {
 	f.left++
 	return f.err
 }
+
+func TestLimitKeyLogIsDebugLevel(t *testing.T) {
+	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+	entries := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "limit key:") {
+			entries <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = &fakeRedisConnLimiter{allowed: true}
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})), "192.0.2.80:12345")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+	select {
+	case entry := <-entries:
+		t.Fatalf("limit key logged at info level: %q", entry.Message)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := logger.ConfigureLevel("debug"); err != nil {
+		t.Fatalf("configure debug level: %v", err)
+	}
+	res = performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})), "192.0.2.80:12345")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "192.0.2.80") || strings.Contains(entry.Message, "route") {
+			t.Fatalf("debug entry = %q, want clean client-IP limit key", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("limit key not logged at debug level")
+	}
+}

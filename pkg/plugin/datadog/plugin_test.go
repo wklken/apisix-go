@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -861,4 +862,141 @@ func mustAtoi(t *testing.T, value string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	writeDeadline time.Time
+}
+
+func (c *deadlineRecordingConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func TestSendReusesDogStatsDSocketAcrossBatches(t *testing.T) {
+	addr, received := startUDPServer(t, 2)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port)})
+	var dials atomic.Int64
+	p.dialFunc = func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("udp", addr)
+	}
+
+	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+		t.Fatalf("send #1 error = %v", err)
+	}
+	if err := p.send(metricEntry{LatencyMS: 2, Status: 201}); err != nil {
+		t.Fatalf("send #2 error = %v", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1 reused socket", got)
+	}
+	waitDatadogMessages(t, received, 2)
+}
+
+func TestSendSetsWriteDeadlinePerSend(t *testing.T) {
+	addr, received := startUDPServer(t, 1)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port)})
+	var wrapped *deadlineRecordingConn
+	p.dialFunc = func() (net.Conn, error) {
+		raw, err := net.Dial("udp", addr)
+		if err != nil {
+			return nil, err
+		}
+		wrapped = &deadlineRecordingConn{Conn: raw}
+		return wrapped, nil
+	}
+
+	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+		t.Fatalf("send() error = %v", err)
+	}
+	if wrapped == nil || wrapped.writeDeadline.IsZero() {
+		t.Fatal("write deadline was not set per send")
+	}
+	waitDatadogMessages(t, received, 1)
+}
+
+func TestSendRedialsAfterSocketFailure(t *testing.T) {
+	addr, received := startUDPServer(t, 2)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port)})
+	var dials atomic.Int64
+	p.dialFunc = func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("udp", addr)
+	}
+
+	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+		t.Fatalf("send #1 error = %v", err)
+	}
+	p.connMu.Lock()
+	_ = p.conn.Close()
+	p.connMu.Unlock()
+
+	if err := p.send(metricEntry{LatencyMS: 2, Status: 201}); err == nil {
+		t.Fatal("send #2 error = nil on a closed socket")
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dial count after failed send = %d, want no redial until the next send", got)
+	}
+
+	if err := p.send(metricEntry{LatencyMS: 3, Status: 202}); err != nil {
+		t.Fatalf("send #3 error = %v, want redial delivery", err)
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dial count after redial = %d, want 2", got)
+	}
+	waitDatadogMessages(t, received, 2)
+}
+
+func TestStopClosesDogStatsDSocket(t *testing.T) {
+	addr, received := startUDPServer(t, 1)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port)})
+	p.dialFunc = func() (net.Conn, error) {
+		return net.Dial("udp", addr)
+	}
+	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+		t.Fatalf("send() error = %v", err)
+	}
+	waitDatadogMessages(t, received, 1)
+
+	p.Stop()
+	p.connMu.Lock()
+	conn := p.conn
+	p.connMu.Unlock()
+	if conn != nil {
+		t.Fatal("Stop() left the DogStatsD socket open")
+	}
+}
+
+func waitDatadogMessages(t *testing.T, received <-chan string, count int) {
+	t.Helper()
+
+	for range count {
+		select {
+		case <-received:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for DogStatsD datagram")
+		}
+	}
 }

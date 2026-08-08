@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -703,4 +704,168 @@ func mustAtoi(t *testing.T, value string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+type countingHTTPListener struct {
+	net.Listener
+	accepts atomic.Int64
+}
+
+func (l *countingHTTPListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.accepts.Add(1)
+	}
+	return conn, err
+}
+
+func TestSendBatchReusesLogglyUDPSocket(t *testing.T) {
+	addr, received := startUDPServerN(t, 2)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "syslog",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+	})
+	var dials atomic.Int64
+	p.dialFunc = func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("udp", addr)
+	}
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch #1 error = %v", err)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+		t.Fatalf("SendBatch #2 error = %v", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1 reused socket", got)
+	}
+	for range 2 {
+		select {
+		case <-received:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for loggly UDP message")
+		}
+	}
+}
+
+func TestSendBatchRedialsLogglyUDPSocketAfterFailure(t *testing.T) {
+	addr, received := startUDPServerN(t, 2)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "syslog",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+	})
+	var dials atomic.Int64
+	p.dialFunc = func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("udp", addr)
+	}
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch #1 error = %v", err)
+	}
+	p.connMu.Lock()
+	_ = p.conn.Close()
+	p.connMu.Unlock()
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err == nil {
+		t.Fatal("SendBatch #2 error = nil on a closed socket")
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r3"}}, 1); err != nil {
+		t.Fatalf("SendBatch #3 error = %v, want redial delivery", err)
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dial count after redial = %d, want 2", got)
+	}
+	for range 2 {
+		select {
+		case <-received:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for loggly UDP message")
+		}
+	}
+}
+
+func TestSendBatchReusesLogglyHTTPTransport(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	counting := &countingHTTPListener{Listener: ln}
+	server.Listener = counting
+	server.Start()
+	t.Cleanup(server.Close)
+
+	host := strings.TrimPrefix(server.URL, "http://")
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "http",
+		Host:          host,
+		Port:          80,
+		Timeout:       1000,
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch #1 error = %v", err)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+		t.Fatalf("SendBatch #2 error = %v", err)
+	}
+	if got := counting.accepts.Load(); got != 1 {
+		t.Fatalf("HTTP connections = %d, want 1 reused transport connection", got)
+	}
+}
+
+func TestStopClosesLogglyUDPSocket(t *testing.T) {
+	addr, received := startUDPServerN(t, 1)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "syslog",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+	})
+	p.dialFunc = func() (net.Conn, error) {
+		return net.Dial("udp", addr)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loggly UDP message")
+	}
+
+	p.Stop()
+	p.connMu.Lock()
+	conn := p.conn
+	p.connMu.Unlock()
+	if conn != nil {
+		t.Fatal("Stop() left the loggly UDP socket open")
+	}
 }

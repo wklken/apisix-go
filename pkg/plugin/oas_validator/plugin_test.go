@@ -2,12 +2,14 @@ package oas_validator
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1096,9 +1098,14 @@ func TestHandlerRefreshesSpecURLAfterMetadataTTL(t *testing.T) {
 
 	now = now.Add(11 * time.Second)
 	serve()
+	deadline := time.Now().Add(2 * time.Second)
+	for fetches.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("fetches after TTL expiry = %d, want 2", got)
 	}
+	p.Stop()
 }
 
 func TestHandlerResolvesExternalSchemaRef(t *testing.T) {
@@ -2147,4 +2154,192 @@ func skipMatrixSpec() string {
     }
   }
 }`
+}
+
+func TestHandlerValidatesConcurrentlyDuringBlockingSpecRefresh(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var fetches atomic.Int32
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fetches.Add(1) == 2 {
+			close(blocked)
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer specServer.Close()
+
+	p := newTestPlugin(t, Config{SpecURL: specServer.URL})
+	p.metadata.SpecURLTTL = 10
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+
+	serve := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/pets/123?verbose=true", strings.NewReader(`{"name":"doggie"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Trace", "trace-id")
+		recorder := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		})).ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+
+	// Prime the first validator synchronously.
+	if code := serve(); code != http.StatusCreated {
+		t.Fatalf("prime response code = %d, want 201", code)
+	}
+
+	// A due request wakes a blocked remote refresh; concurrent requests must
+	// keep validating with the published validator without waiting.
+	now = now.Add(11 * time.Second)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		serve()
+	}()
+	<-started
+	<-blocked
+
+	var wg sync.WaitGroup
+	results := make(chan int, 8)
+	for range 8 {
+		wg.Go(func() {
+			results <- serve()
+		})
+	}
+	wg.Wait()
+	close(results)
+	for code := range results {
+		if code != http.StatusCreated {
+			t.Fatalf("concurrent response code = %d, want 201 during blocked refresh", code)
+		}
+	}
+	close(release)
+	p.Stop()
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("fetches = %d, want exactly one refresh", got)
+	}
+}
+
+func TestHandlerFailedSpecRefreshPreservesPriorValidator(t *testing.T) {
+	var fetches atomic.Int32
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fetches.Add(1) == 2 {
+			http.Error(w, "broken", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer specServer.Close()
+
+	p := newTestPlugin(t, Config{SpecURL: specServer.URL})
+	p.metadata.SpecURLTTL = 10
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+
+	serve := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/pets/123?verbose=true", strings.NewReader(`{"name":"doggie"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Trace", "trace-id")
+		recorder := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		})).ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+
+	if code := serve(); code != http.StatusCreated {
+		t.Fatalf("prime response code = %d, want 201", code)
+	}
+	now = now.Add(11 * time.Second)
+	serve()
+	deadline := time.Now().Add(2 * time.Second)
+	for fetches.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if code := serve(); code != http.StatusCreated {
+		t.Fatalf("response code after failed refresh = %d, want prior validator serving 201", code)
+	}
+	p.Stop()
+}
+
+func TestHandlerSpecRefreshIsBoundToPluginLifecycle(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var fetches atomic.Int32
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fetches.Add(1) == 2 {
+			close(blocked)
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec()))
+	}))
+	defer specServer.Close()
+
+	p := newTestPlugin(t, Config{SpecURL: specServer.URL})
+	p.metadata.SpecURLTTL = 10
+	now := time.Unix(100, 0)
+	p.now = func() time.Time { return now }
+
+	serve := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/pets/123?verbose=true", strings.NewReader(`{"name":"doggie"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Trace", "trace-id")
+		recorder := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		})).ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+
+	if code := serve(); code != http.StatusCreated {
+		t.Fatalf("prime response code = %d, want 201", code)
+	}
+
+	// A due request triggers the refresh and completes with the stale
+	// validator; the request's own context is cancelled right after, which
+	// must not cancel the shared refresh (it is bound to the plugin
+	// lifecycle, so Stop is what joins it).
+	now = now.Add(11 * time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/pets/123?verbose=true", strings.NewReader(`{"name":"doggie"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Trace", "trace-id")
+		recorder := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		})).ServeHTTP(recorder, req.WithContext(ctx))
+		done <- recorder.Code
+	}()
+	if code := <-done; code != http.StatusCreated {
+		t.Fatalf("due request response code = %d, want stale validator 201", code)
+	}
+	cancel()
+	<-blocked
+
+	stopped := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the spec refresh was still blocked")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not join the spec refresh")
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("fetches = %d, want the refresh to complete despite request cancellation", got)
+	}
 }

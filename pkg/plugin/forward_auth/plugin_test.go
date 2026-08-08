@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -314,6 +315,29 @@ func TestHandlerResolvesJSONPostArgumentForGETAuth(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPostArgumentLogsJSONDecodeFailure(t *testing.T) {
+	observed := make(chan logger.Entry, 4)
+	stop := logger.ReplaceObserver("forward-auth-decode", func(entry logger.Entry) { observed <- entry })
+	t.Cleanup(stop)
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/", strings.NewReader(`{"tenant_id":`))
+	request = apisixctx.WithRequestVars(request)
+
+	var cache postArgumentCache
+	if got := postArgument(request, "tenant_id", &cache); got != "" {
+		t.Fatalf("postArgument() = %q, want empty for an undecodable body", got)
+	}
+
+	select {
+	case entry := <-observed:
+		if !strings.Contains(entry.Message, "decode forward-auth request body") {
+			t.Fatalf("observed log = %q, want decode failure context", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("forward-auth body decode failure was not logged")
 	}
 }
 

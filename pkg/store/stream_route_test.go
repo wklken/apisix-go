@@ -42,8 +42,11 @@ func TestParseStreamRouteAcceptsOfficialMinimalUpstream(t *testing.T) {
 }
 
 func TestGetStreamRouteReturnsNotFound(t *testing.T) {
-	streamStore := NewStore(t.TempDir()+"/stream-route.db", make(chan *Event))
-	t.Cleanup(streamStore.Stop)
+	streamStore, err := GetStore(t.TempDir()+"/stream-route.db", make(chan *Event))
+	if err != nil {
+		t.Fatalf("GetStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = streamStore.Stop() })
 
 	if _, err := GetStreamRoute("missing"); err != ErrNotFound {
 		t.Fatalf("GetStreamRoute() error = %v, want %v", err, ErrNotFound)

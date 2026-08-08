@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,6 +12,39 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 )
+
+func TestExporterLifecycleBindsServesAndReleasesListener(t *testing.T) {
+	exportServer, addr, err := StartExportServer(ExportServerConfig{
+		Enabled: true,
+		URI:     "/metrics",
+		Address: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("StartExportServer() error = %v", err)
+	}
+	if exportServer == nil || addr == nil {
+		t.Fatal("StartExportServer() returned no owned server or address")
+	}
+
+	response, err := http.Get("http://" + addr.String() + "/metrics")
+	if err != nil {
+		t.Fatalf("scrape export server: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("export status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+
+	if err := exportServer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	rebound, err := net.Listen("tcp", addr.String())
+	if err != nil {
+		t.Fatalf("export server did not release its listener: %v", err)
+	}
+	_ = rebound.Close()
+}
 
 func TestPrometheusMetricConfigDefaults(t *testing.T) {
 	cfg := newPrometheusMetricConfig(nil)

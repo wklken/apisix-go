@@ -218,8 +218,12 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 		)
 	}
 	if hasJWEDecrypt {
+		key, ok := jweDecryptConfig.Key.(string)
+		if !ok {
+			return consumerSnapshot{}, fmt.Errorf("jwe-decrypt consumer key must be a string")
+		}
 		pluginKeys, referencePlugins = addConsumerLookupKey(
-			pluginKeys, referencePlugins, "jwe-decrypt", jweDecryptConfig.Key.(string),
+			pluginKeys, referencePlugins, "jwe-decrypt", key,
 		)
 	}
 	wolfRBACPlugin, ok := consumer.Plugins["wolf-rbac"]

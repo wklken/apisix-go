@@ -55,6 +55,64 @@ func TestClientControlHandlerBodyLimits(t *testing.T) {
 	}
 }
 
+func TestClientControlMaxBytesAtBoundary(t *testing.T) {
+	called := false
+	plugin := &Plugin{}
+	plugin.config = Config{MaxBodySize: 7}
+	handler := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("payload"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent || !called {
+		t.Fatalf("status/called = %d/%t, want 204/true at the exact limit", response.Code, called)
+	}
+}
+
+func TestClientControlMaxBytesOneByteOver(t *testing.T) {
+	called := false
+	plugin := &Plugin{}
+	plugin.config = Config{MaxBodySize: 6}
+	handler := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("payload"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("status/called = %d/%t, want 413/false one byte over the limit", response.Code, called)
+	}
+}
+
+func TestClientControlMaxBytesReadFailureReturns500(t *testing.T) {
+	called := false
+	plugin := &Plugin{}
+	plugin.config = Config{MaxBodySize: 1024}
+	handler := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/upload", io.NopCloser(failingReader{}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError || called {
+		t.Fatalf("status/called = %d/%t, want 500/false for a body read failure", response.Code, called)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
 func TestIsChunkedRequest(t *testing.T) {
 	tests := []struct {
 		name        string

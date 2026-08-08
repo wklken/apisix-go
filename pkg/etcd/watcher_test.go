@@ -330,6 +330,34 @@ func TestNewConfigClientWithOptionsAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestFetchAllApplySnapshotBoundedWhenEventsUnconsumed(t *testing.T) {
+	client := &ConfigClient{
+		prefix:         "/apisix",
+		events:         make(chan *store.Event),
+		knownKeys:      map[string]struct{}{},
+		requestTimeout: 50 * time.Millisecond,
+		startupRetry:   0,
+	}
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		return &clientv3.GetResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: 1},
+			Kvs: []*mvccpb.KeyValue{{
+				Key:   []byte("/apisix/routes/route-1"),
+				Value: []byte(`{"id":"route-1"}`),
+			}},
+		}, nil
+	}
+
+	start := time.Now()
+	err := client.FetchAll()
+	if err == nil {
+		t.Fatal("FetchAll() error = nil with an unconsumed events channel")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("FetchAll() took %s, want the snapshot bounded by requestTimeout", elapsed)
+	}
+}
+
 func TestWatchRetryDelayBounded(t *testing.T) {
 	if got := watchRetryDelay(0); got != 100*time.Millisecond {
 		t.Fatalf("watchRetryDelay(0) = %s, want 100ms", got)

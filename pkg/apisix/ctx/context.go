@@ -3,6 +3,7 @@ package ctx
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -317,6 +318,9 @@ func GetApisixVar(r *http.Request, key string) any {
 
 func RegisterApisixVar(r *http.Request, key string, val any) {
 	vars := GetApisixVars(r)
+	if vars == nil {
+		return
+	}
 	vars[key] = val
 	state := GetRequestState(r)
 	if state == nil {
@@ -391,17 +395,36 @@ func RegisterRequestVar(r *http.Request, key string, val any) {
 
 const RequestBodyKey = "$request_body"
 
-// ReadRequestBody will return the body in []byte, without change the origin body
+// ReadRequestBody returns the body in []byte without changing the origin
+// body. The read inherits any bound already applied to r.Body, for example
+// client-control's MaxBytesReader.
 func ReadRequestBody(r *http.Request) ([]byte, error) {
+	return readRequestBody(r, 0)
+}
+
+// ReadRequestBodyWithLimit returns the body in []byte bounded at max bytes.
+// Oversized reads surface a *http.MaxBytesError detectable with errors.As.
+func ReadRequestBodyWithLimit(r *http.Request, max int64) ([]byte, error) {
+	return readRequestBody(r, max)
+}
+
+func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 	bodyInCtx := GetRequestVar(r, RequestBodyKey)
 	if bodyInCtx != nil {
-		return bodyInCtx.([]byte), nil
+		body, ok := bodyInCtx.([]byte)
+		if !ok {
+			return nil, fmt.Errorf("$request_body context value has type %T, want []byte", bodyInCtx)
+		}
+		return body, nil
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r, max)
 
-	if cerr := r.Body.Close(); cerr != nil {
-		logger.Errorf("request body close fail: %s", cerr)
+	if r.Body != nil {
+		if cerr := r.Body.Close(); cerr != nil && err == nil {
+			logger.Errorf("request body close fail: %s", cerr)
+			err = cerr
+		}
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -410,4 +433,23 @@ func ReadRequestBody(r *http.Request) ([]byte, error) {
 		RegisterRequestVar(r, RequestBodyKey, body)
 	}
 	return body, err
+}
+
+// bodyLimitResponseWriter satisfies http.MaxBytesReader's writer requirement;
+// only the reader's typed error is needed here.
+type bodyLimitResponseWriter struct{}
+
+func (bodyLimitResponseWriter) Header() http.Header         { return http.Header{} }
+func (bodyLimitResponseWriter) WriteHeader(int)             {}
+func (bodyLimitResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	source := r.Body
+	if max > 0 {
+		source = http.MaxBytesReader(bodyLimitResponseWriter{}, source, max)
+	}
+	return io.ReadAll(source)
 }

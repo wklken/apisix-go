@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 var (
@@ -29,7 +30,9 @@ func Get() string {
 			return
 		}
 		generatedID = uuid.Must(uuid.NewV4()).String()
-		_ = os.WriteFile(uidFilePath, []byte(generatedID), 0o600)
+		if err := os.WriteFile(uidFilePath, []byte(generatedID), 0o600); err != nil {
+			logger.Errorf("persist generated apisix id %q: %s", uidFilePath, err)
+		}
 	})
 
 	return generatedID

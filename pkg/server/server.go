@@ -8,17 +8,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"os/signal"
 	"path"
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -26,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/observability/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -54,11 +51,17 @@ type Server struct {
 	storage           *store.Store
 	etcdClient        *etcd.ConfigClient
 	standaloneWatcher *config.StandaloneFileWatcher
+
+	prometheusServer *http.Server
+	otelShutdown     func(context.Context) error
 }
 
 func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
-	storage := store.NewStore("apisix-go-store.db", events)
+	storage, err := store.GetStore("apisix-go-store.db", events)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
 	var trustedAddresses []string
@@ -73,6 +76,10 @@ func NewServer() (*Server, error) {
 		handler = node_status.Track(handler)
 	}
 	addrs := configuredListenAddresses()
+	otelShutdown, err := otel.Init("apisix-go")
+	if err != nil {
+		return nil, fmt.Errorf("initialize tracing: %w", err)
+	}
 	return &Server{
 		addr:            addrs[0],
 		addrs:           addrs,
@@ -81,6 +88,7 @@ func NewServer() (*Server, error) {
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
+		otelShutdown:    otelShutdown,
 	}, nil
 }
 
@@ -249,7 +257,13 @@ func pluginConfigured(name string) bool {
 	return slices.Contains(config.GlobalConfig.Plugins, name)
 }
 
-func (s *Server) Start() {
+// Start runs the server until ctx is cancelled or a listener fails. Startup
+// failures are returned with operation context instead of panicking; the
+// command owns the process shutdown path.
+func (s *Server) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
 		s.storage.AddEventUpdateHook(
@@ -273,12 +287,11 @@ func (s *Server) Start() {
 		)
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	s.registerSignalHandler(ctx, cancelFunc)
-
 	logger.Info("Starting storage")
 	s.storage.Start()
-	s.startConfigProvider(ctx)
+	if err := s.startConfigProvider(ctx); err != nil {
+		return err
+	}
 
 	logger.Info("build the routes")
 	initialReloadGeneration := reloadGeneration.Load()
@@ -295,28 +308,17 @@ func (s *Server) Start() {
 	// start the reloader
 	go s.listenReloadEvent(ctx)
 
-	// start prometheus at another port
-	for _, plugin := range config.GlobalConfig.Plugins {
-		// prometheus enabled
-		if plugin == "prometheus" {
-			metrics.Init()
-
-			exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
-			if !exportConfig.Enabled {
-				continue
-			}
-
-			go func(exportConfig prometheusExportServerConfig) {
-				mux := chi.NewRouter()
-				mux.Get(exportConfig.ExportURI, promhttp.Handler().ServeHTTP)
-				if err := http.ListenAndServe(exportConfig.Address(), mux); err != nil {
-					logger.Errorf("prometheus export server stopped: %s", err)
-				}
-			}(exportConfig)
-		}
+	if err := s.startPrometheusExportServer(); err != nil {
+		return err
 	}
 
-	s.startServer(ctx)
+	return s.startHTTPListeners(ctx)
+}
+
+// Shutdown gracefully stops the HTTP listeners and the observability and
+// config dependencies owned by the server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.shutdown(ctx)
 }
 
 func initialRouteHandler(handler *chi.Mux) http.Handler {
@@ -326,43 +328,38 @@ func initialRouteHandler(handler *chi.Mux) http.Handler {
 	return handler
 }
 
-func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.CancelFunc) {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		<-sig
-		shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		go func() {
-			<-shutdownCtx.Done()
-			if shutdownCtx.Err() == context.DeadlineExceeded {
-				logger.Fatal("graceful shutdown timed out.. forcing exit.")
-			}
-		}()
-		err := s.shutdown(shutdownCtx)
-		if err != nil {
-			logger.Fatal(err.Error())
-		}
-		cancelFunc()
-	}()
-}
-
 func (s *Server) shutdown(ctx context.Context) error {
-	if err := s.server.Shutdown(ctx); err != nil {
-		return err
+	var errs []error
+	httpErr := s.server.Shutdown(ctx)
+	if httpErr != nil {
+		errs = append(errs, fmt.Errorf("stop HTTP server: %w", httpErr))
+	} else {
+		// HTTP quiescence reached, so no in-flight request can block the
+		// graceful route drain; a timed-out HTTP shutdown skips the drain and
+		// the command's exit releases stragglers.
+		s.routes.Close()
 	}
 	if s.streamRuntime != nil {
 		if err := s.streamRuntime.Close(ctx); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
 	}
-	s.routes.Close()
+	if s.prometheusServer != nil {
+		if err := s.prometheusServer.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop prometheus export server: %w", err))
+		}
+	}
+	if s.otelShutdown != nil {
+		if err := s.otelShutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop tracing: %w", err))
+		}
+	}
 	if s.etcdClient != nil {
 		if err := s.etcdClient.Close(); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("close etcd client: %w", err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Server) startStreamProxy(ctx context.Context) {
@@ -391,6 +388,32 @@ func (s *Server) startStreamProxy(ctx context.Context) {
 	}
 	s.streamRuntime = runtime
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
+}
+
+// startPrometheusExportServer starts the prometheus export server when the
+// plugin is enabled and retains it as an owned lifecycle resource.
+func (s *Server) startPrometheusExportServer() error {
+	if config.GlobalConfig == nil {
+		return nil
+	}
+	for _, plugin := range config.GlobalConfig.Plugins {
+		if plugin != "prometheus" {
+			continue
+		}
+		metrics.Init()
+		exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
+		exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
+			Enabled: exportConfig.Enabled,
+			URI:     exportConfig.ExportURI,
+			Address: exportConfig.Address(),
+		})
+		if err != nil {
+			return fmt.Errorf("start prometheus export server: %w", err)
+		}
+		s.prometheusServer = exporter
+		return nil
+	}
+	return nil
 }
 
 func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {
@@ -495,13 +518,13 @@ func logStreamResult(result streamruntime.Result) {
 	)
 }
 
-func (s *Server) startConfigProvider(ctx context.Context) {
+func (s *Server) startConfigProvider(ctx context.Context) error {
 	provider := standaloneConfigProvider(config.GlobalConfig)
 	if provider != "" {
 		path := config.StandaloneConfigFile(provider)
 		watcher := config.NewStandaloneFileWatcher(path, provider, s.events)
 		if err := watcher.Reload(); err != nil {
-			panic(fmt.Errorf("load standalone config: %w", err))
+			return fmt.Errorf("load standalone config: %w", err)
 		}
 		s.storage.Sync()
 		watcher.SetReloadCallback(func(result config.StandaloneReloadResult, err error) {
@@ -521,9 +544,9 @@ func (s *Server) startConfigProvider(ctx context.Context) {
 			)
 		})
 		s.standaloneWatcher = watcher
-		return
+		return nil
 	}
-	s.startEtcdWatcher(ctx)
+	return s.startEtcdWatcher(ctx)
 }
 
 func applyStandaloneSnapshot(
@@ -556,7 +579,7 @@ func standaloneConfigProvider(cfg *config.Config) string {
 	return provider
 }
 
-func (s *Server) startEtcdWatcher(ctx context.Context) {
+func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	etcdConfig := config.GlobalConfig.Deployment.Etcd
 	prefix := etcdConfig.Prefix
 	endpoints := etcdConfig.Host
@@ -573,8 +596,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 			etcdConfig.TLS.Verify,
 		)
 		if err != nil {
-			logger.Errorf("build etcd TLS config fail: %s", err)
-			return
+			return fmt.Errorf("build etcd TLS config: %w", err)
 		}
 	}
 	requestTimeout := 5 * time.Second
@@ -597,13 +619,13 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 		},
 	)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("start etcd client: %w", err)
 	}
 	s.etcdClient = etcdClient
 	logger.Info("fetch full data from etcd")
 	err = fetchAndSyncInitialEtcdConfig(etcdClient.FetchAll, s.storage.Sync)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("fetch initial etcd config: %w", err)
 	}
 	if serverInfoReportingEnabled() {
 		nodeID := server_info.CurrentInfo().ID
@@ -621,6 +643,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	}
 	logger.Info("watch etcd")
 	go etcdClient.Watch(ctx)
+	return nil
 }
 
 func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func()) error {
@@ -653,38 +676,49 @@ func serverInfoReportingEnabled() bool {
 	return strings.EqualFold(config.GlobalConfig.Deployment.RoleTraditional.ConfigProvider, "etcd")
 }
 
-func (s *Server) startServer(ctx context.Context) {
+// startHTTPListeners binds every configured HTTP and TLS listener and blocks
+// until ctx is cancelled or a listener fails. Bind and serve failures are
+// returned so the command can cancel the root context and enter the normal
+// shutdown path.
+func (s *Server) startHTTPListeners(ctx context.Context) error {
 	addrs := s.addrs
 	if len(addrs) == 0 {
 		addrs = []string{s.addr}
 	}
+	tlsAddrs := configuredTLSListenAddresses()
+	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
 		logger.Infof("listening on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			logger.Fatalf("error opening listener: %v", err)
+			return fmt.Errorf("open listener %s: %w", addr, err)
 		}
 		go func(listener net.Listener) {
-			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-				logger.Errorf("error serve: %s", err)
+			if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErrors <- err
 			}
 		}(listener)
 	}
-	for _, addr := range configuredTLSListenAddresses() {
+	for _, addr := range tlsAddrs {
 		logger.Infof("listening with TLS on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			logger.Fatalf("error opening TLS listener: %v", err)
+			return fmt.Errorf("open TLS listener %s: %w", addr, err)
 		}
 		tlsListener := tls.NewListener(listener, frontendTLSConfig())
 		go func(listener net.Listener) {
-			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-				logger.Errorf("error serve TLS: %s", err)
+			if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErrors <- err
 			}
 		}(tlsListener)
 	}
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serveErrors:
+		return err
+	}
 }
 
 func frontendTLSConfig() *tls.Config {

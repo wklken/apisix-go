@@ -99,8 +99,8 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if len(p.config.TrustedAddresses) > 0 {
-			ip, _, _ := parseAddr(r.RemoteAddr)
-			if !p.isTrustedProxy(net.ParseIP(ip)) {
+			ip, _, ok := parseAddr(r.RemoteAddr)
+			if !ok || !p.isTrustedProxy(net.ParseIP(ip)) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -157,14 +157,16 @@ func (p *Plugin) sourceValue(r *http.Request) string {
 		if value := apisixctx.GetString(r.Context(), source); value != "" {
 			return value
 		}
-		ip, _, _ := parseAddr(r.RemoteAddr)
-		return ip
+		if ip, _, ok := parseAddr(r.RemoteAddr); ok {
+			return ip
+		}
 	case "remote_port", "realip_remote_port":
 		if value := apisixctx.GetString(r.Context(), source); value != "" {
 			return value
 		}
-		_, port, _ := parseAddr(r.RemoteAddr)
-		return port
+		if _, port, ok := parseAddr(r.RemoteAddr); ok {
+			return port
+		}
 	case "host":
 		return r.Host
 	case "request_method":

@@ -171,7 +171,10 @@ func (s *Store) resolveManagedSecret(reference string) (string, error) {
 }
 
 func (s *Store) resolveVaultSecret(id, key string) (string, error) {
-	raw := s.GetFromBucket("secrets", []byte(id))
+	raw, err := s.GetFromBucket("secrets", []byte(id))
+	if err != nil {
+		return "", fmt.Errorf("read secret resource %q: %w", id, err)
+	}
 	if raw == nil {
 		return "", fmt.Errorf("secret resource %q not found", id)
 	}

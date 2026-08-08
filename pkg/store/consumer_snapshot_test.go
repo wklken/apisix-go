@@ -366,7 +366,11 @@ func TestConsumerEventPersistsRawManagedSecretWithoutVaultFetch(t *testing.T) {
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("Vault requests while persisting consumer = %d, want 0", got)
 	}
-	if got := consumerStore.GetFromBucket("consumers", []byte("foo")); !bytes.Equal(got, raw) {
+	got, err := consumerStore.GetFromBucket("consumers", []byte("foo"))
+	if err != nil {
+		t.Fatalf("GetFromBucket() error = %v", err)
+	}
+	if !bytes.Equal(got, raw) {
 		t.Fatalf("persisted consumer = %s, want raw snapshot %s", got, raw)
 	}
 	cached := consumerStore.consumerValues["foo"].Plugins["basic-auth"].(map[string]any)
@@ -560,7 +564,11 @@ func TestConsumerEventRejectsInvalidUpdateBeforePersistingIt(t *testing.T) {
 	events <- &Event{Type: EventTypePut, Key: []byte("/apisix/consumers/foo"), Value: invalid}
 	consumerStore.Sync()
 
-	if got := consumerStore.GetFromBucket("consumers", []byte("foo")); !bytes.Equal(got, valid) {
+	got, err := consumerStore.GetFromBucket("consumers", []byte("foo"))
+	if err != nil {
+		t.Fatalf("GetFromBucket() error = %v", err)
+	}
+	if !bytes.Equal(got, valid) {
 		t.Fatalf("persisted consumer = %s, want last-good %s", got, valid)
 	}
 }
@@ -578,9 +586,11 @@ func newConsumerSnapshotStore(t *testing.T) *Store {
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
-	consumerStore.InitBuckets()
+	if err := consumerStore.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
 	consumerStore.Start()
-	t.Cleanup(consumerStore.Stop)
+	t.Cleanup(func() { _ = consumerStore.Stop() })
 	return consumerStore
 }
 

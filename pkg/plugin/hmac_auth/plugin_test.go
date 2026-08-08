@@ -29,7 +29,10 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		s := store.NewStore(t.TempDir()+"/hmac-auth.db", testEvents)
+		s, err := store.GetStore(t.TempDir()+"/hmac-auth.db", testEvents)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
 		s.Start()
 	})
 }

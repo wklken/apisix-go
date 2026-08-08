@@ -2,6 +2,7 @@ package ctx
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,39 @@ func TestReadRequestBodyWithoutRequestVars(t *testing.T) {
 	}
 }
 
+func TestReadRequestBodyWithLimitAtBoundary(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("hello"))
+	body, err := ReadRequestBodyWithLimit(req, 5)
+	if err != nil {
+		t.Fatalf("ReadRequestBodyWithLimit() error = %v", err)
+	}
+	if string(body) != "hello" {
+		t.Fatalf("body = %q, want hello", body)
+	}
+}
+
+func TestReadRequestBodyWithLimitReportsMaxBytesError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("hello!"))
+	_, err := ReadRequestBodyWithLimit(req, 5)
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(err, &maxBytesErr) {
+		t.Fatalf("ReadRequestBodyWithLimit() error = %v, want *http.MaxBytesError", err)
+	}
+	if maxBytesErr.Limit != 5 {
+		t.Fatalf("MaxBytesError.Limit = %d, want 5", maxBytesErr.Limit)
+	}
+}
+
+func TestReadRequestBodyRejectsNonByteBodyContextValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", nil)
+	req = WithRequestVars(req)
+	RegisterRequestVar(req, RequestBodyKey, "not-a-body")
+
+	if _, err := ReadRequestBody(req); err == nil {
+		t.Fatal("ReadRequestBody() error = nil for a non-[]byte $request_body value")
+	}
+}
+
 func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = WithApisixVars(req, map[string]string{})
@@ -60,6 +94,11 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	if got := req.Header.Get("X-Consumer-Username"); got != "bob" {
 		t.Fatalf("X-Consumer-Username = %q, want bob", got)
 	}
+}
+
+func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	RegisterApisixVar(req, "$route_id", "route-1")
 }
 
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {

@@ -391,6 +391,72 @@ func TestWriterOptionsApplyCompressionLevelAndWindow(t *testing.T) {
 	}
 }
 
+func TestBrotliResponseAboveLimitReturnsControlledError(t *testing.T) {
+	limit := int64(1024)
+	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+
+	recorder := base.NewBufferedResponseWriter()
+	recorder.Header().Set("Content-Type", "text/html")
+	_, _ = recorder.Write(bytes.Repeat([]byte("a"), 2048))
+
+	if err := p.compressResponse(recorder); err == nil {
+		t.Fatal("compressResponse() error = nil for a response above max_response_size")
+	}
+	if recorder.Header().Get("Content-Encoding") == "br" {
+		t.Fatal("oversized response was compressed")
+	}
+	if len(recorder.Body()) != 2048 {
+		t.Fatalf("body length = %d, want the original 2048 bytes untouched", len(recorder.Body()))
+	}
+}
+
+func TestBrotliHandlerPassesOversizedResponseThrough(t *testing.T) {
+	limit := int64(1024)
+	body := bytes.Repeat([]byte("payload"), 300)
+	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/download", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if got := response.Header().Get("Content-Encoding"); got == "br" {
+		t.Fatal("oversized response was compressed instead of passed through")
+	}
+	if !bytes.Equal(response.Body.Bytes(), body) {
+		t.Fatal("oversized response body was modified")
+	}
+}
+
+func TestBrotliCompressesBelowLimit(t *testing.T) {
+	limit := int64(1024)
+	body := []byte("compressible payload")
+	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/page", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding = %q, want br below the cap", got)
+	}
+	if got := decodeBrotli(t, response.Body.Bytes()); got != string(body) {
+		t.Fatalf("decoded body = %q, want %q", got, body)
+	}
+}
+
 func decodeBrotli(t *testing.T, body []byte) string {
 	t.Helper()
 

@@ -1051,7 +1051,11 @@ func ensureRouteStore(t *testing.T) {
 
 	routeStoreOnce.Do(func() {
 		routeStoreEvents = make(chan *store.Event, 16)
-		routeStore = store.NewStore(t.TempDir()+"/route-test.db", routeStoreEvents)
+		var err error
+		routeStore, err = store.GetStore(t.TempDir()+"/route-test.db", routeStoreEvents)
+		if err != nil {
+			t.Fatalf("open route store: %v", err)
+		}
 		routeStore.Start()
 	})
 }

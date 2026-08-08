@@ -52,9 +52,12 @@ func NewRRLoadBalance(servers []string) *RRLoadBalance {
 
 func (rr *RRLoadBalance) Next() string {
 	rr.lock.Lock()
-	value := rr.w.Next().(string)
+	value := rr.w.Next()
 	rr.lock.Unlock()
-	return value
+	if value == nil {
+		return ""
+	}
+	return value.(string)
 }
 
 func NewWeightedRRLoadBalance(servers map[string]int) *RRLoadBalance {

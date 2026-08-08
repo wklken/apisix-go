@@ -127,10 +127,17 @@ func stopAndDrainReloadTimer(timer *time.Timer) {
 
 var reloadMu sync.Mutex
 
-// reload will do the reload
-func (s *Server) reload(_ context.Context) {
+// reload rebuilds the route handler from the store. A cancelled context
+// skips the rebuild so a shutting-down server does not install a handler it
+// cannot serve.
+func (s *Server) reload(ctx context.Context) {
 	reloadMu.Lock()
 	defer reloadMu.Unlock()
+
+	if ctx != nil && ctx.Err() != nil {
+		logger.Info("skip reload: context cancelled")
+		return
+	}
 
 	logger.Info("reloading")
 

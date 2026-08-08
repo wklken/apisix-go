@@ -212,15 +212,21 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	}
 
 	events := make(chan *store.Event, 4)
-	storage := store.NewStore(filepath.Join(t.TempDir(), "store.db"), events)
+	storage, err := store.GetStore(filepath.Join(t.TempDir(), "store.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
 	storage.Sync()
 
-	raw := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
+	raw, err := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
+	if err != nil {
+		t.Fatalf("GetFromBucket() error = %v", err)
+	}
 	if strings.Contains(string(raw), ciphertextShapedPlaintext) {
 		t.Fatalf("stored plugin metadata contains plaintext secret: %s", raw)
 	}

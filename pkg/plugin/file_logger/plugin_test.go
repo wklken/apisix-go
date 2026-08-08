@@ -766,7 +766,10 @@ func initMetadataStore(t *testing.T) chan *store.Event {
 
 	metadataStoreOnce.Do(func() {
 		metadataStoreEvents = make(chan *store.Event, 16)
-		st := store.NewStore(t.TempDir()+"/store.db", metadataStoreEvents)
+		st, err := store.GetStore(t.TempDir()+"/store.db", metadataStoreEvents)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
 		st.Start()
 	})
 	return metadataStoreEvents

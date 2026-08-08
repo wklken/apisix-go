@@ -17,6 +17,27 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
+func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
+	client, clientPeer := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = clientPeer.Close() }()
+	upstream, upstreamPeer := net.Pipe()
+	defer func() { _ = upstream.Close() }()
+	defer func() { _ = upstreamPeer.Close() }()
+
+	done := make(chan error, 1)
+	go func() { done <- bridge(context.Background(), client, upstream, 50*time.Millisecond) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("bridge() error = %v, want a clean idle exit", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bridge() did not exit after the configured idle deadline")
+	}
+}
+
 func TestRouterForwardsMatchingRouteAndPublishesResult(t *testing.T) {
 	upstream, upstreamAddr := startStreamUpstream(t, []byte("stream-response"))
 	defer func() { _ = upstream.Close() }()

@@ -305,9 +305,13 @@ func postArgument(r *http.Request, name string, cache *postArgumentCache) string
 		if err != nil {
 			return ""
 		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.UseNumber()
-		_ = decoder.Decode(&cache.values)
+		if len(bytes.TrimSpace(body)) > 0 && (body[0] == '{' || body[0] == '[') {
+			decoder := json.NewDecoder(bytes.NewReader(body))
+			decoder.UseNumber()
+			if err := decoder.Decode(&cache.values); err != nil {
+				logger.Errorf("decode forward-auth request body post args fail: %s", err)
+			}
+		}
 	}
 	value, ok := cache.values[name]
 	if !ok || value == nil {

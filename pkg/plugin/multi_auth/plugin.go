@@ -61,6 +61,14 @@ type authPlugin interface {
 	Handler(http.Handler) http.Handler
 }
 
+// requestBodyIsolation is implemented by auth plugin configs that consume
+// the request body while authenticating. multi-auth isolates and replays the
+// body for every plugin that advertises body consumption, instead of
+// hard-coding a specific plugin type.
+type requestBodyIsolation interface {
+	BodyIsolation() (enabled bool, max int64)
+}
+
 type configuredAuth struct {
 	name   string
 	plugin authPlugin
@@ -209,12 +217,14 @@ func appendFailureDiagnostic(buffer *bytes.Buffer, message string) {
 }
 
 func (a configuredAuth) isolateRequestBody(original *http.Request, probe *http.Request) *probeBodyState {
-	config, ok := a.plugin.Config().(*hmac_auth.Config)
-	if !ok || !config.ValidateRequestBody || original.Body == nil {
+	isolator, ok := a.plugin.Config().(requestBodyIsolation)
+	if !ok {
 		return nil
 	}
-
-	limit := config.MaxReqBodySize
+	enabled, limit := isolator.BodyIsolation()
+	if !enabled || original.Body == nil {
+		return nil
+	}
 	if limit < math.MaxInt64 {
 		limit++
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -495,6 +496,35 @@ func TestEtcdTLSRequiredForCertKeyAndSNI(t *testing.T) {
 	}
 }
 
+func TestStartReturnsListenError(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy listener: %v", err)
+	}
+	defer func() { _ = occupied.Close() }()
+	address := occupied.Addr().String()
+
+	server := &Server{
+		addr:   address,
+		addrs:  []string{address},
+		server: newConfiguredHTTPServer(http.NotFoundHandler()),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.startHTTPListeners(t.Context()) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start() error = nil for an occupied listener address")
+		}
+		if !strings.Contains(err.Error(), occupied.Addr().String()) {
+			t.Fatalf("Start() error = %v, want the occupied address in the error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start() did not return a listener bind error")
+	}
+}
+
 func TestServerShutdownClosesEtcdClient(t *testing.T) {
 	runtime := &fakeStreamRuntime{}
 	server := &Server{
@@ -509,6 +539,25 @@ func TestServerShutdownClosesEtcdClient(t *testing.T) {
 	}
 	if !runtime.closed {
 		t.Fatal("stream runtime was not closed on shutdown")
+	}
+}
+
+func TestServerShutdownCallsOtelShutdownOnce(t *testing.T) {
+	otelCalls := 0
+	server := &Server{
+		server: &http.Server{},
+		routes: newRouteHandler(http.NotFoundHandler(), nil),
+		otelShutdown: func(ctx context.Context) error {
+			otelCalls++
+			return nil
+		},
+	}
+
+	if err := server.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+	if otelCalls != 1 {
+		t.Fatalf("otel shutdown calls = %d, want exactly 1", otelCalls)
 	}
 }
 

@@ -2,6 +2,7 @@ package client_control
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -57,20 +58,19 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if p.config.MaxBodySize > 0 {
-			r.Body = http.MaxBytesReader(w, r.Body, p.config.MaxBodySize)
-
-			// TODO: maybe a question here? we read the body
-			body, err := io.ReadAll(r.Body)
+			body, err := readLimitedBody(w, r, p.config.MaxBodySize)
 			if err != nil {
-				if err.Error() == "http: request body too large" {
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
 					if isChunkedRequest(r) {
 						logger.Error("client intended to send too large chunked body")
 					}
-					// TODO: change to http.Error?
 					w.WriteHeader(http.StatusRequestEntityTooLarge)
 					return
 				}
-				// FIXME: handle other errors
+				logger.Errorf("read request body fail: %s", err)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
 			}
 
 			// reset the r.Body
@@ -82,6 +82,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(fn)
+}
+
+// readLimitedBody bounds the read at max bytes and classifies oversized
+// bodies through the typed *http.MaxBytesError.
+func readLimitedBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, max)
+	return io.ReadAll(r.Body)
 }
 
 func isChunkedRequest(r *http.Request) bool {

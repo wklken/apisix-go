@@ -28,6 +28,13 @@ type Plugin struct {
 	mu         sync.Mutex
 	rotateTime time.Time
 	now        func() time.Time
+	// rotate is the rotation seam run by the background worker.
+	rotate func(time.Time) error
+
+	trigger  chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 const (
@@ -95,6 +102,13 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	if p.rotate == nil {
+		p.rotate = p.Rotate
+	}
+	p.trigger = make(chan struct{}, 1)
+	p.stop = make(chan struct{})
+	p.done = make(chan struct{})
+	go p.rotationWorker()
 
 	return nil
 }
@@ -103,14 +117,50 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// rotationWorker owns log rotation: one bounded trigger channel coalesces
+// requests while the worker runs the (potentially slow) rename, compression,
+// and history pruning off the request path.
+func (p *Plugin) rotationWorker() {
+	defer close(p.done)
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-p.trigger:
+			if err := p.rotate(p.now()); err != nil {
+				logger.Errorf("log-rotate failed: %s", err)
+			}
+		}
+	}
+}
+
+// Stop is idempotent and waits for the rotation worker to finish.
+func (p *Plugin) Stop() {
+	p.stopOnce.Do(func() {
+		if p.stop != nil {
+			close(p.stop)
+		}
+		if p.done != nil {
+			<-p.done
+		}
+	})
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if err := p.Rotate(p.now()); err != nil {
-			logger.Errorf("log-rotate failed: %s", err)
-		}
+		p.requestRotation()
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// requestRotation schedules rotation without blocking the request; a bounded
+// trigger channel coalesces concurrent requests into one rotation pass.
+func (p *Plugin) requestRotation() {
+	select {
+	case p.trigger <- struct{}{}:
+	default:
+	}
 }
 
 func (p *Plugin) Rotate(now time.Time) error {

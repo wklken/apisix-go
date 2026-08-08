@@ -16,7 +16,13 @@ var ErrNotFound = fmt.Errorf("not found")
 // FIXME: add a cache layer here, if the source data changed, del the cache at the same time
 
 func GetPluginMetadata(id string, v any) error {
-	config := s.GetFromBucket("plugin_metadata", []byte(id))
+	if s == nil {
+		return ErrNotFound
+	}
+	config, err := s.GetFromBucket("plugin_metadata", []byte(id))
+	if err != nil {
+		return err
+	}
 	return decodePluginMetadata(config, id, v)
 }
 
@@ -40,7 +46,13 @@ func decodePluginMetadata(config []byte, id string, v any) error {
 }
 
 func GetUpstream(id string) (resource.Upstream, error) {
-	config := s.GetFromBucket("upstreams", util.StringToBytes(id))
+	if s == nil {
+		return resource.Upstream{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("upstreams", util.StringToBytes(id))
+	if err != nil {
+		return resource.Upstream{}, err
+	}
 	if config == nil {
 		return resource.Upstream{}, ErrNotFound
 	}
@@ -52,7 +64,10 @@ func GetSSL(id string) (resource.SSL, error) {
 	if s == nil {
 		return resource.SSL{}, ErrNotFound
 	}
-	config := s.GetFromBucket("ssls", util.StringToBytes(id))
+	config, err := s.GetFromBucket("ssls", util.StringToBytes(id))
+	if err != nil {
+		return resource.SSL{}, err
+	}
 	if config == nil {
 		return resource.SSL{}, ErrNotFound
 	}
@@ -61,7 +76,13 @@ func GetSSL(id string) (resource.SSL, error) {
 }
 
 func GetStreamRoute(id string) (resource.StreamRoute, error) {
-	config := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	if s == nil {
+		return resource.StreamRoute{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	if err != nil {
+		return resource.StreamRoute{}, err
+	}
 	if config == nil {
 		return resource.StreamRoute{}, ErrNotFound
 	}
@@ -70,7 +91,13 @@ func GetStreamRoute(id string) (resource.StreamRoute, error) {
 }
 
 func GetService(id string) (resource.Service, error) {
-	config := s.GetFromBucket("services", util.StringToBytes(id))
+	if s == nil {
+		return resource.Service{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("services", util.StringToBytes(id))
+	if err != nil {
+		return resource.Service{}, err
+	}
 	if config == nil {
 		return resource.Service{}, ErrNotFound
 	}
@@ -79,13 +106,19 @@ func GetService(id string) (resource.Service, error) {
 }
 
 func GetConsumer(id string) (resource.Consumer, error) {
+	if s == nil {
+		return resource.Consumer{}, ErrNotFound
+	}
 	s.consumerMu.RLock()
 	consumer, ok := s.consumerValues[id]
 	s.consumerMu.RUnlock()
 	if ok {
 		return consumer, nil
 	}
-	config := s.GetFromBucket("consumers", util.StringToBytes(id))
+	config, err := s.GetFromBucket("consumers", util.StringToBytes(id))
+	if err != nil {
+		return resource.Consumer{}, err
+	}
 	if config == nil {
 		return resource.Consumer{}, ErrNotFound
 	}
@@ -94,7 +127,13 @@ func GetConsumer(id string) (resource.Consumer, error) {
 }
 
 func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
-	config := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
+	if s == nil {
+		return resource.ConsumerGroup{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
+	if err != nil {
+		return resource.ConsumerGroup{}, err
+	}
 	if config == nil {
 		return resource.ConsumerGroup{}, ErrNotFound
 	}
@@ -103,7 +142,13 @@ func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
 }
 
 func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
-	config := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
+	if s == nil {
+		return resource.PluginConfigRule{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
+	if err != nil {
+		return resource.PluginConfigRule{}, err
+	}
 	if config == nil {
 		return resource.PluginConfigRule{}, ErrNotFound
 	}
@@ -112,7 +157,13 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 }
 
 func GetProto(id string) (resource.Proto, error) {
-	config := s.GetFromBucket("protos", util.StringToBytes(id))
+	if s == nil {
+		return resource.Proto{}, ErrNotFound
+	}
+	config, err := s.GetFromBucket("protos", util.StringToBytes(id))
+	if err != nil {
+		return resource.Proto{}, err
+	}
 	if config == nil {
 		return resource.Proto{}, ErrNotFound
 	}
@@ -121,8 +172,14 @@ func GetProto(id string) (resource.Proto, error) {
 }
 
 func ListRoutes() ([]resource.Route, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	data, err := s.GetBucketData("routes")
+	if err != nil {
+		return nil, err
+	}
 	var routes []resource.Route
-	data := s.GetBucketData("routes")
 	for _, d := range data {
 		r, err := ParseRoute(d)
 		if err != nil {
@@ -144,8 +201,14 @@ func routeIDForDecodeError(config []byte) string {
 }
 
 func ListStreamRoutes() ([]resource.StreamRoute, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	data, err := s.GetBucketData("stream_routes")
+	if err != nil {
+		return nil, err
+	}
 	var routes []resource.StreamRoute
-	data := s.GetBucketData("stream_routes")
 	for _, d := range data {
 		route, err := ParseStreamRoute(d)
 		if err != nil {
@@ -157,7 +220,13 @@ func ListStreamRoutes() ([]resource.StreamRoute, error) {
 }
 
 func ListSSLs() ([]resource.SSL, error) {
-	data := s.GetBucketData("ssls")
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	data, err := s.GetBucketData("ssls")
+	if err != nil {
+		return nil, err
+	}
 	ssls := make([]resource.SSL, 0, len(data))
 	for _, value := range data {
 		ssl, err := ParseSSL(value)
@@ -170,8 +239,14 @@ func ListSSLs() ([]resource.SSL, error) {
 }
 
 func ListGlobalRules() ([]resource.GlobalRule, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	data, err := s.GetBucketData("global_rules")
+	if err != nil {
+		return nil, err
+	}
 	var rules []resource.GlobalRule
-	data := s.GetBucketData("global_rules")
 	for _, d := range data {
 		r, err := ParseGlobalRule(d)
 		if err != nil {
@@ -302,6 +377,9 @@ func ParseProto(config []byte) (resource.Proto, error) {
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {
+	if s == nil {
+		return resource.Consumer{}, ErrNotFound
+	}
 	return s.getConsumerByPluginKey(pluginName, key)
 }
 

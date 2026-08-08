@@ -248,9 +248,12 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 
 func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	events := make(chan *store.Event)
-	storage := store.NewStore(t.TempDir()+"/reload.db", events)
+	storage, err := store.Open(t.TempDir()+"/reload.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	storage.Start()
-	t.Cleanup(storage.Stop)
+	t.Cleanup(func() { _ = storage.Stop() })
 
 	put := func(bucket string, id string, value []byte) {
 		event := store.NewEvent()
@@ -303,6 +306,31 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	}
 	if got, want := response.Header().Get("X-Global-Security"), "enforced"; got != want {
 		t.Fatalf("global security marker after invalid reload = %q, want %q", got, want)
+	}
+}
+
+func TestReloadSkipsWhenContextCancelled(t *testing.T) {
+	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Handler", "last-good")
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		routes:  newRouteHandler(oldHandler, nil),
+		storage: &store.Store{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server.reload(ctx)
+
+	response := httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status after cancelled reload = %d, want the retained handler", response.Code)
+	}
+	if got := response.Header().Get("X-Handler"); got != "last-good" {
+		t.Fatalf("handler marker after cancelled reload = %q, want last-good", got)
 	}
 }
 

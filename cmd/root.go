@@ -1,9 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -20,12 +26,13 @@ var cfgFile string
 
 var globalConfig *config.Config
 
-func initConfig() {
+func initConfig() error {
 	var err error
 	globalConfig, err = config.Load()
 	if err != nil {
-		logger.Fatalf("could not load configurations from file, %s", err)
+		return fmt.Errorf("load configurations from file: %w", err)
 	}
+	return nil
 }
 
 func configureLogger(cfg *config.Config) error {
@@ -49,8 +56,8 @@ func init() {
 var rootCmd = &cobra.Command{
 	Use:   "apisix",
 	Short: "an golang version of apisix, not production ready",
-	Run: func(cmd *cobra.Command, args []string) {
-		Start()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return Start()
 	},
 }
 
@@ -84,7 +91,7 @@ func startupConfigSummary(cfg *config.Config) map[string]any {
 	}
 }
 
-func Start() {
+func Start() error {
 	fmt.Println("It's apisix")
 
 	// FIXME: merge config.yaml and config-default.yaml
@@ -94,17 +101,53 @@ func Start() {
 		// log.Infof("Load config file: %s", cfgFile)
 		viper.SetConfigFile(cfgFile)
 	}
-	initConfig()
+	if err := initConfig(); err != nil {
+		return err
+	}
 	if err := configureLogger(globalConfig); err != nil {
-		logger.Fatalf("configure logger: %s", err)
+		return fmt.Errorf("configure logger: %s", err)
 	}
 
 	logger.Infof("startup config summary: %v", startupConfigSummary(globalConfig))
 
 	logger.Info("Starting server")
-	server, err := server.NewServer()
+	srv, err := server.NewServer()
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("create server: %w", err)
 	}
-	server.Start()
+	return runServer(srv)
+}
+
+// runServer owns the process shutdown path: a signal triggers a graceful
+// shutdown, and a serving error cancels the root context and enters the
+// normal shutdown path. main remains the only process-exit boundary.
+func runServer(srv *server.Server) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Start(ctx)
+	}()
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(signals)
+
+	select {
+	case err := <-serveErr:
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return fmt.Errorf("server stopped: %w", err)
+	case received := <-signals:
+		logger.Infof("received signal %s, shutting down", received)
+		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		cancel()
+		return nil
+	}
 }

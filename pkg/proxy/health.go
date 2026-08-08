@@ -97,7 +97,12 @@ func healthStateFromRequest(r *http.Request) (*healthRequestState, bool) {
 // NewUpstreamLoadBalance builds the common upstream selector. A passive
 // checks block enables local health state; active-only checks retain the
 // existing weighted selector until an explicit active-probe owner exists.
+// An empty node pool is a construction error: the empty round-robin picker
+// used to panic on the first Next() type assertion.
 func NewUpstreamLoadBalance(servers map[string]int, checks map[string]any) (LoadBalancer, error) {
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("cannot build upstream load balancer without nodes")
+	}
 	if _, hasPassive := checks["passive"]; !hasPassive {
 		return NewWeightedRRLoadBalance(servers), nil
 	}

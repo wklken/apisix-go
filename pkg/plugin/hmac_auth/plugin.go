@@ -113,6 +113,14 @@ type consumerConfig struct {
 	SecretKey string `json:"secret_key"`
 }
 
+// BodyIsolation declares that hmac-auth consumes the request body during
+// validation so multi-auth can isolate and replay it. Implementations of
+// multi-auth's requestBodyIsolation contract advertise their body needs
+// instead of being special-cased by type.
+func (c *Config) BodyIsolation() (bool, int64) {
+	return c.ValidateRequestBody, c.MaxReqBodySize
+}
+
 type signatureParams struct {
 	KeyID      string
 	Algorithm  string

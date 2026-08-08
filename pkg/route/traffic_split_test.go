@@ -1,11 +1,17 @@
 package route
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
@@ -60,5 +66,71 @@ func TestApplyTrafficSplitOverrideRewritesHost(t *testing.T) {
 
 	if req.Host != "api.example.com" {
 		t.Fatalf("Host = %q, want api.example.com", req.Host)
+	}
+}
+
+func TestEmptyUpstreamRouteReturnsClassifiedError(t *testing.T) {
+	builder := &Builder{}
+	handler, err := builder.buildReverseHandler(resource.Route{}, resource.Service{})
+	if err != nil {
+		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil))
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d without a picker panic", response.Code, http.StatusBadGateway)
+	}
+}
+
+func TestErrorHandlerClassifiesDirectorErrorOnce(t *testing.T) {
+	directorErr := errors.New("parse host fail, invalid target")
+	request := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+	request = withDirectorError(request, directorErr)
+
+	response := httptest.NewRecorder()
+	newErrorHandler()(response, request, errors.New("http: no Host in request URL"))
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(response.Body.String(), "http: no Host in request URL") {
+		t.Fatalf("body = %q, leaks the raw proxy error", response.Body.String())
+	}
+}
+
+func TestErrorHandlerClassifiesWrappedErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{
+			name:       "wrapped upstream EOF",
+			err:        fmt.Errorf("read response body: %w", io.EOF),
+			wantStatus: http.StatusBadGateway,
+		},
+		{
+			name:       "wrapped client cancellation",
+			err:        fmt.Errorf("copy response body: %w", context.Canceled),
+			wantStatus: StatusClientClosedRequest,
+		},
+		{
+			name:       "wrapped unexpected EOF",
+			err:        fmt.Errorf("copy request body: %w", io.ErrUnexpectedEOF),
+			wantStatus: StatusClientClosedRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+			response := httptest.NewRecorder()
+			newErrorHandler()(response, request, test.err)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+		})
 	}
 }

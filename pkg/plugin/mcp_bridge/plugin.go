@@ -132,7 +132,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
-	sess, err := p.startSession(r.Context())
+	// The session is owned by this handler and is explicitly closed on
+	// return; the session context is deliberately not derived from the
+	// request context so a request-context cancellation cannot cancel the
+	// child or drop events it already produced. The stream ends when the
+	// child's events are exhausted, a write fails (client disconnect), or
+	// the request context cancels after draining any buffered events.
+	sess, err := p.startSession(context.Background())
 	if err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -163,7 +169,23 @@ func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-r.Context().Done():
-			return
+			// The request context cancels when the client disconnects, but
+			// it can also fire while the child's final output is still being
+			// consumed. Drain whatever the child already produced so the
+			// last event is not dropped.
+			for {
+				select {
+				case event, ok := <-sess.events:
+					if !ok {
+						return
+					}
+					if !writeSSE(w, event.event, event.data) {
+						return
+					}
+				default:
+					return
+				}
+			}
 		case <-pingTicker.C:
 			pingID++
 			if !writePing(w, pingID) {
@@ -245,8 +267,11 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 		scanStderr(sess.ctx, stderr, sess.events)
 	}()
 	go func() {
-		_ = cmd.Wait()
+		// Wait for the scanners to consume the pipes to EOF before reaping
+		// the command: Cmd.Wait closes the stdout/stderr pipes, which would
+		// otherwise discard any buffered output the child produced.
 		wg.Wait()
+		_ = cmd.Wait()
 		p.removeSession(id)
 		close(sess.events)
 		close(sess.done)

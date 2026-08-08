@@ -412,7 +412,6 @@ func (s *Server) startPrometheusExportServer() error {
 	}
 	s.prometheusServer = exporter
 	return nil
-	return nil
 }
 
 func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {

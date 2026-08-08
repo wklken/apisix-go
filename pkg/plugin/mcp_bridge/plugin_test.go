@@ -279,3 +279,40 @@ func readSSEEvent(t *testing.T, reader *bufio.Reader) (string, string) {
 
 	return "", ""
 }
+
+func TestSSEFastChildEventsAreNeverDropped(t *testing.T) {
+	// Regression: the request context can cancel concurrently with a fast
+	// child producing its final event. The handler must still deliver the
+	// child's buffered events (observed as EOF at the message read under
+	// CI load before the drain fix).
+	for iteration := range 200 {
+		p := newTestPlugin(t, Config{
+			BaseURI: "/mcp",
+			Command: "sh",
+			Args:    []string{"-c", `printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		})
+		server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("next handler should not be called")
+		})))
+		t.Cleanup(server.Close)
+
+		resp, err := http.Get(server.URL + "/mcp/sse")
+		if err != nil {
+			t.Fatalf("iteration %d: GET /mcp/sse: %v", iteration, err)
+		}
+		reader := bufio.NewReader(resp.Body)
+		if _, data := readSSEEvent(t, reader); !strings.Contains(data, "sessionId") {
+			t.Fatalf("iteration %d: endpoint data = %q", iteration, data)
+		}
+		event, data := readSSEEvent(t, reader)
+		assertPingEvent(t, event, data, "ping:1")
+		event, data = readSSEEvent(t, reader)
+		if event != "message" {
+			t.Fatalf("iteration %d: process event = %q, want message", iteration, event)
+		}
+		if data != `{"jsonrpc":"2.0","id":1,"result":{}}` {
+			t.Fatalf("iteration %d: process data = %q", iteration, data)
+		}
+		_ = resp.Body.Close()
+	}
+}

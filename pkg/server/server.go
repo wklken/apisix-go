@@ -733,21 +733,7 @@ func frontendTLSConfig() *tls.Config {
 			if serverName == "" && config.GlobalConfig != nil {
 				serverName = strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
 			}
-			ssls, err := store.ListSSLs()
-			if err != nil {
-				return nil, err
-			}
-			for _, sslResource := range ssls {
-				if sslResource.Status == 0 || !matchesSNI(sslResource.Snis, serverName) {
-					continue
-				}
-				certificate, err := tls.X509KeyPair([]byte(sslResource.Cert), []byte(sslResource.Key))
-				if err != nil {
-					return nil, fmt.Errorf("load SSL resource %q: %w", sslResource.ID, err)
-				}
-				return &certificate, nil
-			}
-			return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+			return store.GetSSLCertificateForSNI(serverName)
 		},
 	}
 }
@@ -776,19 +762,6 @@ func frontendPlainHTTP2Enabled() bool {
 	}
 	for _, listener := range config.GlobalConfig.Apisix.NodeListen {
 		if listener.EnableHttp2 {
-			return true
-		}
-	}
-	return false
-}
-
-func matchesSNI(snis []string, serverName string) bool {
-	for _, sni := range snis {
-		sni = strings.TrimSpace(sni)
-		if strings.EqualFold(sni, serverName) {
-			return true
-		}
-		if strings.HasPrefix(sni, "*.") && strings.HasSuffix(strings.ToLower(serverName), strings.ToLower(sni[1:])) {
 			return true
 		}
 	}

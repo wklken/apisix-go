@@ -2,11 +2,15 @@ package store
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
+	"maps"
 	"sort"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -446,4 +450,171 @@ func (s *Store) resolveConsumerForPluginKey(id, pluginName, key string) (resourc
 
 func consumerCredentialLookupError(pluginName string, err error) error {
 	return fmt.Errorf("%w: resolve %s consumer credentials: %v", ErrNotFound, pluginName, err)
+}
+
+// sslCertificateIndex is an immutable snapshot of decoded frontend SSL
+// certificates, published atomically whenever the ssls bucket changes.
+type sslCertificateIndex struct {
+	exact    map[string]sslIndexedCertificate
+	wildcard []sslWildcardCertificate
+}
+
+type sslIndexedCertificate struct {
+	id          string
+	certificate *tls.Certificate
+}
+
+type sslWildcardCertificate struct {
+	sslIndexedCertificate
+	suffix string
+}
+
+func (s *Store) applySSLCertificateEvent(eventType EventType, id string, value []byte) {
+	current := s.sslCerts.Load()
+	next := cloneSSLCertificateIndex(current)
+	switch eventType {
+	case EventTypePut:
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: parse: %s", id, err)
+			return
+		}
+		if ssl.Status == 0 {
+			next.remove(id)
+			break
+		}
+		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: load: %s", id, err)
+			return
+		}
+		next.remove(id)
+		for _, sni := range ssl.Snis {
+			sni = strings.TrimSpace(sni)
+			if sni == "" {
+				continue
+			}
+			entry := sslIndexedCertificate{id: id, certificate: &certificate}
+			if strings.HasPrefix(sni, "*.") {
+				next.wildcard = append(next.wildcard, sslWildcardCertificate{
+					sslIndexedCertificate: entry,
+					suffix:                strings.ToLower(sni[1:]),
+				})
+			} else {
+				next.exact[strings.ToLower(sni)] = entry
+			}
+		}
+	case EventTypeDelete:
+		next.remove(id)
+	}
+	s.sslCerts.Store(next)
+}
+
+func (index *sslCertificateIndex) remove(id string) {
+	if index == nil {
+		return
+	}
+	for sni, entry := range index.exact {
+		if entry.id == id {
+			delete(index.exact, sni)
+		}
+	}
+	if len(index.wildcard) > 0 {
+		kept := index.wildcard[:0]
+		for _, entry := range index.wildcard {
+			if entry.id != id {
+				kept = append(kept, entry)
+			}
+		}
+		index.wildcard = kept
+	}
+}
+
+func cloneSSLCertificateIndex(index *sslCertificateIndex) *sslCertificateIndex {
+	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
+	if index == nil {
+		return next
+	}
+	maps.Copy(next.exact, index.exact)
+	next.wildcard = append(next.wildcard, index.wildcard...)
+	return next
+}
+
+// GetSSLCertificateForSNI returns the decoded frontend certificate for
+// serverName from the process-wide store, preferring exact SNI matches over
+// wildcard matches.
+func GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.GetSSLCertificateForSNI(serverName)
+}
+
+// GetSSLCertificateForSNI returns the decoded frontend certificate for
+// serverName, preferring exact SNI matches over wildcard matches.
+// Certificates are decoded once at publication; handshakes only look up.
+func (s *Store) GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
+	serverName = strings.TrimSpace(serverName)
+	index := s.sslCerts.Load()
+	if index == nil {
+		return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+	}
+	if entry, ok := index.exact[serverName]; ok {
+		return entry.certificate, nil
+	}
+	lower := strings.ToLower(serverName)
+	if lower != serverName {
+		if entry, ok := index.exact[lower]; ok {
+			return entry.certificate, nil
+		}
+	}
+	for _, entry := range index.wildcard {
+		if strings.HasSuffix(lower, entry.suffix) {
+			return entry.certificate, nil
+		}
+	}
+	return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+}
+
+// rebuildSSLCertificateIndex publishes a full index built from the ssls
+// bucket. Invalid certificates are rejected: the last valid published index
+// remains usable.
+func (s *Store) rebuildSSLCertificateIndex() {
+	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
+	data, err := s.GetBucketData("ssls")
+	if err != nil {
+		logger.Errorf("publish SSL certificate index: %s", err)
+		return
+	}
+	for _, value := range data {
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			logger.Errorf("reject SSL resource: parse: %s", err)
+			return
+		}
+		if ssl.Status == 0 {
+			continue
+		}
+		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: load: %s", ssl.ID, err)
+			return
+		}
+		for _, sni := range ssl.Snis {
+			sni = strings.TrimSpace(sni)
+			if sni == "" {
+				continue
+			}
+			entry := sslIndexedCertificate{id: ssl.ID, certificate: &certificate}
+			if strings.HasPrefix(sni, "*.") {
+				next.wildcard = append(next.wildcard, sslWildcardCertificate{
+					sslIndexedCertificate: entry,
+					suffix:                strings.ToLower(sni[1:]),
+				})
+			} else {
+				next.exact[strings.ToLower(sni)] = entry
+			}
+		}
+	}
+	s.sslCerts.Store(next)
 }

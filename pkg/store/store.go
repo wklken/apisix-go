@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -49,6 +51,10 @@ type Store struct {
 	vaultSecrets *cacheutil.BoundedTTLMap[string]
 
 	validatedPluginMetadata *validatedPluginMetadataCache
+
+	// sslCerts is the published immutable index of decoded frontend SSL
+	// certificates, rebuilt on every ssls bucket change.
+	sslCerts atomic.Pointer[sslCertificateIndex]
 }
 
 // should it be global store?
@@ -81,6 +87,7 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	storage.rebuildSSLCertificateIndex()
 	return storage, nil
 }
 
@@ -323,6 +330,9 @@ func (s *Store) processEvent(event *Event) {
 
 	// FIXME: what type of event should trigger the hooks?
 	bucket := string(bucketName)
+	if processed && bucket == "ssls" {
+		s.applySSLCertificateEvent(event.Type, util.BytesToString(id), event.Value)
+	}
 	if processed && (IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket)) {
 		s.triggerEventUpdateHooks(event)
 	}

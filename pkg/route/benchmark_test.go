@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 // Benchmark corpus for APISIX URI conversion, route registration, and
@@ -166,4 +168,102 @@ func benchmarkRouteDispatch(b *testing.B, kind, result string, routeCount int) {
 	if writer.status != want {
 		b.Fatalf("dispatch status = %d, want %d", writer.status, want)
 	}
+}
+
+// BenchmarkRouteBuildIndexes measures route-build store lookups: the
+// route-bucket read, the per-route global-rule lookup, and per-route plugin
+// metadata lookup. The shared store is reseeded per row through the event
+// channel; the corpus uses only stable APIs.
+func BenchmarkRouteBuildIndexes(b *testing.B) {
+	if err := logger.ConfigureLevel("error"); err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = logger.ConfigureLevel("info") })
+
+	events := make(chan *store.Event, 64)
+	storage, err := store.GetStore(b.TempDir()+"/route-build-index.db", events)
+	if err != nil {
+		b.Fatalf("get store: %v", err)
+	}
+	storage.Start()
+	b.Cleanup(func() { _ = storage.Stop() })
+
+	put := func(bucket, id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		event.Value = value
+		events <- event
+	}
+	del := func(bucket, id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		events <- event
+	}
+	clear := func(bucket string, ids []string) {
+		for _, id := range ids {
+			del(bucket, id)
+		}
+		storage.Sync()
+	}
+	seedRoutes := func(count int, withCors bool) []string {
+		ids := make([]string, count)
+		for i := range count {
+			id := fmt.Sprintf("bench-route-%d", i)
+			ids[i] = id
+			plugins := `{}`
+			if withCors {
+				plugins = `{"cors":{}}`
+			}
+			put("routes", id, []byte(`{"id":"`+id+`","uri":"/bench/`+id+`","plugins":`+plugins+`}`))
+		}
+		storage.Sync()
+		return ids
+	}
+	seedRules := func(count int) []string {
+		ids := make([]string, count)
+		for i := range count {
+			id := fmt.Sprintf("bench-rule-%d", i)
+			ids[i] = id
+			put("global_rules", id, []byte(`{"id":"`+id+`","plugins":{}}`))
+		}
+		storage.Sync()
+		return ids
+	}
+	seedMetadata := func() {
+		put("plugin_metadata", "cors", []byte(`{"id":"cors","allow_origins":{"key":"https://a.example.com"}}`))
+		storage.Sync()
+	}
+
+	build := func(b *testing.B) {
+		builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+		for b.Loop() {
+			mux := builder.Build()
+			if mux == nil {
+				b.Fatal("Build() returned nil")
+			}
+		}
+	}
+
+	var routes, rules []string
+
+	routes = seedRoutes(100, false)
+	b.Run("routes=100/global-rules=0", build)
+	clear("routes", routes)
+
+	routes = seedRoutes(100, false)
+	rules = seedRules(100)
+	b.Run("routes=100/global-rules=100", build)
+	clear("routes", routes)
+	clear("global_rules", rules)
+
+	routes = seedRoutes(100, true)
+	seedMetadata()
+	b.Run("routes=100/metadata", build)
+	clear("routes", routes)
+
+	routes = seedRoutes(1000, true)
+	b.Run("routes=1000/metadata", build)
+	clear("routes", routes)
 }

@@ -55,6 +55,12 @@ type Store struct {
 	// sslCerts is the published immutable index of decoded frontend SSL
 	// certificates, rebuilt on every ssls bucket change.
 	sslCerts atomic.Pointer[sslCertificateIndex]
+
+	// configSnapshot is the published immutable route-build generation
+	// (routes, global rules, plugin metadata), rebuilt once per bucket change.
+	configSnapshot     atomic.Pointer[ConfigSnapshot]
+	configSnapshotDirty atomic.Bool
+	configSnapshotMu    sync.Mutex
 }
 
 // should it be global store?
@@ -332,6 +338,9 @@ func (s *Store) processEvent(event *Event) {
 	bucket := string(bucketName)
 	if processed && bucket == "ssls" {
 		s.applySSLCertificateEvent(event.Type, util.BytesToString(id), event.Value)
+	}
+	if processed && (bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata") {
+		s.configSnapshotDirty.Store(true)
 	}
 	if processed && (IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket)) {
 		s.triggerEventUpdateHooks(event)

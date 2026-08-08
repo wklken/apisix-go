@@ -618,3 +618,110 @@ func (s *Store) rebuildSSLCertificateIndex() {
 	}
 	s.sslCerts.Store(next)
 }
+
+// ConfigSnapshot is an immutable generation of the route-build inputs:
+// parsed routes, parsed global rules, and decoded plugin metadata. It is
+// published once per store change; callers must not mutate it.
+type ConfigSnapshot struct {
+	routes         []resource.Route
+	globalRules    []resource.GlobalRule
+	pluginMetadata map[string]map[string]any
+}
+
+// Routes returns the parsed routes of this snapshot generation.
+func (snap *ConfigSnapshot) Routes() []resource.Route {
+	return snap.routes
+}
+
+// GlobalRules returns the parsed global rules of this snapshot generation.
+func (snap *ConfigSnapshot) GlobalRules() []resource.GlobalRule {
+	return snap.globalRules
+}
+
+// PluginMetadata returns the decoded plugin metadata for id. The boolean is
+// false when the id has no decodable plugin metadata.
+func (snap *ConfigSnapshot) PluginMetadata(id string) (map[string]any, bool) {
+	metadata, ok := snap.pluginMetadata[id]
+	return metadata, ok
+}
+
+// GetConfigSnapshot returns the current route-build generation, rebuilding it
+// once per routes/global-rules/plugin-metadata change.
+func GetConfigSnapshot() (*ConfigSnapshot, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.getConfigSnapshot()
+}
+
+func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
+	if !s.configSnapshotDirty.Load() {
+		if snapshot := s.configSnapshot.Load(); snapshot != nil {
+			return snapshot, nil
+		}
+	}
+	s.configSnapshotMu.Lock()
+	defer s.configSnapshotMu.Unlock()
+	if snapshot := s.configSnapshot.Load(); snapshot != nil && !s.configSnapshotDirty.Load() {
+		return snapshot, nil
+	}
+	snapshot, err := s.buildConfigSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	s.configSnapshot.Store(snapshot)
+	s.configSnapshotDirty.Store(false)
+	return snapshot, nil
+}
+
+func (s *Store) buildConfigSnapshot() (*ConfigSnapshot, error) {
+	snapshot := &ConfigSnapshot{pluginMetadata: map[string]map[string]any{}}
+
+	data, err := s.GetBucketData("routes")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		r, err := ParseRoute(d)
+		if err != nil {
+			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
+		}
+		snapshot.routes = append(snapshot.routes, r)
+	}
+
+	data, err = s.GetBucketData("global_rules")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		var rule resource.GlobalRule
+		if err := json.Unmarshal(d, &rule); err != nil {
+			return nil, fmt.Errorf("parse global rule: %w", err)
+		}
+		snapshot.globalRules = append(snapshot.globalRules, rule)
+	}
+
+	data, err = s.GetBucketData("plugin_metadata")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		id := metadataIDForDecodeError(d)
+		var metadata map[string]any
+		if err := decodePluginMetadata(d, id, &metadata); err != nil {
+			continue
+		}
+		snapshot.pluginMetadata[id] = metadata
+	}
+	return snapshot, nil
+}
+
+func metadataIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
+}

@@ -197,7 +197,7 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// get the request http version like 1.0 or 1.1 or 2
-		reqHttpVersion := fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
+		reqHttpVersion := base.ProtocolVersion(r)
 		// only request header Content-Type with accept-encoding: gzip will be compressed
 		acceptEncoding := r.Header.Get("Accept-Encoding")
 		if (strings.Contains(acceptEncoding, "gzip") || strings.Contains(acceptEncoding, "deflate")) &&

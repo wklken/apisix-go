@@ -3,6 +3,7 @@ package error_page
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -79,7 +80,7 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 	}
 	resp.SetBody([]byte(page.Body))
 	resp.Header().Set("Content-Type", page.ContentType)
-	resp.Header().Set("Content-Length", fmt.Sprint(len(page.Body)))
+	resp.Header().Set("Content-Length", strconv.Itoa(len(page.Body)))
 }
 
 func (p *Plugin) errorPage(statusCode int) (ErrorPage, bool) {

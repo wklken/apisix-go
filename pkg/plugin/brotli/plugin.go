@@ -225,7 +225,7 @@ func (p *Plugin) shouldConsiderRequest(r *http.Request) bool {
 	if !acceptsBrotli(r.Header.Get("Accept-Encoding")) {
 		return false
 	}
-	reqHTTPVersion := fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
+	reqHTTPVersion := base.ProtocolVersion(r)
 	return reqHTTPVersion >= p.config.httpVersion
 }
 

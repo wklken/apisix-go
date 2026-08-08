@@ -254,11 +254,12 @@ func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, err
 }
 
 func parseURLValues(raw string, maxArgs int) (url.Values, error) {
-	if _, err := url.ParseQuery(raw); err != nil {
+	full, err := url.ParseQuery(raw)
+	if err != nil {
 		return nil, err
 	}
 	if maxArgs <= 0 {
-		return url.ParseQuery(raw)
+		return full, nil
 	}
 
 	values := url.Values{}

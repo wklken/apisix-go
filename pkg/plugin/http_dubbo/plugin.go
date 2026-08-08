@@ -17,7 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/plugin/dubbo"
 )
 
 type Plugin struct {
@@ -128,16 +128,15 @@ func (p *Plugin) ServeDubbo(w http.ResponseWriter, r *http.Request, target strin
 }
 
 func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Config) {
-	result := serveDubboAttempt(r, target, cfg)
-	reportDubboOutcome(r, result)
-	if result.err != nil {
-		if result.logConnectFailure && r.Context().Err() == nil {
-			logger.Errorf("%s", result.err)
-		}
-		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+	applyDefaults(&cfg)
+	frame, err := buildDubboRequest(r, cfg)
+	if err != nil {
+		dubbo.WriteError(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
 		return
 	}
-	writeDubboResponse(w, result.status, result.body)
+	result := dubbo.Attempt(r.Context(), target, transportConfig(cfg), frame)
+	dubbo.ReportOutcome(r, result.Response.Status, result.Err)
+	writeDubboResult(w, r, result)
 }
 
 // ServeDubboWithRetries retries only failures that happen before any request
@@ -150,121 +149,54 @@ func ServeDubboWithRetries(
 	cfg Config,
 	retries int,
 ) {
+	applyDefaults(&cfg)
 	attempts := max(retries+1, 1)
-	attempts = min(attempts, maxDubboRetries+1)
+	attempts = min(attempts, dubbo.MaxRetries+1)
 
-	var result dubboAttemptResult
-	for attempt := 0; attempt < attempts; attempt++ {
+	tcfg := transportConfig(cfg)
+	result := dubbo.ServeWithRetries(r, attempts, func() dubbo.Result {
 		target, err := nextTarget()
 		if err != nil {
-			result = dubboAttemptResult{err: fmt.Errorf("failed to select upstream target: %w", err)}
-			break
+			return dubbo.Result{Err: fmt.Errorf("failed to select upstream target: %w", err)}
 		}
-		result = serveDubboAttempt(r, target, cfg)
-		reportDubboOutcome(r, result)
-		if result.err == nil || !result.retryable {
-			break
+		frame, frameErr := buildDubboRequest(r, cfg)
+		if frameErr != nil {
+			return dubbo.Result{Err: fmt.Errorf("failed to build Dubbo request: %w", frameErr)}
 		}
-		if r.Context().Err() != nil {
-			break
-		}
-	}
-
-	if result.err != nil {
-		if result.logConnectFailure && r.Context().Err() == nil {
-			logger.Errorf("%s", result.err)
-		}
-		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
-		return
-	}
-	writeDubboResponse(w, result.status, result.body)
+		return dubbo.Attempt(r.Context(), target, tcfg, frame)
+	})
+	writeDubboResult(w, r, result)
 }
 
-type dubboAttemptResult struct {
-	status            int
-	body              string
-	err               error
-	retryable         bool
-	logConnectFailure bool
+func transportConfig(cfg Config) dubbo.Config {
+	return dubbo.Config{
+		ConnectTimeout: time.Duration(cfg.ConnectTimeout) * time.Millisecond,
+		SendTimeout:    time.Duration(cfg.SendTimeout) * time.Millisecond,
+		ReadTimeout:    time.Duration(cfg.ReadTimeout) * time.Millisecond,
+		DecodeResponse: decodeTextResponse,
+	}
 }
 
-func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
-	if result.err == nil {
-		pxy.ReportHTTPOutcome(r, result.status)
-		return
-	}
-	if r.Context().Err() != nil {
-		return
-	}
-	var netErr net.Error
-	pxy.ReportTCPFailureOutcome(r, errors.Is(result.err, context.DeadlineExceeded) ||
-		(errors.As(result.err, &netErr) && netErr.Timeout()))
-}
-
-func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptResult {
-	applyDefaults(&cfg)
-	frame, err := buildDubboRequest(r, cfg)
-	if err != nil {
-		return dubboAttemptResult{err: fmt.Errorf("failed to build Dubbo request: %w", err)}
-	}
-
-	conn, err := (&net.Dialer{Timeout: time.Duration(cfg.ConnectTimeout) * time.Millisecond}).DialContext(
-		r.Context(),
-		"tcp",
-		target,
-	)
-	if err != nil {
-		logConnectFailure := r.Context().Err() == nil
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			logConnectFailure = false
-		}
-		return dubboAttemptResult{
-			err:               fmt.Errorf("failed to connect to upstream: %w", err),
-			retryable:         true,
-			logConnectFailure: logConnectFailure,
-		}
-	}
-	defer func() { _ = conn.Close() }()
-	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
-	defer stopClose()
-
-	if err := conn.SetWriteDeadline(
-		dubboDeadline(r.Context(), time.Duration(cfg.SendTimeout)*time.Millisecond),
-	); err != nil {
-		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to set upstream write deadline: %w", err),
-			retryable: true,
-		}
-	}
-	written, err := conn.Write(frame)
-	if err != nil {
-		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to send Dubbo request: %w", err),
-			retryable: written == 0,
-		}
-	}
-	if written != len(frame) {
-		return dubboAttemptResult{err: io.ErrShortWrite}
-	}
-
-	if err := conn.SetReadDeadline(
-		dubboDeadline(r.Context(), time.Duration(cfg.ReadTimeout)*time.Millisecond),
-	); err != nil {
-		return dubboAttemptResult{err: fmt.Errorf("failed to set upstream read deadline: %w", err)}
-	}
+func decodeTextResponse(conn net.Conn) (dubbo.Response, error) {
 	status, body, err := readDubboResponse(conn)
 	if err != nil {
-		return dubboAttemptResult{err: fmt.Errorf("failed to read Dubbo response: %w", err)}
+		return dubbo.Response{}, err
 	}
-	return dubboAttemptResult{status: status, body: body}
+	return dubbo.Response{Status: status, Body: []byte(body)}, nil
 }
 
-func writeDubboResponse(w http.ResponseWriter, status int, body string) {
-	w.WriteHeader(status)
-	if body != "" {
-		_, _ = w.Write([]byte(body))
+func writeDubboResult(w http.ResponseWriter, r *http.Request, result dubbo.Result) {
+	if result.Err == nil {
+		dubbo.WriteResponse(w, result.Response)
+		return
 	}
+	if result.ConnectFailed && r.Context().Err() == nil {
+		var netErr net.Error
+		if !errors.As(result.Err, &netErr) || !netErr.Timeout() {
+			logger.Errorf("%s", result.Err)
+		}
+	}
+	dubbo.WriteError(w, dubbo.ErrorStatus(r.Context(), result.Err), result.Err.Error())
 }
 
 func applyDefaults(cfg *Config) {
@@ -453,23 +385,4 @@ func readDubboResponse(conn net.Conn) (int, string, error) {
 	default:
 		return http.StatusInternalServerError, "", nil
 	}
-}
-
-func dubboDeadline(ctx context.Context, timeout time.Duration) time.Time {
-	deadline := time.Now().Add(timeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		return contextDeadline
-	}
-	return deadline
-}
-
-func dubboErrorStatus(ctx context.Context, err error) int {
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return http.StatusGatewayTimeout
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return http.StatusGatewayTimeout
-	}
-	return http.StatusBadGateway
 }

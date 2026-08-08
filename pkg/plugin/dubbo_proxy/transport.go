@@ -1,10 +1,8 @@
 package dubbo_proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -12,19 +10,18 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/apache/dubbo-go-hessian2"
 	"github.com/spf13/cast"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
-	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/dubbo"
 )
 
 const (
 	defaultMultiplexCount        = 32
-	maxDubboRetries              = 10
 	maxDubboResponsePayload      = 8 * 1024 * 1024
 	dubboMagicHigh               = 0xda
 	dubboMagicLow                = 0xbb
@@ -40,12 +37,6 @@ const (
 )
 
 var nextDubboRequestID atomic.Uint64
-
-type targetSlot struct {
-	semaphore chan struct{}
-}
-
-var targetSlots sync.Map
 
 func loadMultiplexCount() (int, error) {
 	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.PluginAttr == nil {
@@ -66,21 +57,6 @@ func loadMultiplexCount() (int, error) {
 	return count, nil
 }
 
-func acquireTargetSlot(ctx context.Context, target string, limit int) (bool, func()) {
-	if limit < 1 {
-		limit = defaultMultiplexCount
-	}
-	key := target + "\x00" + strconv.Itoa(limit)
-	value, _ := targetSlots.LoadOrStore(key, &targetSlot{semaphore: make(chan struct{}, limit)})
-	slot := value.(*targetSlot)
-	select {
-	case slot.semaphore <- struct{}{}:
-		return true, func() { <-slot.semaphore }
-	case <-ctx.Done():
-		return false, func() {}
-	}
-}
-
 func (p *Plugin) ServeDubbo(w http.ResponseWriter, r *http.Request, target string) {
 	ServeDubbo(w, r, target, p.config)
 }
@@ -88,12 +64,12 @@ func (p *Plugin) ServeDubbo(w http.ResponseWriter, r *http.Request, target strin
 func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Config) {
 	frame, err := buildDubboRequest(r, cfg)
 	if err != nil {
-		writeDubboError(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
+		dubbo.WriteError(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
 		return
 	}
-	result := serveDubboAttempt(r, target, cfg, frame)
-	reportDubboOutcome(r, result)
-	writeDubboAttemptResult(w, r, result)
+	result := dubbo.Attempt(r.Context(), target, transportConfig(cfg), frame)
+	dubbo.ReportOutcome(r, result.Response.Status, result.Err)
+	writeDubboResult(w, r, result)
 }
 
 // ServeDubboWithRetries retries only failures that happen before any request
@@ -108,117 +84,73 @@ func ServeDubboWithRetries(
 ) {
 	frame, err := buildDubboRequest(r, cfg)
 	if err != nil {
-		writeDubboError(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
+		dubbo.WriteError(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
 		return
 	}
 
 	attempts := max(retries+1, 1)
-	attempts = min(attempts, maxDubboRetries+1)
+	attempts = min(attempts, dubbo.MaxRetries+1)
 
-	var result dubboAttemptResult
-	for attempt := 0; attempt < attempts; attempt++ {
+	tcfg := transportConfig(cfg)
+	result := dubbo.ServeWithRetries(r, attempts, func() dubbo.Result {
 		target, targetErr := nextTarget()
 		if targetErr != nil {
-			result.err = fmt.Errorf("failed to select upstream target: %w", targetErr)
-			break
+			return dubbo.Result{Err: fmt.Errorf("failed to select upstream target: %w", targetErr)}
 		}
-		result = serveDubboAttempt(r, target, cfg, frame)
-		reportDubboOutcome(r, result)
-		if result.err == nil || !result.retryable {
-			break
-		}
-		if r.Context().Err() != nil {
-			break
-		}
-	}
-	writeDubboAttemptResult(w, r, result)
+		return dubbo.Attempt(r.Context(), target, tcfg, frame)
+	})
+	writeDubboResult(w, r, result)
 }
 
-type dubboAttemptResult struct {
-	response  map[string]any
-	err       error
-	retryable bool
+func transportConfig(cfg Config) dubbo.Config {
+	return dubbo.Config{
+		ConnectTimeout: 30 * time.Second,
+		SendTimeout:    30 * time.Second,
+		ReadTimeout:    30 * time.Second,
+		AcquireSlot: func(ctx context.Context, target string) (bool, func()) {
+			return dubbo.AcquireTargetSlot(ctx, target, cfg.MultiplexCount)
+		},
+		DecodeResponse: decodeHessianResponse,
+	}
 }
 
-func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
-	if result.err == nil {
-		pxy.ReportHTTPOutcome(r, dubboResponseStatus(result.response))
-		return
-	}
-	if r.Context().Err() != nil {
-		return
-	}
-	var netErr net.Error
-	pxy.ReportTCPFailureOutcome(r, errors.Is(result.err, context.DeadlineExceeded) ||
-		(errors.As(result.err, &netErr) && netErr.Timeout()))
-}
-
-func dubboResponseStatus(response map[string]any) int {
-	if value, ok := response["status"]; ok {
-		if status, ok := hessianInteger(value); ok && status >= 100 && status <= 599 {
-			return int(status)
-		}
-	}
-	return http.StatusOK
-}
-
-func serveDubboAttempt(r *http.Request, target string, cfg Config, frame []byte) dubboAttemptResult {
-	acquired, release := acquireTargetSlot(r.Context(), target, cfg.MultiplexCount)
-	if !acquired {
-		return dubboAttemptResult{err: fmt.Errorf("dubbo upstream concurrency limit was canceled")}
-	}
-	defer release()
-
-	conn, err := (&net.Dialer{Timeout: 30 * time.Second}).DialContext(r.Context(), "tcp", target)
-	if err != nil {
-		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to connect to upstream: %w", err),
-			retryable: true,
-		}
-	}
-	defer func() { _ = conn.Close() }()
-	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
-	defer stopClose()
-
-	if err := conn.SetWriteDeadline(dubboDeadline(r.Context(), 30*time.Second)); err != nil {
-		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to set upstream write deadline: %w", err),
-			retryable: true,
-		}
-	}
-	written, err := conn.Write(frame)
-	if err != nil {
-		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to send Dubbo request: %w", err),
-			retryable: written == 0,
-		}
-	}
-	if written != len(frame) {
-		return dubboAttemptResult{err: io.ErrShortWrite}
-	}
-	if err := conn.SetReadDeadline(dubboDeadline(r.Context(), 30*time.Second)); err != nil {
-		return dubboAttemptResult{err: fmt.Errorf("failed to set upstream read deadline: %w", err)}
-	}
-
+func decodeHessianResponse(conn net.Conn) (dubbo.Response, error) {
 	response, err := readDubboResponse(conn)
 	if err != nil {
-		return dubboAttemptResult{err: fmt.Errorf("failed to read Dubbo response: %w", err)}
+		return dubbo.Response{}, err
 	}
-	return dubboAttemptResult{response: response}
+	body, err := dubboBodyBytes(response["body"])
+	if err != nil {
+		return dubbo.Response{}, err
+	}
+	status := http.StatusOK
+	if value, ok := response["status"]; ok {
+		parsed, ok := hessianInteger(value)
+		if !ok || parsed < 100 || parsed > 599 {
+			return dubbo.Response{}, fmt.Errorf("invalid HTTP status value %v", value)
+		}
+		status = int(parsed)
+	}
+	headers := make(http.Header)
+	for key, value := range response {
+		if key == "status" || key == "body" {
+			continue
+		}
+		headers.Set(key, hessianHeaderValue(value))
+	}
+	return dubbo.Response{Status: status, Body: body, Headers: headers}, nil
 }
 
-func writeDubboAttemptResult(w http.ResponseWriter, r *http.Request, result dubboAttemptResult) {
-	if result.err != nil {
-		writeDubboError(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+func writeDubboResult(w http.ResponseWriter, r *http.Request, result dubbo.Result) {
+	if result.Err != nil {
+		dubbo.WriteError(w, dubbo.ErrorStatus(r.Context(), result.Err), result.Err.Error())
 		return
 	}
-	if err := writeDubboHTTPResponse(w, result.response); err != nil {
-		writeDubboError(w, http.StatusBadGateway, "invalid Dubbo response: "+err.Error())
-	}
+	dubbo.WriteResponse(w, result.Response)
 }
 
 func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
-	body, err := readDubboRequestBody(r)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return nil, err
 	}
@@ -320,33 +252,6 @@ func readDubboResponse(conn net.Conn) (map[string]any, error) {
 	}
 }
 
-func writeDubboHTTPResponse(w http.ResponseWriter, response map[string]any) error {
-	body, err := dubboBodyBytes(response["body"])
-	if err != nil {
-		return err
-	}
-	status := http.StatusOK
-	if value, ok := response["status"]; ok {
-		parsed, ok := hessianInteger(value)
-		if !ok || parsed < 100 || parsed > 599 {
-			return fmt.Errorf("invalid HTTP status value %v", value)
-		}
-		status = int(parsed)
-	}
-
-	for key, value := range response {
-		if key == "status" || key == "body" {
-			continue
-		}
-		w.Header().Set(key, hessianHeaderValue(value))
-	}
-	w.WriteHeader(status)
-	if body != nil {
-		_, _ = w.Write(body)
-	}
-	return nil
-}
-
 func dubboBodyBytes(value any) ([]byte, error) {
 	switch body := value.(type) {
 	case nil:
@@ -414,41 +319,4 @@ func hessianHeaderValue(value any) string {
 	default:
 		return fmt.Sprint(value)
 	}
-}
-
-func readDubboRequestBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
-func dubboDeadline(ctx context.Context, timeout time.Duration) time.Time {
-	deadline := time.Now().Add(timeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		return contextDeadline
-	}
-	return deadline
-}
-
-func dubboErrorStatus(ctx context.Context, err error) int {
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return http.StatusGatewayTimeout
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return http.StatusGatewayTimeout
-	}
-	return http.StatusBadGateway
-}
-
-func writeDubboError(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

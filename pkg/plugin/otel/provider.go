@@ -1,0 +1,199 @@
+package otel
+
+import (
+	"context"
+	"fmt"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+)
+
+func buildSampler(conf SamplerConfig) sdktrace.Sampler {
+	switch conf.Name {
+	case "always_on":
+		return sdktrace.AlwaysSample()
+	case "trace_id_ratio":
+		return sdktrace.TraceIDRatioBased(conf.Options.Fraction)
+	case "parent_base":
+		return sdktrace.ParentBased(buildRootSampler(conf.Options.Root))
+	default:
+		return sdktrace.NeverSample()
+	}
+}
+
+func buildRootSampler(conf RootSamplerConfig) sdktrace.Sampler {
+	switch conf.Name {
+	case "always_on":
+		return sdktrace.AlwaysSample()
+	case "trace_id_ratio":
+		return sdktrace.TraceIDRatioBased(conf.Options.Fraction)
+	default:
+		return sdktrace.NeverSample()
+	}
+}
+
+func loadMetadata() (metadata Metadata, configured bool) {
+	if config.GlobalConfig != nil {
+		if attr := config.GlobalConfig.PluginAttr[name]; attr != nil {
+			if err := util.Parse(attr, &metadata); err == nil {
+				configured = true
+			}
+		}
+	}
+
+	var stored Metadata
+	if safeGetPluginMetadata(name, &stored) == nil {
+		metadata = stored
+		configured = true
+	}
+	if !configured {
+		return Metadata{}, false
+	}
+	if metadata.TraceIDSource == "" {
+		metadata.TraceIDSource = "random"
+	}
+	if metadata.Collector.Address == "" {
+		metadata.Collector.Address = "127.0.0.1:4318"
+	}
+	if metadata.Collector.RequestTimeout == 0 {
+		metadata.Collector.RequestTimeout = 3
+	}
+	return metadata, true
+}
+
+func safeGetPluginMetadata(id string, target any) error {
+	return store.GetPluginMetadata(id, target)
+}
+
+func newTracerProvider(
+	sampler SamplerConfig,
+	metadata Metadata,
+	metadataConfigured bool,
+) (*sdktrace.TracerProvider, error) {
+	options := []sdktrace.TracerProviderOption{
+		sdktrace.WithSampler(buildSampler(sampler)),
+		sdktrace.WithResource(otelResource(metadata.Resource)),
+	}
+	if metadata.TraceIDSource == "x-request-id" {
+		options = append(options, sdktrace.WithIDGenerator(requestIDGenerator{}))
+	}
+	if !metadataConfigured {
+		return sdktrace.NewTracerProvider(options...), nil
+	}
+
+	exporterOptions := []otlptracehttp.Option{
+		otlptracehttp.WithTimeout(time.Duration(metadata.Collector.RequestTimeout) * time.Second),
+		otlptracehttp.WithHeaders(stringHeaders(metadata.Collector.RequestHeaders)),
+	}
+	address := metadata.Collector.Address
+	if strings.Contains(address, "://") {
+		collectorURL, err := url.Parse(address)
+		if err != nil || collectorURL.Host == "" ||
+			(collectorURL.Scheme != "http" && collectorURL.Scheme != "https") {
+			return nil, fmt.Errorf("invalid OpenTelemetry collector address %q", address)
+		}
+		exporterOptions = append(exporterOptions, otlptracehttp.WithEndpointURL(address))
+	} else {
+		exporterOptions = append(exporterOptions, otlptracehttp.WithEndpoint(address), otlptracehttp.WithInsecure())
+	}
+	exporter, err := otlptracehttp.New(context.Background(), exporterOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("create OpenTelemetry OTLP exporter: %w", err)
+	}
+
+	batchOptions := batchSpanProcessorOptions(metadata.BatchSpanProcessor)
+	options = append(options, sdktrace.WithBatcher(exporter, batchOptions...))
+	return sdktrace.NewTracerProvider(options...), nil
+}
+
+func batchSpanProcessorOptions(config BatchSpanProcessorConfig) []sdktrace.BatchSpanProcessorOption {
+	options := make([]sdktrace.BatchSpanProcessorOption, 0, 5)
+	if !config.DropOnQueueFull {
+		options = append(options, sdktrace.WithBlocking())
+	}
+	if config.MaxQueueSize > 0 {
+		options = append(options, sdktrace.WithMaxQueueSize(config.MaxQueueSize))
+	}
+	if config.BatchTimeout > 0 {
+		options = append(options, sdktrace.WithBatchTimeout(time.Duration(config.BatchTimeout*float64(time.Second))))
+	}
+	if config.InactiveTimeout > 0 {
+		options = append(
+			options,
+			sdktrace.WithExportTimeout(time.Duration(config.InactiveTimeout*float64(time.Second))),
+		)
+	}
+	if config.MaxExportBatchSize > 0 {
+		options = append(options, sdktrace.WithMaxExportBatchSize(config.MaxExportBatchSize))
+	}
+	return options
+}
+
+func otelResource(configured map[string]any) *sdkresource.Resource {
+	configured = flattenResourceAttributes(configured)
+	hostname, _ := os.Hostname()
+	attributes := []attribute.KeyValue{attribute.String("hostname", hostname)}
+	if _, ok := configured["service.name"]; !ok {
+		attributes = append(attributes, attribute.String("service.name", "APISIX"))
+	}
+	for key, value := range configured {
+		switch typed := value.(type) {
+		case string:
+			attributes = append(attributes, attribute.String(key, typed))
+		case bool:
+			attributes = append(attributes, attribute.Bool(key, typed))
+		case float64:
+			attributes = append(attributes, attribute.Float64(key, typed))
+		case int:
+			attributes = append(attributes, attribute.Int(key, typed))
+		}
+	}
+	return sdkresource.NewWithAttributes("", attributes...)
+}
+
+func flattenResourceAttributes(configured map[string]any) map[string]any {
+	flattened := make(map[string]any)
+	var add func(string, any)
+	add = func(key string, value any) {
+		switch nested := value.(type) {
+		case map[string]any:
+			for childKey, childValue := range nested {
+				fullKey := childKey
+				if key != "" {
+					fullKey = key + "." + childKey
+				}
+				add(fullKey, childValue)
+			}
+		case map[string]string:
+			for childKey, childValue := range nested {
+				fullKey := childKey
+				if key != "" {
+					fullKey = key + "." + childKey
+				}
+				add(fullKey, childValue)
+			}
+		default:
+			flattened[key] = value
+		}
+	}
+	for key, value := range configured {
+		add(key, value)
+	}
+	return flattened
+}
+
+func stringHeaders(headers map[string]any) map[string]string {
+	result := make(map[string]string, len(headers))
+	for key, value := range headers {
+		result[key] = fmt.Sprint(value)
+	}
+	return result
+}

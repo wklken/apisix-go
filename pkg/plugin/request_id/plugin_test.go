@@ -254,7 +254,7 @@ func TestKSUIDCarriesRecentTimestampPrefix(t *testing.T) {
 		value.Mul(value, base)
 		value.Add(value, big.NewInt(int64(strings.IndexRune(ksuidAlphabet, ch))))
 	}
-	raw = value.Bytes()
+	raw := value.Bytes()
 	if len(raw) < 4 {
 		t.Fatalf("decoded ksuid too short: %x", raw)
 	}

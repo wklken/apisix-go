@@ -242,7 +242,7 @@ func (p *Plugin) transformRequest(r *http.Request) (*http.Request, error) {
 		return io.NopCloser(bytes.NewReader([]byte(out))), nil
 	}
 	r.ContentLength = int64(len(out))
-	r.Header.Set("Content-Length", fmt.Sprint(len(out)))
+	r.Header.Set("Content-Length", strconv.Itoa(len(out)))
 	return r, nil
 }
 

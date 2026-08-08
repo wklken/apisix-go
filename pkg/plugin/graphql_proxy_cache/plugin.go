@@ -705,7 +705,7 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 		}
 	}
 	age := max(time.Since(entry.storedAt)/time.Second, 0)
-	w.Header().Set("Age", fmt.Sprintf("%d", age))
+	w.Header().Set("Age", strconv.FormatInt(int64(age), 10))
 	w.Header().Set(cacheStatusHeader, cacheStatus)
 	w.Header().Set(cacheKeyHeader, cacheKey)
 	w.WriteHeader(entry.status)

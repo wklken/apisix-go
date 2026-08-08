@@ -282,7 +282,7 @@ func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProt
 	}
 	if body := r.state.Get(2); body != lua.LNil {
 		transformed.body = luaValueToBody(body)
-		transformed.header.Set("Content-Length", fmt.Sprint(len(transformed.body)))
+		transformed.header.Set("Content-Length", strconv.Itoa(len(transformed.body)))
 	}
 	if value := r.state.Get(3); value != lua.LNil {
 		if table, ok := value.(*lua.LTable); ok {

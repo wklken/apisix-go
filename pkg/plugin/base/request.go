@@ -2,10 +2,10 @@ package base
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -47,7 +47,12 @@ func ReplaceRequestBody(r *http.Request, body []byte) {
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}
 	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+}
+
+// ProtocolVersion returns the request protocol version as major.minor.
+func ProtocolVersion(r *http.Request) string {
+	return strconv.Itoa(r.ProtoMajor) + "." + strconv.Itoa(r.ProtoMinor)
 }
 
 // WriteJSONMessage preserves the plugin-base API for existing callers while

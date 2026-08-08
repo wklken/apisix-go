@@ -48,11 +48,7 @@ func decodePluginMetadata(config []byte, id string, v any) error {
 	}
 	data_encryption.DecryptPluginMetadata(id, metadata, keyring)
 
-	decoded, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(decoded, v)
+	return util.Parse(metadata, v)
 }
 
 func GetUpstream(id string) (resource.Upstream, error) {

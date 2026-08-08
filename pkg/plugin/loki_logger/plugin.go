@@ -547,7 +547,7 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) (lokiPayload, error
 	streamIndex := make(map[string]int, len(entries))
 	for _, queuedEntry := range entries {
 		logEntry := queuedEntry
-		logTime := fmt.Sprintf("%d", time.Now().UnixNano())
+		logTime := strconv.FormatInt(time.Now().UnixNano(), 10)
 		var labels map[string]string
 		if envelope, ok := unwrapLokiEntry(queuedEntry); ok {
 			logEntry = envelope.Fields

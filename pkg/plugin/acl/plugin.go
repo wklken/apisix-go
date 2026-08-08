@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -226,6 +227,22 @@ func containsValueWithParser(wantValues []string, value any, parser, separator s
 	return false
 }
 
+// labelSeparatorRegexCache caches compiled label separators; an invalid
+// separator is not cached so the failure keeps surfacing per request.
+var labelSeparatorRegexCache sync.Map // separator -> *regexp.Regexp
+
+func labelSeparatorRegex(separator string) *regexp.Regexp {
+	if cached, ok := labelSeparatorRegexCache.Load(separator); ok {
+		return cached.(*regexp.Regexp)
+	}
+	re, err := regexp.Compile(`\s*(?:` + separator + `)\s*`)
+	if err != nil {
+		return nil
+	}
+	actual, _ := labelSeparatorRegexCache.LoadOrStore(separator, re)
+	return actual.(*regexp.Regexp)
+}
+
 func extractValuesWithParser(value any, parser, separator string) []string {
 	if matches, ok := value.(externalUserMatches); ok {
 		var values []string
@@ -243,9 +260,9 @@ func extractValuesWithParser(value any, parser, separator string) []string {
 		if separator == "" {
 			return nil
 		}
-		re, err := regexp.Compile(`\s*(?:` + separator + `)\s*`)
-		if err != nil {
-			logger.Warnf("failed to split labels [%s], err: %v", text, err)
+		re := labelSeparatorRegex(separator)
+		if re == nil {
+			logger.Warnf("failed to split labels [%s], err: invalid separator %q", text, separator)
 			return nil
 		}
 		parts := re.Split(text, -1)

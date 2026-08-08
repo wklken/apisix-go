@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -163,7 +164,7 @@ func transformRequest(r *http.Request, encoding string) error {
 			return io.NopCloser(bytes.NewReader(decoded)), nil
 		}
 		r.ContentLength = int64(len(decoded))
-		r.Header.Set("Content-Length", fmt.Sprint(len(decoded)))
+		r.Header.Set("Content-Length", strconv.Itoa(len(decoded)))
 	}
 
 	r.Header.Set("Content-Type", defaultProxyContentType)

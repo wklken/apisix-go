@@ -25,6 +25,14 @@ type captureSender struct {
 	messages []rocketmqMessage
 }
 
+func TestSendBatchPreservesRocketMQMarshalErrorContext(t *testing.T) {
+	p := &Plugin{}
+	_, err := p.SendBatch([]map[string]any{{"bad": make(chan int)}}, 1)
+	if err == nil || !strings.Contains(err.Error(), "failed to marshal rocketmq log message") {
+		t.Fatalf("SendBatch() error = %v, want rocketmq marshal context", err)
+	}
+}
+
 type shutdownSender struct {
 	captureSender
 	shutdown bool

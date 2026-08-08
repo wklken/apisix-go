@@ -186,6 +186,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if p.config.ServiceName == "" {
 		p.config.ServiceName = "APISIX"
 	}

@@ -39,3 +39,36 @@ func TestTruncateLogFormatPreservesShallowValues(t *testing.T) {
 		t.Fatalf("TruncateLogFormat() = %#v", got)
 	}
 }
+
+func TestResolveLogFormatTraversesNestedMapsAndPreservesTypedValues(t *testing.T) {
+	format := map[string]any{
+		"host": "$host",
+		"nested": map[string]any{
+			"missing": "$missing",
+			"status":  201,
+		},
+	}
+	resolved := ResolveLogFormat(format, func(value string) any {
+		if value == "$host" {
+			return "example.com"
+		}
+		return ""
+	})
+
+	if resolved["host"] != "example.com" {
+		t.Fatalf("host = %#v, want example.com", resolved["host"])
+	}
+	nested := resolved["nested"].(map[string]any)
+	if nested["missing"] != "" || nested["status"] != 201 {
+		t.Fatalf("nested fields = %#v, want empty missing variable and typed status", nested)
+	}
+}
+
+func TestResolveStringLogFormatUsesCallerResolver(t *testing.T) {
+	got := ResolveStringLogFormat(map[string]string{"host": "$host"}, func(value string) any {
+		return "resolved:" + value
+	})
+	if got["host"] != "resolved:$host" {
+		t.Fatalf("ResolveStringLogFormat() = %#v", got)
+	}
+}

@@ -195,6 +195,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 1000
 	}
@@ -309,19 +310,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 type accessRequest = base.AccessLogRequest
 
 func resolveTCPLogFormat(r *http.Request, request accessRequest, format map[string]any) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
-		fields[key] = resolveTCPLogFormatNode(r, request, value)
-	}
-	return fields
-}
-
-func resolveTCPLogFormatNode(r *http.Request, request accessRequest, value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return resolveTCPLogFormat(r, request, typed)
-	case string:
-		switch typed {
+	return base.ResolveLogFormat(format, func(value string) any {
+		switch value {
 		case "$host":
 			return request.Host
 		case "$remote_addr":
@@ -329,11 +319,9 @@ func resolveTCPLogFormatNode(r *http.Request, request accessRequest, value any) 
 		case "$time_iso8601":
 			return request.Started.Format(time.RFC3339)
 		default:
-			return apisixlog.GetField(r, typed)
+			return apisixlog.GetField(r, value)
 		}
-	default:
-		return typed
-	}
+	})
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -357,17 +345,13 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 }
 
 func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
-	if batchMaxSize == 1 && len(entries) == 1 {
-		body, err := json.Marshal(entries[0])
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal tcp log entry: %w", err)
-		}
-		return body, nil
-	}
-
-	body, err := json.Marshal(entries)
+	body, err := base.EncodeLogBatch(entries, batchMaxSize, "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal tcp log entries: %w", err)
+		entryLabel := "entries"
+		if batchMaxSize == 1 && len(entries) == 1 {
+			entryLabel = "entry"
+		}
+		return nil, fmt.Errorf("failed to marshal tcp log %s: %w", entryLabel, err)
 	}
 	return body, nil
 }

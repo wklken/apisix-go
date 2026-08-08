@@ -312,10 +312,54 @@ func TestExprMatchedSupportsBothPluginExpressionShapes(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			PrepareExprRegexps(test.expressions)
 			if !ExprMatched(r, test.expressions, 0) {
 				t.Fatalf("ExprMatched() = false, want true")
 			}
 		})
+	}
+}
+
+func TestPrepareExprRegexpsSupportsBothRegexOperators(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Trace-Id", "abc-123")
+	expressions := []any{
+		[]any{"$http_x_trace_id", "~", "^abc-[0-9]+$"},
+		"AND",
+		[]any{"$http_x_trace_id", "!~", "^xyz"},
+	}
+
+	PrepareExprRegexps(expressions)
+	if _, ok := preparedExprRegexps.Load("^abc-[0-9]+$"); !ok {
+		t.Fatal("PrepareExprRegexps() did not cache the configured pattern")
+	}
+	if !ExprMatched(r, expressions, 0) {
+		t.Fatal("ExprMatched() = false, want both prepared regex conditions to match")
+	}
+}
+
+func TestPrepareExprRegexpsPreservesInvalidPatternBehavior(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	match := []any{[]any{"$uri", "~", "["}}
+	notMatch := []any{[]any{"$uri", "!~", "["}}
+	PrepareExprRegexps(match, notMatch)
+
+	if ExprMatched(r, match, 0) {
+		t.Fatal("invalid positive regex matched, want false")
+	}
+	if !ExprMatched(r, notMatch, 0) {
+		t.Fatal("invalid negative regex did not match, want existing true behavior")
+	}
+}
+
+func TestExprMatchedPreservesStringAndNonStringOperands(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if !ExprMatched(r, []any{[]any{"$status", "==", "201"}}, http.StatusCreated) {
+		t.Fatal("string operands did not match")
+	}
+	if !ExprMatched(r, []any{[]any{"$status", "==", 201}}, http.StatusCreated) {
+		t.Fatal("non-string operand did not retain fmt.Sprint behavior")
 	}
 }
 

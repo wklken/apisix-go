@@ -264,10 +264,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var logFields map[string]any
 		if p.LogFormat != nil {
-			logFields = make(map[string]any, len(p.LogFormat))
-			for key, value := range p.LogFormat {
-				logFields[key] = p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
-			}
+			logFields = base.ResolveStringLogFormat(p.LogFormat, func(value string) any {
+				return p.resolveLogFormatValue(r, value, request.host, request.remoteAddr)
+			})
 		} else {
 			logFields = buildDefaultEvent(request, w.Header(), r, metrics)
 			for key, value := range p.logFormatExtra {

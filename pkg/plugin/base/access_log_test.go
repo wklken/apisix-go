@@ -9,6 +9,19 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
+func TestCollapseHeaderValuesLowercasesAndCopiesValues(t *testing.T) {
+	header := http.Header{"X-Trace": {"first", "second"}}
+	got := CollapseHeaderValues(header)
+	values, ok := got["x-trace"].([]string)
+	if !ok || len(values) != 2 || values[0] != "first" || values[1] != "second" {
+		t.Fatalf("collapsed headers = %#v, want lowercase multi-value field", got)
+	}
+	values[0] = "changed"
+	if header["X-Trace"][0] != "first" {
+		t.Fatalf("CollapseHeaderValues() aliased source values: %#v", header)
+	}
+}
+
 func TestCaptureAccessLogRequest(t *testing.T) {
 	started := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
 	r := httptest.NewRequest(http.MethodPost, "http://example.com/foo?x=1&x=2&y=3", nil)

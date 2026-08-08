@@ -11,10 +11,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	brotli "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
+
+var preparedExprRegexps sync.Map
 
 // ResponseRecorder forwards responses while retaining a bounded response body
 // and the status code for logger plugins.
@@ -145,6 +148,33 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 	return hasResult && result
 }
 
+// PrepareExprRegexps compiles configured logger expression patterns before
+// they enter the request path. Invalid patterns retain the existing no-match
+// behavior.
+func PrepareExprRegexps(expressionSets ...any) {
+	for _, expressions := range expressionSets {
+		conditions, _, ok := expressionConditions(expressions)
+		if !ok {
+			continue
+		}
+		for _, condition := range conditions {
+			parts, ok := condition.([]any)
+			if !ok || len(parts) != 3 {
+				continue
+			}
+			op := exprOperandString(parts[1])
+			if op != "~" && op != "!~" {
+				continue
+			}
+			pattern := exprOperandString(parts[2])
+			compiled, err := regexp.Compile(pattern)
+			if err == nil {
+				preparedExprRegexps.Store(pattern, compiled)
+			}
+		}
+	}
+}
+
 func expressionConditions(expressions any) ([]any, bool, bool) {
 	switch value := expressions.(type) {
 	case nil:
@@ -168,9 +198,9 @@ func matchCondition(r *http.Request, condition any, status int) bool {
 		return false
 	}
 
-	left := fmt.Sprint(parts[0])
-	op := fmt.Sprint(parts[1])
-	right := fmt.Sprint(parts[2])
+	left := exprOperandString(parts[0])
+	op := exprOperandString(parts[1])
+	right := exprOperandString(parts[2])
 	actual := RequestVar(r, left, status)
 
 	switch op {
@@ -187,14 +217,21 @@ func matchCondition(r *http.Request, condition any, status int) bool {
 	case "<=":
 		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
 	case "~":
-		matched, _ := regexp.MatchString(right, actual)
-		return matched
+		pattern, ok := preparedExprRegexps.Load(right)
+		return ok && pattern.(*regexp.Regexp).MatchString(actual)
 	case "!~":
-		matched, _ := regexp.MatchString(right, actual)
-		return !matched
+		pattern, ok := preparedExprRegexps.Load(right)
+		return !ok || !pattern.(*regexp.Regexp).MatchString(actual)
 	default:
 		return false
 	}
+}
+
+func exprOperandString(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprint(value)
 }
 
 func compareNumber(left string, right string, compare func(float64, float64) bool) bool {

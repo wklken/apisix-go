@@ -25,6 +25,14 @@ type captureSender struct {
 	messages []kafkaMessage
 }
 
+func TestSendBatchPreservesKafkaMarshalErrorContext(t *testing.T) {
+	p := &Plugin{}
+	_, err := p.SendBatch([]map[string]any{{"bad": make(chan int)}}, 1)
+	if err == nil || !strings.Contains(err.Error(), "failed to marshal kafka log message") {
+		t.Fatalf("SendBatch() error = %v, want kafka marshal context", err)
+	}
+}
+
 type closeTrackingSender struct {
 	closeCount int
 }

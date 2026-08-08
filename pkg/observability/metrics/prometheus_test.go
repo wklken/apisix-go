@@ -113,6 +113,18 @@ func TestPrometheusExtraLabelValuesUseRequestAndBoundedHTTPVariables(t *testing.
 	}
 }
 
+func TestPrometheusStatusVariablesUseDecimalLabels(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	entry := HTTPRequestMetrics{Status: http.StatusBadGateway, UpstreamLatency: 1}
+
+	if got := prometheusVariable(req, entry, "$status"); got != "502" {
+		t.Fatalf("status label = %q, want 502", got)
+	}
+	if got := prometheusVariable(req, entry, "$upstream_status"); got != "502" {
+		t.Fatalf("upstream status label = %q, want 502", got)
+	}
+}
+
 func TestPrometheusMetricConfigKeepsDefaultsForInvalidBuckets(t *testing.T) {
 	cfg := newPrometheusMetricConfig(map[string]any{
 		"default_buckets": []any{10, "not-a-number"},

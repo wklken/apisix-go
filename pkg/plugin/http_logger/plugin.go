@@ -212,6 +212,7 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
 	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	if err := validateBodyExpression("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
 		return err
 	}
@@ -438,26 +439,8 @@ func resolveLogFormat(
 	status int,
 	routeLabels map[string]any,
 ) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
-		fields[key] = resolveLogFormatNode(value, r, requestBody, responseBody, status, routeLabels)
-	}
-	return fields
-}
-
-func resolveLogFormatNode(
-	value any,
-	r *http.Request,
-	requestBody string,
-	responseBody string,
-	status int,
-	routeLabels map[string]any,
-) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return resolveLogFormat(typed, r, requestBody, responseBody, status, routeLabels)
-	case string:
-		switch typed {
+	return base.ResolveLogFormat(format, func(value string) any {
+		switch value {
 		case "$request_body":
 			return requestBody
 		case "$resp_body":
@@ -471,11 +454,9 @@ func resolveLogFormatNode(
 		case "$remote_addr":
 			return base.RemoteIP(r.RemoteAddr)
 		default:
-			return apisixlog.GetField(r, typed)
+			return apisixlog.GetField(r, value)
 		}
-	default:
-		return typed
-	}
+	})
 }
 
 func logFormatContains(format map[string]any, variable string) bool {

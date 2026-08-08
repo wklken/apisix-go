@@ -207,6 +207,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
 	keyring, enabled := data_encryption.Keyring()
 	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.CustomerToken)
 	if err != nil {
@@ -345,20 +346,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 type accessRequest = base.AccessLogRequest
 
 func resolveLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
-	fields := make(map[string]any, len(format))
-	for key, value := range format {
+	return base.ResolveStringLogFormat(format, func(value string) any {
 		switch value {
 		case "$host":
-			fields[key] = request.Host
+			return request.Host
 		case "$remote_addr":
-			fields[key] = request.ClientIP
+			return request.ClientIP
 		case "$time_iso8601":
-			fields[key] = request.Started.Format(time.RFC3339)
+			return request.Started.Format(time.RFC3339)
 		default:
-			fields[key] = apisixlog.GetField(r, value)
+			return apisixlog.GetField(r, value)
 		}
-	}
-	return fields
+	})
 }
 
 func (p *Plugin) Send(log map[string]any) {

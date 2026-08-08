@@ -6,7 +6,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -278,11 +278,6 @@ type connLimiter interface {
 	incoming(key string, conn int, burst int) (time.Duration, bool, error)
 	leaving(key string, latency *time.Duration) error
 }
-
-var (
-	varPattern        = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
-	defaultVarPattern = regexp.MustCompile(`^\$\{\s*([0-9A-Za-z_]+)\s*\?\?\s*([^{}]+?)\s*\}$`)
-)
 
 const maxSafeInteger = int64(1<<53 - 1)
 
@@ -617,7 +612,7 @@ func staticLimitValue(value any, name string, allowZero bool) (int, bool, error)
 
 func resolveLimitValue(r *http.Request, value any, name string, allowZero bool) (int, error) {
 	if expr, ok := value.(string); ok {
-		if match := defaultVarPattern.FindStringSubmatch(expr); match != nil {
+		if match := limitbase.DefaultVarPattern.FindStringSubmatch(expr); match != nil {
 			resolved := base.RequestVarFromNginx(r, match[1])
 			if resolved == "" {
 				resolved = strings.TrimSpace(match[2])
@@ -625,7 +620,7 @@ func resolveLimitValue(r *http.Request, value any, name string, allowZero bool) 
 			return parseLimitInt(resolved, name, allowZero)
 		}
 
-		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
+		resolved := limitbase.VarPattern.ReplaceAllStringFunc(expr, func(match string) string {
 			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			varName = strings.TrimSuffix(varName, "}")
 			return base.RequestVarFromNginx(r, varName)
@@ -917,11 +912,11 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 	if !ok || len(values) != 2 {
 		return 0, false, fmt.Errorf("unexpected redis limit-conn result: %v", result)
 	}
-	allowed, ok := redisInt(values[0])
+	allowed, ok := limitbase.RedisInt(values[0])
 	if !ok {
 		return 0, false, fmt.Errorf("unexpected redis limit-conn allowed value: %v", values[0])
 	}
-	delayMs, ok := redisInt(values[1])
+	delayMs, ok := limitbase.RedisInt(values[1])
 	if !ok {
 		return 0, false, fmt.Errorf("unexpected redis limit-conn delay value: %v", values[1])
 	}
@@ -945,30 +940,11 @@ func (l *redisConnLimiter) leaving(key string, latency *time.Duration) error {
 	return nil
 }
 
-func redisInt(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint64:
-		if v > uint64(1<<63-1) {
-			return 0, false
-		}
-		return int64(v), true
-	case string:
-		parsed, err := strconv.ParseInt(v, 10, 64)
-		return parsed, err == nil
-	default:
-		return 0, false
-	}
-}
-
 func (p *Plugin) resolveKey(r *http.Request) string {
 	var key string
 	if p.config.KeyType == "var_combination" {
 		resolved := 0
-		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
+		key = limitbase.VarPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
 			value := requestLimitKey(r, name)
@@ -1007,7 +983,7 @@ func requestLimitKey(r *http.Request, key string) string {
 
 func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, bool) {
 	resolved := 0
-	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
+	key := limitbase.VarPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 		name = strings.TrimSuffix(name, "}")
 		value := base.RequestVarFromNginx(r, name)

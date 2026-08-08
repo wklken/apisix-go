@@ -21,6 +21,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -949,7 +950,7 @@ func TestSlidingWindowResponseHeadersStayRoundedAcrossAcceptedAndRejectedRequest
 		RejectedCode: http.StatusServiceUnavailable,
 	})
 	limiter := newSlidingWindowLimiter(newMemorySlidingWindowStore(), "plugin-limit-count", 2, 5)
-	headers := defaultHeaders(Metadata{})
+	headers := limitbase.DefaultQuotaHeaders("", "", "")
 	start := time.Unix(100, 0)
 	times := []time.Time{
 		start,
@@ -977,12 +978,12 @@ func TestSlidingWindowResponseHeadersStayRoundedAcrossAcceptedAndRejectedRequest
 			t.Fatalf("request %d response status = %d, want %d", i+1, response.Code, statuses[i])
 		}
 		if remaining := response.Header().
-			Get(headers.remaining); !regexp.MustCompile(`^[0-9]+$`).
+			Get(headers.Remaining); !regexp.MustCompile(`^[0-9]+$`).
 			MatchString(remaining) {
 			t.Fatalf("request %d remaining header = %q, want an integer", i+1, remaining)
 		}
 		if reset := response.Header().
-			Get(headers.reset); !regexp.MustCompile(`^[0-9]+(?:\.[0-9]{1,2})?$`).
+			Get(headers.Reset); !regexp.MustCompile(`^[0-9]+(?:\.[0-9]{1,2})?$`).
 			MatchString(reset) {
 			t.Fatalf("request %d reset header = %q, want at most two decimal places", i+1, reset)
 		}
@@ -1681,7 +1682,7 @@ func TestSlidingWindowPublishesRateLimitingInfoForAccessLogs(t *testing.T) {
 		lim,
 		2,
 		"192.0.2.1",
-		defaultHeaders(Metadata{}),
+		limitbase.DefaultQuotaHeaders("", "", ""),
 		time.Unix(102, 0),
 	); !allowed {
 		t.Fatal("first sliding-window request was rejected")
@@ -1723,7 +1724,7 @@ func TestDelayedSyncPublishesRateLimitingInfoForAccessLogs(t *testing.T) {
 		syncer,
 		2,
 		"192.0.2.1",
-		defaultHeaders(Metadata{}),
+		limitbase.DefaultQuotaHeaders("", "", ""),
 	); !allowed {
 		t.Fatal("first delayed-sync request was rejected")
 	}

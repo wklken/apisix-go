@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -209,8 +208,6 @@ type bucketStore struct {
 type reqLimiter interface {
 	incoming(key string, rate float64, burst float64) (time.Duration, bool, error)
 }
-
-var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
 
 var consumerBucketStores sync.Map
 
@@ -566,11 +563,11 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 	if !ok || len(values) != 2 {
 		return 0, false, fmt.Errorf("unexpected redis limit-req result: %v", result)
 	}
-	allowed, ok := redisInt(values[0])
+	allowed, ok := limitbase.RedisInt(values[0])
 	if !ok {
 		return 0, false, fmt.Errorf("unexpected redis limit-req allowed value: %v", values[0])
 	}
-	delayMs, ok := redisInt(values[1])
+	delayMs, ok := limitbase.RedisInt(values[1])
 	if !ok {
 		return 0, false, fmt.Errorf("unexpected redis limit-req delay value: %v", values[1])
 	}
@@ -578,27 +575,11 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 	return time.Duration(delayMs) * time.Millisecond, allowed == 1, nil
 }
 
-func redisInt(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint64:
-		return int64(v), true
-	case string:
-		parsed, err := strconv.ParseInt(v, 10, 64)
-		return parsed, err == nil
-	default:
-		return 0, false
-	}
-}
-
 func (p *Plugin) resolveKey(r *http.Request) string {
 	var key string
 	if p.config.KeyType == "var_combination" {
 		resolved := 0
-		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
+		key = limitbase.VarPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
 			value := base.RequestVarFromNginx(r, name)

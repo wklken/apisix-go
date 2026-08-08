@@ -20,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -50,10 +51,7 @@ const (
 	name     = "limit-count"
 )
 
-var (
-	varPattern        = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
-	defaultVarPattern = regexp.MustCompile(`^\$\{\s*([0-9A-Za-z_]+)\s*\?\?\s*([^{}]+?)\s*\}$`)
-)
+var varPattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
 
 const maxSafeInteger = int64(1<<53 - 1)
 
@@ -1041,7 +1039,7 @@ func staticLimitValue(value any, name string) (int64, bool, error) {
 
 func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
 	if expr, ok := value.(string); ok {
-		if match := defaultVarPattern.FindStringSubmatch(expr); match != nil {
+		if match := limitbase.DefaultVarPattern.FindStringSubmatch(expr); match != nil {
 			resolved := base.RequestVarFromNginx(r, match[1])
 			if resolved == "" {
 				resolved = strings.TrimSpace(match[2])
@@ -1147,7 +1145,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 						http.Error(w, "failed to limit count", http.StatusInternalServerError)
 						return
 					}
-					if !p.runDelayedLimit(w, r, syncer, count, key, ruleHeaders(rule, i)) {
+					if !p.runDelayedLimit(w, r, syncer, count, key, limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i)) {
 						return
 					}
 					continue
@@ -1161,7 +1159,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 						http.Error(w, "failed to limit count", http.StatusInternalServerError)
 						return
 					}
-					if !p.runSlidingLimit(w, r, lim, count, key, ruleHeaders(rule, i), time.Now()) {
+					if !p.runSlidingLimit(
+						w,
+						r,
+						lim,
+						count,
+						key,
+						limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i),
+						time.Now(),
+					) {
 						return
 					}
 					continue
@@ -1178,7 +1184,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 						return
 					}
 				}
-				if !p.runLimit(w, r, lim, count, key, ruleHeaders(rule, i)) {
+				if !p.runLimit(w, r, lim, count, key, limitbase.RuleQuotaHeaders(rule.HeaderPrefix, i)) {
 					return
 				}
 			}
@@ -1212,7 +1218,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				http.Error(w, "failed to limit count", http.StatusInternalServerError)
 				return
 			}
-			if !p.runDelayedLimit(w, r, syncer, count, key, defaultHeaders(p.metadata)) {
+			if !p.runDelayedLimit(
+				w,
+				r,
+				syncer,
+				count,
+				key,
+				limitbase.DefaultQuotaHeaders(
+					p.metadata.LimitHeader,
+					p.metadata.RemainingHeader,
+					p.metadata.ResetHeader,
+				),
+			) {
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -1228,7 +1245,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				http.Error(w, "failed to limit count", http.StatusInternalServerError)
 				return
 			}
-			if !p.runSlidingLimit(w, r, lim, count, key, defaultHeaders(p.metadata), time.Now()) {
+			if !p.runSlidingLimit(
+				w,
+				r,
+				lim,
+				count,
+				key,
+				limitbase.DefaultQuotaHeaders(
+					p.metadata.LimitHeader,
+					p.metadata.RemainingHeader,
+					p.metadata.ResetHeader,
+				),
+				time.Now(),
+			) {
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -1244,7 +1273,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, "failed to limit count", http.StatusInternalServerError)
 			return
 		}
-		if !p.runLimit(w, r, lim, count, key, defaultHeaders(p.metadata)) {
+		if !p.runLimit(
+			w,
+			r,
+			lim,
+			count,
+			key,
+			limitbase.DefaultQuotaHeaders(p.metadata.LimitHeader, p.metadata.RemainingHeader, p.metadata.ResetHeader),
+		) {
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -1452,7 +1488,7 @@ func (p *Plugin) runLimit(
 	lim *limiter.Limiter,
 	count int64,
 	key string,
-	headers quotaHeaders,
+	headers limitbase.QuotaHeaders,
 ) bool {
 	var context limiter.Context
 	var err error
@@ -1477,9 +1513,9 @@ func (p *Plugin) runLimit(
 
 	if context.Reached {
 		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
-			w.Header().Add(headers.remaining, "0")
-			w.Header().Add(headers.reset, strconv.FormatInt(reset, 10))
+			w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.Remaining, "0")
+			w.Header().Add(headers.Reset, strconv.FormatInt(reset, 10))
 		}
 
 		if p.config.RejectedMsg != "" {
@@ -1493,9 +1529,9 @@ func (p *Plugin) runLimit(
 	}
 
 	if *p.config.ShowLimitQuotaHeader {
-		w.Header().Add(headers.limit, strconv.FormatInt(context.Limit, 10))
-		w.Header().Add(headers.remaining, strconv.FormatInt(context.Remaining, 10))
-		w.Header().Add(headers.reset, strconv.FormatInt(reset, 10))
+		w.Header().Add(headers.Limit, strconv.FormatInt(context.Limit, 10))
+		w.Header().Add(headers.Remaining, strconv.FormatInt(context.Remaining, 10))
+		w.Header().Add(headers.Reset, strconv.FormatInt(reset, 10))
 	}
 
 	return true
@@ -1529,7 +1565,7 @@ func (p *Plugin) runSlidingLimit(
 	lim *slidingWindowLimiter,
 	count int64,
 	key string,
-	headers quotaHeaders,
+	headers limitbase.QuotaHeaders,
 	now time.Time,
 ) bool {
 	remaining, reset, err := lim.incoming(
@@ -1549,9 +1585,9 @@ func (p *Plugin) runSlidingLimit(
 
 	if errors.Is(err, errSlidingWindowRejected) {
 		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
-			w.Header().Add(headers.remaining, "0")
-			w.Header().Add(headers.reset, strconv.FormatFloat(reset, 'f', -1, 64))
+			w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.Remaining, "0")
+			w.Header().Add(headers.Reset, strconv.FormatFloat(reset, 'f', -1, 64))
 		}
 		if p.config.RejectedMsg != "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -1564,9 +1600,9 @@ func (p *Plugin) runSlidingLimit(
 	}
 
 	if *p.config.ShowLimitQuotaHeader {
-		w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
-		w.Header().Add(headers.remaining, strconv.FormatInt(remaining, 10))
-		w.Header().Add(headers.reset, strconv.FormatFloat(reset, 'f', -1, 64))
+		w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
+		w.Header().Add(headers.Remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Add(headers.Reset, strconv.FormatFloat(reset, 'f', -1, 64))
 	}
 	return true
 }
@@ -1577,7 +1613,7 @@ func (p *Plugin) runDelayedLimit(
 	syncer *delayedSyncer,
 	count int64,
 	key string,
-	headers quotaHeaders,
+	headers limitbase.QuotaHeaders,
 ) bool {
 	remaining, reset, err := syncer.incoming(
 		r.Context(),
@@ -1596,9 +1632,9 @@ func (p *Plugin) runDelayedLimit(
 	p.recordRateLimitingInfo(r, key, count, max(remaining, 0), resetSeconds)
 	if errors.Is(err, errDelayedSyncRejected) {
 		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
-			w.Header().Add(headers.remaining, "0")
-			w.Header().Add(headers.reset, strconv.FormatInt(resetSeconds, 10))
+			w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.Remaining, "0")
+			w.Header().Add(headers.Reset, strconv.FormatInt(resetSeconds, 10))
 		}
 		if p.config.RejectedMsg != "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -1611,9 +1647,9 @@ func (p *Plugin) runDelayedLimit(
 	}
 
 	if *p.config.ShowLimitQuotaHeader {
-		w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
-		w.Header().Add(headers.remaining, strconv.FormatInt(remaining, 10))
-		w.Header().Add(headers.reset, strconv.FormatInt(resetSeconds, 10))
+		w.Header().Add(headers.Limit, strconv.FormatInt(count, 10))
+		w.Header().Add(headers.Remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Add(headers.Reset, strconv.FormatInt(resetSeconds, 10))
 	}
 	return true
 }
@@ -1677,7 +1713,7 @@ func limitCountRequestVar(r *http.Request, name string) string {
 }
 
 func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
-	if match := defaultVarPattern.FindStringSubmatch(rule.Key); match != nil {
+	if match := limitbase.DefaultVarPattern.FindStringSubmatch(rule.Key); match != nil {
 		key := limitCountRequestVar(r, match[1])
 		if key == "" {
 			key = strings.TrimSpace(match[2])
@@ -1699,44 +1735,4 @@ func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
 		return "", false
 	}
 	return key, true
-}
-
-type quotaHeaders struct {
-	limit     string
-	remaining string
-	reset     string
-}
-
-func defaultHeaders(metadata Metadata) quotaHeaders {
-	metadata = applyMetadataDefaults(metadata)
-	return quotaHeaders{
-		limit:     metadata.LimitHeader,
-		remaining: metadata.RemainingHeader,
-		reset:     metadata.ResetHeader,
-	}
-}
-
-func applyMetadataDefaults(metadata Metadata) Metadata {
-	if metadata.LimitHeader == "" {
-		metadata.LimitHeader = "X-RateLimit-Limit"
-	}
-	if metadata.RemainingHeader == "" {
-		metadata.RemainingHeader = "X-RateLimit-Remaining"
-	}
-	if metadata.ResetHeader == "" {
-		metadata.ResetHeader = "X-RateLimit-Reset"
-	}
-	return metadata
-}
-
-func ruleHeaders(rule Rule, index int) quotaHeaders {
-	prefix := rule.HeaderPrefix
-	if prefix == "" {
-		prefix = strconv.Itoa(index + 1)
-	}
-	return quotaHeaders{
-		limit:     "X-" + prefix + "-RateLimit-Limit",
-		remaining: "X-" + prefix + "-RateLimit-Remaining",
-		reset:     "X-" + prefix + "-RateLimit-Reset",
-	}
 }

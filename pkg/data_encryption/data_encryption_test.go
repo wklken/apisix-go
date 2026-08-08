@@ -28,6 +28,50 @@ func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigWithResolverLookupResults(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	resolver := NewResolver(true, []string{key})
+
+	t.Run("registered plugin fields decrypted", func(t *testing.T) {
+		configs := map[string]any{
+			"key-auth":   map[string]any{"key": encryptForTest(t, key, "api-secret")},
+			"basic-auth": map[string]any{"password": encryptForTest(t, key, "pw")},
+		}
+		for name, config := range configs {
+			DecryptPluginConfigWithResolver(config, name, resolver)
+		}
+		if got := configs["key-auth"].(map[string]any)["key"]; got != "api-secret" {
+			t.Fatalf("key-auth.key = %v, want decrypted", got)
+		}
+		if got := configs["basic-auth"].(map[string]any)["password"]; got != "pw" {
+			t.Fatalf("basic-auth.password = %v, want decrypted", got)
+		}
+	})
+
+	t.Run("unknown plugin left untouched", func(t *testing.T) {
+		ciphertext := encryptForTest(t, key, "secret")
+		config := map[string]any{"token": ciphertext}
+		DecryptPluginConfigWithResolver(config, "not-a-plugin", resolver)
+		if got := config["token"]; got != ciphertext {
+			t.Fatalf("unknown plugin token = %v, want ciphertext untouched", got)
+		}
+	})
+
+	t.Run("non-map config skipped", func(t *testing.T) {
+		config := "plain string"
+		DecryptPluginConfigWithResolver(config, "key-auth", resolver)
+		if config != "plain string" {
+			t.Fatalf("non-map config mutated to %v", config)
+		}
+	})
+
+	t.Run("nil and empty configs are no-ops", func(t *testing.T) {
+		DecryptPluginConfigs(nil, []string{key})
+		DecryptPluginConfigs(map[string]any{}, []string{key})
+		DecryptPluginConfigs(map[string]any{"key-auth": map[string]any{}}, nil)
+	})
+}
+
 func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	ciphertext := encryptForTest(t, key, "redis-secret")

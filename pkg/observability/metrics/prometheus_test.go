@@ -173,7 +173,7 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 	t.Helper()
 	old := struct {
 		connections          *prometheus.GaugeVec
-		requests             prometheus.Gauge
+		requests             prometheus.Counter
 		etcdReachable        prometheus.Gauge
 		hostInfo             *prometheus.GaugeVec
 		etcdModifyIndexed    *prometheus.GaugeVec
@@ -233,7 +233,7 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		"llm_model",
 	}
 	prometheusExtraLabels = nil
-	Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: prefix + "http_requests_total"})
+	Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "http_requests_total"})
 	HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "http_status"}, httpLabels)
 	HttpLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "http_latency"}, commonLabels)
 	Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "bandwidth"}, commonLabels)
@@ -250,7 +250,7 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 	installMetricVectors(t, "test_enable_")
 
 	install := func() {
-		Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_enable_requests"})
+		Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_enable_requests"})
 		HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_status"}, []string{"code"})
 		HttpLatency = prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Name: "test_enable_latency"},
@@ -274,7 +274,7 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 		t.Fatal("enabled with no metric vectors installed")
 	}
 	for _, single := range []func(){
-		func() { Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_one_requests"}) },
+		func() { Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_one_requests"}) },
 		func() {
 			HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_status"}, []string{"code"})
 		},

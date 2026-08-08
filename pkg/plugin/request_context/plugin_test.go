@@ -75,7 +75,7 @@ func TestHandlerRecordsOfficialPrometheusRequestMetrics(t *testing.T) {
 	oldLLMLatency := metrics.LLMLatency
 	oldLLMPromptTokens := metrics.LLMPromptTokens
 	oldLLMCompletionTokens := metrics.LLMCompletionTokens
-	metrics.Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_prometheus_requests"})
+	metrics.Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_prometheus_requests"})
 	metrics.HttpStatus = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "test_prometheus_http_status"},
 		[]string{
@@ -170,6 +170,67 @@ func TestHandlerRecordsOfficialPrometheusRequestMetrics(t *testing.T) {
 	}
 	if got := counterValue(t, metrics.LLMCompletionTokens.WithLabelValues(llmLabelValues...)); got != 8 {
 		t.Fatalf("LLM completion tokens = %v, want 8", got)
+	}
+}
+
+func TestHandlerRecordsMonotonicRequestTotal(t *testing.T) {
+	oldRequests := metrics.Requests
+	oldStatus := metrics.HttpStatus
+	oldLatency := metrics.HttpLatency
+	oldBandwidth := metrics.Bandwidth
+	oldLLMLatency := metrics.LLMLatency
+	oldLLMPromptTokens := metrics.LLMPromptTokens
+	oldLLMCompletionTokens := metrics.LLMCompletionTokens
+	metrics.Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_monotonic_requests"})
+	metrics.HttpStatus = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_monotonic_http_status"},
+		[]string{
+			"code", "route", "matched_uri", "matched_host", "service", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model", "response_source",
+		},
+	)
+	metrics.HttpLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "test_monotonic_http_latency"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	metrics.Bandwidth = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_monotonic_bandwidth"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	llmLabels := []string{
+		"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+	}
+	metrics.LLMLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "test_monotonic_llm_latency"}, llmLabels,
+	)
+	metrics.LLMPromptTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_monotonic_llm_prompt_tokens"}, llmLabels,
+	)
+	metrics.LLMCompletionTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_monotonic_llm_completion_tokens"}, llmLabels,
+	)
+	t.Cleanup(func() {
+		metrics.Requests = oldRequests
+		metrics.HttpStatus = oldStatus
+		metrics.HttpLatency = oldLatency
+		metrics.Bandwidth = oldBandwidth
+		metrics.LLMLatency = oldLLMLatency
+		metrics.LLMPromptTokens = oldLLMPromptTokens
+		metrics.LLMCompletionTokens = oldLLMCompletionTokens
+	})
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	p := &Plugin{config: Config{RouteID: "route-1"}}
+	handler := p.Handler(next)
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/orders/42", nil)
+
+	for range 3 {
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := counterValue(t, metrics.Requests); got != 3 {
+		t.Fatalf("request total = %v, want 3 after three requests", got)
 	}
 }
 

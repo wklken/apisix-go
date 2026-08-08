@@ -232,7 +232,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.UseTLS {
 		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
 	}
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	); err != nil {
+		return err
+	}
 	if err := validateBodyExpressions("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
 		return err
 	}

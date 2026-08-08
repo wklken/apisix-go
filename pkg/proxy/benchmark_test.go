@@ -127,3 +127,36 @@ func benchmarkReverseProxyServeHTTP(b *testing.B, payload []byte) {
 		b.Fatalf("writer bytes = %d, want %d", writer.bytes, len(payload))
 	}
 }
+
+// BenchmarkVerifiedSmallPath measures passive health-config parsing at
+// upstream publication for a checks map with both healthy and unhealthy
+// sections.
+func BenchmarkVerifiedSmallPath(b *testing.B) {
+	checks := map[string]any{
+		"passive": map[string]any{
+			"type": "https",
+			"healthy": map[string]any{
+				"http_statuses": []any{float64(200), float64(204)},
+			},
+			"unhealthy": map[string]any{
+				"http_statuses": []any{float64(429), float64(500)},
+				"http_failures": float64(5),
+				"tcp_failures":  float64(2),
+				"timeouts":      float64(7),
+			},
+		},
+	}
+
+	b.Run("health-config-parse", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			config, err := parsePassiveHealthConfig(checks)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if config.HTTPFailures != 5 {
+				b.Fatal("parsed failure counts mismatch")
+			}
+		}
+	})
+}

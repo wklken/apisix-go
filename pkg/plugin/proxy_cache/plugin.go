@@ -31,6 +31,11 @@ type Plugin struct {
 	loaded  map[string]bool
 	lock    *sync.RWMutex
 
+	// diskEntryKeys maps a disk entry file path back to its storage key so
+	// directory-driven cleanup can forget the matching in-memory entry without
+	// scanning the whole entries map.
+	diskEntryKeys map[string]string
+
 	memoryZone *memoryZone
 
 	diskRoot    string
@@ -571,6 +576,7 @@ func (p *Plugin) PostInit() error {
 	p.entries = map[string]cacheEntry{}
 	p.vary = map[string]varyIndex{}
 	p.loaded = map[string]bool{}
+	p.diskEntryKeys = map[string]string{}
 	p.lock = &sync.RWMutex{}
 	p.diskRoot = ""
 	p.diskEnabled = false
@@ -935,14 +941,30 @@ func (p *Plugin) varyIndexPath(key string) string {
 }
 
 func (p *Plugin) persistEntry(storageKey string, entry cacheEntry) error {
-	return writeDiskJSON(p.diskRoot, p.entryPath(storageKey), diskCacheEntry{
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	return p.persistEntryLocked(storageKey, entry)
+}
+
+// persistEntryLocked persists an entry to disk and records its storage key in
+// the reverse path index so directory-driven cleanup can forget it without
+// scanning the whole entries map. Callers must hold p.lock.
+func (p *Plugin) persistEntryLocked(storageKey string, entry cacheEntry) error {
+	if err := writeDiskJSON(p.diskRoot, p.entryPath(storageKey), diskCacheEntry{
 		Header:    cacheutil.CloneHeader(entry.header),
 		Body:      append([]byte(nil), entry.body...),
 		Status:    entry.status,
 		StoredAt:  entry.storedAt,
 		TTL:       int64(entry.ttl),
 		ExpiresAt: entry.expiresAt,
-	})
+	}); err != nil {
+		return err
+	}
+	if p.diskEntryKeys == nil {
+		p.diskEntryKeys = map[string]string{}
+	}
+	p.diskEntryKeys[p.entryPath(storageKey)] = storageKey
+	return nil
 }
 
 func (p *Plugin) persistVaryIndex(key string, index varyIndex) error {
@@ -975,15 +997,18 @@ func (p *Plugin) loadVaryIndexLocked(key string) {
 }
 
 func (p *Plugin) loadEntryLocked(storageKey string) (cacheEntry, bool) {
-	data, err := os.ReadFile(p.entryPath(storageKey))
+	path := p.entryPath(storageKey)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return cacheEntry{}, false
 	}
 	var persisted diskCacheEntry
 	if err := json.Unmarshal(data, &persisted); err != nil || persisted.Status < 100 || persisted.Status > 599 {
-		_ = os.Remove(p.entryPath(storageKey))
+		_ = os.Remove(path)
+		delete(p.diskEntryKeys, path)
 		return cacheEntry{}, false
 	}
+	p.diskEntryKeys[path] = storageKey
 	return cacheEntry{
 		header:    cacheutil.CloneHeader(persisted.Header),
 		body:      append([]byte(nil), persisted.Body...),
@@ -995,8 +1020,10 @@ func (p *Plugin) loadEntryLocked(storageKey string) (cacheEntry, bool) {
 }
 
 func (p *Plugin) removeEntryLocked(storageKey string) {
+	path := p.entryPath(storageKey)
+	delete(p.diskEntryKeys, path)
 	if p.diskEnabled {
-		_ = os.Remove(p.entryPath(storageKey))
+		_ = os.Remove(path)
 	}
 }
 
@@ -1227,7 +1254,7 @@ func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedRespo
 	p.entries[storageKey] = entry
 	index, hasIndex := p.vary[key]
 	if p.diskEnabled {
-		_ = p.persistEntry(storageKey, entry)
+		_ = p.persistEntryLocked(storageKey, entry)
 		if hasIndex {
 			_ = p.persistVaryIndex(key, index)
 		}
@@ -1323,11 +1350,12 @@ func diskEntryExpired(path string, now time.Time) bool {
 }
 
 func (p *Plugin) forgetDiskEntryLocked(path string) {
-	for key := range p.entries {
-		if p.entryPath(key) == path {
-			delete(p.entries, key)
-		}
+	key, ok := p.diskEntryKeys[path]
+	if !ok {
+		return
 	}
+	delete(p.entries, key)
+	delete(p.diskEntryKeys, path)
 }
 
 func (p *Plugin) updateVaryIndexLocked(key string, headers []string, signature string, expiresAt time.Time) {

@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"runtime"
 	"testing"
 
@@ -297,5 +299,42 @@ func BenchmarkLoggerObserver(b *testing.B) {
 func benchmarkLoggerObserverFormatting(b *testing.B) {
 	for b.Loop() {
 		logger.Infof("request uri=%s status=%d", "/hello", 200)
+	}
+}
+
+// BenchmarkExprMatched measures request-time expression evaluation for the
+// shapes logger plugins use: no expression, an exact match, a single regexp
+// condition, and multiple regexp alternatives. Regexp patterns are prepared
+// once through the compiled store, mirroring plugin initialization.
+func BenchmarkExprMatched(b *testing.B) {
+	request := httptest.NewRequest(http.MethodGet, "/hello?source=bench", nil)
+	request.Header.Set("X-Trace-Id", "abc-123")
+	exact := []any{[]any{"$uri", "==", "/hello"}}
+	oneRegexp := []any{[]any{"$uri", "~", "^/hello"}}
+	multiRegexp := []any{
+		[]any{"$uri", "~", "^/hello"},
+		"AND",
+		[]any{"$http_x_trace_id", "~", "^abc-[0-9]+$"},
+	}
+	for _, pattern := range []string{"^/hello", "^abc-[0-9]+$"} {
+		preparedExprRegexps.Store(pattern, regexp.MustCompile(pattern))
+	}
+	cases := []struct {
+		name        string
+		expressions any
+	}{
+		{name: "no-expression", expressions: nil},
+		{name: "exact-match", expressions: exact},
+		{name: "one-regexp", expressions: oneRegexp},
+		{name: "multi-regexp", expressions: multiRegexp},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				if !ExprMatched(request, tc.expressions, http.StatusOK) {
+					b.Fatal("ExprMatched() = false, want true")
+				}
+			}
+		})
 	}
 }

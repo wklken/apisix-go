@@ -412,6 +412,15 @@ type Builder struct {
 	servicePlugins        map[servicePluginKey]plugin.Plugin
 	servicePluginMu       sync.Mutex
 	stopOnce              sync.Once
+
+	// snapshot is the route-build generation for the current Build; it is
+	// populated at Build() start and cleared before Build() returns so no
+	// request path reads across a generation boundary.
+	snapshot *store.ConfigSnapshot
+	// compiledSchemas caches plugin schema compilation for the duration of one
+	// Build; plugin schemas are constants, so repeated plugin instances never
+	// recompile the same schema.
+	compiledSchemas map[string]*util.CompiledSchema
 }
 
 type consumerPluginChainKey struct {
@@ -458,11 +467,19 @@ func (b *Builder) Build() *chi.Mux {
 		return nil
 	}
 
-	routes, err := store.ListRoutes()
+	snapshot, err := store.GetConfigSnapshot()
 	if err != nil {
 		logger.Errorf("list routes fail: %s", err)
 		return nil
 	}
+	b.snapshot = snapshot
+	b.compiledSchemas = make(map[string]*util.CompiledSchema)
+	defer func() {
+		b.snapshot = nil
+		b.compiledSchemas = nil
+	}()
+
+	routes := snapshot.Routes()
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
 	registrar := newRouteRegistrar(mux)
@@ -495,13 +512,8 @@ func (b *Builder) Build() *chi.Mux {
 				continue
 			}
 		}
-		fmt.Println("===============================")
 	}
-	globalRules, err := store.ListGlobalRules()
-	if err != nil {
-		logger.Errorf("list global rules for not found handler fail: %s", err)
-		return nil
-	}
+	globalRules := snapshot.GlobalRules()
 	notFoundHandler, err := b.buildGlobalNotFoundHandler(globalRules)
 	if err != nil {
 		logger.Errorf("build global not found handler fail: %s", err)
@@ -623,7 +635,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	localPlugins = append(localPlugins, initialized...)
-	globalRules, err := store.ListGlobalRules()
+	globalRules, err := b.globalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
 		return nil, err
@@ -1103,7 +1115,7 @@ func (b *Builder) configureGlobalErrorLogObserver() {
 	}
 
 	var metadata map[string]any
-	if err := store.GetPluginMetadata(pluginName, &metadata); err != nil || len(metadata) == 0 {
+	if metadata, ok := b.pluginMetadata(pluginName); !ok || len(metadata) == 0 {
 		_ = logger.ReplaceObserver(pluginName, nil)
 		logger.Errorf("please set the correct plugin_metadata for error-log-logger")
 		return
@@ -1127,7 +1139,11 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 	if err := p.Init(); err != nil {
 		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
 	}
-	if err := util.Validate(config, p.GetSchema()); err != nil {
+	compiledSchema, err := util.CompileSchema(p.GetSchema())
+	if err != nil {
+		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
+	}
+	if err := compiledSchema.Validate(config); err != nil {
 		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
 	}
 	if err := util.Parse(config, p.Config()); err != nil {
@@ -1141,6 +1157,47 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 		b.addStopper(stopper)
 	}
 	return nil
+}
+
+// globalRules returns the global rules of the current build generation,
+// falling back to a live store read outside Build.
+func (b *Builder) globalRules() ([]resource.GlobalRule, error) {
+	if b.snapshot != nil {
+		return b.snapshot.GlobalRules(), nil
+	}
+	return store.ListGlobalRules()
+}
+
+// pluginMetadata returns the decoded plugin metadata of the current build
+// generation, falling back to a live store read outside Build.
+func (b *Builder) pluginMetadata(name string) (map[string]any, bool) {
+	if b.snapshot != nil {
+		return b.snapshot.PluginMetadata(name)
+	}
+	var metadata map[string]any
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil, false
+	}
+	return metadata, true
+}
+
+// compiledSchema returns the compiled form of schema, caching the result for
+// the duration of one Build. Plugin schemas are constants, so the same schema
+// string always compiles to equivalent validation behavior.
+func (b *Builder) compiledSchema(schema string) (*util.CompiledSchema, error) {
+	if b.compiledSchemas != nil {
+		if compiled, ok := b.compiledSchemas[schema]; ok {
+			return compiled, nil
+		}
+	}
+	compiled, err := util.CompileSchema(schema)
+	if err != nil {
+		return nil, err
+	}
+	if b.compiledSchemas != nil {
+		b.compiledSchemas[schema] = compiled
+	}
+	return compiled, nil
 }
 
 func (b *Builder) initPlugins(
@@ -1230,15 +1287,22 @@ func (b *Builder) initPluginsStrict(
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
 		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
-			var metadata map[string]any
-			if err := store.GetPluginMetadata(name, &metadata); err == nil {
-				if err := util.Validate(metadata, metadataSchema); err != nil {
+			if metadata, ok := b.pluginMetadata(name); ok {
+				compiledMetadataSchema, compileErr := b.compiledSchema(metadataSchema)
+				if compileErr != nil {
+					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, compileErr)
+				}
+				if err := compiledMetadataSchema.Validate(metadata); err != nil {
 					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
 				}
 			}
 		}
 
-		err = util.Validate(config, p.GetSchema())
+		compiledSchema, compileErr := b.compiledSchema(p.GetSchema())
+		if compileErr != nil {
+			return nil, fmt.Errorf("validate plugin %s config: %w", name, compileErr)
+		}
+		err = compiledSchema.Validate(config)
 		if err != nil {
 			return nil, fmt.Errorf("validate plugin %s config: %w", name, err)
 		}

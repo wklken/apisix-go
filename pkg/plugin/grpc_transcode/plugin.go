@@ -35,6 +35,7 @@ type Plugin struct {
 
 	bindingMu      sync.Mutex
 	bindingContent string
+	bindingGen     int64
 	binding        *methodBinding
 	bindingErr     error
 	bindingLoaded  bool
@@ -268,6 +269,9 @@ func (p *Plugin) PostInit() error {
 			"disable_hooks",
 		}
 	}
+	// Preload the descriptor binding at initialization; request handling only
+	// revalidates the proto generation. Load errors surface on request.
+	_, _ = p.loadBinding()
 	return nil
 }
 
@@ -296,13 +300,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) loadBinding() (*methodBinding, error) {
-	content, err := fetchProtoContent(p.config.ProtoID)
-	if err != nil {
-		return nil, err
-	}
-
 	p.bindingMu.Lock()
 	defer p.bindingMu.Unlock()
+	generation := store.ProtoGeneration()
+	if p.bindingLoaded && p.bindingGen == generation {
+		return p.binding, p.bindingErr
+	}
+	p.bindingGen = generation
+	content, err := fetchProtoContent(p.config.ProtoID)
+	if err != nil {
+		p.bindingErr = err
+		return nil, err
+	}
 	if p.bindingLoaded && p.bindingContent == content {
 		return p.binding, p.bindingErr
 	}

@@ -55,6 +55,16 @@ const metadataSchema = `
 }
 `
 
+var compiledBatchLimitsSchema = mustCompileBatchLimitsSchema()
+
+func mustCompileBatchLimitsSchema() *util.CompiledSchema {
+	compiled, err := util.CompileSchema(metadataSchema)
+	if err != nil {
+		panic("compile batch-requests metadata schema: " + err.Error())
+	}
+	return compiled
+}
+
 type Config struct{}
 
 type Limits struct {
@@ -301,7 +311,7 @@ func loadLimits() (Limits, error) {
 	usedLastGood, err := store.GetValidatedPluginMetadata(
 		name,
 		func(metadata map[string]any) error {
-			return util.Validate(metadata, metadataSchema)
+			return compiledBatchLimitsSchema.Validate(metadata)
 		},
 		&limits,
 	)

@@ -114,6 +114,16 @@ const metadataSchema = `
 }
 `
 
+var compiledMetadataSchema = mustCompileMetadataSchema()
+
+func mustCompileMetadataSchema() *util.CompiledSchema {
+	compiled, err := util.CompileSchema(metadataSchema)
+	if err != nil {
+		panic("compile chaitin-waf metadata schema: " + err.Error())
+	}
+	return compiled
+}
+
 type Config struct {
 	Mode                 string      `json:"mode,omitempty"`
 	Match                []MatchRule `json:"match,omitempty"`
@@ -395,7 +405,7 @@ func (p *Plugin) loadMetadata() (metadata Metadata) {
 }
 
 func validateMetadata(metadata map[string]any) error {
-	return util.Validate(metadata, metadataSchema)
+	return compiledMetadataSchema.Validate(metadata)
 }
 
 func mergeWAFConfig(baseConfig, override WAFConfig) WAFConfig {

@@ -166,7 +166,11 @@ func (p *Plugin) PostInit() error {
 				if _, ok := action.Config["group"]; ok {
 					return fmt.Errorf("workflow rule %d limit-count action group is not supported", ruleIndex)
 				}
-				if err := util.Validate(action.Config, plugin.GetSchema()); err != nil {
+				compiledSchema, err := util.CompileSchema(plugin.GetSchema())
+				if err != nil {
+					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
+				}
+				if err := compiledSchema.Validate(action.Config); err != nil {
 					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
 				}
 				if err := util.Parse(action.Config, plugin.Config()); err != nil {

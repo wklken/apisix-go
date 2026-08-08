@@ -113,6 +113,23 @@ const wolfRBACConsumerSchema = `
   }
 }`
 
+var (
+	keyAuthCompiledSchema   = mustCompileConsumerSchema(keyAuthConsumerSchema)
+	basicAuthCompiledSchema = mustCompileConsumerSchema(basicAuthConsumerSchema)
+	jwtAuthCompiledSchema   = mustCompileConsumerSchema(jwtAuthConsumerSchema)
+	hmacAuthCompiledSchema  = mustCompileConsumerSchema(hmacAuthConsumerSchema)
+	ldapAuthCompiledSchema  = mustCompileConsumerSchema(ldapAuthConsumerSchema)
+	wolfRBACCompiledSchema  = mustCompileConsumerSchema(wolfRBACConsumerSchema)
+)
+
+func mustCompileConsumerSchema(schema string) *util.CompiledSchema {
+	compiled, err := util.CompileSchema(schema)
+	if err != nil {
+		panic("compile consumer schema: " + err.Error())
+	}
+	return compiled
+}
+
 type consumerSnapshot struct {
 	id               []byte
 	consumer         resource.Consumer
@@ -126,32 +143,32 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 		return consumerSnapshot{}, err
 	}
 	if keyAuthPlugin, ok := consumer.Plugins["key-auth"]; ok {
-		if err := util.Validate(keyAuthPlugin, keyAuthConsumerSchema); err != nil {
+		if err := keyAuthCompiledSchema.Validate(keyAuthPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("key-auth consumer configuration: %w", err)
 		}
 	}
 	if basicAuthPlugin, ok := consumer.Plugins["basic-auth"]; ok {
-		if err := util.Validate(basicAuthPlugin, basicAuthConsumerSchema); err != nil {
+		if err := basicAuthCompiledSchema.Validate(basicAuthPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("basic-auth consumer configuration: %w", err)
 		}
 	}
 	if jwtAuthPlugin, ok := consumer.Plugins["jwt-auth"]; ok {
-		if err := util.Validate(jwtAuthPlugin, jwtAuthConsumerSchema); err != nil {
+		if err := jwtAuthCompiledSchema.Validate(jwtAuthPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("jwt-auth consumer configuration: %w", err)
 		}
 	}
 	if hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]; ok {
-		if err := util.Validate(hmacAuthPlugin, hmacAuthConsumerSchema); err != nil {
+		if err := hmacAuthCompiledSchema.Validate(hmacAuthPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("hmac-auth consumer configuration: %w", err)
 		}
 	}
 	if ldapAuthPlugin, ok := consumer.Plugins["ldap-auth"]; ok {
-		if err := util.Validate(ldapAuthPlugin, ldapAuthConsumerSchema); err != nil {
+		if err := ldapAuthCompiledSchema.Validate(ldapAuthPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("ldap-auth consumer configuration: %w", err)
 		}
 	}
 	if wolfRBACPlugin, ok := consumer.Plugins["wolf-rbac"]; ok {
-		if err := util.Validate(wolfRBACPlugin, wolfRBACConsumerSchema); err != nil {
+		if err := wolfRBACCompiledSchema.Validate(wolfRBACPlugin); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("wolf-rbac consumer configuration: %w", err)
 		}
 	}

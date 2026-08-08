@@ -12,12 +12,37 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	brotli "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
-var preparedExprRegexps sync.Map
+// exprRegexpIndex maps expression pattern strings to their compiled form.
+// Patterns are compiled once at plugin initialization; request-time evaluation
+// only reads the index.
+type exprRegexpIndex struct {
+	mu sync.RWMutex
+	re map[string]*regexp.Regexp
+}
+
+func (idx *exprRegexpIndex) Store(pattern string, compiled *regexp.Regexp) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.re == nil {
+		idx.re = make(map[string]*regexp.Regexp)
+	}
+	idx.re[pattern] = compiled
+}
+
+func (idx *exprRegexpIndex) Load(pattern string) (*regexp.Regexp, bool) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	compiled, ok := idx.re[pattern]
+	return compiled, ok
+}
+
+var preparedExprRegexps exprRegexpIndex
 
 // ResponseRecorder forwards responses while retaining a bounded response body
 // and the status code for logger plugins.
@@ -109,10 +134,11 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 	result := true
 	for _, condition := range conditions {
 		if op, ok := condition.(string); ok {
-			switch strings.ToUpper(op) {
-			case "AND", "OR":
-				pendingOp = strings.ToUpper(op)
-			default:
+			if strings.EqualFold(op, "AND") {
+				pendingOp = "AND"
+			} else if strings.EqualFold(op, "OR") {
+				pendingOp = "OR"
+			} else {
 				return false
 			}
 			continue
@@ -120,10 +146,11 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 		if nested {
 			if parts, ok := condition.([]any); ok && len(parts) == 1 {
 				if op, ok := parts[0].(string); ok {
-					switch strings.ToUpper(op) {
-					case "AND", "OR":
-						pendingOp = strings.ToUpper(op)
-					default:
+					if strings.EqualFold(op, "AND") {
+						pendingOp = "AND"
+					} else if strings.EqualFold(op, "OR") {
+						pendingOp = "OR"
+					} else {
 						return false
 					}
 					continue
@@ -149,9 +176,9 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 }
 
 // PrepareExprRegexps compiles configured logger expression patterns before
-// they enter the request path. Invalid patterns retain the existing no-match
-// behavior.
-func PrepareExprRegexps(expressionSets ...any) {
+// they enter the request path. An invalid pattern fails plugin initialization
+// so a malformed expression never reaches request handling.
+func PrepareExprRegexps(expressionSets ...any) error {
 	for _, expressions := range expressionSets {
 		conditions, _, ok := expressionConditions(expressions)
 		if !ok {
@@ -168,11 +195,13 @@ func PrepareExprRegexps(expressionSets ...any) {
 			}
 			pattern := exprOperandString(parts[2])
 			compiled, err := regexp.Compile(pattern)
-			if err == nil {
-				preparedExprRegexps.Store(pattern, compiled)
+			if err != nil {
+				return fmt.Errorf("invalid expression pattern %q: %w", pattern, err)
 			}
+			preparedExprRegexps.Store(pattern, compiled)
 		}
 	}
+	return nil
 }
 
 func expressionConditions(expressions any) ([]any, bool, bool) {
@@ -218,10 +247,10 @@ func matchCondition(r *http.Request, condition any, status int) bool {
 		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
 	case "~":
 		pattern, ok := preparedExprRegexps.Load(right)
-		return ok && pattern.(*regexp.Regexp).MatchString(actual)
+		return ok && pattern.MatchString(actual)
 	case "!~":
 		pattern, ok := preparedExprRegexps.Load(right)
-		return !ok || !pattern.(*regexp.Regexp).MatchString(actual)
+		return !ok || !pattern.MatchString(actual)
 	default:
 		return false
 	}
@@ -244,6 +273,64 @@ func compareNumber(left string, right string, compare func(float64, float64) boo
 		return false
 	}
 	return compare(l, r)
+}
+
+// requestHeaderValue returns the first value of header name without
+// allocating: the name is canonicalized into a stack buffer mirroring
+// textproto.CanonicalMIMEHeaderKey, so expression evaluation never boxes or
+// copies header names. Names longer than 127 bytes fall back to the standard
+// library path.
+func requestHeaderValue(header http.Header, name string) string {
+	if name == "" || len(name) > 127 {
+		return header.Get(name)
+	}
+	buf := [128]byte{}
+	copy(buf[:], name)
+	canonicalHeaderKey(buf[:len(name)])
+	values, ok := header[unsafe.String(&buf[0], len(name))]
+	if !ok || len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+// canonicalHeaderKey canonicalizes name in place, mirroring
+// textproto.CanonicalMIMEHeaderKey: the first letter and the letter after each
+// dash are uppercased and other letters lowercased, with underscores folded
+// into dashes (the APISIX http_ variable convention); names containing bytes
+// that must not be canonicalized are left unchanged.
+func canonicalHeaderKey(name []byte) {
+	upper := true
+	for i, c := range name {
+		if !validHeaderFieldByte(c) {
+			return
+		}
+		if c == '_' {
+			name[i] = '-'
+			upper = true
+			continue
+		}
+		if upper && 'a' <= c && c <= 'z' {
+			c -= 'a' - 'A'
+		} else if !upper && 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		name[i] = c
+		upper = c == '-'
+	}
+}
+
+// validHeaderFieldByte mirrors the RFC 7230 token characters accepted by
+// textproto.CanonicalMIMEHeaderKey.
+func validHeaderFieldByte(c byte) bool {
+	if '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return false
 }
 
 func RequestVar(r *http.Request, name string, status int) string {
@@ -279,8 +366,8 @@ func RequestVar(r *http.Request, name string, status int) string {
 	case strings.HasPrefix(name, "arg_"):
 		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
 	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
+		header := strings.TrimPrefix(name, "http_")
+		return requestHeaderValue(r.Header, header)
 	default:
 		key := "$" + name
 		if value, ok := apisixctx.GetApisixVars(r)[key]; ok {

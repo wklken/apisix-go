@@ -292,17 +292,20 @@ func parsePassiveHealthConfig(checks map[string]any) (PassiveHealthConfig, error
 				return config, err
 			}
 		}
-		for key, destination := range map[string]*int{
-			"http_failures": &config.HTTPFailures,
-			"tcp_failures":  &config.TCPFailures,
-			"timeouts":      &config.Timeouts,
+		for _, item := range []struct {
+			key  string
+			dest *int
+		}{
+			{key: "http_failures", dest: &config.HTTPFailures},
+			{key: "tcp_failures", dest: &config.TCPFailures},
+			{key: "timeouts", dest: &config.Timeouts},
 		} {
-			if rawValue, exists := unhealthy[key]; exists {
-				value, err := nonNegativeInt(rawValue, "checks.passive.unhealthy."+key)
+			if rawValue, exists := unhealthy[item.key]; exists {
+				value, err := nonNegativeInt(rawValue, "checks.passive.unhealthy."+item.key)
 				if err != nil {
 					return config, err
 				}
-				*destination = value
+				*item.dest = value
 			}
 		}
 	}

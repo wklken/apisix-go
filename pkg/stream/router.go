@@ -238,7 +238,11 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		if err := p.Init(); err != nil {
 			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
 		}
-		if err := util.Validate(config, p.GetSchema()); err != nil {
+		compiledSchema, err := util.CompileSchema(p.GetSchema())
+		if err != nil {
+			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
+		}
+		if err := compiledSchema.Validate(config); err != nil {
 			return routeEntry{}, fmt.Errorf("validate stream plugin %s: %w", name, err)
 		}
 		if err := util.Parse(config, p.Config()); err != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -420,36 +421,73 @@ func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
 	}
 }
 
-func TestMatchesSNI(t *testing.T) {
-	tests := []struct {
-		name       string
-		snis       []string
-		serverName string
-		want       bool
-	}{
-		{
-			name:       "exact case-insensitive",
-			snis:       []string{"Api.Example.Test"},
-			serverName: "api.example.test",
-			want:       true,
-		},
-		{name: "wildcard", snis: []string{"*.example.test"}, serverName: "a.example.test", want: true},
-		{name: "wildcard does not match bare domain", snis: []string{"*.example.test"}, serverName: "example.test"},
-		{name: "unrelated host", snis: []string{"api.example.test"}, serverName: "other.example.test"},
-		{name: "empty SNI", snis: []string{"api.example.test"}, serverName: ""},
-		{
-			name:       "whitespace trimmed",
-			snis:       []string{"  api.example.test  "},
-			serverName: "api.example.test",
-			want:       true,
+func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events)
+	if err != nil {
+		t.Fatalf("get store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	cert, key := frontendTestCertificatePEM(t, "api.example.test")
+	put := func(bucket, id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		event.Value = value
+		events <- event
+	}
+	ssl := func(id string, snis []string, status int) []byte {
+		snisJSON := "[]"
+		if len(snis) > 0 {
+			snisJSON = `["` + strings.Join(snis, `","`) + `"]`
+		}
+		return []byte(`{"id":"` + id + `","snis":` + snisJSON +
+			`,"cert":"` + cert + `","key":"` + key + `","status":` + strconv.Itoa(status) + `}`)
+	}
+	put("ssls", "ssl-wild", ssl("ssl-wild", []string{"*.example.test"}, 1))
+	put("ssls", "ssl-exact", ssl("ssl-exact", []string{"api.example.test"}, 1))
+	put("ssls", "ssl-disabled", ssl("ssl-disabled", []string{"disabled.example.org"}, 0))
+	storage.Sync()
+
+	getCertificate := frontendTLSConfig().GetCertificate
+	selected, err := getCertificate(&tls.ClientHelloInfo{ServerName: "api.example.test"})
+	if err != nil {
+		t.Fatalf("GetCertificate(exact) error = %v", err)
+	}
+	if selected == nil || len(selected.Certificate) == 0 {
+		t.Fatal("GetCertificate(exact) returned an empty certificate")
+	}
+
+	wildcard, err := getCertificate(&tls.ClientHelloInfo{ServerName: "a.example.test"})
+	if err != nil {
+		t.Fatalf("GetCertificate(wildcard) error = %v", err)
+	}
+	if wildcard == nil || len(wildcard.Certificate) == 0 {
+		t.Fatal("GetCertificate(wildcard) returned an empty certificate")
+	}
+
+	if _, err := getCertificate(&tls.ClientHelloInfo{ServerName: "disabled.example.org"}); err == nil {
+		t.Fatal("GetCertificate(disabled) error = nil")
+	}
+	if _, err := getCertificate(&tls.ClientHelloInfo{ServerName: "unknown.example.org"}); err == nil {
+		t.Fatal("GetCertificate(unknown) error = nil")
+	}
+
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{
+		Apisix: config.Apisix{
+			Ssl: config.Ssl{FallbackSNI: "api.example.test"},
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := matchesSNI(test.snis, test.serverName); got != test.want {
-				t.Fatalf("matchesSNI(%v, %q) = %t, want %t", test.snis, test.serverName, got, test.want)
-			}
-		})
+	fallback, err := getCertificate(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatalf("GetCertificate(empty SNI with fallback) error = %v", err)
+	}
+	if fallback == nil || len(fallback.Certificate) == 0 {
+		t.Fatal("GetCertificate(empty SNI with fallback) returned an empty certificate")
 	}
 }
 

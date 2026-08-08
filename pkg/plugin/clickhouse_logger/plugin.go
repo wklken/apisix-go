@@ -199,7 +199,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	); err != nil {
+		return err
+	}
 	user, err := resolveClickHouseUser(p.config.User)
 	if err != nil {
 		return err

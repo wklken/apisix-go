@@ -307,7 +307,11 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	); err != nil {
+		return err
+	}
 	if err := validateBodyExpression("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
 		return err
 	}

@@ -2,11 +2,15 @@ package store
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
+	"maps"
 	"sort"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -366,11 +370,10 @@ func decryptPluginConfigs(configs map[string]resource.PluginConfig) {
 	if !enabled {
 		return
 	}
-	values := make(map[string]any, len(configs))
-	for name, value := range configs {
-		values[name] = value
+	resolver := data_encryption.NewResolver(true, keyring)
+	for name, config := range configs {
+		data_encryption.DecryptPluginConfigWithResolver(config, name, resolver)
 	}
-	data_encryption.DecryptPluginConfigs(values, keyring)
 }
 
 func ParseProto(config []byte) (resource.Proto, error) {
@@ -446,4 +449,288 @@ func (s *Store) resolveConsumerForPluginKey(id, pluginName, key string) (resourc
 
 func consumerCredentialLookupError(pluginName string, err error) error {
 	return fmt.Errorf("%w: resolve %s consumer credentials: %v", ErrNotFound, pluginName, err)
+}
+
+// sslCertificateIndex is an immutable snapshot of decoded frontend SSL
+// certificates, published atomically whenever the ssls bucket changes.
+type sslCertificateIndex struct {
+	exact    map[string]sslIndexedCertificate
+	wildcard []sslWildcardCertificate
+}
+
+type sslIndexedCertificate struct {
+	id          string
+	certificate *tls.Certificate
+}
+
+type sslWildcardCertificate struct {
+	sslIndexedCertificate
+	suffix string
+}
+
+func (s *Store) applySSLCertificateEvent(eventType EventType, id string, value []byte) {
+	current := s.sslCerts.Load()
+	next := cloneSSLCertificateIndex(current)
+	switch eventType {
+	case EventTypePut:
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: parse: %s", id, err)
+			return
+		}
+		if ssl.Status == 0 {
+			next.remove(id)
+			break
+		}
+		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: load: %s", id, err)
+			return
+		}
+		next.remove(id)
+		for _, sni := range ssl.Snis {
+			sni = strings.TrimSpace(sni)
+			if sni == "" {
+				continue
+			}
+			entry := sslIndexedCertificate{id: id, certificate: &certificate}
+			if strings.HasPrefix(sni, "*.") {
+				next.wildcard = append(next.wildcard, sslWildcardCertificate{
+					sslIndexedCertificate: entry,
+					suffix:                strings.ToLower(sni[1:]),
+				})
+			} else {
+				next.exact[strings.ToLower(sni)] = entry
+			}
+		}
+	case EventTypeDelete:
+		next.remove(id)
+	}
+	s.sslCerts.Store(next)
+}
+
+func (index *sslCertificateIndex) remove(id string) {
+	if index == nil {
+		return
+	}
+	for sni, entry := range index.exact {
+		if entry.id == id {
+			delete(index.exact, sni)
+		}
+	}
+	if len(index.wildcard) > 0 {
+		kept := index.wildcard[:0]
+		for _, entry := range index.wildcard {
+			if entry.id != id {
+				kept = append(kept, entry)
+			}
+		}
+		index.wildcard = kept
+	}
+}
+
+func cloneSSLCertificateIndex(index *sslCertificateIndex) *sslCertificateIndex {
+	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
+	if index == nil {
+		return next
+	}
+	maps.Copy(next.exact, index.exact)
+	next.wildcard = append(next.wildcard, index.wildcard...)
+	return next
+}
+
+// GetSSLCertificateForSNI returns the decoded frontend certificate for
+// serverName from the process-wide store, preferring exact SNI matches over
+// wildcard matches.
+func GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.GetSSLCertificateForSNI(serverName)
+}
+
+// GetSSLCertificateForSNI returns the decoded frontend certificate for
+// serverName, preferring exact SNI matches over wildcard matches.
+// Certificates are decoded once at publication; handshakes only look up.
+func (s *Store) GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
+	serverName = strings.TrimSpace(serverName)
+	index := s.sslCerts.Load()
+	if index == nil {
+		return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+	}
+	if entry, ok := index.exact[serverName]; ok {
+		return entry.certificate, nil
+	}
+	lower := strings.ToLower(serverName)
+	if lower != serverName {
+		if entry, ok := index.exact[lower]; ok {
+			return entry.certificate, nil
+		}
+	}
+	for _, entry := range index.wildcard {
+		if strings.HasSuffix(lower, entry.suffix) {
+			return entry.certificate, nil
+		}
+	}
+	return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+}
+
+// rebuildSSLCertificateIndex publishes a full index built from the ssls
+// bucket. Invalid certificates are rejected: the last valid published index
+// remains usable.
+func (s *Store) rebuildSSLCertificateIndex() {
+	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
+	data, err := s.GetBucketData("ssls")
+	if err != nil {
+		logger.Errorf("publish SSL certificate index: %s", err)
+		return
+	}
+	for _, value := range data {
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			logger.Errorf("reject SSL resource: parse: %s", err)
+			return
+		}
+		if ssl.Status == 0 {
+			continue
+		}
+		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+		if err != nil {
+			logger.Errorf("reject SSL resource %q: load: %s", ssl.ID, err)
+			return
+		}
+		for _, sni := range ssl.Snis {
+			sni = strings.TrimSpace(sni)
+			if sni == "" {
+				continue
+			}
+			entry := sslIndexedCertificate{id: ssl.ID, certificate: &certificate}
+			if strings.HasPrefix(sni, "*.") {
+				next.wildcard = append(next.wildcard, sslWildcardCertificate{
+					sslIndexedCertificate: entry,
+					suffix:                strings.ToLower(sni[1:]),
+				})
+			} else {
+				next.exact[strings.ToLower(sni)] = entry
+			}
+		}
+	}
+	s.sslCerts.Store(next)
+}
+
+// ConfigSnapshot is an immutable generation of the route-build inputs:
+// parsed routes, parsed global rules, and decoded plugin metadata. It is
+// published once per store change; callers must not mutate it.
+type ConfigSnapshot struct {
+	routes         []resource.Route
+	globalRules    []resource.GlobalRule
+	pluginMetadata map[string]map[string]any
+}
+
+// Routes returns the parsed routes of this snapshot generation.
+func (snap *ConfigSnapshot) Routes() []resource.Route {
+	return snap.routes
+}
+
+// GlobalRules returns the parsed global rules of this snapshot generation.
+func (snap *ConfigSnapshot) GlobalRules() []resource.GlobalRule {
+	return snap.globalRules
+}
+
+// PluginMetadata returns the decoded plugin metadata for id. The boolean is
+// false when the id has no decodable plugin metadata.
+func (snap *ConfigSnapshot) PluginMetadata(id string) (map[string]any, bool) {
+	metadata, ok := snap.pluginMetadata[id]
+	return metadata, ok
+}
+
+// GetConfigSnapshot returns the current route-build generation, rebuilding it
+// once per routes/global-rules/plugin-metadata change.
+func GetConfigSnapshot() (*ConfigSnapshot, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.getConfigSnapshot()
+}
+
+func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
+	if !s.configSnapshotDirty.Load() {
+		if snapshot := s.configSnapshot.Load(); snapshot != nil {
+			return snapshot, nil
+		}
+	}
+	s.configSnapshotMu.Lock()
+	defer s.configSnapshotMu.Unlock()
+	if snapshot := s.configSnapshot.Load(); snapshot != nil && !s.configSnapshotDirty.Load() {
+		return snapshot, nil
+	}
+	snapshot, err := s.buildConfigSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	s.configSnapshot.Store(snapshot)
+	s.configSnapshotDirty.Store(false)
+	return snapshot, nil
+}
+
+func (s *Store) buildConfigSnapshot() (*ConfigSnapshot, error) {
+	snapshot := &ConfigSnapshot{pluginMetadata: map[string]map[string]any{}}
+
+	data, err := s.GetBucketData("routes")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		r, err := ParseRoute(d)
+		if err != nil {
+			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
+		}
+		snapshot.routes = append(snapshot.routes, r)
+	}
+
+	data, err = s.GetBucketData("global_rules")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		var rule resource.GlobalRule
+		if err := json.Unmarshal(d, &rule); err != nil {
+			return nil, fmt.Errorf("parse global rule: %w", err)
+		}
+		snapshot.globalRules = append(snapshot.globalRules, rule)
+	}
+
+	data, err = s.GetBucketData("plugin_metadata")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range data {
+		id := metadataIDForDecodeError(d)
+		var metadata map[string]any
+		if err := decodePluginMetadata(d, id, &metadata); err != nil {
+			continue
+		}
+		snapshot.pluginMetadata[id] = metadata
+	}
+	return snapshot, nil
+}
+
+func metadataIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
+}
+
+// ProtoGeneration returns a counter that increments on every protos bucket
+// change. Consumers can compare it against the generation they loaded from to
+// skip re-reading the bucket when no proto resource changed.
+func ProtoGeneration() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.protosGeneration.Load()
 }

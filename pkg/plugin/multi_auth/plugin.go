@@ -121,7 +121,11 @@ func (p *Plugin) PostInit() error {
 			if err := auth.Init(); err != nil {
 				return err
 			}
-			if err := util.Validate(authConfig, auth.GetSchema()); err != nil {
+			compiledSchema, err := util.CompileSchema(auth.GetSchema())
+			if err != nil {
+				return fmt.Errorf("plugin %s check schema failed: %w", authName, err)
+			}
+			if err := compiledSchema.Validate(authConfig); err != nil {
 				return fmt.Errorf("plugin %s check schema failed: %w", authName, err)
 			}
 			if err := util.Parse(authConfig, auth.Config()); err != nil {

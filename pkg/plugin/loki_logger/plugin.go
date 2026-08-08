@@ -245,7 +245,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	base.PrepareExprRegexps(p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr)
+	if err := base.PrepareExprRegexps(
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	); err != nil {
+		return err
+	}
 	if p.config.EndpointURI == "" {
 		p.config.EndpointURI = "/loki/api/v1/push"
 	}

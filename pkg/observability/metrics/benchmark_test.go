@@ -1,0 +1,16 @@
+package metrics
+
+import "testing"
+
+// BenchmarkVerifiedSmallPath measures the request-total increment that the
+// request-context plugin performs for every request.
+func BenchmarkVerifiedSmallPath(b *testing.B) {
+	Init()
+
+	b.Run("counter-inc", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			Requests.Inc()
+		}
+	})
+}

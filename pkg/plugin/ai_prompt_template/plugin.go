@@ -185,17 +185,22 @@ func renderTemplate(template Template, values map[string]any) Template {
 }
 
 func renderString(text string, values map[string]any) string {
-	return templateExprPattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := templateExprPattern.FindStringSubmatch(match)
-		if len(parts) != 2 {
-			return match
-		}
-		key := strings.TrimSpace(parts[1])
+	indexes := templateExprPattern.FindAllStringSubmatchIndex(text, -1)
+	if len(indexes) == 0 {
+		return text
+	}
+	var out strings.Builder
+	last := 0
+	for _, loc := range indexes {
+		out.WriteString(text[last:loc[0]])
+		key := strings.TrimSpace(text[loc[2]:loc[3]])
 		if value, ok := lookupValue(values, key); ok {
-			return fmt.Sprint(value)
+			fmt.Fprint(&out, value)
 		}
-		return ""
-	})
+		last = loc[1]
+	}
+	out.WriteString(text[last:])
+	return out.String()
 }
 
 func lookupValue(values map[string]any, expression string) (any, bool) {

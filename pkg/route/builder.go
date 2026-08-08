@@ -563,7 +563,6 @@ func normalizePluginResourceContext(
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	resourcePlugins := clonePluginConfigs(r.Plugins)
 	// handle plugin_config_id
-	// fmt.Println("r.Uri", r.Uri, "r.PluginConfigID", r.PluginConfigID)
 	if r.PluginConfigID != "" {
 		pluginConfigRule, err := store.GetPluginConfigRule(r.PluginConfigID)
 		if err != nil {
@@ -1411,7 +1410,6 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
-	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
 	scheme := upstream.Scheme
 	targetScheme := scheme
 	if strings.EqualFold(targetScheme, "grpc") {
@@ -2071,8 +2069,6 @@ func newModifyResponse() pxy.ModifyResponse {
 		// set the status into request ctx
 		// ctx := resp.Request.Context()
 		// ctx = context.WithValue(ctx, "status", status)
-
-		// fmt.Println("in modify response, status:", status)
 
 		// resp.Request = resp.Request.WithContext(ctx)
 

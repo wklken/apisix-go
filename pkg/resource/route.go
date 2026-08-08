@@ -70,7 +70,6 @@ type Upstream struct {
 }
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
-	// FIXME: refactor it
 	s.Scheme = "http"
 	var upstreamData map[string]json.RawMessage
 	if err := json.Unmarshal(data, &upstreamData); err != nil {
@@ -86,15 +85,15 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 				"httpbin.org": 1
 			}
 		*/
-		var nodes map[string]int
-		if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
-			addresses := make([]string, 0, len(nodes))
-			for host := range nodes {
+		var nodeMap map[string]int
+		if err := json.Unmarshal(upstreamData["nodes"], &nodeMap); err == nil {
+			addresses := make([]string, 0, len(nodeMap))
+			for host := range nodeMap {
 				addresses = append(addresses, host)
 			}
 			sort.Strings(addresses)
 			for _, host := range addresses {
-				weight := nodes[host]
+				weight := nodeMap[host]
 				host, port := parseNodeAddress(host)
 
 				s.Nodes = append(s.Nodes, Node{
@@ -109,77 +108,34 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	if raw := upstreamData["type"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &s.Type); err != nil {
-			return fmt.Errorf("unmarshal field `type` fail, %w", err)
+	for _, field := range []struct {
+		name string
+		raw  json.RawMessage
+		dest any
+	}{
+		{name: "type", raw: upstreamData["type"], dest: &s.Type},
+		{name: "scheme", raw: upstreamData["scheme"], dest: &s.Scheme},
+		{name: "timeout", raw: upstreamData["timeout"], dest: &s.Timeout},
+		{name: "tls", raw: upstreamData["tls"], dest: &s.TLS},
+		{name: "retries", raw: upstreamData["retries"], dest: &s.Retries},
+		{name: "checks", raw: upstreamData["checks"], dest: &s.Checks},
+		{name: "hash_on", raw: upstreamData["hash_on"], dest: &s.HashOn},
+		{name: "key", raw: upstreamData["key"], dest: &s.Key},
+		{name: "pass_host", raw: upstreamData["pass_host"], dest: &s.PassHost},
+		{name: "upstream_host", raw: upstreamData["upstream_host"], dest: &s.UpstreamHost},
+		{name: "name", raw: upstreamData["name"], dest: &s.Name},
+		{name: "desc", raw: upstreamData["desc"], dest: &s.Desc},
+	} {
+		if len(field.raw) == 0 {
+			continue
+		}
+		if err := json.Unmarshal(field.raw, field.dest); err != nil {
+			return fmt.Errorf("unmarshal field `%s` fail, %w", field.name, err)
 		}
 	}
 
-	if raw := upstreamData["scheme"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &s.Scheme); err != nil {
-			return fmt.Errorf("unmarshal field `scheme` fail, %w", err)
-		}
-	}
-
-	if raw := upstreamData["timeout"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &s.Timeout); err != nil {
-			return fmt.Errorf("unmarshal field `timeout` fail, %w", err)
-		}
-	}
-
-	if raw := upstreamData["tls"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &s.TLS); err != nil {
-			return fmt.Errorf("unmarshal field `tls` fail, %w", err)
-		}
-	}
-
-	if upstreamData["retries"] != nil {
-		if err := json.Unmarshal(upstreamData["retries"], &s.Retries); err != nil {
-			return fmt.Errorf("unmarshal field `retries` fail, %w", err)
-		}
+	if raw := upstreamData["retries"]; raw != nil {
 		s.retriesSet = true
-	}
-
-	if upstreamData["checks"] != nil {
-		if err := json.Unmarshal(upstreamData["checks"], &s.Checks); err != nil {
-			return fmt.Errorf("unmarshal field `checks` fail, %w", err)
-		}
-	}
-
-	if upstreamData["hash_on"] != nil {
-		if err := json.Unmarshal(upstreamData["hash_on"], &s.HashOn); err != nil {
-			return fmt.Errorf("unmarshal field `hash_on` fail, %w", err)
-		}
-	}
-
-	if upstreamData["key"] != nil {
-		if err := json.Unmarshal(upstreamData["key"], &s.Key); err != nil {
-			return fmt.Errorf("unmarshal field `key` fail, %w", err)
-		}
-	}
-
-	if upstreamData["pass_host"] != nil {
-		if err := json.Unmarshal(upstreamData["pass_host"], &s.PassHost); err != nil {
-			return fmt.Errorf("unmarshal field `pass_host` fail, %w", err)
-		}
-	}
-
-	if upstreamData["upstream_host"] != nil {
-		if err := json.Unmarshal(upstreamData["upstream_host"], &s.UpstreamHost); err != nil {
-			return fmt.Errorf("unmarshal field `upstream_host` fail, %w", err)
-		}
-	}
-
-	if upstreamData["name"] != nil {
-		if err := json.Unmarshal(upstreamData["name"], &s.Name); err != nil {
-			return fmt.Errorf("unmarshal field `name` fail, %w", err)
-		}
-	}
-
-	if upstreamData["desc"] != nil {
-		if err := json.Unmarshal(upstreamData["desc"], &s.Desc); err != nil {
-			return fmt.Errorf("unmarshal field `desc` fail, %w", err)
-		}
 	}
 
 	return nil

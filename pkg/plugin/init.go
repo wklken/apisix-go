@@ -249,6 +249,8 @@ func New(name string) Plugin {
 }
 
 func BuildPluginChain(plugins ...Plugin) alice.Chain {
+	// Copy before sorting so the caller's backing array is not reordered.
+	plugins = append([]Plugin(nil), plugins...)
 	// sort the plugin by priority
 	slices.SortFunc(plugins, func(a, b Plugin) int {
 		return cmp.Compare(b.GetPriority(), a.GetPriority())

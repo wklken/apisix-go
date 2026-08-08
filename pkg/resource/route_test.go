@@ -151,6 +151,72 @@ func TestUpstreamUnmarshalTracksWhetherRetriesWereConfigured(t *testing.T) {
 	}
 }
 
+func TestUpstreamUnmarshalAcceptsListNodeList(t *testing.T) {
+	var upstream Upstream
+	if err := json.Unmarshal([]byte(`{
+		"nodes": [
+			{"host": "a.example.test", "port": 8080, "weight": 3},
+			{"host": "b.example.test", "port": 8081, "weight": 0}
+		]
+	}`), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(upstream.Nodes) != 2 {
+		t.Fatalf("upstream.Nodes = %#v, want two nodes", upstream.Nodes)
+	}
+	if upstream.Nodes[0].Host != "a.example.test" || upstream.Nodes[0].Port != 8080 ||
+		upstream.Nodes[0].Weight != 3 || !upstream.Nodes[0].WeightConfigured() {
+		t.Fatalf("first node = %#v, want host/port/weight configured", upstream.Nodes[0])
+	}
+	if upstream.Nodes[1].Host != "b.example.test" || upstream.Nodes[1].Port != 8081 ||
+		upstream.Nodes[1].Weight != 0 || !upstream.Nodes[1].WeightConfigured() {
+		t.Fatalf("second node = %#v, want explicit zero weight preserved", upstream.Nodes[1])
+	}
+}
+
+func TestUpstreamUnmarshalAcceptsEmptyNodes(t *testing.T) {
+	var upstream Upstream
+	if err := json.Unmarshal([]byte(`{"nodes": []}`), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if upstream.Nodes == nil || len(upstream.Nodes) != 0 {
+		t.Fatalf("upstream.Nodes = %#v, want empty non-nil list", upstream.Nodes)
+	}
+}
+
+func TestUpstreamRoundTripPreservesDocument(t *testing.T) {
+	var upstream Upstream
+	const config = `{
+		"type": "roundrobin",
+		"nodes": {"backend.example.test:8080": 1},
+		"scheme": "https",
+		"timeout": {"connect": 3, "send": 4, "read": 5},
+		"tls": {"verify": true},
+		"retries": 2,
+		"checks": {"active": {"type": "http"}},
+		"hash_on": "vars",
+		"key": "remote_addr",
+		"pass_host": "rewrite",
+		"upstream_host": "up.example.test",
+		"name": "upstream-1",
+		"desc": "a complete upstream"
+	}`
+	if err := json.Unmarshal([]byte(config), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	roundTripped, err := json.Marshal(&upstream)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var decoded Upstream
+	if err := json.Unmarshal(roundTripped, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() round-trip error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, upstream) {
+		t.Fatalf("round-trip upstream = %#v, want %#v", decoded, upstream)
+	}
+}
+
 func TestNodeWeightPresence(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -259,10 +325,13 @@ func TestUpstreamUnmarshalRejectsMalformedFields(t *testing.T) {
 		frag string
 	}{
 		{name: "nodes", json: `{"nodes": 123}`, frag: "unmarshal field `nodes` fail"},
+		{name: "missing nodes", json: `{}`, frag: "unmarshal field `nodes` fail"},
 		{name: "type", json: `{"nodes": {}, "type": 123}`, frag: "unmarshal field `type` fail"},
 		{name: "timeout", json: `{"nodes": {}, "timeout": "soon"}`, frag: "unmarshal field `timeout` fail"},
 		{name: "tls", json: `{"nodes": {}, "tls": 5}`, frag: "unmarshal field `tls` fail"},
 		{name: "retries", json: `{"nodes": {}, "retries": "many"}`, frag: "unmarshal field `retries` fail"},
+		{name: "checks", json: `{"nodes": {}, "checks": 123}`, frag: "unmarshal field `checks` fail"},
+		{name: "name", json: `{"nodes": {}, "name": 5}`, frag: "unmarshal field `name` fail"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

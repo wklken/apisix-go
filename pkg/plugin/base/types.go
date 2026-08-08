@@ -36,12 +36,6 @@ func (p *BasePlugin) GetMetadataSchema() string {
 	return p.MetadataSchema
 }
 
-// type LoggerPlugin interface {
-// Fire(entry map[string]any) error
-// Consume()
-// Send(log map[string]any)
-// }
-
 const (
 	MAX_REQ_BODY  = 524288 // 512 KiB
 	MAX_RESP_BODY = 524288 // 512 KiB
@@ -134,12 +128,6 @@ func (p *BaseLoggerPlugin) Stop() {
 	}
 }
 
-// func getRequest(r *http.Request, includeRequestBody bool) map[string]any {
-// }
-
-// func getResponse(w http.ResponseWriter, includeResponseBody bool) map[string]any {
-// }
-
 func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
@@ -148,9 +136,6 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 
 		// FIXME: if not LogFormat, will get full log,
 		// reference: https://github.com/apache/apisix/blob/master/apisix/utils/log-util.lua#L136
-
-		// logFields["request"] = getRequest(r, p.IncludeRequestBody)
-		// logFields["response"] = getResponse(w, p.IncludeResponseBody)
 
 		_ = p.Fire(logFields)
 	}
@@ -176,20 +161,3 @@ func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
 	}
 	return nil
 }
-
-// add a http log consumer here, to consume the log via a channel
-func (p *BaseLoggerPlugin) Consume() {
-	if p.BatchProcessor != nil {
-		return
-	}
-
-	go func() {
-		for log := range p.FireChan {
-			p.SendFunc(log)
-		}
-	}()
-}
-
-// func (p *BaseLoggerPlugin) Send(log map[string]any) {
-// 	logger.Errorf("the Send not implemented in sub-class: %s", p.Name)
-// }

@@ -11,9 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	rocketmq "github.com/apache/rocketmq-client-go/v2"
-	"github.com/apache/rocketmq-client-go/v2/primitive"
-	"github.com/apache/rocketmq-client-go/v2/producer"
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -178,21 +175,6 @@ type Config struct {
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
-}
-
-type rocketmqMessage struct {
-	Topic string
-	Key   string
-	Tag   string
-	Body  []byte
-}
-
-type rocketmqSender interface {
-	Send(ctx context.Context, message rocketmqMessage) error
-}
-
-type rocketmqClientSender struct {
-	producer rocketmq.Producer
 }
 
 func (p *Plugin) Stop() {
@@ -460,46 +442,4 @@ func (p *Plugin) applyDefaults() {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
-}
-
-func (p *Plugin) newSender() (rocketmqSender, error) {
-	options := []producer.Option{
-		producer.WithNameServer(p.config.NameServerList),
-		producer.WithSendMsgTimeout(time.Duration(p.config.Timeout) * time.Second),
-		producer.WithInstanceName(fmt.Sprintf(
-			"apisix-go-rocketmq-%d",
-			producerInstanceSequence.Add(1),
-		)),
-	}
-	if p.config.AccessKey != "" {
-		options = append(options, producer.WithCredentials(primitive.Credentials{
-			AccessKey: p.config.AccessKey,
-			SecretKey: p.config.SecretKey,
-		}))
-	}
-
-	prod, err := rocketmq.NewProducer(options...)
-	if err != nil {
-		return nil, err
-	}
-	if err := prod.Start(); err != nil {
-		return nil, err
-	}
-
-	return &rocketmqClientSender{producer: prod}, nil
-}
-
-func (s *rocketmqClientSender) Send(ctx context.Context, message rocketmqMessage) error {
-	msg := primitive.NewMessage(message.Topic, message.Body)
-	if message.Tag != "" {
-		msg.WithTag(message.Tag)
-	}
-	if message.Key != "" {
-		msg.WithKeys([]string{message.Key})
-	}
-
-	// SendSync is context-aware: its timeout/cancellation owns termination, so
-	// no wrapper goroutine is needed and none can outlive the send.
-	_, err := s.producer.SendSync(ctx, msg)
-	return err
 }

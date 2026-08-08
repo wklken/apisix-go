@@ -205,22 +205,6 @@ func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id strin
 	w.events <- event
 }
 
-func InitStandaloneFileWatcher(path string, events chan *store.Event) {
-	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
-	if err := watcher.Reload(); err != nil {
-		logger.Errorf("load standalone config %q failed: %s", path, err)
-		return
-	}
-	watcher.Watch()
-}
-
-func ReadAndReload(path string, events chan *store.Event) {
-	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
-	if err := watcher.Reload(); err != nil {
-		logger.Errorf("load standalone config %q failed: %s", path, err)
-	}
-}
-
 func standaloneProviderFromPath(path string) string {
 	return strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 }

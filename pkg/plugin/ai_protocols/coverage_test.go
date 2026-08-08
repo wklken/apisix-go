@@ -196,7 +196,7 @@ func TestProtocolStreamingAndNumericUsageEdgeTypes(t *testing.T) {
 		t.Fatal("embeddings incorrectly reported streaming")
 	}
 	for value, want := range map[any]int64{float64(1.6): 2, int64(3): 3, int(4): 4, "5": -1} {
-		if got := numericUsage(value); got != want {
+		if got := NumericUsage(value, true); got != want {
 			t.Fatalf("numericUsage(%#v) = %d, want %d", value, got, want)
 		}
 	}

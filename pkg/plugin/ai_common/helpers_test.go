@@ -3,8 +3,7 @@ package ai_common
 import (
 	"net/http"
 	"testing"
-
-	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"time"
 )
 
 func TestCloneJSONValueDoesNotAlias(t *testing.T) {
@@ -85,63 +84,57 @@ func TestCopyForwardHeadersSkipsHopByHop(t *testing.T) {
 	}
 }
 
-func TestAppendProtocolEndpoint(t *testing.T) {
-	endpoint, err := AppendProtocolEndpoint("https://api.openai.com", ai_protocols.OpenAIChat)
-	if err != nil {
-		t.Fatalf("AppendProtocolEndpoint() error = %v", err)
+func TestApplyTransportOptionsDoNotMutateDefaultTransport(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	verify := false
+	keepalive := false
+
+	ApplyTransportKeepalive(transport, 42, 3000, &keepalive)
+	ApplyTransportSSLVerify(transport, &verify)
+
+	if !transport.DisableKeepAlives {
+		t.Fatal("keepalive disabled option not applied to the clone")
 	}
-	if endpoint != "https://api.openai.com/v1/chat/completions" {
-		t.Fatalf("endpoint = %q", endpoint)
+	if transport.MaxIdleConnsPerHost != 42 || transport.IdleConnTimeout != 3*time.Second {
+		t.Fatalf("keepalive options = %d/%v, want 42/3s", transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
+	}
+	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("SSL verify option not applied to the clone")
 	}
 
-	endpoint, err = AppendProtocolEndpoint("https://api.openai.com/v1", ai_protocols.OpenAIChat)
-	if err != nil {
-		t.Fatalf("AppendProtocolEndpoint(/v1) error = %v", err)
+	if http.DefaultTransport.(*http.Transport).DisableKeepAlives {
+		t.Fatal("DefaultTransport mutated by transport options")
 	}
-	if endpoint != "https://api.openai.com/v1/chat/completions" {
-		t.Fatalf("endpoint = %q", endpoint)
-	}
-
-	endpoint, err = AppendProtocolEndpoint("https://gateway.example/custom/path", ai_protocols.OpenAIChat)
-	if err != nil {
-		t.Fatalf("AppendProtocolEndpoint(custom) error = %v", err)
-	}
-	if endpoint != "https://gateway.example/custom/path" {
-		t.Fatalf("endpoint = %q, want unchanged custom path", endpoint)
+	if cfg := http.DefaultTransport.(*http.Transport).TLSClientConfig; cfg != nil && cfg.InsecureSkipVerify {
+		t.Fatal("DefaultTransport TLS verification disabled by transport options")
 	}
 }
 
-func TestAppendBedrockEndpoint(t *testing.T) {
-	endpoint, err := AppendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", "claude-3", false)
-	if err != nil {
-		t.Fatalf("AppendBedrockEndpoint() error = %v", err)
-	}
-	if endpoint != "https://bedrock-runtime.us-east-1.amazonaws.com/model/claude-3/converse" {
-		t.Fatalf("endpoint = %q", endpoint)
-	}
-
-	endpoint, err = AppendBedrockEndpoint("https://bedrock-runtime.us-east-1.amazonaws.com", "claude 3", true)
-	if err != nil {
-		t.Fatalf("AppendBedrockEndpoint(stream) error = %v", err)
-	}
-	if endpoint != "https://bedrock-runtime.us-east-1.amazonaws.com/model/claude%203/converse-stream" {
-		t.Fatalf("endpoint = %q", endpoint)
+func TestApplyTransportOptionsLeaveVerifyEnabled(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	verify := true
+	ApplyTransportSSLVerify(transport, &verify)
+	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify set while verification was enabled")
 	}
 
-	if _, err := AppendBedrockEndpoint("https://bedrock.example", "", false); err == nil {
-		t.Fatal("AppendBedrockEndpoint(empty model) error = nil, want error")
+	ApplyTransportSSLVerify(transport, nil)
+	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify set for nil verify")
 	}
 }
 
-func TestProviderUsesOpenAIChat(t *testing.T) {
-	for _, provider := range []string{"openai", "deepseek", "openai-compatible", "azure-openai", "gemini", "vertex-ai"} {
-		if !ProviderUsesOpenAIChat(provider) {
-			t.Fatalf("ProviderUsesOpenAIChat(%s) = false, want true", provider)
-		}
+func TestHasProtocolRequestBodyOverride(t *testing.T) {
+	if !HasProtocolRequestBodyOverride(map[string]any{"openai-chat": map[string]any{}}) {
+		t.Fatal("protocol key not detected")
 	}
-	for _, provider := range []string{"bedrock", "anthropic", "unknown"} {
-		if ProviderUsesOpenAIChat(provider) {
-			t.Fatalf("ProviderUsesOpenAIChat(%s) = true, want false", provider)
-		}
+	if !HasProtocolRequestBodyOverride(map[string]any{"passthrough": map[string]any{}}) {
+		t.Fatal("passthrough key not detected")
+	}
+	if HasProtocolRequestBodyOverride(map[string]any{"other": map[string]any{}}) {
+		t.Fatal("non-protocol key detected as override")
+	}
+	if HasProtocolRequestBodyOverride(map[string]any{}) {
+		t.Fatal("empty map detected as override")
 	}
 }

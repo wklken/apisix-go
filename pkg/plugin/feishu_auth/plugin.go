@@ -2,12 +2,12 @@ package feishu_auth
 
 import (
 	"bytes"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -323,8 +323,6 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-	}
+	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
 	return transport
 }

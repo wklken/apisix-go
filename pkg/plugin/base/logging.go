@@ -129,42 +129,24 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 		return true
 	}
 
+	result := false
+	hasOperand := false
 	pendingOp := "AND"
-	hasResult := false
-	result := true
 	for _, condition := range conditions {
-		if op, ok := condition.(string); ok {
-			if strings.EqualFold(op, "AND") {
-				pendingOp = "AND"
-			} else if strings.EqualFold(op, "OR") {
-				pendingOp = "OR"
-			} else {
-				return false
-			}
+		op, isOperator, valid := expressionOperator(condition, nested)
+		if !valid {
+			return false
+		}
+		if isOperator {
+			pendingOp = op
 			continue
 		}
-		if nested {
-			if parts, ok := condition.([]any); ok && len(parts) == 1 {
-				if op, ok := parts[0].(string); ok {
-					if strings.EqualFold(op, "AND") {
-						pendingOp = "AND"
-					} else if strings.EqualFold(op, "OR") {
-						pendingOp = "OR"
-					} else {
-						return false
-					}
-					continue
-				}
-			}
-		}
-
 		matched := matchCondition(r, condition, status)
-		if !hasResult {
+		if !hasOperand {
 			result = matched
-			hasResult = true
+			hasOperand = true
 			continue
 		}
-
 		if pendingOp == "OR" {
 			result = result || matched
 		} else {
@@ -172,7 +154,34 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 		}
 		pendingOp = "AND"
 	}
-	return hasResult && result
+	return hasOperand && result
+}
+
+// expressionOperator classifies condition as an AND/OR operator, returning
+// the upper-cased operator when recognized. An unrecognized operator string
+// marks the whole expression invalid; other values are ordinary conditions.
+func expressionOperator(condition any, nested bool) (op string, isOperator, valid bool) {
+	if text, ok := condition.(string); ok {
+		switch strings.ToUpper(text) {
+		case "AND", "OR":
+			return strings.ToUpper(text), true, true
+		default:
+			return "", false, false
+		}
+	}
+	if nested {
+		if parts, ok := condition.([]any); ok && len(parts) == 1 {
+			if text, ok := parts[0].(string); ok {
+				switch strings.ToUpper(text) {
+				case "AND", "OR":
+					return strings.ToUpper(text), true, true
+				default:
+					return "", false, false
+				}
+			}
+		}
+	}
+	return "", false, true
 }
 
 // PrepareExprRegexps compiles configured logger expression patterns before

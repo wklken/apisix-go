@@ -380,6 +380,42 @@ func TestExprMatchedPreservesStringAndNonStringOperands(t *testing.T) {
 	}
 }
 
+func TestExprMatchedTruthTable(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/items?id=42", nil)
+	r.Header.Set("X-Trace-Id", "abc-123")
+
+	tests := []struct {
+		name        string
+		expressions any
+		want        bool
+	}{
+		{name: "nil expressions", expressions: nil, want: true},
+		{name: "empty flat list", expressions: []any{}, want: true},
+		{name: "unsupported expression type", expressions: "not-a-list", want: false},
+		{name: "exact equality match", expressions: []any{[]any{"$arg_id", "==", "42"}}, want: true},
+		{name: "exact equality mismatch", expressions: []any{[]any{"$arg_id", "==", "7"}}, want: false},
+		{name: "regex positive match", expressions: []any{[]any{"$http_x_trace_id", "~", "^abc"}}, want: true},
+		{name: "regex positive mismatch", expressions: []any{[]any{"$http_x_trace_id", "~", "^xyz"}}, want: false},
+		{name: "regex negation match", expressions: []any{[]any{"$http_x_trace_id", "!~", "^xyz"}}, want: true},
+		{name: "regex negation mismatch", expressions: []any{[]any{"$http_x_trace_id", "!~", "^abc"}}, want: false},
+		{name: "unknown flat operator", expressions: []any{[]any{"$arg_id", "==", "42"}, "XOR", []any{"$uri", "==", "/"}}, want: false},
+		{name: "unknown nested operator", expressions: [][]any{{"$arg_id", "==", "42"}, {"XOR"}, {"$uri", "==", "/"}}, want: false},
+		{name: "malformed condition", expressions: []any{"$uri"}, want: false},
+		{name: "or combines alternatives", expressions: []any{[]any{"$arg_id", "==", "7"}, "OR", []any{"$arg_id", "==", "42"}}, want: true},
+		{name: "and requires both", expressions: []any{[]any{"$arg_id", "==", "42"}, "AND", []any{"$uri", "==", "/missing"}}, want: false},
+		{name: "leading operator before first operand", expressions: []any{"OR", []any{"$arg_id", "==", "42"}}, want: true},
+		{name: "chained or resets to and", expressions: []any{[]any{"$arg_id", "==", "42"}, "OR", []any{"$arg_id", "==", "7"}, "AND", []any{"$uri", "==", "/items"}}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			PrepareExprRegexps(test.expressions)
+			if got := ExprMatched(r, test.expressions, 0); got != test.want {
+				t.Fatalf("ExprMatched() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestInitLogger(t *testing.T) {
 	p := &BaseLoggerPlugin{}
 	send := func(map[string]any) {}

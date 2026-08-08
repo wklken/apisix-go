@@ -498,7 +498,12 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 			uris = []string{routeResource.Uri}
 		}
 		for _, uri := range uris {
-			if registerErr := registrar.registerRouteWithHosts(routeResource.Methods, uri, routeResource.Hosts, handler); registerErr != nil {
+			if registerErr := registrar.registerRouteWithHosts(
+				routeResource.Methods,
+				uri,
+				routeResource.Hosts,
+				handler,
+			); registerErr != nil {
 				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
 			}
 		}

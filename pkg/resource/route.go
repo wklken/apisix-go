@@ -236,7 +236,7 @@ type Route struct {
 	UpstreamID     string   `json:"upstream_id,omitempty"`
 	Upstream       Upstream `json:"upstream"`
 	Timeout        Timeout  `json:"timeout"`
-	FilterFunc string `json:"filter_func,omitempty"`
+	FilterFunc     string   `json:"filter_func,omitempty"`
 
 	CreateTime int64 `json:"create_time,omitempty"`
 	UpdateTime int64 `json:"update_time,omitempty"`

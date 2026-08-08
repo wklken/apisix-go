@@ -152,14 +152,42 @@ func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
 		request *http.Request
 		want    bool
 	}{
-		{name: "GET without body", request: httptest.NewRequest(http.MethodGet, "http://upstream.test/", nil), want: true},
-		{name: "HEAD without body", request: httptest.NewRequest(http.MethodHead, "http://upstream.test/", nil), want: true},
-		{name: "OPTIONS without body", request: httptest.NewRequest(http.MethodOptions, "http://upstream.test/", nil), want: true},
-		{name: "TRACE without body", request: httptest.NewRequest(http.MethodTrace, "http://upstream.test/", nil), want: true},
+		{
+			name:    "GET without body",
+			request: httptest.NewRequest(http.MethodGet, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "HEAD without body",
+			request: httptest.NewRequest(http.MethodHead, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "OPTIONS without body",
+			request: httptest.NewRequest(http.MethodOptions, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "TRACE without body",
+			request: httptest.NewRequest(http.MethodTrace, "http://upstream.test/", nil),
+			want:    true,
+		},
 		{name: "PUT with replayable body", request: replayableRequest(http.MethodPut), want: true},
-		{name: "DELETE without body", request: httptest.NewRequest(http.MethodDelete, "http://upstream.test/", nil), want: true},
-		{name: "POST with Idempotency-Key", request: keyed(replayableRequest(http.MethodPost), "Idempotency-Key"), want: true},
-		{name: "PATCH with X-Idempotency-Key", request: keyed(replayableRequest(http.MethodPatch), "X-Idempotency-Key"), want: true},
+		{
+			name:    "DELETE without body",
+			request: httptest.NewRequest(http.MethodDelete, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "POST with Idempotency-Key",
+			request: keyed(replayableRequest(http.MethodPost), "Idempotency-Key"),
+			want:    true,
+		},
+		{
+			name:    "PATCH with X-Idempotency-Key",
+			request: keyed(replayableRequest(http.MethodPatch), "X-Idempotency-Key"),
+			want:    true,
+		},
 		{name: "POST without key", request: replayableRequest(http.MethodPost), want: false},
 		{name: "PATCH without key", request: replayableRequest(http.MethodPatch), want: false},
 		{name: "PUT without replayable body", request: nonReplayable(), want: false},

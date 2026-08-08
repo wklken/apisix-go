@@ -3,6 +3,7 @@ package ai_proxy
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -2047,5 +2048,76 @@ func assertUsageRequestVars(t *testing.T, req *http.Request, wantRawPrompt float
 	normalized, ok := apisixctx.GetRequestVar(req, "$ai_token_usage").(map[string]any)
 	if !ok || normalized["total_tokens"] != wantNormalizedTotal {
 		t.Fatalf("$ai_token_usage = %#v, want total_tokens %d", normalized, wantNormalizedTotal)
+	}
+}
+
+func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
+	p := &Plugin{config: Config{MaxReqBodySize: 4}}
+	tests := []struct {
+		name     string
+		request  *http.Request
+		wantSize bool
+	}{
+		{
+			name: "declared oversized",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+				req.ContentLength = 17
+				return req
+			}(),
+			wantSize: true,
+		},
+		{
+			name: "streamed oversized",
+			request: func() *http.Request {
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/v1/chat/completions",
+					strings.NewReader(`{"model":"too-large"}`),
+				)
+				req.ContentLength = -1
+				return req
+			}(),
+			wantSize: true,
+		},
+		{
+			name: "invalid json",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+				req.ContentLength = -1
+				return req
+			}(),
+		},
+		{
+			name: "empty body",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(" \n"))
+			}(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, _, err := p.readJSONDocument(test.request)
+			if err == nil {
+				t.Fatal("readJSONDocument() error = nil")
+			}
+			if got := errors.Is(err, errRequestBodyTooLarge); got != test.wantSize {
+				t.Fatalf("errors.Is(err, errRequestBodyTooLarge) = %v, want %v; error = %v", got, test.wantSize, err)
+			}
+			if test.wantSize && !strings.Contains(err.Error(), "max_req_body_size") {
+				t.Fatalf("error text = %q, want size hint", err.Error())
+			}
+		})
+	}
+
+	// The handler maps the typed error to 413, never matching error text.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.ContentLength = 17
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler called for oversized request")
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("handler status = %d, want 413", rr.Code)
 	}
 }

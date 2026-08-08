@@ -36,10 +36,19 @@ type Plugin struct {
 	counters map[string]*counter
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
-	redis    *redis.Client
+	redis    redisClient
 
 	resourceScope  string
 	configIdentity string
+}
+
+// redisClient is the subset of the go-redis API the plugin uses, so tests can
+// inject a counting fake that asserts request context propagation and round
+// trips per decision.
+type redisClient interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd
+	Close() error
 }
 
 const (
@@ -62,6 +71,12 @@ if ttl < 0 then
   ttl = tonumber(ARGV[2])
 end
 return {current, ttl}
+`
+
+const redisSnapshotScript = `
+local value = redis.call("GET", KEYS[1])
+local ttl = redis.call("PTTL", KEYS[1])
+return {value, ttl}
 `
 
 const schema = `
@@ -473,7 +488,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			rejectedIndex := p.firstRejectedQuota(quotas)
+			rejectedIndex := p.firstRejectedQuota(r.Context(), quotas)
 			if rejectedIndex < 0 {
 				break
 			}
@@ -483,7 +498,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				continue
 			}
 			for _, headerQuota := range quotas[:rejectedIndex+1] {
-				p.writeQuotaHeaders(w.Header(), headerQuota)
+				p.writeQuotaHeaders(r.Context(), w.Header(), headerQuota)
 			}
 			p.reject(w)
 			return
@@ -501,7 +516,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			if usedTokens := p.responseTokenCostForRequest(r, nil); usedTokens > 0 {
 				for _, q := range quotas {
-					p.charge(q, usedTokens)
+					p.charge(r.Context(), q, usedTokens)
 				}
 			}
 			return
@@ -517,12 +532,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 		}
 		for _, q := range quotas {
-			p.writeQuotaHeaders(recorder.Header(), q)
+			p.writeQuotaHeaders(r.Context(), recorder.Header(), q)
 		}
 		usedTokens := p.responseTokenCostForRequest(r, recorder.Body())
 		if usedTokens > 0 {
 			for _, q := range quotas {
-				p.charge(q, usedTokens)
+				p.charge(r.Context(), q, usedTokens)
 			}
 		}
 		recorder.Commit(w)
@@ -561,13 +576,13 @@ func (w *quotaResponseWriter) writeQuotaHeaders() {
 		return
 	}
 	for _, q := range quotas {
-		w.plugin.writeQuotaHeaders(w.Header(), q)
+		w.plugin.writeQuotaHeaders(w.request.Context(), w.Header(), q)
 	}
 }
 
-func (p *Plugin) firstRejectedQuota(quotas []quota) int {
+func (p *Plugin) firstRejectedQuota(ctx context.Context, quotas []quota) int {
 	for i, q := range quotas {
-		if !p.allowed(q) {
+		if !p.allowed(ctx, q) {
 			return i
 		}
 	}
@@ -782,9 +797,9 @@ func requestVariable(r *http.Request, key string) string {
 	return v.GetNginxVar(r, variableName)
 }
 
-func (p *Plugin) allowed(q quota) bool {
+func (p *Plugin) allowed(ctx context.Context, q quota) bool {
 	if p.redis != nil {
-		value, err := p.redis.Get(context.Background(), p.redisKey(q)).Int64()
+		value, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
 		return err == redis.Nil || (err == nil && value < q.limit)
 	}
 	p.mu.Lock()
@@ -794,10 +809,10 @@ func (p *Plugin) allowed(q quota) bool {
 	return state.used < q.limit
 }
 
-func (p *Plugin) charge(q quota, tokens int64) {
+func (p *Plugin) charge(ctx context.Context, q quota, tokens int64) {
 	if p.redis != nil {
 		_ = p.redis.Eval(
-			context.Background(),
+			ctx,
 			redisChargeScript,
 			[]string{p.redisKey(q)},
 			tokens,
@@ -988,12 +1003,12 @@ func numericArguments(arguments []any, minimum int) ([]float64, error) {
 	return values, nil
 }
 
-func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
+func (p *Plugin) writeQuotaHeaders(ctx context.Context, header http.Header, q quota) {
 	if p.config.ShowLimitQuotaHeader != nil && !*p.config.ShowLimitQuotaHeader {
 		return
 	}
 
-	used, reset := p.snapshot(q)
+	used, reset := p.snapshot(ctx, q)
 	remaining := max(q.limit-used, 0)
 	if q.headerPrefix != "" {
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
@@ -1006,24 +1021,44 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	header.Set("X-AI-RateLimit-Reset-"+q.headerName, strconv.FormatInt(reset, 10))
 }
 
-func (p *Plugin) snapshot(q quota) (int64, int64) {
+func (p *Plugin) snapshot(ctx context.Context, q quota) (int64, int64) {
 	if p.redis != nil {
-		ctx := context.Background()
-		used, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
-		if err != nil && err != redis.Nil {
-			used = 0
+		// One round trip: GET and PTTL in a single Lua script.
+		values, err := p.redis.Eval(ctx, redisSnapshotScript, []string{p.redisKey(q)}).Slice()
+		if err != nil || len(values) != 2 {
+			return 0, max(int64(math.Ceil(q.window.Seconds())), 0)
 		}
-		ttl, err := p.redis.PTTL(ctx, p.redisKey(q)).Result()
-		if err != nil || ttl < 0 {
-			ttl = q.window
+		used := snapshotInteger(values[0])
+		ttl := snapshotInteger(values[1])
+		if ttl < 0 {
+			ttl = q.window.Milliseconds()
 		}
-		return used, max(int64(math.Ceil(ttl.Seconds())), 0)
+		return used, max(int64(math.Ceil(float64(ttl)/1000)), 0)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	state := p.state(q)
 	return state.used, max(int64(math.Ceil(state.reset.Sub(p.now()).Seconds())), 0)
+}
+
+// snapshotInteger converts a Lua script reply element to an integer; nil
+// replies (missing keys) and strings both decode like Redis integers.
+func snapshotInteger(value any) int64 {
+	switch typed := value.(type) {
+	case nil:
+		return 0
+	case int64:
+		return typed
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func (p *Plugin) redisKey(q quota) string {

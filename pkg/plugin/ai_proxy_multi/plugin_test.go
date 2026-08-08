@@ -3,10 +3,12 @@ package ai_proxy_multi
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -578,6 +580,18 @@ func TestHandlerSkipsActivelyUnhealthyHigherPriorityInstance(t *testing.T) {
 			Override: Override{Endpoint: low.URL + "/v1/chat/completions"},
 		},
 	}})
+
+	// Probes run on the plugin-owned refresher, so the request itself must
+	// not be the probe trigger: wake a refresh and wait for the published
+	// snapshot to record the unhealthy instance before selecting.
+	p.refreshHealth(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for p.instanceHealthy(0) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if p.instanceHealthy(0) {
+		t.Fatal("health snapshot never recorded the failing probe")
+	}
 
 	body := serveChat(t, p, "")
 	if highProviderCalls.Load() != 0 || lowProviderCalls.Load() != 1 || !strings.Contains(body, `"instance":"low"`) {
@@ -1615,4 +1629,375 @@ func TestHealthProbeConcurrentProbesAreRaceFree(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestHealthDueCheckDoesNotDelaySelection(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		close(probeStarted)
+		<-releaseProbe
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	blocked := time.Now().Add(time.Hour)
+	p.health[0].nextCheck = blocked.Add(-time.Hour)
+
+	p.refreshHealth(context.Background())
+	<-probeStarted
+
+	// While the blocking probe is in flight, selection must use the last
+	// snapshot and must not wait for the probe to finish.
+	start := time.Now()
+	index, ok := p.pickInstance(nil, nil)
+	if !ok || index != 0 {
+		t.Fatalf("pickInstance = (%d, %v), want instance 0", index, ok)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("selection waited %s for the in-flight probe", elapsed)
+	}
+	if !p.instanceHealthy(0) {
+		t.Fatal("stale-but-valid health became unreadable during refresh")
+	}
+
+	close(releaseProbe)
+	p.Stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for probeCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if probeCalls.Load() != 1 {
+		t.Fatalf("probe calls = %d, want exactly 1", probeCalls.Load())
+	}
+}
+
+func TestHealthConcurrentWakesRunOnlyOneRefreshPass(t *testing.T) {
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			p.refreshHealth(context.Background())
+		})
+	}
+	wg.Wait()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for probeCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("probe calls after 16 concurrent wakes = %d, want exactly 1", got)
+	}
+	p.Stop()
+}
+
+func TestHealthStopJoinsInFlightRefresh(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probeCalls.Add(1)
+		close(probeStarted)
+		<-releaseProbe
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.health[0].nextCheck = time.Now().Add(-time.Second)
+	p.refreshHealth(context.Background())
+	<-probeStarted
+
+	// Stop must join the refresher: it cannot return while the in-flight
+	// probe is still blocked, and no probe can start afterwards.
+	stopped := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the probe was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseProbe)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not join the refresher after the probe completed")
+	}
+	p.Stop()
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("probe calls after Stop = %d, want exactly 1", got)
+	}
+}
+
+func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
+	p := &Plugin{config: Config{MaxReqBodySize: 4}}
+	tests := []struct {
+		name     string
+		request  *http.Request
+		wantSize bool
+	}{
+		{
+			name: "declared oversized",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+				req.ContentLength = 17
+				return req
+			}(),
+			wantSize: true,
+		},
+		{
+			name: "streamed oversized",
+			request: func() *http.Request {
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/v1/chat/completions",
+					strings.NewReader(`{"model":"too-large"}`),
+				)
+				req.ContentLength = -1
+				return req
+			}(),
+			wantSize: true,
+		},
+		{
+			name: "invalid json",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+				req.ContentLength = -1
+				return req
+			}(),
+		},
+		{
+			name: "empty body",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(" \n"))
+			}(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, _, err := p.readJSONDocument(test.request)
+			if err == nil {
+				t.Fatal("readJSONDocument() error = nil")
+			}
+			if got := errors.Is(err, errRequestBodyTooLarge); got != test.wantSize {
+				t.Fatalf("errors.Is(err, errRequestBodyTooLarge) = %v, want %v; error = %v", got, test.wantSize, err)
+			}
+			if test.wantSize && !strings.Contains(err.Error(), "max_req_body_size") {
+				t.Fatalf("error text = %q, want size hint", err.Error())
+			}
+		})
+	}
+
+	// The handler maps the typed error to 413, never matching error text.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.ContentLength = 17
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler called for oversized request")
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("handler status = %d, want 413", rr.Code)
+	}
+}
+
+func TestProviderBodyCopiesOnlyMutatedRequestFields(t *testing.T) {
+	p := newTestPlugin(t, Config{Instances: []Instance{{Name: "one", Weight: 1}}})
+
+	document := ai_protocols.Document{Raw: map[string]any{
+		"model":    "caller-model",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}}
+	instance := Instance{Name: "one", Provider: "openai-compatible", Options: map[string]any{"model": "gpt-4"}}
+
+	_, providerDocument, err := p.providerBody(nil, document, ai_protocols.OpenAIChat, instance)
+	if err != nil {
+		t.Fatalf("providerBody() error = %v", err)
+	}
+
+	if got := providerDocument.Raw["model"]; got != "gpt-4" {
+		t.Fatalf("provider model = %v, want gpt-4", got)
+	}
+	// The shared client document must never be mutated by the provider copy.
+	if got := document.Raw["model"]; got != "caller-model" {
+		t.Fatalf("client model = %v, want caller-model; client document mutated", got)
+	}
+}
+
+func TestProviderBodyUnchangedReturnsOriginalBodyBytes(t *testing.T) {
+	p := newTestPlugin(t, Config{Instances: []Instance{{Name: "one", Weight: 1}}})
+
+	const raw = `{"model":"caller-model","messages":[{"role":"user","content":"hello"}]}`
+	document := ai_protocols.Document{Raw: map[string]any{
+		"model":    "caller-model",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}}
+	instance := Instance{Name: "one", Provider: "openai-compatible"}
+
+	body, providerDocument, err := p.providerBody([]byte(raw), document, ai_protocols.OpenAIChat, instance)
+	if err != nil {
+		t.Fatalf("providerBody() error = %v", err)
+	}
+	if string(body) != raw {
+		t.Fatalf("provider body = %q, want exact raw bytes", body)
+	}
+	if got := providerDocument.Raw["model"]; got != "caller-model" {
+		t.Fatalf("provider model = %v, want caller-model", got)
+	}
+	if got := document.Raw["model"]; got != "caller-model" {
+		t.Fatalf("client model = %v, want caller-model", got)
+	}
+}
+
+func TestWeightSelectionHonorsConfiguredWeightsWithoutExpansion(t *testing.T) {
+	instances := make([]Instance, 0, 3)
+	for i, weight := range []int{1, 3, 6} {
+		instances = append(instances, Instance{
+			Name:     "weighted-" + strconv.Itoa(i),
+			Provider: "openai-compatible",
+			Weight:   weight,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+		})
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	sel := p.selection[0]
+	if sel == nil {
+		t.Fatal("no weight selection index for priority 0")
+	}
+	// The index must stay compact: cumulative weights over distinct IDs, not
+	// an expanded repeated-provider slice.
+	if len(sel.ids) != 3 || len(sel.cumulative) != 3 {
+		t.Fatalf(
+			"selection index = %d ids, %d cumulative, want 3 each (no expansion)",
+			len(sel.ids),
+			len(sel.cumulative),
+		)
+	}
+	if sel.total != 10 {
+		t.Fatalf("total weight = %d, want 10", sel.total)
+	}
+	wantCumulative := []int{1, 4, 10}
+	for i, want := range wantCumulative {
+		if sel.cumulative[i] != want {
+			t.Fatalf("cumulative[%d] = %d, want %d", i, sel.cumulative[i], want)
+		}
+	}
+
+	// Property: every slot maps to the configured instance; the mapping is a
+	// permutation of the distinct IDs in weight order.
+	slotInstances := make(map[int]int)
+	for slot := range sel.total {
+		slotInstances[weightInstanceAtSlot(sel, slot)]++
+	}
+	wantSlots := []int{1, 3, 6}
+	for i, want := range wantSlots {
+		if slotInstances[i] != want {
+			t.Fatalf("instance %d received %d slots, want weight %d", i, slotInstances[i], want)
+		}
+	}
+}
+
+func TestPickInstanceDistributesByWeightOverManyPicks(t *testing.T) {
+	instances := make([]Instance, 0, 2)
+	for i, weight := range []int{1, 3} {
+		instances = append(instances, Instance{
+			Name:     "weighted-" + strconv.Itoa(i),
+			Provider: "openai-compatible",
+			Weight:   weight,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+		})
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	const picks = 4000
+	counts := make(map[int]int)
+	for range picks {
+		index, ok := p.pickInstance(nil, nil)
+		if !ok {
+			t.Fatal("pickInstance() = false, want an instance")
+		}
+		counts[index]++
+	}
+	// With weights 1:3 the heavier instance must receive ~3x the picks within
+	// a generous tolerance; round-robin over the slot table enforces the exact
+	// ratio over a full cycle.
+	if counts[0] < picks/5 || counts[1] < 3*picks/5 {
+		t.Fatalf("pick distribution = %#v over %d picks, want ~1:3", counts, picks)
+	}
+}
+
+func TestInstanceIndexResolvesByNameAndMissingIDs(t *testing.T) {
+	instances := []Instance{
+		{
+			Name:     "first",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1"},
+		},
+		{
+			Name:     "second",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v2"},
+		},
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	if index, ok := p.instanceIndex("first"); !ok || index != 0 {
+		t.Fatalf("instanceIndex(first) = (%d, %v), want (0, true)", index, ok)
+	}
+	if index, ok := p.instanceIndex("second"); !ok || index != 1 {
+		t.Fatalf("instanceIndex(second) = (%d, %v), want (1, true)", index, ok)
+	}
+	if _, ok := p.instanceIndex("missing"); ok {
+		t.Fatal("instanceIndex(missing) = ok, want false")
+	}
+	if _, ok := p.instanceIndex(""); ok {
+		t.Fatal("instanceIndex(empty) = ok, want false")
+	}
+}
+
+func TestInstanceIndexDuplicateNamesKeepFirstOccurrence(t *testing.T) {
+	instances := []Instance{
+		{
+			Name:     "dup",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v1"},
+		},
+		{
+			Name:     "dup",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: "http://127.0.0.1/v2"},
+		},
+	}
+	p := newTestPlugin(t, Config{Instances: instances})
+
+	index, ok := p.instanceIndex("dup")
+	if !ok || index != 0 {
+		t.Fatalf("instanceIndex(dup) = (%d, %v), want first occurrence (0, true)", index, ok)
+	}
 }

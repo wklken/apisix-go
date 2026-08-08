@@ -330,13 +330,14 @@ func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendRes
 		SecretAccessKey: p.config.Comprehend.SecretAccessKey,
 		SessionToken:    p.config.Comprehend.SessionToken,
 	}, ai_auth.SignAWSRequestOptions{
-		Region:           p.config.Comprehend.Region,
-		Service:          "comprehend",
-		SetSecurityToken: true,
-		CanonicalHeaders: []string{"content-type", "host", "x-amz-date", "x-amz-target"},
-		HeaderValue:      strings.TrimSpace,
-		CanonicalURI:     ai_auth.CanonicalURIPlain,
-		CanonicalQuery:   ai_auth.CanonicalQueryRaw,
+		Region:                 p.config.Comprehend.Region,
+		Service:                "comprehend",
+		SetSecurityToken:       true,
+		DisableURIPathEscaping: true,
+		CanonicalHeaders:       []string{"content-type", "host", "x-amz-date", "x-amz-target"},
+		HeaderValue:            strings.TrimSpace,
+		CanonicalURI:           ai_auth.CanonicalURIPlain,
+		CanonicalQuery:         ai_auth.CanonicalQueryRaw,
 	}, p.now()); err != nil {
 		return result, fmt.Errorf("failed to sign moderation request: %w", err)
 	}

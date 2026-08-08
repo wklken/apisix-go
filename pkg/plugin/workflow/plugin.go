@@ -197,8 +197,13 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		// One resolver per request: rule matching never allocates a closure
+		// per step, so scanning hundreds of rules stays allocation-free.
+		resolve := func(name string) any {
+			return pluginexpr.RequestValue(r, name)
+		}
 		for _, rule := range p.config.Rules {
-			if !matchRule(r, rule) {
+			if !matchRule(r, rule, resolve) {
 				continue
 			}
 			if p.handleAction(w, r, next, rule.Actions) {
@@ -267,14 +272,12 @@ func withConsumerActionOverride(r *http.Request, actionName string) *http.Reques
 	return apisixctx.WithConsumerPluginOverrides(r, overrides)
 }
 
-func matchRule(r *http.Request, rule Rule) bool {
+func matchRule(r *http.Request, rule Rule, resolve pluginexpr.Resolver) bool {
 	if len(rule.Case) == 0 {
 		return true
 	}
 	if rule.expr == nil {
 		return false
 	}
-	return rule.expr.Eval(func(name string) any {
-		return pluginexpr.RequestValue(r, name)
-	})
+	return rule.expr.Eval(resolve)
 }

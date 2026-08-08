@@ -3,6 +3,7 @@ package ai_proxy_multi
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -11,12 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -37,8 +38,9 @@ type Plugin struct {
 	client    *http.Client
 	mu        sync.Mutex
 	nextSlot  map[int]int
-	weighted  map[int][]int
+	selection map[int]*weightSelection
 	priority  []int
+	instances map[string]int
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
 	healthMu  sync.Mutex
@@ -46,10 +48,30 @@ type Plugin struct {
 	healthNow func() time.Time
 
 	healthClients map[int]*http.Client
+
+	healthStart    sync.Once
+	healthStopOnce sync.Once
+	stoppedHealth  atomic.Bool
+	wakeHealth     chan struct{}
+	stopHealth     chan struct{}
+	healthDone     chan struct{}
+	healthCtx      context.Context
+	healthCancel   context.CancelFunc
+	snapshot       atomic.Pointer[healthSnapshot]
 }
 
 type gcpTokenApplier interface {
 	Apply(context.Context, *http.Client, *http.Request, ai_auth.GCPConfig) error
+}
+
+// weightSelection is the O(1)-lookup weighted index built at configuration
+// publication: cumulative weight boundaries over distinct instance IDs. A slot
+// in [0, total) maps to an instance via binary search without expanding a
+// repeated-provider slice.
+type weightSelection struct {
+	total      int
+	cumulative []int
+	ids        []int
 }
 
 type preparedInstanceRequest struct {
@@ -80,6 +102,8 @@ const (
 	priority = 1041
 	name     = "ai-proxy-multi"
 )
+
+var errRequestBodyTooLarge = errors.New("request body exceeds max_req_body_size")
 
 const schema = `
 {
@@ -558,11 +582,18 @@ func (p *Plugin) PostInit() error {
 		p.config.SSLVerify = &sslVerify
 	}
 
-	p.weighted = make(map[int][]int)
+	p.selection = make(map[int]*weightSelection)
 	p.priority = p.priority[:0]
 	p.nextSlot = make(map[int]int)
+	p.instances = make(map[string]int)
 	for i := range p.config.Instances {
 		instance := &p.config.Instances[i]
+		if instance.Name != "" {
+			// First occurrence wins, matching the previous linear scan.
+			if _, exists := p.instances[instance.Name]; !exists {
+				p.instances[instance.Name] = i
+			}
+		}
 		if instance.Weight == 0 {
 			continue
 		}
@@ -592,12 +623,17 @@ func (p *Plugin) PostInit() error {
 				)
 			}
 		}
-		if _, ok := p.weighted[instance.Priority]; !ok {
+		if _, ok := p.selection[instance.Priority]; !ok {
 			p.priority = append(p.priority, instance.Priority)
 		}
-		for range instance.Weight {
-			p.weighted[instance.Priority] = append(p.weighted[instance.Priority], i)
+		sel := p.selection[instance.Priority]
+		if sel == nil {
+			sel = &weightSelection{}
+			p.selection[instance.Priority] = sel
 		}
+		sel.total += instance.Weight
+		sel.cumulative = append(sel.cumulative, sel.total)
+		sel.ids = append(sel.ids, i)
 	}
 	if len(p.priority) == 0 {
 		return fmt.Errorf("at least one instance must have weight greater than 0")
@@ -626,7 +662,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		body, document, protocol, err := p.readJSONDocument(r)
 		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "max_req_body_size") {
+			if errors.Is(err, errRequestBodyTooLarge) {
 				status = http.StatusRequestEntityTooLarge
 			}
 			base.WriteJSONMessage(w, status, err.Error())
@@ -813,12 +849,8 @@ func (p *Plugin) registerLogging(r *http.Request, protocol ai_protocols.Protocol
 }
 
 func (p *Plugin) instanceIndex(name string) (int, bool) {
-	for i := range p.config.Instances {
-		if p.config.Instances[i].Name == name {
-			return i, true
-		}
-	}
-	return 0, false
+	index, ok := p.instances[name]
+	return index, ok
 }
 
 func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Document, ai_protocols.Protocol, error) {
@@ -830,9 +862,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		)
 	}
 	if r.ContentLength > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
-			"request body exceeds max_req_body_size",
-		)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 
 	reader := io.LimitReader(r.Body, p.config.MaxReqBodySize+1)
@@ -848,9 +878,7 @@ func (p *Plugin) readJSONDocument(r *http.Request) ([]byte, ai_protocols.Documen
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("could not get body: %w", err)
 	}
 	if int64(len(body)) > p.config.MaxReqBodySize {
-		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf(
-			"request body exceeds max_req_body_size",
-		)
+		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, errRequestBodyTooLarge
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, ai_protocols.Document{}, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
@@ -1001,8 +1029,10 @@ func (p *Plugin) prepareInstanceRequest(
 		prepared.providerDocument = providerDocument
 		return prepared, err
 	}
-	clientBody := ai_common.CloneJSONValue(document.Raw).(map[string]any)
-	maps.Copy(clientBody, ai_common.CloneJSONValue(instance.Options).(map[string]any))
+	clientBody := maps.Clone(document.Raw)
+	for key, value := range instance.Options {
+		clientBody[key] = ai_common.CloneJSONValue(value)
+	}
 	convertedDocument, toolNameMap, err := ai_protocols.ConvertAnthropicMessagesDocumentToOpenAI(
 		ai_protocols.Document{Raw: clientBody},
 	)
@@ -1034,19 +1064,38 @@ func (p *Plugin) providerBody(
 	protocol ai_protocols.Protocol,
 	instance Instance,
 ) ([]byte, ai_protocols.Document, error) {
-	bodyTab := ai_common.CloneJSONValue(document.Raw).(map[string]any)
-	originalBody := ai_common.CloneJSONValue(bodyTab).(map[string]any)
-	maps.Copy(bodyTab, ai_common.CloneJSONValue(instance.Options).(map[string]any))
-	p.applyLLMOptions(bodyTab, protocol, instance)
-	p.applyRequestBodyOverride(bodyTab, protocol, instance)
-	p.applyProviderBodyRules(bodyTab, instance)
+	// Copy only the mutated request fields: a shallow top-level copy isolates
+	// the provider document from the shared client document, and nested maps
+	// are cloned on write (MergeBodyMap, bedrock inference config) instead of
+	// deep-copying the whole payload on every request.
+	bodyTab := maps.Clone(document.Raw)
+	changed := false
+	for key, value := range instance.Options {
+		if !ai_common.JSONValueEqual(bodyTab[key], value) {
+			changed = true
+		}
+		bodyTab[key] = ai_common.CloneJSONValue(value)
+	}
+	if p.applyLLMOptions(bodyTab, protocol, instance) {
+		changed = true
+	}
+	if p.applyRequestBodyOverride(bodyTab, protocol, instance) {
+		changed = true
+	}
+	if p.applyProviderBodyRules(bodyTab, instance) {
+		changed = true
+	}
 	providerDocument := ai_protocols.Document{Raw: bodyTab}
 	if providerDocument.IsStreaming(protocol) && protocol == ai_protocols.OpenAIChat {
-		bodyTab["stream_options"] = map[string]any{"include_usage": true}
+		streamOptions := map[string]any{"include_usage": true}
+		if !ai_common.JSONValueEqual(bodyTab["stream_options"], streamOptions) {
+			changed = true
+		}
+		bodyTab["stream_options"] = streamOptions
 	}
 
 	vertexEmbeddings := instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings
-	if reflect.DeepEqual(originalBody, bodyTab) && !vertexEmbeddings {
+	if !changed && !vertexEmbeddings {
 		return body, providerDocument, nil
 	}
 	rewritten, err := json.Marshal(bodyTab)
@@ -1068,13 +1117,13 @@ func (p *Plugin) applyRequestBodyOverride(
 	body map[string]any,
 	protocol ai_protocols.Protocol,
 	instance Instance,
-) {
+) bool {
 	override := requestBodyOverride(instance.Override.RequestBody, protocol)
 	if len(override) == 0 {
-		return
+		return false
 	}
 	force := instance.Override.RequestBodyForceOverride != nil && *instance.Override.RequestBodyForceOverride
-	ai_common.MergeBodyMap(body, override, force)
+	return ai_common.MergeBodyMap(body, override, force)
 }
 
 func requestBodyOverride(values map[string]any, protocol ai_protocols.Protocol) map[string]any {
@@ -1093,67 +1142,111 @@ func requestBodyOverride(values map[string]any, protocol ai_protocols.Protocol) 
 	return values
 }
 
-func (p *Plugin) applyProviderBodyRules(body map[string]any, instance Instance) {
+func (p *Plugin) applyProviderBodyRules(body map[string]any, instance Instance) bool {
+	changed := false
 	if instance.Provider == "azure-openai" || instance.Provider == "bedrock" {
-		delete(body, "model")
+		if _, ok := body["model"]; ok {
+			delete(body, "model")
+			changed = true
+		}
 	}
 	if instance.Provider == "bedrock" {
-		delete(body, "stream")
+		if _, ok := body["stream"]; ok {
+			delete(body, "stream")
+			changed = true
+		}
 	}
+	return changed
 }
 
-func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Protocol, instance Instance) {
+func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Protocol, instance Instance) bool {
 	if instance.Override.LLMOptions.MaxTokens == 0 {
-		return
+		return false
 	}
 	if protocol == ai_protocols.OpenAIEmbeddings {
-		return
+		return false
+	}
+	changed := false
+	set := func(key string, value any) {
+		if !ai_common.JSONValueEqual(body[key], value) {
+			changed = true
+		}
+		body[key] = value
+	}
+	remove := func(key string) {
+		if _, ok := body[key]; ok {
+			delete(body, key)
+			changed = true
+		}
 	}
 	switch instance.Provider {
 	case "openai":
 		switch protocol {
 		case ai_protocols.OpenAIChat:
-			body["max_completion_tokens"] = instance.Override.LLMOptions.MaxTokens
-			delete(body, "max_tokens")
+			set("max_completion_tokens", instance.Override.LLMOptions.MaxTokens)
+			remove("max_tokens")
 		case ai_protocols.OpenAIResponses:
-			body["max_output_tokens"] = instance.Override.LLMOptions.MaxTokens
+			set("max_output_tokens", instance.Override.LLMOptions.MaxTokens)
 		}
 	case "gemini", "vertex-ai":
 		if protocol == ai_protocols.OpenAIChat {
-			body["max_completion_tokens"] = instance.Override.LLMOptions.MaxTokens
+			set("max_completion_tokens", instance.Override.LLMOptions.MaxTokens)
 		}
 	case "bedrock":
 		if protocol == ai_protocols.BedrockConverse {
-			inferenceConfig, _ := body["inferenceConfig"].(map[string]any)
-			if inferenceConfig == nil {
+			inferenceConfig, ok := body["inferenceConfig"].(map[string]any)
+			if !ok {
 				inferenceConfig = make(map[string]any)
 				body["inferenceConfig"] = inferenceConfig
+				changed = true
+			} else {
+				// clone-on-write: never mutate a nested map shared with the
+				// client document under a shallow top-level copy
+				inferenceConfig = ai_common.CloneJSONValue(inferenceConfig).(map[string]any)
+				body["inferenceConfig"] = inferenceConfig
+			}
+			if !ai_common.JSONValueEqual(inferenceConfig["maxTokens"], instance.Override.LLMOptions.MaxTokens) {
+				changed = true
 			}
 			inferenceConfig["maxTokens"] = instance.Override.LLMOptions.MaxTokens
 		}
 	default:
 		if protocol == ai_protocols.OpenAIChat {
-			body["max_tokens"] = instance.Override.LLMOptions.MaxTokens
+			set("max_tokens", instance.Override.LLMOptions.MaxTokens)
 		}
 	}
+	return changed
 }
 
 func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
-	if len(p.priority) == 0 {
+	priorities := p.priority
+	if len(priorities) == 0 {
 		return 0, false
 	}
 
-	starts := make(map[int]int, len(p.priority))
-	for _, priority := range p.priority {
-		weighted := p.weighted[priority]
-		starts[priority] = p.nextWeightedSlot(r, priority, len(weighted))
+	// Advance each priority's rotation slot exactly once per pick, then reuse
+	// the starts across the healthy and fallback passes.
+	starts := make([]int, len(priorities))
+	for i, priority := range priorities {
+		sel := p.selection[priority]
+		if sel == nil || sel.total == 0 {
+			starts[i] = -1
+			continue
+		}
+		starts[i] = p.nextWeightedSlot(r, priority, sel.total)
 	}
 	for _, requireHealthy := range []bool{true, false} {
-		for _, priority := range p.priority {
-			weighted := p.weighted[priority]
-			start := starts[priority]
-			for offset := range len(weighted) {
-				index := weighted[(start+offset)%len(weighted)]
+		for i, priority := range priorities {
+			sel := p.selection[priority]
+			if starts[i] < 0 {
+				continue
+			}
+			// Walk distinct instances in weight order starting at the slot's
+			// instance; the weight run of a rejected instance is skipped in
+			// one step instead of one slot at a time.
+			first := weightInstanceAtSlot(sel, starts[i])
+			for offset := range len(sel.ids) {
+				index := sel.ids[(first+offset)%len(sel.ids)]
 				if !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
 					return index, true
 				}
@@ -1161,6 +1254,19 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// weightInstanceAtSlot maps a slot in [0, sel.total) to the index of its
+// distinct instance. When every instance has weight 1 the cumulative array is
+// the identity and the slot itself is the instance (O(1)); otherwise a binary
+// search over cumulative weights resolves the slot.
+func weightInstanceAtSlot(sel *weightSelection, slot int) int {
+	if sel.total == len(sel.ids) {
+		return slot
+	}
+	return sort.Search(len(sel.cumulative), func(i int) bool {
+		return sel.cumulative[i] > slot
+	})
 }
 
 func (p *Plugin) nextWeightedSlot(r *http.Request, priority int, size int) int {

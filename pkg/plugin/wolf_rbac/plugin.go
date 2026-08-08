@@ -22,7 +22,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client *http.Client
+	client         *http.Client
+	insecureClient *http.Client
 }
 
 const (
@@ -109,6 +110,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
+	}
+	if p.insecureClient == nil {
+		p.insecureClient = insecureWolfClient(p.client)
 	}
 	if strings.HasPrefix(strings.ToLower(p.config.Server), "http://") {
 		logger.Warn("Using wolf-rbac server with no TLS is a security risk")
@@ -274,8 +278,16 @@ func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
 	if cfg.SSLVerify != nil && *cfg.SSLVerify {
 		return p.client
 	}
+	// The insecure client is immutable and shared: build it once instead of
+	// cloning the transport on every request.
+	return p.insecureClient
+}
 
-	client := *p.client
+// insecureWolfClient returns a shared client whose transport skips TLS
+// certificate verification, mirroring the previous per-request clone but built
+// once so requests never allocate a transport.
+func insecureWolfClient(base *http.Client) *http.Client {
+	client := *base
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok || transport == nil {
 		transport = http.DefaultTransport.(*http.Transport)
@@ -288,7 +300,6 @@ func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
 	}
 	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
 	client.Transport = transport
-
 	return &client
 }
 

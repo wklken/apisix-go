@@ -32,19 +32,66 @@ func AsAnyMap(value any) (map[string]any, bool) {
 	return out, ok
 }
 
-// MergeBodyMap merges override into dst, cloning override values.
-func MergeBodyMap(dst map[string]any, override map[string]any, force bool) {
+// MergeBodyMap merges override into dst, cloning override values. It reports
+// whether any value in dst actually changed. Nested maps are cloned before
+// recursion so a shallow-copied dst never mutates maps it shares with another
+// document.
+func MergeBodyMap(dst map[string]any, override map[string]any, force bool) bool {
+	changed := false
 	for key, overrideValue := range override {
 		currentValue, exists := dst[key]
 		currentMap, currentIsMap := AsAnyMap(currentValue)
 		overrideMap, overrideIsMap := AsAnyMap(overrideValue)
 		if exists && currentIsMap && overrideIsMap {
-			MergeBodyMap(currentMap, overrideMap, force)
+			cloned := CloneJSONValue(currentMap).(map[string]any)
+			dst[key] = cloned
+			if MergeBodyMap(cloned, overrideMap, force) {
+				changed = true
+			}
 			continue
 		}
 		if !exists || force {
+			if !exists || !JSONValueEqual(currentValue, overrideValue) {
+				changed = true
+			}
 			dst[key] = CloneJSONValue(overrideValue)
 		}
+	}
+	return changed
+}
+
+// JSONValueEqual reports whether two JSON-decoded values are deeply equal
+// without reflection or intermediate serialization.
+func JSONValueEqual(left any, right any) bool {
+	switch typed := left.(type) {
+	case map[string]any:
+		other, ok := right.(map[string]any)
+		if !ok || len(typed) != len(other) {
+			return false
+		}
+		for key, value := range typed {
+			if !JSONValueEqual(value, other[key]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		other, ok := right.([]any)
+		if !ok || len(typed) != len(other) {
+			return false
+		}
+		for index, value := range typed {
+			if !JSONValueEqual(value, other[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		switch right.(type) {
+		case map[string]any, []any:
+			return false
+		}
+		return left == right
 	}
 }
 

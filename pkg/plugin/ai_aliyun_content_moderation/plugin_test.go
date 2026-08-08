@@ -577,3 +577,112 @@ func aliyunServer(t *testing.T, body string, status int) *httptest.Server {
 		_, _ = w.Write([]byte(body))
 	}))
 }
+
+func TestRealtimeWriterSplitsUTF8AcrossChunkBoundary(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		StreamCheckCacheSize: 128, RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+
+	writer := newRealtimeResponseWriter(rr, req, p, ai_protocols.OpenAIChat, map[string]any{"stream": true})
+	// "你好" is 6 UTF-8 bytes; split it mid-character across writes.
+	first := "data: {\"choices\":[{\"delta\":{\"content\":\"你"
+	second := "好\"}}]}\n\n"
+	if _, err := writer.Write([]byte(first)); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if _, err := writer.Write([]byte(second)); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	writer.Close()
+
+	if got := rr.Body.String(); got != first+second {
+		t.Fatalf("forwarded body = %q, want original chunks concatenated", got)
+	}
+}
+
+func TestRealtimeWriterModeratesRiskSpanningChunks(t *testing.T) {
+	var moderatedContent string
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		moderatedContent, _ = parameters["content"].(string)
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"max","Advice":[{"Answer":"span blocked"}]}}`))
+	}))
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		StreamCheckCacheSize: 128, StreamCheckInterval: 1e9, RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+
+	writer := newRealtimeResponseWriter(rr, req, p, ai_protocols.OpenAIChat, map[string]any{"stream": true})
+	// The risky token "unsafe" is split across two chunks; the accumulated
+	// content must join them before moderation runs.
+	first := "data: {\"choices\":[{\"delta\":{\"content\":\"un"
+	second := "safe\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n"
+	if _, err := writer.Write([]byte(first)); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if _, err := writer.Write([]byte(second)); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	writer.Close()
+
+	if moderatedContent != "unsafedone" {
+		t.Fatalf("moderated content = %q, want joined \"unsafedone\"", moderatedContent)
+	}
+	if !strings.Contains(rr.Body.String(), "span blocked") {
+		t.Fatalf("blocked stream = %q, want deny message appended", rr.Body.String())
+	}
+}
+
+func TestRealtimeWriterFlushesPendingOnClose(t *testing.T) {
+	var moderatedContent string
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		moderatedContent, _ = parameters["content"].(string)
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"flush blocked"}]}}`))
+	}))
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		StreamCheckCacheSize: 128, StreamCheckInterval: 1e9, RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+
+	writer := newRealtimeResponseWriter(rr, req, p, ai_protocols.OpenAIChat, map[string]any{"stream": true})
+	// The final line has no trailing newline; Close must flush and moderate it.
+	partial := "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}"
+	if _, err := writer.Write([]byte(partial)); err != nil {
+		t.Fatalf("Write(partial) error = %v", err)
+	}
+	writer.Close()
+
+	if moderatedContent != "tail" {
+		t.Fatalf("moderated content = %q, want flushed \"tail\"", moderatedContent)
+	}
+	if !strings.Contains(rr.Body.String(), "flush blocked") {
+		t.Fatalf("blocked stream = %q, want deny message", rr.Body.String())
+	}
+}

@@ -1,10 +1,14 @@
 package ai_rate_limiting
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,7 +200,7 @@ func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	options := p.redis.Options()
+	options := p.redis.(*redis.Client).Options()
 	if options.Password != "somepassword" {
 		t.Fatalf("Redis password = %q, want decrypted plaintext", options.Password)
 	}
@@ -211,7 +215,7 @@ func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing
 		)
 	}
 	p.Stop()
-	if err := p.redis.Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
+	if err := p.redis.(*redis.Client).Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
 		t.Fatalf("Ping() error after Stop = %v, want redis client closed", err)
 	}
 }
@@ -765,7 +769,11 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 		{Name: "model-a", Limit: 1, TimeWindow: 60},
 		{Name: "model-b", Limit: 5, TimeWindow: 60},
 	}}, time.Now)
-	rate.charge(quota{key: "instance:model-a", headerName: "model-a", limit: 1, window: time.Minute}, 1)
+	rate.charge(
+		context.Background(),
+		quota{key: "instance:model-a", headerName: "model-a", limit: 1, window: time.Minute},
+		1,
+	)
 	handler := ai_runtime.EnableTerminal(proxy.Handler(rate.Handler(ai_runtime.TerminalHandler(http.HandlerFunc(func(
 		http.ResponseWriter,
 		*http.Request,
@@ -793,7 +801,11 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 		t.Fatalf("model-b remaining header = %q, want pre-charge quota 5", got)
 	}
 
-	rate.charge(quota{key: "instance:model-b", headerName: "model-b", limit: 5, window: time.Minute}, 4)
+	rate.charge(
+		context.Background(),
+		quota{key: "instance:model-b", headerName: "model-b", limit: 5, window: time.Minute},
+		4,
+	)
 	blocked := httptest.NewRecorder()
 	handler.ServeHTTP(blocked, request())
 	if blocked.Code != http.StatusServiceUnavailable {
@@ -1264,5 +1276,167 @@ func TestResponseTokenCostPreservesFixedStrategies(t *testing.T) {
 				t.Fatalf("responseTokenCost() = %d, want %d", got, test.want)
 			}
 		})
+	}
+}
+
+// rateLimitTestKey is the typed context key used by the Redis decision tests.
+type rateLimitTestKey struct{}
+
+// countingRedis records every command with its context and returns scripted
+// replies, so tests can assert context propagation and round trips.
+type countingRedis struct {
+	mu        sync.Mutex
+	commands  []string
+	contexts  []context.Context
+	getResult int64
+	getError  error
+	ttlResult int64
+	evalErr   error
+}
+
+func (c *countingRedis) record(command string, ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.commands = append(c.commands, command)
+	c.contexts = append(c.contexts, ctx)
+}
+
+func (c *countingRedis) Get(ctx context.Context, key string) *redis.StringCmd {
+	c.record("GET "+key, ctx)
+	return redis.NewStringResult(strconv.FormatInt(c.getResult, 10), c.getError)
+}
+
+func (c *countingRedis) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
+	c.record("EVAL "+keys[0], ctx)
+	if c.evalErr != nil {
+		return redis.NewCmdResult(nil, c.evalErr)
+	}
+	if strings.Contains(script, `redis.call("INCRBY"`) {
+		return redis.NewCmdResult([]any{int64(1), int64(60000)}, nil)
+	}
+	return redis.NewCmdResult([]any{int64(c.getResult), int64(c.ttlResult)}, nil)
+}
+
+func (c *countingRedis) Close() error { return nil }
+
+func (c *countingRedis) commandsOf(command string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	count := 0
+	for _, got := range c.commands {
+		if got == command {
+			count++
+		}
+	}
+	return count
+}
+
+func (c *countingRedis) contextsAreRequestContexts(want context.Context) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	problems := make([]string, 0)
+	for i, got := range c.contexts {
+		if got == context.Background() {
+			problems = append(problems, fmt.Sprintf("command %d used context.Background()", i+1))
+		}
+		if got != want {
+			problems = append(problems, fmt.Sprintf("command %d context = %v, want request context %v", i+1, got, want))
+		}
+	}
+	return problems
+}
+
+func TestRedisDecisionsUseRequestContextAndSingleRoundTrip(t *testing.T) {
+	redisFake := &countingRedis{getResult: 0, ttlResult: 60000}
+	p := newTestPlugin(
+		t,
+		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
+		time.Now,
+	)
+	_ = p.redis.Close()
+	p.redis = redisFake
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req = req.WithContext(context.WithValue(req.Context(), rateLimitTestKey{}, "value"))
+	ctx := req.Context()
+
+	q := quota{key: "global", limit: 10, window: 60 * time.Second}
+
+	if !p.allowed(ctx, q) {
+		t.Fatalf("allowed() = false with used 0, want true")
+	}
+	p.charge(ctx, q, 5)
+	if _, reset := p.snapshot(ctx, q); reset != 60 {
+		t.Fatalf("snapshot() reset = %d, want 60", reset)
+	}
+
+	if got := redisFake.commandsOf("GET " + p.redisKey(q)); got != 1 {
+		t.Fatalf("allowed() issued %d GET commands, want exactly 1 round trip", got)
+	}
+	if got := redisFake.commandsOf("EVAL " + p.redisKey(q)); got != 2 {
+		t.Fatalf("charge+snapshot issued %d EVAL commands, want exactly 2 round trips", got)
+	}
+	if problems := redisFake.contextsAreRequestContexts(ctx); len(problems) > 0 {
+		t.Fatalf("redis commands did not use the request context: %v", problems)
+	}
+}
+
+func TestRedisRejectsAtLimitAndFailsClosedOnBackendError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx := req.Context()
+
+	atLimit := &countingRedis{getResult: 10, ttlResult: 60000}
+	atLimitPlugin := newTestPlugin(
+		t,
+		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
+		time.Now,
+	)
+	_ = atLimitPlugin.redis.Close()
+	atLimitPlugin.redis = atLimit
+	if atLimitPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
+		t.Fatalf("allowed() = true at used == limit, want false")
+	}
+
+	expired := &countingRedis{getError: redis.Nil, ttlResult: 60000}
+	expiredPlugin := newTestPlugin(
+		t,
+		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
+		time.Now,
+	)
+	_ = expiredPlugin.redis.Close()
+	expiredPlugin.redis = expired
+	if !expiredPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
+		t.Fatalf("allowed() = false on expired key, want true (fail-open for missing counters)")
+	}
+
+	backendError := &countingRedis{getError: fmt.Errorf("backend down"), ttlResult: 60000}
+	backendPlugin := newTestPlugin(
+		t,
+		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
+		time.Now,
+	)
+	_ = backendPlugin.redis.Close()
+	backendPlugin.redis = backendError
+	if backendPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
+		t.Fatalf("allowed() = true on backend error, want false (fail-closed decision)")
+	}
+}
+
+func TestRedisSnapshotFailsOpenOnBackendError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx := req.Context()
+
+	backendError := &countingRedis{getResult: 8, evalErr: fmt.Errorf("backend down"), ttlResult: 60000}
+	p := newTestPlugin(
+		t,
+		Config{Limit: 10, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPort: 6379},
+		time.Now,
+	)
+	_ = p.redis.Close()
+	p.redis = backendError
+
+	used, reset := p.snapshot(ctx, quota{key: "global", limit: 10, window: 60 * time.Second})
+	if used != 0 || reset != 60 {
+		t.Fatalf("snapshot() = (%d, %d) on backend error, want (0, 60) fail-open", used, reset)
 	}
 }

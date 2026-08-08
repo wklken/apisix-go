@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -20,8 +21,18 @@ type Plugin struct {
 	config     Config
 	metadata   Metadata
 	mu         sync.Mutex
-	compiledAt time.Time
+	compiled   atomic.Pointer[compiledSpec]
+	compiledAt atomic.Int64
 	now        func() time.Time
+
+	refreshStart   sync.Once
+	refreshStop    sync.Once
+	refreshStopped atomic.Bool
+	wakeRefresh    chan struct{}
+	stopRefresh    chan struct{}
+	refreshDone    chan struct{}
+	refreshCtx     context.Context
+	refreshCancel  context.CancelFunc
 }
 
 const (
@@ -125,8 +136,6 @@ type Config struct {
 	SkipPathParamsValidation    bool              `json:"skip_path_params_validation,omitempty"`
 	RejectIfNotMatch            *bool             `json:"reject_if_not_match,omitempty"`
 	RejectionStatusCode         int               `json:"rejection_status_code,omitempty"`
-
-	compiled *compiledSpec
 }
 
 type Metadata struct {
@@ -189,18 +198,79 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) validator() (*compiledSpec, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.config.compiled != nil {
-		if p.config.Spec != "" || p.currentTime().Before(p.compiledAt.Add(p.specURLTTL())) {
-			return p.config.compiled, nil
+	if compiled := p.compiled.Load(); compiled != nil {
+		if p.config.Spec != "" || p.currentTime().Before(time.Unix(0, p.compiledAt.Load()).Add(p.specURLTTL())) {
+			return compiled, nil
 		}
+		p.wakeSpecRefresh()
+		return compiled, nil
 	}
 
+	// No validator exists yet, so the first request must wait for the
+	// initial compile. A short lock keeps concurrent first requests on a
+	// single compile while published validators are read atomically.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if compiled := p.compiled.Load(); compiled != nil {
+		return compiled, nil
+	}
+	compiled, err := p.compileValidator(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	p.publishValidator(compiled)
+	return compiled, nil
+}
+
+// wakeSpecRefresh starts the plugin-owned refresher on first use and wakes it
+// to re-fetch and recompile a due spec in the background. Requests never wait
+// on the remote fetch; they keep validating with the last published validator.
+func (p *Plugin) wakeSpecRefresh() {
+	if p.refreshStopped.Load() {
+		return
+	}
+	p.refreshStart.Do(func() {
+		p.refreshCtx, p.refreshCancel = context.WithCancel(context.Background())
+		p.wakeRefresh = make(chan struct{}, 1)
+		p.stopRefresh = make(chan struct{})
+		p.refreshDone = make(chan struct{})
+		go p.specRefreshLoop()
+	})
+	select {
+	case p.wakeRefresh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Plugin) specRefreshLoop() {
+	defer close(p.refreshDone)
+	for {
+		select {
+		case <-p.stopRefresh:
+			return
+		case <-p.wakeRefresh:
+		}
+		// A wake that arrives while another pass was refreshing must not
+		// trigger a second fetch once the fresh validator is published.
+		if p.config.Spec != "" ||
+			p.currentTime().Before(time.Unix(0, p.compiledAt.Load()).Add(p.specURLTTL())) {
+			continue
+		}
+		compiled, err := p.compileValidator(p.refreshCtx)
+		if err != nil {
+			logger.Errorf("failed to refresh openapi spec from URL: %s", err)
+			continue
+		}
+		p.publishValidator(compiled)
+	}
+}
+
+// compileValidator fetches and compiles the configured spec. It performs
+// network I/O and must never run while the published-validator lock is held.
+func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
 	spec := p.config.Spec
 	if spec == "" {
-		fetched, err := p.fetchSpec()
+		fetched, err := p.fetchSpec(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +288,7 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 		}
 	}
 	compiled, err := compileSpec(
-		context.Background(),
+		ctx,
 		[]byte(spec),
 		baseURL,
 		p.httpClient(),
@@ -230,9 +300,28 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 		}
 		return nil, fmt.Errorf("failed to compile inline openapi spec: %w", err)
 	}
-	p.config.compiled = compiled
-	p.compiledAt = p.currentTime()
 	return compiled, nil
+}
+
+// publishValidator atomically swaps in a fully compiled validator.
+func (p *Plugin) publishValidator(compiled *compiledSpec) {
+	p.compiled.Store(compiled)
+	p.compiledAt.Store(p.currentTime().UnixNano())
+}
+
+// Stop joins the spec refresher and cancels its remote fetches so no refresh
+// worker outlives the plugin.
+func (p *Plugin) Stop() {
+	p.refreshStop.Do(func() {
+		p.refreshStopped.Store(true)
+		if p.stopRefresh != nil {
+			close(p.stopRefresh)
+			<-p.refreshDone
+		}
+		if p.refreshCancel != nil {
+			p.refreshCancel()
+		}
+	})
 }
 
 func (p *Plugin) currentTime() time.Time {
@@ -249,8 +338,8 @@ func (p *Plugin) specURLTTL() time.Duration {
 	return defaultSpecURLTTL * time.Second
 }
 
-func (p *Plugin) fetchSpec() (string, error) {
-	req, err := http.NewRequest(http.MethodGet, p.config.SpecURL, nil)
+func (p *Plugin) fetchSpec(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.config.SpecURL, nil)
 	if err != nil {
 		return "", err
 	}

@@ -10,7 +10,6 @@ import (
 	"net/textproto"
 	"net/url"
 	"path"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -31,6 +30,9 @@ type SignAWSRequestOptions struct {
 	Region  string
 	Service string
 
+	// DisableURIPathEscaping signs the request path without the SDK's
+	// double escaping. Set it together with CanonicalURIPlain.
+	DisableURIPathEscaping bool
 	// IncludePayloadHash sets the X-Amz-Content-Sha256 header.
 	IncludePayloadHash bool
 	// SetSecurityToken sets the X-Amz-Security-Token header from
@@ -143,8 +145,7 @@ func signWithSDK(
 		ctx, credentials, req, payloadHash,
 		options.Service, options.Region, now,
 		func(o *v4.SignerOptions) {
-			o.DisableURIPathEscaping = reflect.ValueOf(options.CanonicalURI).Pointer() ==
-				reflect.ValueOf(CanonicalURIPlain).Pointer()
+			o.DisableURIPathEscaping = options.DisableURIPathEscaping
 		},
 	)
 }

@@ -66,7 +66,11 @@ func TestGCPTokenRefreshRunsSingleFlightOutsideTheCacheLock(t *testing.T) {
 	source.now = func() time.Time { return now }
 
 	// Prime the fast key with a valid cached token.
-	if _, err := source.Token(t.Context(), fastServer.Client(), GCPConfig{ServiceAccountJSON: string(fastAccount)}); err != nil {
+	if _, err := source.Token(
+		t.Context(),
+		fastServer.Client(),
+		GCPConfig{ServiceAccountJSON: string(fastAccount)},
+	); err != nil {
 		t.Fatalf("prime fast token: %v", err)
 	}
 
@@ -82,7 +86,11 @@ func TestGCPTokenRefreshRunsSingleFlightOutsideTheCacheLock(t *testing.T) {
 	}
 	aResult := make(chan tokenResult, 1)
 	go func() {
-		value, err := source.Token(t.Context(), blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		value, err := source.Token(
+			t.Context(),
+			blockingServer.Client(),
+			GCPConfig{ServiceAccountJSON: string(blockedAccount)},
+		)
 		aResult <- tokenResult{value: value, err: err}
 	}()
 	<-blocked
@@ -90,7 +98,11 @@ func TestGCPTokenRefreshRunsSingleFlightOutsideTheCacheLock(t *testing.T) {
 	// A second caller for the same key must wait for the single refresh.
 	bResult := make(chan tokenResult, 1)
 	go func() {
-		value, err := source.Token(t.Context(), blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		value, err := source.Token(
+			t.Context(),
+			blockingServer.Client(),
+			GCPConfig{ServiceAccountJSON: string(blockedAccount)},
+		)
 		bResult <- tokenResult{value: value, err: err}
 	}()
 	select {
@@ -104,7 +116,11 @@ func TestGCPTokenRefreshRunsSingleFlightOutsideTheCacheLock(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(t.Context())
 	cResult := make(chan tokenResult, 1)
 	go func() {
-		value, err := source.Token(cancelCtx, blockingServer.Client(), GCPConfig{ServiceAccountJSON: string(blockedAccount)})
+		value, err := source.Token(
+			cancelCtx,
+			blockingServer.Client(),
+			GCPConfig{ServiceAccountJSON: string(blockedAccount)},
+		)
 		cResult <- tokenResult{value: value, err: err}
 	}()
 	cancel()

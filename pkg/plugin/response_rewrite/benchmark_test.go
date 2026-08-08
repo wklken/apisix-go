@@ -44,7 +44,3 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 		}
 	}
 }
-
-func stringPointer(value string) *string {
-	return &value
-}

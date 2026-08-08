@@ -18,12 +18,12 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config   Config
-	metadata Metadata
-	mu       sync.Mutex
-	compiled atomic.Pointer[compiledSpec]
+	config     Config
+	metadata   Metadata
+	mu         sync.Mutex
+	compiled   atomic.Pointer[compiledSpec]
 	compiledAt atomic.Int64
-	now      func() time.Time
+	now        func() time.Time
 
 	refreshStart   sync.Once
 	refreshStop    sync.Once

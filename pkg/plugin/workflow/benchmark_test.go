@@ -16,7 +16,7 @@ func BenchmarkAISelection(b *testing.B) {
 	for _, size := range []int{2, 100, 1000} {
 		b.Run(fmt.Sprintf("steps-%d", size), func(b *testing.B) {
 			rules := make([]Rule, 0, size)
-			for i := 0; i < size; i++ {
+			for i := range size {
 				rules = append(rules, Rule{Case: []any{
 					[]any{"$http_x_workflow_bench", "==", "never-" + strconv.Itoa(i)},
 				}})

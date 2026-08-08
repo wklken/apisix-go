@@ -39,7 +39,11 @@ func BenchmarkProviderDispatch(b *testing.B) {
 		},
 	} {
 		b.Run(scenario.name, func(b *testing.B) {
-			req := httptest.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/claude/converse", strings.NewReader(string(body)))
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"https://bedrock-runtime.us-east-1.amazonaws.com/model/claude/converse",
+				strings.NewReader(string(body)),
+			)
 			req.Header.Set("Content-Type", "application/json")
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {

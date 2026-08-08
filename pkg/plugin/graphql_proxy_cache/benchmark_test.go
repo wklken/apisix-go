@@ -14,7 +14,7 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 		CacheStrategy:     "memory",
 		CacheZone:         "graphql-bench-zone",
 		CacheTTL:          300,
-		ConsumerIsolation: boolPointer(false),
+		ConsumerIsolation: new(bool),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/graphql", nil)
@@ -40,8 +40,4 @@ func newBenchmarkPlugin(b testing.TB, cfg Config) *Plugin {
 	}
 	b.Cleanup(p.Stop)
 	return p
-}
-
-func boolPointer(value bool) *bool {
-	return &value
 }

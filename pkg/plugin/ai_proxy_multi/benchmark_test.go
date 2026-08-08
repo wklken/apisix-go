@@ -71,7 +71,7 @@ func BenchmarkAISelection(b *testing.B) {
 	for _, size := range []int{2, 100, 1000} {
 		b.Run("providers-"+strconv.Itoa(size), func(b *testing.B) {
 			instances := make([]Instance, 0, size)
-			for i := 0; i < size; i++ {
+			for i := range size {
 				instances = append(instances, Instance{
 					Name:     "provider-" + strconv.Itoa(i),
 					Provider: "openai-compatible",
@@ -92,7 +92,7 @@ func BenchmarkAISelection(b *testing.B) {
 
 	b.Run("weighted-1000", func(b *testing.B) {
 		instances := make([]Instance, 0, 10)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			instances = append(instances, Instance{
 				Name:     "weighted-" + strconv.Itoa(i),
 				Provider: "openai-compatible",
@@ -113,7 +113,7 @@ func BenchmarkAISelection(b *testing.B) {
 
 func benchmarkHealthConfig(endpoint string) Config {
 	instances := make([]Instance, 0, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		instances = append(instances, Instance{
 			Name:     "probe-" + strconv.Itoa(i),
 			Provider: "openai-compatible",
@@ -175,7 +175,11 @@ func BenchmarkProviderDispatch(b *testing.B) {
 		if err != nil {
 			b.Fatalf("prepareInstanceRequest() error = %v", err)
 		}
-		if _, err := p.endpoint(p.config.Instances[0], prepared.providerProtocol, prepared.providerDocument); err != nil {
+		if _, err := p.endpoint(
+			p.config.Instances[0],
+			prepared.providerProtocol,
+			prepared.providerDocument,
+		); err != nil {
 			b.Fatalf("endpoint() error = %v", err)
 		}
 	}
@@ -193,7 +197,11 @@ func BenchmarkProviderDispatchErrorClass(b *testing.B) {
 	}}})
 	p.config.MaxReqBodySize = 4
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+	)
 	req.Header.Set("Content-Type", "application/json")
 	req.ContentLength = 17
 

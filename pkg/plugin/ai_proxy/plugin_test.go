@@ -2,8 +2,8 @@ package ai_proxy
 
 import (
 	"context"
-	"errors"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"net/http"
@@ -2070,7 +2070,11 @@ func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
 		{
 			name: "streamed oversized",
 			request: func() *http.Request {
-				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"too-large"}`))
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/v1/chat/completions",
+					strings.NewReader(`{"model":"too-large"}`),
+				)
 				req.ContentLength = -1
 				return req
 			}(),

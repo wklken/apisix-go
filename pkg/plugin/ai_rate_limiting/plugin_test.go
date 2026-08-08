@@ -1279,6 +1279,9 @@ func TestResponseTokenCostPreservesFixedStrategies(t *testing.T) {
 	}
 }
 
+// rateLimitTestKey is the typed context key used by the Redis decision tests.
+type rateLimitTestKey struct{}
+
 // countingRedis records every command with its context and returns scripted
 // replies, so tests can assert context propagation and round trips.
 type countingRedis struct {
@@ -1354,7 +1357,7 @@ func TestRedisDecisionsUseRequestContextAndSingleRoundTrip(t *testing.T) {
 	p.redis = redisFake
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "rate-limit-test", "value"))
+	req = req.WithContext(context.WithValue(req.Context(), rateLimitTestKey{}, "value"))
 	ctx := req.Context()
 
 	q := quota{key: "global", limit: 10, window: 60 * time.Second}

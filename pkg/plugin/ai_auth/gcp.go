@@ -158,8 +158,8 @@ func (s *GCPTokenSource) Token(ctx context.Context, client *http.Client, config 
 	token, err := s.exchangeToken(ctx, client, []byte(serviceAccountJSON), config, now)
 
 	s.mu.Lock()
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		cached := cachedGCPToken{value: token.AccessToken, expires: token.Expiry}
 		s.cache[cacheKey] = cached
 		refresh.value = cached.value

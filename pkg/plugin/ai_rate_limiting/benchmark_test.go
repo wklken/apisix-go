@@ -67,7 +67,7 @@ type benchRedisFixture struct {
 	listener net.Listener
 
 	mu       sync.Mutex
-	count    int64
+	count    atomic.Int64
 	values   map[string]string
 	integers map[string]int64
 	expiries map[string]time.Time
@@ -102,11 +102,11 @@ func (f *benchRedisFixture) port() int {
 }
 
 func (f *benchRedisFixture) resetCommands() {
-	atomic.StoreInt64(&f.count, 0)
+	f.count.Store(0)
 }
 
 func (f *benchRedisFixture) commands() int64 {
-	return atomic.LoadInt64(&f.count)
+	return f.count.Load()
 }
 
 func (f *benchRedisFixture) serve() {
@@ -145,7 +145,7 @@ func (f *benchRedisFixture) writeResponse(writer io.Writer, command []string) er
 	case "AUTH", "SELECT", "CLIENT":
 		return writeBenchSimpleRESP(writer, "OK")
 	case "GET":
-		atomic.AddInt64(&f.count, 1)
+		f.count.Add(1)
 		f.mu.Lock()
 		value, ok := f.values[command[1]]
 		if integer, integerOK := f.integers[command[1]]; integerOK {
@@ -158,7 +158,7 @@ func (f *benchRedisFixture) writeResponse(writer io.Writer, command []string) er
 		}
 		return writeBenchRESPBulk(writer, value)
 	case "PTTL":
-		atomic.AddInt64(&f.count, 1)
+		f.count.Add(1)
 		f.mu.Lock()
 		expiry, ok := f.expiries[command[1]]
 		f.mu.Unlock()
@@ -167,7 +167,7 @@ func (f *benchRedisFixture) writeResponse(writer io.Writer, command []string) er
 		}
 		return writeBenchRESPInteger(writer, max(time.Until(expiry).Milliseconds(), 1))
 	case "EVAL", "EVALSHA":
-		atomic.AddInt64(&f.count, 1)
+		f.count.Add(1)
 		return f.writeEvalResponse(writer, command)
 	default:
 		return writeBenchRESPError(writer, "unsupported command "+command[0])

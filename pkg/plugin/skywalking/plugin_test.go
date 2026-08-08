@@ -3,6 +3,7 @@ package skywalking
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,45 @@ import (
 	"testing"
 	"time"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestRandomIDReturnsErrorForFailingReader(t *testing.T) {
+	value, err := randomID(failingReader{}, 16)
+	if err == nil {
+		t.Fatal("randomID() error = nil, want failure")
+	}
+	if value != "" {
+		t.Fatalf("randomID() = %q, want empty on failure", value)
+	}
+}
+
+func TestRandomUnitReturnsErrorForFailingReader(t *testing.T) {
+	value, err := randomUnit(failingReader{})
+	if err == nil {
+		t.Fatal("randomUnit() error = nil, want failure")
+	}
+	if value != 0 {
+		t.Fatalf("randomUnit() = %v, want zero on failure", value)
+	}
+}
+
+func TestHandlerFailsClosedWhenSampleRandomUnavailable(t *testing.T) {
+	p := newTestPlugin(t, Config{SampleRatio: 0.25})
+	p.sampleRandom = func() (float64, error) { return 0, errors.New("random unavailable") }
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -48,14 +88,16 @@ func TestPostInitSetsSkyWalkingDefaults(t *testing.T) {
 
 func TestShouldSampleUsesFractionalRatio(t *testing.T) {
 	p := newTestPlugin(t, Config{SampleRatio: 0.25})
-	p.sampleRandom = func() float64 { return 0.24 }
-	if !p.shouldSample() {
-		t.Fatal("shouldSample() = false below sample ratio, want true")
+	p.sampleRandom = func() (float64, error) { return 0.24, nil }
+	sample, err := p.shouldSample()
+	if err != nil || !sample {
+		t.Fatalf("shouldSample() = %t/%v below sample ratio, want true/nil", sample, err)
 	}
 
-	p.sampleRandom = func() float64 { return 0.25 }
-	if p.shouldSample() {
-		t.Fatal("shouldSample() = true at sample ratio boundary, want false")
+	p.sampleRandom = func() (float64, error) { return 0.25, nil }
+	sample, err = p.shouldSample()
+	if err != nil || sample {
+		t.Fatalf("shouldSample() = %t/%v at sample ratio boundary, want false/nil", sample, err)
 	}
 }
 

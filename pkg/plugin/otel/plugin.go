@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -590,13 +591,15 @@ type requestIDGenerator struct{}
 func (requestIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
 	traceID := traceIDFromRequestID(ctx.Value(requestIDContextKey{}))
 	if !traceID.IsValid() {
-		traceID = randomTraceID()
+		traceID, _ = randomTraceID(rand.Reader)
 	}
-	return traceID, randomSpanID()
+	spanID, _ := randomSpanID(rand.Reader)
+	return traceID, spanID
 }
 
 func (requestIDGenerator) NewSpanID(context.Context, trace.TraceID) trace.SpanID {
-	return randomSpanID()
+	spanID, _ := randomSpanID(rand.Reader)
+	return spanID
 }
 
 func traceIDFromRequestID(value any) trace.TraceID {
@@ -616,22 +619,22 @@ func traceIDFromRequestID(value any) trace.TraceID {
 	return trace.TraceID{}
 }
 
-func randomTraceID() trace.TraceID {
+func randomTraceID(reader io.Reader) (trace.TraceID, error) {
 	var traceID trace.TraceID
 	for !traceID.IsValid() {
-		if _, err := rand.Read(traceID[:]); err != nil {
-			panic(fmt.Sprintf("generate OpenTelemetry trace ID: %s", err))
+		if _, err := io.ReadFull(reader, traceID[:]); err != nil {
+			return trace.TraceID{}, fmt.Errorf("generate OpenTelemetry trace ID: %w", err)
 		}
 	}
-	return traceID
+	return traceID, nil
 }
 
-func randomSpanID() trace.SpanID {
+func randomSpanID(reader io.Reader) (trace.SpanID, error) {
 	var spanID trace.SpanID
 	for !spanID.IsValid() {
-		if _, err := rand.Read(spanID[:]); err != nil {
-			panic(fmt.Sprintf("generate OpenTelemetry span ID: %s", err))
+		if _, err := io.ReadFull(reader, spanID[:]); err != nil {
+			return trace.SpanID{}, fmt.Errorf("generate OpenTelemetry span ID: %w", err)
 		}
 	}
-	return spanID
+	return spanID, nil
 }

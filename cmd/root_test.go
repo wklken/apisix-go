@@ -1,11 +1,30 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 )
+
+func TestStartupConfigSummaryExcludesSecrets(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Deployment.Admin.AdminKey = []config.AdminKey{{Key: "admin-secret"}}
+	cfg.Deployment.Etcd.Password = "etcd-secret"
+	cfg.Apisix.DataEncryption.Keyring = []string{"0123456789abcdef"}
+
+	encoded, err := json.Marshal(startupConfigSummary(cfg))
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	for _, secret := range []string{"admin-secret", "etcd-secret", "0123456789abcdef"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("startup summary contains %q: %s", secret, encoded)
+		}
+	}
+}
 
 func TestConfigureLoggerUsesLoadedErrorLogLevel(t *testing.T) {
 	t.Cleanup(func() { _ = logger.ConfigureLevel("info") })

@@ -2100,7 +2100,8 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		_ = util.WriteJSON(w, status, err.Error())
+		logger.Errorf("proxy request %s %s failed: %v", r.Method, r.URL.RequestURI(), err)
+		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
 }
 

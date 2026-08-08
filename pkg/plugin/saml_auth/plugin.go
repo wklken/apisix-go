@@ -234,7 +234,11 @@ func (p *Plugin) startAuthentication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stateID := randomState()
+	stateID, err := randomState(rand.Reader)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("saml authentication failed"), http.StatusInternalServerError)
+		return
+	}
 	state := requestState{
 		RequestID:   authReq.ID,
 		OriginalURI: r.URL.RequestURI(),
@@ -323,7 +327,11 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
 	}
-	stateID := randomState()
+	stateID, err := randomState(rand.Reader)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("saml logout failed"), http.StatusInternalServerError)
+		return
+	}
 	logoutRequest, redirectURL, err := signedRedirectLogoutRequest(
 		sp,
 		p.config.IDPURI,
@@ -1108,10 +1116,10 @@ func validateSignedSAMLXML(rawXML []byte, certificatePEM string) ([]byte, error)
 	return validatedXML, nil
 }
 
-func randomState() string {
+func randomState(reader io.Reader) (string, error) {
 	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return hex.EncodeToString([]byte(time.Now().String()))
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return "", fmt.Errorf("generate authorization state: %w", err)
 	}
-	return hex.EncodeToString(raw)
+	return hex.EncodeToString(raw), nil
 }

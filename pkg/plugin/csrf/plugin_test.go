@@ -1,11 +1,13 @@
 package csrf
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,16 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 )
+
+func TestCSRFPluginSourceGuardRejectsDirectComparison(t *testing.T) {
+	source, err := os.ReadFile("plugin.go")
+	if err != nil {
+		t.Fatalf("read plugin.go: %v", err)
+	}
+	if bytes.Contains(source, []byte("sign != csrfToken.Sign")) {
+		t.Fatal("plugin.go compares token signatures with a direct non-constant-time expression")
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -175,6 +187,18 @@ func TestCheckCSRFTokenValidationTable(t *testing.T) {
 		t.Fatalf("marshal wrong-signature token: %v", err)
 	}
 
+	shortSign := csrfToken{Random: 0.8, Expires: now, Sign: "short-signature"}
+	shortSignBody, err := json.Marshal(shortSign)
+	if err != nil {
+		t.Fatalf("marshal short-signature token: %v", err)
+	}
+
+	longSign := csrfToken{Random: 0.9, Expires: now, Sign: strings.Repeat("a", 128)}
+	longSignBody, err := json.Marshal(longSign)
+	if err != nil {
+		t.Fatalf("marshal long-signature token: %v", err)
+	}
+
 	tests := []struct {
 		name      string
 		token     string
@@ -193,6 +217,18 @@ func TestCheckCSRFTokenValidationTable(t *testing.T) {
 		{name: "invalid json", token: base64.StdEncoding.EncodeToString([]byte("{not json")), key: key, expires: 7200},
 		{name: "expired timestamp", token: base64.StdEncoding.EncodeToString(expiredBody), key: key, expires: 7200},
 		{name: "wrong signature", token: base64.StdEncoding.EncodeToString(wrongKeyBody), key: key, expires: 7200},
+		{
+			name:    "wrong signature shorter",
+			token:   base64.StdEncoding.EncodeToString(shortSignBody),
+			key:     key,
+			expires: 7200,
+		},
+		{
+			name:    "wrong signature longer",
+			token:   base64.StdEncoding.EncodeToString(longSignBody),
+			key:     key,
+			expires: 7200,
+		},
 		{
 			name:      "expires zero bypass",
 			token:     base64.StdEncoding.EncodeToString(expiredBody),

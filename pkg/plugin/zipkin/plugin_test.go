@@ -3,12 +3,55 @@ package zipkin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestRandomHexReturnsErrorForFailingReader(t *testing.T) {
+	value, err := randomHex(failingReader{}, 16)
+	if err == nil {
+		t.Fatal("randomHex() error = nil, want failure")
+	}
+	if value != "" {
+		t.Fatalf("randomHex() = %q, want empty on failure", value)
+	}
+}
+
+func TestRandomUnitReturnsErrorForFailingReader(t *testing.T) {
+	value, err := randomUnit(failingReader{})
+	if err == nil {
+		t.Fatal("randomUnit() error = nil, want failure")
+	}
+	if value != 0 {
+		t.Fatalf("randomUnit() = %v, want zero on failure", value)
+	}
+}
+
+func TestHandlerFailsClosedWhenSampleRandomUnavailable(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Endpoint:    "http://127.0.0.1:9411/api/v2/spans",
+		SampleRatio: 0.25,
+	})
+	p.sampleRandom = func() (float64, error) { return 0, errors.New("random unavailable") }
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -43,13 +86,15 @@ func TestShouldSampleUsesConfiguredRatio(t *testing.T) {
 		Endpoint:    "http://127.0.0.1:9411/api/v2/spans",
 		SampleRatio: 0.25,
 	})
-	p.sampleRandom = func() float64 { return 0.2 }
-	if !p.shouldSample() {
-		t.Fatal("sample value below sample_ratio was rejected")
+	p.sampleRandom = func() (float64, error) { return 0.2, nil }
+	sample, err := p.shouldSample()
+	if err != nil || !sample {
+		t.Fatalf("sample value below sample_ratio was rejected: %t/%v", sample, err)
 	}
-	p.sampleRandom = func() float64 { return 0.3 }
-	if p.shouldSample() {
-		t.Fatal("sample value above sample_ratio was accepted")
+	p.sampleRandom = func() (float64, error) { return 0.3, nil }
+	sample, err = p.shouldSample()
+	if err != nil || sample {
+		t.Fatalf("sample value above sample_ratio was accepted: %t/%v", sample, err)
 	}
 }
 

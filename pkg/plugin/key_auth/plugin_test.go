@@ -178,6 +178,58 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(output)
 }
 
+func TestHandlerRejectsConsumerLookupError(t *testing.T) {
+	setupStore(t)
+
+	consumer := map[string]any{
+		"username": "broken-ref-user",
+		"plugins": map[string]any{
+			"key-auth": map[string]any{
+				"key": "$secret://vault/broken",
+			},
+		},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/broken-ref-user")
+	event.Value = body
+	testEvents <- event
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetConsumer("broken-ref-user"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("apikey", "$secret://vault/broken")
+	rr := httptest.NewRecorder()
+
+	nextCalled := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if nextCalled {
+		t.Fatal("next handler was invoked on consumer lookup error")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Consumer-Username"); got != "" {
+		t.Fatalf("X-Consumer-Username = %q, want unset", got)
+	}
+}
+
 func TestHandlerRejectsMissingKey(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

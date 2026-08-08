@@ -36,6 +36,23 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestRandomStateReturnsErrorForFailingReader(t *testing.T) {
+	state, err := randomState(failingReader{})
+	if err == nil {
+		t.Fatal("randomState() error = nil, want failure")
+	}
+	if state != "" {
+		t.Fatalf("randomState() = %q, want empty state on failure", state)
+	}
+	if !strings.Contains(err.Error(), "random unavailable") {
+		t.Fatalf("randomState() error = %v, want failing reader wrapped", err)
+	}
+}
+
 func TestUnauthenticatedRequestRedirectsToIDP(t *testing.T) {
 	cfg := testConfig(t)
 	p := newTestPlugin(t, cfg)

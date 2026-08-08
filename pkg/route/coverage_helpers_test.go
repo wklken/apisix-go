@@ -93,6 +93,28 @@ func TestBatchRequestsURIResolvesConfiguredValue(t *testing.T) {
 	}
 }
 
+func TestErrorHandlerHidesUpstreamDetails(t *testing.T) {
+	reporter := &routeHealthRecorder{}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders?debug=true", nil)
+	request = apisixctx.WithRequestVars(request)
+	request = pxy.WithHealthReporter(request, reporter)
+	pxy.SetSelectedTarget(request, "http://upstream.test:80")
+	response := httptest.NewRecorder()
+
+	newErrorHandler()(response, request, errors.New("dial tcp 10.0.0.7:9443: connection refused"))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "10.0.0.7") || strings.Contains(body, "connection refused") {
+		t.Fatalf("body = %q, leaks upstream error details", body)
+	}
+	if !strings.Contains(body, "upstream request failed") {
+		t.Fatalf("body = %q, want generic upstream failure message", body)
+	}
+}
+
 func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -100,7 +122,6 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 		wantStatus   int
 		wantTCPCalls int
 		wantTimeout  bool
-		message      string
 	}{
 		{
 			name:         "timeout",
@@ -108,30 +129,26 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			wantStatus:   http.StatusGatewayTimeout,
 			wantTCPCalls: 1,
 			wantTimeout:  true,
-			message:      "upstream network failure",
 		},
 		{
 			name:         "network",
 			err:          routeNetError{},
 			wantStatus:   http.StatusBadGateway,
 			wantTCPCalls: 1,
-			message:      "upstream network failure",
 		},
-		{name: "eof", err: io.EOF, wantStatus: http.StatusBadGateway, wantTCPCalls: 1, message: "EOF"},
-		{name: "canceled", err: context.Canceled, wantStatus: StatusClientClosedRequest, message: "context canceled"},
+		{name: "eof", err: io.EOF, wantStatus: http.StatusBadGateway, wantTCPCalls: 1},
+		{name: "canceled", err: context.Canceled, wantStatus: StatusClientClosedRequest},
 		{
 			name:         "unexpected eof",
 			err:          io.ErrUnexpectedEOF,
 			wantStatus:   StatusClientClosedRequest,
 			wantTCPCalls: 1,
-			message:      "unexpected EOF",
 		},
 		{
 			name:         "generic",
 			err:          errors.New("upstream failed"),
 			wantStatus:   http.StatusInternalServerError,
 			wantTCPCalls: 1,
-			message:      "upstream failed",
 		},
 	}
 
@@ -149,8 +166,8 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
 			}
-			if !strings.Contains(response.Body.String(), test.message) {
-				t.Fatalf("body = %q, want message %q", response.Body.String(), test.message)
+			if !strings.Contains(response.Body.String(), "upstream request failed") {
+				t.Fatalf("body = %q, want generic upstream failure message", response.Body.String())
 			}
 			if got := apisixctx.GetRequestVar(request, "$response_source"); got != "apisix" {
 				t.Fatalf("$response_source = %v, want apisix", got)

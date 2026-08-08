@@ -317,9 +317,7 @@ func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 	}
 	w.WriteHeader(resp.StatusCode())
 	if resp.Header().Get("Content-Encoding") == "br" {
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		_ = http.NewResponseController(w).Flush()
 	}
 	resp.WriteBodyTo(w)
 }

@@ -3,6 +3,7 @@ package mcp_bridge
 import (
 	"bufio"
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"io"
 	"net/http"
@@ -215,7 +216,11 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 		return nil, err
 	}
 
-	id := uuid.Must(uuid.NewV4()).String()
+	id, err := newSessionID(crand.Reader)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	sess := &session{
 		id:     id,
 		ctx:    ctx,
@@ -338,6 +343,14 @@ func scanStderr(ctx context.Context, pipe io.Reader, events chan<- sseEvent) {
 			return
 		}
 	}
+}
+
+func newSessionID(reader io.Reader) (string, error) {
+	id, err := uuid.NewGenWithOptions(uuid.WithRandomReader(reader)).NewV4()
+	if err != nil {
+		return "", fmt.Errorf("generate session id: %w", err)
+	}
+	return id.String(), nil
 }
 
 func sendEvent(ctx context.Context, events chan<- sseEvent, event sseEvent) bool {

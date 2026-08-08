@@ -2,6 +2,7 @@ package csrf
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -187,12 +188,18 @@ func checkCSRFToken(token string, key string, expires int64) bool {
 	sign := genSign(csrfToken.Random, csrfToken.Expires, key)
 
 	// 检查签名是否匹配
-	if sign != csrfToken.Sign {
+	if !constantTimeEqual(sign, csrfToken.Sign) {
 		logger.Error("Invalid signatures")
 		return false
 	}
 
 	return true
+}
+
+func constantTimeEqual(left, right string) bool {
+	leftHash := sha256.Sum256([]byte(left))
+	rightHash := sha256.Sum256([]byte(right))
+	return subtle.ConstantTimeCompare(leftHash[:], rightHash[:]) == 1
 }
 
 // genCSRFToken 生成一个 CSRF Token，并以 Base64 编码的 JSON 形式返回

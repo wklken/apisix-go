@@ -58,6 +58,32 @@ func TestRedisConnConfigOptions(t *testing.T) {
 	}
 }
 
+func TestRedisConnConfigNilSSLVerifyDefaultsToVerify(t *testing.T) {
+	ssl := true
+	cfg := RedisConnConfig{Host: "127.0.0.1", Port: 6379, SSL: &ssl, SSLVerify: nil}
+
+	options := cfg.Options()
+	if options.TLSConfig == nil {
+		t.Fatal("TLSConfig = nil, want non-nil")
+	}
+	if options.TLSConfig.InsecureSkipVerify {
+		t.Fatal("TLSConfig.InsecureSkipVerify = true, want secure nil-default false")
+	}
+}
+
+func TestRedisClusterConnConfigNilSSLVerifyDefaultsToVerify(t *testing.T) {
+	ssl := true
+	cfg := RedisClusterConnConfig{Nodes: []string{"a:6379"}, SSL: &ssl, SSLVerify: nil}
+
+	options := cfg.ClusterOptions()
+	if options.TLSConfig == nil {
+		t.Fatal("TLSConfig = nil, want non-nil")
+	}
+	if options.TLSConfig.InsecureSkipVerify {
+		t.Fatal("TLSConfig.InsecureSkipVerify = true, want secure nil-default false")
+	}
+}
+
 func TestRedisConnConfigOptionsWithoutTLS(t *testing.T) {
 	ssl := false
 	cfg := RedisConnConfig{SSL: &ssl}

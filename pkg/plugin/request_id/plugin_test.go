@@ -2,6 +2,7 @@ package request_id
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,32 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestKSUIDIDReturnsErrorForFailingReader(t *testing.T) {
+	p := &Plugin{}
+	id, err := p.ksuidID(failingReader{})
+	if err == nil {
+		t.Fatal("ksuidID() error = nil, want failure")
+	}
+	if id != "" {
+		t.Fatalf("ksuidID() = %q, want empty on failure", id)
+	}
+}
+
+func TestUUIDV4IDReturnsErrorForFailingReader(t *testing.T) {
+	p := &Plugin{}
+	id, err := p.uuidV4ID(failingReader{})
+	if err == nil {
+		t.Fatal("uuidV4ID() error = nil, want failure")
+	}
+	if id != "" {
+		t.Fatalf("uuidV4ID() = %q, want empty on failure", id)
+	}
+}
 
 func TestSchemaAcceptsUUIDv7AndKSUIDAlgorithms(t *testing.T) {
 	p := &Plugin{}

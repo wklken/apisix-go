@@ -8,9 +8,11 @@ package gzip
 // Under the MIT License
 
 import (
+	"bufio"
 	"compress/flate"
 	cgzip "compress/gzip"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -147,6 +149,25 @@ type maybeCompressResponseWriter struct {
 	wroteHeader  bool
 	wildcardType bool
 	minLength    int
+}
+
+var (
+	_ http.ResponseWriter                       = (*maybeCompressResponseWriter)(nil)
+	_ http.Flusher                              = (*maybeCompressResponseWriter)(nil)
+	_ http.Hijacker                             = (*maybeCompressResponseWriter)(nil)
+	_ interface{ Unwrap() http.ResponseWriter } = (*maybeCompressResponseWriter)(nil)
+)
+
+func (w *maybeCompressResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *maybeCompressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
 }
 
 func (w *maybeCompressResponseWriter) WriteHeader(code int) {

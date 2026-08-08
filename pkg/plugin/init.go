@@ -1,7 +1,8 @@
 package plugin
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/justinas/alice"
 	"github.com/wklken/apisix-go/pkg/plugin/acl"
@@ -360,8 +361,8 @@ func New(name string) Plugin {
 
 func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	// sort the plugin by priority
-	sort.Slice(plugins, func(i, j int) bool {
-		return plugins[i].GetPriority() > plugins[j].GetPriority()
+	slices.SortFunc(plugins, func(a, b Plugin) int {
+		return cmp.Compare(b.GetPriority(), a.GetPriority())
 	})
 
 	transformCount := 0

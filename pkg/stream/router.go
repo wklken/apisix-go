@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,8 +87,8 @@ func (r *Router) Reload(routes []resource.StreamRoute) error {
 		}
 		entries = append(entries, entry)
 	}
-	sort.SliceStable(entries, func(left, right int) bool {
-		return routeSpecificity(entries[left].route) > routeSpecificity(entries[right].route)
+	slices.SortStableFunc(entries, func(a, b routeEntry) int {
+		return cmp.Compare(routeSpecificity(b.route), routeSpecificity(a.route))
 	})
 
 	r.mu.Lock()

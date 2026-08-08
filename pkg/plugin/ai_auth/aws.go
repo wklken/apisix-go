@@ -1,6 +1,7 @@
 package ai_auth
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,7 @@ import (
 	"net/url"
 	"path"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -244,11 +245,11 @@ func CanonicalQuerySortedParts(target *url.URL) string {
 		}
 		parts = append(parts, queryPart{key: key, value: value})
 	}
-	sort.Slice(parts, func(i, j int) bool {
-		if parts[i].key != parts[j].key {
-			return parts[i].key < parts[j].key
+	slices.SortFunc(parts, func(a, b queryPart) int {
+		if a.key != b.key {
+			return cmp.Compare(a.key, b.key)
 		}
-		return parts[i].value < parts[j].value
+		return cmp.Compare(a.value, b.value)
 	})
 	var query strings.Builder
 	for i, part := range parts {

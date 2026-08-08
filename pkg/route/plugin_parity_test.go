@@ -1060,6 +1060,23 @@ func ensureRouteStore(t *testing.T) {
 	})
 }
 
+func putRouteResource(t *testing.T, id string, value []byte) {
+	t.Helper()
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/routes/" + id)
+	event.Value = value
+	routeStoreEvents <- event
+	routeStore.Sync()
+	t.Cleanup(func() {
+		remove := store.NewEvent()
+		remove.Type = store.EventTypeDelete
+		remove.Key = []byte("/apisix/routes/" + id)
+		routeStoreEvents <- remove
+		routeStore.Sync()
+	})
+}
+
 func buildRoutePluginChain(t *testing.T, name string, config map[string]any) http.Handler {
 	t.Helper()
 	return buildRoutePluginChainWithFallback(

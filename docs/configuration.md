@@ -21,6 +21,16 @@ object so an official file can be loaded without being rewritten.
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
 | `deployment.role: data_plane` with `role_data_plane.config_provider: yaml` or `json` | Loads resource snapshots from `conf/apisix.yaml` or `conf/apisix.json`, watches the file, and applies additions, updates, and removals through the local store. |
 
+## HTTP upstream proxy behavior
+
+- A route timeout overrides the corresponding upstream timeout; zero inherits from the upstream.
+- `connect` limits TCP connection establishment. `send` and `read` are inactivity limits which reset when body I/O makes progress. `read` also limits the wait for response headers.
+- `tls.verify: true` validates an HTTPS upstream certificate. Omitted or false preserves APISIX-compatible insecure verification behavior.
+- Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
+- `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
+- An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
+- Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
+
 ## Standalone file-driven mode
 
 Set the deployment role and provider in `conf/config.yaml`:

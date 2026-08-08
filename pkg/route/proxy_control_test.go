@@ -1,6 +1,7 @@
 package route
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,7 +26,7 @@ func TestBufferRequestBodyIfNeededBuffersWhenEnabled(t *testing.T) {
 	req.ContentLength = int64(len("upload-body"))
 	req = proxy_control.WithRequestBuffering(req, true)
 
-	if err := bufferRequestBodyIfNeeded(req); err != nil {
+	if err := bufferRequestBodyIfNeeded(httptest.NewRecorder(), req); err != nil {
 		t.Fatalf("bufferRequestBodyIfNeeded() error = %v", err)
 	}
 
@@ -58,7 +59,7 @@ func TestBufferRequestBodyIfNeededSkipsWhenDisabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/upload", original)
 	req = proxy_control.WithRequestBuffering(req, false)
 
-	if err := bufferRequestBodyIfNeeded(req); err != nil {
+	if err := bufferRequestBodyIfNeeded(httptest.NewRecorder(), req); err != nil {
 		t.Fatalf("bufferRequestBodyIfNeeded() error = %v", err)
 	}
 
@@ -67,6 +68,40 @@ func TestBufferRequestBodyIfNeededSkipsWhenDisabled(t *testing.T) {
 	}
 	if original.reads != 0 {
 		t.Fatalf("body reads = %d, want 0", original.reads)
+	}
+}
+
+func TestBufferRequestBodyIfNeededRejectsBodyAboveReplayLimit(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1))
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(body))
+	request = proxy_control.WithRequestBuffering(request, true)
+	recorder := httptest.NewRecorder()
+	err := bufferRequestBodyIfNeeded(recorder, request)
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(err, &maxBytesErr) {
+		t.Fatalf("bufferRequestBodyIfNeeded() error = %v, want *http.MaxBytesError", err)
+	}
+}
+
+func TestProxyHandlerRejectsOversizedBufferedRequestWith413(t *testing.T) {
+	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
+		Upstream: resource.Upstream{
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}, resource.Service{})
+	if err != nil {
+		t.Fatalf("buildReverseHandler() error = %v", err)
+	}
+
+	body := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1))
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(body))
+	request = proxy_control.WithRequestBuffering(request, true)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 

@@ -2,15 +2,16 @@ package limit_count
 
 import (
 	"context"
+	"net"
+	"strconv"
+	"time"
+
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
-	"net"
-	"strconv"
-	"time"
 )
 
 type redisPoolStatsProvider interface {

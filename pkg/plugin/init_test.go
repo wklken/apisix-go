@@ -74,6 +74,10 @@ func TestBuildPluginChainDoesNotMutateCallerSlice(t *testing.T) {
 	BuildPluginChain(plugins...)
 
 	if plugins[0] != low || plugins[1] != high {
-		t.Fatalf("BuildPluginChain mutated the caller slice: got [%s %s], want [low high]", plugins[0].GetName(), plugins[1].GetName())
+		t.Fatalf(
+			"BuildPluginChain mutated the caller slice: got [%s %s], want [low high]",
+			plugins[0].GetName(),
+			plugins[1].GetName(),
+		)
 	}
 }

@@ -120,242 +120,131 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/zipkin"
 )
 
+var pluginRegistry = map[string]func() Plugin{
+	"ai":                           func() Plugin { return &ai.Plugin{} },
+	"ai-prompt-decorator":          func() Plugin { return &ai_prompt_decorator.Plugin{} },
+	"ai-prompt-guard":              func() Plugin { return &ai_prompt_guard.Plugin{} },
+	"ai-prompt-template":           func() Plugin { return &ai_prompt_template.Plugin{} },
+	"ai-aliyun-content-moderation": func() Plugin { return &ai_aliyun_content_moderation.Plugin{} },
+	"ai-aws-content-moderation":    func() Plugin { return &ai_aws_content_moderation.Plugin{} },
+	"ai-proxy":                     func() Plugin { return &ai_proxy.Plugin{} },
+	"ai-proxy-multi":               func() Plugin { return &ai_proxy_multi.Plugin{} },
+	"ai-rag":                       func() Plugin { return &ai_rag.Plugin{} },
+	"ai-rate-limiting":             func() Plugin { return &ai_rate_limiting.Plugin{} },
+	"ai-request-rewrite":           func() Plugin { return &ai_request_rewrite.Plugin{} },
+	"batch-requests":               func() Plugin { return &batch_requests.Plugin{} },
+	"aws-lambda":                   func() Plugin { return &aws_lambda.Plugin{} },
+	"azure-functions":              func() Plugin { return &azure_functions.Plugin{} },
+	"attach-consumer-label":        func() Plugin { return &attach_consumer_label.Plugin{} },
+	"brotli":                       func() Plugin { return &brotli.Plugin{} },
+	"file-logger":                  func() Plugin { return &file_logger.Plugin{} },
+	"echo":                         func() Plugin { return &echo.Plugin{} },
+	"acl":                          func() Plugin { return &acl.Plugin{} },
+	"authz-casbin":                 func() Plugin { return &authz_casbin.Plugin{} },
+	"authz-casdoor":                func() Plugin { return &authz_casdoor.Plugin{} },
+	"authz-keycloak":               func() Plugin { return &authz_keycloak.Plugin{} },
+	"error-log-logger":             func() Plugin { return &error_log_logger.Plugin{} },
+	"error-page":                   func() Plugin { return &error_page.Plugin{} },
+	"exit-transformer":             func() Plugin { return &exit_transformer.Plugin{} },
+	"example-plugin":               func() Plugin { return &example_plugin.Plugin{} },
+	"feishu-auth":                  func() Plugin { return &feishu_auth.Plugin{} },
+	"cas-auth":                     func() Plugin { return &cas_auth.Plugin{} },
+	"chaitin-waf":                  func() Plugin { return &chaitin_waf.Plugin{} },
+	"forward-auth":                 func() Plugin { return &forward_auth.Plugin{} },
+	"gm":                           func() Plugin { return &gm.Plugin{} },
+	"otel":                         func() Plugin { return &otel.Plugin{} },
+	"opa":                          func() Plugin { return &opa.Plugin{} },
+	"proxy-rewrite":                func() Plugin { return &proxy_rewrite.Plugin{} },
+	"response-rewrite":             func() Plugin { return &response_rewrite.Plugin{} },
+	"body-transformer":             func() Plugin { return &body_transformer.Plugin{} },
+	"degraphql":                    func() Plugin { return &degraphql.Plugin{} },
+	"dingtalk-auth":                func() Plugin { return &dingtalk_auth.Plugin{} },
+	"dubbo-proxy":                  func() Plugin { return &dubbo_proxy.Plugin{} },
+	"http-dubbo":                   func() Plugin { return &http_dubbo.Plugin{} },
+	"graphql-limit-count":          func() Plugin { return &graphql_limit_count.Plugin{} },
+	"graphql-proxy-cache":          func() Plugin { return &graphql_proxy_cache.Plugin{} },
+	"grpc-transcode":               func() Plugin { return &grpc_transcode.Plugin{} },
+	"grpc-web":                     func() Plugin { return &grpc_web.Plugin{} },
+	"public-api":                   func() Plugin { return &public_api.Plugin{} },
+	"proxy-mirror":                 func() Plugin { return &proxy_mirror.Plugin{} },
+	"proxy-control":                func() Plugin { return &proxy_control.Plugin{} },
+	"proxy-buffering":              func() Plugin { return &proxy_buffering.Plugin{} },
+	"proxy-cache":                  func() Plugin { return &proxy_cache.Plugin{} },
+	"mocking":                      func() Plugin { return &mocking.Plugin{} },
+	"node-status":                  func() Plugin { return &node_status.Plugin{} },
+	"openfunction":                 func() Plugin { return &openfunction.Plugin{} },
+	"openwhisk":                    func() Plugin { return &openwhisk.Plugin{} },
+	"openid-connect":               func() Plugin { return &openid_connect.Plugin{} },
+	"oas-validator":                func() Plugin { return &oas_validator.Plugin{} },
+	"server-info":                  func() Plugin { return &server_info.Plugin{} },
+	"serverless-pre-function":      func() Plugin { return serverless.NewPreFunction() },
+	"serverless-post-function":     func() Plugin { return serverless.NewPostFunction() },
+	"opentelemetry":                func() Plugin { return &otel.Plugin{} },
+	"prometheus":                   func() Plugin { return &prometheus.Plugin{} },
+	"client-control":               func() Plugin { return &client_control.Plugin{} },
+	"request-id":                   func() Plugin { return &request_id.Plugin{} },
+	"uri-blocker":                  func() Plugin { return &uri_blocker.Plugin{} },
+	"limit-req":                    func() Plugin { return &limit_req.Plugin{} },
+	"limit-conn":                   func() Plugin { return &limit_conn.Plugin{} },
+	"limit-count":                  func() Plugin { return &limit_count.Plugin{} },
+	"multi-auth":                   func() Plugin { return &multi_auth.Plugin{} },
+	"wolf-rbac":                    func() Plugin { return &wolf_rbac.Plugin{} },
+	"traffic-split":                func() Plugin { return &traffic_split.Plugin{} },
+	"traffic-label":                func() Plugin { return &traffic_label.Plugin{} },
+	"workflow":                     func() Plugin { return &workflow.Plugin{} },
+	"log-rotate":                   func() Plugin { return &log_rotate.Plugin{} },
+	"loggly":                       func() Plugin { return &loggly.Plugin{} },
+	"loki-logger":                  func() Plugin { return &loki_logger.Plugin{} },
+	"mcp-bridge":                   func() Plugin { return &mcp_bridge.Plugin{} },
+	"mqtt-proxy":                   func() Plugin { return &mqtt_proxy.Plugin{} },
+	"splunk-hec-logging":           func() Plugin { return &splunk_hec_logging.Plugin{} },
+	"clickhouse-logger":            func() Plugin { return &clickhouse_logger.Plugin{} },
+	"skywalking-logger":            func() Plugin { return &skywalking_logger.Plugin{} },
+	"sls-logger":                   func() Plugin { return &sls_logger.Plugin{} },
+	"google-cloud-logging":         func() Plugin { return &google_cloud_logging.Plugin{} },
+	"zipkin":                       func() Plugin { return &zipkin.Plugin{} },
+	"datadog":                      func() Plugin { return &datadog.Plugin{} },
+	"lago":                         func() Plugin { return &lago.Plugin{} },
+	"skywalking":                   func() Plugin { return &skywalking.Plugin{} },
+	"kafka-logger":                 func() Plugin { return &kafka_logger.Plugin{} },
+	"kafka-proxy":                  func() Plugin { return &kafka_proxy.Plugin{} },
+	"rocketmq-logger":              func() Plugin { return &rocketmq_logger.Plugin{} },
+	"saml-auth":                    func() Plugin { return &saml_auth.Plugin{} },
+	"tencent-cloud-cls":            func() Plugin { return &tencent_cloud_cls.Plugin{} },
+	"api-breaker":                  func() Plugin { return &api_breaker.Plugin{} },
+	"gzip":                         func() Plugin { return &gzip.Plugin{} },
+	"referer-restriction":          func() Plugin { return &referer_restriction.Plugin{} },
+	"ua-restriction":               func() Plugin { return &ua_restriction.Plugin{} },
+	"real-ip":                      func() Plugin { return &real_ip.Plugin{} },
+	"ip-restriction":               func() Plugin { return &ip_restriction.Plugin{} },
+	"basic-auth":                   func() Plugin { return &basic_auth.Plugin{} },
+	"jwe-decrypt":                  func() Plugin { return &jwe_decrypt.Plugin{} },
+	"hmac-auth":                    func() Plugin { return &hmac_auth.Plugin{} },
+	"jwt-auth":                     func() Plugin { return &jwt_auth.Plugin{} },
+	"key-auth":                     func() Plugin { return &key_auth.Plugin{} },
+	"ldap-auth":                    func() Plugin { return &ldap_auth.Plugin{} },
+	"request-context":              func() Plugin { return &request_context.Plugin{} },
+	"cors":                         func() Plugin { return &cors.Plugin{} },
+	"request-validation":           func() Plugin { return &request_validation.Plugin{} },
+	"fault-injection":              func() Plugin { return &fault_injection.Plugin{} },
+	"redirect":                     func() Plugin { return &redirect.Plugin{} },
+	"csrf":                         func() Plugin { return &csrf.Plugin{} },
+	"data-mask":                    func() Plugin { return &data_mask.Plugin{} },
+	"consumer-restriction":         func() Plugin { return &consumer_restriction.Plugin{} },
+	"http-logger":                  func() Plugin { return &http_logger.Plugin{} },
+	"udp-logger":                   func() Plugin { return &udp_logger.Plugin{} },
+	"syslog":                       func() Plugin { return &syslog.Plugin{} },
+	"tcp-logger":                   func() Plugin { return &tcp_logger.Plugin{} },
+	"elasticsearch-logger":         func() Plugin { return &elasticsearch_logger.Plugin{} },
+}
+
+// New returns the plugin registered for name, or nil for unknown names.
 func New(name string) Plugin {
-	// fmt.Println("plugin name:", name)
-	// FIXME: auto detecting the plugins under dir `plugin`
-	switch name {
-	case "ai":
-		return &ai.Plugin{}
-	case "ai-prompt-decorator":
-		return &ai_prompt_decorator.Plugin{}
-	case "ai-prompt-guard":
-		return &ai_prompt_guard.Plugin{}
-	case "ai-prompt-template":
-		return &ai_prompt_template.Plugin{}
-	case "ai-aliyun-content-moderation":
-		return &ai_aliyun_content_moderation.Plugin{}
-	case "ai-aws-content-moderation":
-		return &ai_aws_content_moderation.Plugin{}
-	case "ai-proxy":
-		return &ai_proxy.Plugin{}
-	case "ai-proxy-multi":
-		return &ai_proxy_multi.Plugin{}
-	case "ai-rag":
-		return &ai_rag.Plugin{}
-	case "ai-rate-limiting":
-		return &ai_rate_limiting.Plugin{}
-	case "ai-request-rewrite":
-		return &ai_request_rewrite.Plugin{}
-	case "batch-requests":
-		return &batch_requests.Plugin{}
-	case "aws-lambda":
-		return &aws_lambda.Plugin{}
-	case "azure-functions":
-		return &azure_functions.Plugin{}
-	case "attach-consumer-label":
-		return &attach_consumer_label.Plugin{}
-	case "brotli":
-		return &brotli.Plugin{}
-	case "file-logger":
-		return &file_logger.Plugin{}
-	case "echo":
-		return &echo.Plugin{}
-	case "acl":
-		return &acl.Plugin{}
-	case "authz-casbin":
-		return &authz_casbin.Plugin{}
-	case "authz-casdoor":
-		return &authz_casdoor.Plugin{}
-	case "authz-keycloak":
-		return &authz_keycloak.Plugin{}
-	case "error-log-logger":
-		return &error_log_logger.Plugin{}
-	case "error-page":
-		return &error_page.Plugin{}
-	case "exit-transformer":
-		return &exit_transformer.Plugin{}
-	case "example-plugin":
-		return &example_plugin.Plugin{}
-	case "feishu-auth":
-		return &feishu_auth.Plugin{}
-	case "cas-auth":
-		return &cas_auth.Plugin{}
-	case "chaitin-waf":
-		return &chaitin_waf.Plugin{}
-	case "forward-auth":
-		return &forward_auth.Plugin{}
-	case "gm":
-		return &gm.Plugin{}
-	case "otel":
-		return &otel.Plugin{}
-	case "opa":
-		return &opa.Plugin{}
-	case "proxy-rewrite":
-		return &proxy_rewrite.Plugin{}
-	case "response-rewrite":
-		return &response_rewrite.Plugin{}
-	case "body-transformer":
-		return &body_transformer.Plugin{}
-	case "degraphql":
-		return &degraphql.Plugin{}
-	case "dingtalk-auth":
-		return &dingtalk_auth.Plugin{}
-	case "dubbo-proxy":
-		return &dubbo_proxy.Plugin{}
-	case "http-dubbo":
-		return &http_dubbo.Plugin{}
-	case "graphql-limit-count":
-		return &graphql_limit_count.Plugin{}
-	case "graphql-proxy-cache":
-		return &graphql_proxy_cache.Plugin{}
-	case "grpc-transcode":
-		return &grpc_transcode.Plugin{}
-	case "grpc-web":
-		return &grpc_web.Plugin{}
-	case "public-api":
-		return &public_api.Plugin{}
-	case "proxy-mirror":
-		return &proxy_mirror.Plugin{}
-	case "proxy-control":
-		return &proxy_control.Plugin{}
-	case "proxy-buffering":
-		return &proxy_buffering.Plugin{}
-	case "proxy-cache":
-		return &proxy_cache.Plugin{}
-	case "mocking":
-		return &mocking.Plugin{}
-	case "node-status":
-		return &node_status.Plugin{}
-	case "openfunction":
-		return &openfunction.Plugin{}
-	case "openwhisk":
-		return &openwhisk.Plugin{}
-	case "openid-connect":
-		return &openid_connect.Plugin{}
-	case "oas-validator":
-		return &oas_validator.Plugin{}
-	case "server-info":
-		return &server_info.Plugin{}
-	case "serverless-pre-function":
-		return serverless.NewPreFunction()
-	case "serverless-post-function":
-		return serverless.NewPostFunction()
-	case "opentelemetry":
-		return &otel.Plugin{}
-	case "prometheus":
-		return &prometheus.Plugin{}
-	case "client-control":
-		return &client_control.Plugin{}
-	case "request-id":
-		return &request_id.Plugin{}
-	case "uri-blocker":
-		return &uri_blocker.Plugin{}
-	case "limit-req":
-		return &limit_req.Plugin{}
-	case "limit-conn":
-		return &limit_conn.Plugin{}
-	case "limit-count":
-		return &limit_count.Plugin{}
-	case "multi-auth":
-		return &multi_auth.Plugin{}
-	case "wolf-rbac":
-		return &wolf_rbac.Plugin{}
-	case "traffic-split":
-		return &traffic_split.Plugin{}
-	case "traffic-label":
-		return &traffic_label.Plugin{}
-	case "workflow":
-		return &workflow.Plugin{}
-	case "log-rotate":
-		return &log_rotate.Plugin{}
-	case "loggly":
-		return &loggly.Plugin{}
-	case "loki-logger":
-		return &loki_logger.Plugin{}
-	case "mcp-bridge":
-		return &mcp_bridge.Plugin{}
-	case "mqtt-proxy":
-		return &mqtt_proxy.Plugin{}
-	case "splunk-hec-logging":
-		return &splunk_hec_logging.Plugin{}
-	case "clickhouse-logger":
-		return &clickhouse_logger.Plugin{}
-	case "skywalking-logger":
-		return &skywalking_logger.Plugin{}
-	case "sls-logger":
-		return &sls_logger.Plugin{}
-	case "google-cloud-logging":
-		return &google_cloud_logging.Plugin{}
-	case "zipkin":
-		return &zipkin.Plugin{}
-	case "datadog":
-		return &datadog.Plugin{}
-	case "lago":
-		return &lago.Plugin{}
-	case "skywalking":
-		return &skywalking.Plugin{}
-	case "kafka-logger":
-		return &kafka_logger.Plugin{}
-	case "kafka-proxy":
-		return &kafka_proxy.Plugin{}
-	case "rocketmq-logger":
-		return &rocketmq_logger.Plugin{}
-	case "saml-auth":
-		return &saml_auth.Plugin{}
-	case "tencent-cloud-cls":
-		return &tencent_cloud_cls.Plugin{}
-	case "api-breaker":
-		return &api_breaker.Plugin{}
-	case "gzip":
-		return &gzip.Plugin{}
-	case "referer-restriction":
-		return &referer_restriction.Plugin{}
-	case "ua-restriction":
-		return &ua_restriction.Plugin{}
-	case "real-ip":
-		return &real_ip.Plugin{}
-	case "ip-restriction":
-		return &ip_restriction.Plugin{}
-	case "basic-auth":
-		return &basic_auth.Plugin{}
-	case "jwe-decrypt":
-		return &jwe_decrypt.Plugin{}
-	case "hmac-auth":
-		return &hmac_auth.Plugin{}
-	case "jwt-auth":
-		return &jwt_auth.Plugin{}
-	case "key-auth":
-		return &key_auth.Plugin{}
-	case "ldap-auth":
-		return &ldap_auth.Plugin{}
-	case "request-context":
-		return &request_context.Plugin{}
-	case "cors":
-		return &cors.Plugin{}
-	case "request-validation":
-		return &request_validation.Plugin{}
-	case "fault-injection":
-		return &fault_injection.Plugin{}
-	case "redirect":
-		return &redirect.Plugin{}
-	case "csrf":
-		return &csrf.Plugin{}
-	case "data-mask":
-		return &data_mask.Plugin{}
-	case "consumer-restriction":
-		return &consumer_restriction.Plugin{}
-	case "http-logger":
-		return &http_logger.Plugin{}
-	case "udp-logger":
-		return &udp_logger.Plugin{}
-	case "syslog":
-		return &syslog.Plugin{}
-	case "tcp-logger":
-		return &tcp_logger.Plugin{}
-	case "elasticsearch-logger":
-		return &elasticsearch_logger.Plugin{}
+	factory, ok := pluginRegistry[name]
+	if !ok {
+		return nil
 	}
-	return nil
+	return factory()
 }
 
 func BuildPluginChain(plugins ...Plugin) alice.Chain {

@@ -1,5 +1,5 @@
 BINARY_NAME ?= apisix
-BINARY_PATH ?= .cache/out/$(BINARY_NAME)
+BINARY_PATH ?= ./$(BINARY_NAME)
 CACHE_BIN ?= $(if $(GOBIN),$(GOBIN),.cache/bin)
 GOLANGCI_LINT_VERSION ?= v2.12.2
 

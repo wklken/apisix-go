@@ -55,7 +55,7 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared cache
 
 ## Development Workflow
 
-- Build the binary: `make build`. This writes the worktree-local `.cache/out/apisix`, which is ignored by Git and can be removed with `make clean`.
+- Build the binary: `make build`. After sourcing `.envrc` (the agent/worktree workflow) this writes the worktree-local `.cache/out/apisix`; without `.envrc`, it writes `./apisix` at the repo root. Both are ignored by Git and can be removed with `make clean`.
 - Run the server after building: `make serve`.
 - Run with live rebuilds: `make live`. This uses `github.com/cosmtrek/air@v1.51.0`.
 - Run a specific config manually: `go run . -c conf/config.yaml`.

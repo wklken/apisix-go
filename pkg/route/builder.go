@@ -1127,7 +1127,11 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 	if err := p.Init(); err != nil {
 		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
 	}
-	if err := util.Validate(config, p.GetSchema()); err != nil {
+	compiledSchema, err := util.CompileSchema(p.GetSchema())
+	if err != nil {
+		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
+	}
+	if err := compiledSchema.Validate(config); err != nil {
 		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
 	}
 	if err := util.Parse(config, p.Config()); err != nil {
@@ -1232,13 +1236,21 @@ func (b *Builder) initPluginsStrict(
 		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
 			var metadata map[string]any
 			if err := store.GetPluginMetadata(name, &metadata); err == nil {
-				if err := util.Validate(metadata, metadataSchema); err != nil {
+				compiledMetadataSchema, compileErr := util.CompileSchema(metadataSchema)
+				if compileErr != nil {
+					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, compileErr)
+				}
+				if err := compiledMetadataSchema.Validate(metadata); err != nil {
 					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
 				}
 			}
 		}
 
-		err = util.Validate(config, p.GetSchema())
+		compiledSchema, compileErr := util.CompileSchema(p.GetSchema())
+		if compileErr != nil {
+			return nil, fmt.Errorf("validate plugin %s config: %w", name, compileErr)
+		}
+		err = compiledSchema.Validate(config)
 		if err != nil {
 			return nil, fmt.Errorf("validate plugin %s config: %w", name, err)
 		}

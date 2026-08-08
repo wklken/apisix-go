@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
-
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -69,8 +67,8 @@ type Config struct {
 	RejectedCode int            `json:"rejected_code"`
 	RejectedMsg  string         `json:"rejected_msg"`
 
-	bodySchemaStr   string
-	headerSchemaStr string
+	headerSchema *util.CompiledSchema
+	bodySchema   *util.CompiledSchema
 }
 
 func (p *Plugin) Init() error {
@@ -92,10 +90,11 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal header schema: %w", err)
 		}
-		if err := compileNestedSchema("header_schema", headerSchemaStr); err != nil {
-			return err
+		compiled, err := util.CompileSchema(util.BytesToString(headerSchemaStr))
+		if err != nil {
+			return fmt.Errorf("invalid header_schema: %w", err)
 		}
-		p.config.headerSchemaStr = util.BytesToString(headerSchemaStr)
+		p.config.headerSchema = compiled
 	}
 
 	if p.config.BodySchema != nil {
@@ -104,10 +103,11 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal body schema: %w", err)
 		}
-		if err := compileNestedSchema("body_schema", bodySchemaStr); err != nil {
-			return err
+		compiled, err := util.CompileSchema(util.BytesToString(bodySchemaStr))
+		if err != nil {
+			return fmt.Errorf("invalid body_schema: %w", err)
 		}
-		p.config.bodySchemaStr = util.BytesToString(bodySchemaStr)
+		p.config.bodySchema = compiled
 	}
 
 	return nil
@@ -119,15 +119,15 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.headerSchemaStr != "" {
-			if err := util.Validate(requestHeaders(r), p.config.headerSchemaStr); err != nil {
+		if p.config.headerSchema != nil {
+			if err := p.config.headerSchema.Validate(requestHeaders(r)); err != nil {
 				logger.Error("req schema validation failed: " + err.Error())
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
 		}
 
-		if p.config.bodySchemaStr != "" {
+		if p.config.bodySchema != nil {
 			body, err := ctx.ReadRequestBody(r)
 			if err != nil {
 				err = fmt.Errorf("failed to read request body: %w", err)
@@ -144,7 +144,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			err = util.Validate(bodyData, p.config.bodySchemaStr)
+			err = p.config.bodySchema.Validate(bodyData)
 			if err != nil {
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
@@ -196,13 +196,6 @@ func requestHeaders(r *http.Request) map[string]any {
 	}
 
 	return headers
-}
-
-func compileNestedSchema(name string, schema []byte) error {
-	if _, err := jsonschema.CompileString(name+".json", util.BytesToString(schema)); err != nil {
-		return fmt.Errorf("invalid %s: %w", name, err)
-	}
-	return nil
 }
 
 func parseRequestBody(r *http.Request, body []byte) (any, bool, error) {

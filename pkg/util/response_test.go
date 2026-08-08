@@ -87,3 +87,45 @@ func TestValidateAcceptsAndRejectsConfig(t *testing.T) {
 		t.Fatal("Validate(broken schema) error = nil")
 	}
 }
+
+func TestCompiledSchemaAcceptsAndRejectsConfig(t *testing.T) {
+	schema := "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}},\"required\":[\"count\"]}"
+	compiled, err := CompileSchema(schema)
+	if err != nil {
+		t.Fatalf("CompileSchema error = %v", err)
+	}
+	if err := compiled.Validate(map[string]any{"count": 2}); err != nil {
+		t.Fatalf("CompiledSchema.Validate(valid) error = %v", err)
+	}
+	if err := compiled.Validate(map[string]any{"count": "two"}); err == nil {
+		t.Fatal("CompiledSchema.Validate(invalid) error = nil")
+	}
+	if err := compiled.Validate(nil); err == nil {
+		t.Fatal("CompiledSchema.Validate(nil config) error = nil")
+	}
+	if _, err := CompileSchema("{"); err == nil {
+		t.Fatal("CompileSchema(broken schema) error = nil")
+	}
+}
+
+func TestCompiledSchemaErrorsMatchValidate(t *testing.T) {
+	schema := "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}},\"required\":[\"count\"]}"
+	compiled, err := CompileSchema(schema)
+	if err != nil {
+		t.Fatalf("CompileSchema error = %v", err)
+	}
+	compileErr := Validate(map[string]any{"count": "two"}, schema)
+	compiledErr := compiled.Validate(map[string]any{"count": "two"})
+	if compileErr == nil || compiledErr == nil {
+		t.Fatal("validation error = nil")
+	}
+	if compileErr.Error() != compiledErr.Error() {
+		t.Fatalf("error mismatch: Validate = %q, CompiledSchema = %q", compileErr.Error(), compiledErr.Error())
+	}
+	if _, err := CompileSchema("{"); err == nil {
+		t.Fatal("CompileSchema(broken schema) error = nil")
+	}
+	if err := Validate(map[string]any{}, "{"); err == nil {
+		t.Fatal("Validate(broken schema) error = nil")
+	}
+}

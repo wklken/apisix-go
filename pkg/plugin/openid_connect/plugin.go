@@ -32,7 +32,6 @@ import (
 	_ "crypto/sha512"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/santhosh-tekuri/jsonschema/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -51,6 +50,7 @@ type Plugin struct {
 	httpProxy           *url.URL
 	httpsProxy          *url.URL
 	noProxy             []string
+	claimSchema         *util.CompiledSchema
 
 	clientRelease func()
 
@@ -524,9 +524,11 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return errors.New("failed to encode claim_schema")
 		}
-		if _, err := jsonschema.CompileString(name+"-claim-schema.json", string(encoded)); err != nil {
+		compiled, err := util.CompileSchema(string(encoded))
+		if err != nil {
 			return fmt.Errorf("check claim_schema failed: %w", err)
 		}
+		p.claimSchema = compiled
 	}
 	if p.config.Realm == "" {
 		p.config.Realm = "apisix"
@@ -1695,15 +1697,11 @@ func (p *Plugin) validateSessionClaimSchema(tokens tokenResponse, userinfo strin
 }
 
 func (p *Plugin) validateSchema(value any) error {
-	if len(p.config.ClaimSchema) == 0 {
+	if p.claimSchema == nil {
 		return nil
 	}
 
-	encoded, err := json.Marshal(p.config.ClaimSchema)
-	if err != nil {
-		return fmt.Errorf("failed to encode claim schema")
-	}
-	if err := util.Validate(value, string(encoded)); err != nil {
+	if err := p.claimSchema.Validate(value); err != nil {
 		return err
 	}
 	return nil

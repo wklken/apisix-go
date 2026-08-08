@@ -158,6 +158,22 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 	}
 }
 
+func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{}
+	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
+	}
+	if server.IdleTimeout != 90*time.Second {
+		t.Fatalf("IdleTimeout = %s, want 90s", server.IdleTimeout)
+	}
+	if server.ReadTimeout != 0 || server.WriteTimeout != 0 {
+		t.Fatalf("stream-sensitive total timeouts = %s/%s, want zero", server.ReadTimeout, server.WriteTimeout)
+	}
+}
+
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })

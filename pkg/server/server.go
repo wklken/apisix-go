@@ -222,6 +222,11 @@ func configuredTLSListenAddresses() []string {
 	return addresses
 }
 
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultHTTPIdleTimeout   = 90 * time.Second
+)
+
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
@@ -231,7 +236,12 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	if frontendPlainHTTP2Enabled() {
 		protocols.SetUnencryptedHTTP2(true)
 	}
-	server := &http.Server{Handler: handler, Protocols: protocols}
+	server := &http.Server{
+		Handler:           handler,
+		Protocols:         protocols,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		IdleTimeout:       defaultHTTPIdleTimeout,
+	}
 	if frontendHTTP2Enabled() {
 		if err := http2.ConfigureServer(server, nil); err != nil {
 			logger.Errorf("configure HTTP/2 server: %s", err)
@@ -242,8 +252,12 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	}
 
 	httpConfig := config.GlobalConfig.NginxConfig.HTTP
-	server.IdleTimeout = httpConfig.KeepaliveTimeout
-	server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
+	if httpConfig.KeepaliveTimeout > 0 {
+		server.IdleTimeout = httpConfig.KeepaliveTimeout
+	}
+	if httpConfig.ClientHeaderTimeout > 0 {
+		server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
+	}
 	server.WriteTimeout = httpConfig.SendTimeout
 	if httpConfig.ClientBodyTimeout > 0 {
 		server.ReadTimeout = httpConfig.ClientBodyTimeout + httpConfig.ClientHeaderTimeout

@@ -83,6 +83,7 @@ func convertURI(uri string) (string, error) {
 
 	if withColon && !withAsterisk {
 		segments := strings.Split(uri, "/")
+		names := make(map[string]struct{})
 		for i, segment := range segments {
 			if !strings.ContainsRune(segment, ':') {
 				continue
@@ -90,7 +91,12 @@ func convertURI(uri string) (string, error) {
 			if !parameterInPathRegexp.MatchString(segment) {
 				return "", fmt.Errorf("not supported uri: %s", uri)
 			}
-			segments[i] = "{" + strings.TrimPrefix(segment, ":") + "}"
+			name := strings.TrimPrefix(segment, ":")
+			if _, exists := names[name]; exists {
+				return "", fmt.Errorf("not supported uri: %s", uri)
+			}
+			names[name] = struct{}{}
+			segments[i] = "{" + name + "}"
 		}
 		return strings.Join(segments, "/"), nil
 	}

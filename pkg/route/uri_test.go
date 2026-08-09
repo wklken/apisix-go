@@ -3,6 +3,7 @@ package route
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -47,6 +48,8 @@ func TestConvertURIRejectsUnsupportedPatterns(t *testing.T) {
 		"/articles/:id/*",
 		"/articles/:/comments",
 		"/articles/{id}/comments",
+		"/user/:id/:id",
+		"/:name/team/:name",
 	} {
 		t.Run(uri, func(t *testing.T) {
 			t.Parallel()
@@ -55,6 +58,24 @@ func TestConvertURIRejectsUnsupportedPatterns(t *testing.T) {
 				t.Fatalf("convertURI(%q) error = nil, want unsupported URI error", uri)
 			}
 		})
+	}
+}
+
+func TestBuildStrictRejectsDuplicateURIParametersWithoutPanic(t *testing.T) {
+	ensureRouteStore(t)
+	putRouteResource(t, "duplicate-param", []byte(`{"id":"duplicate-param","uri":"/user/:id/:id"}`))
+
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	handler, err := builder.BuildStrict()
+	if err == nil {
+		t.Fatalf("BuildStrict() error = nil, want duplicate-parameter rejection")
+	}
+	if handler != nil {
+		t.Fatalf("BuildStrict() handler = %T, want nil", handler)
+	}
+	if !strings.Contains(err.Error(), "duplicate-param") || !strings.Contains(err.Error(), "/user/:id/:id") {
+		t.Fatalf("BuildStrict() error = %q, want route ID and URI", err)
 	}
 }
 

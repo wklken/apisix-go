@@ -369,7 +369,10 @@ func dispatchPipelineRequest(
 		target += "?" + query.Encode()
 	}
 
-	req := httptest.NewRequest(method, target, strings.NewReader(item.Body)).WithContext(ctx)
+	req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(item.Body))
+	if err != nil {
+		return PipelineResponse{Status: http.StatusBadRequest, Reason: http.StatusText(http.StatusBadRequest)}, false
+	}
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
@@ -398,9 +401,9 @@ func dispatchPipelineRequest(
 
 	select {
 	case <-ctx.Done():
-		// Wait for the worker so it cannot pile up after the response is
-		// sent; the subrequest context is already canceled.
-		<-done
+		// Return immediately once the timeout expires; the buffered done
+		// channel lets a late worker publish without blocking even when the
+		// handler ignores the canceled context.
 		return timeoutResponse(), true
 	case result := <-done:
 		if ctx.Err() != nil {

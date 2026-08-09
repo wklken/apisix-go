@@ -1,6 +1,7 @@
 package zipkin
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,49 @@ import (
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+type capabilityResponseWriter struct {
+	http.ResponseWriter
+	conn    net.Conn
+	flushed bool
+}
+
+func (w *capabilityResponseWriter) Flush() {
+	w.flushed = true
+}
+
+func (w *capabilityResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func TestStatusRecorderExposesResponseWriterCapabilities(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = server.Close() })
+
+	underlying := &capabilityResponseWriter{conn: server}
+	recorder := &statusRecorder{ResponseWriter: underlying}
+
+	controller := http.NewResponseController(recorder)
+	if err := controller.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v, want delegated flush", err)
+	}
+	if !underlying.flushed {
+		t.Fatal("Flush() did not reach the underlying writer")
+	}
+
+	conn, rw, err := controller.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack() error = %v, want delegated hijack", err)
+	}
+	if conn == nil {
+		t.Fatal("Hijack() returned nil connection")
+	}
+	if rw == nil {
+		t.Fatal("Hijack() returned nil ReadWriter")
+	}
+}
+
 
 func TestRandomHexReturnsErrorForFailingReader(t *testing.T) {
 	value, err := randomHex(failingReader{}, 16)

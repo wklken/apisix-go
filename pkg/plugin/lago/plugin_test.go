@@ -1,6 +1,7 @@
 package lago
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +18,49 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
+
+type capabilityResponseWriter struct {
+	http.ResponseWriter
+	conn    net.Conn
+	flushed bool
+}
+
+func (w *capabilityResponseWriter) Flush() {
+	w.flushed = true
+}
+
+func (w *capabilityResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func TestResponseRecorderExposesResponseWriterCapabilities(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = server.Close() })
+
+	underlying := &capabilityResponseWriter{conn: server}
+	recorder := &responseRecorder{ResponseWriter: underlying}
+
+	controller := http.NewResponseController(recorder)
+	if err := controller.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v, want delegated flush", err)
+	}
+	if !underlying.flushed {
+		t.Fatal("Flush() did not reach the underlying writer")
+	}
+
+	conn, rw, err := controller.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack() error = %v, want delegated hijack", err)
+	}
+	if conn == nil {
+		t.Fatal("Hijack() returned nil connection")
+	}
+	if rw == nil {
+		t.Fatal("Hijack() returned nil ReadWriter")
+	}
+}
+
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 // nginx vars: http://nginx.org/en/docs/varindex.html
@@ -44,6 +46,9 @@ func GetNginxVar(r *http.Request, key string) string {
 	case "$request_uri":
 		return r.URL.RequestURI()
 	case "$remote_addr":
+		if value, ok := r.Context().Value(apisixctx.RemoteAddrKey).(string); ok && value != "" {
+			return value
+		}
 		return addressHost(r.RemoteAddr)
 	case "$host":
 		return addressHost(r.Host)

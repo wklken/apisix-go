@@ -370,6 +370,10 @@ func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
 	}
+	config["cookie_secure"] = false
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None with cookie_secure=false")
+	}
 	config["cookie_secure"] = true
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)

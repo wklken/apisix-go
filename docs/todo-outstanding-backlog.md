@@ -1,83 +1,64 @@
 # Outstanding Backlog（待办清单）
 
-> Status: 2026-08-08。本文档是 docs 目录全部审计/整改文档合并后的唯一待办落点。
+> Status: 2026-08-08（已复核）。本文档是 docs 目录全部审计/整改结论的唯一待办落点。
 >
-> 来源审计（已归档删除，结论已合并到本文档）：
-> - `docs/bug-report-2026-08-06.md`（14 高危 / 67 中危 / 79 低危）
-> - `docs/code-quality-scan-report-20260807.md`（H1-H21 / M01-M62）
-> - `docs/perf-data-structure-review-report-20260805.md`（R1-R5 / P1-P8）
-> - `docs/TEST_CONVERSION_REVIEW.md`（21 WRONG / ~130 WEAKENED）
-> - `docs/plugins.md` remaining-jobs 列（具体 Go 侧 TODO）
-> - `docs/todo_route-performance-followups-20260807.md`（P1/P2/P3）
-> - `docs/external-dependency-review-20260808.md`（依赖简化建议）
-> - `docs/reinventing-the-wheel-review-20260806.md`（造轮子建议）
-> - `docs/code-quality-remediation-suite-closure-20260808.md`（关闭说明）
-> - `docs/codebase-consistency-audit.md`（整改台账）
-> - `docs/superpowers/plans/*`（执行计划）
+> 本轮最初以 `master`（`8478c9a`）、实际生产代码/测试、`docs/plugins.md`，以及 Apache APISIX `3.17.0` tag（`9ef2ecab67f652d38365049613610ef649bb4ad0`）为依据；开始实施前已在当前 `master`（`ccde2ae`）重新核对目标路径。未勾选不再等于“应当实施”：只有“确认要做”中的复选框属于执行队列；其余项目分别记录外部前置条件、测量门槛或驳回原因。
+>
+> 审计期间工作区并发出现了 3 份尚未合入的 proxy runtime 计划（`proxy-safety-correctness`、`proxy-performance-acceptance`、`upstream-cluster-runtime`）。它们不属于本 backlog 原始条目，本轮未把其中的新增架构工作并入“确认要做”；执行到 traffic-split timeout 或 route performance 前，应先确认两套计划的依赖顺序与文件所有权。
 
-## P0 —— 安全/数据完整性（建议优先修复）
+## 确认要做
 
-### 安全绕过
+### P0 — 请求/响应完整性
 
-- [ ] **wolf_rbac 只校验状态码，不校验响应体 `ok` 字段** — `pkg/plugin/wolf_rbac/plugin.go:263-267` `checkPermission` 解码了 `body.OK` 但丢弃；Handler 仅凭 `status != 200` 拒绝（`:161`）。wolf server 以 2xx+`ok:false` 拒绝时请求被放行（权限绕过）。
-- [ ] **ai_prompt_guard 最后一条非 user 消息可整体绕过** — `pkg/plugin/ai_prompt_guard/plugin.go:142-151` 会话最后一条是 assistant/tool/system 时 `userMessages` 结果为空 → 直接放行，deny 正则不执行。修复：最后一条非 user 消息时回退扫描最后一条 user 消息。
-- [ ] **ai_aliyun_content_moderation 审核服务故障时 fail-open** — `pkg/plugin/ai_aliyun_content_moderation/plugin.go:631-634` `checkSingleContent` 已返回 error，但 `moderateContent` 仍 `if err != nil { return 0, "", "" }`，调用方 code==0 放行。修复：审核 API 失败按 deny 处理。
-- [ ] **authz_casbin 用户身份取自客户端可控 header** — `pkg/plugin/authz_casbin/plugin.go:192-197` `username()` 直接 `r.Header.Get(p.config.Username)`，客户端可伪造匹配任意 policy subject。修复：绑定到已认证变量（`$consumer_name`）。
+- [ ] **chaitin-waf 只把截断后的请求体恢复给上游** — `pkg/plugin/chaitin_waf/plugin.go` 的 `askWAF` 通过 `io.LimitReader` 读取后用截断副本替换 `r.Body`。应完整读取并恢复原 body，只把 `req_body_size` 范围内的副本发给 WAF。计划：[`2026-08-08-data-integrity-and-cache-correctness.md`](superpowers/plans/2026-08-08-data-integrity-and-cache-correctness.md)。
+- [ ] **request-validation 规范化 JSON 时丢失大整数精度** — `parseJSON` 解码到 `float64` 后重新序列化；应使用 `json.Decoder.UseNumber()`，继续保留“校验对象与上游对象一致”的规范化安全语义。计划：[`2026-08-08-data-integrity-and-cache-correctness.md`](superpowers/plans/2026-08-08-data-integrity-and-cache-correctness.md)。
+- [ ] **proxy-cache 的 HEAD MISS 会写入与 GET 共用的空 body 缓存项** — 默认 cache method 同时包含 GET/HEAD，而 cache key 不区分方法。保留 HEAD 命中既有 GET 缓存的能力，但 HEAD MISS 不得创建/覆盖共享缓存项。计划：[`2026-08-08-data-integrity-and-cache-correctness.md`](superpowers/plans/2026-08-08-data-integrity-and-cache-correctness.md)。
 
-### 数据完整性
+### P1 — APISIX 3.17 行为与测试语料对齐
 
-- [ ] **chaitin_waf 截断并丢弃请求体后转发** — `pkg/plugin/chaitin_waf/plugin.go:437-441` `askWAF` 用 `io.LimitReader` 读后直接把 `r.Body` 替换为截断内容，放行后上游收到截断 body + 原 Content-Length。修复：完整读 body 发截断副本给 WAF，r.Body 恢复完整内容。
-- [ ] **request_validation 校验后改写 body，大整数精度丢失** — `pkg/plugin/request_validation/plugin.go:259-263` 仍 `json.Unmarshal` 无 `UseNumber`，`normalizeJSONBody` 重序列化替换 r.Body。>2^53 整数丢失精度。修复：校验用 `json.Number` 或校验后不改写 body。
-- [ ] **proxy_cache HEAD 响应污染 GET 缓存** — `pkg/plugin/proxy_cache/plugin.go:606-622` `cacheKey` 无方法维度，`cacheableMethod` 默认含 HEAD（`:233`）。HEAD MISS 缓存空 body + Content-Length，后续 GET 命中回放截断响应。修复：HEAD 只写 header 不入 body 缓存，或 key 区分方法。
+- [ ] **grpc-transcode fractional `deadline` 生成无效 `grpc-timeout`** — schema 接受小数，当前直接拼成 `1.5m`；将 schema 收紧为非负整数毫秒，并覆盖小数拒绝与整数 wire 值。上游 3.17 也存在这个 schema/wire 缺陷，本项是 wire correctness hardening，不宣称上游差异。计划：[`2026-08-08-protocol-parity-and-fixtures.md`](superpowers/plans/2026-08-08-protocol-parity-and-fixtures.md)。
+- [ ] **grpc-web 非 POST 返回 400，而 3.17 返回 405** — 改为 405 并更新单元/route parity 断言。计划：[`2026-08-08-protocol-parity-and-fixtures.md`](superpowers/plans/2026-08-08-protocol-parity-and-fixtures.md)。
+- [ ] **proxy-rewrite 到 before-proxy 才修改 `r.URL` / method** — 3.17 在 rewrite phase 调用 `ngx.req.set_uri` / `ngx.req.set_method`，后续插件能观察新值；Go 侧应在 proxy-rewrite handler 内完成 URI/method finalize，同时保留 host/scheme 的上游目标阶段处理。计划：[`2026-08-08-protocol-parity-and-fixtures.md`](superpowers/plans/2026-08-08-protocol-parity-and-fixtures.md)。
+- [ ] **limit-count TEST 16/17 没有表示“更新同一路由并禁用插件”** — `t/plugin/limit-count.yaml` 当前把 TEST 16 配成仍启用插件，TEST 17 又重新执行限流；应使用一个场景先建立限流状态，再以空 `plugins` 更新同一路由，并断言后续 4 次请求均为 200。计划：[`2026-08-08-protocol-parity-and-fixtures.md`](superpowers/plans/2026-08-08-protocol-parity-and-fixtures.md)。
+- [ ] **traffic-split2 TEST 16 丢失两个 `match` 规则** — pinned 3.17 TEST 16 明确以 `arg_id == 1/2` 绑定两个 `upstream_id`；当前 manifest 将其弱化为无条件权重轮询。补回规则，TEST 17 继续分别断言 route/first/second。计划：[`2026-08-08-protocol-parity-and-fixtures.md`](superpowers/plans/2026-08-08-protocol-parity-and-fixtures.md)。
 
-## P1 —— 文档声明的具体 Go 侧 TODO（来自 plugins.md remaining-jobs）
+### P2 — 生命周期与安全残留
 
-- [ ] **grpc-transcode `deadline` 接受小数，产生 `1.5m` 无效值** — `pkg/plugin/grpc_transcode/plugin.go:68-71` schema `type: number`、`plugin.go:457-458` `fmt.Sprintf("%gm", ...)`。修复：限制/归一化为整数 wire 格式。
-- [ ] **grpc-web 非 POST 返回 400，官方为 405** — `pkg/plugin/grpc_web/plugin.go:86-89`。与 pinned 3.17 源（`return exit(ctx, 405)`）矛盾。修复：对齐 405 并更新测试。
-- [ ] **GM 插件 SSL marker 校验未接入生产加载路径** — `pkg/plugin/gm/plugin.go:60-71` `ValidateSSLConfig` 仅测试引用，`pkg/server` 的 SSL 加载路径未调用。修复：wire 进 SSL 加载。
-- [ ] **ai-aws-content-moderation 缺 `check_request` / `deny_message` schema 字段** — `pkg/plugin/ai_aws_content_moderation/plugin.go:35-100` schema/config 均无这两个官方字段。
-- [ ] **rocketmq-logger `use_tls` 仍硬拒** — `pkg/plugin/rocketmq_logger/plugin.go:213-216` PostInit hard-reject。仅当有 approved client transport 契约时实现。
-- [ ] **ai-proxy-multi 无 per-IP DNS 健康状态** — `pkg/plugin/ai_proxy_multi/health.go:59-84` 按 instance index 而非 per-IP node 维护健康。需新 transport/health 契约。
-- [ ] **kafka-proxy 无外部 broker smoke 测试** — `pkg/plugin/kafka_proxy/` 仅 loopback fixtures。需外部集成环境 + 凭据安全 CI 契约。
+- [ ] **authz-casdoor 随机源失败时退回可预测时间字符串** — session ID 与 OAuth state 都必须在 `crypto/rand` 失败时 fail closed，不得生成弱随机值。计划：[`2026-08-08-runtime-security-and-lifecycle.md`](superpowers/plans/2026-08-08-runtime-security-and-lifecycle.md)。
+- [ ] **三个限流外层共享注册表没有 release 生命周期** — `limit_req.consumerBucketStores`、`limit_count.limitCountGroups.entries`、`graphql_limit_count.graphqlLimitCountGroups.entries` 的内层状态虽有容量/TTL，外层 config/group key 仍只增不删。应增加引用计数，并在 plugin `Stop()` 时释放最后一个 owner。计划：[`2026-08-08-runtime-security-and-lifecycle.md`](superpowers/plans/2026-08-08-runtime-security-and-lifecycle.md)。
+- [ ] **openid-connect 每次 bearer 校验都重新解析静态公钥** — 在 `PostInit` 解析已完成 secret resolution 的 `public_key`，请求路径只按 token algorithm 构造 verifier。计划：[`2026-08-08-runtime-security-and-lifecycle.md`](superpowers/plans/2026-08-08-runtime-security-and-lifecycle.md)。
+- [ ] **traffic-split 把 connect/send/read 的最小值当成整个请求 deadline** — 该近似会在合法 read timeout 之前取消请求。先删除错误的整体 deadline 承诺与实现；精确的 phase-specific transport timeout 仍作为独立 transport contract 延期。计划：[`2026-08-08-runtime-security-and-lifecycle.md`](superpowers/plans/2026-08-08-runtime-security-and-lifecycle.md)。
+- [ ] **mqtt-proxy CONNECT 预读 deadline 没有清除** — `decodeConnect` 成功后立即 `SetReadDeadline(time.Time{})`，避免后续双向复制继承 5 秒预读期限。计划：[`2026-08-08-runtime-security-and-lifecycle.md`](superpowers/plans/2026-08-08-runtime-security-and-lifecycle.md)。
 
-## P2 —— Route 性能后续（来自 todo_route-performance-followups-20260807.md）
+### P3 — Route suffix collision 性能
 
-- [ ] **同 suffix 候选碰撞仍 O(n)** — `pkg/route/builder.go:171` `embeddedSuffixes [3][2]map[string][]int` 按 host rank 而非 exact host 值索引；`matchEmbeddedRoute`（`:339-354`）对同 suffix 候选反向线性扫描，1000 条同 suffix 不同 exact host 仍 O(n)。修复：exact host/method 纳入候选索引，host 每请求只解析一次，保留 bucket slice 注册顺序真源与既有优先级语义。
-- [ ] **补同 suffix + 多 exact host / 多 wildcard host / 多 method 语义测试** — 现有测试不同 suffix；`BenchmarkRouteDispatch` 无同 suffix 语料、无 host/method 维度。
-- [ ] **补正式 suffix-collision benchmark（10/100/1000，first/last/mismatch/miss）** — 用 identical-corpus baseline/current + pinned benchstat 验收。
-- [ ] **补完整 route reload benchmark** — `BenchmarkRouteBuildIndexes`（pkg/route/benchmark_test.go:177）只覆盖 100/1000 条、无 atomic swap、无插件组合、无 10k。目标覆盖 100/1000/10000、无插件/典型插件链/consumer+service+global 组合、CPU/alloc/wall profile。
+- [ ] **同 suffix + 多 exact host 候选仍反向线性扫描** — 先补 exact/wildcard host 与 method 的语义测试，以及 10/100/1000 的 collision benchmark；在同一 benchmark corpus 上记录 baseline 后，为 exact host 建立值级索引。只有 1000-route exact-host `match-first`/`host-mismatch` 达到预声明的实用阈值才接受优化，wildcard host 只要求语义不回归。计划：[`2026-08-08-route-suffix-collision-performance.md`](superpowers/plans/2026-08-08-route-suffix-collision-performance.md)。
 
-## P3 —— 集成测试覆盖缺口（来自 TEST_CONVERSION_REVIEW）
+## 有条件延期（当前不进入实施队列）
 
-- [ ] **limit-count 禁用插件场景未表示** — `t/plugin/limit-count.yaml:10185,10230` `limit-count-disable-plugin-test-16/17` 仍插件启用断言 200+503，无 `"plugins": {}` disable case（上游断言 4×200 无限流）。
-- [ ] **traffic-split2-16 match 分发仍弱化** — `t/plugin/traffic-split.yaml` 2-16 仍单条无 match 规则，upstream_id 变体断言仍为 `^(first|second)$`。修复：与 2-12/13/17 一致补 `match: arg_id==1/==2`。
-- [ ] **`security-warning.t` / `security-warning2.t` 38 个 TEST 块仍 pending** — 跨插件 TLS 警告族，需评估是否纳入 scope。
+- **wolf-rbac `ok:false`**：pinned 3.17 的 `/wolf/rbac/access_check` 同样只按 HTTP status 判定；在没有 Wolf server 契约或可复现的 2xx+`ok:false` 拒绝响应前，不把它定为权限绕过。
+- **ai-prompt-guard 最后一条非 user 消息**：当前顺序与 3.17 完全一致（先取最后一条，再按 role 过滤）。改为“回退最后一条 user”属于产品语义变化，需要单独确认，不作为 parity 修复。
+- **ai-aliyun-content-moderation 故障 fail-open**：3.17 明确记录错误后继续请求。若要 fail-closed，应先增加显式 `fail_mode` 契约，不能无条件 deny。
+- **GM SSL marker**：当前 `resource.SSL` 不含 GM 双证书字段，Go TLS 也不提供 Tongsuo/NTLS serving；只接一个校验 helper 不会形成可用生产路径，保持 native/runtime deferred。
+- **rocketmq-logger TLS**：等待 approved RocketMQ client transport hook；当前 hard reject 比静默忽略安全。
+- **ai-proxy-multi per-IP DNS health**：需要新的 DNS snapshot、transport dial 和 health ownership 契约，保持 separate subsystem。
+- **kafka-proxy 外部 broker smoke**：仅在有外部环境与 credential-safe CI 契约后增加；loopback TLS/SASL fixture 继续作为当前可重复 gate。
+- **`security-warning*.t` 38 块**：这些是 19 个插件的 HTTP/TLS 告警日志族，不是功能路径缺失；另立跨插件 observability 项目时再纳入，不混入当前 correctness 批次。
+- **exit-transformer Lua VM 池化**：`LState` 清理/复用有状态泄漏风险；先用正式 benchmark/profile 证明 `lua.NewState` 是实际瓶颈，再决定是否池化。JSON decode 是官方向 Lua table 传值所需，不单独删除。
+- **完整 route reload benchmark**：没有已声明的 reload 性能目标或已复现回归；需要 reload SLO、真实插件组合和 atomic swap owner 后再建语料。
 
-## P4 —— 审计残留（中等严重度）
+## 审计后移除（不应实施）
 
-- [ ] **exit_transformer 每响应新建 Lua VM + 全量 JSON Unmarshal** — `pkg/plugin/exit_transformer/plugin.go:137-143,306` Lua 源已预编译为共享 proto，但 `lua.NewState` 仍每响应新建、响应体全量 `json.Unmarshal`。修复：LState 池化/复用。
-- [ ] **限流外层注册表只增不删** — `limit_req` `consumerBucketStores`（`plugin.go:219,485`）、`limit_count` `limitCountGroups.entries`（`:65-68,690`）、`graphql_limit_count` `graphqlLimitCountGroups.entries`（`:265-268,464`）永不淘汰（内部状态已用 `BoundedTTLMap` 约束，外层仍泄漏）。
-- [ ] **authz_casdoor 弱随机回退仍在** — `pkg/plugin/authz_casdoor/plugin.go:323-329` `randomState()` 在 `rand.Read` 失败时回退 `time.Now()` 可预测值（saml_auth 已修，此处漏）。
-- [ ] **openid_connect 每请求重解析 RSA 公钥** — `pkg/plugin/openid_connect/verify.go:186-198` `staticKeyVerifier` 每请求 PEM 解码 + x509 解析，无 verifier 缓存字段。
-- [ ] **node_status 手写 uint→string + `^uint64(0)` 补码减一** — `pkg/plugin/node_status/plugin.go:92-105` `stringUint` 手写循环，`:67` `activeRequests.Add(^uint64(0))`。替换为 `strconv.FormatUint` / `Dec()`。
-- [ ] **traffic_split `upstreamTimeout` 取 min 作为整体请求 deadline** — `pkg/plugin/traffic_split/plugin.go:671-686`（`:435-439` 应用）。connect=3s、read=60s 时 3s 后整体取消。修复：用 read（或 max）作为 deadline。
-- [ ] **mqtt_proxy 预读 deadline 未清除** — `pkg/plugin/mqtt_proxy/stream.go:157` `readConnectFromStream` 设 5s read deadline 从不重置，后续 `io.Copy` 仍受过期 deadline 约束，空闲连接约 5s 断开。修复：预读后 `SetReadDeadline(time.Time{})`。
-- [ ] **cors 所有 OPTIONS 短路为 200** — `pkg/plugin/cors/plugin.go:257-260` 任何 OPTIONS（含非 preflight）都被网关吞掉。修复：仅对带 Origin + Access-Control-Request-Method 的 preflight 短路（当前注释自述 mirror APISIX，需确认）。
-- [ ] **proxy_rewrite URI 改写延迟到 before-proxy 生效** — `pkg/plugin/proxy_rewrite/plugin.go:203-213` 存 `ProxyRewriteKey`，`FinalizeProxyRewrite` 在 director 时（`pkg/route/builder.go:1491,2019-2031`）才应用，后续插件读到旧 `$uri`。
+- **authz-casbin 改绑 `$consumer_name`**：驳回。3.17 schema 的 `username` 就是 header 名，官方实现直接读取该 header；强制 consumer 变量会破坏独立 authz-casbin 用法。
+- **ai-aws-content-moderation 增加 `check_request` / `deny_message`**：驳回。两个字段不存在于 APISIX 3.17 schema；`docs/plugins.md` 的旧声明是错误镜像。
+- **node-status 改为 `Dec()`**：驳回。`atomic.Uint64` 没有 `Dec` API，`Add(^uint64(0))` 是无锁减一；手写 `stringUint` 也没有已证明的正确性或性能问题。
+- **CORS 只拦真正 preflight**：驳回。3.17 rewrite 明确对所有 OPTIONS 返回 200，当前代码和测试与之相符。
+- **P5 依赖删除 Phase 1-4**：从缺陷 backlog 移除。当前依赖均仍有生产调用；“零风险”、统一 writer 或替换 limiter/balancer 都未经行为测试与收益测量。以后只能以具体依赖升级、漏洞、二进制体积或 profile 证据单独立项。
+- **手写协议层整体替换**：从缺陷 backlog 移除。JWE/HMAC/SSE/TC3/B3/sw8/Dubbo/Kafka 项必须由具体互操作失败、CVE 或维护成本证据触发；`request-id` UUIDv7/KSUID 继续有意保留。
 
-## P5 —— 依赖简化 / 造轮子（可选，低优先级）
-
-> 来自 `external-dependency-review-20260808.md`（建议清单，未实施）与 `reinventing-the-wheel-review-20260806.md`。全部仍未实施，按阶段排序：
-
-- [ ] **Phase 1（S，零风险）**：删 `samber/lo`、`spf13/cast`、`gofrs/uuid`、`go-nanoid`、`bpool`（ID 三件套合并为一个 `pkg/util` helper）。
-- [ ] **Phase 2（M）**：`resty` → pkg/shared net/http helper；`alice` → 手写 Chain；`rs/cors` → 插件内 40 行；`httpsnoop` → base recorder（顺带统一 15 处 writer）。
-- [ ] **Phase 3（M，先写测试）**：`ulule/limiter`、`smallnest/weighted`（先补选点分布序列测试）。
-- [ ] **Phase 4（可选，需基准）**：`goccy/go-json` → `encoding/json`（benchstat 对比后再定）。
-- [ ] **仍手写的协议层**（reinventing-the-wheel 未替换项）：jwe_decrypt compact JWE、hmac_auth signature、ai_stream SSE、tencent_cloud_cls TC3/protobuf、zipkin/skywalking B3/sw8、dubbo 帧层、kafka_proxy pubsub protobuf。request_id UUIDv7/KSUID 为有意保留（#53），不在替换范围。
-
-## 已完成并验证（无需处理，仅记录）
+## 已完成并验证（无需处理）
 
 - etcd watch 重连、bbolt Clone、otel init shutdown、LB 空节点 panic、splunk 换行、google_cloud_logging 超时、key_auth fail-closed、jwt_auth 缺失 claim、sls TLS 校验、error_log_logger kafka close、prometheus 优雅关闭、globalClients refcount、zipkin 超时、casdoor 会话过期、batch_requests 取消、proxy_cache Vary 变体、echo before/after 拼接、proxy-cache no_cache→MISS、acl 字段拼写、graphql 空文档消息、kafka-logger 反向断言、limit-conn key 日志、RS256 2048-bit。
 - consistency-audit 台账 60 项抽验全部属实（cacheutil/luautil/dubbo/limitbase/log_batch/base 系列/ai_common 系列/pluginRegistry）。
-- `docs/superpowers/plans/` 30 个计划全部执行并合入；仅 `security-warning*` 38 块 pending（见 P3）。
+- 当前 `master` 已合入的历史计划不再重复列为待办；本轮审计生成的 4 份计划只覆盖上述“确认要做”队列。
 - client-control 非尺寸读错已修（`TestClientControlMaxBytesReadFailureReturns500`）。

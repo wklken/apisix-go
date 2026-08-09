@@ -44,7 +44,6 @@ type Plugin struct {
 
 	healthClients map[int]*http.Client
 
-	healthStart    sync.Once
 	healthStopOnce sync.Once
 	stoppedHealth  atomic.Bool
 	wakeHealth     chan struct{}
@@ -649,6 +648,9 @@ func (p *Plugin) PostInit() error {
 		p.healthNow = time.Now
 	}
 	p.initHealthStates()
+	if len(p.health) > 0 {
+		p.startHealthLoop()
+	}
 	return nil
 }
 

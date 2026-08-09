@@ -1587,6 +1587,70 @@ func TestHealthStopClosesIdleConnectionsOnConfigReplacement(t *testing.T) {
 	}
 }
 
+func TestPostInitOwnsHealthLoopLifecycle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	if p.wakeHealth == nil {
+		t.Fatal("wakeHealth not initialized after PostInit")
+	}
+	if p.stopHealth == nil {
+		t.Fatal("stopHealth not initialized after PostInit")
+	}
+	if p.healthDone == nil {
+		t.Fatal("healthDone not initialized after PostInit")
+	}
+	if p.healthCancel == nil {
+		t.Fatal("healthCancel not initialized after PostInit")
+	}
+}
+
+func TestStopHealthConcurrentWithWakes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.wakeHealthRefresh()
+		}()
+	}
+	p.Stop()
+	wg.Wait()
+
+	select {
+	case <-p.healthDone:
+	case <-time.After(time.Second):
+		t.Fatal("healthDone did not close after concurrent Stop")
+	}
+}
+
+func TestStopHealthImmediatelyAfterPostInit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.Stop()
+	p.Stop()
+
+	select {
+	case <-p.healthDone:
+	case <-time.After(time.Second):
+		t.Fatal("healthDone did not close after immediate Stop")
+	}
+}
+
 func TestHealthProbeHonorsConfiguredTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()

@@ -57,9 +57,11 @@ func newSyslogTransport(config Config) (*syslogTransport, error) {
 	}, nil
 }
 
-// Log returns len(message) when the transport owns the message. If a failed
-// flush has not written any part of the new message, Log rolls it back and
-// returns zero so the caller can retry it without duplication.
+// Log returns len(message) when the transport owns the message. On a flush
+// failure the trigger message is handed back to the caller: a dial failure
+// restores the prior buffer so the complete frame batch can be retried, while
+// an ambiguous partial write discards the whole batch so an orphan suffix never
+// survives onto a new connection.
 func (t *syslogTransport) Log(message []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -77,11 +79,17 @@ func (t *syslogTransport) Log(message []byte) (int, error) {
 		previousBuffered := len(t.buffer)
 		t.buffer = append(t.buffer, message...)
 		written, err := t.flushLocked()
-		if err != nil && written <= previousBuffered {
-			t.buffer = t.buffer[:len(t.buffer)-len(message)]
+		if err != nil {
+			if written == 0 {
+				// Nothing reached the peer: restore the prior buffer so the
+				// complete frame batch can be retried, and hand the trigger
+				// message back to the caller. A partial write has already
+				// discarded the whole batch in flushLocked.
+				t.buffer = t.buffer[:previousBuffered]
+			}
 			return 0, err
 		}
-		return len(message), err
+		return len(message), nil
 	default:
 		buffered := len(t.buffer)
 		_, err := t.flushLocked()
@@ -142,6 +150,13 @@ func (t *syslogTransport) flushLocked() (int, error) {
 		return 0, nil
 	}
 	written, err := t.write(t.buffer)
+	if err != nil && written > 0 {
+		// A partial write makes the byte boundary unknowable at the peer;
+		// discard the whole batch so an orphan suffix never survives onto a
+		// new frame. Retrying the already accepted prefix may duplicate it.
+		t.buffer = t.buffer[:0]
+		return written, err
+	}
 	if written > 0 {
 		copy(t.buffer, t.buffer[written:])
 		t.buffer = t.buffer[:len(t.buffer)-written]
@@ -150,8 +165,8 @@ func (t *syslogTransport) flushLocked() (int, error) {
 }
 
 // write returns the payload prefix acknowledged by net.Conn.Write. A positive
-// byte count is authoritative even when the same call also returns an error, so
-// the caller can retain only the unwritten suffix without duplicating bytes.
+// byte count is authoritative even when the same call also returns an error; the
+// caller decides whether to retry the prefix or discard the ambiguous batch.
 func (t *syslogTransport) write(payload []byte) (int, error) {
 	connection, err := t.connection()
 	if err != nil {

@@ -6,7 +6,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.1.0"
+var (
+	version   = "0.1.0"
+	gitCommit = ""
+)
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
@@ -14,6 +17,9 @@ var versionCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), version)
+		if gitCommit != "" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "commit: %s\n", gitCommit)
+		}
 	},
 }
 

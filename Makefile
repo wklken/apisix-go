@@ -3,6 +3,11 @@ BINARY_PATH ?= ./$(BINARY_NAME)
 CACHE_BIN ?= $(if $(GOBIN),$(GOBIN),.cache/bin)
 GOLANGCI_LINT_VERSION ?= v2.12.2
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+GO_LDFLAGS ?= -X github.com/wklken/apisix-go/cmd.version=$(VERSION) \
+	-X github.com/wklken/apisix-go/cmd.gitCommit=$(GIT_COMMIT)
+
 BENCHSTAT_VERSION ?= v0.0.0-20260709024250-82a0b07e230d
 BENCH_DIR ?= .cache/bench
 BENCHSTAT ?= $(CACHE_BIN)/benchstat
@@ -44,7 +49,11 @@ lint:
 .PHONY: build
 build:
 	mkdir -p $(dir $(BINARY_PATH))
-	go build -o $(BINARY_PATH)
+	go build -ldflags '$(GO_LDFLAGS)' -o $(BINARY_PATH)
+
+.PHONY: docker-build
+docker-build:
+	docker build --build-arg VERSION="$(VERSION)" --build-arg GIT_COMMIT="$(GIT_COMMIT)" -t apisix-go .
 
 .PHONY: test
 test:

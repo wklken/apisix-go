@@ -110,3 +110,20 @@ func TestVersionCommandPrintsVersion(t *testing.T) {
 		t.Fatalf("version output = %q, want %q", got, version)
 	}
 }
+
+func TestVersionCommandPrintsGitCommit(t *testing.T) {
+	previous := gitCommit
+	t.Cleanup(func() { gitCommit = previous })
+	gitCommit = "abc1234"
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"version"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("version command failed: %v", err)
+	}
+	want := version + "\ncommit: abc1234"
+	if got := strings.TrimSpace(buf.String()); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}

@@ -1559,21 +1559,6 @@ func (b *blockingRequestBody) Close() error {
 	return nil
 }
 
-type blockingRequestTransport struct{}
-
-func (blockingRequestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	_, err := io.Copy(io.Discard, request.Body)
-	if err != nil {
-		return nil, err
-	}
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
-		Request:    request,
-	}, nil
-}
-
 func TestTransportTimesOutStalledRequestBodySend(t *testing.T) {
 	p := newTestPlugin(t, Config{Timeout: 30})
 	transport := p.transport()
@@ -2192,7 +2177,7 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
 			_, _ = w.Write([]byte(chunk))
 			flusher.Flush()
@@ -2217,7 +2202,7 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	output := rr.Body.String()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if !strings.Contains(output, "tok"+strconv.Itoa(i)) {
 			t.Fatalf("progressing stream lost chunk %d; body = %q", i, output)
 		}

@@ -48,15 +48,15 @@ func selectEncoding(h http.Header) encoding {
 	gzipQuality := -1.0
 	deflateQuality := -1.0
 	wildcardQuality := -1.0
-	for _, part := range strings.Split(enc, ",") {
+	for part := range strings.SplitSeq(enc, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 		coding, quality := part, 1.0
-		if idx := strings.IndexByte(part, ';'); idx >= 0 {
-			coding = strings.TrimSpace(part[:idx])
-			if params := strings.TrimSpace(part[idx+1:]); strings.HasPrefix(strings.ToLower(params), "q=") {
+		if before, after, found := strings.Cut(part, ";"); found {
+			coding = strings.TrimSpace(before)
+			if params := strings.TrimSpace(after); strings.HasPrefix(strings.ToLower(params), "q=") {
 				if parsed, err := strconv.ParseFloat(strings.TrimSpace(params[2:]), 64); err == nil {
 					quality = max(0, min(parsed, 1))
 				}

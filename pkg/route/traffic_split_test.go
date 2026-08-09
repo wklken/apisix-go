@@ -72,10 +72,10 @@ func TestApplyTrafficSplitOverrideRewritesHost(t *testing.T) {
 func TestApplyTrafficSplitOverrideRetainsRewrittenHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
 	req = traffic_split.WithOverride(req, &traffic_split.Override{
-		Scheme:       "http",
-		Host:         "127.0.0.1:8080",
-		PassHost:     "rewrite",
-		UpstreamHost: "split.example",
+		Scheme:         "http",
+		Host:           "127.0.0.1:8080",
+		PassHost:       "rewrite",
+		UpstreamHost:   "split.example",
 		HealthReporter: &recordingSplitHealthReporter{},
 		HealthTarget:   "http://127.0.0.1:8080",
 	})

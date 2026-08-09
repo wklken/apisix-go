@@ -330,7 +330,12 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 		t.Fatalf("sessionCookie() error = %v", err)
 	}
 	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("cookie attributes = secure:%t httpOnly:%t sameSite:%v", cookie.Secure, cookie.HttpOnly, cookie.SameSite)
+		t.Fatalf(
+			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			cookie.Secure,
+			cookie.HttpOnly,
+			cookie.SameSite,
+		)
 	}
 }
 
@@ -360,12 +365,12 @@ func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 	config := map[string]any{
-		"app_id":           "app-id",
-		"app_secret":       "app-secret",
-		"secret":           "12345678",
+		"app_id":            "app-id",
+		"app_secret":        "app-secret",
+		"secret":            "12345678",
 		"auth_redirect_uri": "https://gateway.example.com/callback",
-		"redirect_uri":     "https://login.feishu.cn/oauth",
-		"cookie_same_site": "None",
+		"redirect_uri":      "https://login.feishu.cn/oauth",
+		"cookie_same_site":  "None",
 	}
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("schema accepted SameSite=None without cookie_secure=true")

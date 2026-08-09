@@ -188,10 +188,25 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 		wantVary       bool
 	}{
 		{name: "explicit gzip disabled", acceptEncoding: "gzip;q=0", wantEncoding: ""},
-		{name: "disabled gzip defers to deflate", acceptEncoding: "gzip;q=0, deflate;q=1", wantEncoding: "deflate", wantVary: true},
+		{
+			name:           "disabled gzip defers to deflate",
+			acceptEncoding: "gzip;q=0, deflate;q=1",
+			wantEncoding:   "deflate",
+			wantVary:       true,
+		},
 		{name: "wildcard disabled", acceptEncoding: "*;q=0", wantEncoding: ""},
-		{name: "wildcard applies without explicit coding", acceptEncoding: "*;q=0.5", wantEncoding: "gzip", wantVary: true},
-		{name: "higher quality coding wins", acceptEncoding: "deflate;q=0.3, gzip;q=0.8", wantEncoding: "gzip", wantVary: true},
+		{
+			name:           "wildcard applies without explicit coding",
+			acceptEncoding: "*;q=0.5",
+			wantEncoding:   "gzip",
+			wantVary:       true,
+		},
+		{
+			name:           "higher quality coding wins",
+			acceptEncoding: "deflate;q=0.3, gzip;q=0.8",
+			wantEncoding:   "gzip",
+			wantVary:       true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

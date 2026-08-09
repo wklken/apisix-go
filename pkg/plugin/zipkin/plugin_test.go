@@ -58,7 +58,6 @@ func TestStatusRecorderExposesResponseWriterCapabilities(t *testing.T) {
 	}
 }
 
-
 func TestRandomHexReturnsErrorForFailingReader(t *testing.T) {
 	value, err := randomHex(failingReader{}, 16)
 	if err == nil {

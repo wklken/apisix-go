@@ -61,7 +61,6 @@ func TestResponseRecorderExposesResponseWriterCapabilities(t *testing.T) {
 	}
 }
 
-
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 

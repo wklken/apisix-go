@@ -2470,7 +2470,11 @@ func TestLocalFixedWindowDoesNotSlideOnIncrement(t *testing.T) {
 		t.Fatalf("increment at t=59s remaining = %d, want 98", ctx.Remaining)
 	}
 	if ctx.Reset != base.Add(time.Minute).Unix() {
-		t.Fatalf("increment at t=59s reset = %d, want anchored window reset %d", ctx.Reset, base.Add(time.Minute).Unix())
+		t.Fatalf(
+			"increment at t=59s reset = %d, want anchored window reset %d",
+			ctx.Reset,
+			base.Add(time.Minute).Unix(),
+		)
 	}
 
 	now = base.Add(61 * time.Second)

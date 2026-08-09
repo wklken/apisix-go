@@ -36,10 +36,10 @@ cat > "$fake_go" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
     version)
-        echo "${FAKE_GO_VERSION:-go version go1.26.4 darwin/arm64}"
+        echo "${FAKE_GO_VERSION:-go version go1.26.5 darwin/arm64}"
         ;;
     env)
-        printf 'go1.26.4\ndarwin\narm64\nv8.0\n1\n\n'
+        printf 'go1.26.5\ndarwin\narm64\nv8.0\n1\n\n'
         ;;
     test)
         if [[ "${FAKE_GO_FAIL:-0}" == 1 ]]; then

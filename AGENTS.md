@@ -137,7 +137,7 @@ Correctness:
 
 - Local build: `make build`.
 - Docker build: `docker build -t apisix-go .`.
-- The Dockerfile uses a Go 1.26.4 Alpine builder and an Alpine runtime image.
+- The Dockerfile uses a Go 1.26.5 Alpine builder and an Alpine runtime image.
 - The container entrypoint is `/usr/bin/apisix -c /usr/local/apisix/conf/config.yaml`.
 
 ## Pull Request Guidelines

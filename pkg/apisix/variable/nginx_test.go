@@ -1,11 +1,14 @@
 package variable
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestGetNginxVarResolvesHostAndRemoteAddressLikeNginx(t *testing.T) {
@@ -74,6 +77,15 @@ func TestGetNginxVarTimeVariablesParseWithProductionLayouts(t *testing.T) {
 		t.Fatal("$time_local = empty, want current time in NGINX layout")
 	} else if _, err := time.Parse("02/Jan/2006:15:04:05 -0700", got); err != nil {
 		t.Fatalf("$time_local = %q, not NGINX layout: %v", got, err)
+	}
+}
+
+func TestRemoteAddrFromRealIPContextIsAuthoritative(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	request.RemoteAddr = "10.0.0.1:1234"
+	request = request.WithContext(context.WithValue(request.Context(), apisixctx.RemoteAddrKey, "203.0.113.9"))
+	if got := GetNginxVar(request, "$remote_addr"); got != "203.0.113.9" {
+		t.Fatalf("$remote_addr = %q", got)
 	}
 }
 

@@ -35,6 +35,8 @@ type Plugin struct {
 	BatchProcessor *logger_batch.Processor
 	observerStop   func()
 	stopOnce       sync.Once
+
+	dialTCP func(network, address string, timeout time.Duration, tlsConfig *tls.Config, useTLS bool) (net.Conn, error)
 }
 
 const (
@@ -131,7 +133,8 @@ const schema = `
     "max_retry_count": {"type": "integer", "minimum": 0},
     "retry_delay": {"type": "integer", "minimum": 0},
     "buffer_duration": {"type": "integer", "minimum": 1},
-    "inactive_timeout": {"type": "integer", "minimum": 1}
+    "inactive_timeout": {"type": "integer", "minimum": 1},
+    "max_pending_entries": {"type": "integer", "minimum": 1, "default": 10000}
   },
   "anyOf": [
     {"maxProperties": 0},
@@ -156,15 +159,16 @@ type Config struct {
 	TLS           bool   `json:"tls,omitempty"`
 	TLSServerName string `json:"tls_server_name,omitempty"`
 
-	Name            string `json:"name,omitempty"`
-	Level           string `json:"level,omitempty"`
-	Timeout         int    `json:"timeout,omitempty"`
-	Keepalive       int    `json:"keepalive,omitempty"`
-	BatchMaxSize    int    `json:"batch_max_size,omitempty"`
-	MaxRetryCount   int    `json:"max_retry_count,omitempty"`
-	RetryDelay      int    `json:"retry_delay,omitempty"`
-	BufferDuration  int    `json:"buffer_duration,omitempty"`
-	InactiveTimeout int    `json:"inactive_timeout,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Level             string `json:"level,omitempty"`
+	Timeout           int    `json:"timeout,omitempty"`
+	Keepalive         int    `json:"keepalive,omitempty"`
+	BatchMaxSize      int    `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int    `json:"max_retry_count,omitempty"`
+	RetryDelay        int    `json:"retry_delay,omitempty"`
+	BufferDuration    int    `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int    `json:"inactive_timeout,omitempty"`
+	MaxPendingEntries int    `json:"max_pending_entries,omitempty"`
 }
 
 type TCPConfig struct {
@@ -267,6 +271,7 @@ func (p *Plugin) PostInit() error {
 		RetryDelaySec:      p.config.RetryDelay,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
+		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, "", "", p.SendBatch)
 
 	return nil
@@ -395,6 +400,9 @@ func (p *Plugin) applyDefaults() {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = 3
 	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = 10000
+	}
 	if p.config.TCP == nil && p.config.Host != "" {
 		p.config.TCP = &TCPConfig{
 			Host:          p.config.Host,
@@ -467,21 +475,34 @@ func (p *Plugin) sendToTCP(lines []string) error {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	timeout := time.Duration(p.config.Timeout) * time.Second
 
-	var conn net.Conn
-	var err error
-	if cfg.TLS {
-		dialer := &net.Dialer{Timeout: timeout}
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: cfg.TLSServerName})
-	} else {
-		conn, err = net.DialTimeout("tcp", addr, timeout)
-	}
+	conn, err := p.dialTCPConnection("tcp", addr, timeout, &tls.Config{ServerName: cfg.TLSServerName}, cfg.TLS)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
 
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+
 	_, err = conn.Write([]byte(strings.Join(lines, "\n") + "\n"))
 	return err
+}
+
+func (p *Plugin) dialTCPConnection(
+	network, address string,
+	timeout time.Duration,
+	tlsConfig *tls.Config,
+	useTLS bool,
+) (net.Conn, error) {
+	if p.dialTCP != nil {
+		return p.dialTCP(network, address, timeout, tlsConfig, useTLS)
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	if useTLS {
+		return tls.DialWithDialer(dialer, network, address, tlsConfig)
+	}
+	return dialer.Dial(network, address)
 }
 
 func (p *Plugin) sendToSkywalking(ctx context.Context, lines []string) error {

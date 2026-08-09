@@ -16,6 +16,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -316,6 +317,44 @@ func TestHandlerPassesConsumerRunnerRequestContextToDownstream(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+}
+
+func TestBasicAuthDiagnosticDoesNotExposeCredentials(t *testing.T) {
+	var mu sync.Mutex
+	var messages []string
+	stop := logger.ReplaceObserver("basic-auth-redaction", func(entry logger.Entry) {
+		mu.Lock()
+		messages = append(messages, entry.Message)
+		mu.Unlock()
+	})
+	t.Cleanup(stop)
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"basic-auth": {}},
+			{"key-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("alicesecret")))
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", res.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, message := range messages {
+		for _, secret := range []string{"alicesecret", "alice", "secret"} {
+			if strings.Contains(message, secret) {
+				t.Fatalf("log message %q exposes %q", message, secret)
+			}
+		}
 	}
 }
 

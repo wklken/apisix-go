@@ -495,6 +495,25 @@ func TestHandlerUpdatesCachedRequestBodyAfterJSONNormalization(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsNullableEmptyBodySchema(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{"type": []any{"null", "object"}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", nil)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerLetsSchemaDecideEmptyJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BodySchema: map[string]any{
@@ -520,6 +539,30 @@ func TestHandlerLetsSchemaDecideEmptyJSONBody(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerValidatesEmptyBodySchemaRequiredObject(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RejectedMsg:  "schema rejected",
+		RejectedCode: http.StatusBadRequest,
+		BodySchema:   map[string]any{"type": "object", "required": []any{"id"}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", nil)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != "schema rejected" {
+		t.Fatalf("response body = %q, want schema rejection rather than empty JSON data", got)
 	}
 }
 

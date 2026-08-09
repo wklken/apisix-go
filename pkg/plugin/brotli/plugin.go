@@ -210,8 +210,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := base.GetOrCreateTransformResponseWriter(r)
-		next.ServeHTTP(recorder, r)
+		bw := newBoundedResponseWriter(w, *p.config.MaxResponseSize)
+		next.ServeHTTP(bw, r)
+		if bw.committed {
+			// The response already streamed to the client; nothing to
+			// rewrite and no second write may happen.
+			return
+		}
+
+		recorder := bw.materialize()
 		if p.shouldCompressResponse(recorder) {
 			if err := p.compressResponse(recorder); err != nil {
 				logger.Errorf("brotli compress response fail: %s", err)
@@ -219,6 +226,86 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		writeCompressedResponse(w, recorder)
 	})
+}
+
+// boundedResponseWriter buffers a response until either completion or the
+// configured cap is exceeded. Once the cap is exceeded it switches once to
+// pass-through: headers including Content-Length are copied, the status and
+// the buffered bytes plus the current write chunk are flushed to the
+// underlying writer, and later writes stream directly.
+type boundedResponseWriter struct {
+	base        http.ResponseWriter
+	header      http.Header
+	statusCode  int
+	buffer      bytes.Buffer
+	committed   bool
+	cap         int64
+	maxBuffered int64
+}
+
+func newBoundedResponseWriter(base http.ResponseWriter, cap int64) *boundedResponseWriter {
+	return &boundedResponseWriter{
+		base:       base,
+		header:     make(http.Header),
+		statusCode: http.StatusOK,
+		cap:        cap,
+	}
+}
+
+func (w *boundedResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *boundedResponseWriter) WriteHeader(code int) {
+	if w.committed {
+		w.base.WriteHeader(code)
+		return
+	}
+	w.statusCode = code
+}
+
+func (w *boundedResponseWriter) Write(p []byte) (int, error) {
+	if w.committed {
+		return w.base.Write(p)
+	}
+	if w.cap > 0 && int64(w.buffer.Len())+int64(len(p)) > w.cap {
+		w.commit(p)
+		return len(p), nil
+	}
+	w.maxBuffered = max(w.maxBuffered, int64(w.buffer.Len())+int64(len(p)))
+	_, err := w.buffer.Write(p)
+	return len(p), err
+}
+
+func (w *boundedResponseWriter) commit(chunk []byte) {
+	w.committed = true
+	for field, values := range w.header {
+		for _, value := range values {
+			w.base.Header().Add(field, value)
+		}
+	}
+	w.base.WriteHeader(w.statusCode)
+	if n := w.buffer.Len(); n > 0 {
+		_, _ = w.base.Write(w.buffer.Bytes())
+	}
+	if len(chunk) > 0 {
+		_, _ = w.base.Write(chunk)
+	}
+	w.buffer.Reset()
+}
+
+// materialize converts the still-buffered response into a
+// BufferedResponseWriter so the compression pipeline can rewrite it.
+func (w *boundedResponseWriter) materialize() *base.BufferedResponseWriter {
+	recorder := base.NewBufferedResponseWriter()
+	for field, values := range w.header {
+		for _, value := range values {
+			recorder.Header().Add(field, value)
+		}
+	}
+	recorder.WriteHeader(w.statusCode)
+	recorder.SetBody(w.buffer.Bytes())
+	return recorder
 }
 
 func (p *Plugin) shouldConsiderRequest(r *http.Request) bool {
@@ -346,9 +433,9 @@ func weakenETag(header http.Header) {
 }
 
 func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
-	compressed := resp.Header().Get("Content-Encoding") == "br"
+	brotli := resp.Header().Get("Content-Encoding") == "br"
 	for field, values := range resp.Header() {
-		if compressed && strings.EqualFold(field, "Content-Length") {
+		if brotli && strings.EqualFold(field, "Content-Length") {
 			continue
 		}
 		for _, value := range values {
@@ -356,7 +443,7 @@ func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 		}
 	}
 	w.WriteHeader(resp.StatusCode())
-	if compressed {
+	if brotli {
 		_ = http.NewResponseController(w).Flush()
 	}
 	resp.WriteBodyTo(w)

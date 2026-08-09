@@ -153,6 +153,82 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 	}
 }
 
+func TestSendBatchDetectsBulkItemFailures(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`{"errors":true,"items":[` +
+				`{"index":{"_index":"apisix-logs","status":201}},` +
+				`{"index":{"_index":"apisix-logs","status":429,"error":{"type":"too_many_requests"}}},` +
+				`{"index":{"_index":"apisix-logs","status":201}}]}`,
+		))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		BatchMaxSize:  3,
+		Timeout:       10,
+	})
+
+	firstFail, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}, {"path": "/c"}}, 3)
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want detected bulk item failure")
+	}
+	if firstFail != 2 {
+		t.Fatalf("firstFail = %d, want 2 (second bulk item)", firstFail)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestSendBatchMalformedBulkResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		BatchMaxSize:  1,
+		Timeout:       10,
+	})
+
+	firstFail, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want malformed bulk response error")
+	}
+	if firstFail != 1 {
+		t.Fatalf("firstFail = %d, want 1 for an undecodable bulk result", firstFail)
+	}
+}
+
 func TestSendBatchWritesMultipleBulkEntries(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

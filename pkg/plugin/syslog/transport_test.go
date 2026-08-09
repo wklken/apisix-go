@@ -152,7 +152,7 @@ func TestTransportRetainsBufferedFramesAfterDialFailure(t *testing.T) {
 	}
 }
 
-func TestTransportRetainsOnlyUnwrittenSuffixAfterPartialWriteFailure(t *testing.T) {
+func TestTransportDiscardsAmbiguouslySplitFramesAfterPartialWriteFailure(t *testing.T) {
 	transport, err := newSyslogTransport(Config{
 		Host:       "127.0.0.1",
 		Port:       1,
@@ -179,8 +179,8 @@ func TestTransportRetainsOnlyUnwrittenSuffixAfterPartialWriteFailure(t *testing.
 	if got := partial.Written(); got != "abc" {
 		t.Fatalf("partially written payload = %q, want abc", got)
 	}
-	if stats := transport.Stats(); stats.Buffered != len("def") {
-		t.Fatalf("buffered bytes after partial write = %d, want %d", stats.Buffered, len("def"))
+	if stats := transport.Stats(); stats.Buffered != 0 {
+		t.Fatalf("buffered bytes after partial write = %d, want 0 to discard the orphan suffix", stats.Buffered)
 	}
 
 	recovery := &scriptedConn{}
@@ -188,12 +188,15 @@ func TestTransportRetainsOnlyUnwrittenSuffixAfterPartialWriteFailure(t *testing.
 	if _, err := transport.Log([]byte("ghijkl")); err != nil {
 		t.Fatalf("recovery Log() error = %v", err)
 	}
-	if got := recovery.Written(); got != "defghijkl" {
-		t.Fatalf("recovery payload = %q, want unwritten suffix followed by new frame", got)
+	if err := transport.Flush(); err != nil {
+		t.Fatalf("recovery Flush() error = %v", err)
+	}
+	if got := recovery.Written(); got != "ghijkl" {
+		t.Fatalf("recovery payload = %q, want exactly ghijkl and never defghijkl", got)
 	}
 }
 
-func TestSendBodyDoesNotRetryAnAcceptedMessageAfterPartialWriteFailure(t *testing.T) {
+func TestSendBodyReturnsErrorAfterAmbiguousPartialWrite(t *testing.T) {
 	transport, err := newSyslogTransport(Config{
 		Host:       "127.0.0.1",
 		Port:       1,
@@ -216,27 +219,30 @@ func TestSendBodyDoesNotRetryAnAcceptedMessageAfterPartialWriteFailure(t *testin
 	transport.idle <- partial
 
 	plugin := &Plugin{transport: transport}
-	if err := plugin.sendBody([]byte("new")); err != nil {
-		t.Fatalf("sendBody(new) error = %v, want accepted message to stay transport-owned", err)
+	if err := plugin.sendBody([]byte("new")); !errors.Is(err, writeFailure) {
+		t.Fatalf("sendBody(new) error = %v, want caller-owned retry for an ambiguous partial write", err)
 	}
 	if got := partial.Written(); got != "oldn" {
 		t.Fatalf("partially written payload = %q, want oldn", got)
 	}
-	if stats := transport.Stats(); stats.Buffered != len("ew") {
-		t.Fatalf("buffered bytes after partial write = %d, want %d", stats.Buffered, len("ew"))
+	if stats := transport.Stats(); stats.Buffered != 0 {
+		t.Fatalf("buffered bytes after ambiguous partial write = %d, want 0", stats.Buffered)
 	}
 
 	recovery := &scriptedConn{}
 	transport.idle <- recovery
+	if err := plugin.sendBody([]byte("new")); err != nil {
+		t.Fatalf("retry sendBody(new) error = %v", err)
+	}
 	if err := transport.Flush(); err != nil {
 		t.Fatalf("recovery Flush() error = %v", err)
 	}
-	if got := recovery.Written(); got != "ew" {
-		t.Fatalf("recovery payload = %q, want only the unacknowledged suffix", got)
+	if got := recovery.Written(); got != "new" {
+		t.Fatalf("recovery payload = %q, want the full message without an orphan suffix", got)
 	}
 }
 
-func TestSendBodyRetriesTriggerAfterPartialWriteStopsInPriorBuffer(t *testing.T) {
+func TestSendBodyRetriesAfterPartialWriteDiscardsPriorBuffer(t *testing.T) {
 	transport, err := newSyslogTransport(Config{
 		Host:       "127.0.0.1",
 		Port:       1,
@@ -265,8 +271,8 @@ func TestSendBodyRetriesTriggerAfterPartialWriteStopsInPriorBuffer(t *testing.T)
 	if got := partial.Written(); got != "ol" {
 		t.Fatalf("partially written payload = %q, want ol", got)
 	}
-	if stats := transport.Stats(); stats.Buffered != len("der") {
-		t.Fatalf("buffered bytes after rollback = %d, want %d", stats.Buffered, len("der"))
+	if stats := transport.Stats(); stats.Buffered != 0 {
+		t.Fatalf("buffered bytes after partial write = %d, want 0 (prior batch discarded)", stats.Buffered)
 	}
 
 	recovery := &scriptedConn{}
@@ -277,8 +283,8 @@ func TestSendBodyRetriesTriggerAfterPartialWriteStopsInPriorBuffer(t *testing.T)
 	if err := transport.Flush(); err != nil {
 		t.Fatalf("recovery Flush() error = %v", err)
 	}
-	if got := recovery.Written(); got != "dernew" {
-		t.Fatalf("recovery payload = %q, want prior suffix followed by one trigger", got)
+	if got := recovery.Written(); got != "new" {
+		t.Fatalf("recovery payload = %q, want only the retried message without a prior suffix", got)
 	}
 }
 

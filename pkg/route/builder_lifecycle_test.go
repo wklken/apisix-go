@@ -1,6 +1,7 @@
 package route
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -249,6 +250,113 @@ func performRouteTestRequest(t *testing.T, handler http.Handler, target string) 
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	return res
+}
+
+type priorityRouteFixture struct {
+	id       string
+	uri      string
+	priority int
+	upstream string
+}
+
+func buildPriorityRouter(t *testing.T, fixtures []priorityRouteFixture) http.Handler {
+	t.Helper()
+	ensureRouteStore(t)
+	for _, fixture := range fixtures {
+		value := fmt.Sprintf(
+			`{"id":%q,"uri":%q,"priority":%d,"upstream":{"type":"roundrobin","nodes":{%q:1}}}`,
+			fixture.id,
+			fixture.uri,
+			fixture.priority,
+			fixture.upstream,
+		)
+		putRouteResource(t, fixture.id, []byte(value))
+	}
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	return builder.Build()
+}
+
+func routePriorityNode(t *testing.T, rawURL string) string {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, rawURL, nil)
+	return net.JoinHostPort(request.URL.Hostname(), request.URL.Port())
+}
+
+func assertHigherPriorityRouteWins(t *testing.T, uri string, path string) {
+	t.Helper()
+	low := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer low.Close()
+	high := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer high.Close()
+
+	lowNode := routePriorityNode(t, low.URL)
+	highNode := routePriorityNode(t, high.URL)
+
+	for _, lowFirst := range []bool{true, false} {
+		order := "high-first"
+		if lowFirst {
+			order = "low-first"
+		}
+		t.Run(order, func(t *testing.T) {
+			lowFixture := priorityRouteFixture{uri: uri, priority: 1, upstream: lowNode}
+			highFixture := priorityRouteFixture{uri: uri, priority: 10, upstream: highNode}
+			var fixtures []priorityRouteFixture
+			if lowFirst {
+				lowFixture.id = "aaa-prio-low"
+				highFixture.id = "zzz-prio-high"
+				fixtures = []priorityRouteFixture{lowFixture, highFixture}
+			} else {
+				highFixture.id = "aaa-prio-high"
+				lowFixture.id = "zzz-prio-low"
+				fixtures = []priorityRouteFixture{highFixture, lowFixture}
+			}
+			response := performRouteTestRequest(t, buildPriorityRouter(t, fixtures), path)
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d from the priority-10 route", response.Code, http.StatusAccepted)
+			}
+		})
+	}
+}
+
+func TestRoutePriorityExactWinsRegardlessOfOrder(t *testing.T) {
+	assertHigherPriorityRouteWins(t, "/api/v1/items", "/api/v1/items")
+}
+
+func TestRoutePriorityParameterWinsRegardlessOfOrder(t *testing.T) {
+	assertHigherPriorityRouteWins(t, "/api/v1/items/:id", "/api/v1/items/1")
+}
+
+func TestRoutePriorityWildcardWinsRegardlessOfOrder(t *testing.T) {
+	assertHigherPriorityRouteWins(t, "/api/v1/*", "/api/v1/items/1")
+}
+
+func TestRoutePriorityEqualKeepsLaterRegistration(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer second.Close()
+
+	fixtures := []priorityRouteFixture{
+		{id: "aaa-equal-first", uri: "/api/v1/items/:id", priority: 5, upstream: routePriorityNode(t, first.URL)},
+		{id: "zzz-equal-second", uri: "/api/v1/items/:id", priority: 5, upstream: routePriorityNode(t, second.URL)},
+	}
+	response := performRouteTestRequest(t, buildPriorityRouter(t, fixtures), "/api/v1/items/1")
+	if response.Code != http.StatusAccepted {
+		t.Fatalf(
+			"status = %d, want %d from the later-registered equal-priority route",
+			response.Code,
+			http.StatusAccepted,
+		)
+	}
 }
 
 func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {

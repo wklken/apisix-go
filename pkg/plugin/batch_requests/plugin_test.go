@@ -548,8 +548,14 @@ func TestHandlerParentCancellationCancelsSubrequestsAndJoinsWorkers(t *testing.T
 		t.Fatal("batch handler did not return after parent cancellation")
 	}
 
-	if got := exited.Load(); got != 1 {
-		t.Fatalf("joined subrequest workers = %d, want the single in-flight worker", got)
+	// The handler no longer blocks on the worker, so the cancellation-aware
+	// in-flight worker exits asynchronously once its context is canceled.
+	exitedDeadline := time.Now().Add(2 * time.Second)
+	for exited.Load() != 1 {
+		if time.Now().After(exitedDeadline) {
+			t.Fatalf("in-flight subrequest worker did not exit after cancellation")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if got := started.Load(); got != 1 {
 		t.Fatalf("started subrequests = %d, want the pipeline to stop after cancellation", got)
@@ -566,6 +572,51 @@ func TestHandlerParentCancellationCancelsSubrequestsAndJoinsWorkers(t *testing.T
 	}
 	if responses[0].Body != "" {
 		t.Fatalf("response body = %q, want internal error text discarded", responses[0].Body)
+	}
+}
+
+func TestDispatchPipelineRequestInvalidTargetReturnsBadRequest(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	outer := httptest.NewRequest(http.MethodGet, "http://example.com/batch", nil)
+	item := PipelineRequest{Path: "/%zz"}
+
+	response, timedOut := dispatchPipelineRequest(dispatcher, outer, Request{}, item, time.Second)
+
+	if timedOut {
+		t.Fatal("invalid target reported a timeout")
+	}
+	if response.Status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Status, http.StatusBadRequest)
+	}
+	if response.Reason != http.StatusText(http.StatusBadRequest) {
+		t.Fatalf("reason = %q, want %q", response.Reason, http.StatusText(http.StatusBadRequest))
+	}
+}
+
+func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	outer := httptest.NewRequest(http.MethodGet, "http://example.com/batch", nil)
+	item := PipelineRequest{Path: "/slow"}
+
+	start := time.Now()
+	response, timedOut := dispatchPipelineRequest(dispatcher, outer, Request{}, item, 20*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !timedOut {
+		t.Fatal("timedOut = false, want true")
+	}
+	if response.Status != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", response.Status, http.StatusGatewayTimeout)
+	}
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("dispatch took %s, want return before 200ms", elapsed)
 	}
 }
 

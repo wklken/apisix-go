@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
 func TestXForwardedForUsesLastAddress(t *testing.T) {
@@ -187,6 +188,28 @@ func TestSourceRejectsOutOfRangePort(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
 			t.Fatalf("remote_addr = %q, want unchanged", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
+func TestRemoteAddrVariableAfterRealIPUsesTrustedAddress(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Source:           "http_x_forwarded_for",
+		TrustedAddresses: []string{"127.0.0.0/24"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.13")
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := apisixvar.GetNginxVar(r, "$remote_addr"); got != "203.0.113.13" {
+			t.Fatalf("$remote_addr = %q, want trusted real-ip value", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

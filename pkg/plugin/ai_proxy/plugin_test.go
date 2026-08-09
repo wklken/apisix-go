@@ -6,10 +6,13 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1537,6 +1540,54 @@ func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
 	}
 }
 
+type blockingRequestBody struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newBlockingRequestBody() *blockingRequestBody {
+	return &blockingRequestBody{closed: make(chan struct{})}
+}
+
+func (b *blockingRequestBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (b *blockingRequestBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestTransportTimesOutStalledRequestBodySend(t *testing.T) {
+	p := newTestPlugin(t, Config{Timeout: 30})
+	transport := p.transport()
+	request, err := http.NewRequest(http.MethodPost, "http://example.com", newBlockingRequestBody())
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	request = request.WithContext(context.Background())
+
+	started := time.Now()
+	_, err = transport.RoundTrip(request)
+	if err == nil {
+		t.Fatal("RoundTrip() error = nil, want timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, os.ErrDeadlineExceeded) {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("RoundTrip() error = %v, want timeout", err)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("RoundTrip() took %s, want send timeout to abort promptly", elapsed)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("RoundTrip() took %s, want timeout to be armed", elapsed)
+	}
+}
+
 func TestHandlerRejectsNonStreamingOversizedContentLength(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2119,5 +2170,80 @@ func TestReadJSONDocumentClassifiesOversizedBodyByTypeNotText(t *testing.T) {
 	})).ServeHTTP(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("handler status = %d, want 413", rr.Code)
+	}
+}
+
+func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for i := range 8 {
+			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
+			_, _ = w.Write([]byte(chunk))
+			flusher.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Timeout:  30,
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}],"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	})).ServeHTTP(rr, req)
+
+	output := rr.Body.String()
+	for i := range 8 {
+		if !strings.Contains(output, "tok"+strconv.Itoa(i)) {
+			t.Fatalf("progressing stream lost chunk %d; body = %q", i, output)
+		}
+	}
+}
+
+func TestHandlerStalledStreamTimesOutConfiguredInactivity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		flusher.Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Timeout:  30,
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}],"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	started := time.Now()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	})).ServeHTTP(rr, req)
+
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled stream took %s, want progress timeout to abort promptly", elapsed)
+	}
+	if !strings.Contains(rr.Body.String(), "first") {
+		t.Fatalf("stalled stream = %q, want first chunk before abort", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "late") {
+		t.Fatalf("stalled stream = %q, want abort before the late chunk", rr.Body.String())
 	}
 }

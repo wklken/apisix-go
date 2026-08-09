@@ -183,18 +183,21 @@ const (
 // RequestState owns the mutable per-request maps and typed hot fields behind a
 // single context value. The maps remain available for plugin compatibility.
 type RequestState struct {
-	ApisixVars      map[string]any
-	RequestVars     map[string]any
-	recycled        atomic.Bool
-	RequestBody     []byte
-	RequestBodyErr  error
-	RequestBodyRead bool
+	ApisixVars  map[string]any
+	RequestVars map[string]any
+	recycled    atomic.Bool
 
 	Status       int
 	BalancerIP   string
 	BalancerPort string
 	RouteID      string
 	ServiceID    string
+
+	// RequestBodyRead caches the first bounded body read so repeated reads
+	// return the same bytes and error instead of masking a size violation.
+	RequestBodyRead bool
+	RequestBody     []byte
+	RequestBodyErr  error
 }
 
 func GetRequestState(r *http.Request) *RequestState {
@@ -313,12 +316,11 @@ func RegisterRequestVar(r *http.Request, key string, val any) {
 	}
 	vars[key] = val
 	if key == RequestBodyKey {
-		if state := GetRequestState(r); state != nil {
-			body, ok := val.([]byte)
-			if ok {
+		if body, ok := val.([]byte); ok {
+			if state := GetRequestState(r); state != nil {
+				state.RequestBodyRead = true
 				state.RequestBody = body
 				state.RequestBodyErr = nil
-				state.RequestBodyRead = true
 			}
 		}
 	}
@@ -340,9 +342,15 @@ func ReadRequestBodyWithLimit(r *http.Request, max int64) ([]byte, error) {
 }
 
 func readRequestBody(r *http.Request, max int64) ([]byte, error) {
-	if state := GetRequestState(r); state != nil && state.RequestBodyRead {
+	state := GetRequestState(r)
+	if state == nil {
+		*r = *WithRequestVars(r)
+		state = GetRequestState(r)
+	}
+	if state.RequestBodyRead {
 		return state.RequestBody, state.RequestBodyErr
 	}
+
 	bodyInCtx := GetRequestVar(r, RequestBodyKey)
 	if bodyInCtx != nil {
 		body, ok := bodyInCtx.([]byte)
@@ -371,6 +379,9 @@ func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 	if err == nil && GetRequestVars(r) != nil {
 		RegisterRequestVar(r, RequestBodyKey, body)
 	}
+	state.RequestBodyRead = true
+	state.RequestBody = body
+	state.RequestBodyErr = err
 	return body, err
 }
 

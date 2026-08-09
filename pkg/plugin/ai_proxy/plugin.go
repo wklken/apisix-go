@@ -360,10 +360,7 @@ func (p *Plugin) PostInit() error {
 		p.config.SSLVerify = &sslVerify
 	}
 
-	p.client = &http.Client{
-		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
-		Transport: p.transport(),
-	}
+	p.client = &http.Client{Transport: p.transport()}
 	if p.now == nil {
 		p.now = time.Now
 	}

@@ -615,6 +615,25 @@ func TestHandlerSkipsJSONMaskWhenBodyExceedsLimit(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", http.NoBody)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 with an empty body", rr.Code)
+	}
+}
+
 func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
@@ -645,6 +664,29 @@ func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
 	}
 }
 
+func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
+		}},
+	})
+
+	spy := &closeSpyBody{ReadCloser: io.NopCloser(strings.NewReader(`{"token":"secret"}`))}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", spy)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !spy.closed {
+		t.Fatal("original request body was not closed")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerClosesOriginalRequestBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
@@ -661,12 +703,12 @@ func TestHandlerClosesOriginalRequestBody(t *testing.T) {
 	req.Body = spy
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
 	if !spy.closed {
-		t.Fatal("original request body was not closed")
+		t.Fatalf("original request body was not closed")
 	}
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)

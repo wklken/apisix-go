@@ -374,11 +374,7 @@ func dispatchPipelineRequest(
 
 	req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(item.Body))
 	if err != nil {
-		return PipelineResponse{
-			Status: http.StatusBadRequest,
-			Reason: http.StatusText(http.StatusBadRequest),
-			Body:   fmt.Sprintf("bad request body: pipeline[0].path is invalid: %v", err),
-		}, false
+		return PipelineResponse{Status: http.StatusBadRequest, Reason: http.StatusText(http.StatusBadRequest)}, false
 	}
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
@@ -408,10 +404,9 @@ func dispatchPipelineRequest(
 
 	select {
 	case <-ctx.Done():
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-		}
+		// Return immediately once the timeout expires; the buffered done
+		// channel lets a late worker publish without blocking even when the
+		// handler ignores the canceled context.
 		return timeoutResponse(), true
 	case result := <-done:
 		if ctx.Err() != nil {

@@ -7,8 +7,44 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type recordingSplitHealthReporter struct {
+	target string
+	status int
+}
+
+func (r *recordingSplitHealthReporter) ReportHTTP(target string, status int) {
+	r.target = target
+	r.status = status
+}
+
+func (r *recordingSplitHealthReporter) ReportTCPFailure(string, bool) {
+}
+
+func TestApplyTrafficSplitOverrideRetainsHealthReporter(t *testing.T) {
+	reporter := &recordingSplitHealthReporter{}
+	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme:         "http",
+		Host:           "127.0.0.1:8080",
+		HealthReporter: reporter,
+		HealthTarget:   "http://127.0.0.1:8080",
+	})
+
+	applyTrafficSplitOverride(req)
+	pxy.ReportHTTPOutcome(req, http.StatusServiceUnavailable)
+
+	if reporter.target != "http://127.0.0.1:8080" {
+		t.Fatalf("reported target = %q, want selected traffic-split target", reporter.target)
+	}
+	if reporter.status != http.StatusServiceUnavailable {
+		t.Fatalf("reported status = %d, want 503", reporter.status)
+	}
+}
 
 func TestBuildReverseHandlerQuarantinesPassiveHTTPFailure(t *testing.T) {
 	var badHits atomic.Int32

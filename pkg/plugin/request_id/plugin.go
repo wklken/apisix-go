@@ -18,7 +18,6 @@ import (
 	"github.com/oxtoacart/bpool"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
@@ -184,7 +183,7 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 		id[i] = charSet[rand.Intn(len(charSet))]
 	}
 
-	return util.BytesToString(id)
+	return string(id)
 }
 
 // uuidv7ID generates a UUIDv7 with strict per-instance monotonic ordering.

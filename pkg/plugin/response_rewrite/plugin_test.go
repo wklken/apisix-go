@@ -406,11 +406,13 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			if got := res.Body.String(); got != "secret token" {
 				t.Fatalf("body = %q, want encoded body left unfiltered", got)
 			}
+			// The representation metadata survives when the filters cannot
+			// decode the body, even though the body is left unfiltered.
 			if got := res.Header().Get("Content-Encoding"); got != tt.encoding {
-				t.Fatalf("Content-Encoding = %q, want %q preserved when filters cannot decode", got, tt.encoding)
+				t.Fatalf("Content-Encoding = %q, want preserved %q", got, tt.encoding)
 			}
 			if got := res.Header().Get("Content-Length"); got != "12" {
-				t.Fatalf("Content-Length = %q, want original length preserved", got)
+				t.Fatalf("Content-Length = %q, want preserved 12", got)
 			}
 		})
 	}

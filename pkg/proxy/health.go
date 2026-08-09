@@ -94,17 +94,19 @@ func healthStateFromRequest(r *http.Request) (*healthRequestState, bool) {
 	return &healthRequestState{reporter: reporter, target: target}, true
 }
 
-// NewUpstreamLoadBalance builds the common upstream selector. A passive
-// checks block enables local health state; active-only checks retain the
-// existing weighted selector until an explicit active-probe owner exists.
-// An empty node pool is a construction error: the empty round-robin picker
-// used to panic on the first Next() type assertion.
+// NewUpstreamLoadBalance builds the common upstream selector. A passive or
+// active checks block enables local health state; active probes can then
+// recover or quarantine targets through the health-aware selector. An empty
+// node pool is a construction error: the empty round-robin picker used to
+// panic on the first Next() type assertion.
 func NewUpstreamLoadBalance(servers map[string]int, checks map[string]any) (LoadBalancer, error) {
 	if len(servers) == 0 {
 		return nil, fmt.Errorf("cannot build upstream load balancer without nodes")
 	}
 	if _, hasPassive := checks["passive"]; !hasPassive {
-		return NewWeightedRRLoadBalance(servers), nil
+		if _, hasActive := checks["active"]; !hasActive {
+			return NewWeightedRRLoadBalance(servers), nil
+		}
 	}
 	return NewHealthAwareLoadBalance(servers, checks)
 }
@@ -236,6 +238,50 @@ func (lb *HealthAwareLoadBalance) IsHealthy(target string) bool {
 	defer lb.mu.Unlock()
 	state, ok := lb.states[target]
 	return ok && !state.unhealthy
+}
+
+// MarkHealthy recovers a target after a successful active probe. It reports
+// whether the target actually changed from unhealthy to healthy so the caller
+// can notify observers only on a state transition.
+func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	state, ok := lb.states[target]
+	if !ok || !state.unhealthy {
+		return false
+	}
+	state.unhealthy = false
+	state.httpFailures = 0
+	state.tcpFailures = 0
+	state.timeouts = 0
+	return true
+}
+
+// MarkUnhealthy quarantines a target after a failed active probe. It reports
+// whether the target actually changed from healthy to unhealthy so the caller
+// can notify observers only on a state transition.
+func (lb *HealthAwareLoadBalance) MarkUnhealthy(target string) bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	state, ok := lb.states[target]
+	if !ok || state.unhealthy {
+		return false
+	}
+	state.unhealthy = true
+	return true
+}
+
+// HealthSnapshot returns a copy of the current healthy state for every target.
+// It is used by active probes to select the healthy/unhealthy probe interval
+// and to decide which targets need recovery.
+func (lb *HealthAwareLoadBalance) HealthSnapshot() map[string]bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	snapshot := make(map[string]bool, len(lb.states))
+	for target, state := range lb.states {
+		snapshot[target] = !state.unhealthy
+	}
+	return snapshot
 }
 
 func parsePassiveHealthConfig(checks map[string]any) (PassiveHealthConfig, error) {

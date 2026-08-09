@@ -94,14 +94,15 @@ func sortedClusterTargets(targets map[string]int) []clusterKeyTarget {
 }
 
 // Cluster owns one base transport, one retry/progress wrapper chain, one load
-// balancer, and a non-queueing in-flight limiter. It is immutable after
-// construction except for close.
+// balancer, an optional active-probe owner, and a non-queueing in-flight
+// limiter. It is immutable after construction except for close.
 type Cluster struct {
 	config      ClusterConfig
 	key         ClusterKey
 	lb          LoadBalancer
 	transport   http.RoundTripper
 	observer    ClusterObserver
+	health      healthChecker
 	closeIdle   func()
 	closed      atomic.Bool
 	closeOnce   sync.Once
@@ -156,6 +157,17 @@ func newClusterWithTransport(
 		closeIdle:   closeIdle,
 		maxInFlight: maxInFlight,
 	}
+	if healthAware, ok := lb.(*HealthAwareLoadBalance); ok {
+		active, enabled, err := ParseActiveHealthConfig(config.Checks)
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			checker := newActiveHealthChecker(active, healthAware, config.Targets, config.Name, observer, base)
+			checker.Start()
+			cluster.health = checker
+		}
+	}
 	return cluster, nil
 }
 
@@ -175,9 +187,13 @@ func (c *Cluster) MaxInFlight() int {
 	return c.maxInFlight
 }
 
-// Close closes idle upstream connections. It is safe to call more than once.
+// Close stops active health probes and closes idle upstream connections. It
+// is safe to call more than once.
 func (c *Cluster) Close() {
 	c.closeOnce.Do(func() {
+		if c.health != nil {
+			c.health.Close()
+		}
 		if c.closeIdle != nil {
 			c.closeIdle()
 		}

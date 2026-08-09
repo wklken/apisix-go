@@ -39,6 +39,40 @@ func TestHealthReporterContextCarriesSelectedTarget(t *testing.T) {
 	}
 }
 
+func TestHealthAwareLoadBalanceActiveProbeRecoversTarget(t *testing.T) {
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
+		map[string]any{"passive": map[string]any{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := lb.Next()
+	lb.MarkUnhealthy(target)
+	if lb.IsHealthy(target) {
+		t.Fatal("target remained healthy")
+	}
+	lb.MarkHealthy(target)
+	if !lb.IsHealthy(target) {
+		t.Fatal("active success did not recover target")
+	}
+}
+
+func TestHealthAwareLoadBalanceHealthSnapshotReflectsActiveMarks(t *testing.T) {
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
+		map[string]any{"passive": map[string]any{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb.MarkUnhealthy("http://one.example:80")
+	snapshot := lb.HealthSnapshot()
+	if !snapshot["http://two.example:80"] || snapshot["http://one.example:80"] {
+		t.Fatalf("HealthSnapshot() = %v, want two healthy and one quarantined", snapshot)
+	}
+}
+
 func TestHealthAwareLoadBalanceQuarantinesTCPFailures(t *testing.T) {
 	lb, err := NewHealthAwareLoadBalance(
 		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
@@ -168,14 +202,22 @@ func TestWithHealthReporterDisabledAllocatesNothing(t *testing.T) {
 	}
 }
 
-func TestNewUpstreamLoadBalanceEnablesPassiveHealthOnlyWhenConfigured(t *testing.T) {
+func TestNewUpstreamLoadBalanceEnablesHealthOnlyWhenConfigured(t *testing.T) {
 	servers := map[string]int{"http://one.example:80": 1}
-	withoutPassive, err := NewUpstreamLoadBalance(servers, map[string]any{"active": map[string]any{}})
+	withoutHealth, err := NewUpstreamLoadBalance(servers, nil)
+	if err != nil {
+		t.Fatalf("NewUpstreamLoadBalance(nil) error = %v", err)
+	}
+	if _, ok := withoutHealth.(*HealthAwareLoadBalance); ok {
+		t.Fatal("no checks unexpectedly enabled health state")
+	}
+
+	withActive, err := NewUpstreamLoadBalance(servers, map[string]any{"active": map[string]any{}})
 	if err != nil {
 		t.Fatalf("NewUpstreamLoadBalance(active) error = %v", err)
 	}
-	if _, ok := withoutPassive.(*HealthAwareLoadBalance); ok {
-		t.Fatal("active-only checks unexpectedly enabled passive health state")
+	if _, ok := withActive.(*HealthAwareLoadBalance); !ok {
+		t.Fatalf("active checks returned %T, want *HealthAwareLoadBalance so probes can recover targets", withActive)
 	}
 
 	withPassive, err := NewUpstreamLoadBalance(servers, map[string]any{"passive": map[string]any{}})

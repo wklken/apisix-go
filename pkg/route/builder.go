@@ -2180,7 +2180,12 @@ func newErrorHandler() pxy.ErrorHandler {
 
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
-		if directorErr := requestDirectorError(r); directorErr != nil {
+		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
+		if overloaded {
+			// The cluster is saturated. This is a capacity decision, not a
+			// target failure, so it never reports a TCP health failure.
+			status = http.StatusServiceUnavailable
+		} else if directorErr := requestDirectorError(r); directorErr != nil {
 			// The director failed target selection before RoundTrip; classify
 			// it as an upstream failure instead of a client cancellation.
 			err = directorErr
@@ -2196,18 +2201,20 @@ func newErrorHandler() pxy.ErrorHandler {
 			ctx.RegisterRequestVar(r, "$response_source", "apisix")
 		}
 
-		if e, ok := err.(net.Error); ok {
-			if e.Timeout() {
-				status = http.StatusGatewayTimeout
+		if !overloaded {
+			if e, ok := err.(net.Error); ok {
+				if e.Timeout() {
+					status = http.StatusGatewayTimeout
+				} else {
+					status = http.StatusBadGateway
+				}
 			} else {
-				status = http.StatusBadGateway
-			}
-		} else {
-			switch {
-			case errors.Is(err, io.EOF):
-				status = http.StatusBadGateway
-			case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
-				status = StatusClientClosedRequest
+				switch {
+				case errors.Is(err, io.EOF):
+					status = http.StatusBadGateway
+				case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
+					status = StatusClientClosedRequest
+				}
 			}
 		}
 

@@ -39,6 +39,10 @@ var (
 	LLMPromptTokens       *prometheus.CounterVec
 	LLMCompletionTokens   *prometheus.CounterVec
 	LLMActiveConnections  *prometheus.GaugeVec
+	ProxyInFlight         *prometheus.GaugeVec
+	ProxyRejected         *prometheus.CounterVec
+	ProxyRetry            *prometheus.CounterVec
+	ProxyHealth           *prometheus.GaugeVec
 	prometheusExtraLabels map[string][]prometheusExtraLabel
 )
 
@@ -267,6 +271,35 @@ func initMetrics() {
 		}),
 	)
 
+	ProxyInFlight = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + proxyInFlightMetric,
+			Help: "Number of concurrently active response bodies in an upstream cluster",
+		},
+		[]string{"upstream"},
+	)
+	ProxyRejected = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: metricConfig.MetricPrefix + proxyRejectedMetric,
+			Help: "Total upstream requests rejected because a cluster was overloaded",
+		},
+		[]string{"upstream"},
+	)
+	ProxyRetry = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: metricConfig.MetricPrefix + proxyRetryMetric,
+			Help: "Terminal outcome of upstream transport attempts, labelled success/error/stopped",
+		},
+		[]string{"upstream", "result"},
+	)
+	ProxyHealth = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + proxyHealthMetric,
+			Help: "Current upstream target health, 1 healthy and 0 quarantined",
+		},
+		[]string{"upstream", "target"},
+	)
+
 	hostName, err := os.Hostname()
 	if err != nil || hostName == "" {
 		hostName = "unknown"
@@ -288,6 +321,10 @@ func initMetrics() {
 		LLMPromptTokens,
 		LLMCompletionTokens,
 		LLMActiveConnections,
+		ProxyInFlight,
+		ProxyRejected,
+		ProxyRetry,
+		ProxyHealth,
 	)
 }
 

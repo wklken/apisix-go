@@ -150,6 +150,11 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			wantStatus:   http.StatusInternalServerError,
 			wantTCPCalls: 1,
 		},
+		{
+			name:       "cluster overloaded",
+			err:        pxy.ErrClusterOverloaded,
+			wantStatus: http.StatusServiceUnavailable,
+		},
 	}
 
 	for _, test := range tests {

@@ -88,7 +88,7 @@ func NewServer() (*Server, error) {
 		addrs:           addrs,
 		server:          newConfiguredHTTPServer(handler),
 		routes:          routes,
-		clusters:        pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
+		clusters:        pxy.NewClusterRegistry(metrics.NewProxyRuntimeObserver()),
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,

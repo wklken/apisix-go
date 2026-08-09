@@ -18,13 +18,21 @@ const (
 	// krakend is 250 / janus is 64
 	DefaultMaxIdleConnsPerHost = 250
 
+	// DefaultMaxIdleConns the default value set for http.Transport.MaxIdleConns.
+	DefaultMaxIdleConns = 1024
+
+	// DefaultMaxConnsPerHost the default value set for http.Transport.MaxConnsPerHost.
+	DefaultMaxConnsPerHost = 1024
+
 	// DefaultIdleConnTimeout is the default value for the the maximum amount of time an idle
 	// (keep-alive) connection will remain idle before closing itself.
 	DefaultIdleConnTimeout = 90 * time.Second
 )
 
 type TransportOption struct {
+	maxIdleConnections        int
 	maxIdleConnectionsPerHost int
+	maxConnectionsPerHost     int
 	insecureSkipVerify        bool
 	dialTimeout               time.Duration
 	responseHeaderTimeout     time.Duration
@@ -41,8 +49,16 @@ func (ob *TransportOptionBuilder) Build() TransportOption {
 		ob.opt.dialTimeout = DefaultDialTimeout
 	}
 
+	if ob.opt.maxIdleConnections <= 0 {
+		ob.opt.maxIdleConnections = DefaultMaxIdleConns
+	}
+
 	if ob.opt.maxIdleConnectionsPerHost <= 0 {
 		ob.opt.maxIdleConnectionsPerHost = DefaultMaxIdleConnsPerHost
+	}
+
+	if ob.opt.maxConnectionsPerHost <= 0 {
+		ob.opt.maxConnectionsPerHost = DefaultMaxConnsPerHost
 	}
 
 	if ob.opt.idleConnTimeout == 0 {
@@ -88,6 +104,45 @@ func (ob *TransportOptionBuilder) WithMaxIdleConnectionsPerHost(value int) *Tran
 	return ob
 }
 
+// WithMaxIdleConnections sets the global maximum number of idle (keep-alive)
+// connections across all upstream hosts. Zero selects DefaultMaxIdleConns.
+func (ob *TransportOptionBuilder) WithMaxIdleConnections(value int) *TransportOptionBuilder {
+	ob.opt.maxIdleConnections = value
+	return ob
+}
+
+// WithMaxConnectionsPerHost sets the maximum number of concurrent
+// connections per upstream host. Zero selects DefaultMaxConnsPerHost.
+func (ob *TransportOptionBuilder) WithMaxConnectionsPerHost(value int) *TransportOptionBuilder {
+	ob.opt.maxConnectionsPerHost = value
+	return ob
+}
+
+// transportKeyIdentity is the deterministic, complete serialization of every
+// effective value that changes transport behavior. It feeds upstream cluster
+// identity so a cluster is only reused for byte-identical effective config.
+type transportKeyIdentity struct {
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	MaxConnsPerHost       int
+	InsecureSkipVerify    bool
+	DialTimeout           time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+}
+
+func (t TransportOption) keyIdentity() transportKeyIdentity {
+	return transportKeyIdentity{
+		MaxIdleConns:          t.maxIdleConnections,
+		MaxIdleConnsPerHost:   t.maxIdleConnectionsPerHost,
+		MaxConnsPerHost:       t.maxConnectionsPerHost,
+		InsecureSkipVerify:    t.insecureSkipVerify,
+		DialTimeout:           t.dialTimeout,
+		ResponseHeaderTimeout: t.responseHeaderTimeout,
+		IdleConnTimeout:       t.idleConnTimeout,
+	}
+}
+
 // reference: https://github.com/hellofresh/janus/blob/master/pkg/proxy/transport/transport.go
 // reference: https://github.com/containous/traefik/blob/master/pkg/server/roundtripper.go
 
@@ -113,9 +168,10 @@ func NewTransport(t TransportOption) *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: t.responseHeaderTimeout,
-		// MaxIdleConns:          100,
-		MaxIdleConnsPerHost: t.maxIdleConnectionsPerHost,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: t.insecureSkipVerify},
+		MaxIdleConns:          t.maxIdleConnections,
+		MaxIdleConnsPerHost:   t.maxIdleConnectionsPerHost,
+		MaxConnsPerHost:       t.maxConnectionsPerHost,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: t.insecureSkipVerify},
 	}
 
 	if err := http2.ConfigureTransport(tr); err != nil {

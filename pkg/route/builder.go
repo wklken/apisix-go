@@ -405,6 +405,8 @@ func matchesWildcardRoute(pattern string, path string) bool {
 
 type Builder struct {
 	serverAddr            string
+	clusterRegistry       *pxy.ClusterRegistry
+	ownsClusterRegistry   bool
 	stoppers              []pluginStopper
 	stopperMu             sync.Mutex
 	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
@@ -443,11 +445,24 @@ func NewBuilder(storage *store.Store) *Builder {
 }
 
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
-	return &Builder{
+	return NewBuilderWithClusterRegistry(storage, serverAddr, pxy.NewClusterRegistry(pxy.NopClusterObserver{}))
+}
+
+// NewBuilderWithClusterRegistry builds routes against a server-owned cluster
+// registry. The builder acquires cluster leases from it and releases them on
+// Stop, but never closes it; the server owns its lifecycle.
+func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, registry *pxy.ClusterRegistry) *Builder {
+	builder := &Builder{
 		serverAddr:           normalizeServerAddr(serverAddr),
+		clusterRegistry:      registry,
 		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
 		servicePlugins:       make(map[servicePluginKey]plugin.Plugin),
 	}
+	if registry == nil {
+		builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+		builder.ownsClusterRegistry = true
+	}
+	return builder
 }
 
 func (b *Builder) Stop() {
@@ -457,6 +472,9 @@ func (b *Builder) Stop() {
 		b.stopperMu.Unlock()
 		for _, stopper := range stoppers {
 			stopper.Stop()
+		}
+		if b.ownsClusterRegistry && b.clusterRegistry != nil {
+			b.clusterRegistry.Close()
 		}
 	})
 }
@@ -1441,12 +1459,28 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	// Never construct an empty round-robin picker: without nodes, target
 	// selection reports a classified director error unless traffic-split
 	// supplies an override for the request.
+	timeouts := resolveUpstreamTimeouts(r.Timeout, upstream.Timeout)
 	var lb pxy.LoadBalancer
+	var transport http.RoundTripper
 	if len(servers) > 0 {
-		lb, err = pxy.NewUpstreamLoadBalance(servers, upstream.Checks)
-		if err != nil {
-			return nil, fmt.Errorf("build upstream load balancer: %w", err)
+		if b.clusterRegistry == nil {
+			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+			b.ownsClusterRegistry = true
 		}
+		clusterConfig, err := buildClusterConfig(r, upstream, servers)
+		if err != nil {
+			return nil, err
+		}
+		lease, err := b.clusterRegistry.Acquire(clusterConfig)
+		if err != nil {
+			return nil, fmt.Errorf("acquire upstream cluster: %w", err)
+		}
+		b.addStopper(lease)
+		cluster := lease.Cluster()
+		lb = cluster.LoadBalancer()
+		transport = cluster.RoundTripper()
+	} else {
+		transport = pxy.NewRetryTransport(pxy.NewTransport((&pxy.TransportOptionBuilder{}).Build()))
 	}
 
 	director := func(req *http.Request) {
@@ -1504,14 +1538,6 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// }
 	}
 
-	timeouts := resolveUpstreamTimeouts(r.Timeout, upstream.Timeout)
-	opt := (&pxy.TransportOptionBuilder{}).
-		WithDialTimeout(timeouts.connect).
-		WithResponseHeaderTimeout(timeouts.responseHeader).
-		WithIdleConnTimeout(30 * time.Second).
-		WithInsecureSkipVerify(upstreamTLSInsecureSkipVerify(upstream))
-	var transport http.RoundTripper = pxy.NewTransport(opt.Build())
-	transport = pxy.NewProgressTimeoutTransport(transport, timeouts.send, timeouts.read)
 	if strings.EqualFold(scheme, "grpc") {
 		transport = &http2.Transport{
 			AllowHTTP: true,
@@ -1519,8 +1545,8 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 				return (&net.Dialer{Timeout: timeouts.connect}).DialContext(ctx, network, address)
 			},
 		}
+		transport = pxy.NewRetryTransport(transport)
 	}
-	transport = pxy.NewRetryTransport(transport)
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
@@ -2154,7 +2180,12 @@ func newErrorHandler() pxy.ErrorHandler {
 
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
-		if directorErr := requestDirectorError(r); directorErr != nil {
+		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
+		if overloaded {
+			// The cluster is saturated. This is a capacity decision, not a
+			// target failure, so it never reports a TCP health failure.
+			status = http.StatusServiceUnavailable
+		} else if directorErr := requestDirectorError(r); directorErr != nil {
 			// The director failed target selection before RoundTrip; classify
 			// it as an upstream failure instead of a client cancellation.
 			err = directorErr
@@ -2170,18 +2201,20 @@ func newErrorHandler() pxy.ErrorHandler {
 			ctx.RegisterRequestVar(r, "$response_source", "apisix")
 		}
 
-		if e, ok := err.(net.Error); ok {
-			if e.Timeout() {
-				status = http.StatusGatewayTimeout
+		if !overloaded {
+			if e, ok := err.(net.Error); ok {
+				if e.Timeout() {
+					status = http.StatusGatewayTimeout
+				} else {
+					status = http.StatusBadGateway
+				}
 			} else {
-				status = http.StatusBadGateway
-			}
-		} else {
-			switch {
-			case errors.Is(err, io.EOF):
-				status = http.StatusBadGateway
-			case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
-				status = StatusClientClosedRequest
+				switch {
+				case errors.Is(err, io.EOF):
+					status = http.StatusBadGateway
+				case errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
+					status = StatusClientClosedRequest
+				}
 			}
 		}
 

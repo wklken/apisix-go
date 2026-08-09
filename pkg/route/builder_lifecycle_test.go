@@ -17,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -903,5 +904,89 @@ func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing
 	_, err := (&Builder{}).buildReverseHandler(resource.Route{}, resource.Service{})
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
+	}
+}
+
+func TestBuilderClusterRegistrySharesIdenticalUpstreamUntilFinalStop(t *testing.T) {
+	ensureRouteStore(t)
+	putRouteResource(
+		t,
+		"cluster-shared",
+		[]byte(
+			`{"id":"cluster-shared","uri":"/cluster-shared","upstream":{"scheme":"http","nodes":[{"host":"127.0.0.1","port":18081,"weight":1}]}}`,
+		),
+	)
+
+	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+	t.Cleanup(registry.Close)
+
+	firstBuilder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	defer firstBuilder.Stop()
+	firstHandler, err := firstBuilder.BuildStrict()
+	if err != nil {
+		t.Fatalf("first BuildStrict() error = %v", err)
+	}
+	if firstHandler == nil {
+		t.Fatal("first BuildStrict() returned nil handler")
+	}
+	if got := registry.Len(); got != 1 {
+		t.Fatalf("registry.Len() after first build = %d, want 1", got)
+	}
+
+	secondBuilder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	defer secondBuilder.Stop()
+	secondHandler, err := secondBuilder.BuildStrict()
+	if err != nil {
+		t.Fatalf("second BuildStrict() error = %v", err)
+	}
+	if secondHandler == nil {
+		t.Fatal("second BuildStrict() returned nil handler")
+	}
+	if got := registry.Len(); got != 1 {
+		t.Fatalf("registry.Len() after second build = %d, want shared cluster 1", got)
+	}
+
+	firstBuilder.Stop()
+	if got := registry.Len(); got != 1 {
+		t.Fatalf("registry.Len() after first builder stop = %d, want shared cluster retained", got)
+	}
+
+	secondBuilder.Stop()
+	if got := registry.Len(); got != 0 {
+		t.Fatalf("registry.Len() after second builder stop = %d, want 0", got)
+	}
+}
+
+func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
+	ensureRouteStore(t)
+	putRouteResource(
+		t,
+		"cluster-timeout-a",
+		[]byte(
+			`{"id":"cluster-timeout-a","uri":"/cluster-timeout-a","upstream":{"scheme":"http","timeout":{"read":1},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
+		),
+	)
+	putRouteResource(
+		t,
+		"cluster-timeout-b",
+		[]byte(
+			`{"id":"cluster-timeout-b","uri":"/cluster-timeout-b","upstream":{"scheme":"http","timeout":{"read":2},"nodes":[{"host":"127.0.0.1","port":18082,"weight":1}]}}`,
+		),
+	)
+
+	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+	t.Cleanup(registry.Close)
+
+	builder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	defer builder.Stop()
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		t.Fatalf("BuildStrict() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("BuildStrict() returned nil handler")
+	}
+	if got := registry.Len(); got != 2 {
+		t.Fatalf("registry.Len() = %d, want 2 distinct clusters", got)
 	}
 }

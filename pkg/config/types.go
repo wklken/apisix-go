@@ -171,7 +171,10 @@ type Proxy struct {
 	TLSHandshakeTimeout   int `mapstructure:"tls_handshake_timeout"`
 	ExpectContinueTimeout int `mapstructure:"expect_continue_timeout"`
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
+	MaxIdleConns          int `mapstructure:"max_idle_conns"`
 	MaxIdleConnsPerHost   int `mapstructure:"max_idle_conns_per_host"`
+	MaxConnsPerHost       int `mapstructure:"max_conns_per_host"`
+	MaxInFlight           int `mapstructure:"max_in_flight"`
 
 	// TODO:
 	// keepalive_timeout

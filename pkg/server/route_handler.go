@@ -62,7 +62,7 @@ func (h *routeHandler) Replace(handler http.Handler, stop func()) {
 	retireRouteSet(previous)
 	h.mu.Unlock()
 
-	stopRouteSet(previous)
+	retireAndStopRouteSet(previous)
 }
 
 func (h *routeHandler) Close() {
@@ -121,4 +121,15 @@ func stopRouteSet(current *routeSet) {
 	if current.stop != nil {
 		current.stop()
 	}
+}
+
+// retireAndStopRouteSet retires and stops an old route generation without
+// blocking the caller. Publication must never wait for a long-lived request
+// on a replaced generation; the stopper still runs only after that request
+// drains. It is used only from Replace.
+func retireAndStopRouteSet(current *routeSet) {
+	if current == nil {
+		return
+	}
+	go stopRouteSet(current)
 }

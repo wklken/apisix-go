@@ -32,6 +32,22 @@ func TestNewTransportDoesNotAutoDecompressUpstreamResponses(t *testing.T) {
 	}
 }
 
+func TestNewTransportAppliesConnectionCaps(t *testing.T) {
+	transport := NewTransport((&TransportOptionBuilder{}).
+		WithMaxIdleConnections(64).
+		WithMaxIdleConnectionsPerHost(16).
+		WithMaxConnectionsPerHost(32).
+		Build())
+	if transport.MaxIdleConns != 64 || transport.MaxIdleConnsPerHost != 16 || transport.MaxConnsPerHost != 32 {
+		t.Fatalf(
+			"transport caps = %d/%d/%d",
+			transport.MaxIdleConns,
+			transport.MaxIdleConnsPerHost,
+			transport.MaxConnsPerHost,
+		)
+	}
+}
+
 func TestNewTransportHonorsTLSVerification(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

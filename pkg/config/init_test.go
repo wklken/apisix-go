@@ -42,6 +42,11 @@ apisix:
       count: 512
       neg_ttl: 60
       neg_count: 512
+proxy:
+  max_idle_conns: 2048
+  max_idle_conns_per_host: 256
+  max_conns_per_host: 512
+  max_in_flight: 768
 nginx_config:
   worker_shutdown_timeout: 240s
   http:
@@ -125,6 +130,18 @@ deployment:
 	if got, want := cfg.NginxConfig.HTTP.Upstream.Keepalive, 320; got != want {
 		t.Fatalf("upstream.keepalive = %d, want %d", got, want)
 	}
+	if got, want := cfg.Proxy.MaxIdleConns, 2048; got != want {
+		t.Fatalf("proxy.max_idle_conns = %d, want %d", got, want)
+	}
+	if got, want := cfg.Proxy.MaxIdleConnsPerHost, 256; got != want {
+		t.Fatalf("proxy.max_idle_conns_per_host = %d, want %d", got, want)
+	}
+	if got, want := cfg.Proxy.MaxConnsPerHost, 512; got != want {
+		t.Fatalf("proxy.max_conns_per_host = %d, want %d", got, want)
+	}
+	if got, want := cfg.Proxy.MaxInFlight, 768; got != want {
+		t.Fatalf("proxy.max_in_flight = %d, want %d", got, want)
+	}
 	if got, want := cfg.Deployment.Etcd.TLS.SNI, "etcd.example.com"; got != want {
 		t.Fatalf("etcd.tls.sni = %q, want %q", got, want)
 	}
@@ -140,6 +157,37 @@ deployment:
 func TestApisixListenAddressesDefaultsToLegacyAddress(t *testing.T) {
 	if got, want := (Apisix{}).ListenAddresses(), []string{":8080"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadRejectsNegativeProxyLimits(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, test := range []struct {
+		name  string
+		field string
+	}{
+		{name: "max_idle_conns", field: "proxy.max_idle_conns"},
+		{name: "max_idle_conns_per_host", field: "proxy.max_idle_conns_per_host"},
+		{name: "max_conns_per_host", field: "proxy.max_conns_per_host"},
+		{name: "max_in_flight", field: "proxy.max_in_flight"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			v := viper.New()
+			v.SetConfigType("yaml")
+			err := v.ReadConfig(strings.NewReader("proxy:\n  " + test.name + ": -1\n"))
+			if err != nil {
+				t.Fatalf("ReadConfig() error = %v", err)
+			}
+			_, err = load(v)
+			if err == nil {
+				t.Fatalf("load() error = nil, want %q rejection", test.field)
+			}
+			if !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("load() error = %q, want it to name %q", err, test.field)
+			}
+		})
 	}
 }
 

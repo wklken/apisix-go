@@ -14,7 +14,8 @@ type retryState struct {
 }
 
 type retryTransport struct {
-	base http.RoundTripper
+	base    http.RoundTripper
+	observe func(string)
 }
 
 type retryContextKey struct{}
@@ -53,30 +54,58 @@ func retryRequestAllowed(request *http.Request) bool {
 // NewRetryTransport wraps a transport with bounded retries for connection and
 // other RoundTrip errors. HTTP responses are returned without retrying.
 func NewRetryTransport(base http.RoundTripper) http.RoundTripper {
+	return NewRetryTransportWithObserver(base, nil)
+}
+
+// NewRetryTransportWithObserver wraps a transport with bounded retries and
+// reports every terminal outcome as one of the bounded labels success, error,
+// or stopped. Raw error text is never used as a label value. A nil observer
+// makes this identical to NewRetryTransport.
+func NewRetryTransportWithObserver(base http.RoundTripper, observe func(string)) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &retryTransport{base: base}
+	return &retryTransport{base: base, observe: observe}
 }
 
 func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	state, _ := request.Context().Value(retryContextKey{}).(*retryState)
 	if state == nil {
-		return transport.base.RoundTrip(request)
+		response, err := transport.base.RoundTrip(request)
+		transport.observeResult(err, false)
+		return response, err
 	}
 
 	response, err := transport.base.RoundTrip(request)
+	stopped := false
 	for remaining := state.count; err != nil && remaining > 0; remaining-- {
 		if request.Context().Err() != nil || !resetRequestBody(request) {
-			return response, err
+			stopped = true
+			break
 		}
 		reportRetryFailure(request, err)
 		if !state.next(request) {
-			return response, err
+			stopped = true
+			break
 		}
 		response, err = transport.base.RoundTrip(request)
 	}
+	transport.observeResult(err, stopped)
 	return response, err
+}
+
+func (transport *retryTransport) observeResult(err error, stopped bool) {
+	if transport.observe == nil {
+		return
+	}
+	switch {
+	case stopped:
+		transport.observe("stopped")
+	case err != nil:
+		transport.observe("error")
+	default:
+		transport.observe("success")
+	}
 }
 
 func resetRequestBody(request *http.Request) bool {

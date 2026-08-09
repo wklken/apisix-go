@@ -118,6 +118,31 @@ func (ob *TransportOptionBuilder) WithMaxConnectionsPerHost(value int) *Transpor
 	return ob
 }
 
+// transportKeyIdentity is the deterministic, complete serialization of every
+// effective value that changes transport behavior. It feeds upstream cluster
+// identity so a cluster is only reused for byte-identical effective config.
+type transportKeyIdentity struct {
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	MaxConnsPerHost       int
+	InsecureSkipVerify    bool
+	DialTimeout           time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+}
+
+func (t TransportOption) keyIdentity() transportKeyIdentity {
+	return transportKeyIdentity{
+		MaxIdleConns:          t.maxIdleConnections,
+		MaxIdleConnsPerHost:   t.maxIdleConnectionsPerHost,
+		MaxConnsPerHost:       t.maxConnectionsPerHost,
+		InsecureSkipVerify:    t.insecureSkipVerify,
+		DialTimeout:           t.dialTimeout,
+		ResponseHeaderTimeout: t.responseHeaderTimeout,
+		IdleConnTimeout:       t.idleConnTimeout,
+	}
+}
+
 // reference: https://github.com/hellofresh/janus/blob/master/pkg/proxy/transport/transport.go
 // reference: https://github.com/containous/traefik/blob/master/pkg/server/roundtripper.go
 

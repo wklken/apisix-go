@@ -290,6 +290,71 @@ func TestRetryTransportReturnsSuccessfulResponseWithoutSelectingAnotherTarget(t 
 	}
 }
 
+func TestRetryTransportObserverReportsBoundedOutcomes(t *testing.T) {
+	attempts := 0
+	var recorded []string
+	transport := NewRetryTransportWithObserver(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("connection reset")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: request}, nil
+	}), func(result string) {
+		recorded = append(recorded, result)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://upstream.example/", nil)
+	request = WithRetries(request, 3, func(*http.Request) bool { return true })
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	_ = response.Body.Close()
+	if got := recorded; len(got) != 1 || got[0] != "success" {
+		t.Fatalf("observed outcomes = %v, want [success]", got)
+	}
+
+	failing := NewRetryTransportWithObserver(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection reset")
+	}), func(result string) {
+		recorded = append(recorded, result)
+	})
+	failingRequest := httptest.NewRequest(http.MethodGet, "http://upstream.example/", nil)
+	failingRequest = WithRetries(failingRequest, 1, func(*http.Request) bool { return true })
+	if _, err := failing.RoundTrip(failingRequest); err == nil {
+		t.Fatal("failing RoundTrip() error = nil, want transport error")
+	}
+	if got := recorded[1]; got != "error" {
+		t.Fatalf("failing outcome = %q, want error", got)
+	}
+
+	stoppedRequest := httptest.NewRequest(http.MethodGet, "http://upstream.example/", nil)
+	stoppedRequest = WithRetries(stoppedRequest, 1, func(*http.Request) bool { return false })
+	if _, err := failing.RoundTrip(stoppedRequest); err == nil {
+		t.Fatal("stopped RoundTrip() error = nil, want transport error")
+	}
+	if got := recorded[2]; got != "stopped" {
+		t.Fatalf("stopped outcome = %q, want stopped", got)
+	}
+}
+
+func TestRetryTransportObserverWithoutRetriesReportsDirectOutcome(t *testing.T) {
+	var recorded []string
+	transport := NewRetryTransportWithObserver(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: request}, nil
+	}), func(result string) {
+		recorded = append(recorded, result)
+	})
+	response, err := transport.RoundTrip(httptest.NewRequest(http.MethodGet, "http://upstream.example/", nil))
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	_ = response.Body.Close()
+	if got := recorded; len(got) != 1 || got[0] != "success" {
+		t.Fatalf("observed outcomes = %v, want [success]", got)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {

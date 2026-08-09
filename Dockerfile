@@ -1,10 +1,12 @@
-FROM golang:1.26.4-alpine AS builder
+FROM golang:1.26.5 AS builder
 
 # build
 WORKDIR /app
 
 ARG VERSION=0.1.0
-ARG GIT_COMMIT=unknown
+ARG COMMIT=none
+ARG BUILD_TIME=unknown
+ARG GO_VERSION=unknown
 
 COPY go.mod /app/
 COPY go.sum /app/
@@ -14,7 +16,7 @@ COPY main.go /app/
 COPY cmd /app/cmd
 COPY pkg /app/pkg
 
-RUN go build -ldflags "-X github.com/wklken/apisix-go/cmd.version=${VERSION} -X github.com/wklken/apisix-go/cmd.gitCommit=${GIT_COMMIT}" -o /apisix
+RUN go build -ldflags "-X github.com/wklken/apisix-go/pkg/version.Version=${VERSION} -X github.com/wklken/apisix-go/pkg/version.Commit=${COMMIT} -X github.com/wklken/apisix-go/pkg/version.BuildTime=${BUILD_TIME} -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=${GO_VERSION}'" -o /apisix
 
 # deploy
 FROM alpine:3.19

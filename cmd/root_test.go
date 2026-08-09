@@ -11,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 func TestStartHasNoDebugBannerPrint(t *testing.T) {
@@ -99,31 +100,26 @@ func TestRootCommandRejectsUnknownArgs(t *testing.T) {
 	}
 }
 
-func TestVersionCommandPrintsVersion(t *testing.T) {
+func TestVersionCommandPrintsFullVersionInfo(t *testing.T) {
+	restore := versionFieldsForTest("1.2.3", "abc1234", "2026-08-09_12:00:00", "go1.26.5")
+	t.Cleanup(restore)
+
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs([]string{"version"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("version command failed: %v", err)
 	}
-	if got := strings.TrimSpace(buf.String()); got != version {
-		t.Fatalf("version output = %q, want %q", got, version)
+	want := "Version: 1.2.3\nCommit: abc1234\nBuild Time: 2026-08-09_12:00:00\nGo Version: go1.26.5"
+	if got := strings.TrimSpace(buf.String()); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }
 
-func TestVersionCommandPrintsGitCommit(t *testing.T) {
-	previous := gitCommit
-	t.Cleanup(func() { gitCommit = previous })
-	gitCommit = "abc1234"
-
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetArgs([]string{"version"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("version command failed: %v", err)
-	}
-	want := version + "\ncommit: abc1234"
-	if got := strings.TrimSpace(buf.String()); got != want {
-		t.Fatalf("version output = %q, want %q", got, want)
+func versionFieldsForTest(v, commit, buildTime, goVersion string) func() {
+	origVersion, origCommit, origBuildTime, origGoVersion := version.Version, version.Commit, version.BuildTime, version.GoVersion
+	version.Version, version.Commit, version.BuildTime, version.GoVersion = v, commit, buildTime, goVersion
+	return func() {
+		version.Version, version.Commit, version.BuildTime, version.GoVersion = origVersion, origCommit, origBuildTime, origGoVersion
 	}
 }

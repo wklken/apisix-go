@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
-)
 
-var (
-	version   = "0.1.0"
-	gitCommit = ""
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 var versionCmd = &cobra.Command{
@@ -16,10 +14,13 @@ var versionCmd = &cobra.Command{
 	Short: "Print apisix-go version",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), version)
-		if gitCommit != "" {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "commit: %s\n", gitCommit)
+		info := []string{
+			"Version: " + version.Version,
+			"Commit: " + version.Commit,
+			"Build Time: " + version.BuildTime,
+			"Go Version: " + version.GoVersion,
 		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), strings.Join(info, "\n"))
 	},
 }
 

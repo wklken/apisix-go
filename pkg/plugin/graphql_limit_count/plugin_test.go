@@ -651,6 +651,46 @@ func TestGroupSharesLocalQuotaAcrossPluginInstances(t *testing.T) {
 	}
 }
 
+func TestGroupRegistryReleasesLastOwner(t *testing.T) {
+	resetGroupCountersForTest()
+	t.Cleanup(resetGroupCountersForTest)
+
+	config := Config{Count: 2, TimeWindow: 60, Policy: "local", Group: "shared"}
+	first := newTestPlugin(t, config)
+	second := newTestPlugin(t, config)
+
+	graphqlLimitCountGroups.Lock()
+	entry, ok := graphqlLimitCountGroups.entries[config.Group]
+	graphqlLimitCountGroups.Unlock()
+	if !ok || entry.refs != 2 {
+		t.Fatalf("group entry = %#v/%t, want refs=2", entry, ok)
+	}
+
+	first.Stop()
+	graphqlLimitCountGroups.Lock()
+	entry, ok = graphqlLimitCountGroups.entries[config.Group]
+	graphqlLimitCountGroups.Unlock()
+	if !ok || entry.refs != 1 {
+		t.Fatalf("group entry after first Stop = %#v/%t, want refs=1", entry, ok)
+	}
+
+	second.Stop()
+	graphqlLimitCountGroups.Lock()
+	_, ok = graphqlLimitCountGroups.entries[config.Group]
+	graphqlLimitCountGroups.Unlock()
+	if ok {
+		t.Fatal("group entry remains after final owner Stop")
+	}
+
+	second.Stop()
+	graphqlLimitCountGroups.Lock()
+	_, ok = graphqlLimitCountGroups.entries[config.Group]
+	graphqlLimitCountGroups.Unlock()
+	if ok {
+		t.Fatal("group entry recreated by idempotent Stop")
+	}
+}
+
 func TestPostInitRejectsMismatchedGroupConfiguration(t *testing.T) {
 	resetGroupCountersForTest()
 	t.Cleanup(resetGroupCountersForTest)
@@ -737,7 +777,7 @@ func resetGroupCountersForTest() {
 	groupCounters.entries = nil
 	groupCounters.Unlock()
 	graphqlLimitCountGroups.Lock()
-	graphqlLimitCountGroups.entries = map[string]string{}
+	graphqlLimitCountGroups.entries = map[string]graphqlLimitCountGroup{}
 	graphqlLimitCountGroups.Unlock()
 }
 

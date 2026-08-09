@@ -42,6 +42,7 @@ type Plugin struct {
 	routeID           string
 	localLimiterStore limiter.Store
 	dynamicLimits     bool
+	groupRegistered   bool
 
 	clientMu       sync.Mutex
 	clientReleases []func()
@@ -60,6 +61,7 @@ const maxSafeInteger = int64(1<<53 - 1)
 type limitCountGroup struct {
 	fingerprint string
 	store       limiter.Store
+	refs        int
 }
 
 var limitCountGroups = struct {
@@ -589,7 +591,11 @@ func (p *Plugin) PostInit() error {
 		if err := p.registerGroup(); err != nil {
 			return err
 		}
-		return p.initRuleLimiters()
+		if err := p.initRuleLimiters(); err != nil {
+			p.releaseGroup()
+			return err
+		}
+		return nil
 	}
 
 	count, countStatic, err := staticLimitValue(p.config.Count, "count")
@@ -608,6 +614,7 @@ func (p *Plugin) PostInit() error {
 		if p.config.SyncInterval > 0 &&
 			p.config.Policy != "local" &&
 			p.config.SyncInterval >= float64(timeWindow) {
+			p.releaseGroup()
 			return fmt.Errorf("sync_interval should be smaller than time_window")
 		}
 		if p.delayedSyncEnabled() {
@@ -617,6 +624,7 @@ func (p *Plugin) PostInit() error {
 		if p.config.WindowType == "sliding" {
 			sliding, err := p.newSlidingLimiter(count, timeWindow)
 			if err != nil {
+				p.releaseGroup()
 				return err
 			}
 			p.sliding = sliding
@@ -625,6 +633,7 @@ func (p *Plugin) PostInit() error {
 		if p.config.Policy == "local" {
 			lim, err := p.newLimiter(count, timeWindow)
 			if err != nil {
+				p.releaseGroup()
 				return err
 			}
 			p.limiter = lim
@@ -670,7 +679,7 @@ func (p *Plugin) consumerScopedKey(r *http.Request, key string) string {
 }
 
 func (p *Plugin) registerGroup() error {
-	if p.config.Group == "" {
+	if p.config.Group == "" || p.groupRegistered {
 		return nil
 	}
 	fingerprint, err := json.Marshal(p.config)
@@ -685,13 +694,36 @@ func (p *Plugin) registerGroup() error {
 		if current.fingerprint != string(fingerprint) {
 			return fmt.Errorf("group conf mismatched")
 		}
+		current.refs++
+		limitCountGroups.entries[p.config.Group] = current
+		p.groupRegistered = true
 		return nil
 	}
 	limitCountGroups.entries[p.config.Group] = limitCountGroup{
 		fingerprint: string(fingerprint),
 		store:       newLocalFixedWindowStore(time.Now, defaultLocalStoreCapacity),
+		refs:        1,
 	}
+	p.groupRegistered = true
 	return nil
+}
+
+func (p *Plugin) releaseGroup() {
+	if !p.groupRegistered || p.config.Group == "" {
+		return
+	}
+	limitCountGroups.Lock()
+	entry, ok := limitCountGroups.entries[p.config.Group]
+	if ok {
+		entry.refs--
+		if entry.refs <= 0 {
+			delete(limitCountGroups.entries, p.config.Group)
+		} else {
+			limitCountGroups.entries[p.config.Group] = entry
+		}
+	}
+	limitCountGroups.Unlock()
+	p.groupRegistered = false
 }
 
 func (p *Plugin) localStore() limiter.Store {
@@ -1527,6 +1559,8 @@ func (p *Plugin) trackClientRelease(release func()) {
 }
 
 func (p *Plugin) Stop() {
+	p.releaseGroup()
+
 	p.limiterMu.Lock()
 	syncers := make([]*delayedSyncer, 0, len(p.delayedByKey)+1)
 	if p.delayed != nil {

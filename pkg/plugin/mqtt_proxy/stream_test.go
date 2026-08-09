@@ -10,6 +10,40 @@ import (
 	"time"
 )
 
+type readDeadlineConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *readDeadlineConn) SetReadDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	return c.Conn.SetReadDeadline(deadline)
+}
+
+func TestReadConnectClearsPrereadDeadline(t *testing.T) {
+	client, gateway := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = gateway.Close()
+	})
+	conn := &readDeadlineConn{Conn: gateway}
+	packet := mqttConnectPacket(4, 0x02, "deadline-client", nil, nil)
+	go func() { _, _ = client.Write(packet) }()
+
+	if _, _, err := readConnectFromStream(context.Background(), conn, "MQTT", 4); err != nil {
+		t.Fatalf("readConnectFromStream() error = %v", err)
+	}
+	if len(conn.deadlines) != 2 {
+		t.Fatalf("recorded read deadlines = %d, want 2", len(conn.deadlines))
+	}
+	if conn.deadlines[0].IsZero() {
+		t.Fatal("preread deadline was not set")
+	}
+	if !conn.deadlines[1].IsZero() {
+		t.Fatalf("cleared read deadline = %s, want zero", conn.deadlines[1])
+	}
+}
+
 func TestServeStreamReplaysPrereadAndExposesClientID(t *testing.T) {
 	plugin := newMQTTStreamPlugin(t, Config{ProtocolLevel: 4})
 	client, gateway := net.Pipe()

@@ -1863,6 +1863,46 @@ func TestGroupSharesLocalQuotaAcrossPluginInstances(t *testing.T) {
 	}
 }
 
+func TestGroupRegistryReleasesLastOwner(t *testing.T) {
+	resetLimitCountGroupsForTest()
+	t.Cleanup(resetLimitCountGroupsForTest)
+
+	config := Config{Count: 2, TimeWindow: 60, Policy: "local", Group: "shared"}
+	first := newTestPlugin(t, config)
+	second := newTestPlugin(t, config)
+
+	limitCountGroups.Lock()
+	entry, ok := limitCountGroups.entries[config.Group]
+	limitCountGroups.Unlock()
+	if !ok || entry.refs != 2 {
+		t.Fatalf("group entry = %#v/%t, want refs=2", entry, ok)
+	}
+
+	first.Stop()
+	limitCountGroups.Lock()
+	entry, ok = limitCountGroups.entries[config.Group]
+	limitCountGroups.Unlock()
+	if !ok || entry.refs != 1 {
+		t.Fatalf("group entry after first Stop = %#v/%t, want refs=1", entry, ok)
+	}
+
+	second.Stop()
+	limitCountGroups.Lock()
+	_, ok = limitCountGroups.entries[config.Group]
+	limitCountGroups.Unlock()
+	if ok {
+		t.Fatal("group entry remains after final owner Stop")
+	}
+
+	second.Stop()
+	limitCountGroups.Lock()
+	_, ok = limitCountGroups.entries[config.Group]
+	limitCountGroups.Unlock()
+	if ok {
+		t.Fatal("group entry recreated by idempotent Stop")
+	}
+}
+
 func TestPostInitRejectsMismatchedGroupConfiguration(t *testing.T) {
 	resetLimitCountGroupsForTest()
 	t.Cleanup(resetLimitCountGroupsForTest)

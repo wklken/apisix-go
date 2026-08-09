@@ -1,6 +1,7 @@
 package openid_connect
 
 import (
+	"crypto"
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/base64"
@@ -30,6 +31,7 @@ type Plugin struct {
 
 	client              *http.Client
 	clientRSAPrivateKey *rsa.PrivateKey
+	staticPublicKey     crypto.PublicKey
 	sessionStore        sessionStore
 	httpProxy           *url.URL
 	httpsProxy          *url.URL
@@ -396,6 +398,13 @@ func (p *Plugin) PostInit() error {
 		return errors.New("resolve openid-connect public_key reference: credential unavailable")
 	}
 	p.config.PublicKey = resolvedPublicKey
+	if p.config.PublicKey != "" {
+		publicKey, err := parsePublicKey([]byte(p.config.PublicKey))
+		if err != nil {
+			return errors.New("failed to parse public key")
+		}
+		p.staticPublicKey = publicKey
+	}
 
 	if p.config.Scope == "" {
 		p.config.Scope = "openid"

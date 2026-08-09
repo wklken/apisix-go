@@ -36,7 +36,8 @@ type Plugin struct {
 	routeID      string
 	metadata     Metadata
 
-	clientRelease func()
+	clientRelease   func()
+	groupRegistered bool
 }
 
 // defaultLocalCountersCapacity bounds the number of in-memory local-policy
@@ -264,8 +265,13 @@ var groupCounters = struct {
 
 var graphqlLimitCountGroups = struct {
 	sync.Mutex
-	entries map[string]string
-}{entries: map[string]string{}}
+	entries map[string]graphqlLimitCountGroup
+}{entries: map[string]graphqlLimitCountGroup{}}
+
+type graphqlLimitCountGroup struct {
+	fingerprint string
+	refs        int
+}
 
 const redisLimitCountScript = `
 local current = redis.call("INCRBY", KEYS[1], ARGV[1])
@@ -423,6 +429,7 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
+	p.releaseGroup()
 	if p.clientRelease != nil {
 		p.clientRelease()
 		p.clientRelease = nil
@@ -444,7 +451,7 @@ func (p *Plugin) counterNamespace() string {
 }
 
 func (p *Plugin) registerGroup() error {
-	if p.config.Group == "" {
+	if p.config.Group == "" || p.groupRegistered {
 		return nil
 	}
 	fingerprint, err := json.Marshal(p.config)
@@ -456,13 +463,38 @@ func (p *Plugin) registerGroup() error {
 	defer graphqlLimitCountGroups.Unlock()
 	current, ok := graphqlLimitCountGroups.entries[p.config.Group]
 	if ok {
-		if current != string(fingerprint) {
+		if current.fingerprint != string(fingerprint) {
 			return fmt.Errorf("group conf mismatched")
 		}
+		current.refs++
+		graphqlLimitCountGroups.entries[p.config.Group] = current
+		p.groupRegistered = true
 		return nil
 	}
-	graphqlLimitCountGroups.entries[p.config.Group] = string(fingerprint)
+	graphqlLimitCountGroups.entries[p.config.Group] = graphqlLimitCountGroup{
+		fingerprint: string(fingerprint),
+		refs:        1,
+	}
+	p.groupRegistered = true
 	return nil
+}
+
+func (p *Plugin) releaseGroup() {
+	if !p.groupRegistered || p.config.Group == "" {
+		return
+	}
+	graphqlLimitCountGroups.Lock()
+	entry, ok := graphqlLimitCountGroups.entries[p.config.Group]
+	if ok {
+		entry.refs--
+		if entry.refs <= 0 {
+			delete(graphqlLimitCountGroups.entries, p.config.Group)
+		} else {
+			graphqlLimitCountGroups.entries[p.config.Group] = entry
+		}
+	}
+	graphqlLimitCountGroups.Unlock()
+	p.groupRegistered = false
 }
 
 func validateRules(rules []Rule) error {

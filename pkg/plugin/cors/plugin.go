@@ -243,18 +243,29 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
+	// rs/cors owns the CORS engine: origin/method/header matching, preflight
+	// handling, Vary, credentials, private-network, max-age and the 200 status
+	// for successful preflight OPTIONS requests.
 	handler := p.cors.Handler(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		responseWriter := &varyResponseWriter{ResponseWriter: w}
-		p.setAPISIXResponseHeaders(responseWriter.Header(), r)
-		if origin, ok := p.timingAllowOrigin(r.Header.Get("Origin")); ok {
+		// Capture request headers before downstream plugins (e.g. proxy-rewrite)
+		// can rewrite them: the CORS response headers must reflect the original
+		// request, not a rewritten one.
+		responseWriter := &varyResponseWriter{
+			ResponseWriter:   w,
+			p:                p,
+			origin:           r.Header.Get("Origin"),
+			requestedHeaders: r.Header.Get("Access-Control-Request-Headers"),
+		}
+		if origin, ok := p.timingAllowOrigin(responseWriter.origin); ok {
 			responseWriter.Header().Set("Timing-Allow-Origin", origin)
 		}
 		if p.config.AllowPrivateNetwork && r.Method == http.MethodOptions &&
 			strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
 			responseWriter.Header().Set("Access-Control-Allow-Private-Network", "true")
 		}
-		if r.Method == http.MethodOptions {
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") == "" {
+			// APISIX exits all OPTIONS requests with 200, even non-preflight ones.
 			responseWriter.WriteHeader(http.StatusOK)
 			return
 		}
@@ -264,7 +275,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 type varyResponseWriter struct {
 	http.ResponseWriter
-	wroteHeader bool
+	p                *Plugin
+	origin           string
+	requestedHeaders string
+	wroteHeader      bool
 }
 
 func (w *varyResponseWriter) WriteHeader(statusCode int) {
@@ -272,6 +286,10 @@ func (w *varyResponseWriter) WriteHeader(statusCode int) {
 		return
 	}
 	w.wroteHeader = true
+	// Re-assert the APISIX wire format once rs/cors and the upstream handler
+	// have produced their headers, so the plugin wins over any upstream CORS
+	// headers and emits Allow-Methods/Allow-Headers/Max-Age on every response.
+	w.p.setAPISIXResponseHeaders(w.Header(), w.origin, w.requestedHeaders)
 	normalizeVary(w.Header())
 	w.ResponseWriter.WriteHeader(statusCode)
 }
@@ -381,15 +399,15 @@ func (p *Plugin) responseOrigin(origin string) (string, bool) {
 	return "", false
 }
 
-func (p *Plugin) setAPISIXResponseHeaders(header http.Header, request *http.Request) {
-	origin, ok := p.responseOrigin(request.Header.Get("Origin"))
+func (p *Plugin) setAPISIXResponseHeaders(header http.Header, origin, requestedHeaders string) {
+	origin, ok := p.responseOrigin(origin)
 	if !ok {
 		return
 	}
 	header.Set("Access-Control-Allow-Origin", origin)
 	header.Set("Access-Control-Allow-Methods", responseMethods(p.config.AllowMethods))
 	if p.config.AllowHeaders == "**" {
-		if requestedHeaders := request.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
+		if requestedHeaders != "" {
 			header.Set("Access-Control-Allow-Headers", requestedHeaders)
 		} else {
 			header.Del("Access-Control-Allow-Headers")

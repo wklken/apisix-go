@@ -398,6 +398,7 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 
 			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Encoding", tt.encoding)
+				w.Header().Set("Content-Length", "12")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("secret token"))
 			})
@@ -405,11 +406,13 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			if got := res.Body.String(); got != "secret token" {
 				t.Fatalf("body = %q, want encoded body left unfiltered", got)
 			}
-			// The upstream clears Content-Encoding whenever filters are
-			// configured (clear_header_as_body_modified in header_filter),
-			// even when the decoder cannot run.
-			if got := res.Header().Get("Content-Encoding"); got != "" {
-				t.Fatalf("Content-Encoding = %q, want cleared after body-modified filters", got)
+			// The representation metadata survives when the filters cannot
+			// decode the body, even though the body is left unfiltered.
+			if got := res.Header().Get("Content-Encoding"); got != tt.encoding {
+				t.Fatalf("Content-Encoding = %q, want preserved %q", got, tt.encoding)
+			}
+			if got := res.Header().Get("Content-Length"); got != "12" {
+				t.Fatalf("Content-Length = %q, want preserved 12", got)
 			}
 		})
 	}

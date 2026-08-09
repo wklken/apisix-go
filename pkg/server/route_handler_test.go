@@ -14,6 +14,76 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
+func TestRouteHandlerReplacementDoesNotBlockBehindOlderGeneration(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseRequest) })
+	}
+	t.Cleanup(release)
+
+	firstStopped := make(chan struct{})
+	first := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusOK)
+	})
+	routes := newRouteHandler(first, func() { close(firstStopped) })
+
+	firstResponse := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		routes.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		firstResponse <- recorder.Code
+	}()
+	<-requestStarted
+
+	// Replace twice while generation 1 still has an in-flight request. Neither
+	// replacement may wait for that long-lived request to drain.
+	routes.Replace(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	routes.Replace(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+
+	thirdResponse := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		routes.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		thirdResponse <- recorder.Code
+	}()
+	select {
+	case status := <-thirdResponse:
+		if status != http.StatusNoContent {
+			t.Fatalf("third status = %d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second replacement blocked behind a retired generation")
+	}
+
+	select {
+	case <-firstStopped:
+		t.Fatal("first generation stopped before its in-flight request exited")
+	default:
+	}
+	release()
+	select {
+	case status := <-firstResponse:
+		if status != http.StatusOK {
+			t.Fatalf("first status = %d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first generation request never completed")
+	}
+	select {
+	case <-firstStopped:
+	case <-time.After(time.Second):
+		t.Fatal("first generation was not stopped after its request drained")
+	}
+}
+
 func TestRouteHandlerReplaceWaitsForActiveRequestBeforeStopping(t *testing.T) {
 	delivered := make(chan struct{}, 1)
 	processor := logger_batch.New(logger_batch.Config{
@@ -54,6 +124,8 @@ func TestRouteHandlerReplaceWaitsForActiveRequestBeforeStopping(t *testing.T) {
 	}()
 	<-requestStarted
 
+	// Replace returns immediately; the retired generation is stopped
+	// asynchronously only after its active request drains.
 	replaceDone := make(chan struct{})
 	go func() {
 		routes.Replace(newHandler, nil)
@@ -62,8 +134,8 @@ func TestRouteHandlerReplaceWaitsForActiveRequestBeforeStopping(t *testing.T) {
 
 	select {
 	case <-replaceDone:
-		t.Fatal("Replace returned before the active request completed")
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Replace blocked behind the active request")
 	}
 
 	replacementRequestDone := make(chan struct{})
@@ -80,9 +152,14 @@ func TestRouteHandlerReplaceWaitsForActiveRequestBeforeStopping(t *testing.T) {
 	}
 	<-replacementRequestDone
 
+	select {
+	case <-delivered:
+		t.Fatal("retired route logger flushed before the active request exited")
+	default:
+	}
+
 	close(releaseRequest)
 	<-requestDone
-	<-replaceDone
 
 	select {
 	case <-delivered:

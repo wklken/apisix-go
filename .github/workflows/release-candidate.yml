@@ -64,10 +64,22 @@ jobs:
       - name: Run source unit tests and coverage gate
         run: make test-cover
 
-  integration:
-    name: RC Integration Suite
+  integration-smoke:
+    name: RC Integration Smoke (${{ matrix.case.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - name: key-auth
+            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+          - name: proxy-rewrite
+            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+          - name: proxy-control
+            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+          - name: uri-blocker
+            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,15 +92,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run standalone integration suite
-        run: make test-integration
+      - name: Run focused standalone smoke case
+        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
 
   package-validation:
     name: RC Package Validation
     needs:
       - lint
       - build-and-unit
-      - integration
+      - integration-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -2024,7 +2024,10 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 		return false
 	}
 	if override.HealthReporter != nil {
-		req = pxy.WithHealthReporter(req, override.HealthReporter)
+		enriched := pxy.WithHealthReporter(req, override.HealthReporter)
+		if enriched != req {
+			*req = *enriched
+		}
 		pxy.SetSelectedTarget(req, override.HealthTarget)
 	}
 	req.URL.Scheme = override.Scheme

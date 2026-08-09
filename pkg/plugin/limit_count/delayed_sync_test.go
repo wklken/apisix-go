@@ -1,9 +1,115 @@
 package limit_count
 
 import (
+	"context"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 )
+
+// blockingRecordingDelayedSyncBackend records every sync delta and blocks a
+// mutation once armed, signaling when the blocked call has been reached.
+type blockingRecordingDelayedSyncBackend struct {
+	mu      sync.Mutex
+	limit   int64
+	reset   time.Duration
+	calls   []int64
+	block   chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingRecordingDelayedSyncBackend) sync(
+	_ context.Context,
+	_ string,
+	delta int64,
+	_ time.Time,
+) (int64, time.Duration, error) {
+	b.mu.Lock()
+	b.calls = append(b.calls, delta)
+	block := b.block
+	b.mu.Unlock()
+	if block != nil {
+		b.once.Do(func() { close(b.entered) })
+		<-block
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.limit -= delta
+	return b.limit, b.reset, nil
+}
+
+func (b *blockingRecordingDelayedSyncBackend) arm() chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.block = make(chan struct{})
+	b.entered = make(chan struct{})
+	b.once = sync.Once{}
+	return b.block
+}
+
+func (b *blockingRecordingDelayedSyncBackend) deltas() []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]int64(nil), b.calls...)
+}
+
+func TestDelayedSyncDoesNotDoubleCommitExpiredDelta(t *testing.T) {
+	backend := &blockingRecordingDelayedSyncBackend{limit: 10, reset: time.Minute}
+	syncer := newDelayedSyncer(backend, 10, time.Minute, time.Hour, 100)
+	t.Cleanup(syncer.Stop)
+
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	if _, _, err := syncer.incoming(context.Background(), "contended", 1, base); err != nil {
+		t.Fatalf("seed incoming() error = %v", err)
+	}
+
+	release := backend.arm()
+	flushDone := make(chan struct{})
+	go func() {
+		_ = syncer.flushNow(context.Background(), base.Add(time.Second))
+		close(flushDone)
+	}()
+
+	select {
+	case <-backend.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush did not reach the blocked backend mutation")
+	}
+
+	// The window expired while the flush is stuck; the pending delta must not
+	// be committed again by an inline expiry flush.
+	afterReset := base.Add(61 * time.Second)
+	incomingDone := make(chan error, 1)
+	go func() {
+		_, _, err := syncer.incoming(context.Background(), "contended", 1, afterReset)
+		incomingDone <- err
+	}()
+
+	close(release)
+	select {
+	case err := <-incomingDone:
+		if err != nil {
+			t.Fatalf("incoming() after expired window error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("incoming() after expired window did not complete")
+	}
+	select {
+	case <-flushDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush did not complete after the blocked backend call returned")
+	}
+
+	sum := int64(0)
+	for _, delta := range backend.deltas() {
+		sum += delta
+	}
+	if sum != 1 {
+		t.Fatalf("sum of non-zero backend deltas = %d, want exactly the one accepted request synced once", sum)
+	}
+}
 
 func TestDrainQueueDeduplicatesStably(t *testing.T) {
 	s := &delayedSyncer{queue: make(chan string, 8)}

@@ -28,6 +28,8 @@ type delayedSyncState struct {
 	reservationAt   time.Time
 	resetAt         time.Time
 	initialized     bool
+	inFlight        bool
+	inFlightDone    chan struct{}
 }
 
 type delayedSyncer struct {
@@ -82,45 +84,59 @@ func (s *delayedSyncer) incoming(
 	cost int64,
 	now time.Time,
 ) (remaining int64, reset time.Duration, err error) {
-	s.mu.Lock()
-	state := s.states[key]
-	if state == nil {
-		state = &delayedSyncState{}
-		s.states[key] = state
-	}
-	if state.initialized && !now.Before(state.resetAt) && state.localDelta > 0 {
-		_, _, syncErr := s.backend.sync(ctx, key, state.localDelta, state.reservationAt)
-		if syncErr != nil {
-			s.mu.Unlock()
-			return 0, 0, syncErr
+	for {
+		s.mu.Lock()
+		state := s.states[key]
+		if state == nil {
+			state = &delayedSyncState{}
+			s.states[key] = state
 		}
-		state.localDelta = 0
-		state.initialized = false
-	}
-	if !state.initialized || !now.Before(state.resetAt) {
-		remoteRemaining, remoteReset, syncErr := s.backend.sync(ctx, key, 0, now)
-		if syncErr != nil {
-			s.mu.Unlock()
-			return 0, 0, syncErr
+		if state.initialized && !now.Before(state.resetAt) {
+			if state.inFlight {
+				done := state.inFlightDone
+				s.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					return 0, 0, ctx.Err()
+				}
+			}
+			if state.localDelta > 0 {
+				_, _, syncErr := s.backend.sync(ctx, key, state.localDelta, state.reservationAt)
+				if syncErr != nil {
+					s.mu.Unlock()
+					return 0, 0, syncErr
+				}
+				state.localDelta = 0
+				state.initialized = false
+			}
 		}
-		state.remoteRemaining = remoteRemaining
-		state.localDelta = 0
-		state.reservationAt = now
-		state.resetAt = now.Add(remoteReset)
-		state.initialized = true
-	}
+		if !state.initialized || !now.Before(state.resetAt) {
+			remoteRemaining, remoteReset, syncErr := s.backend.sync(ctx, key, 0, now)
+			if syncErr != nil {
+				s.mu.Unlock()
+				return 0, 0, syncErr
+			}
+			state.remoteRemaining = remoteRemaining
+			state.localDelta = 0
+			state.reservationAt = now
+			state.resetAt = now.Add(remoteReset)
+			state.initialized = true
+		}
 
-	remaining = state.remoteRemaining - state.localDelta - cost
-	reset = max(state.resetAt.Sub(now), 0)
-	if remaining < 0 {
+		remaining = state.remoteRemaining - state.localDelta - cost
+		reset = max(state.resetAt.Sub(now), 0)
+		if remaining < 0 {
+			s.mu.Unlock()
+			return remaining, reset, errDelayedSyncRejected
+		}
+		state.localDelta += cost
 		s.mu.Unlock()
-		return remaining, reset, errDelayedSyncRejected
-	}
-	state.localDelta += cost
-	s.mu.Unlock()
 
-	s.enqueue(key)
-	return remaining, reset, nil
+		s.enqueue(key)
+		return remaining, reset, nil
+	}
 }
 
 func (s *delayedSyncer) enqueue(key string) bool {
@@ -205,50 +221,50 @@ func (s *delayedSyncer) flushKeys(ctx context.Context, keys []string, retryFailu
 	type pendingMutation struct {
 		delta         int64
 		reservationAt time.Time
+		done          chan struct{}
 	}
-	// Snapshot the pending deltas under the lock, then release it for the
-	// Redis I/O so a slow backend never blocks unrelated key mutations.
+	// Reserve each pending delta under the lock so a concurrent expiry flush
+	// in incoming can never commit the same delta twice, then release the
+	// lock for the Redis I/O so a slow backend never blocks unrelated key
+	// mutations.
 	s.mu.Lock()
 	pending := make(map[string]pendingMutation, len(keys))
 	for _, key := range keys {
 		state := s.states[key]
-		if state == nil || state.localDelta == 0 {
+		if state == nil || state.localDelta == 0 || state.inFlight {
 			continue
 		}
-		pending[key] = pendingMutation{delta: state.localDelta, reservationAt: state.reservationAt}
+		delta := state.localDelta
+		state.localDelta -= delta
+		state.inFlight = true
+		state.inFlightDone = make(chan struct{})
+		pending[key] = pendingMutation{delta: delta, reservationAt: state.reservationAt, done: state.inFlightDone}
 	}
 	s.mu.Unlock()
 
 	var firstErr error
-	for key, mutation := range pending {
+	for _, key := range keys {
+		mutation, ok := pending[key]
+		if !ok {
+			continue
+		}
 		remaining, _, err := s.backend.sync(ctx, key, mutation.delta, mutation.reservationAt)
+		s.mu.Lock()
+		state := s.states[key]
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
+			state.localDelta += mutation.delta
 			if retryFailures {
-				s.mu.Lock()
 				s.retryNext[key] = struct{}{}
-				s.mu.Unlock()
 			}
-			continue
-		}
-		s.mu.Lock()
-		state := s.states[key]
-		if state != nil {
+		} else {
 			state.remoteRemaining = remaining
-			switch {
-			case state.localDelta == mutation.delta:
-				// No concurrent mutation landed while the sync was in
-				// flight; the pending delta was fully synced.
-				state.localDelta = 0
-			case state.localDelta > mutation.delta:
-				// Concurrent mutations landed while the sync was in flight;
-				// only the snapshotted delta was synced, keep the rest
-				// pending so nothing is lost or double-counted.
-				state.localDelta -= mutation.delta
-			}
 		}
+		state.inFlight = false
+		state.inFlightDone = nil
+		close(mutation.done)
 		s.mu.Unlock()
 	}
 	return firstErr

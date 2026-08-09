@@ -198,7 +198,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if !p.config.UseRealRequestURIUnsafe {
 			r.URL.RawPath = ""
 		}
-		p.config.Headers.apply(r, captures)
 
 		data := map[string]any{
 			"uri":     uri,
@@ -208,9 +207,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			"headers": p.config.Headers,
 		}
 
-		ctx = context.WithValue(ctx, apisixctx.ProxyRewriteKey, data)
+		rewritten := r.WithContext(context.WithValue(ctx, apisixctx.ProxyRewriteKey, data))
+		apisixctx.FinalizeProxyRewrite(rewritten)
+		p.config.Headers.apply(rewritten, captures)
 
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, rewritten)
 	}
 	return http.HandlerFunc(fn)
 }

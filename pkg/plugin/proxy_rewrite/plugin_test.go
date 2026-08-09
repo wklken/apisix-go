@@ -122,6 +122,34 @@ func TestHandlerPreservesAndMergesQueryForConfiguredURI(t *testing.T) {
 	}
 }
 
+func TestHandlerFinalizesURIAndMethodBeforeNextPlugin(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Uri:    "/rewritten?fixed=1",
+		Method: http.MethodPatch,
+		Headers: Headers{Set: map[string]string{
+			"X-Rewrite-View": "$request_method:$uri",
+		}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/original?incoming=1", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %s, want PATCH", r.Method)
+		}
+		if r.URL.Path != "/rewritten" || r.URL.RawQuery != "fixed=1&incoming=1" {
+			t.Fatalf("URL = %s?%s, want /rewritten?fixed=1&incoming=1", r.URL.Path, r.URL.RawQuery)
+		}
+		if got := r.Header.Get("X-Rewrite-View"); got != "PATCH:/rewritten" {
+			t.Fatalf("X-Rewrite-View = %q, want PATCH:/rewritten", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerExpandsConfiguredURIVariables(t *testing.T) {
 	p := newTestPlugin(t, Config{Uri: "/$arg_target"})
 	var rewrite map[string]any

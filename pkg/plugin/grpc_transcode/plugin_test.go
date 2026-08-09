@@ -1062,6 +1062,21 @@ func TestConfigAcceptsNumericProtoID(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsFractionalDeadline(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"proto_id": "echo",
+		"service":  "echo.EchoService",
+		"method":   "Echo",
+		"deadline": 1.5,
+	}, p.GetSchema()); err == nil {
+		t.Fatal("fractional deadline validation error = nil")
+	}
+}
+
 func stubProtoContent(t *testing.T, id string, content string) func() {
 	t.Helper()
 

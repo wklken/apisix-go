@@ -85,7 +85,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		if r.Method != http.MethodPost {
 			p.setCommonCorsHeaders(w.Header())
-			w.WriteHeader(http.StatusBadRequest)
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 

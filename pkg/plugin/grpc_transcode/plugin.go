@@ -66,7 +66,8 @@ const schema = `
       "type": "string"
     },
     "deadline": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 0,
       "default": 0
     },
     "pb_option": {
@@ -117,7 +118,7 @@ type Config struct {
 	ProtoID          string   `json:"proto_id"`
 	Service          string   `json:"service"`
 	Method           string   `json:"method"`
-	Deadline         float64  `json:"deadline,omitempty"`
+	Deadline         int      `json:"deadline,omitempty"`
 	PBOption         []string `json:"pb_option,omitempty"`
 	ShowStatusInBody bool     `json:"show_status_in_body,omitempty"`
 	StatusDetailType string   `json:"status_detail_type,omitempty"`
@@ -128,7 +129,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		ProtoID          any      `json:"proto_id"`
 		Service          string   `json:"service"`
 		Method           string   `json:"method"`
-		Deadline         float64  `json:"deadline,omitempty"`
+		Deadline         int      `json:"deadline,omitempty"`
 		PBOption         []string `json:"pb_option,omitempty"`
 		ShowStatusInBody bool     `json:"show_status_in_body,omitempty"`
 		StatusDetailType string   `json:"status_detail_type,omitempty"`
@@ -455,7 +456,7 @@ func (p *Plugin) transformRequest(r *http.Request, binding *methodBinding) error
 	r.Header.Set("Content-Length", strconv.Itoa(len(framed)))
 	r.Header.Set("TE", "trailers")
 	if p.config.Deadline > 0 {
-		r.Header.Set("grpc-timeout", fmt.Sprintf("%gm", p.config.Deadline))
+		r.Header.Set("grpc-timeout", strconv.Itoa(p.config.Deadline)+"m")
 	}
 	return nil
 }

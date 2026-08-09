@@ -2190,9 +2190,20 @@ cases:
           plugins:
             traffic-split:
               rules:
-                - weighted_upstreams:
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "1"
+                  weighted_upstreams:
                     - upstream_id: one
                       weight: 1
+                - match:
+                    - vars:
+                        - - arg_id
+                          - ==
+                          - "2"
+                  weighted_upstreams:
                     - upstream_id: two
                       weight: 1
           upstream:
@@ -2211,22 +2222,21 @@ cases:
           type: roundrobin
     fixtures:
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=1'}}
         kind: http
         name: first
         respond:
           - body: first
             status: 200
       - expect:
-          - path:
-              matches: ^/split(?:\?.*)?$
+          - {path: {equals: '/split?id=2'}}
         kind: http
         name: second
         respond:
           - body: second
             status: 200
-      - expect_requests: 0
+      - expect:
+          - {path: {equals: /split}}
         kind: http
         name: route
         respond:
@@ -2238,14 +2248,15 @@ cases:
       tests:
         - 16
     steps:
-      - input:
-          path: /split
-        name: referenced-upstream-ids-join-the-weighted-cycle
-        output:
-          body:
-            matches: ^(first|second)$
-          status: 200
-        repeat: 2
+      - input: {path: '/split?id=1'}
+        name: first-match-selects-first-referenced-upstream
+        output: {status: 200, body: {equals: first}}
+      - input: {path: '/split?id=2'}
+        name: second-match-selects-second-referenced-upstream
+        output: {status: 200, body: {equals: second}}
+      - input: {path: /split}
+        name: unmatched-request-uses-route-upstream
+        output: {status: 200, body: {equals: route}}
   - config:
       routes:
         - id: traffic-split

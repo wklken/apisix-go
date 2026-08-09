@@ -534,8 +534,8 @@ func TestGRPCWebRouteChainRejectsUnsupportedMethod(t *testing.T) {
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", res.Code, http.StatusBadRequest)
+	if res.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusMethodNotAllowed)
 	}
 	if res.Header().Get("X-Route-Fallback") != "" {
 		t.Fatal("fallback handler was reached after grpc-web method rejection")

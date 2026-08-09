@@ -151,7 +151,7 @@ type limitCountManifestCase struct {
 	} `yaml:"steps"`
 }
 
-func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *testing.T) {
+func TestStandaloneManifestMapsEveryPinnedBlockInOrder(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "t", "plugin", "limit-count.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -249,12 +249,9 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 		sequence[want.file] = numbers
 		cursor[want.file] = 0
 	}
-	if len(manifest.Cases) != total {
-		t.Fatalf("top-level cases = %d, want exactly %d", len(manifest.Cases), total)
-	}
-
 	genericName := regexp.MustCompile(`(?i)(block-[0-9]+|source-[0-9]+|placeholder|generic|probe|lifecycle)`)
-	names := make(map[string]struct{}, total)
+	names := make(map[string]struct{}, len(manifest.Cases))
+	covered := 0
 	for i, testCase := range manifest.Cases {
 		numbers, ok := sequence[testCase.Source.File]
 		if !ok {
@@ -269,17 +266,19 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 				testCase.Source.File,
 			)
 		}
-		want := numbers[position]
-		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != want {
+		caseTests := testCase.Source.Tests
+		if len(caseTests) == 0 || position+len(caseTests) > len(numbers) ||
+			!slices.Equal(caseTests, numbers[position:position+len(caseTests)]) {
 			t.Fatalf(
-				"case %d %q source tests = %v, want [%d]",
+				"case %d %q source tests = %v, want next tests from %v",
 				i+1,
 				testCase.Name,
-				testCase.Source.Tests,
-				want,
+				caseTests,
+				numbers[position:],
 			)
 		}
-		cursor[testCase.Source.File]++
+		cursor[testCase.Source.File] += len(caseTests)
+		covered += len(caseTests)
 		if _, duplicate := names[testCase.Name]; duplicate {
 			t.Errorf("case %d has duplicate behavior name %q", i+1, testCase.Name)
 		}
@@ -289,6 +288,9 @@ func TestStandaloneManifestMapsEveryPinnedBlockToIndependentLimitCountCase(t *te
 		}
 		assertLimitCountCaseIdentity(t, i+1, testCase, genericName)
 		assertLimitCountCaseResources(t, i+1, testCase)
+	}
+	if covered != total {
+		t.Fatalf("covered source tests = %d, want exactly %d", covered, total)
 	}
 	for _, source := range wantSources {
 		if got := cursor[source.file]; got != source.tests {
@@ -305,15 +307,22 @@ func assertLimitCountCaseIdentity(
 ) {
 	t.Helper()
 	source := strings.TrimSuffix(filepath.Base(testCase.Source.File), ".t")
-	testNumber := testCase.Source.Tests[0]
-	suffix := "-test-" + strconv.Itoa(testNumber)
+	testNumbers := testCase.Source.Tests
+	suffix := "-test-" + strconv.Itoa(testNumbers[0])
+	if len(testNumbers) > 1 {
+		parts := make([]string, len(testNumbers))
+		for i, testNumber := range testNumbers {
+			parts[i] = strconv.Itoa(testNumber)
+		}
+		suffix = "-tests-" + strings.Join(parts, "-")
+	}
 	if !strings.HasPrefix(testCase.Name, source+"-") || !strings.HasSuffix(testCase.Name, suffix) {
 		t.Errorf(
-			"case %d %q does not encode source %q and test %d",
+			"case %d %q does not encode source %q and tests %v",
 			index,
 			testCase.Name,
 			source,
-			testNumber,
+			testNumbers,
 		)
 	}
 	behavior := strings.TrimSuffix(strings.TrimPrefix(testCase.Name, source+"-"), suffix)

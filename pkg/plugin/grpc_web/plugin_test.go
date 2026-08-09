@@ -66,7 +66,7 @@ func TestHandlerRejectsInvalidRequest(t *testing.T) {
 			name:        "non-post",
 			method:      http.MethodGet,
 			contentType: "application/grpc-web",
-			wantStatus:  http.StatusBadRequest,
+			wantStatus:  http.StatusMethodNotAllowed,
 		},
 		{
 			name:        "unsupported content type",

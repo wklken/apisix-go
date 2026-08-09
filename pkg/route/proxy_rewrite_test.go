@@ -63,6 +63,55 @@ func TestBuildReverseHandlerRewritesHostWithoutChangingTarget(t *testing.T) {
 	}
 }
 
+func TestBuildReverseHandlerFinalizesProxyRewriteBeforeUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("upstream method = %q, want PATCH", r.Method)
+		}
+		if got := r.URL.RequestURI(); got != "/rewritten?fixed=1&incoming=1" {
+			t.Errorf("upstream request URI = %q, want /rewritten?fixed=1&incoming=1", got)
+		}
+		if r.Host != "api.example.com" {
+			t.Errorf("upstream Host = %q, want api.example.com", r.Host)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(target.Port())
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
+		Upstream: resource.Upstream{
+			Type:   "roundrobin",
+			Scheme: target.Scheme,
+			Nodes:  []resource.Node{{Host: target.Hostname(), Port: port, Weight: 1}},
+		},
+	}, resource.Service{})
+	if err != nil {
+		t.Fatalf("buildReverseHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/original?incoming=1", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	rewrite := map[string]any{
+		"uri": "/rewritten?fixed=1&incoming=1", "method": http.MethodPatch,
+		"host": "api.example.com", "scheme": target.Scheme,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.ProxyRewriteKey, rewrite))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d, want 204", res.Code)
+	}
+}
+
 func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 	receivedHost := make(chan string, 1)
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

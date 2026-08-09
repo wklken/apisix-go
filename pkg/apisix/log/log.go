@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
@@ -24,6 +25,21 @@ func GetField(r *http.Request, key string) any {
 
 	if _, ok := v.RequestVars[key]; ok {
 		return v.GetRequestVar(r, key)
+	}
+
+	// Unknown static names fall back to exact keys in the live APISIX and
+	// request variable maps so runtime-registered values (for example
+	// $balancer_ip, $upstream_addr, $upstream_latency) resolve without
+	// growing the statically declared whitelists.
+	if vars := apisixctx.GetApisixVars(r); vars != nil {
+		if value, ok := vars[key]; ok {
+			return value
+		}
+	}
+	if vars := apisixctx.GetRequestVars(r); vars != nil {
+		if value, ok := vars[key]; ok {
+			return value
+		}
 	}
 	return ""
 

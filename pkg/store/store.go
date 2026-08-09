@@ -117,6 +117,18 @@ func GetStore(dbPath string, events chan *Event) (*Store, error) {
 	return s, nil
 }
 
+// ReplaceGlobalStoreForTest swaps the process-wide store backing the
+// package-level getters and returns the previous value so a test can restore
+// it. It exists because the route builder reads the package-level getters and
+// tests must isolate the store they publish without leaking it to later tests.
+func ReplaceGlobalStoreForTest(storage *Store) *Store {
+	globalStoreMu.Lock()
+	defer globalStoreMu.Unlock()
+	previous := s
+	s = storage
+	return previous
+}
+
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
 }

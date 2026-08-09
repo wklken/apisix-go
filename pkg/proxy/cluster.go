@@ -144,7 +144,7 @@ func newClusterWithTransport(
 	observeRetry := func(result string) {
 		observer.ObserveRetry(config.Name, result)
 	}
-	var transport http.RoundTripper = NewProgressTimeoutTransport(base, config.SendTimeout, config.ReadTimeout)
+	transport := NewProgressTimeoutTransport(base, config.SendTimeout, config.ReadTimeout)
 	transport = NewRetryTransportWithObserver(transport, observeRetry)
 	transport = newAdmissionTransport(transport, maxInFlight, config.Name, observer)
 

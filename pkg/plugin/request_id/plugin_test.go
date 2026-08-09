@@ -313,6 +313,21 @@ func TestKSUIDEncodingIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRangeIDDoesNotAliasReusedPoolBuffer(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Algorithm: "range_id",
+		RangeID:   RangeID{Length: 16, CharSet: "AAAAAB"},
+	})
+	first := p.rangeID("AAAAAB", 16)
+	want := strings.Clone(first)
+	for range 10_000 {
+		_ = p.rangeID("ZZZZZY", 16)
+	}
+	if first != want {
+		t.Fatalf("first range id changed after pool reuse: got %q, want %q", first, want)
+	}
+}
+
 func TestRangeIDUsesCustomAlphabetAndLength(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Algorithm: "range_id",

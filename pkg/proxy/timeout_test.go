@@ -33,3 +33,20 @@ func TestProgressTimeoutBodyClosesStalledRead(t *testing.T) {
 		t.Fatalf("Read() error/elapsed = %v/%s", err, time.Since(started))
 	}
 }
+
+func TestProgressTimeoutBodyCloseDoesNotCancelContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := newBlockingBody()
+	timed := newProgressTimeoutBody(body, time.Second, cancel)
+	if err := timed.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("Close() canceled the request context")
+	default:
+	}
+}

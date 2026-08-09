@@ -6,8 +6,10 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -519,6 +521,77 @@ func TestHandlerStalledStreamTimesOutForSelectedInstance(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "late") {
 		t.Fatalf("stalled stream = %q, want abort before the late chunk", rr.Body.String())
+	}
+}
+
+type blockingMultiRequestBody struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newBlockingMultiRequestBody() *blockingMultiRequestBody {
+	return &blockingMultiRequestBody{closed: make(chan struct{})}
+}
+
+func (b *blockingMultiRequestBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (b *blockingMultiRequestBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+type blockingMultiRequestTransport struct{}
+
+func (blockingMultiRequestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	_, err := io.Copy(io.Discard, request.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
+		Request:    request,
+	}, nil
+}
+
+func TestTransportTimesOutStalledRequestBodySend(t *testing.T) {
+	p := newTestPlugin(
+		t,
+		Config{Timeout: 30, Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Override: Override{Endpoint: "http://example.com/v1/chat/completions"},
+		}}},
+	)
+	transport := p.transport()
+	request, err := http.NewRequest(http.MethodPost, "http://example.com", newBlockingMultiRequestBody())
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	request = request.WithContext(context.Background())
+
+	started := time.Now()
+	_, err = transport.RoundTrip(request)
+	if err == nil {
+		t.Fatal("RoundTrip() error = nil, want timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, os.ErrDeadlineExceeded) {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("RoundTrip() error = %v, want timeout", err)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("RoundTrip() took %s, want send timeout to abort promptly", elapsed)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("RoundTrip() took %s, want timeout to be armed", elapsed)
 	}
 }
 

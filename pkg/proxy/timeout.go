@@ -58,7 +58,6 @@ func (b *progressTimeoutBody) Read(p []byte) (int, error) {
 
 func (b *progressTimeoutBody) Close() error {
 	b.stop()
-	b.cancel()
 	return b.body.Close()
 }
 

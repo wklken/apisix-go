@@ -204,5 +204,5 @@ func (p *Plugin) transport() http.RoundTripper {
 	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
 	transport.TLSHandshakeTimeout = timeout
 	transport.ResponseHeaderTimeout = timeout
-	return pxy.NewProgressTimeoutTransport(transport, 0, timeout)
+	return pxy.NewProgressTimeoutTransport(transport, timeout, timeout)
 }

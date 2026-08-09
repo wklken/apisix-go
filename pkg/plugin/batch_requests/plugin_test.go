@@ -158,6 +158,23 @@ func TestHandlerStopsAfterTimedOutPipelineRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsInvalidPipelinePathWithoutPanic(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path": "http://[::1"}]
+	}`))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "pipeline[0].path") {
+		t.Fatalf("response body = %q, want invalid pipeline path message", res.Body.String())
+	}
+}
+
 func TestHandlerContinuesAfterIntentionalGatewayTimeout(t *testing.T) {
 	var calls atomic.Int32
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -461,6 +478,31 @@ func TestHandlerTimeoutJoinsCancellationAwareDispatcher(t *testing.T) {
 	}
 	if responses[0].Body != "" {
 		t.Fatalf("pipeline body = %q, want internal error text discarded", responses[0].Body)
+	}
+}
+
+func TestHandlerTimeoutReturnsWithoutWaitingForStuckWorker(t *testing.T) {
+	released := make(chan struct{})
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-released
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"timeout": 10,
+		"pipeline": [{"path": "/slow"}]
+	}`))
+	res := httptest.NewRecorder()
+
+	start := time.Now()
+	handler.ServeHTTP(res, req)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("handler elapsed = %s, want bounded timeout even when worker ignores cancellation", elapsed)
+	}
+	close(released)
+
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusGatewayTimeout {
+		t.Fatalf("pipeline status = %d, want 504", responses[0].Status)
 	}
 }
 

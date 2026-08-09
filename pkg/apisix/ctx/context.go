@@ -370,6 +370,11 @@ func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	if state := GetRequestState(r); state != nil {
+		state.RequestBody = body
+		state.RequestBodyErr = err
+		state.RequestBodyRead = true
+	}
 
 	if err == nil && GetRequestVars(r) != nil {
 		RegisterRequestVar(r, RequestBodyKey, body)

@@ -207,6 +207,9 @@ func parseRequestBody(r *http.Request, body []byte) (any, bool, error) {
 		data, err := parseURLEncodedForm(body)
 		return data, false, err
 	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, false, nil
+	}
 
 	data, err := parseJSON(body)
 	return data, true, err

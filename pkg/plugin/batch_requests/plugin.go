@@ -286,6 +286,9 @@ func validateRequest(req Request, limits Limits) error {
 		if item.Path == "" {
 			return fmt.Errorf("pipeline[%d].path is required", i)
 		}
+		if _, err := http.NewRequest(http.MethodGet, item.Path, nil); err != nil {
+			return fmt.Errorf("pipeline[%d].path is invalid: %w", i, err)
+		}
 		if item.Method != "" && !validMethod(item.Method) {
 			return fmt.Errorf("pipeline[%d].method is invalid", i)
 		}

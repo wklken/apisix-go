@@ -13,6 +13,19 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+type closeSpyBody struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (b *closeSpyBody) Close() error {
+	b.closed = true
+	if b.ReadCloser != nil {
+		return b.ReadCloser.Close()
+	}
+	return nil
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -621,14 +634,34 @@ func TestHandlerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
 	}
 }
 
-type closeSpyBody struct {
-	io.ReadCloser
-	closes int
-}
+func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type:       "body",
+			BodyFormat: "json",
+			Name:       "$.token",
+			Action:     "replace",
+			Value:      "*****",
+		}},
+	})
 
-func (b *closeSpyBody) Close() error {
-	b.closes++
-	return nil
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", http.NoBody)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("body = %q, want empty", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
@@ -646,8 +679,36 @@ func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if spy.closes != 1 {
-		t.Fatalf("original body closes = %d, want exactly 1", spy.closes)
+	if !spy.closed {
+		t.Fatal("original request body was not closed")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerClosesOriginalRequestBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type:       "body",
+			BodyFormat: "json",
+			Name:       "$.token",
+			Action:     "replace",
+			Value:      "*****",
+		}},
+	})
+
+	spy := &closeSpyBody{ReadCloser: io.NopCloser(strings.NewReader(`{"token":"secret"}`))}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", nil)
+	req.Body = spy
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !spy.closed {
+		t.Fatalf("original request body was not closed")
 	}
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)

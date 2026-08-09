@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -117,30 +116,27 @@ func TestHandlerCarriesInlineHostRewriteSettings(t *testing.T) {
 	}
 }
 
-func TestHandlerAppliesSelectedUpstreamTimeoutToRequestContext(t *testing.T) {
+func TestHandlerDoesNotCollapsePhaseTimeoutsIntoOverallDeadline(t *testing.T) {
 	p := newTestPlugin(t, Config{Rules: []Rule{{
 		WeightedUpstreams: []WeightedUpstream{{
 			Upstream: &Upstream{
-				Timeout: resource.Timeout{Connect: 3, Send: 2, Read: 1},
+				Timeout: resource.Timeout{Connect: 3, Send: 2, Read: 60},
 				Nodes:   []Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
 			},
 		}},
 	}}})
 
-	var deadline time.Time
 	performRequestWithHandler(t, p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var ok bool
-		deadline, ok = r.Context().Deadline()
-		if !ok {
-			t.Fatal("request context has no deadline")
+		if _, ok := r.Context().Deadline(); ok {
+			t.Fatal("selected phase timeouts must not become one whole-request deadline")
+		}
+		override := GetOverride(r)
+		if override == nil || override.Timeout.Connect != 3 || override.Timeout.Send != 2 ||
+			override.Timeout.Read != 60 {
+			t.Fatalf("override timeout = %#v, want connect=3 send=2 read=60", override)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-
-	remaining := time.Until(deadline)
-	if remaining <= 0 || remaining > 1100*time.Millisecond {
-		t.Fatalf("selected upstream deadline remaining = %s, want about one second", remaining)
-	}
 }
 
 func TestHandlerUsesWeightedRoundRobin(t *testing.T) {

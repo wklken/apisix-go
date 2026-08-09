@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 
@@ -432,11 +431,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if timeout := upstreamTimeout(override.Timeout); timeout > 0 {
-			ctx, cancel := context.WithTimeout(r.Context(), timeout)
-			defer cancel()
-			r = r.WithContext(ctx)
-		}
 		next.ServeHTTP(w, WithOverride(r, override))
 	}
 	return http.HandlerFunc(fn)
@@ -666,23 +660,6 @@ func configuredRetries(upstream *Upstream) int {
 		return 0
 	}
 	return len(upstream.Nodes) - 1
-}
-
-func upstreamTimeout(timeout resource.Timeout) time.Duration {
-	seconds := []int{timeout.Connect, timeout.Send, timeout.Read}
-	minimum := 0
-	for _, value := range seconds {
-		if value <= 0 {
-			continue
-		}
-		if minimum == 0 || value < minimum {
-			minimum = value
-		}
-	}
-	if minimum == 0 {
-		return 0
-	}
-	return time.Duration(minimum) * time.Second
 }
 
 func joinHostPort(scheme string, node Node) string {

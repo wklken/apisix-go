@@ -32,7 +32,10 @@ type Plugin struct {
 	redisLimiter reqLimiter
 	routeID      string
 
-	clientRelease func()
+	clientRelease    func()
+	consumerStoreMu  sync.Mutex
+	consumerStoreKey string
+	consumerStore    *bucketStore
 }
 
 // defaultLocalBucketsCapacity bounds the number of in-memory local-policy
@@ -216,7 +219,15 @@ type reqLimiter interface {
 	incoming(key string, rate float64, burst float64) (time.Duration, bool, error)
 }
 
-var consumerBucketStores sync.Map
+type consumerBucketEntry struct {
+	store *bucketStore
+	refs  int
+}
+
+var consumerBucketStores = struct {
+	sync.Mutex
+	entries map[string]consumerBucketEntry
+}{entries: map[string]consumerBucketEntry{}}
 
 const redisLimitReqScript = `
 local state = redis.call("HMGET", KEYS[1], "excess", "last")
@@ -368,6 +379,7 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
+	p.releaseConsumerBucketStore()
 	if p.clientRelease != nil {
 		p.clientRelease()
 		p.clientRelease = nil
@@ -474,16 +486,57 @@ func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Dur
 }
 
 func (p *Plugin) consumerBucketStore() *bucketStore {
+	p.consumerStoreMu.Lock()
+	defer p.consumerStoreMu.Unlock()
+	if p.consumerStore != nil {
+		return p.consumerStore
+	}
+
 	uid := shared.NewConfigUID()
 	uid.Add(p.config.Rate, p.config.Burst, p.config.Key, p.config.KeyType)
-	created := &bucketStore{
-		buckets: cacheutil.NewBoundedTTLMap[*bucket](
-			defaultLocalBucketsCapacity,
-			func() time.Time { return p.now() },
-		),
+	key := uid.String()
+	consumerBucketStores.Lock()
+	entry, ok := consumerBucketStores.entries[key]
+	if !ok {
+		entry = consumerBucketEntry{
+			store: &bucketStore{
+				buckets: cacheutil.NewBoundedTTLMap[*bucket](
+					defaultLocalBucketsCapacity,
+					func() time.Time { return p.now() },
+				),
+			},
+		}
 	}
-	actual, _ := consumerBucketStores.LoadOrStore(uid.String(), created)
-	return actual.(*bucketStore)
+	entry.refs++
+	consumerBucketStores.entries[key] = entry
+	consumerBucketStores.Unlock()
+
+	p.consumerStoreKey = key
+	p.consumerStore = entry.store
+	return p.consumerStore
+}
+
+func (p *Plugin) releaseConsumerBucketStore() {
+	p.consumerStoreMu.Lock()
+	key, store := p.consumerStoreKey, p.consumerStore
+	p.consumerStoreKey = ""
+	p.consumerStore = nil
+	p.consumerStoreMu.Unlock()
+	if key == "" || store == nil {
+		return
+	}
+
+	consumerBucketStores.Lock()
+	entry, ok := consumerBucketStores.entries[key]
+	if ok && entry.store == store {
+		entry.refs--
+		if entry.refs <= 0 {
+			delete(consumerBucketStores.entries, key)
+		} else {
+			consumerBucketStores.entries[key] = entry
+		}
+	}
+	consumerBucketStores.Unlock()
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {

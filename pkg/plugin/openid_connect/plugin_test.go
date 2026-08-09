@@ -685,7 +685,12 @@ func TestHandlerUnauthActionPassAllowsRequestWithoutToken(t *testing.T) {
 }
 
 func TestPostInitResolvesPublicKeyEnvironmentReference(t *testing.T) {
-	t.Setenv("OPENID_CONNECT_PUBLIC_KEY", "resolved-public-key")
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	resolved := publicKeyPEM(t, &privateKey.PublicKey)
+	t.Setenv("OPENID_CONNECT_PUBLIC_KEY", resolved)
 	p := &Plugin{config: Config{
 		ClientID:   "apisix",
 		Discovery:  "http://idp.example.test/.well-known/openid-configuration",
@@ -698,8 +703,52 @@ func TestPostInitResolvesPublicKeyEnvironmentReference(t *testing.T) {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	if p.config.PublicKey != "resolved-public-key" {
+	if p.config.PublicKey != resolved {
 		t.Fatalf("PublicKey = %q, want resolved environment value", p.config.PublicKey)
+	}
+	if p.staticPublicKey == nil {
+		t.Fatal("staticPublicKey is nil after environment resolution")
+	}
+}
+
+func TestPostInitParsesStaticPublicKey(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	tests := []struct {
+		name      string
+		publicKey string
+		wantErr   bool
+	}{
+		{name: "valid", publicKey: publicKeyPEM(t, &privateKey.PublicKey)},
+		{name: "invalid", publicKey: "not a public key", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				ClientID:   "apisix",
+				Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+				BearerOnly: true,
+				PublicKey:  test.publicKey,
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if test.wantErr {
+				if err == nil || err.Error() != "failed to parse public key" {
+					t.Fatalf("PostInit() error = %v, want failed to parse public key", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+			if p.staticPublicKey == nil {
+				t.Fatal("staticPublicKey is nil after PostInit")
+			}
+		})
 	}
 }
 

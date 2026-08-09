@@ -184,12 +184,11 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 // public key. Issuer validation is deferred to validateIssuer because the
 // plugin accepts an explicit issuer list.
 func (p *Plugin) staticKeyVerifier(algorithm string) (*oidc.IDTokenVerifier, error) {
-	publicKey, err := parsePublicKey([]byte(p.config.PublicKey))
-	if err != nil {
-		return nil, err
+	if p.staticPublicKey == nil {
+		return nil, errors.New("static public key is not configured")
 	}
 	return oidc.NewVerifier("", &oidc.StaticKeySet{
-		PublicKeys: []crypto.PublicKey{publicKey},
+		PublicKeys: []crypto.PublicKey{p.staticPublicKey},
 	}, &oidc.Config{
 		SkipClientIDCheck:    true,
 		SkipIssuerCheck:      true,

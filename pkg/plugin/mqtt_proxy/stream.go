@@ -164,6 +164,9 @@ func readConnectFromStream(
 		}
 		return nil, ConnectInfo{}, err
 	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return nil, ConnectInfo{}, fmt.Errorf("mqtt CONNECT clear read deadline: %w", err)
+	}
 	return raw, info, nil
 }
 

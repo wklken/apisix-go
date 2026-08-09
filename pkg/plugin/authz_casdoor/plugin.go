@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,7 +25,7 @@ type Plugin struct {
 
 	client   *http.Client
 	sessions *cacheutil.BoundedTTLMap[sessionData]
-	newState func() string
+	newState func() (string, error)
 	now      func() time.Time
 
 	cleanupStop chan struct{}
@@ -107,7 +108,7 @@ func (p *Plugin) PostInit() error {
 		)
 	}
 	if p.newState == nil {
-		p.newState = randomState
+		p.newState = func() (string, error) { return randomState(rand.Reader) }
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -214,8 +215,26 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
-	sessionID := randomState()
-	state := p.newState()
+	sessionID, err := p.newState()
+	if err != nil {
+		logger.Error(err.Error())
+		http.Error(
+			w,
+			util.BuildMessageResponse("failed to generate authorization state"),
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	state, err := p.newState()
+	if err != nil {
+		logger.Error(err.Error())
+		http.Error(
+			w,
+			util.BuildMessageResponse("failed to generate authorization state"),
+			http.StatusInternalServerError,
+		)
+		return
+	}
 	p.saveSession(sessionID, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
@@ -320,10 +339,10 @@ func cookieValue(r *http.Request, name string) string {
 	return cookie.Value
 }
 
-func randomState() string {
+func randomState(reader io.Reader) (string, error) {
 	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return hex.EncodeToString([]byte(time.Now().String()))
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return "", fmt.Errorf("generate random state: %w", err)
 	}
-	return hex.EncodeToString(raw)
+	return hex.EncodeToString(raw), nil
 }

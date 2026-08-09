@@ -257,6 +257,54 @@ func TestConsumerLimiterSharesQuotaAcrossRouteInstancesAndIsolatesConsumers(t *t
 	}
 }
 
+func TestConsumerBucketStoreReleasesLastOwner(t *testing.T) {
+	resetConsumerBucketStoresForTest()
+	t.Cleanup(resetConsumerBucketStoresForTest)
+
+	config := Config{Rate: 1, Burst: 1, Key: "remote_addr"}
+	first := newTestPlugin(t, config)
+	second := newTestPlugin(t, config)
+	if store := first.consumerBucketStore(); store == nil {
+		t.Fatal("first consumer bucket store is nil")
+	} else if store != second.consumerBucketStore() {
+		t.Fatal("identical consumer configurations did not share a bucket store")
+	}
+
+	key := first.consumerStoreKey
+	consumerBucketStores.Lock()
+	entry, ok := consumerBucketStores.entries[key]
+	consumerBucketStores.Unlock()
+	if !ok || entry.refs != 2 {
+		t.Fatalf("consumer bucket entry = %#v/%t, want refs=2", entry, ok)
+	}
+
+	neverUsed := newTestPlugin(t, config)
+	neverUsed.Stop()
+	consumerBucketStores.Lock()
+	entry, ok = consumerBucketStores.entries[key]
+	consumerBucketStores.Unlock()
+	if !ok || entry.refs != 2 {
+		t.Fatalf("entry after unused owner Stop = %#v/%t, want refs=2", entry, ok)
+	}
+
+	first.Stop()
+	consumerBucketStores.Lock()
+	entry, ok = consumerBucketStores.entries[key]
+	consumerBucketStores.Unlock()
+	if !ok || entry.refs != 1 {
+		t.Fatalf("entry after first Stop = %#v/%t, want refs=1", entry, ok)
+	}
+
+	second.Stop()
+	consumerBucketStores.Lock()
+	_, ok = consumerBucketStores.entries[key]
+	consumerBucketStores.Unlock()
+	if ok {
+		t.Fatal("entry remains after final owner Stop")
+	}
+	second.Stop()
+}
+
 func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) {
 	redisLimiter := &fakeRedisLimiter{allowed: true}
 	p := newTestPlugin(t, Config{
@@ -286,6 +334,12 @@ func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) 
 	if redisLimiter.key != "consumer:jack:192.0.2.40" {
 		t.Fatalf("Redis consumer key = %q, want consumer scope", redisLimiter.key)
 	}
+}
+
+func resetConsumerBucketStoresForTest() {
+	consumerBucketStores.Lock()
+	consumerBucketStores.entries = map[string]consumerBucketEntry{}
+	consumerBucketStores.Unlock()
 }
 
 func TestResolveKeyLogsFallbackToClientIP(t *testing.T) {

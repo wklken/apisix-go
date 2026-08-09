@@ -2,6 +2,7 @@ package authz_casdoor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,11 +17,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.newState = func() string { return "state-1" }
+	p.newState = func() (string, error) { return "state-1", nil }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	p.newState = func() string { return "state-1" }
+	p.newState = func() (string, error) { return "state-1", nil }
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -72,6 +73,45 @@ func TestUnauthenticatedRequestRedirectsToCasdoorAuthorize(t *testing.T) {
 	}
 	if cookie := findSessionCookie(rr.Result().Cookies()); cookie == nil {
 		t.Fatal("authz-casdoor session cookie was not set")
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
+}
+
+func TestRandomStateFailsClosed(t *testing.T) {
+	state, err := randomState(failingReader{})
+	if err == nil || state != "" {
+		t.Fatalf("randomState() = %q, %v; want empty state and error", state, err)
+	}
+}
+
+func TestHandlerRejectsRandomStateFailure(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: "secret-a",
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+	p.newState = func() (string, error) { return "", errors.New("entropy unavailable") }
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if cookie := findSessionCookie(rr.Result().Cookies()); cookie != nil {
+		t.Fatalf("session cookie = %#v, want none", cookie)
+	}
+	if got := p.sessions.Len(); got != 0 {
+		t.Fatalf("session count = %d, want 0", got)
 	}
 }
 

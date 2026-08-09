@@ -439,10 +439,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writeCachedResponse(w, entry, status)
 			return
 		} else if status == "EXPIRED" {
-			p.fetchAndMaybeStore(w, r, next, key, status, !p.hasTruthyValue(r, p.config.NoCache))
+			p.fetchAndMaybeStore(w, r, next, key, status, r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache))
 			return
 		} else if status == "STALE" {
-			p.fetchAndMaybeStore(w, r, next, key, status, !p.hasTruthyValue(r, p.config.NoCache))
+			p.fetchAndMaybeStore(w, r, next, key, status, r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache))
 			return
 		} else if p.onlyIfCachedMiss(r) {
 			w.Header().Set(cacheStatusHeader, "MISS")
@@ -450,7 +450,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		p.fetchAndMaybeStore(w, r, next, key, "MISS", !p.hasTruthyValue(r, p.config.NoCache))
+		shouldStore := r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache)
+		p.fetchAndMaybeStore(w, r, next, key, "MISS", shouldStore)
 	}
 	return http.HandlerFunc(fn)
 }

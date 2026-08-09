@@ -112,6 +112,60 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotStoreHEADMissUnderGETCacheKey(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Length", "8")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("get-body"))
+		}
+	}))
+
+	head := performRequest(t, handler, http.MethodHead, "/head-first", nil)
+	get := performRequest(t, handler, http.MethodGet, "/head-first", nil)
+	getHit := performRequest(t, handler, http.MethodGet, "/head-first", nil)
+
+	if head.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("HEAD cache status = %q, want MISS", head.Header().Get(cacheStatusHeader))
+	}
+	if get.Header().Get(cacheStatusHeader) != "MISS" || get.Body.String() != "get-body" {
+		t.Fatalf("first GET = %q/%q, want MISS/get-body", get.Header().Get(cacheStatusHeader), get.Body.String())
+	}
+	if getHit.Header().Get(cacheStatusHeader) != "HIT" || getHit.Body.String() != "get-body" {
+		t.Fatalf("second GET = %q/%q, want HIT/get-body", getHit.Header().Get(cacheStatusHeader), getHit.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerServesHEADHitFromGETEntry(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Length", "8")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("get-body"))
+		}
+	}))
+
+	get := performRequest(t, handler, http.MethodGet, "/head-hit", nil)
+	head := performRequest(t, handler, http.MethodHead, "/head-hit", nil)
+
+	if get.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("GET cache status = %q, want MISS", get.Header().Get(cacheStatusHeader))
+	}
+	if head.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("HEAD cache status = %q, want HIT from GET entry", head.Header().Get(cacheStatusHeader))
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
 func TestHandlerSetsAgeOnCacheHit(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

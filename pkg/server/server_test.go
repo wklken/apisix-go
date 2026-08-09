@@ -17,11 +17,38 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
+	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
 
 	"github.com/go-chi/chi/v5"
 )
+
+func TestServerShutdownClosesClusterRegistry(t *testing.T) {
+	clusters := proxy.NewClusterRegistry(proxy.NopClusterObserver{})
+	lease, err := clusters.Acquire(proxy.ClusterConfig{
+		Name:    "shutdown",
+		Targets: map[string]int{"http://127.0.0.1:18090": 1},
+		Transport: (&proxy.TransportOptionBuilder{}).
+			WithDialTimeout(time.Second).
+			Build(),
+		MaxInFlight: 4,
+	})
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if got := clusters.Len(); got != 1 {
+		t.Fatalf("registry.Len() = %d, want 1", got)
+	}
+
+	s := &Server{server: &http.Server{}, routes: newRouteHandler(http.NotFoundHandler(), nil), clusters: clusters}
+	if err := s.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+	if !lease.Cluster().Closed() {
+		t.Fatal("shutdown() did not close the cluster registry")
+	}
+}
 
 func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
 	var gotPath string

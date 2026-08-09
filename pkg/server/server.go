@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -45,6 +46,7 @@ type Server struct {
 	addrs           []string
 	server          *http.Server
 	routes          *routeHandler
+	clusters        *pxy.ClusterRegistry
 	streamRuntime   streamRuntimeOwner
 	reloadEventChan chan struct{}
 
@@ -86,6 +88,7 @@ func NewServer() (*Server, error) {
 		addrs:           addrs,
 		server:          newConfiguredHTTPServer(handler),
 		routes:          routes,
+		clusters:        pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
@@ -310,7 +313,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	logger.Info("build the routes")
 	initialReloadGeneration := reloadGeneration.Load()
-	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
+	builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
 	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
 		return err
 	}
@@ -368,6 +371,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 		if err := s.streamRuntime.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
+	}
+	if s.clusters != nil {
+		s.clusters.Close()
 	}
 	if s.prometheusServer != nil {
 		if err := s.prometheusServer.Shutdown(ctx); err != nil {

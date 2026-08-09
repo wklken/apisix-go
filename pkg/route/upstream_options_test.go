@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -47,5 +48,101 @@ func TestUpstreamTLSInsecureSkipVerify(t *testing.T) {
 				t.Fatalf("upstreamTLSInsecureSkipVerify() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildClusterConfigKeyIsStableAndIgnoresUpstreamName(t *testing.T) {
+	servers := map[string]int{"http://127.0.0.1:18091": 1}
+	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+		{Host: "127.0.0.1", Port: 18091, Weight: 1},
+	}}
+	first, err := buildClusterConfig(resource.Route{}, base, servers)
+	if err != nil {
+		t.Fatalf("first buildClusterConfig() error = %v", err)
+	}
+	renamed := base
+	renamed.Name = "orders-v2"
+	second, err := buildClusterConfig(resource.Route{UpstreamID: "upstream-orders"}, renamed, servers)
+	if err != nil {
+		t.Fatalf("second buildClusterConfig() error = %v", err)
+	}
+
+	firstKey, err := first.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := second.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey != secondKey {
+		t.Fatal("upstream name/id changed the cluster key, want label-only")
+	}
+	if second.Name != "orders-v2" {
+		t.Fatalf("cluster label = %q, want upstream name", second.Name)
+	}
+}
+
+func TestBuildClusterConfigKeyChangesWithTimeout(t *testing.T) {
+	servers := map[string]int{"http://127.0.0.1:18091": 1}
+	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+		{Host: "127.0.0.1", Port: 18091, Weight: 1},
+	}}
+	first, err := buildClusterConfig(resource.Route{}, base, servers)
+	if err != nil {
+		t.Fatalf("first buildClusterConfig() error = %v", err)
+	}
+	changed := base
+	changed.Timeout = resource.Timeout{Read: 2}
+	second, err := buildClusterConfig(resource.Route{}, changed, servers)
+	if err != nil {
+		t.Fatalf("second buildClusterConfig() error = %v", err)
+	}
+
+	firstKey, err := first.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := second.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey == secondKey {
+		t.Fatal("changing the upstream read timeout did not change the cluster key")
+	}
+}
+
+func TestBuildClusterConfigUsesKeyPrefixLabelWhenUnnamed(t *testing.T) {
+	servers := map[string]int{"http://127.0.0.1:18091": 1}
+	config, err := buildClusterConfig(resource.Route{}, resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+		{Host: "127.0.0.1", Port: 18091, Weight: 1},
+	}}, servers)
+	if err != nil {
+		t.Fatalf("buildClusterConfig() error = %v", err)
+	}
+	if len(config.Name) != 12 {
+		t.Fatalf("cluster label = %q, want 12-hex key prefix", config.Name)
+	}
+}
+
+func TestBuildClusterConfigOmitsActiveChecksWhenDisabled(t *testing.T) {
+	previous := appconfig.GlobalConfig
+	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{DisableUpstreamHealthcheck: true}}
+
+	config, err := buildClusterConfig(resource.Route{}, resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+		{Host: "127.0.0.1", Port: 18091, Weight: 1},
+	}, Checks: map[string]any{
+		"active":  map[string]any{"http_path": "/health"},
+		"passive": map[string]any{},
+	}}, map[string]int{"http://127.0.0.1:18091": 1})
+	if err != nil {
+		t.Fatalf("buildClusterConfig() error = %v", err)
+	}
+	if _, ok := config.Checks["active"]; ok {
+		t.Fatal("active checks retained after disable_upstream_healthcheck")
+	}
+	if _, ok := config.Checks["passive"]; !ok {
+		t.Fatal("passive checks removed by disable_upstream_healthcheck")
 	}
 }

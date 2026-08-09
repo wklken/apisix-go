@@ -2,6 +2,7 @@ package basic_auth
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -190,6 +191,11 @@ func (e authorizationError) Error() string {
 	return string(e)
 }
 
+var (
+	errInvalidBasicEncoding = errors.New("invalid Basic authorization encoding")
+	errInvalidBasicValue    = errors.New("invalid Basic authorization value")
+)
+
 func parseBasicAuthorization(header string) (string, string, error) {
 	scheme, encoded, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, "basic") || encoded == "" {
@@ -197,11 +203,11 @@ func parseBasicAuthorization(header string) (string, string, error) {
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return "", "", authorizationError(fmt.Sprintf("Failed to decode authentication header: %s", encoded))
+		return "", "", errInvalidBasicEncoding
 	}
 	user, pass, found := strings.Cut(string(decoded), ":")
 	if !found {
-		return "", "", authorizationError(fmt.Sprintf("Split authorization err: invalid decoded data: %s", decoded))
+		return "", "", errInvalidBasicValue
 	}
 	return user, pass, nil
 }

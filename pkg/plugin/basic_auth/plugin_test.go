@@ -104,6 +104,20 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestBasicAuthorizationErrorsDoNotExposeCredentials(t *testing.T) {
+	for _, header := range []string{"Basic not-base64", "Basic " + base64.StdEncoding.EncodeToString([]byte("alicesecret"))} {
+		_, _, err := parseBasicAuthorization(header)
+		if err == nil {
+			t.Fatalf("parseBasicAuthorization(%q) error = nil", header)
+		}
+		for _, secret := range []string{"not-base64", "alice", "secret"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error %q exposes %q", err, secret)
+			}
+		}
+	}
+}
+
 func TestHandlerRecordsProbeDiagnosticInsteadOfDiscardingDetail(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
@@ -121,8 +135,8 @@ func TestHandlerRecordsProbeDiagnosticInsteadOfDiscardingDetail(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want 401", rr.Code)
 	}
-	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "Failed to decode authentication header") {
-		t.Fatalf("probe diagnostics = %v, want detailed decode failure", diagnostics)
+	if len(diagnostics) != 1 || diagnostics[0] != errInvalidBasicEncoding.Error() {
+		t.Fatalf("probe diagnostics = %v, want redacted decode failure", diagnostics)
 	}
 }
 
@@ -367,8 +381,8 @@ func TestParseBasicAuthorizationDiagnostics(t *testing.T) {
 		wantErr  string
 	}{
 		{name: "invalid scheme", header: "Bad_header YmFyOmJhcgo=", wantErr: "Invalid authorization header format"},
-		{name: "invalid base64", header: "Basic aca_a", wantErr: "Failed to decode authentication header: aca_a"},
-		{name: "missing password", header: "Basic YmFy", wantErr: "Split authorization err: invalid decoded data: bar"},
+		{name: "invalid base64", header: "Basic aca_a", wantErr: "invalid Basic authorization encoding"},
+		{name: "missing password", header: "Basic YmFy", wantErr: "invalid Basic authorization value"},
 		{name: "case insensitive", header: "bASiC Zm9vOmJhcg==", wantUser: "foo", wantPass: "bar"},
 	}
 

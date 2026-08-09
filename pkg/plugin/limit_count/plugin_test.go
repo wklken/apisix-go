@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
+	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -343,6 +344,48 @@ func TestPostInitBuildsRedisClusterOptionsFromRootFields(t *testing.T) {
 	}
 	if options.TLSConfig == nil || !options.TLSConfig.InsecureSkipVerify {
 		t.Fatalf("cluster TLS config = %#v, want TLS with verification disabled", options.TLSConfig)
+	}
+}
+
+func TestRealIPWrapsLimitCountWithIndependentQuota(t *testing.T) {
+	limitCount := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		Key:          "remote_addr",
+		RejectedCode: http.StatusTooManyRequests,
+	})
+	realIP := &real_ip.Plugin{}
+	*realIP.Config().(*real_ip.Config) = real_ip.Config{
+		Source:           "http_x_forwarded_for",
+		TrustedAddresses: []string{"10.0.0.0/8"},
+	}
+	if err := realIP.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := realIP.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	handler := realIP.Handler(limitCount.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	request := func(xff string) int {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "10.0.0.1:1234"
+		r.Header.Set("X-Forwarded-For", xff)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		return recorder.Code
+	}
+
+	if status := request("203.0.113.1"); status != http.StatusNoContent {
+		t.Fatalf("first client status = %d, want %d", status, http.StatusNoContent)
+	}
+	if status := request("203.0.113.2"); status != http.StatusNoContent {
+		t.Fatalf("second client status = %d, want independent quota %d", status, http.StatusNoContent)
+	}
+	if status := request("203.0.113.1"); status != http.StatusTooManyRequests {
+		t.Fatalf("first client repeat status = %d, want shared quota rejection %d", status, http.StatusTooManyRequests)
 	}
 }
 

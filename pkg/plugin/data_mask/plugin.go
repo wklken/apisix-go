@@ -2,7 +2,6 @@ package data_mask
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -165,9 +164,12 @@ func (p *Plugin) maskRequest(r *http.Request) error {
 	if len(p.bodyRules) == 0 {
 		return nil
 	}
-	body, err := readBody(r)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return err
+	}
+	if len(body) == 0 {
+		return nil
 	}
 	body, _, err = p.maskBodyRules(body, p.bodyRules)
 	if err != nil {
@@ -605,15 +607,4 @@ func parsePathSegment(part string) (pathSegment, bool) {
 	segment.hasIndex = true
 	segment.index = index
 	return segment, segment.name != "" || segment.hasIndex
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
-	}
-	return body, nil
 }

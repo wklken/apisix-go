@@ -346,8 +346,9 @@ func weakenETag(header http.Header) {
 }
 
 func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
+	compressed := resp.Header().Get("Content-Encoding") == "br"
 	for field, values := range resp.Header() {
-		if strings.EqualFold(field, "Content-Length") {
+		if compressed && strings.EqualFold(field, "Content-Length") {
 			continue
 		}
 		for _, value := range values {
@@ -355,7 +356,7 @@ func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 		}
 	}
 	w.WriteHeader(resp.StatusCode())
-	if resp.Header().Get("Content-Encoding") == "br" {
+	if compressed {
 		_ = http.NewResponseController(w).Flush()
 	}
 	resp.WriteBodyTo(w)

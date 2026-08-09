@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	brotlidec "github.com/andybalholm/brotli"
@@ -416,6 +417,7 @@ func TestBrotliHandlerPassesOversizedResponseThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
 	}))
 
@@ -430,8 +432,35 @@ func TestBrotliHandlerPassesOversizedResponseThrough(t *testing.T) {
 	if got := response.Header().Get("Content-Encoding"); got == "br" {
 		t.Fatal("oversized response was compressed instead of passed through")
 	}
+	if got := response.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Fatalf("Content-Length = %q, want %d preserved on pass-through", got, len(body))
+	}
 	if !bytes.Equal(response.Body.Bytes(), body) {
 		t.Fatal("oversized response body was modified")
+	}
+}
+
+func TestBrotliHandlerPreservesContentLengthForUncompressedResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4")
+		_, _ = w.Write([]byte("body"))
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/plain", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want empty", got)
+	}
+	if got := response.Header().Get("Content-Length"); got != "4" {
+		t.Fatalf("Content-Length = %q, want preserved original length", got)
+	}
+	if got := response.Body.String(); got != "body" {
+		t.Fatalf("body = %q, want body", got)
 	}
 }
 

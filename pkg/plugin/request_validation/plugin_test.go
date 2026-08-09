@@ -495,6 +495,34 @@ func TestHandlerUpdatesCachedRequestBodyAfterJSONNormalization(t *testing.T) {
 	}
 }
 
+func TestHandlerLetsSchemaDecideEmptyJSONBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type": []any{"object", "null"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", http.NoBody)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("upstream body = %q, want empty", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func performRequest(
 	p *Plugin,
 	method string,

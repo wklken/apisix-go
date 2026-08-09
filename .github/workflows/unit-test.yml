@@ -1,24 +1,89 @@
-name: Unit Test
+name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
   push:
     branches:
       - master
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  unit-test:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Install golangci-lint
+        run: make init
+
+      - name: Run lint
+        run: make lint
+
+  build-and-unit:
+    name: Build And Unit Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: make build
+
       - name: Run source unit tests and coverage gate
         run: make test-cover
+
+  integration-smoke:
+    name: Integration Smoke (${{ matrix.case.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - name: key-auth
+            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+          - name: proxy-rewrite
+            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+          - name: proxy-control
+            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+          - name: uri-blocker
+            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run focused standalone smoke case
+        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v

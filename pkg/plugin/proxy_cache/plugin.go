@@ -751,12 +751,9 @@ func cacheControlValueDirective(value string, names ...string) (string, bool) {
 			directiveValue = strings.Trim(strings.TrimSpace(directive[index+1:]), `"`)
 			directive = strings.TrimSpace(directive[:index])
 		}
-		for _, name := range names {
-			if directive == name {
-				found = directiveValue
-				ok = true
-				break
-			}
+		if slices.Contains(names, directive) {
+			found = directiveValue
+			ok = true
 		}
 	}
 	return found, ok

@@ -305,6 +305,9 @@ func GetRequestVar(r *http.Request, key string) any {
 
 func RegisterRequestVar(r *http.Request, key string, val any) {
 	vars := GetRequestVars(r)
+	if vars == nil {
+		return
+	}
 	vars[key] = val
 }
 

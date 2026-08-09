@@ -2,6 +2,7 @@ package route
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -494,7 +495,11 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
 	registrar := newRouteRegistrar(mux)
-	for _, routeResource := range snapshot.Routes() {
+	routes := append([]resource.Route(nil), snapshot.Routes()...)
+	slices.SortStableFunc(routes, func(left, right resource.Route) int {
+		return cmp.Compare(left.Priority, right.Priority)
+	})
+	for _, routeResource := range routes {
 		handler, buildErr := b.buildHandlerStrict(routeResource)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)

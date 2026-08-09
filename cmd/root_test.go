@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 func TestStartHasNoDebugBannerPrint(t *testing.T) {
@@ -87,5 +89,37 @@ func TestStartReturnsStartupErrorWithoutPanic(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "config") {
 		t.Fatalf("Start() error = %v, want configuration context in the error", err)
+	}
+}
+
+func TestRootCommandRejectsUnknownArgs(t *testing.T) {
+	rootCmd.SetErr(io.Discard)
+	rootCmd.SetArgs([]string{"definitely-not-a-real-command"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("root command accepted an unknown positional argument")
+	}
+}
+
+func TestVersionCommandPrintsFullVersionInfo(t *testing.T) {
+	restore := versionFieldsForTest("1.2.3", "abc1234", "2026-08-09_12:00:00", "go1.26.5")
+	t.Cleanup(restore)
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"version"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("version command failed: %v", err)
+	}
+	want := "Version: 1.2.3\nCommit: abc1234\nBuild Time: 2026-08-09_12:00:00\nGo Version: go1.26.5"
+	if got := strings.TrimSpace(buf.String()); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func versionFieldsForTest(v, commit, buildTime, goVersion string) func() {
+	origVersion, origCommit, origBuildTime, origGoVersion := version.Version, version.Commit, version.BuildTime, version.GoVersion
+	version.Version, version.Commit, version.BuildTime, version.GoVersion = v, commit, buildTime, goVersion
+	return func() {
+		version.Version, version.Commit, version.BuildTime, version.GoVersion = origVersion, origCommit, origBuildTime, origGoVersion
 	}
 }

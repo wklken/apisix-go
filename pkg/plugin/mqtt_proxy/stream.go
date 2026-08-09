@@ -164,6 +164,9 @@ func readConnectFromStream(
 		}
 		return nil, ConnectInfo{}, err
 	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return nil, ConnectInfo{}, fmt.Errorf("clear mqtt CONNECT read deadline: %w", err)
+	}
 	return raw, info, nil
 }
 
@@ -184,6 +187,9 @@ func writeStreamBytes(ctx context.Context, conn net.Conn, payload []byte) error 
 			return io.ErrShortWrite
 		}
 		payload = payload[written:]
+	}
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear mqtt CONNECT write deadline: %w", err)
 	}
 	return nil
 }

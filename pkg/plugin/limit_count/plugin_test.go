@@ -2403,6 +2403,45 @@ func TestLimitCountLocalStoreEvictsOldestAndExpired(t *testing.T) {
 	}
 }
 
+func TestLocalFixedWindowDoesNotSlideOnIncrement(t *testing.T) {
+	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
+	now := base
+	store := newLocalFixedWindowStore(func() time.Time { return now }, defaultLocalStoreCapacity)
+	rate := limiter.Rate{Period: 60 * time.Second, Limit: 100}
+
+	ctx, err := store.Increment(context.Background(), "anchored", 1, rate)
+	if err != nil {
+		t.Fatalf("increment at t=0: %v", err)
+	}
+	if ctx.Remaining != 99 {
+		t.Fatalf("increment at t=0 remaining = %d, want 99", ctx.Remaining)
+	}
+
+	now = base.Add(59 * time.Second)
+	ctx, err = store.Increment(context.Background(), "anchored", 1, rate)
+	if err != nil {
+		t.Fatalf("increment at t=59s: %v", err)
+	}
+	if ctx.Remaining != 98 {
+		t.Fatalf("increment at t=59s remaining = %d, want 98", ctx.Remaining)
+	}
+	if ctx.Reset != base.Add(time.Minute).Unix() {
+		t.Fatalf("increment at t=59s reset = %d, want anchored window reset %d", ctx.Reset, base.Add(time.Minute).Unix())
+	}
+
+	now = base.Add(61 * time.Second)
+	ctx, err = store.Increment(context.Background(), "anchored", 1, rate)
+	if err != nil {
+		t.Fatalf("increment at t=61s: %v", err)
+	}
+	if ctx.Remaining != 99 {
+		t.Fatalf("increment at t=61s remaining = %d, want a fresh count of 1", ctx.Remaining)
+	}
+	if want := now.Add(rate.Period).Unix(); ctx.Reset != want {
+		t.Fatalf("increment at t=61s reset = %d, want fresh window reset %d", ctx.Reset, want)
+	}
+}
+
 type blockingDelayedSyncBackend struct {
 	block map[string]chan struct{}
 }

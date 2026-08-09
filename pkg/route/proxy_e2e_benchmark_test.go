@@ -31,6 +31,8 @@ var (
 	proxyLoopbackStoreOnce sync.Once
 	proxyLoopbackStore     *store.Store
 	proxyLoopbackEvents    chan *store.Event
+	proxyLoopbackEnvMu     sync.Mutex
+	proxyLoopbackEnvCache  = map[string]*proxyBenchmarkEnvironment{}
 )
 
 func proxyLoopbackRouteStore(b *testing.B) *store.Store {
@@ -47,12 +49,13 @@ func proxyLoopbackRouteStore(b *testing.B) *store.Store {
 }
 
 type proxyBenchmarkEnvironment struct {
-	client    *http.Client
-	server    *httptest.Server
-	upstreams []*httptest.Server
-	storage   *store.Store
-	builder   *Builder
-	routeIDs  []string
+	client     *http.Client
+	server     *httptest.Server
+	upstreams  []*httptest.Server
+	storage    *store.Store
+	builder    *Builder
+	routeIDs   []string
+	targetPath string
 }
 
 func (environment *proxyBenchmarkEnvironment) Close() {
@@ -78,6 +81,8 @@ func newProxyBenchmarkEnvironment(
 ) *proxyBenchmarkEnvironment {
 	payload := bytes.Repeat([]byte("x"), payloadSize)
 	environment := &proxyBenchmarkEnvironment{}
+	pathPrefix := fmt.Sprintf("/bench/%d-%s-%d", routes, plugins, nodes)
+	environment.targetPath = pathPrefix + "/target"
 
 	nodeSpecs := make([]string, 0, nodes)
 	for range nodes {
@@ -112,9 +117,9 @@ func newProxyBenchmarkEnvironment(
 	}
 	for index := range routes {
 		id := fmt.Sprintf("bench-%d-%s-%d", routes, plugins, index)
-		uri := "/bench/target"
+		uri := environment.targetPath
 		if index > 0 {
-			uri = fmt.Sprintf("/bench/filler/%06d", index)
+			uri = fmt.Sprintf("%s/filler/%06d", pathPrefix, index)
 		}
 		route := fmt.Sprintf(
 			`{"id":%q,"uri":%q,"methods":["GET"],"upstream":{"scheme":"http","nodes":%s}}`,
@@ -155,14 +160,29 @@ func newProxyBenchmarkEnvironment(
 	return environment
 }
 
+func proxyLoopbackBenchmarkEnvironment(
+	b *testing.B,
+	routes, nodes, payloadSize int,
+	plugins string,
+) *proxyBenchmarkEnvironment {
+	key := fmt.Sprintf("routes=%d/plugins=%s/nodes=%d/payload=%d", routes, plugins, nodes, payloadSize)
+	proxyLoopbackEnvMu.Lock()
+	defer proxyLoopbackEnvMu.Unlock()
+	if environment := proxyLoopbackEnvCache[key]; environment != nil {
+		return environment
+	}
+	environment := newProxyBenchmarkEnvironment(b, routes, nodes, payloadSize, plugins)
+	proxyLoopbackEnvCache[key] = environment
+	return environment
+}
+
 func BenchmarkRouteProxyLoopback(b *testing.B) {
 	for _, routes := range []int{1, 100, 1000} {
 		for _, plugins := range []string{"none", "request-id"} {
 			for _, nodes := range []int{1, 10} {
 				name := fmt.Sprintf("routes=%d/plugins=%s/nodes=%d", routes, plugins, nodes)
 				b.Run(name, func(b *testing.B) {
-					environment := newProxyBenchmarkEnvironment(b, routes, nodes, 1024, plugins)
-					defer environment.Close()
+					environment := proxyLoopbackBenchmarkEnvironment(b, routes, nodes, 1024, plugins)
 					errors := make(chan error, 1)
 					reportError := func(err error) {
 						select {
@@ -175,7 +195,7 @@ func BenchmarkRouteProxyLoopback(b *testing.B) {
 					b.ResetTimer()
 					b.RunParallel(func(pb *testing.PB) {
 						for pb.Next() {
-							response, err := environment.client.Get(environment.server.URL + "/bench/target")
+							response, err := environment.client.Get(environment.server.URL + environment.targetPath)
 							if err != nil {
 								reportError(err)
 								return

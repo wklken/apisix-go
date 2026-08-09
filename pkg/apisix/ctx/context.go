@@ -183,9 +183,12 @@ const (
 // RequestState owns the mutable per-request maps and typed hot fields behind a
 // single context value. The maps remain available for plugin compatibility.
 type RequestState struct {
-	ApisixVars  map[string]any
-	RequestVars map[string]any
-	recycled    atomic.Bool
+	ApisixVars      map[string]any
+	RequestVars     map[string]any
+	recycled        atomic.Bool
+	RequestBody     []byte
+	RequestBodyErr  error
+	RequestBodyRead bool
 
 	Status       int
 	BalancerIP   string
@@ -305,7 +308,20 @@ func GetRequestVar(r *http.Request, key string) any {
 
 func RegisterRequestVar(r *http.Request, key string, val any) {
 	vars := GetRequestVars(r)
+	if vars == nil {
+		return
+	}
 	vars[key] = val
+	if key == RequestBodyKey {
+		if state := GetRequestState(r); state != nil {
+			body, ok := val.([]byte)
+			if ok {
+				state.RequestBody = body
+				state.RequestBodyErr = nil
+				state.RequestBodyRead = true
+			}
+		}
+	}
 }
 
 const RequestBodyKey = "$request_body"
@@ -324,6 +340,9 @@ func ReadRequestBodyWithLimit(r *http.Request, max int64) ([]byte, error) {
 }
 
 func readRequestBody(r *http.Request, max int64) ([]byte, error) {
+	if state := GetRequestState(r); state != nil && state.RequestBodyRead {
+		return state.RequestBody, state.RequestBodyErr
+	}
 	bodyInCtx := GetRequestVar(r, RequestBodyKey)
 	if bodyInCtx != nil {
 		body, ok := bodyInCtx.([]byte)
@@ -343,8 +362,13 @@ func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	if state := GetRequestState(r); state != nil {
+		state.RequestBody = body
+		state.RequestBodyErr = err
+		state.RequestBodyRead = true
+	}
 
-	if GetRequestVars(r) != nil {
+	if err == nil && GetRequestVars(r) != nil {
 		RegisterRequestVar(r, RequestBodyKey, body)
 	}
 	return body, err

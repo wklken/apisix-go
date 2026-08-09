@@ -354,7 +354,6 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 			decoded, ok := decodeFilterBody(resp)
 			if !ok {
 				canFilter = false
-				resp.Header().Del("Content-Encoding")
 				logger.Errorf(
 					"filters may not work as expected due to unsupported compression encoding type: %s",
 					encoding,

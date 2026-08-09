@@ -286,6 +286,9 @@ func validateRequest(req Request, limits Limits) error {
 		if item.Path == "" {
 			return fmt.Errorf("pipeline[%d].path is required", i)
 		}
+		if _, err := http.NewRequest(http.MethodGet, item.Path, nil); err != nil {
+			return fmt.Errorf("pipeline[%d].path is invalid: %w", i, err)
+		}
 		if item.Method != "" && !validMethod(item.Method) {
 			return fmt.Errorf("pipeline[%d].method is invalid", i)
 		}
@@ -369,7 +372,14 @@ func dispatchPipelineRequest(
 		target += "?" + query.Encode()
 	}
 
-	req := httptest.NewRequest(method, target, strings.NewReader(item.Body)).WithContext(ctx)
+	req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(item.Body))
+	if err != nil {
+		return PipelineResponse{
+			Status: http.StatusBadRequest,
+			Reason: http.StatusText(http.StatusBadRequest),
+			Body:   fmt.Sprintf("bad request body: pipeline[0].path is invalid: %v", err),
+		}, false
+	}
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
@@ -398,9 +408,10 @@ func dispatchPipelineRequest(
 
 	select {
 	case <-ctx.Done():
-		// Wait for the worker so it cannot pile up after the response is
-		// sent; the subrequest context is already canceled.
-		<-done
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
 		return timeoutResponse(), true
 	case result := <-done:
 		if ctx.Err() != nil {

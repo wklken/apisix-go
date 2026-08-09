@@ -51,6 +51,26 @@ func TestReadRequestBodyWithoutRequestVars(t *testing.T) {
 	}
 }
 
+func TestReadRequestBodyWithLimitCachesReadError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("hello!"))
+	req = WithRequestVars(req)
+
+	firstBody, firstErr := ReadRequestBodyWithLimit(req, 5)
+	secondBody, secondErr := ReadRequestBodyWithLimit(req, 5)
+
+	var firstMaxBytesErr *http.MaxBytesError
+	var secondMaxBytesErr *http.MaxBytesError
+	if !errors.As(firstErr, &firstMaxBytesErr) {
+		t.Fatalf("first ReadRequestBodyWithLimit() error = %v, want *http.MaxBytesError", firstErr)
+	}
+	if !errors.As(secondErr, &secondMaxBytesErr) {
+		t.Fatalf("second ReadRequestBodyWithLimit() error = %v, want *http.MaxBytesError", secondErr)
+	}
+	if !reflect.DeepEqual(firstBody, secondBody) {
+		t.Fatalf("cached body = %q, want %q", secondBody, firstBody)
+	}
+}
+
 func TestReadRequestBodyWithLimitAtBoundary(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("hello"))
 	body, err := ReadRequestBodyWithLimit(req, 5)

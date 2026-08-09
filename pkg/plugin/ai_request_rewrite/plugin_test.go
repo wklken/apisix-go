@@ -202,6 +202,59 @@ func TestHandlerUsesBedrockConverseRequestAndResponse(t *testing.T) {
 	}
 }
 
+func TestAnthropicUsesMessagesProtocol(t *testing.T) {
+	var llmPath string
+	var llmRequest map[string]any
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&llmRequest); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"{\"content\":\"redacted\"}"}]}`))
+	}))
+	defer llm.Close()
+
+	p := newTestPlugin(t, Config{
+		Prompt:   "redact sensitive fields",
+		Provider: "anthropic",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+		Options: map[string]any{
+			"model":       "claude-sonnet",
+			"temperature": float64(0),
+		},
+		Override: Override{Endpoint: llm.URL},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"content":"4111 1111 1111 1111"}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := string(readTestBody(t, r)); got != `{"content":"redacted"}` {
+			t.Fatalf("rewritten body = %q, want redacted JSON", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+	if llmPath != "/v1/messages" {
+		t.Fatalf("LLM path = %q, want /v1/messages", llmPath)
+	}
+	if _, ok := llmRequest["messages"]; !ok {
+		t.Fatalf("LLM request = %#v, want Anthropic messages body", llmRequest)
+	}
+	if _, ok := llmRequest["max_completion_tokens"]; ok {
+		t.Fatalf("LLM request = %#v, want no OpenAI max_completion_tokens", llmRequest)
+	}
+	if got := llmRequest["system"]; got != "redact sensitive fields" {
+		t.Fatalf("LLM system = %#v, want Anthropic system prompt", got)
+	}
+	if _, ok := llmRequest["max_tokens"]; !ok {
+		t.Fatalf("LLM request = %#v, want Anthropic max_tokens", llmRequest)
+	}
+}
+
 func TestHandlerAppliesGCPTokenForVertexRewrite(t *testing.T) {
 	var authorization string
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

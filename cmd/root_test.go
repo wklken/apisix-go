@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,5 +88,25 @@ func TestStartReturnsStartupErrorWithoutPanic(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "config") {
 		t.Fatalf("Start() error = %v, want configuration context in the error", err)
+	}
+}
+
+func TestRootCommandRejectsUnknownArgs(t *testing.T) {
+	rootCmd.SetErr(io.Discard)
+	rootCmd.SetArgs([]string{"definitely-not-a-real-command"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("root command accepted an unknown positional argument")
+	}
+}
+
+func TestVersionCommandPrintsVersion(t *testing.T) {
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"version"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("version command failed: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != version {
+		t.Fatalf("version output = %q, want %q", got, version)
 	}
 }

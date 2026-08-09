@@ -56,6 +56,7 @@ func init() {
 var rootCmd = &cobra.Command{
 	Use:   "apisix",
 	Short: "an golang version of apisix, not production ready",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return Start()
 	},

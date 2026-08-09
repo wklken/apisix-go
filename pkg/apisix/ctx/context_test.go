@@ -100,6 +100,11 @@ func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 	RegisterApisixVar(req, "$route_id", "route-1")
 }
 
+func TestRegisterRequestVarWithoutRequestStateIsNoOp(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	RegisterRequestVar(req, "$status", http.StatusOK)
+}
+
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {
 	original := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	trusted := WithTrustedProxy(original)

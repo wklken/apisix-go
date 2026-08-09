@@ -124,11 +124,43 @@ func TestProxyFaultHandling(t *testing.T) {
 		wantAttempts int
 		wantAborted  bool
 	}{
-		{name: "GET retries reset", method: http.MethodGet, mode: faultReset, wantStatus: http.StatusBadGateway, wantAttempts: 2},
-		{name: "POST does not retry reset", method: http.MethodPost, mode: faultReset, wantStatus: http.StatusBadGateway, wantAttempts: 1},
-		{name: "keyed POST retries reset", method: http.MethodPost, idempotency: "order-123", mode: faultReset, wantStatus: http.StatusBadGateway, wantAttempts: 2},
-		{name: "header inactivity maps to 504", method: http.MethodGet, mode: faultHeaderTimeout, wantStatus: http.StatusGatewayTimeout, wantAttempts: 2},
-		{name: "body inactivity terminates copy", method: http.MethodGet, mode: faultBodyStall, wantStatus: http.StatusOK, wantAttempts: 1, wantAborted: true},
+		{
+			name:         "GET retries reset",
+			method:       http.MethodGet,
+			mode:         faultReset,
+			wantStatus:   http.StatusBadGateway,
+			wantAttempts: 2,
+		},
+		{
+			name:         "POST does not retry reset",
+			method:       http.MethodPost,
+			mode:         faultReset,
+			wantStatus:   http.StatusBadGateway,
+			wantAttempts: 1,
+		},
+		{
+			name:         "keyed POST retries reset",
+			method:       http.MethodPost,
+			idempotency:  "order-123",
+			mode:         faultReset,
+			wantStatus:   http.StatusBadGateway,
+			wantAttempts: 2,
+		},
+		{
+			name:         "header inactivity maps to 504",
+			method:       http.MethodGet,
+			mode:         faultHeaderTimeout,
+			wantStatus:   http.StatusGatewayTimeout,
+			wantAttempts: 2,
+		},
+		{
+			name:         "body inactivity terminates copy",
+			method:       http.MethodGet,
+			mode:         faultBodyStall,
+			wantStatus:   http.StatusOK,
+			wantAttempts: 1,
+			wantAborted:  true,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -2126,7 +2126,7 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
 			_, _ = w.Write([]byte(chunk))
 			flusher.Flush()
@@ -2151,7 +2151,7 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	output := rr.Body.String()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if !strings.Contains(output, "tok"+strconv.Itoa(i)) {
 			t.Fatalf("progressing stream lost chunk %d; body = %q", i, output)
 		}

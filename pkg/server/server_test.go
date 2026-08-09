@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -607,6 +609,37 @@ func TestServerShutdownClosesEtcdClient(t *testing.T) {
 	}
 	if !runtime.closed {
 		t.Fatal("stream runtime was not closed on shutdown")
+	}
+}
+
+func TestServerShutdownStopsStandaloneWatcher(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /one\n#END\n"), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	watcher := config.NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event))
+	server := &Server{
+		server:            &http.Server{},
+		routes:            newRouteHandler(http.NotFoundHandler(), nil),
+		standaloneWatcher: watcher,
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		_, err := watcher.ReloadSnapshot()
+		reloadDone <- err
+	}()
+
+	if err := server.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown() error = %v", err)
+	}
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("blocked standalone reload error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown() did not stop the standalone watcher")
 	}
 }
 

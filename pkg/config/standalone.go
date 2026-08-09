@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,10 @@ const (
 	standaloneProviderYAML = "yaml"
 	standaloneProviderJSON = "json"
 )
+
+// standaloneIDRegexp bounds standalone resource IDs. Numeric IDs are
+// normalized to their decimal string form before validation.
+var standaloneIDRegexp = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 var standaloneBuckets = []string{
 	"routes",
@@ -69,6 +74,11 @@ type StandaloneFileWatcher struct {
 	mu       sync.Mutex
 	current  standaloneSnapshot
 	onReload func(StandaloneReloadResult, error)
+
+	stop         chan struct{}
+	done         chan struct{}
+	stopOnce     sync.Once
+	watchStarted bool
 }
 
 func StandaloneConfigFile(provider string) string {
@@ -88,7 +98,24 @@ func NewStandaloneFileWatcher(path, provider string, events chan *store.Event) *
 		provider: strings.ToLower(strings.TrimSpace(provider)),
 		events:   events,
 		current:  make(standaloneSnapshot),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
+}
+
+// Stop unblocks any in-flight reload that is waiting to emit a store event and
+// waits for the Watch goroutine to exit. It is idempotent and safe to call
+// even when Watch was never started.
+func (w *StandaloneFileWatcher) Stop() {
+	w.stopOnce.Do(func() {
+		close(w.stop)
+		w.mu.Lock()
+		started := w.watchStarted
+		w.mu.Unlock()
+		if started {
+			<-w.done
+		}
+	})
 }
 
 func (w *StandaloneFileWatcher) Reload() error {
@@ -113,7 +140,9 @@ func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error)
 
 		for _, id := range sortedSnapshotIDs(previous) {
 			if _, ok := updated[id]; !ok {
-				w.emit(store.EventTypeDelete, bucket, id, nil)
+				if !w.emit(store.EventTypeDelete, bucket, id, nil) {
+					return result, nil
+				}
 				changed = true
 			}
 		}
@@ -121,7 +150,9 @@ func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error)
 			if previousValue, ok := previous[id]; ok && bytes.Equal(previousValue, updated[id]) {
 				continue
 			}
-			w.emit(store.EventTypePut, bucket, id, updated[id])
+			if !w.emit(store.EventTypePut, bucket, id, updated[id]) {
+				return result, nil
+			}
 			changed = true
 		}
 		if changed && store.IsHTTPRouteReloadBucket(bucket) {
@@ -152,6 +183,10 @@ func (w *StandaloneFileWatcher) Watch() {
 		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
 		return
 	}
+	w.mu.Lock()
+	w.watchStarted = true
+	w.mu.Unlock()
+
 	result, err := w.ReloadSnapshot()
 	if err != nil {
 		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
@@ -160,11 +195,14 @@ func (w *StandaloneFileWatcher) Watch() {
 
 	configuredBase := filepath.Base(w.path)
 	go func() {
+		defer close(w.done)
 		defer func() {
 			_ = watcher.Close()
 		}()
 		for {
 			select {
+			case <-w.stop:
+				return
 			case event, ok := <-watcher.Events:
 				if !ok {
 					return
@@ -197,12 +235,17 @@ func (w *StandaloneFileWatcher) notifyReload(result StandaloneReloadResult, err 
 	}
 }
 
-func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {
+func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) bool {
 	event := store.NewEvent()
 	event.Type = eventType
 	event.Key = []byte("/apisix/" + bucket + "/" + id)
 	event.Value = append([]byte(nil), value...)
-	w.events <- event
+	select {
+	case w.events <- event:
+		return true
+	case <-w.stop:
+		return false
+	}
 }
 
 func standaloneProviderFromPath(path string) string {
@@ -294,6 +337,9 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 	id, err := standaloneResourceID(idRaw)
 	if err != nil {
 		return "", nil, err
+	}
+	if bucket != "secrets" && !standaloneIDRegexp.MatchString(id) {
+		return "", nil, fmt.Errorf("invalid id %q", id)
 	}
 	if idKey == "id" {
 		fields[idKey], err = json.Marshal(id)

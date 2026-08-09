@@ -69,6 +69,24 @@ func TestApplyTrafficSplitOverrideRewritesHost(t *testing.T) {
 	}
 }
 
+func TestApplyTrafficSplitOverrideRetainsRewrittenHost(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme:       "http",
+		Host:         "127.0.0.1:8080",
+		PassHost:     "rewrite",
+		UpstreamHost: "split.example",
+		HealthReporter: &recordingSplitHealthReporter{},
+		HealthTarget:   "http://127.0.0.1:8080",
+	})
+
+	applyTrafficSplitOverride(req)
+
+	if req.Host != "split.example" {
+		t.Fatalf("Host = %q, want split.example", req.Host)
+	}
+}
+
 func TestEmptyUpstreamRouteReturnsClassifiedError(t *testing.T) {
 	builder := &Builder{}
 	handler, err := builder.buildReverseHandler(resource.Route{}, resource.Service{})

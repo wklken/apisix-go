@@ -602,6 +602,58 @@ func TestHandlerSkipsJSONMaskWhenBodyExceedsLimit(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", http.NoBody)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 with an empty body", rr.Code)
+	}
+}
+
+type closeSpyBody struct {
+	io.ReadCloser
+	closes int
+}
+
+func (b *closeSpyBody) Close() error {
+	b.closes++
+	return nil
+}
+
+func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
+		}},
+	})
+
+	spy := &closeSpyBody{ReadCloser: io.NopCloser(strings.NewReader(`{"token":"secret"}`))}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", spy)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if spy.closes != 1 {
+		t.Fatalf("original body closes = %d, want exactly 1", spy.closes)
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
 func mustParseQuery(t *testing.T, raw string) url.Values {
 	t.Helper()
 

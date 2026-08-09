@@ -350,10 +350,13 @@ func TestRoutePriorityEqualKeepsLaterRegistration(t *testing.T) {
 	}
 	response := performRouteTestRequest(t, buildPriorityRouter(t, fixtures), "/api/v1/items/1")
 	if response.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d from the later-registered equal-priority route", response.Code, http.StatusAccepted)
+		t.Fatalf(
+			"status = %d, want %d from the later-registered equal-priority route",
+			response.Code,
+			http.StatusAccepted,
+		)
 	}
 }
-
 
 func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

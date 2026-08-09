@@ -96,8 +96,8 @@ func TestHandlerSendsBoundedBodyToWAFAndPreservesFullBodyForUpstream(t *testing.
 	t.Cleanup(waf.Close)
 
 	p := newTestPlugin(t, Config{
-		Mode:  "block",
-		Nodes: []Node{nodeFromURL(t, waf.URL)},
+		Mode:   "block",
+		Nodes:  []Node{nodeFromURL(t, waf.URL)},
 		Config: WAFConfig{ReqBodySize: 1},
 	})
 	fullBody := bytes.Repeat([]byte("a"), 2*1024)

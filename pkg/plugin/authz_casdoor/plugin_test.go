@@ -250,7 +250,12 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 		t.Fatal("session cookie was not set")
 	}
 	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("cookie attributes = secure:%t httpOnly:%t sameSite:%v", cookie.Secure, cookie.HttpOnly, cookie.SameSite)
+		t.Fatalf(
+			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			cookie.Secure,
+			cookie.HttpOnly,
+			cookie.SameSite,
+		)
 	}
 }
 

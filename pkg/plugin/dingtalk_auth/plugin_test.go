@@ -10,6 +10,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -277,6 +278,62 @@ func TestHandlerCachesAccessToken(t *testing.T) {
 
 	if tokenRequests != 1 {
 		t.Fatalf("token requests = %d, want cached access token reused", tokenRequests)
+	}
+}
+
+func TestSessionCookieSecureByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AppKey:      "app-key",
+		AppSecret:   "app-secret",
+		Secret:      "12345678",
+		RedirectURI: "https://login.dingtalk.com/oauth2/auth",
+	})
+	cookie, err := p.sessionCookie(map[string]any{"userid": "user-a"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie attributes = secure:%t httpOnly:%t sameSite:%v", cookie.Secure, cookie.HttpOnly, cookie.SameSite)
+	}
+}
+
+func TestSessionCookieHonorsCookieControls(t *testing.T) {
+	cookieSecure := false
+	p := newTestPlugin(t, Config{
+		AppKey:         "app-key",
+		AppSecret:      "app-secret",
+		Secret:         "12345678",
+		RedirectURI:    "https://login.dingtalk.com/oauth2/auth",
+		CookieSecure:   &cookieSecure,
+		CookieSameSite: "Strict",
+	})
+	cookie, err := p.sessionCookie(map[string]any{"userid": "user-a"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
+	}
+}
+
+func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"app_key":          "app-key",
+		"app_secret":       "app-secret",
+		"secret":           "12345678",
+		"redirect_uri":     "https://login.dingtalk.com/oauth2/auth",
+		"cookie_same_site": "None",
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
+	}
+	config["cookie_secure"] = true
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
 	}
 }
 

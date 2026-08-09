@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -267,6 +269,74 @@ func TestInvalidTokenResponseReturnsServiceUnavailable(t *testing.T) {
 
 	if callbackRR.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", callbackRR.Code)
+	}
+}
+
+func TestSessionCookieSecureByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: "secret-a",
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil))
+
+	cookie := findSessionCookie(rr.Result().Cookies())
+	if cookie == nil {
+		t.Fatal("session cookie was not set")
+	}
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie attributes = secure:%t httpOnly:%t sameSite:%v", cookie.Secure, cookie.HttpOnly, cookie.SameSite)
+	}
+}
+
+func TestSessionCookieHonorsCookieControls(t *testing.T) {
+	cookieSecure := false
+	p := newTestPlugin(t, Config{
+		EndpointAddr:   "https://door.example.com",
+		ClientID:       "client-a",
+		ClientSecret:   "secret-a",
+		CallbackURL:    "https://gateway.example.com/callback",
+		CookieSecure:   &cookieSecure,
+		CookieSameSite: "Strict",
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil))
+
+	cookie := findSessionCookie(rr.Result().Cookies())
+	if cookie == nil {
+		t.Fatal("session cookie was not set")
+	}
+	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
+	}
+}
+
+func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"endpoint_addr":    "https://door.example.com",
+		"client_id":        "client-a",
+		"client_secret":    "secret-a",
+		"callback_url":     "https://gateway.example.com/callback",
+		"cookie_same_site": "None",
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
+	}
+	config["cookie_secure"] = true
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
 	}
 }
 

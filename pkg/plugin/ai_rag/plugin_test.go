@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 )
@@ -365,4 +366,71 @@ func readBodyForTest(t *testing.T, r *http.Request) []byte {
 		t.Fatalf("read body: %v", err)
 	}
 	return body
+}
+
+func TestPostInitDefaultsTimeoutTo30000(t *testing.T) {
+	p := &Plugin{config: Config{
+		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://e", APIKey: "k"}},
+		VectorSearchProvider: VectorSearchProvider{
+			AzureAISearch: AzureProvider{Endpoint: "http://s", APIKey: "k"},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if got := p.config.Timeout; got != 30000 {
+		t.Fatalf("config.Timeout = %d, want default 30000", got)
+	}
+}
+
+func TestHandlerTimeoutBoundsBlockedEmbeddingProvider(t *testing.T) {
+	release := make(chan struct{})
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		blocked.Close()
+	}()
+
+	p := newTestPlugin(t, Config{
+		Timeout: 20,
+		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{
+			Endpoint: blocked.URL,
+			APIKey:   "k",
+		}},
+		VectorSearchProvider: VectorSearchProvider{AzureAISearch: AzureProvider{
+			Endpoint: "http://127.0.0.1:1",
+			APIKey:   "k",
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "ai_rag": {
+	    "embeddings": {"input":"hello"},
+	    "vector_search": {"fields":"contentVector"}
+	  }
+	}`))
+	rr := httptest.NewRecorder()
+	started := time.Now()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called when embedding provider hangs")
+	})).ServeHTTP(rr, req)
+
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("handler took %s, want provider timeout within 200ms", elapsed)
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "failed to request embeddings") {
+		t.Fatalf("response body = %q, want embedding provider error", rr.Body.String())
+	}
 }

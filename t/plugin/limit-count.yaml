@@ -10182,112 +10182,54 @@ cases:
                 X-RateLimit-Remaining:
                     equals: "0"
             status: 503
-    - name: limit-count-disable-plugin-test-16
+    - name: limit-count-disable-plugin-tests-16-17
       source:
         file: t/plugin/limit-count.t
-        tests:
-            - 16
+        tests: [16, 17]
       config:
         routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
+          - id: limit-count-route
+            uri: /limit-count
+            plugins:
+              limit-count:
+                count: 2
+                time_window: 60
+                key: remote_addr
+                rejected_code: 503
+            upstream:
+              type: roundrobin
+              nodes: {'{{FIXTURE.primary.ADDR}}': 1}
       fixtures:
-        - count:
-            at_least: 1
-            at_most: 1
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
+        - name: primary
           kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
+          count: {at_least: 7, at_most: 7}
+          expect: [{method: GET, path: {equals: /limit-count}}]
+          respond: [{status: 200, body: limit-count upstream}]
       steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
-          output:
-            body:
-                equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
-            status: 200
-    - name: limit-count-up-the-limit-test-17
-      source:
-        file: t/plugin/limit-count.t
-        tests:
-            - 17
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
+        - name: enabled-request-1
+          input: {method: GET, path: /limit-count}
+          output: {status: 200}
+        - name: enabled-request-2
+          input: {method: GET, path: /limit-count}
+          output: {status: 200}
+        - name: enabled-request-over-limit
+          input: {method: GET, path: /limit-count}
+          output: {status: 503}
+        - name: disable-plugin-and-first-unlimited-request
+          config:
+            routes:
+              - id: limit-count-route
+                uri: /limit-count
+                plugins: {}
+                upstream:
+                  type: roundrobin
+                  nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+          config_probe:
+            input: {method: GET, path: /limit-count}
+            output: {status: 200, body: {equals: limit-count upstream}}
+          input: {method: GET, path: /limit-count}
+          output: {status: 200, body: {equals: limit-count upstream}}
+          repeat: 4
     - name: limit-count-set-route-key-server-addr-test-18
       source:
         file: t/plugin/limit-count.t

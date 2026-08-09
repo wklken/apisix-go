@@ -509,3 +509,24 @@ general-purpose response body, not an unambiguous credential. The Go extension
 leaves it encrypted, `PostInit` calls strict `Resolver.Resolve`, and invalid or
 missing-key ciphertext fails before response handling. `body_secret` cannot be
 combined with ordinary `body` or `filters`.
+
+## Route Building and Priority
+
+Route resources are stable-sorted by ascending `resource.Route.Priority` before
+registration so the highest-priority route registers last and wins for
+identical URI patterns. Within a single pattern, equal priorities keep the
+existing later-registration behavior.
+
+Cross-pattern conflicts follow chi's radix-tree specificity order
+(static > parameter > wildcard) regardless of registration order or priority.
+For example, with exact `/api/items` at priority 0 and parameter `/api/:id` at
+priority 100, a request to `/api/items` resolves to the exact route. This is
+partial APISIX parity: APISIX's priority-first semantics would prefer the
+parameter route in that case, but the Go runtime intentionally does not override
+chi's more-specific matching because it strictly improves on ignoring priority
+entirely. Tests in `pkg/route/builder_lifecycle_test.go` pin this behavior.
+
+`base.ReplaceRequestBody` replaces the request body without refreshing the
+ctx request-body cache, so a later read through `apisixctx.ReadRequestBody`
+can observe a stale body. This is a documented follow-up, not a regression of
+any current change.

@@ -334,6 +334,49 @@ func TestRoutePriorityWildcardWinsRegardlessOfOrder(t *testing.T) {
 	assertHigherPriorityRouteWins(t, "/api/v1/*", "/api/v1/items/1")
 }
 
+func TestCrossPatternExactWinsOverHigherPriorityParam(t *testing.T) {
+	exact := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer exact.Close()
+	param := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer param.Close()
+
+	exactNode := routePriorityNode(t, exact.URL)
+	paramNode := routePriorityNode(t, param.URL)
+
+	for _, paramFirst := range []bool{true, false} {
+		order := "exact-registered-first"
+		if paramFirst {
+			order = "param-registered-first"
+		}
+		t.Run(order, func(t *testing.T) {
+			exactFixture := priorityRouteFixture{uri: "/api/items", priority: 0, upstream: exactNode}
+			paramFixture := priorityRouteFixture{uri: "/api/:id", priority: 100, upstream: paramNode}
+			var fixtures []priorityRouteFixture
+			if paramFirst {
+				paramFixture.id = "aaa-prio-param"
+				exactFixture.id = "zzz-prio-exact"
+				fixtures = []priorityRouteFixture{paramFixture, exactFixture}
+			} else {
+				exactFixture.id = "aaa-prio-exact"
+				paramFixture.id = "zzz-prio-param"
+				fixtures = []priorityRouteFixture{exactFixture, paramFixture}
+			}
+			response := performRouteTestRequest(t, buildPriorityRouter(t, fixtures), "/api/items")
+			if response.Code != http.StatusCreated {
+				t.Fatalf(
+					"status = %d, want %d: chi resolves static > param regardless of priority, so the exact route wins",
+					response.Code,
+					http.StatusCreated,
+				)
+			}
+		})
+	}
+}
+
 func TestRoutePriorityEqualKeepsLaterRegistration(t *testing.T) {
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)

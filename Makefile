@@ -10,7 +10,9 @@ BENCH_PACKAGES ?= ./pkg/json ./pkg/plugin/base ./pkg/proxy ./pkg/route
 BENCH_CORPUS_FILES ?= pkg/json/benchmark_test.go \
 	pkg/plugin/base/logging_benchmark_test.go \
 	pkg/proxy/benchmark_test.go \
-	pkg/route/benchmark_test.go
+	pkg/proxy/runtime_benchmark_test.go \
+	pkg/route/benchmark_test.go \
+	pkg/route/proxy_e2e_benchmark_test.go
 BENCH_REGEX ?= .
 BENCH_TIME ?= 1s
 BENCH_COUNT ?= 10

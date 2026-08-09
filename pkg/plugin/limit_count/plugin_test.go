@@ -1128,7 +1128,11 @@ func TestDelayedSyncFlushRetriesDroppedStateWithoutAnotherRequest(t *testing.T) 
 	if err := syncer.flushNow(context.Background(), now); err != nil {
 		t.Fatalf("first flushNow() error = %v", err)
 	}
-	if got := backend.keyDeltas(); fmt.Sprint(got) != "[queued-1:1 queued-2:1]" {
+	got := backend.keyDeltas()
+	slices.SortFunc(got, func(left, right delayedSyncCall) int {
+		return strings.Compare(left.key, right.key)
+	})
+	if fmt.Sprint(got) != "[queued-1:1 queued-2:1]" {
 		t.Fatalf("first flush calls = %v, want only the two queued keys", got)
 	}
 	syncer.mu.Lock()

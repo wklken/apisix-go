@@ -419,6 +419,44 @@ func TestHandlerNormalizesValidatedJSONBody(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesLargeIntegerDuringJSONNormalization(t *testing.T) {
+	p := newTestPlugin(t, Config{BodySchema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id": map[string]any{"type": "integer"},
+		},
+	}})
+
+	const body = `{"id":9007199254740993}`
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/validate",
+		strings.NewReader(body),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		if string(got) != body {
+			t.Fatalf("upstream body = %s, want %s", got, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestParseJSONRejectsTrailingData(t *testing.T) {
+	if _, err := parseJSON([]byte(`{"id":1}{"id":2}`)); err == nil {
+		t.Fatal("parseJSON() error = nil, want trailing JSON data rejected")
+	}
+}
+
 func TestHandlerUpdatesCachedRequestBodyAfterJSONNormalization(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BodySchema: map[string]any{

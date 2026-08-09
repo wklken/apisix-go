@@ -83,6 +83,84 @@ func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 	}
 }
 
+func TestHandlerSendsBoundedBodyToWAFAndPreservesFullBodyForUpstream(t *testing.T) {
+	var wafBody []byte
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		wafBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read WAF body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:   "block",
+		Nodes:  []Node{nodeFromURL(t, waf.URL)},
+		Config: WAFConfig{ReqBodySize: 1},
+	})
+	fullBody := bytes.Repeat([]byte("a"), 2*1024)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", bytes.NewReader(fullBody))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		if !bytes.Equal(got, fullBody) {
+			t.Fatalf("upstream body length = %d, want %d", len(got), len(fullBody))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(wafBody) != 1024 {
+		t.Fatalf("WAF body length = %d, want 1024", len(wafBody))
+	}
+}
+
+func TestHandlerSendsNoBodyToWAFForNegativeInspectionLimit(t *testing.T) {
+	var wafBody []byte
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		wafBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read WAF body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:   "block",
+		Nodes:  []Node{nodeFromURL(t, waf.URL)},
+		Config: WAFConfig{ReqBodySize: -1},
+	})
+	fullBody := []byte("complete request body")
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", bytes.NewReader(fullBody))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		if !bytes.Equal(got, fullBody) {
+			t.Fatalf("upstream body = %q, want %q", got, fullBody)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(wafBody) != 0 {
+		t.Fatalf("WAF body length = %d, want 0", len(wafBody))
+	}
+}
+
 func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-1"})

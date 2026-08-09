@@ -3,7 +3,6 @@ package chaitin_waf
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -434,14 +434,20 @@ func mergeWAFConfig(baseConfig, override WAFConfig) WAFConfig {
 }
 
 func (p *Plugin) askWAF(r *http.Request, node Node, cfg WAFConfig) (wafDecision, time.Duration, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(cfg.ReqBodySize)*1024))
+	body, err := apisixctx.ReadRequestBody(r)
 	if err != nil {
 		return wafDecision{}, 0, err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
+	inspectionBody := body
+	limit := cfg.ReqBodySize * 1024
+	if limit <= 0 {
+		inspectionBody = inspectionBody[:0]
+	} else if len(inspectionBody) > limit {
+		inspectionBody = inspectionBody[:limit]
+	}
 
 	endpoint := "http://" + node.hostPort() + r.URL.RequestURI()
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint, bytes.NewReader(inspectionBody))
 	if err != nil {
 		return wafDecision{}, 0, err
 	}

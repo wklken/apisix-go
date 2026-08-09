@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,61 @@ func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 	t.Cleanup(func() { p.Stop() })
 	if got := p.config.Kafka.Brokers[0].SASLConfig.Password; got != "kafka-secret" {
 		t.Fatalf("kafka password = %q, want resolved plaintext", got)
+	}
+}
+
+func TestSendToTCPReturnsWithinWriteDeadline(t *testing.T) {
+	conn := &deadlineWriteConn{}
+	p := &Plugin{
+		config: Config{
+			TCP:     &TCPConfig{Host: "127.0.0.1", Port: 1},
+			Timeout: 1,
+		},
+	}
+	p.dialTCP = func(string, string, time.Duration, *tls.Config, bool) (net.Conn, error) {
+		return conn, nil
+	}
+
+	start := time.Now()
+	err := p.sendToTCP([]string{"blocked write"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("sendToTCP() error = nil, want write deadline error")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("sendToTCP() took %s, want return within twice the configured 1s timeout", elapsed)
+	}
+}
+
+func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BatchMaxSize:    50000,
+		InactiveTimeout: 3600,
+		BufferDuration:  3600,
+	})
+
+	dropped := 0
+	for range 10002 {
+		if !p.BatchProcessor.Push(map[string]any{"message": "line"}) {
+			dropped++
+		}
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want exactly 1 beyond the default 10000 pending cap", dropped)
+	}
+}
+
+func TestMetadataSchemaAcceptsMaxPendingEntries(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{
+		"tcp":                 map[string]any{"host": "127.0.0.1", "port": 1999},
+		"max_pending_entries": 100,
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected max_pending_entries: %v", err)
 	}
 }
 
@@ -757,4 +813,66 @@ func mustAtoi(t *testing.T, s string) int {
 		t.Fatalf("atoi %q: %v", s, err)
 	}
 	return n
+}
+
+type deadlineWriteConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	closed   bool
+}
+
+func (c *deadlineWriteConn) Write([]byte) (int, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.mu.Unlock()
+	if deadline.IsZero() {
+		time.Sleep(time.Hour)
+		return 0, os.ErrDeadlineExceeded
+	}
+	time.Sleep(time.Until(deadline))
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (c *deadlineWriteConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *deadlineWriteConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *deadlineWriteConn) LocalAddr() net.Addr {
+	return errorLoggerTestAddr("local")
+}
+
+func (c *deadlineWriteConn) RemoteAddr() net.Addr {
+	return errorLoggerTestAddr("remote")
+}
+
+func (c *deadlineWriteConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *deadlineWriteConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *deadlineWriteConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = deadline
+	return nil
+}
+
+type errorLoggerTestAddr string
+
+func (a errorLoggerTestAddr) Network() string {
+	return "test"
+}
+
+func (a errorLoggerTestAddr) String() string {
+	return string(a)
 }

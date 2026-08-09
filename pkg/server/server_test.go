@@ -19,6 +19,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
@@ -156,6 +158,22 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 	}
 }
 
+func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{}
+	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
+	}
+	if server.IdleTimeout != 90*time.Second {
+		t.Fatalf("IdleTimeout = %s, want 90s", server.IdleTimeout)
+	}
+	if server.ReadTimeout != 0 || server.WriteTimeout != 0 {
+		t.Fatalf("stream-sensitive total timeouts = %s/%s, want zero", server.ReadTimeout, server.WriteTimeout)
+	}
+}
+
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })
@@ -258,13 +276,25 @@ func TestConfiguredHTTPServerEnablesH2COnlyForPlaintextListener(t *testing.T) {
 	}
 }
 
-func TestInitialRouteHandlerUsesNotFoundForFailedBuild(t *testing.T) {
-	handler := initialRouteHandler(nil)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/missing", nil))
+type failingStrictRouteBuilder struct {
+	stopped bool
+}
 
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+func (*failingStrictRouteBuilder) BuildStrict() (*chi.Mux, error) {
+	return nil, errors.New("invalid initial snapshot")
+}
+
+func (builder *failingStrictRouteBuilder) Stop() { builder.stopped = true }
+
+func TestInitialRouteBuildFailureIsRejected(t *testing.T) {
+	builder := &failingStrictRouteBuilder{}
+	routes := newRouteHandler(http.NotFoundHandler(), nil)
+	err := buildAndInstallInitialRoutes(routes, builder)
+	if err == nil || !strings.Contains(err.Error(), "build initial routes") {
+		t.Fatalf("buildAndInstallInitialRoutes() error = %v", err)
+	}
+	if !builder.stopped {
+		t.Fatal("failed initial builder was not stopped")
 	}
 }
 

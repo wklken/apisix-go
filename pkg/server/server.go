@@ -222,6 +222,11 @@ func configuredTLSListenAddresses() []string {
 	return addresses
 }
 
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultHTTPIdleTimeout   = 90 * time.Second
+)
+
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
@@ -231,7 +236,12 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	if frontendPlainHTTP2Enabled() {
 		protocols.SetUnencryptedHTTP2(true)
 	}
-	server := &http.Server{Handler: handler, Protocols: protocols}
+	server := &http.Server{
+		Handler:           handler,
+		Protocols:         protocols,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		IdleTimeout:       defaultHTTPIdleTimeout,
+	}
 	if frontendHTTP2Enabled() {
 		if err := http2.ConfigureServer(server, nil); err != nil {
 			logger.Errorf("configure HTTP/2 server: %s", err)
@@ -242,8 +252,12 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	}
 
 	httpConfig := config.GlobalConfig.NginxConfig.HTTP
-	server.IdleTimeout = httpConfig.KeepaliveTimeout
-	server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
+	if httpConfig.KeepaliveTimeout > 0 {
+		server.IdleTimeout = httpConfig.KeepaliveTimeout
+	}
+	if httpConfig.ClientHeaderTimeout > 0 {
+		server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
+	}
 	server.WriteTimeout = httpConfig.SendTimeout
 	if httpConfig.ClientBodyTimeout > 0 {
 		server.ReadTimeout = httpConfig.ClientBodyTimeout + httpConfig.ClientHeaderTimeout
@@ -297,7 +311,9 @@ func (s *Server) Start(ctx context.Context) error {
 	logger.Info("build the routes")
 	initialReloadGeneration := reloadGeneration.Load()
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
-	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
+	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
+		return err
+	}
 	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	s.startStreamProxy(ctx)
 	if s.standaloneWatcher != nil {
@@ -322,11 +338,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.shutdown(ctx)
 }
 
-func initialRouteHandler(handler *chi.Mux) http.Handler {
-	if handler == nil {
-		return http.NotFoundHandler()
+type strictRouteBuilder interface {
+	BuildStrict() (*chi.Mux, error)
+	Stop()
+}
+
+func buildAndInstallInitialRoutes(routes *routeHandler, builder strictRouteBuilder) error {
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		builder.Stop()
+		return fmt.Errorf("build initial routes: %w", err)
 	}
-	return handler
+	routes.Replace(handler, builder.Stop)
+	return nil
 }
 
 func (s *Server) shutdown(ctx context.Context) error {

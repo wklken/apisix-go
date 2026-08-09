@@ -31,3 +31,22 @@ func TestNewTransportDoesNotAutoDecompressUpstreamResponses(t *testing.T) {
 		t.Fatalf("Content-Encoding = %q, want gzip preserved", got)
 	}
 }
+
+func TestNewTransportHonorsTLSVerification(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	insecure := &http.Client{Transport: NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(true).Build())}
+	response, err := insecure.Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("insecure transport GET: %v", err)
+	}
+	_ = response.Body.Close()
+
+	verified := &http.Client{Transport: NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(false).Build())}
+	if _, err := verified.Get(upstream.URL); err == nil {
+		t.Fatal("verified transport accepted an untrusted certificate")
+	}
+}

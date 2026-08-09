@@ -99,6 +99,7 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
+	request.Header.Set("Idempotency-Key", "order-123")
 	request = WithRetries(request, 2, func(*http.Request) bool { return true })
 
 	response, err := transport.RoundTrip(request)
@@ -108,6 +109,97 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 	_ = response.Body.Close()
 	if got, want := strings.Join(bodies, ","), "payload,payload,payload"; got != want {
 		t.Fatalf("attempt bodies = %q, want %q", got, want)
+	}
+}
+
+func TestRetryTransportDoesNotRetryUnsafePOST(t *testing.T) {
+	attempts := 0
+	transport := NewRetryTransport(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return nil, errors.New("connection reset")
+	}))
+	request := httptest.NewRequest(http.MethodPost, "http://upstream.test/orders", strings.NewReader("payload"))
+	request.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("payload")), nil
+	}
+	request = WithRetries(request, 2, func(*http.Request) bool { return true })
+	_, _ = transport.RoundTrip(request)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func replayableRequest(method string) *http.Request {
+	request := httptest.NewRequest(method, "http://upstream.test/", strings.NewReader("payload"))
+	request.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("payload")), nil
+	}
+	return request
+}
+
+func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
+	keyed := func(request *http.Request, name string) *http.Request {
+		request.Header.Set(name, "order-123")
+		return request
+	}
+	nonReplayable := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPut, "http://upstream.test/", strings.NewReader("payload"))
+		request.GetBody = nil
+		return request
+	}
+	tests := []struct {
+		name    string
+		request *http.Request
+		want    bool
+	}{
+		{
+			name:    "GET without body",
+			request: httptest.NewRequest(http.MethodGet, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "HEAD without body",
+			request: httptest.NewRequest(http.MethodHead, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "OPTIONS without body",
+			request: httptest.NewRequest(http.MethodOptions, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "TRACE without body",
+			request: httptest.NewRequest(http.MethodTrace, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{name: "PUT with replayable body", request: replayableRequest(http.MethodPut), want: true},
+		{
+			name:    "DELETE without body",
+			request: httptest.NewRequest(http.MethodDelete, "http://upstream.test/", nil),
+			want:    true,
+		},
+		{
+			name:    "POST with Idempotency-Key",
+			request: keyed(replayableRequest(http.MethodPost), "Idempotency-Key"),
+			want:    true,
+		},
+		{
+			name:    "PATCH with X-Idempotency-Key",
+			request: keyed(replayableRequest(http.MethodPatch), "X-Idempotency-Key"),
+			want:    true,
+		},
+		{name: "POST without key", request: replayableRequest(http.MethodPost), want: false},
+		{name: "PATCH without key", request: replayableRequest(http.MethodPatch), want: false},
+		{name: "PUT without replayable body", request: nonReplayable(), want: false},
+		{name: "CONNECT", request: httptest.NewRequest(http.MethodConnect, "http://upstream.test/", nil), want: false},
+		{name: "nil request", request: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := retryRequestAllowed(test.request); got != test.want {
+				t.Fatalf("retryRequestAllowed() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

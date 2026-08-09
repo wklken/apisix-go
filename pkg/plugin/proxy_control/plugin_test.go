@@ -47,3 +47,26 @@ func TestHandlerSetsRequestBufferingContext(t *testing.T) {
 		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
+
+func TestRequestBufferingStateCarriesFixedLimit(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("body"))
+	if got := GetRequestBufferingLimit(request); got != 0 {
+		t.Fatalf("GetRequestBufferingLimit() without state = %d, want 0", got)
+	}
+
+	request = WithRequestBuffering(request, true)
+	if !GetRequestBuffering(request) {
+		t.Fatal("GetRequestBuffering() = false after enabling buffering")
+	}
+	if got := GetRequestBufferingLimit(request); got != DefaultRequestBufferingLimit {
+		t.Fatalf("GetRequestBufferingLimit() = %d, want %d", got, DefaultRequestBufferingLimit)
+	}
+
+	request = WithRequestBuffering(request, false)
+	if GetRequestBuffering(request) {
+		t.Fatal("GetRequestBuffering() = true after disabling buffering")
+	}
+	if got := GetRequestBufferingLimit(request); got != DefaultRequestBufferingLimit {
+		t.Fatalf("disabled GetRequestBufferingLimit() = %d, want %d", got, DefaultRequestBufferingLimit)
+	}
+}

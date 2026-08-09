@@ -829,33 +829,27 @@ func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
 func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
 	ensureRouteStore(t)
 
-	put := func(id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/routes/" + id)
-		event.Value = value
-		routeStoreEvents <- event
-	}
-	remove := func(id string) {
-		event := store.NewEvent()
-		event.Type = store.EventTypeDelete
-		event.Key = []byte("/apisix/routes/" + id)
-		routeStoreEvents <- event
-	}
-
-	put("strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
-	put("strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
-	routeStore.Sync()
-	t.Cleanup(func() {
-		remove("strict-valid")
-		remove("strict-invalid")
-		routeStore.Sync()
-	})
+	putRouteResource(t, "strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
+	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
 
 	builder := NewBuilder(nil)
 	defer builder.Stop()
 	if handler := builder.Build(); handler != nil {
 		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
+	}
+}
+
+func TestBuildStrictReturnsRouteContext(t *testing.T) {
+	ensureRouteStore(t)
+	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	handler, err := builder.BuildStrict()
+	if err == nil || !strings.Contains(err.Error(), "strict-invalid") {
+		t.Fatalf("BuildStrict() handler/error = %T/%v, want route-scoped error", handler, err)
+	}
+	if handler != nil {
+		t.Fatalf("BuildStrict() handler = %T, want nil", handler)
 	}
 }
 

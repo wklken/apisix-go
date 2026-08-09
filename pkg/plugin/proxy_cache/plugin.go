@@ -43,6 +43,19 @@ type Plugin struct {
 	cleanupMu       sync.Mutex
 	cleanupStop     chan struct{}
 	cleanupDone     chan struct{}
+
+	// fillMu guards fillLocks, the per-key reference-counted fill mutexes that
+	// serialize concurrent cache misses for the same base cache key.
+	fillMu    sync.Mutex
+	fillLocks map[string]*cacheFillLock
+}
+
+// cacheFillLock coordinates concurrent fills for one base cache key. refs
+// counts the waiters that still reference the entry; the registry entry is
+// deleted once the final waiter releases it.
+type cacheFillLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 const (
@@ -438,11 +451,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if entry, status := p.lookup(r, key); status == "HIT" {
 			writeCachedResponse(w, entry, status)
 			return
-		} else if status == "EXPIRED" {
-			p.fetchAndMaybeStore(w, r, next, key, status, r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache))
-			return
-		} else if status == "STALE" {
-			p.fetchAndMaybeStore(w, r, next, key, status, r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache))
+		} else if status == "EXPIRED" || status == "STALE" {
+			shouldStore := r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache)
+			p.fillOrFetch(w, r, next, key, status, shouldStore)
 			return
 		} else if p.onlyIfCachedMiss(r) {
 			w.Header().Set(cacheStatusHeader, "MISS")
@@ -451,9 +462,38 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		shouldStore := r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache)
-		p.fetchAndMaybeStore(w, r, next, key, "MISS", shouldStore)
+		p.fillOrFetch(w, r, next, key, "MISS", shouldStore)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// fillOrFetch serializes concurrent fills for the same base cache key. After
+// the initial MISS/EXPIRED/STALE decision it takes the keyed fill lock and
+// repeats the lookup so a fill completed by a concurrent request is served as
+// a HIT instead of stampeding the upstream. Bypass and no_cache requests skip
+// the lock and go straight to the fetch/store path.
+func (p *Plugin) fillOrFetch(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	key string,
+	cacheStatus string,
+	shouldStore bool,
+) {
+	if p.hasTruthyValue(r, p.config.NoCache) {
+		p.fetchAndMaybeStore(w, r, next, key, cacheStatus, shouldStore)
+		return
+	}
+
+	lock := p.acquireFillLock(key)
+	defer p.releaseFillLock(key, lock)
+	lock.mu.Lock()
+
+	if entry, status := p.lookup(r, key); status == "HIT" {
+		writeCachedResponse(w, entry, status)
+		return
+	}
+	p.fetchAndMaybeStore(w, r, next, key, cacheStatus, shouldStore)
 }
 
 func (p *Plugin) fetchAndMaybeStore(
@@ -487,6 +527,33 @@ func (p *Plugin) fetchAndMaybeStore(
 	}
 	recorder.Header().Set(cacheStatusHeader, cacheStatus)
 	recorder.Commit(w)
+}
+
+func (p *Plugin) acquireFillLock(key string) *cacheFillLock {
+	p.fillMu.Lock()
+	defer p.fillMu.Unlock()
+	if p.fillLocks == nil {
+		p.fillLocks = make(map[string]*cacheFillLock)
+	}
+	lock := p.fillLocks[key]
+	if lock == nil {
+		lock = &cacheFillLock{}
+		p.fillLocks[key] = lock
+	}
+	lock.refs++
+	return lock
+}
+
+func (p *Plugin) releaseFillLock(key string, lock *cacheFillLock) {
+	lock.mu.Unlock()
+	p.fillMu.Lock()
+	defer p.fillMu.Unlock()
+	lock.refs--
+	if lock.refs == 0 {
+		if current := p.fillLocks[key]; current == lock {
+			delete(p.fillLocks, key)
+		}
+	}
 }
 
 func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {

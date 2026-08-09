@@ -180,6 +180,66 @@ func TestHandlerCompressesMultipleWritesOnce(t *testing.T) {
 	}
 }
 
+func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
+	tests := []struct {
+		name           string
+		acceptEncoding string
+		wantEncoding   string
+		wantVary       bool
+	}{
+		{name: "explicit gzip disabled", acceptEncoding: "gzip;q=0", wantEncoding: ""},
+		{name: "disabled gzip defers to deflate", acceptEncoding: "gzip;q=0, deflate;q=1", wantEncoding: "deflate", wantVary: true},
+		{name: "wildcard disabled", acceptEncoding: "*;q=0", wantEncoding: ""},
+		{name: "wildcard applies without explicit coding", acceptEncoding: "*;q=0.5", wantEncoding: "gzip", wantVary: true},
+		{name: "higher quality coding wins", acceptEncoding: "deflate;q=0.3, gzip;q=0.8", wantEncoding: "gzip", wantVary: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1), Vary: new(true)})
+			req := httptest.NewRequest(http.MethodGet, "/text", nil)
+			req.Header.Set("Accept-Encoding", tt.acceptEncoding)
+			res := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte("compress me please"))
+			})).ServeHTTP(res, req)
+
+			if got := res.Header().Get("Content-Encoding"); got != tt.wantEncoding {
+				t.Fatalf("Content-Encoding = %q, want %q", got, tt.wantEncoding)
+			}
+			if tt.wantVary {
+				if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
+					t.Fatalf("Vary = %q, want Accept-Encoding", got)
+				}
+			} else if got := res.Header().Get("Vary"); got != "" {
+				t.Fatalf("Vary = %q, want empty when not compressed", got)
+			}
+
+			switch tt.wantEncoding {
+			case "gzip":
+				if decoded := decodeGzip(t, res.Body.Bytes()); decoded != "compress me please" {
+					t.Fatalf("decoded body = %q, want gzip-compressed body", decoded)
+				}
+			case "deflate":
+				reader := flate.NewReader(bytes.NewReader(res.Body.Bytes()))
+				defer func() { _ = reader.Close() }()
+				decoded, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatalf("decode deflate body: %v", err)
+				}
+				if string(decoded) != "compress me please" {
+					t.Fatalf("decoded body = %q, want deflate-compressed body", decoded)
+				}
+			default:
+				if got := res.Body.String(); got != "compress me please" {
+					t.Fatalf("body = %q, want uncompressed body", got)
+				}
+			}
+		})
+	}
+}
+
 func decodeGzip(t *testing.T, body []byte) string {
 	t.Helper()
 

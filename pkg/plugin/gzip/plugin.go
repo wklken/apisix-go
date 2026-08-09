@@ -3,7 +3,6 @@ package gzip
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -198,16 +197,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// get the request http version like 1.0 or 1.1 or 2
 		reqHttpVersion := base.ProtocolVersion(r)
-		// only request header Content-Type with accept-encoding: gzip will be compressed
-		acceptEncoding := r.Header.Get("Accept-Encoding")
-		if (strings.Contains(acceptEncoding, "gzip") || strings.Contains(acceptEncoding, "deflate")) &&
-			reqHttpVersion >= p.config.HTTPVersionStr {
+		// only request header Content-Type with an acceptable encoding will be compressed
+		encoding := selectEncoding(r.Header)
+		if encoding != encodingNone && reqHttpVersion >= p.config.HTTPVersionStr {
 			mcw := &maybeCompressResponseWriter{
 				ResponseWriter: w,
 				w:              w,
 				contentTypes:   p.config.ConfigTypes,
 				wildcardType:   p.config.WildcardType,
-				encoding:       selectEncoding(r.Header),
+				encoding:       encoding,
 				level:          *p.config.CompLevel,
 				minLength:      *p.config.MinLength,
 			}

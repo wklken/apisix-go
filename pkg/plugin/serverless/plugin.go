@@ -588,16 +588,3 @@ func stringSliceToLuaTable(l *lua.LState, values []string) *lua.LTable {
 	}
 	return t
 }
-
-func isArrayTable(t *lua.LTable) bool {
-	if t.Len() == 0 {
-		return false
-	}
-	array := true
-	t.ForEach(func(key lua.LValue, _ lua.LValue) {
-		if _, ok := key.(lua.LNumber); !ok {
-			array = false
-		}
-	})
-	return array
-}

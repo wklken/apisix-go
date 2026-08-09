@@ -199,6 +199,9 @@ func requestHeaders(r *http.Request) map[string]any {
 }
 
 func parseRequestBody(r *http.Request, body []byte) (any, bool, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, false, nil
+	}
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
 		data, err := parseURLEncodedForm(body)

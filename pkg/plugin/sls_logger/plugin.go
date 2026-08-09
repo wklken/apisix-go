@@ -25,6 +25,8 @@ type Plugin struct {
 	config Config
 
 	addr string
+
+	dialTLS func(dialer *net.Dialer, network, address string, config *tls.Config) (net.Conn, error)
 }
 
 const (
@@ -122,6 +124,11 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 5
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 10000
     }
   },
   "required": ["host", "port", "project", "logstore", "access_key_id", "access_key_secret"]
@@ -161,11 +168,12 @@ type Config struct {
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
 
-	BatchMaxSize    int `json:"batch_max_size,omitempty"`
-	MaxRetryCount   int `json:"max_retry_count,omitempty"`
-	RetryDelay      int `json:"retry_delay,omitempty"`
-	BufferDuration  int `json:"buffer_duration,omitempty"`
-	InactiveTimeout int `json:"inactive_timeout,omitempty"`
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 func (p *Plugin) Config() any {
@@ -221,6 +229,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = 10000
+	}
 	p.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
 	if len(p.config.LogFormat) > 0 {
@@ -235,6 +246,7 @@ func (p *Plugin) PostInit() error {
 		RetryDelaySec:      p.config.RetryDelay,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
+		MaxPendingEntries:  p.config.MaxPendingEntries,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
@@ -348,11 +360,21 @@ func (p *Plugin) sendMessage(message string) error {
 	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
 		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicit APISIX-compatible operator opt-out
 	}
-	conn, err := tls.DialWithDialer(dialer, "tcp", p.addr, tlsConfig)
+	dialTLS := p.dialTLS
+	if dialTLS == nil {
+		dialTLS = func(dialer *net.Dialer, network, address string, config *tls.Config) (net.Conn, error) {
+			return tls.DialWithDialer(dialer, network, address, config)
+		}
+	}
+	conn, err := dialTLS(dialer, "tcp", p.addr, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, err)
 	}
 	defer func() { _ = conn.Close() }()
+
+	if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)); err != nil {
+		return fmt.Errorf("failed to set SLS write deadline: %w", err)
+	}
 
 	if _, err := conn.Write([]byte(message)); err != nil {
 		return fmt.Errorf("failed to send SLS log message: %w", err)

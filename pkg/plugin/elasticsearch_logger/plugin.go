@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -403,7 +404,47 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	if resp.IsError() {
 		return 0, fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
 	}
+	firstFail, err := p.bulkResultFailure(resp.Body)
+	if err != nil {
+		return firstFail, fmt.Errorf("failed to deliver Elasticsearch bulk: %w", err)
+	}
 	return 0, nil
+}
+
+// bulkResultFailure inspects a 2xx bulk response and returns the first failing
+// item as a 1-based index. A bulk operation is failing when its status is 300
+// or higher or it carries an error payload. A response that reports errors but
+// contains no decodable failing item is treated as a malformed result.
+func (p *Plugin) bulkResultFailure(body io.Reader) (int, error) {
+	var result struct {
+		Errors bool                         `json:"errors"`
+		Items  []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(body).Decode(&result); err != nil {
+		return 1, fmt.Errorf("failed to decode Elasticsearch bulk result: %w", err)
+	}
+	for index, item := range result.Items {
+		for _, operationJSON := range item {
+			var operation struct {
+				Status int             `json:"status"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if err := json.Unmarshal(operationJSON, &operation); err != nil {
+				return index + 1, fmt.Errorf("failed to decode Elasticsearch bulk item %d: %w", index+1, err)
+			}
+			if operation.Status >= 300 || bulkItemError(operation.Error) {
+				return index + 1, fmt.Errorf("elasticsearch bulk item %d failed: status %d", index+1, operation.Status)
+			}
+		}
+	}
+	if result.Errors {
+		return 1, fmt.Errorf("elasticsearch bulk result reported errors without a failing item")
+	}
+	return 0, nil
+}
+
+func bulkItemError(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
 }
 
 func (p *Plugin) endpointAddr() string {

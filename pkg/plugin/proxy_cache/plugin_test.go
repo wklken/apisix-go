@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +107,60 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 	}
 	if second.Body.String() != "response-v1" {
 		t.Fatalf("second body = %q, want response-v1", second.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestHandlerDoesNotStoreHEADMissUnderGETCacheKey(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Length", "8")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("get-body"))
+		}
+	}))
+
+	head := performRequest(t, handler, http.MethodHead, "/head-first", nil)
+	get := performRequest(t, handler, http.MethodGet, "/head-first", nil)
+	getHit := performRequest(t, handler, http.MethodGet, "/head-first", nil)
+
+	if head.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("HEAD cache status = %q, want MISS", head.Header().Get(cacheStatusHeader))
+	}
+	if get.Header().Get(cacheStatusHeader) != "MISS" || get.Body.String() != "get-body" {
+		t.Fatalf("first GET = %q/%q, want MISS/get-body", get.Header().Get(cacheStatusHeader), get.Body.String())
+	}
+	if getHit.Header().Get(cacheStatusHeader) != "HIT" || getHit.Body.String() != "get-body" {
+		t.Fatalf("second GET = %q/%q, want HIT/get-body", getHit.Header().Get(cacheStatusHeader), getHit.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerServesHEADHitFromGETEntry(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Length", "8")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("get-body"))
+		}
+	}))
+
+	get := performRequest(t, handler, http.MethodGet, "/head-hit", nil)
+	head := performRequest(t, handler, http.MethodHead, "/head-hit", nil)
+
+	if get.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("GET cache status = %q, want MISS", get.Header().Get(cacheStatusHeader))
+	}
+	if head.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("HEAD cache status = %q, want HIT from GET entry", head.Header().Get(cacheStatusHeader))
 	}
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
@@ -1625,6 +1680,125 @@ func TestNewDiskZoneStorePreservesUnconfiguredFallback(t *testing.T) {
 	if err != nil || configured || store != nil {
 		t.Fatalf("NewDiskZoneStore(unconfigured) = %#v, %t, %v", store, configured, err)
 	}
+}
+
+func TestConcurrentMissSerializesFills(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+
+	var upstreamCalls atomic.Int32
+	release := make(chan struct{})
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		<-release
+		w.Header().Set("X-Origin", "upstream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("serialized-body"))
+	})
+	handler := p.Handler(upstream)
+
+	const requestCount = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]*httptest.ResponseRecorder, requestCount)
+	for i := range requestCount {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = performRequest(t, handler, http.MethodGet, "/stampede", nil)
+		}(i)
+	}
+
+	close(start)
+	waitForProxyCacheUpstream(t, func() bool { return upstreamCalls.Load() >= 1 }, "first upstream fill")
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 for a serialized concurrent miss", got)
+	}
+	misses := 0
+	for i, rr := range results {
+		if rr.Body.String() != "serialized-body" {
+			t.Fatalf("response %d body = %q, want serialized-body", i, rr.Body.String())
+		}
+		if rr.Header().Get(cacheStatusHeader) == "MISS" {
+			misses++
+		}
+	}
+	if misses != 1 {
+		t.Fatalf("MISS responses = %d, want exactly 1", misses)
+	}
+}
+
+func TestFillLockSerializesNoStoreFills(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+
+	var current, maxConcurrent, calls atomic.Int32
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := current.Add(1)
+		for {
+			max := maxConcurrent.Load()
+			if now <= max || maxConcurrent.CompareAndSwap(max, now) {
+				break
+			}
+		}
+		defer current.Add(-1)
+		calls.Add(1)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("no-store-body"))
+	})
+	handler := p.Handler(upstream)
+
+	const requestCount = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]*httptest.ResponseRecorder, requestCount)
+	for i := range requestCount {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = performRequest(t, handler, http.MethodGet, "/no-store", nil)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := calls.Load(); got != requestCount {
+		t.Fatalf("upstream calls = %d, want %d (no-store never serves a HIT)", got, requestCount)
+	}
+	if got := maxConcurrent.Load(); got != 1 {
+		t.Fatalf("max concurrent upstream executions = %d, want 1 (fills serialized per key)", got)
+	}
+	if got := p.fillLockCount(); got != 0 {
+		t.Fatalf("fill lock registry entries = %d, want 0 after all requests complete", got)
+	}
+	for i, rr := range results {
+		if rr.Body.String() != "no-store-body" {
+			t.Fatalf("response %d body = %q, want no-store-body", i, rr.Body.String())
+		}
+	}
+}
+
+func waitForProxyCacheUpstream(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
+}
+
+func (p *Plugin) fillLockCount() int {
+	p.fillMu.Lock()
+	defer p.fillMu.Unlock()
+	return len(p.fillLocks)
 }
 
 func performConsumerRequest(

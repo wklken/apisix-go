@@ -257,6 +257,95 @@ func TestServeListenerPublishesStreamInfo(t *testing.T) {
 	}
 }
 
+type deadlineRecorder struct {
+	net.Conn
+	readDeadlines  []time.Time
+	writeDeadlines []time.Time
+}
+
+func (w *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	w.readDeadlines = append(w.readDeadlines, deadline)
+	return w.Conn.SetReadDeadline(deadline)
+}
+
+func (w *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	w.writeDeadlines = append(w.writeDeadlines, deadline)
+	return w.Conn.SetWriteDeadline(deadline)
+}
+
+func TestServeStreamClearsPrereadDeadlines(t *testing.T) {
+	plugin := newMQTTStreamPlugin(t, Config{ProtocolLevel: 4})
+	client, gateway := net.Pipe()
+	upstreamClient, upstreamGateway := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = gateway.Close()
+		_ = upstreamClient.Close()
+		_ = upstreamGateway.Close()
+	})
+
+	clientRecorder := &deadlineRecorder{Conn: gateway}
+	upstreamRecorder := &deadlineRecorder{Conn: upstreamGateway}
+
+	dialed := make(chan string, 1)
+	result := make(chan error, 1)
+	go func() {
+		_, err := plugin.ServeStream(
+			context.Background(),
+			clientRecorder,
+			"192.0.2.10:1883",
+			func(_ context.Context, clientID string) (net.Conn, error) {
+				dialed <- clientID
+				return upstreamRecorder, nil
+			},
+		)
+		result <- err
+	}()
+
+	packet := mqttConnectPacket(4, 0x02, "deadline-client", nil, nil)
+	extra := []byte("publish-before")
+	go func() {
+		_, _ = client.Write(append(append([]byte(nil), packet...), extra...))
+	}()
+
+	select {
+	case got := <-dialed:
+		if got != "deadline-client" {
+			t.Fatalf("dial client ID = %q, want deadline-client", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream dial")
+	}
+
+	replayed := make([]byte, len(packet)+len(extra))
+	if _, err := io.ReadFull(upstreamClient, replayed); err != nil {
+		t.Fatalf("read replayed CONNECT bytes: %v", err)
+	}
+
+	if len(clientRecorder.readDeadlines) == 0 {
+		t.Fatal("no read deadline was recorded")
+	}
+	if got := clientRecorder.readDeadlines[len(clientRecorder.readDeadlines)-1]; !got.IsZero() {
+		t.Fatalf("final client read deadline = %v, want zero", got)
+	}
+	if len(upstreamRecorder.writeDeadlines) == 0 {
+		t.Fatal("no write deadline was recorded")
+	}
+	if got := upstreamRecorder.writeDeadlines[len(upstreamRecorder.writeDeadlines)-1]; !got.IsZero() {
+		t.Fatalf("final upstream write deadline = %v, want zero", got)
+	}
+
+	_ = client.Close()
+	select {
+	case err := <-result:
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("ServeStream() error = %v, want clean disconnect", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ServeStream() did not stop after client disconnect")
+	}
+}
+
 func newMQTTStreamPlugin(t *testing.T, config Config) *Plugin {
 	t.Helper()
 	plugin := &Plugin{config: config}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -70,6 +71,12 @@ const schema = `
     "ssl_verify": {
       "type": "boolean",
       "default": true
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000,
+      "default": 30000
     }
   },
   "required": ["embeddings_provider", "vector_search_provider"]
@@ -79,6 +86,7 @@ const schema = `
 type Config struct {
 	EmbeddingsProvider   EmbeddingsProvider   `json:"embeddings_provider"`
 	VectorSearchProvider VectorSearchProvider `json:"vector_search_provider"`
+	Timeout              int                  `json:"timeout,omitempty"`
 	SSLVerify            *bool                `json:"ssl_verify,omitempty"`
 }
 
@@ -107,11 +115,17 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.Timeout == 0 {
+		p.config.Timeout = 30000
+	}
 	if p.config.SSLVerify == nil {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
-	p.client = &http.Client{Transport: p.transport()}
+	p.client = &http.Client{
+		Transport: p.transport(),
+		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
+	}
 	return nil
 }
 

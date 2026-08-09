@@ -623,6 +623,59 @@ validObserved:
 	}
 }
 
+func TestStandaloneFileWatcherRejectsInvalidStringIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := `routes:
+  - id: team/route
+    uri: /hello
+#END
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	events := make(chan *store.Event, 1)
+	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err == nil ||
+		!strings.Contains(err.Error(), "invalid id") {
+		t.Fatalf("Reload() error = %v, want invalid id", err)
+	}
+}
+
+func TestStandaloneWatcherStopUnblocksBlockedEmit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /one\n#END\n"), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+
+	go watcher.Watch()
+	select {
+	case event := <-events:
+		if string(event.Key) != "/apisix/routes/route-1" {
+			t.Fatalf("initial event key = %q, want /apisix/routes/route-1", event.Key)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not emit the initial route")
+	}
+
+	updated := []byte("routes:\n  - id: route-2\n    uri: /two\n#END\n")
+	if err := atomicReplaceStandaloneTestFile(path, updated); err != nil {
+		t.Fatalf("replace standalone config: %v", err)
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		watcher.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not return before the one-second deadline")
+	}
+}
+
 func TestStandaloneConfigFile(t *testing.T) {
 	if got, want := StandaloneConfigFile("yaml"), "conf/apisix.yaml"; got != want {
 		t.Fatalf("StandaloneConfigFile(yaml) = %q, want %q", got, want)

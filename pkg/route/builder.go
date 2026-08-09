@@ -2,6 +2,7 @@ package route
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -83,6 +84,7 @@ func convertURI(uri string) (string, error) {
 
 	if withColon && !withAsterisk {
 		segments := strings.Split(uri, "/")
+		names := make(map[string]struct{})
 		for i, segment := range segments {
 			if !strings.ContainsRune(segment, ':') {
 				continue
@@ -90,7 +92,12 @@ func convertURI(uri string) (string, error) {
 			if !parameterInPathRegexp.MatchString(segment) {
 				return "", fmt.Errorf("not supported uri: %s", uri)
 			}
-			segments[i] = "{" + strings.TrimPrefix(segment, ":") + "}"
+			name := strings.TrimPrefix(segment, ":")
+			if _, exists := names[name]; exists {
+				return "", fmt.Errorf("not supported uri: %s", uri)
+			}
+			names[name] = struct{}{}
+			segments[i] = "{" + name + "}"
 		}
 		return strings.Join(segments, "/"), nil
 	}
@@ -488,7 +495,11 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
 	registrar := newRouteRegistrar(mux)
-	for _, routeResource := range snapshot.Routes() {
+	routes := append([]resource.Route(nil), snapshot.Routes()...)
+	slices.SortStableFunc(routes, func(left, right resource.Route) int {
+		return cmp.Compare(left.Priority, right.Priority)
+	})
+	for _, routeResource := range routes {
 		handler, buildErr := b.buildHandlerStrict(routeResource)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
@@ -2024,7 +2035,10 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 		return false
 	}
 	if override.HealthReporter != nil {
-		req = pxy.WithHealthReporter(req, override.HealthReporter)
+		enriched := pxy.WithHealthReporter(req, override.HealthReporter)
+		if enriched != req {
+			*req = *enriched
+		}
 		pxy.SetSelectedTarget(req, override.HealthTarget)
 	}
 	req.URL.Scheme = override.Scheme

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
 type Plugin struct {
@@ -44,7 +46,6 @@ type Plugin struct {
 
 	healthClients map[int]*http.Client
 
-	healthStart    sync.Once
 	healthStopOnce sync.Once
 	stoppedHealth  atomic.Bool
 	wakeHealth     chan struct{}
@@ -635,10 +636,7 @@ func (p *Plugin) PostInit() error {
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(p.priority)))
 
-	p.client = &http.Client{
-		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
-		Transport: p.transport(),
-	}
+	p.client = &http.Client{Transport: p.transport()}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -649,6 +647,9 @@ func (p *Plugin) PostInit() error {
 		p.healthNow = time.Now
 	}
 	p.initHealthStates()
+	if len(p.health) > 0 {
+		p.startHealthLoop()
+	}
 	return nil
 }
 
@@ -1415,5 +1416,9 @@ func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	ai_common.ApplyTransportKeepalive(transport, p.config.KeepalivePool, p.config.KeepaliveTimeout, p.config.Keepalive)
 	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
-	return transport
+	timeout := time.Duration(p.config.Timeout) * time.Millisecond
+	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = timeout
+	transport.ResponseHeaderTimeout = timeout
+	return pxy.NewProgressTimeoutTransport(transport, 0, timeout)
 }

@@ -10,6 +10,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -313,6 +314,74 @@ func TestHandlerRejectsFailedUserInfo(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+}
+
+func TestSessionCookieSecureByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          "12345678",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	})
+	cookie, err := p.sessionCookie(map[string]any{"open_id": "user-a"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf(
+			"cookie attributes = secure:%t httpOnly:%t sameSite:%v",
+			cookie.Secure,
+			cookie.HttpOnly,
+			cookie.SameSite,
+		)
+	}
+}
+
+func TestSessionCookieHonorsCookieControls(t *testing.T) {
+	cookieSecure := false
+	p := newTestPlugin(t, Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          "12345678",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+		CookieSecure:    &cookieSecure,
+		CookieSameSite:  "Strict",
+	})
+	cookie, err := p.sessionCookie(map[string]any{"open_id": "user-a"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	if cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie attributes = secure:%t sameSite:%v", cookie.Secure, cookie.SameSite)
+	}
+}
+
+func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"app_id":            "app-id",
+		"app_secret":        "app-secret",
+		"secret":            "12345678",
+		"auth_redirect_uri": "https://gateway.example.com/callback",
+		"redirect_uri":      "https://login.feishu.cn/oauth",
+		"cookie_same_site":  "None",
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None without cookie_secure=true")
+	}
+	config["cookie_secure"] = false
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted SameSite=None with cookie_secure=false")
+	}
+	config["cookie_secure"] = true
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected secure SameSite=None cookie: %v", err)
 	}
 }
 

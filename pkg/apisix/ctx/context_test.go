@@ -1,6 +1,7 @@
 package ctx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -74,6 +75,52 @@ func TestReadRequestBodyWithLimitReportsMaxBytesError(t *testing.T) {
 	}
 }
 
+var errSentinelBodyRead = errors.New("sentinel body read error")
+
+type sentinelErrorReader struct {
+	err error
+}
+
+func (r sentinelErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestRequestBodyErrorCachedOnRepeatedMaxBytesRead(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", strings.NewReader("hello!"))
+	first, firstErr := ReadRequestBodyWithLimit(req, 5)
+	second, secondErr := ReadRequestBodyWithLimit(req, 5)
+
+	var firstMaxBytes *http.MaxBytesError
+	if !errors.As(firstErr, &firstMaxBytes) {
+		t.Fatalf("first error = %v, want *http.MaxBytesError", firstErr)
+	}
+	var secondMaxBytes *http.MaxBytesError
+	if !errors.As(secondErr, &secondMaxBytes) {
+		t.Fatalf("second error = %v, want cached *http.MaxBytesError", secondErr)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("first body = %q, second body = %q; want matching partial bytes", first, second)
+	}
+}
+
+func TestRequestBodyErrorCachedOnRepeatedReaderFailure(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", nil)
+	req.Body = io.NopCloser(io.MultiReader(
+		strings.NewReader("partial"),
+		sentinelErrorReader{err: errSentinelBodyRead},
+	))
+	first, firstErr := ReadRequestBodyWithLimit(req, 1024)
+	second, secondErr := ReadRequestBodyWithLimit(req, 1024)
+
+	if !errors.Is(firstErr, errSentinelBodyRead) {
+		t.Fatalf("first error = %v, want sentinel read error", firstErr)
+	}
+	if !errors.Is(secondErr, errSentinelBodyRead) {
+		t.Fatalf("second error = %v, want cached sentinel read error", secondErr)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("first body = %q, second body = %q; want matching partial bytes", first, second)
+	}
+}
+
 func TestReadRequestBodyRejectsNonByteBodyContextValue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/upload", nil)
 	req = WithRequestVars(req)
@@ -98,6 +145,11 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	RegisterApisixVar(req, "$route_id", "route-1")
+}
+
+func TestRegisterRequestVarWithoutRequestStateIsNoOp(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	RegisterRequestVar(req, "$status", http.StatusOK)
 }
 
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {

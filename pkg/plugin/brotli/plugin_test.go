@@ -457,6 +457,96 @@ func TestBrotliCompressesBelowLimit(t *testing.T) {
 	}
 }
 
+func TestBrotliPassThroughOversizedDeclaredRetainsContentLength(t *testing.T) {
+	limit := int64(1024)
+	body := bytes.Repeat([]byte("payload"), 512)
+	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write(body)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/download", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want empty for pass-through", got)
+	}
+	if got := response.Header().Get("Content-Length"); got != "4096" {
+		t.Fatalf("Content-Length = %q, want preserved 4096", got)
+	}
+	if !bytes.Equal(response.Body.Bytes(), body) {
+		t.Fatal("pass-through body was modified")
+	}
+}
+
+func TestBrotliPassThroughOversizedUnknownLength(t *testing.T) {
+	limit := int64(1024)
+	body := bytes.Repeat([]byte("payload"), 512)
+	p := newTestPlugin(t, Config{MaxResponseSize: &limit})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(body)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/download", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want empty for pass-through", got)
+	}
+	if !bytes.Equal(response.Body.Bytes(), body) {
+		t.Fatal("pass-through body was modified")
+	}
+}
+
+func TestBrotliPassThroughRetainsSmallContentLength(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/html"}, MinLength: new(5)})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "4")
+		_, _ = w.Write([]byte("tiny"))
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/data", nil)
+	request.Header.Set("Accept-Encoding", "br")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if got := response.Header().Get("Content-Length"); got != "4" {
+		t.Fatalf("Content-Length = %q, want preserved 4", got)
+	}
+	if got := response.Body.String(); got != "tiny" {
+		t.Fatalf("body = %q, want tiny", got)
+	}
+}
+
+func TestBoundedResponseWriterNeverBuffersBeyondCapPlusChunk(t *testing.T) {
+	const cap = int64(1024)
+	base := httptest.NewRecorder()
+	writer := newBoundedResponseWriter(base, cap)
+
+	chunk := bytes.Repeat([]byte("a"), 1024)
+	for range 4 {
+		_, _ = writer.Write(chunk)
+	}
+
+	if !writer.committed {
+		t.Fatal("bounded writer did not switch to pass-through for an oversized body")
+	}
+	if writer.maxBuffered > cap+int64(len(chunk)) {
+		t.Fatalf("max buffered = %d, want at most cap+largestWrite %d", writer.maxBuffered, cap+int64(len(chunk)))
+	}
+	if got := base.Body.Len(); got != 4096 {
+		t.Fatalf("streamed body length = %d, want 4096", got)
+	}
+}
+
 func decodeBrotli(t *testing.T, body []byte) string {
 	t.Helper()
 

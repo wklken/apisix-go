@@ -192,6 +192,12 @@ type RequestState struct {
 	BalancerPort string
 	RouteID      string
 	ServiceID    string
+
+	// RequestBodyRead caches the first bounded body read so repeated reads
+	// return the same bytes and error instead of masking a size violation.
+	RequestBodyRead bool
+	RequestBody     []byte
+	RequestBodyErr  error
 }
 
 func GetRequestState(r *http.Request) *RequestState {
@@ -305,7 +311,19 @@ func GetRequestVar(r *http.Request, key string) any {
 
 func RegisterRequestVar(r *http.Request, key string, val any) {
 	vars := GetRequestVars(r)
+	if vars == nil {
+		return
+	}
 	vars[key] = val
+	if key == RequestBodyKey {
+		if body, ok := val.([]byte); ok {
+			if state := GetRequestState(r); state != nil {
+				state.RequestBodyRead = true
+				state.RequestBody = body
+				state.RequestBodyErr = nil
+			}
+		}
+	}
 }
 
 const RequestBodyKey = "$request_body"
@@ -324,6 +342,15 @@ func ReadRequestBodyWithLimit(r *http.Request, max int64) ([]byte, error) {
 }
 
 func readRequestBody(r *http.Request, max int64) ([]byte, error) {
+	state := GetRequestState(r)
+	if state == nil {
+		*r = *WithRequestVars(r)
+		state = GetRequestState(r)
+	}
+	if state.RequestBodyRead {
+		return state.RequestBody, state.RequestBodyErr
+	}
+
 	bodyInCtx := GetRequestVar(r, RequestBodyKey)
 	if bodyInCtx != nil {
 		body, ok := bodyInCtx.([]byte)
@@ -344,9 +371,12 @@ func readRequestBody(r *http.Request, max int64) ([]byte, error) {
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	if GetRequestVars(r) != nil {
+	if err == nil && GetRequestVars(r) != nil {
 		RegisterRequestVar(r, RequestBodyKey, body)
 	}
+	state.RequestBodyRead = true
+	state.RequestBody = body
+	state.RequestBodyErr = err
 	return body, err
 }
 

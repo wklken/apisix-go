@@ -190,6 +190,8 @@ type responseRecorder struct {
 	limit  int
 }
 
+func (w *responseRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *responseRecorder) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)

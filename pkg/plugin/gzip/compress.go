@@ -41,45 +41,71 @@ var defaultContentTypes = map[string]struct{}{
 
 func selectEncoding(h http.Header) encoding {
 	enc := h.Get("Accept-Encoding")
-
-	switch {
-	// TODO:
-	// case "br":    // Brotli, experimental. Firefox 2016, to-be-in Chromium.
-	// case "lzma":  // Opera.
-	// case "sdch":  // Chrome, Android. Gzip output + dictionary header.
-
-	case strings.Contains(enc, "gzip"):
-		// TODO: Exception for old MSIE browsers that can't handle non-HTML?
-		// https://zoompf.com/blog/2012/02/lose-the-wait-http-compression
-		return encodingGzip
-
-	case strings.Contains(enc, "deflate"):
-		// HTTP 1.1 "deflate" (RFC 2616) stands for DEFLATE data (RFC 1951)
-		// wrapped with zlib (RFC 1950). The zlib wrapper uses Adler-32
-		// checksum compared to CRC-32 used in "gzip" and thus is faster.
-		//
-		// But.. some old browsers (MSIE, Safari 5.1) incorrectly expect
-		// raw DEFLATE data only, without the mentioned zlib wrapper.
-		// Because of this major confusion, most modern browsers try it
-		// both ways, first looking for zlib headers.
-		// Quote by Mark Adler: http://stackoverflow.com/a/9186091/385548
-		//
-		// The list of browsers having problems is quite big, see:
-		// http://zoompf.com/blog/2012/02/lose-the-wait-http-compression
-		// https://web.archive.org/web/20120321182910/http://www.vervestudios.co/projects/compression-tests/results
-		//
-		// That's why we prefer gzip over deflate. It's just more reliable
-		// and not significantly slower than gzip.
-		return encodingDeflate
-
-		// NOTE: Not implemented, intentionally:
-		// case "compress": // LZW. Deprecated.
-		// case "bzip2":    // Too slow on-the-fly.
-		// case "zopfli":   // Too slow on-the-fly.
-		// case "xz":       // Too slow on-the-fly.
+	if enc == "" {
+		return encodingNone
 	}
 
-	return encodingNone
+	gzipQuality := -1.0
+	deflateQuality := -1.0
+	wildcardQuality := -1.0
+	for part := range strings.SplitSeq(enc, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		coding, quality := part, 1.0
+		if before, after, found := strings.Cut(part, ";"); found {
+			coding = strings.TrimSpace(before)
+			if params := strings.TrimSpace(after); strings.HasPrefix(strings.ToLower(params), "q=") {
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(params[2:]), 64); err == nil {
+					quality = max(0, min(parsed, 1))
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(coding)) {
+		case "gzip":
+			if quality > gzipQuality {
+				gzipQuality = quality
+			}
+		case "deflate":
+			if quality > deflateQuality {
+				deflateQuality = quality
+			}
+		case "*":
+			if quality > wildcardQuality {
+				wildcardQuality = quality
+			}
+		}
+	}
+
+	switch {
+	case gzipQuality >= 0 || deflateQuality >= 0:
+		// Explicit codings decide before the wildcard: a zero quality
+		// disables that coding, and equal qualities prefer gzip.
+		if gzipQuality > deflateQuality {
+			if gzipQuality == 0 {
+				return encodingNone
+			}
+			return encodingGzip
+		}
+		if deflateQuality > gzipQuality {
+			if deflateQuality == 0 {
+				return encodingNone
+			}
+			return encodingDeflate
+		}
+		if gzipQuality == 0 {
+			return encodingNone
+		}
+		return encodingGzip
+	case wildcardQuality >= 0:
+		if wildcardQuality == 0 {
+			return encodingNone
+		}
+		return encodingGzip
+	default:
+		return encodingNone
+	}
 }
 
 type resettableWriteCloser interface {

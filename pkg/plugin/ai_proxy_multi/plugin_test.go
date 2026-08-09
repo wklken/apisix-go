@@ -440,6 +440,88 @@ func TestHandlerEnforcesStreamDurationForSelectedInstance(t *testing.T) {
 	}
 }
 
+func TestHandlerProgressingStreamKeepsSelectedInstanceHealthy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for i := range 8 {
+			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
+			_, _ = w.Write([]byte(chunk))
+			flusher.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Timeout: 30,
+		Instances: []Instance{{
+			Name: "progressing", Provider: "openai-compatible", Weight: 1,
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}],"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	})).ServeHTTP(rr, req)
+
+	output := rr.Body.String()
+	for i := range 8 {
+		if !strings.Contains(output, "tok"+strconv.Itoa(i)) {
+			t.Fatalf("progressing stream lost chunk %d; body = %q", i, output)
+		}
+	}
+	if !p.instanceHealthy(0) {
+		t.Fatal("selected instance marked unhealthy after progressing stream")
+	}
+}
+
+func TestHandlerStalledStreamTimesOutForSelectedInstance(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		flusher.Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Timeout: 30,
+		Instances: []Instance{{
+			Name: "stalled", Provider: "openai-compatible", Weight: 1,
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}],"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	started := time.Now()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	})).ServeHTTP(rr, req)
+
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled stream took %s, want progress timeout to abort promptly", elapsed)
+	}
+	if !strings.Contains(rr.Body.String(), "first") {
+		t.Fatalf("stalled stream = %q, want first chunk before abort", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "late") {
+		t.Fatalf("stalled stream = %q, want abort before the late chunk", rr.Body.String())
+	}
+}
+
 func TestHandlerPublishesConfiguredLoggingForSelectedInstance(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{
@@ -1584,6 +1666,68 @@ func TestHealthStopClosesIdleConnectionsOnConfigReplacement(t *testing.T) {
 	result := replacement.probeInstance(context.Background(), 0)
 	if result.err != nil || result.status != http.StatusOK {
 		t.Fatalf("replacement probe = %+v, want status 200", result)
+	}
+}
+
+func TestPostInitOwnsHealthLoopLifecycle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	if p.wakeHealth == nil {
+		t.Fatal("wakeHealth not initialized after PostInit")
+	}
+	if p.stopHealth == nil {
+		t.Fatal("stopHealth not initialized after PostInit")
+	}
+	if p.healthDone == nil {
+		t.Fatal("healthDone not initialized after PostInit")
+	}
+	if p.healthCancel == nil {
+		t.Fatal("healthCancel not initialized after PostInit")
+	}
+}
+
+func TestStopHealthConcurrentWithWakes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			p.wakeHealthRefresh()
+		})
+	}
+	p.Stop()
+	wg.Wait()
+
+	select {
+	case <-p.healthDone:
+	case <-time.After(time.Second):
+		t.Fatal("healthDone did not close after concurrent Stop")
+	}
+}
+
+func TestStopHealthImmediatelyAfterPostInit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, healthProbeConfig(server.URL))
+	p.Stop()
+	p.Stop()
+
+	select {
+	case <-p.healthDone:
+	case <-time.After(time.Second):
+		t.Fatal("healthDone did not close after immediate Stop")
 	}
 }
 

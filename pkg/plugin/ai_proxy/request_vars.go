@@ -2,6 +2,7 @@ package ai_proxy
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
 func registerUpstreamTargetVars(r *http.Request, upstream *http.Request) {
@@ -198,5 +200,9 @@ func (p *Plugin) transport() http.RoundTripper {
 	transport.DisableCompression = true
 	ai_common.ApplyTransportKeepalive(transport, p.config.KeepalivePool, p.config.KeepaliveTimeout, p.config.Keepalive)
 	ai_common.ApplyTransportSSLVerify(transport, p.config.SSLVerify)
-	return transport
+	timeout := time.Duration(p.config.Timeout) * time.Millisecond
+	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = timeout
+	transport.ResponseHeaderTimeout = timeout
+	return pxy.NewProgressTimeoutTransport(transport, 0, timeout)
 }

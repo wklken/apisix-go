@@ -384,10 +384,14 @@ func (p *Plugin) endpoint(protocol ai_protocols.Protocol) (string, error) {
 }
 
 func preferredProtocol(provider string) ai_protocols.Protocol {
-	if provider == "bedrock" {
+	switch provider {
+	case "anthropic":
+		return ai_protocols.AnthropicMessages
+	case "bedrock":
 		return ai_protocols.BedrockConverse
+	default:
+		return ai_protocols.OpenAIChat
 	}
-	return ai_protocols.OpenAIChat
 }
 
 func (p *Plugin) providerBaseURL() string {

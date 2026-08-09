@@ -194,20 +194,23 @@ func (p *Plugin) refreshHealth(_ context.Context) {
 	p.wakeHealthRefresh()
 }
 
-// wakeHealthRefresh starts the single refresher on first use and wakes it for
-// one refresh pass. Wakes coalesce: concurrent requests never start more than
-// one probe cycle.
+// startHealthLoop publishes the plugin-owned refresher lifecycle before any
+// request can arrive. It runs once from PostInit when at least one instance
+// has active checks, so Stop always observes initialized channels.
+func (p *Plugin) startHealthLoop() {
+	p.healthCtx, p.healthCancel = context.WithCancel(context.Background())
+	p.wakeHealth = make(chan struct{}, 1)
+	p.stopHealth = make(chan struct{})
+	p.healthDone = make(chan struct{})
+	go p.healthLoop()
+}
+
+// wakeHealthRefresh wakes the plugin-owned refresher for one refresh pass.
+// Wakes coalesce: concurrent requests never start more than one probe cycle.
 func (p *Plugin) wakeHealthRefresh() {
-	if p.stoppedHealth.Load() {
+	if p.stoppedHealth.Load() || p.wakeHealth == nil {
 		return
 	}
-	p.healthStart.Do(func() {
-		p.healthCtx, p.healthCancel = context.WithCancel(context.Background())
-		p.wakeHealth = make(chan struct{}, 1)
-		p.stopHealth = make(chan struct{})
-		p.healthDone = make(chan struct{})
-		go p.healthLoop()
-	})
 	select {
 	case p.wakeHealth <- struct{}{}:
 	default:

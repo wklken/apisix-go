@@ -369,6 +369,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
 	}
+	if s.standaloneWatcher != nil {
+		s.standaloneWatcher.Stop()
+	}
 	if s.prometheusServer != nil {
 		if err := s.prometheusServer.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop prometheus export server: %w", err))

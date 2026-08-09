@@ -17,7 +17,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,6 +117,56 @@ func TestPostInitResolvesRotatedEncryptedAccessKeySecret(t *testing.T) {
 	t.Cleanup(func() { p.BatchProcessor.Stop() })
 	if p.config.AccessKeySecret != "sls-secret" {
 		t.Fatalf("access_key_secret = %q, want resolved plaintext", p.config.AccessKeySecret)
+	}
+}
+
+func TestSendMessageReturnsWithinWriteDeadline(t *testing.T) {
+	conn := &blockingWriteConn{}
+	p := newTestPlugin(t, Config{
+		Host:            "127.0.0.1",
+		Port:            10009,
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		Timeout:         100,
+	})
+	p.dialTLS = func(*net.Dialer, string, string, *tls.Config) (net.Conn, error) {
+		return conn, nil
+	}
+
+	start := time.Now()
+	err := p.sendMessage("blocked SLS message")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("sendMessage() error = nil, want write deadline error")
+	}
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("sendMessage() took %s, want return within twice the configured 100ms timeout", elapsed)
+	}
+}
+
+func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Host:            "127.0.0.1",
+		Port:            10009,
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		BatchMaxSize:    50000,
+		BufferDuration:  3600,
+		InactiveTimeout: 3600,
+	})
+
+	dropped := 0
+	for range 10002 {
+		if !p.BatchProcessor.Push(map[string]any{"message": "line"}) {
+			dropped++
+		}
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want exactly 1 beyond the default 10000 pending cap", dropped)
 	}
 }
 
@@ -691,4 +743,66 @@ func mustAtoi(t *testing.T, value string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+type blockingWriteConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	closed   bool
+}
+
+func (c *blockingWriteConn) Write([]byte) (int, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.mu.Unlock()
+	if deadline.IsZero() {
+		time.Sleep(time.Hour)
+		return 0, os.ErrDeadlineExceeded
+	}
+	time.Sleep(time.Until(deadline))
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (c *blockingWriteConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *blockingWriteConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *blockingWriteConn) LocalAddr() net.Addr {
+	return slsTestAddr("local")
+}
+
+func (c *blockingWriteConn) RemoteAddr() net.Addr {
+	return slsTestAddr("remote")
+}
+
+func (c *blockingWriteConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *blockingWriteConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *blockingWriteConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = deadline
+	return nil
+}
+
+type slsTestAddr string
+
+func (a slsTestAddr) Network() string {
+	return "test"
+}
+
+func (a slsTestAddr) String() string {
+	return string(a)
 }

@@ -500,6 +500,12 @@ plugin_attr:          # Plugin attributes
   zipkin:                             # Plugin: zipkin
     set_ngx_var: false                # export zipkin variables to nginx variables
 
+proxy:                          # Upstream transport and capacity limits
+  max_idle_conns: 1024          # Global maximum number of idle (keep-alive) connections kept open.
+  max_idle_conns_per_host: 250  # Maximum number of idle connections kept open per upstream host.
+  max_conns_per_host: 1024      # Maximum number of concurrent connections per upstream host.
+  max_in_flight: 1024           # Maximum number of concurrently active upstream response bodies per cluster.
+
 deployment:                    # Deployment configurations
   role: traditional            # Set deployment mode: traditional, control_plane, or data_plane.
   role_traditional:

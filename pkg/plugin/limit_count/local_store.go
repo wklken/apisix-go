@@ -48,9 +48,13 @@ func (s *localFixedWindowStore) increment(key string, delta int64, rate limiter.
 	var value int64
 	var expiration time.Time
 	s.cache.Mutate(key, func(current localFixedCounter, now time.Time) (localFixedCounter, time.Duration, bool) {
-		value = current.value + delta
-		expiration = now.Add(rate.Period)
-		return localFixedCounter{value: value, resetAt: expiration}, rate.Period, true
+		if current.resetAt.IsZero() || !now.Before(current.resetAt) {
+			current = localFixedCounter{resetAt: now.Add(rate.Period)}
+		}
+		current.value += delta
+		value = current.value
+		expiration = current.resetAt
+		return current, max(current.resetAt.Sub(now), 0), true
 	})
 	return contextFromState(rate, expiration, value), nil
 }

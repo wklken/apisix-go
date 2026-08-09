@@ -94,6 +94,25 @@ func TestAttachExternalUser(t *testing.T) {
 	}
 }
 
+func TestCookieSameSite(t *testing.T) {
+	tests := []struct {
+		value string
+		want  http.SameSite
+	}{
+		{"Strict", http.SameSiteStrictMode},
+		{"None", http.SameSiteNoneMode},
+		{"Default", http.SameSiteDefaultMode},
+		{"Lax", http.SameSiteLaxMode},
+		{"", http.SameSiteLaxMode},
+		{"Unknown", http.SameSiteLaxMode},
+	}
+	for _, test := range tests {
+		if got := CookieSameSite(test.value); got != test.want {
+			t.Fatalf("CookieSameSite(%q) = %v, want %v", test.value, got, test.want)
+		}
+	}
+}
+
 func TestCodeFromRequest(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/?code=query-code", nil)
 	r.Header.Set("X-Code", "header-code")

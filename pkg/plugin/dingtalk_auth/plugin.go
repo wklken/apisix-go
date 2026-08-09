@@ -100,8 +100,33 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 86400
+    },
+    "cookie_secure": {
+      "type": "boolean",
+      "default": true
+    },
+    "cookie_same_site": {
+      "type": "string",
+      "enum": ["Default", "Lax", "Strict", "None"],
+      "default": "Lax"
     }
   },
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "not": {
+            "properties": {"cookie_same_site": {"enum": ["None"]}},
+            "required": ["cookie_same_site"]
+          }
+        },
+        {
+          "properties": {"cookie_secure": {"enum": [true]}},
+          "required": ["cookie_secure"]
+        }
+      ]
+    }
+  ],
   "required": ["app_key", "app_secret", "secret", "redirect_uri"]
 }
 `
@@ -120,6 +145,8 @@ type Config struct {
 	Secret            string   `json:"secret"`
 	SecretFallbacks   []string `json:"secret_fallbacks,omitempty"`
 	CookieExpiresIn   int      `json:"cookie_expires_in,omitempty"`
+	CookieSecure      *bool    `json:"cookie_secure,omitempty"`
+	CookieSameSite    string   `json:"cookie_same_site,omitempty"`
 }
 
 type tokenCacheEntry struct {
@@ -179,6 +206,13 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.CookieExpiresIn == 0 {
 		p.config.CookieExpiresIn = 86400
+	}
+	if p.config.CookieSecure == nil {
+		cookieSecure := true
+		p.config.CookieSecure = &cookieSecure
+	}
+	if p.config.CookieSameSite == "" {
+		p.config.CookieSameSite = "Lax"
 	}
 	if p.client == nil {
 		p.client = &http.Client{
@@ -377,6 +411,8 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 		Value:    base.SignSessionValue(payload, p.config.Secret),
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   *p.config.CookieSecure,
+		SameSite: base.CookieSameSite(p.config.CookieSameSite),
 		MaxAge:   p.config.CookieExpiresIn,
 	}, nil
 }

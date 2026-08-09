@@ -62,17 +62,44 @@ const schema = `
     "callback_url": {
       "type": "string",
       "pattern": "^[^%?]+[^/]$"
+    },
+    "cookie_secure": {
+      "type": "boolean",
+      "default": true
+    },
+    "cookie_same_site": {
+      "type": "string",
+      "enum": ["Default", "Lax", "Strict", "None"],
+      "default": "Lax"
     }
   },
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "not": {
+            "properties": {"cookie_same_site": {"enum": ["None"]}},
+            "required": ["cookie_same_site"]
+          }
+        },
+        {
+          "properties": {"cookie_secure": {"enum": [true]}},
+          "required": ["cookie_secure"]
+        }
+      ]
+    }
+  ],
   "required": ["callback_url", "endpoint_addr", "client_id", "client_secret"]
 }
 `
 
 type Config struct {
-	EndpointAddr string `json:"endpoint_addr"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	CallbackURL  string `json:"callback_url"`
+	EndpointAddr   string `json:"endpoint_addr"`
+	ClientID       string `json:"client_id"`
+	ClientSecret   string `json:"client_secret"`
+	CallbackURL    string `json:"callback_url"`
+	CookieSecure   *bool  `json:"cookie_secure,omitempty"`
+	CookieSameSite string `json:"cookie_same_site,omitempty"`
 }
 
 type sessionData struct {
@@ -97,6 +124,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.CookieSecure == nil {
+		cookieSecure := true
+		p.config.CookieSecure = &cookieSecure
+	}
+	if p.config.CookieSameSite == "" {
+		p.config.CookieSameSite = "Lax"
+	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
@@ -304,6 +338,8 @@ func (p *Plugin) setSessionCookie(w http.ResponseWriter, sessionID string, lifet
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   *p.config.CookieSecure,
+		SameSite: base.CookieSameSite(p.config.CookieSameSite),
 		MaxAge:   int(lifetime.Seconds()),
 	})
 }

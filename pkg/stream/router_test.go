@@ -15,6 +15,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 )
 
 func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
@@ -26,15 +27,134 @@ func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
 	defer func() { _ = upstreamPeer.Close() }()
 
 	done := make(chan error, 1)
-	go func() { done <- bridge(context.Background(), client, upstream, 50*time.Millisecond) }()
+	go func() { done <- streambridge.Pump(context.Background(), client, upstream, nil, 50*time.Millisecond) }()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("bridge() error = %v, want a clean idle exit", err)
+			t.Fatalf("Pump() error = %v, want a clean idle exit", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("bridge() did not exit after the configured idle deadline")
+		t.Fatal("Pump() did not exit after the configured idle deadline")
+	}
+}
+
+func TestStreamBridgePreservesHalfClose(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+
+	request := []byte("half-close-request")
+	response := []byte("delayed-half-close-response")
+	upstreamDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := upstream.Accept()
+		if acceptErr != nil {
+			upstreamDone <- acceptErr
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		got := make([]byte, len(request))
+		if _, readErr := io.ReadFull(conn, got); readErr != nil {
+			upstreamDone <- fmt.Errorf("read request: %w", readErr)
+			return
+		}
+		if !bytes.Equal(got, request) {
+			upstreamDone <- fmt.Errorf("request = %q, want %q", got, request)
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		var probe [1]byte
+		if _, readErr := conn.Read(probe[:]); !errors.Is(readErr, io.EOF) {
+			upstreamDone <- fmt.Errorf("read after client half-close = %v, want EOF", readErr)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		if _, writeErr := conn.Write(response); writeErr != nil {
+			upstreamDone <- fmt.Errorf("write delayed response: %w", writeErr)
+			return
+		}
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			if closeErr := tcpConn.CloseWrite(); closeErr != nil {
+				upstreamDone <- fmt.Errorf("close upstream write: %w", closeErr)
+				return
+			}
+		}
+		upstreamDone <- nil
+	}()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen route: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	upstreamHost, upstreamPort, err := net.SplitHostPort(upstream.Addr().String())
+	if err != nil {
+		t.Fatalf("split upstream address: %v", err)
+	}
+	upstreamPortNumber, err := strconv.Atoi(upstreamPort)
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "half-close-route",
+		Upstream: resource.Upstream{
+			Scheme: "tcp",
+			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial route: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	serverConn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept route: %v", err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- router.Serve(context.Background(), listener, serverConn) }()
+
+	if _, err := client.Write(request); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	if tcpConn, ok := client.(*net.TCPConn); ok {
+		if err := tcpConn.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	} else {
+		t.Fatal("client connection is not TCP")
+	}
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gotResponse := make([]byte, len(response))
+	if _, err := io.ReadFull(client, gotResponse); err != nil {
+		t.Fatalf("read delayed response: %v", err)
+	}
+	if !bytes.Equal(gotResponse, response) {
+		t.Fatalf("response = %q, want %q", gotResponse, response)
+	}
+
+	select {
+	case err := <-upstreamDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not finish half-close exchange")
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve() did not finish half-close exchange")
 	}
 }
 

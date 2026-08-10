@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 )
 
 const (
 	defaultMQTTStreamPrereadTimeout = 5 * time.Second
 	defaultMQTTStreamWriteTimeout   = 5 * time.Second
+	defaultMQTTStreamIdleTimeout    = 60 * time.Second
 )
 
 // StreamDialer selects a stream upstream using the parsed MQTT client ID. The
@@ -87,6 +89,18 @@ func (p *Plugin) ServeStream(
 	peer string,
 	dial StreamDialer,
 ) (StreamInfo, error) {
+	return p.ServeStreamWithIdle(ctx, client, peer, dial, defaultMQTTStreamIdleTimeout)
+}
+
+// ServeStreamWithIdle is the route-owned MQTT stream entry point. It uses the
+// supplied per-direction idle bound after CONNECT preread and replay.
+func (p *Plugin) ServeStreamWithIdle(
+	ctx context.Context,
+	client net.Conn,
+	peer string,
+	dial StreamDialer,
+	idle time.Duration,
+) (StreamInfo, error) {
 	if client == nil {
 		return StreamInfo{}, fmt.Errorf("mqtt client connection is nil")
 	}
@@ -141,7 +155,7 @@ func (p *Plugin) ServeStream(
 	info := StreamInfo{ConnectInfo: connectInfo, ClientID: clientID, Peer: peer}
 	// Any bytes already buffered after CONNECT are forwarded exactly once
 	// through the buffered reader.
-	return info, copyMQTTStream(ctx, bufio.NewReader(client), client, upstream)
+	return info, streambridge.Pump(ctx, client, upstream, bufio.NewReader(client), idle)
 }
 
 func readConnectFromStream(
@@ -188,43 +202,10 @@ func writeStreamBytes(ctx context.Context, conn net.Conn, payload []byte) error 
 		}
 		payload = payload[written:]
 	}
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear write deadline: %w", err)
+	}
 	return nil
-}
-
-func copyMQTTStream(ctx context.Context, reader *bufio.Reader, client net.Conn, upstream net.Conn) error {
-	results := make(chan error, 2)
-	go copyMQTTDirection(client, upstream, results)
-	go copyMQTTDirection(upstream, reader, results)
-
-	var first error
-	select {
-	case first = <-results:
-	case <-ctx.Done():
-		first = ctx.Err()
-	}
-	_ = client.Close()
-	_ = upstream.Close()
-	<-results
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	return normalizeMQTTCopyError(first)
-}
-
-func copyMQTTDirection(dst net.Conn, src io.Reader, results chan<- error) {
-	_, err := io.Copy(dst, src)
-	results <- err
-}
-
-func normalizeMQTTCopyError(err error) error {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-		return nil
-	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "closed pipe") || strings.Contains(message, "use of closed network connection") {
-		return nil
-	}
-	return err
 }
 
 func closeStreamOnContextDone(ctx context.Context, conns ...net.Conn) func() {

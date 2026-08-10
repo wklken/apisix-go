@@ -34,6 +34,23 @@ func NewRuntime(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("stream runtime requires at least one TCP listener")
+	}
+	for _, spec := range specs {
+		if spec.Tls {
+			return nil, fmt.Errorf("TLS stream listeners are not supported")
+		}
+		if spec.ProxyProtocol {
+			return nil, fmt.Errorf("stream listener PROXY protocol is not supported")
+		}
+		if spec.ProxyProtocolToUpstream {
+			return nil, fmt.Errorf("upstream PROXY protocol is not supported")
+		}
+	}
+	if err := validateStreamRoutes(routes); err != nil {
+		return nil, err
+	}
 	router, err := NewRouter(routes, enabledPlugins, onResult)
 	if err != nil {
 		return nil, err
@@ -47,10 +64,6 @@ func NewRuntime(
 	}
 
 	for _, spec := range specs {
-		if spec.Tls {
-			runtime.close()
-			return nil, fmt.Errorf("TLS stream listeners are not supported")
-		}
 		address, err := normalizeListenAddr(spec.Addr)
 		if err != nil {
 			runtime.close()
@@ -82,7 +95,19 @@ func (r *Runtime) Addresses() []string {
 }
 
 func (r *Runtime) Reload(routes []resource.StreamRoute) error {
+	if err := validateStreamRoutes(routes); err != nil {
+		return err
+	}
 	return r.router.Reload(routes)
+}
+
+func validateStreamRoutes(routes []resource.StreamRoute) error {
+	for _, route := range routes {
+		if route.Upstream.TLS != nil {
+			return fmt.Errorf("TLS stream upstreams are not supported")
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Close(ctx context.Context) error {

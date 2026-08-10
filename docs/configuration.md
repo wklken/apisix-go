@@ -11,7 +11,7 @@ object so an official file can be loaded without being rewritten.
 | Configuration | Go behavior |
 | --- | --- |
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
-| `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | Select and start the existing HTTP/TCP stream runtimes. UDP listeners are parsed but not started. |
+| `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
 | `plugins`, `stream_plugins`, and `plugin_attr` | Control the existing plugin registration, stream plugin selection, and plugin-specific settings. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
@@ -72,9 +72,17 @@ listed above:
 - OpenResty/NGINX worker directives, Lua module paths/hooks, Lua shared-dict
   sizing, NGINX configuration snippets, access-log formatting, and NGINX
   variable/real-IP directives.
-- Dynamic HTTPS listener serving, HTTP/3/QUIC, PROXY protocol, and UDP stream
-  proxying. HTTPS certificate selection is a dynamic APISIX resource concern,
-  not represented by the official listener-only config fields.
+- Dynamic HTTPS listener serving, HTTP/3/QUIC, stream TLS/mTLS, PROXY protocol,
+  and UDP stream proxying. In stream mode, empty TCP listener sets, listener or
+  upstream TLS/PROXY protocol flags, top-level TCP PROXY protocol flags,
+  unresolved upstream references, unsupported stream plugins, invalid listener
+  addresses, and bind failures are rejected at startup rather than ignored.
+  HTTPS certificate selection is a dynamic APISIX resource concern, not
+  represented by the official listener-only config fields.
+- General stream-plugin chaining, stream metrics, and a dynamic readiness
+  endpoint. The repository has no readiness endpoint; startup failures are
+  surfaced through the process return and dynamic health publication belongs to
+  a later observability contract.
 - The APISIX Admin API, control API, status server, admin UI, admin CORS/IP
   restrictions, and admin mTLS. The current Go admin router is not a complete
   APISIX Admin API implementation.

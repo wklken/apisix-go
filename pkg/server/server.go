@@ -318,7 +318,10 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
-	s.startStreamProxy(ctx)
+	previousStreamRuntime := s.streamRuntime
+	if err := s.startStreamProxy(ctx); err != nil {
+		return err
+	}
 	if s.standaloneWatcher != nil {
 		s.standaloneWatcher.Watch()
 		provider := standaloneConfigProvider(config.GlobalConfig)
@@ -328,11 +331,31 @@ func (s *Server) Start(ctx context.Context) error {
 	// start the reloader
 	go s.listenReloadEvent(ctx)
 
-	if err := s.startPrometheusExportServer(); err != nil {
-		return err
-	}
+	return s.startServing(
+		ctx,
+		previousStreamRuntime,
+		s.startPrometheusExportServer,
+		s.startHTTPListeners,
+	)
+}
 
-	return s.startHTTPListeners(ctx)
+func (s *Server) startServing(
+	ctx context.Context,
+	previousStreamRuntime streamRuntimeOwner,
+	startPrometheus func() error,
+	startHTTP func(context.Context) error,
+) error {
+	var startedStreamRuntime streamRuntimeOwner
+	if s.streamRuntime != previousStreamRuntime {
+		startedStreamRuntime = s.streamRuntime
+	}
+	if err := startPrometheus(); err != nil {
+		return errors.Join(err, s.closeStartedStreamRuntime(startedStreamRuntime))
+	}
+	if err := startHTTP(ctx); err != nil {
+		return errors.Join(err, s.closeStartedStreamRuntime(startedStreamRuntime))
+	}
+	return nil
 }
 
 // Shutdown gracefully stops the HTTP listeners and the observability and
@@ -393,32 +416,54 @@ func (s *Server) shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *Server) startStreamProxy(ctx context.Context) {
+func (s *Server) startStreamProxy(ctx context.Context) error {
 	if config.GlobalConfig == nil || !streamProxyModeEnabled(config.GlobalConfig) {
-		return
+		return nil
 	}
-	if len(config.GlobalConfig.Apisix.StreamProxy.Tcp) == 0 {
-		return
+	streamConfig := config.GlobalConfig.Apisix.StreamProxy
+	if len(streamConfig.Tcp) == 0 {
+		return fmt.Errorf("stream mode requires at least one TCP listener")
+	}
+	if len(streamConfig.Udp) > 0 {
+		return fmt.Errorf("UDP stream listeners are not supported")
+	}
+	proxyProtocol := config.GlobalConfig.Apisix.ProxyProtocol
+	if proxyProtocol.EnableTCPPP {
+		return fmt.Errorf("stream PROXY protocol is not supported")
+	}
+	if proxyProtocol.EnableTCPPPToUpstream {
+		return fmt.Errorf("upstream PROXY protocol is not supported")
 	}
 
 	routes, err := s.loadStreamRoutes()
 	if err != nil {
-		logger.Errorf("load stream routes fail: %s", err)
-		return
+		return fmt.Errorf("load stream routes: %w", err)
 	}
 	runtime, err := streamruntime.NewRuntime(
 		ctx,
-		config.GlobalConfig.Apisix.StreamProxy.Tcp,
+		streamConfig.Tcp,
 		routes,
 		config.GlobalConfig.StreamPlugins,
 		logStreamResult,
 	)
 	if err != nil {
-		logger.Errorf("start stream proxy fail: %s", err)
-		return
+		return fmt.Errorf("start stream proxy: %w", err)
 	}
 	s.streamRuntime = runtime
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
+	return nil
+}
+
+func (s *Server) closeStartedStreamRuntime(runtime streamRuntimeOwner) error {
+	if runtime == nil || s.streamRuntime != runtime {
+		return nil
+	}
+	err := runtime.Close(context.Background())
+	s.streamRuntime = nil
+	if err != nil {
+		return fmt.Errorf("stop stream runtime after startup failure: %w", err)
+	}
+	return nil
 }
 
 // startPrometheusExportServer starts the prometheus export server when the
@@ -493,7 +538,7 @@ func streamProxyModeEnabled(cfg *config.Config) bool {
 		return false
 	}
 	mode := strings.ToLower(strings.ReplaceAll(cfg.Apisix.ProxyMode, " ", ""))
-	return mode == "stream" || mode == "http&stream" || mode == "stream&http"
+	return slices.Contains(strings.Split(mode, "&"), "stream")
 }
 
 func isStreamRouteEvent(event *store.Event) bool {

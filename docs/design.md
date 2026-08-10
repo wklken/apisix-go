@@ -11,11 +11,16 @@
 > [`plugins.md`](plugins.md).
 
 The current Go runtime has an HTTP `http.Handler` pipeline and now also owns a
-bounded TCP stream listener/route snapshot with cancellation and result/log
-callbacks. It does not yet expose a general stream-variable/plugin-chain API,
-active health probes, TLS/UDP stream owner, or Kafka-specific stream
-binding. Protocol-owned bounded transport and stream boundaries therefore have
-different integration states:
+bounded raw-TCP stream listener/route snapshot with cancellation and result/log
+callbacks. Stream startup is fail-closed: stream mode requires at least one
+TCP listener, and unsupported UDP, TLS, PROXY protocol, unresolved upstream,
+and unsupported plugin configuration is rejected before the server begins
+serving. An invalid route reload is rejected without replacing the last-good
+router generation. It does not yet expose a general stream-variable/plugin-chain
+API, active health probes, TLS/UDP stream owner, or Kafka-specific stream
+binding. There is no readiness endpoint in this repository; startup failures
+are returned to the process entrypoint. Protocol-owned bounded transport and
+stream boundaries therefore have different integration states:
 
 | Plugin | Current local behavior | Design consequence |
 |---|---|---|
@@ -250,6 +255,20 @@ stream log context, not to ordinary HTTP request variables.
   errors, with no HTTP status invented for a raw TCP client;
 - protocol-level 4 and 5 are validated, but MQTT payloads are not decoded or
   rewritten by the gateway.
+
+#### Main-server startup boundary
+
+The main stream owner currently supports raw TCP routes and the
+`mqtt-proxy` route plugin only. The configured upstream `read` timeout bounds
+each forwarding direction, with a 60-second default when it is unset. Stream
+mode fails before HTTP serving when the TCP listener set is empty, a UDP
+listener is configured, a listener or upstream requests TLS or PROXY protocol,
+an upstream reference cannot be resolved, a route uses an unsupported stream
+plugin, or a listener cannot bind. Runtime construction is transactional across
+listeners, and a later Prometheus or HTTP startup error closes and clears the
+stream runtime created by that startup attempt. General stream plugin chaining,
+stream TLS/mTLS, UDP forwarding, PROXY protocol, stream metrics, and dynamic
+readiness publication remain outside this bounded contract.
 
 #### Acceptance tests
 

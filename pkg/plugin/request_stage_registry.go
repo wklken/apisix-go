@@ -11,12 +11,14 @@ import (
 )
 
 // RequestStageSpec describes the audited request-stage owner for one exact
-// plugin factory key. The legacy adapter is limited to rewrite-only handlers
-// with no post-next work, response-writer wrapper, flush/hijack, logging, or
-// deferred cleanup behavior.
+// plugin factory key. AdaptLegacyHandler is set only for handlers audited for
+// request-stage adaptation with no post-next work, response-writer wrapper,
+// flush/hijack, logging, or deferred cleanup behavior.
 type RequestStageSpec struct {
-	Stage              RequestStage
-	AdaptLegacyHandler bool
+	Stage                 RequestStage
+	AuthenticatesConsumer bool
+	ConsumerConfigOnly    bool
+	AdaptLegacyHandler    bool
 }
 
 // requestStageRegistry is intentionally exact. A factory alias or an
@@ -38,6 +40,46 @@ var requestStageRegistry = map[string]RequestStageSpec{
 	"degraphql":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 	"example-plugin":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 	"jwe-decrypt":         {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+
+	"limit-conn": {Stage: RequestStageAccess},
+
+	"basic-auth": {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"hmac-auth":  {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"jwt-auth":   {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"key-auth":   {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"ldap-auth":  {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"multi-auth": {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+	"wolf-rbac":  {Stage: RequestStageAccess, AuthenticatesConsumer: true, ConsumerConfigOnly: true},
+
+	"attach-consumer-label": {Stage: RequestStageConsumerRewrite, AdaptLegacyHandler: true},
+
+	"acl":                       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"ai-aws-content-moderation": {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"ai-prompt-guard":           {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"authz-casbin":              {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"authz-casdoor":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"authz-keycloak":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"cas-auth":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"chaitin-waf":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"client-control":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"consumer-restriction":      {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"csrf":                      {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"dingtalk-auth":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"feishu-auth":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"forward-auth":              {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"graphql-limit-count":       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"ip-restriction":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"limit-count":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"limit-req":                 {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"oas-validator":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"opa":                       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"openid-connect":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"referer-restriction":       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"request-validation":        {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"saml-auth":                 {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"ua-restriction":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"uri-blocker":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+	"workflow":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
 }
 
 // RequestStageFor resolves only the exact factory/config name.

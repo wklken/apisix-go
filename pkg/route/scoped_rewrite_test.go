@@ -396,7 +396,7 @@ func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
 	}
 }
 
-func TestRouteRewriteReadsAuthStateAfterLegacyJWTAuth(t *testing.T) {
+func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 	ensureRouteStore(t)
 	putHTTPAllowlistResource(t, "consumers", "scoped-jwt-auth-only", []byte(`{
 		"username":"scoped-jwt-auth-only",
@@ -457,7 +457,7 @@ func TestRouteRewriteReadsAuthStateAfterLegacyJWTAuth(t *testing.T) {
 	}
 }
 
-func TestJWTAuthConsumerOverridesSameNameProxyRewriteOnce(t *testing.T) {
+func TestPlan14V2ConsumerProxyRewriteOverridesRouteBeforeEitherExecutes(t *testing.T) {
 	ensureRouteStore(t)
 	putHTTPAllowlistResource(t, "consumers", "scoped-jwt-proxy-consumer", []byte(`{
 		"username":"scoped-jwt-proxy-consumer",

@@ -29,6 +29,73 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 		"degraphql":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"example-plugin":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"jwe-decrypt":         {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"limit-conn":          {Stage: RequestStageAccess, AdaptLegacyHandler: false},
+
+		"basic-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"hmac-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"jwt-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"key-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"ldap-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"multi-auth": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+		"wolf-rbac": {
+			Stage:                 RequestStageAccess,
+			AuthenticatesConsumer: true,
+			ConsumerConfigOnly:    true,
+		},
+
+		"attach-consumer-label": {Stage: RequestStageConsumerRewrite, AdaptLegacyHandler: true},
+
+		"acl":                       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ai-aws-content-moderation": {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ai-prompt-guard":           {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"authz-casbin":              {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"authz-casdoor":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"authz-keycloak":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"cas-auth":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"chaitin-waf":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"client-control":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"consumer-restriction":      {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"csrf":                      {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"dingtalk-auth":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"feishu-auth":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"forward-auth":              {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"graphql-limit-count":       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ip-restriction":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"limit-count":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"limit-req":                 {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"oas-validator":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"opa":                       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"openid-connect":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"referer-restriction":       {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"request-validation":        {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"saml-auth":                 {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ua-restriction":            {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"uri-blocker":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"workflow":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
 	}
 	for name, wantSpec := range want {
 		got, ok := RequestStageFor(name)
@@ -49,6 +116,84 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 	}
 }
 
+func TestPlan14RegistrySubsetsAreExact(t *testing.T) {
+	authentication := []string{
+		"basic-auth", "hmac-auth", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac",
+	}
+	legacyAccess := []string{
+		"acl", "ai-aws-content-moderation", "ai-prompt-guard", "authz-casbin",
+		"authz-casdoor", "authz-keycloak", "cas-auth", "chaitin-waf", "client-control",
+		"consumer-restriction", "csrf", "dingtalk-auth", "feishu-auth", "forward-auth",
+		"graphql-limit-count", "ip-restriction", "limit-count", "limit-req", "oas-validator",
+		"opa", "openid-connect", "referer-restriction", "request-validation", "saml-auth",
+		"ua-restriction", "uri-blocker", "workflow",
+	}
+	consumerRewrite := []string{"attach-consumer-label"}
+	credentialOnly := []string{
+		"basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac",
+	}
+
+	assertSet := func(name string, want []string, predicate func(RequestStageSpec) bool) {
+		t.Helper()
+		got := make([]string, 0)
+		for key, spec := range requestStageRegistry {
+			if predicate(spec) {
+				got = append(got, key)
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s size = %d, want %d (%v)", name, len(got), len(want), want)
+		}
+		for _, key := range want {
+			if spec, ok := requestStageRegistry[key]; !ok || !predicate(spec) {
+				t.Fatalf("%s missing exact key %q", name, key)
+			}
+		}
+	}
+
+	assertSet("authentication", authentication, func(spec RequestStageSpec) bool {
+		return spec.Stage == RequestStageAccess && spec.AuthenticatesConsumer &&
+			spec.ConsumerConfigOnly && !spec.AdaptLegacyHandler
+	})
+	assertSet("legacy access", legacyAccess, func(spec RequestStageSpec) bool {
+		return spec.Stage == RequestStageAccess && !spec.AuthenticatesConsumer &&
+			!spec.ConsumerConfigOnly && spec.AdaptLegacyHandler
+	})
+	assertSet("consumer rewrite", consumerRewrite, func(spec RequestStageSpec) bool {
+		return spec.Stage == RequestStageConsumerRewrite && !spec.AuthenticatesConsumer &&
+			!spec.ConsumerConfigOnly && spec.AdaptLegacyHandler
+	})
+
+	for _, key := range credentialOnly {
+		if key == "jwe-decrypt" {
+			spec, ok := requestStageRegistry[key]
+			if !ok || spec.Stage != RequestStageRewrite || !spec.AdaptLegacyHandler {
+				t.Fatalf("credential-only rewrite %q = %#v/%v", key, spec, ok)
+			}
+			continue
+		}
+		spec, ok := requestStageRegistry[key]
+		if !ok || !spec.AuthenticatesConsumer || !spec.ConsumerConfigOnly {
+			t.Fatalf("credential-only auth %q = %#v/%v", key, spec, ok)
+		}
+	}
+}
+
+func TestRequestStageEnumOrderIsFrozen(t *testing.T) {
+	got := []RequestStage{
+		RequestStageLegacy,
+		RequestStageRewrite,
+		RequestStageConsumerRewrite,
+		RequestStageAccess,
+		RequestStageBeforeProxy,
+	}
+	for i, stage := range got {
+		if uint8(stage) != uint8(i) {
+			t.Fatalf("RequestStage value at index %d = %d, want %d", i, stage, i)
+		}
+	}
+}
+
 func TestRequestStageRegistryRejectsUnknownAndImplementationName(t *testing.T) {
 	for _, name := range []string{"", "unknown-plugin", "request_context", "proxy_rewrite"} {
 		if _, ok := RequestStageFor(name); ok {
@@ -60,7 +205,9 @@ func TestRequestStageRegistryRejectsUnknownAndImplementationName(t *testing.T) {
 func TestRewriteOnlyAdapterPropagatesReplacementRequest(t *testing.T) {
 	plugin := newExecutorLegacyPlugin("request_context", 1, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			replacement := r.WithContext(context.WithValue(r.Context(), registryTraceKey{}, "replacement"))
+			replacement := r.WithContext(
+				context.WithValue(r.Context(), registryTraceKey{}, "replacement"),
+			)
 			next.ServeHTTP(w, replacement)
 		})
 	})
@@ -74,7 +221,8 @@ func TestRewriteOnlyAdapterPropagatesReplacementRequest(t *testing.T) {
 	)).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		terminalRequest = r
 	})).ServeHTTP(httptest.NewRecorder(), request)
-	if terminalRequest == nil || terminalRequest.Context().Value(registryTraceKey{}) != "replacement" {
+	if terminalRequest == nil ||
+		terminalRequest.Context().Value(registryTraceKey{}) != "replacement" {
 		t.Fatalf("terminal request did not receive replacement: %#v", terminalRequest)
 	}
 }
@@ -145,7 +293,9 @@ func TestRewriteOnlyAdapterRejectsDoubleNext(t *testing.T) {
 
 func TestRewriteOnlyAdapterDoesNotExecuteDownstreamTwice(t *testing.T) {
 	plugin := newExecutorLegacyPlugin("proxy_rewrite", 1, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		return http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) },
+		)
 	})
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	terminalCalls := 0
@@ -165,7 +315,9 @@ func TestRewriteOnlyAdapterDoesNotExecuteDownstreamTwice(t *testing.T) {
 
 func TestScopedExecutorRejectsUnregisteredRewriteBinding(t *testing.T) {
 	plugin := newExecutorLegacyPlugin("legacy-name", 1, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+		return http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) },
+		)
 	})
 	var diagnostics []string
 	request := withRewriteAdapterDiagnosticRecorder(
@@ -186,8 +338,13 @@ func TestScopedExecutorRejectsUnregisteredRewriteBinding(t *testing.T) {
 	if terminalCalled {
 		t.Fatal("terminal called for unregistered rewrite binding")
 	}
-	if response.Code != http.StatusInternalServerError || response.Body.String() != "Internal Server Error\n" {
-		t.Fatalf("unregistered rewrite response = %d/%q, want generic 500", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError ||
+		response.Body.String() != "Internal Server Error\n" {
+		t.Fatalf(
+			"unregistered rewrite response = %d/%q, want generic 500",
+			response.Code,
+			response.Body.String(),
+		)
 	}
 	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "service/svc-unaudited") {
 		t.Fatalf("unregistered rewrite diagnostics = %q, want provenance", diagnostics)

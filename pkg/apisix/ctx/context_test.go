@@ -225,70 +225,6 @@ func TestFinalizeProxyRewriteUpdatesMethodAndEscapedTarget(t *testing.T) {
 	}
 }
 
-func TestRunConsumerPluginsUsesRegisteredRunner(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	called := false
-	req = WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-		called = true
-		next.ServeHTTP(w, r)
-	})
-	response := httptest.NewRecorder()
-
-	RunConsumerPlugins(response, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	if !called {
-		t.Fatal("consumer plugin runner was not called")
-	}
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
-	}
-}
-
-func TestRunConsumerPluginsFallsBackToNextHandler(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	response := httptest.NewRecorder()
-
-	RunConsumerPlugins(response, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
-	}
-}
-
-func TestRunConsumerPluginsRunsRunnerOnceAcrossStackedAuthCalls(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	runnerCalls := 0
-	req = WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-		runnerCalls++
-		next.ServeHTTP(w, r)
-	})
-	downstreamCalls := 0
-	downstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		downstreamCalls++
-		w.WriteHeader(http.StatusNoContent)
-	})
-	secondAuth := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		RunConsumerPlugins(w, r, downstream)
-	})
-	response := httptest.NewRecorder()
-
-	RunConsumerPlugins(response, req, secondAuth)
-
-	if runnerCalls != 1 {
-		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
-	}
-	if downstreamCalls != 1 {
-		t.Fatalf("downstream calls = %d, want 1", downstreamCalls)
-	}
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
-	}
-}
-
 func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	var diagnostics []string
@@ -304,6 +240,87 @@ func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
 	}
 	if !reflect.DeepEqual(diagnostics, []string{"first", "second"}) {
 		t.Fatalf("diagnostics = %v, want [first second]", diagnostics)
+	}
+}
+
+func TestAuthenticationStateFromReturnsIndependentCopies(t *testing.T) {
+	consumer := resource.Consumer{
+		Username: "alice",
+		GroupID:  "group-a",
+		Plugins: map[string]resource.PluginConfig{
+			"jwt-auth": map[string]any{
+				"claims": map[string]any{
+					"roles": []any{"reader", map[string]any{"name": "nested"}},
+				},
+			},
+		},
+		Labels: map[string]any{
+			"team":  "edge",
+			"zones": []string{"a", "b"},
+		},
+	}
+	state := NewAuthenticationState("jwt-auth", consumer)
+	request := WithAuthenticationState(httptest.NewRequest(http.MethodGet, "/", nil), state)
+
+	got, ok := AuthenticationStateFrom(request)
+	if !ok {
+		t.Fatal("AuthenticationStateFrom() = false, want true")
+	}
+	gotConsumer := got.Consumer()
+	gotConsumer.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[1].(map[string]any)["name"] = "mutated"
+	gotConsumer.Labels["zones"].([]string)[0] = "mutated"
+
+	if gotName := consumer.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[1].(map[string]any)["name"]; gotName != "nested" {
+		t.Fatalf("original nested plugin value = %q, want nested", gotName)
+	}
+	if gotZone := consumer.Labels["zones"].([]string)[0]; gotZone != "a" {
+		t.Fatalf("original label slice value = %q, want a", gotZone)
+	}
+
+	consumer.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0] = "changed-after-store"
+	consumer.Labels["team"] = "changed-after-store"
+	stored, _ := AuthenticationStateFrom(request)
+	storedConsumer := stored.Consumer()
+	if gotRole := storedConsumer.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0]; gotRole != "reader" {
+		t.Fatalf("stored auth state role = %q, want reader", gotRole)
+	}
+	if gotTeam := storedConsumer.Labels["team"]; gotTeam != "edge" {
+		t.Fatalf("stored auth state label = %q, want edge", gotTeam)
+	}
+	if got.Source != "jwt-auth" {
+		t.Fatalf("authentication source = %q, want jwt-auth", got.Source)
+	}
+}
+
+func TestAuthenticationProbeStartsWithoutPublishedState(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/original?one=1", strings.NewReader("payload"))
+	request.Header.Set("X-Probe", "original")
+	request = WithAuthenticationState(request, NewAuthenticationState("key-auth", resource.Consumer{Username: "alice"}))
+	request = WithAuthProbeDiagnosticRecorder(request, func(string) {})
+
+	probe := NewAuthenticationProbeRequest(request)
+	probe.Header.Set("X-Probe", "probe")
+	probe.URL.Path = "/probe"
+	probe.URL.RawQuery = "two=2"
+
+	if got := request.Header.Get("X-Probe"); got != "original" {
+		t.Fatalf("original header = %q, want original", got)
+	}
+	if got := request.URL.RequestURI(); got != "/original?one=1" {
+		t.Fatalf("original URI = %q, want /original?one=1", got)
+	}
+	if _, ok := AuthenticationStateFrom(probe); ok {
+		t.Fatal("probe unexpectedly retained authentication state")
+	}
+	if RecordAuthProbeDiagnostic(probe, "losing probe") {
+		t.Fatal("probe unexpectedly retained diagnostics recorder")
+	}
+	if probe.Body != http.NoBody {
+		t.Fatalf("probe body = %T, want http.NoBody until multi-auth installs a bounded replay", probe.Body)
+	}
+	body, err := io.ReadAll(request.Body)
+	if err != nil || string(body) != "payload" {
+		t.Fatalf("parent body = %q, error = %v; want unread payload", body, err)
 	}
 }
 

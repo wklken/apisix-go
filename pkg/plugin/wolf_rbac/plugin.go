@@ -129,56 +129,72 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		prefix := p.config.HeaderPrefix
-		if prefix == "" {
-			prefix = "X-"
-		}
-		clearUserHeaders(r, prefix)
-		clearResponseHeaders(w, prefix)
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
+}
 
-		rawToken := fetchRBACToken(r)
-		if rawToken == "" {
-			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
-			return
-		}
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
 
-		token, err := parseRBACToken(rawToken)
-		if err != nil {
-			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
-			return
-		}
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	prefix := p.config.HeaderPrefix
+	if prefix == "" {
+		prefix = "X-"
+	}
+	clearUserHeaders(r, prefix)
+	clearResponseHeaders(w, prefix)
 
-		consumer, cfg, err := p.consumerByAppID(token.AppID)
-		if err != nil {
-			logger.Errorf("consumer [%s] not found", token.AppID)
-			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Invalid appid in rbac token")
-			return
-		}
-		clearUserHeaders(r, cfg.headerPrefix())
-		clearResponseHeaders(w, cfg.headerPrefix())
+	rawToken := fetchRBACToken(r)
+	if rawToken == "" {
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
+		return base.StopRequest(r)
+	}
 
-		status, reason, userInfo, err := p.checkPermission(r, cfg, token)
-		if err != nil {
-			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if status != http.StatusOK {
-			if reason == "" {
-				reason = http.StatusText(status)
-			}
-			logger.Errorf("wolf-rbac permission denied, status:%d, reason:%s", status, reason)
-			_ = util.WriteJSONMessage(w, status, reason)
-			return
-		}
-		if err := p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo); err != nil {
-			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	token, err := parseRBACToken(rawToken)
+	if err != nil {
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
+		return base.StopRequest(r)
+	}
 
-		ctx.AttachConsumer(r, consumer)
-		ctx.RunConsumerPlugins(w, r, next)
-	})
+	consumer, cfg, err := p.consumerByAppID(token.AppID)
+	if err != nil {
+		logger.Errorf("consumer [%s] not found", token.AppID)
+		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Invalid appid in rbac token")
+		return base.StopRequest(r)
+	}
+	clearUserHeaders(r, cfg.headerPrefix())
+	clearResponseHeaders(w, cfg.headerPrefix())
+
+	status, reason, userInfo, err := p.checkPermission(r, cfg, token)
+	if err != nil {
+		_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
+		return base.StopRequest(r)
+	}
+	if status != http.StatusOK {
+		if reason == "" {
+			reason = http.StatusText(status)
+		}
+		logger.Errorf("wolf-rbac permission denied, status:%d, reason:%s", status, reason)
+		_ = util.WriteJSONMessage(w, status, reason)
+		return base.StopRequest(r)
+	}
+	if err := p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo); err != nil {
+		_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
+		return base.StopRequest(r)
+	}
+
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 }
 
 func fetchRBACToken(r *http.Request) string {

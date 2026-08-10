@@ -81,81 +81,96 @@ type basicAuth struct {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Missing authorization in request"}`)
-			return
-		}
-
-		user, pass, err := parseBasicAuthorization(authHeader)
-		if err != nil {
-			if !ctx.RecordAuthProbeDiagnostic(r, err.Error()) {
-				logger.Warn(err.Error())
-			}
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Invalid authorization in request"}`)
-			return
-		}
-		if *p.config.HideCredentials {
-			r.Header.Del("Authorization")
-		}
-		user = normalizeCredential(user)
-		pass = normalizeCredential(pass)
-
-		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
-		if err != nil {
-			ctx.RecordAuthProbeDiagnostic(r, "failed to find user: invalid user")
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
-			return
-		}
-		logger.Info("find consumer " + consumer.Username)
-
-		consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
-		if !exists {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Missing authorization config in consumer settings"}`)
-			return
-		}
-
-		var ba basicAuth
-		err = util.Parse(consumerPluginConfig, &ba)
-		if err != nil {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Invalid authorization config in consumer settings"}`)
-			return
-		}
-
-		if pass != ba.Password {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
-			return
-		}
-
-		ctx.AttachConsumer(r, consumer)
-
-		ctx.RunConsumerPlugins(w, r, next)
-	}
-	return http.HandlerFunc(fn)
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
 }
 
-func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Missing authorization in request"}`)
+		return base.StopRequest(r)
+	}
+
+	user, pass, err := parseBasicAuthorization(authHeader)
+	if err != nil {
+		if !ctx.RecordAuthProbeDiagnostic(r, err.Error()) {
+			logger.Warn(err.Error())
+		}
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Invalid authorization in request"}`)
+		return base.StopRequest(r)
+	}
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
+	}
+	user = normalizeCredential(user)
+	pass = normalizeCredential(pass)
+
+	consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
+	if err != nil {
+		ctx.RecordAuthProbeDiagnostic(r, "failed to find user: invalid user")
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
+		return base.StopRequest(r)
+	}
+	logger.Info("find consumer " + consumer.Username)
+
+	consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
+	if !exists {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Missing authorization config in consumer settings"}`)
+		return base.StopRequest(r)
+	}
+
+	var ba basicAuth
+	err = util.Parse(consumerPluginConfig, &ba)
+	if err != nil {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Invalid authorization config in consumer settings"}`)
+		return base.StopRequest(r)
+	}
+
+	if pass != ba.Password {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
+		return base.StopRequest(r)
+	}
+
+	r = ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, bool) {
 	if p.config.AnonymousConsumer == "" {
-		return false
+		return base.RequestPhaseResult{}, false
 	}
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
@@ -165,12 +180,10 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 			logger.Error(message)
 		}
 		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
-		return true
+		return base.StopRequest(r), true
 	}
 
-	ctx.AttachConsumer(r, consumer)
-	ctx.RunConsumerPlugins(w, r, next)
-	return true
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {

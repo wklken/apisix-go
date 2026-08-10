@@ -8,8 +8,30 @@ import (
 
 	"github.com/justinas/alice"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 )
+
+type pluginExecutor interface {
+	Then(http.Handler) http.Handler
+}
+
+func withAIExecutionTerminal(chain pluginExecutor, fallback http.Handler) http.Handler {
+	pipeline := plugin.NewRequestPipeline(nil, nil)
+	return ai_runtime.EnableTerminal(chain.Then(pipeline.Then(ai_runtime.TerminalHandler(fallback))))
+}
+
+func assembleRouteExecutor(
+	routeBindings []plugin.Binding,
+	globalBindings []plugin.Binding,
+	systemBindings []plugin.Binding,
+) plugin.Executor {
+	bindings := make([]plugin.Binding, 0, len(routeBindings)+len(globalBindings)+len(systemBindings))
+	bindings = append(bindings, systemBindings...)
+	bindings = append(bindings, globalBindings...)
+	bindings = append(bindings, routeBindings...)
+	return plugin.NewScopedExecutor(bindings...)
+}
 
 func TestAIExecutionTerminalRunsHookBeforeProviderWithoutFallback(t *testing.T) {
 	events := make([]string, 0, 2)

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -52,11 +53,18 @@ type executorRequestPlugin struct {
 	phase func(http.ResponseWriter, *http.Request) base.RequestPhaseResult
 }
 
-func (p *executorRequestPlugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+func (p *executorRequestPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
 	return p.phase(w, r)
 }
 
-func newExecutorLegacyPlugin(name string, priority int, handler func(http.Handler) http.Handler) *executorLegacyPlugin {
+func newExecutorLegacyPlugin(
+	name string,
+	priority int,
+	handler func(http.Handler) http.Handler,
+) *executorLegacyPlugin {
 	plugin := &executorLegacyPlugin{handler: handler}
 	plugin.Name = name
 	plugin.SetPriority(priority)
@@ -129,10 +137,14 @@ func TestExecutorMixedRequestAndLegacyPreservesPriorityAndUnwind(t *testing.T) {
 }
 
 func TestExecutorStopsWithoutCallingRemainder(t *testing.T) {
-	stop := newExecutorRequestPlugin("stop", 300, func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-		executorTraceFromRequest(r).add("stop")
-		return base.StopRequest(r)
-	})
+	stop := newExecutorRequestPlugin(
+		"stop",
+		300,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("stop")
+			return base.StopRequest(r)
+		},
+	)
 	legacy := newExecutorLegacyPlugin("legacy", 200, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			executorTraceFromRequest(r).add("legacy")
@@ -178,7 +190,9 @@ func TestExecutorPropagatesReplacementRequest(t *testing.T) {
 		})
 	})
 	var terminalRequest *http.Request
-	terminal := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { terminalRequest = r })
+	terminal := http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) { terminalRequest = r },
+	)
 
 	NewExecutor(explicit, legacy).Then(terminal).ServeHTTP(httptest.NewRecorder(), request)
 	if terminalRequest != replacement {
@@ -202,10 +216,13 @@ func TestExecutorTreatsUnknownDecisionAsStop(t *testing.T) {
 	)
 	request, lifecycle, _ := executorRequest(t)
 	called := false
-	NewExecutor(unknown).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(
-		httptest.NewRecorder(),
-		request,
-	)
+	NewExecutor(
+		unknown,
+	).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			request,
+		)
 	if called {
 		t.Fatal("terminal called for unknown decision")
 	}
@@ -241,7 +258,9 @@ func TestExecutorPreservesTransformPipeline(t *testing.T) {
 	}
 	outer := transform("echo", "outer", 200)
 	inner := transform("response-rewrite", "inner", 100)
-	terminal := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("terminal")) })
+	terminal := http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("terminal")) },
+	)
 	request, _, _ := executorRequest(t)
 	response := httptest.NewRecorder()
 	NewExecutor(outer, inner).Then(terminal).ServeHTTP(response, request)
@@ -279,8 +298,18 @@ func TestScopedExecutorClonesBindings(t *testing.T) {
 	low := newExecutorLegacyPlugin("low", 10, nil)
 	high := newExecutorLegacyPlugin("high", 100, nil)
 	bindings := []Binding{
-		BindPlugin("legacy-low", low, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "low"}),
-		BindPlugin("legacy-high", high, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "high"}),
+		BindPlugin(
+			"legacy-low",
+			low,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "low"},
+		),
+		BindPlugin(
+			"legacy-high",
+			high,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "high"},
+		),
 	}
 	executor := NewScopedExecutor(bindings...)
 	bindings[0] = Binding{}
@@ -320,13 +349,26 @@ func TestScopedExecutorRunsGlobalRewriteBeforeHigherPriorityRouteRewrite(t *test
 	)
 	request, _, trace := executorRequest(t)
 	NewScopedExecutor(
-		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"}),
-		BindPlugin("request-id", route, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "r"}),
+		BindPlugin(
+			"request-id",
+			global,
+			ScopeGlobal,
+			ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"},
+		),
+		BindPlugin(
+			"request-id",
+			route,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "r"},
+		),
 	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		executorTraceFromRequest(r).add("terminal")
 	})).ServeHTTP(httptest.NewRecorder(), request)
 
-	if got, want := trace.values(), []string{"global", "route", "terminal"}; !reflect.DeepEqual(got, want) {
+	if got, want := trace.values(), []string{"global", "route", "terminal"}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
 		t.Fatalf("scoped executor order = %v, want %v", got, want)
 	}
 }
@@ -350,21 +392,38 @@ func TestScopedExecutorSortsRewritePriorityWithinScope(t *testing.T) {
 	)
 	request, _, trace := executorRequest(t)
 	NewScopedExecutor(
-		BindPlugin("request-id", low, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "low"}),
-		BindPlugin("request-id", high, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "high"}),
+		BindPlugin(
+			"request-id",
+			low,
+			ScopeGlobal,
+			ResourceProvenance{Kind: ResourceGlobalRule, ID: "low"},
+		),
+		BindPlugin(
+			"request-id",
+			high,
+			ScopeGlobal,
+			ResourceProvenance{Kind: ResourceGlobalRule, ID: "high"},
+		),
 	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		executorTraceFromRequest(r).add("terminal")
 	})).ServeHTTP(httptest.NewRecorder(), request)
-	if got, want := trace.values(), []string{"high", "low", "terminal"}; !reflect.DeepEqual(got, want) {
+	if got, want := trace.values(), []string{"high", "low", "terminal"}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
 		t.Fatalf("same-scope rewrite order = %v, want %v", got, want)
 	}
 }
 
 func TestScopedExecutorStopsRewriteBeforeLegacyRemainder(t *testing.T) {
-	stop := newExecutorRequestPlugin("stop", 100, func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-		executorTraceFromRequest(r).add("stop")
-		return base.StopRequest(r)
-	})
+	stop := newExecutorRequestPlugin(
+		"stop",
+		100,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("stop")
+			return base.StopRequest(r)
+		},
+	)
 	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			executorTraceFromRequest(r).add("legacy")
@@ -373,8 +432,18 @@ func TestScopedExecutorStopsRewriteBeforeLegacyRemainder(t *testing.T) {
 	})
 	request, lifecycle, trace := executorRequest(t)
 	NewScopedExecutor(
-		BindPlugin("request-id", stop, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "stop"}),
-		BindPlugin("legacy", legacy, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "legacy"}),
+		BindPlugin(
+			"request-id",
+			stop,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "stop"},
+		),
+		BindPlugin(
+			"legacy",
+			legacy,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "legacy"},
+		),
 	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		executorTraceFromRequest(r).add("terminal")
 	})).ServeHTTP(httptest.NewRecorder(), request)
@@ -389,7 +458,9 @@ func TestScopedExecutorStopsRewriteBeforeLegacyRemainder(t *testing.T) {
 
 func TestScopedExecutorPropagatesRequestAcrossScopes(t *testing.T) {
 	request, _, trace := executorRequest(t)
-	replacement := request.WithContext(context.WithValue(request.Context(), executorTraceKey{}, trace))
+	replacement := request.WithContext(
+		context.WithValue(request.Context(), executorTraceKey{}, trace),
+	)
 	global := newExecutorRequestPlugin(
 		"global",
 		1,
@@ -397,17 +468,31 @@ func TestScopedExecutorPropagatesRequestAcrossScopes(t *testing.T) {
 			return base.ContinueRequest(replacement)
 		},
 	)
-	route := newExecutorRequestPlugin("route", 1, func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-		if r != replacement {
-			t.Errorf("route request = %p, want replacement %p", r, replacement)
-		}
-		executorTraceFromRequest(r).add("route")
-		return base.ContinueRequest(r)
-	})
+	route := newExecutorRequestPlugin(
+		"route",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			if r != replacement {
+				t.Errorf("route request = %p, want replacement %p", r, replacement)
+			}
+			executorTraceFromRequest(r).add("route")
+			return base.ContinueRequest(r)
+		},
+	)
 	var terminalRequest *http.Request
 	NewScopedExecutor(
-		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"}),
-		BindPlugin("request-id", route, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "r"}),
+		BindPlugin(
+			"request-id",
+			global,
+			ScopeGlobal,
+			ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"},
+		),
+		BindPlugin(
+			"request-id",
+			route,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "r"},
+		),
 	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { terminalRequest = r })).ServeHTTP(
 		httptest.NewRecorder(),
 		request,
@@ -437,8 +522,18 @@ func TestScopedExecutorLeavesLegacyPriorityAndUnwindUnchanged(t *testing.T) {
 	})
 	request, _, trace := executorRequest(t)
 	NewScopedExecutor(
-		BindPlugin("legacy-high", high, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "high"}),
-		BindPlugin("legacy-low", low, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "low"}),
+		BindPlugin(
+			"legacy-high",
+			high,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "high"},
+		),
+		BindPlugin(
+			"legacy-low",
+			low,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "low"},
+		),
 	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		executorTraceFromRequest(r).add("terminal")
 	})).ServeHTTP(httptest.NewRecorder(), request)
@@ -463,7 +558,9 @@ func TestScopedExecutorKeepsRouteRewriteInLegacyAuthEnvelope(t *testing.T) {
 	auth := newExecutorLegacyPlugin("jwt-auth", 100, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			executorTraceFromRequest(r).add("auth-enter")
-			r = r.WithContext(context.WithValue(r.Context(), executorAuthStateKey{}, "authenticated"))
+			r = r.WithContext(
+				context.WithValue(r.Context(), executorAuthStateKey{}, "authenticated"),
+			)
 			next.ServeHTTP(w, r)
 			executorTraceFromRequest(r).add("auth-exit")
 		})
@@ -483,8 +580,18 @@ func TestScopedExecutorKeepsRouteRewriteInLegacyAuthEnvelope(t *testing.T) {
 
 	request, lifecycle, trace := executorRequest(t)
 	NewScopedExecutor(
-		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "global"}),
-		BindPlugin("jwt-auth", auth, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "route-auth"}),
+		BindPlugin(
+			"request-id",
+			global,
+			ScopeGlobal,
+			ResourceProvenance{Kind: ResourceGlobalRule, ID: "global"},
+		),
+		BindPlugin(
+			"jwt-auth",
+			auth,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "route-auth"},
+		),
 		BindPlugin(
 			"request-id",
 			routeRewrite,
@@ -501,5 +608,408 @@ func TestScopedExecutorKeepsRouteRewriteInLegacyAuthEnvelope(t *testing.T) {
 	}
 	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
 		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUpstream)
+	}
+}
+
+func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
+	if setter, ok := p.(interface{ SetPriority(int) }); ok {
+		setter.SetPriority(priority)
+	}
+	return BindPlugin(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+}
+
+func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
+	order := []string{}
+	mark := func(name string) func(http.ResponseWriter, *http.Request) base.RequestPhaseResult {
+		return func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, name)
+			return base.ContinueRequest(r)
+		}
+	}
+	bindings := []Binding{
+		pipelineBinding(
+			"request-context",
+			newExecutorRequestPlugin("system", 1, mark("system")),
+			ScopeSystem,
+			1,
+		),
+		pipelineBinding(
+			"request-id",
+			newExecutorRequestPlugin("global", 1, mark("global")),
+			ScopeGlobal,
+			1,
+		),
+		pipelineBinding(
+			"jwt-auth",
+			newExecutorRequestPlugin("auth", 1, mark("auth")),
+			ScopeRoute,
+			1,
+		),
+		pipelineBinding(
+			"proxy-rewrite",
+			newExecutorRequestPlugin("route-rewrite", 1, mark("route-rewrite")),
+			ScopeRoute,
+			1,
+		),
+		pipelineBinding(
+			"attach-consumer-label",
+			newExecutorRequestPlugin("global-consumer-rewrite", 1, mark("global-consumer-rewrite")),
+			ScopeGlobal,
+			1,
+		),
+		pipelineBinding(
+			"acl",
+			newExecutorRequestPlugin("global-access", 1, mark("global-access")),
+			ScopeGlobal,
+			1,
+		),
+		pipelineBinding(
+			"limit-conn",
+			newExecutorRequestPlugin("route-access", 1, mark("route-access")),
+			ScopeRoute,
+			1,
+		),
+	}
+	dynamic := pipelineBinding(
+		"attach-consumer-label",
+		newExecutorRequestPlugin("consumer-rewrite", 1, mark("consumer-rewrite")),
+		ScopeConsumer,
+		1,
+	)
+	resolverCalls := 0
+	pipeline := NewRequestPipeline(bindings, func(r *http.Request) (ConsumerResolution, error) {
+		resolverCalls++
+		return ConsumerResolution{Request: r, Bindings: []Binding{dynamic}, Resolved: true}, nil
+	})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = apisixctx.WithBeforeProxyHook(
+		request,
+		func(*http.Request) { order = append(order, "before-proxy") },
+	)
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		order = append(order, "terminal")
+	})).ServeHTTP(
+		httptest.NewRecorder(),
+		request,
+	)
+
+	want := []string{
+		"system", "global", "auth", "route-rewrite", "global-consumer-rewrite",
+		"consumer-rewrite", "global-access", "route-access", "before-proxy", "terminal",
+	}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("pipeline order = %v, want %v", order, want)
+	}
+	if resolverCalls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolverCalls)
+	}
+}
+
+func TestRequestPipelineRunsSystemAccessBeforeGlobalAndMergedAccess(t *testing.T) {
+	order := []string{}
+	mark := func(name string) func(http.ResponseWriter, *http.Request) base.RequestPhaseResult {
+		return func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, name)
+			return base.ContinueRequest(r)
+		}
+	}
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding(
+			"client-control",
+			newExecutorRequestPlugin("system-access", 1, mark("system-access")),
+			ScopeSystem,
+			1,
+		),
+		pipelineBinding("acl", newExecutorRequestPlugin("global-access", 1, mark("global-access")), ScopeGlobal, 1),
+		pipelineBinding("limit-conn", newExecutorRequestPlugin("route-access", 1, mark("route-access")), ScopeRoute, 1),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		order = append(order, "terminal")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	want := []string{"system-access", "global-access", "route-access", "terminal"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("access order = %v, want %v", order, want)
+	}
+}
+
+func TestRequestPipelineAuthStopSkipsResolverAndLegacy(t *testing.T) {
+	order := []string{}
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, "auth")
+			return base.StopRequest(r)
+		},
+	)
+	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			order = append(order, "legacy")
+			next.ServeHTTP(w, r)
+		})
+	})
+	resolverCalls := 0
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+		pipelineBinding("unknown", legacy, ScopeRoute, 1),
+	}, func(*http.Request) (ConsumerResolution, error) {
+		resolverCalls++
+		return ConsumerResolution{Resolved: true}, nil
+	})
+	terminalCalls := 0
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { terminalCalls++ })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	if !reflect.DeepEqual(order, []string{"auth"}) {
+		t.Fatalf("auth-stop order = %v, want [auth]", order)
+	}
+	if resolverCalls != 0 || terminalCalls != 0 {
+		t.Fatalf("resolver/terminal calls = %d/%d, want 0/0", resolverCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineResolverErrorSkipsLegacyAndReturnsGeneric500(t *testing.T) {
+	legacyCalls := 0
+	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			legacyCalls++
+			next.ServeHTTP(w, r)
+		})
+	})
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("unknown", legacy, ScopeRoute, 1),
+	}, func(*http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{}, fmt.Errorf("missing group: store unavailable")
+	})
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("terminal called") })).
+		ServeHTTP(
+			response,
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	if response.Code != http.StatusInternalServerError ||
+		response.Body.String() != "Internal Server Error\n" {
+		t.Fatalf(
+			"resolver error response = %d/%q, want generic 500",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	if legacyCalls != 0 {
+		t.Fatalf("legacy calls = %d, want 0", legacyCalls)
+	}
+}
+
+func TestRequestPipelineResolvesExactlyOnceWithoutAuthentication(t *testing.T) {
+	resolverCalls := 0
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		resolverCalls++
+		return ConsumerResolution{Request: r, Resolved: false}, nil
+	})
+	terminalCalls := 0
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { terminalCalls++ })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	if resolverCalls != 1 || terminalCalls != 1 {
+		t.Fatalf("resolver/terminal calls = %d/%d, want 1/1", resolverCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineConsumerOverridesRouteRewriteBeforeExecution(t *testing.T) {
+	order := []string{}
+	route := newExecutorRequestPlugin(
+		"route",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, "route")
+			return base.ContinueRequest(r)
+		},
+	)
+	consumer := newExecutorRequestPlugin(
+		"consumer",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, "consumer")
+			return base.ContinueRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline(
+		[]Binding{pipelineBinding("proxy-rewrite", route, ScopeRoute, 1)},
+		func(r *http.Request) (ConsumerResolution, error) {
+			return ConsumerResolution{
+				Request:  r,
+				Resolved: true,
+				Bindings: []Binding{pipelineBinding("proxy-rewrite", consumer, ScopeConsumer, 1)},
+			}, nil
+		},
+	)
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		order = append(order, "terminal")
+	})).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	)
+	if got, want := order, []string{"consumer", "terminal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("consumer override order = %v, want %v", got, want)
+	}
+}
+
+func TestRequestPipelineMergedAccessUsesEffectivePriorityAcrossScopes(t *testing.T) {
+	order := []string{}
+	routeAccess := newExecutorRequestPlugin(
+		"route-access",
+		200,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, "route-access")
+			return base.ContinueRequest(r)
+		},
+	)
+	consumerAccess := newExecutorRequestPlugin(
+		"consumer-access",
+		100,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, "consumer-access")
+			return base.ContinueRequest(r)
+		},
+	)
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("limit-conn", routeAccess, ScopeRoute, 200),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{
+			Request:  r,
+			Resolved: true,
+			Bindings: []Binding{pipelineBinding("acl", consumerAccess, ScopeConsumer, 100)},
+		}, nil
+	})
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		order = append(order, "terminal")
+	})).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	)
+	want := []string{"route-access", "consumer-access", "terminal"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("merged access order = %v, want %v", order, want)
+	}
+}
+
+func TestRequestPipelineDeferredLegacyUsesEffectiveWinnersOnly(t *testing.T) {
+	order := []string{}
+	legacy := func(name string) *executorLegacyPlugin {
+		return newExecutorLegacyPlugin(name, 1, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, name)
+				next.ServeHTTP(w, r)
+			})
+		})
+	}
+	routeLoser := legacy("route-loser")
+	consumerWinner := legacy("consumer-winner")
+	pipeline := NewRequestPipeline(
+		[]Binding{pipelineBinding("same-name", routeLoser, ScopeRoute, 1)},
+		func(r *http.Request) (ConsumerResolution, error) {
+			return ConsumerResolution{
+				Request:  r,
+				Resolved: true,
+				Bindings: []Binding{pipelineBinding("same-name", consumerWinner, ScopeConsumer, 1)},
+			}, nil
+		},
+	)
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	if got, want := order, []string{"consumer-winner", "terminal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("effective legacy order = %v, want %v", got, want)
+	}
+}
+
+func TestRequestPipelineDeferredLegacyPreservesPriorityAndUnwind(t *testing.T) {
+	order := []string{}
+	legacy := func(name string, priority int) *executorLegacyPlugin {
+		return newExecutorLegacyPlugin(name, priority, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, name+"-enter")
+				next.ServeHTTP(w, r)
+				order = append(order, name+"-exit")
+			})
+		})
+	}
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("global-legacy", legacy("global", 300), ScopeGlobal, 300),
+		pipelineBinding("route-legacy", legacy("route", 100), ScopeRoute, 100),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { order = append(order, "terminal") })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	want := []string{"global-enter", "route-enter", "terminal", "route-exit", "global-exit"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("legacy priority/unwind = %v, want %v", order, want)
+	}
+}
+
+func TestRequestPipelinePropagatesEveryReplacementRequest(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	first := request.WithContext(context.WithValue(request.Context(), executorTraceKey{}, "first"))
+	second := first.WithContext(context.WithValue(first.Context(), executorTraceKey{}, "second"))
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(_ http.ResponseWriter, _ *http.Request) base.RequestPhaseResult {
+			return base.ContinueRequest(first)
+		},
+	)
+	rewrite := newExecutorRequestPlugin(
+		"rewrite",
+		1,
+		func(_ http.ResponseWriter, _ *http.Request) base.RequestPhaseResult {
+			return base.ContinueRequest(second)
+		},
+	)
+	var terminalRequest *http.Request
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+		pipelineBinding("proxy-rewrite", rewrite, ScopeRoute, 1),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		if r != first {
+			t.Fatalf("resolver request = %p, want auth replacement %p", r, first)
+		}
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { terminalRequest = r })).
+		ServeHTTP(
+			httptest.NewRecorder(),
+			request,
+		)
+	if terminalRequest != second {
+		t.Fatalf("terminal request = %p, want rewrite replacement %p", terminalRequest, second)
+	}
+}
+
+func TestRequestPipelineRunsBeforeProxyOnce(t *testing.T) {
+	hookCalls := 0
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) { hookCalls++ })
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		httptest.NewRecorder(),
+		request,
+	)
+	if hookCalls != 1 {
+		t.Fatalf("before-proxy hook calls = %d, want 1", hookCalls)
 	}
 }

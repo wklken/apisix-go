@@ -434,17 +434,16 @@ func matchesWildcardRoute(pattern string, path string) bool {
 }
 
 type Builder struct {
-	serverAddr            string
-	enabledPlugins        *plugin.EnabledSet
-	clusterRegistry       *pxy.ClusterRegistry
-	ownsClusterRegistry   bool
-	stoppers              []pluginStopper
-	stopperMu             sync.Mutex
-	consumerPluginChains  map[consumerPluginChainKey]plugin.Executor
-	consumerPluginChainMu sync.Mutex
-	servicePlugins        map[servicePluginKey]plugin.Plugin
-	servicePluginMu       sync.Mutex
-	stopOnce              sync.Once
+	serverAddr          string
+	enabledPlugins      *plugin.EnabledSet
+	clusterRegistry     *pxy.ClusterRegistry
+	ownsClusterRegistry bool
+	stoppers            []pluginStopper
+	stopperMu           sync.Mutex
+	consumerResolution  consumerResolutionCache
+	servicePlugins      map[servicePluginKey]plugin.Plugin
+	servicePluginMu     sync.Mutex
+	stopOnce            sync.Once
 
 	// snapshot is the route-build generation for the current Build; it is
 	// populated at Build() start and cleared before Build() returns so no
@@ -456,14 +455,18 @@ type Builder struct {
 	compiledSchemas map[string]*util.CompiledSchema
 }
 
-type consumerPluginChainKey struct {
-	consumerID     string
-	consumerDigest [32]byte
-	groupID        string
-	groupDigest    [32]byte
-	routeID        string
-	serviceID      string
+type consumerResolutionTemplate struct {
+	ready    chan struct{}
+	bindings []plugin.Binding
+	err      error
 }
+
+type consumerResolutionCache struct {
+	mu      sync.Mutex
+	entries map[plugin.ConsumerCacheKey]*consumerResolutionTemplate
+}
+
+var errConsumerBindingInitializationPanicked = errors.New("consumer plugin initialization panicked")
 
 type servicePluginKey struct {
 	serviceID string
@@ -484,10 +487,12 @@ func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder 
 // Stop, but never closes it; the server owns its lifecycle.
 func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, registry *pxy.ClusterRegistry) *Builder {
 	builder := &Builder{
-		serverAddr:           normalizeServerAddr(serverAddr),
-		clusterRegistry:      registry,
-		consumerPluginChains: make(map[consumerPluginChainKey]plugin.Executor),
-		servicePlugins:       make(map[servicePluginKey]plugin.Plugin),
+		serverAddr:      normalizeServerAddr(serverAddr),
+		clusterRegistry: registry,
+		consumerResolution: consumerResolutionCache{
+			entries: make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate),
+		},
+		servicePlugins: make(map[servicePluginKey]plugin.Plugin),
 	}
 	if registry == nil {
 		builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
@@ -596,13 +601,17 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 	if err != nil {
 		return nil, err
 	}
-	chain := assembleRouteExecutor(nil, globalBindings, systemBindings)
-	return withAIExecutionTerminal(chain, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if lifecycle := ctx.GetRequestLifecycle(r); lifecycle != nil {
 			lifecycle.SetResponseSource(ctx.ResponseSourceEarlyStop)
 		}
 		http.NotFoundHandler().ServeHTTP(w, r)
-	})), nil
+	})
+	pipeline := plugin.NewRequestPipeline(
+		append(append([]plugin.Binding{}, systemBindings...), globalBindings...),
+		nil,
+	)
+	return ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(terminal))), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -683,15 +692,9 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range localBindings {
-		localBindings[i].Plugin = newRouteConsumerOverridePlugin(localBindings[i].Plugin)
-	}
 	serviceBindings, err := b.initServicePluginBindingsStrict(serviceSources, routeContext)
 	if err != nil {
 		return nil, err
-	}
-	for i := range serviceBindings {
-		serviceBindings[i].Plugin = newRouteConsumerOverridePlugin(serviceBindings[i].Plugin)
 	}
 	systemSources := materializedPluginSources(
 		systemPlugins,
@@ -719,7 +722,6 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	localBindings = append(localBindings, serviceBindings...)
-	chain := assembleRouteExecutor(localBindings, globalBindings, systemBindings)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -727,185 +729,196 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext), nil
+	staticBindings := make([]plugin.Binding, 0, len(systemBindings)+len(globalBindings)+len(localBindings))
+	staticBindings = append(staticBindings, systemBindings...)
+	staticBindings = append(staticBindings, globalBindings...)
+	staticBindings = append(staticBindings, localBindings...)
+	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext))
+	return ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(handler))), nil
 }
 
-func (b *Builder) withConsumerPluginRunner(
-	handler http.Handler,
+func (b *Builder) resolveConsumerBindings(
 	routeContext pluginRouteContext,
-) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-			b.runConsumerPlugins(w, r, next, routeContext)
+) plugin.ConsumerBindingResolver {
+	return func(request *http.Request) (plugin.ConsumerResolution, error) {
+		resolution := plugin.ConsumerResolution{Request: request}
+		state, ok := ctx.AuthenticationStateFrom(request)
+		if !ok {
+			return resolution, nil
+		}
+
+		consumer := state.Consumer()
+		resolution.Identity = plugin.ConsumerIdentity{
+			Username:   consumer.Username,
+			GroupID:    consumer.GroupID,
+			AuthSource: state.Source,
+		}
+
+		var group resource.ConsumerGroup
+		if consumer.GroupID != "" {
+			var err error
+			group, err = store.GetConsumerGroup(consumer.GroupID)
+			if err != nil {
+				return resolution, fmt.Errorf(
+					"resolve consumer %q group %q: %w",
+					consumer.Username,
+					consumer.GroupID,
+					err,
+				)
+			}
+			if err := b.validatePluginConfigSource(group.Plugins, "consumer_group", consumer.GroupID); err != nil {
+				return resolution, err
+			}
+		}
+		if err := b.validatePluginConfigSource(consumer.Plugins, "consumer", consumer.Username); err != nil {
+			return resolution, err
+		}
+
+		consumerDigest, err := consumerConfigDigest(consumer.Plugins, consumer.ConfigDigest)
+		if err != nil {
+			return resolution, fmt.Errorf("resolve consumer %q: %w", consumer.Username, err)
+		}
+		var groupDigest [32]byte
+		if consumer.GroupID != "" {
+			groupDigest, err = consumerConfigDigest(group.Plugins, group.ConfigDigest)
+			if err != nil {
+				return resolution, fmt.Errorf("resolve consumer group %q: %w", consumer.GroupID, err)
+			}
+		}
+		serviceID := routeContext.service.ID
+		if serviceID == "" {
+			serviceID = routeContext.route.ServiceID
+		}
+		key := plugin.ConsumerCacheKey{
+			ConsumerID:     consumer.Username,
+			ConsumerDigest: consumerDigest,
+			GroupID:        consumer.GroupID,
+			GroupDigest:    groupDigest,
+			RouteID:        routeContext.routeID,
+			ServiceID:      serviceID,
+		}
+		resolution.CacheKey = key
+
+		bindings, err := b.consumerBindingsForKey(key, func() ([]plugin.Binding, error) {
+			sources := consumerPluginSources(group, consumer)
+			return b.initPluginBindingsStrict(sources, routeContext, pluginInitOptions{})
 		})
-		handler.ServeHTTP(w, r)
-	})
-}
-
-type routeConsumerOverridePlugin struct {
-	plugin.Plugin
-}
-
-func (p routeConsumerOverridePlugin) Handler(next http.Handler) http.Handler {
-	handler := p.Plugin.Handler(next)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
-			next.ServeHTTP(w, r)
-			return
+		if err != nil {
+			return resolution, err
 		}
-		handler.ServeHTTP(w, r)
-	})
-}
 
-type routeConsumerOverrideRequestPlugin struct {
-	plugin.Plugin
-	phase base.RequestPhasePlugin
-}
-
-func newRouteConsumerOverridePlugin(p plugin.Plugin) plugin.Plugin {
-	phase, ok := p.(base.RequestPhasePlugin)
-	if !ok {
-		return routeConsumerOverridePlugin{Plugin: p}
-	}
-	return routeConsumerOverrideRequestPlugin{Plugin: p, phase: phase}
-}
-
-func (p routeConsumerOverrideRequestPlugin) Handler(next http.Handler) http.Handler {
-	handler := p.Plugin.Handler(next)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
-			next.ServeHTTP(w, r)
-			return
+		request = ctx.WithApisixVars(request, nil)
+		ctx.AttachConsumer(request, consumer)
+		overrides := make(map[string]struct{}, len(bindings))
+		for _, binding := range bindings {
+			if binding.Plugin != nil {
+				overrides[binding.Plugin.GetName()] = struct{}{}
+			}
 		}
-		handler.ServeHTTP(w, r)
-	})
+		request = ctx.WithConsumerPluginOverrides(request, overrides)
+		resolution.Bindings = append([]plugin.Binding(nil), bindings...)
+		resolution.Request = request
+		resolution.Resolved = true
+		return resolution, nil
+	}
 }
 
-func (p routeConsumerOverrideRequestPlugin) RunRequestPhase(
-	w http.ResponseWriter,
-	r *http.Request,
-) base.RequestPhaseResult {
-	if ctx.ConsumerPluginOverrides(r, p.GetName()) {
-		return base.ContinueRequest(r)
+func (b *Builder) consumerBindingsForKey(
+	key plugin.ConsumerCacheKey,
+	initialize func() ([]plugin.Binding, error),
+) ([]plugin.Binding, error) {
+	b.consumerResolution.mu.Lock()
+	if template, ok := b.consumerResolution.entries[key]; ok {
+		b.consumerResolution.mu.Unlock()
+		<-template.ready
+		if template.err != nil {
+			return nil, template.err
+		}
+		return append([]plugin.Binding(nil), template.bindings...), nil
 	}
-	return p.phase.RunRequestPhase(w, r)
-}
+	if b.consumerResolution.entries == nil {
+		b.consumerResolution.entries = make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate)
+	}
+	template := &consumerResolutionTemplate{ready: make(chan struct{})}
+	b.consumerResolution.entries[key] = template
+	b.consumerResolution.mu.Unlock()
 
-func (b *Builder) runConsumerPlugins(
-	w http.ResponseWriter,
-	r *http.Request,
-	next http.Handler,
-	routeContext pluginRouteContext,
-) {
-	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
-	if !ok {
-		next.ServeHTTP(w, r)
-		return
-	}
-
-	if err := b.validateConsumerPluginSources(consumer); err != nil {
-		logger.Errorf("validate consumer plugins for %s: %s", consumer.Username, err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-	pluginConfigs, groupDigest := consumerPluginConfigsWithDigest(consumer)
-	if len(pluginConfigs) == 0 {
-		next.ServeHTTP(w, r)
-		return
-	}
-
-	chain, err := b.consumerPluginChainForIdentity(pluginConfigs, consumer, groupDigest, routeContext)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			b.consumerResolution.mu.Lock()
+			template.err = errConsumerBindingInitializationPanicked
+			delete(b.consumerResolution.entries, key)
+			close(template.ready)
+			b.consumerResolution.mu.Unlock()
+			panic(recovered)
+		}
+	}()
+	bindings, err := initialize()
+	b.consumerResolution.mu.Lock()
+	template.bindings = append([]plugin.Binding(nil), bindings...)
+	template.err = err
 	if err != nil {
-		logger.Errorf("initialize consumer plugins for %s: %s", consumer.Username, err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
+		delete(b.consumerResolution.entries, key)
 	}
-	overrides := make(map[string]struct{}, len(pluginConfigs))
-	for name := range pluginConfigs {
-		overrides[name] = struct{}{}
-	}
-	r = ctx.WithConsumerPluginOverrides(r, overrides)
-	chain.Then(next).ServeHTTP(w, r)
-}
-
-func consumerPluginConfigsWithDigest(
-	consumer resource.Consumer,
-) (map[string]resource.PluginConfig, [32]byte) {
-	pluginConfigs := make(map[string]resource.PluginConfig)
-	var groupDigest [32]byte
-	if consumer.GroupID != "" {
-		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
-			maps.Copy(pluginConfigs, group.Plugins)
-			groupDigest = group.ConfigDigest
-		}
-	}
-	maps.Copy(pluginConfigs, consumer.Plugins)
-
-	for name := range pluginConfigs {
-		if isConsumerAuthenticationPlugin(name) {
-			delete(pluginConfigs, name)
-		}
-	}
-	return pluginConfigs, groupDigest
-}
-
-func (b *Builder) validateConsumerPluginSources(consumer resource.Consumer) error {
-	if err := b.validatePluginConfigSource(consumer.Plugins, "consumer", consumer.Username); err != nil {
-		return err
-	}
-	if consumer.GroupID == "" {
-		return nil
-	}
-	group, err := store.GetConsumerGroup(consumer.GroupID)
+	close(template.ready)
+	b.consumerResolution.mu.Unlock()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return b.validatePluginConfigSource(group.Plugins, "consumer_group", consumer.GroupID)
+	return append([]plugin.Binding(nil), template.bindings...), nil
 }
 
-func isConsumerAuthenticationPlugin(name string) bool {
+func consumerConfigDigest(configs map[string]resource.PluginConfig, configured [32]byte) ([32]byte, error) {
+	if configured != ([32]byte{}) {
+		return configured, nil
+	}
+	encoded, err := json.Marshal(configs)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("marshal plugin configs: %w", err)
+	}
+	return sha256.Sum256(encoded), nil
+}
+
+func consumerPluginSources(group resource.ConsumerGroup, consumer resource.Consumer) []materializedPluginSource {
+	sourcesByName := make(map[string]materializedPluginSource, len(group.Plugins)+len(consumer.Plugins))
+	for _, name := range slices.Sorted(maps.Keys(group.Plugins)) {
+		if isConsumerCredentialOnly(name) {
+			continue
+		}
+		sourcesByName[name] = materializedPluginSource{
+			name:       name,
+			config:     group.Plugins[name],
+			scope:      plugin.ScopeRoute,
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumerGroup, ID: consumer.GroupID},
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(consumer.Plugins)) {
+		if isConsumerCredentialOnly(name) {
+			continue
+		}
+		sourcesByName[name] = materializedPluginSource{
+			name:       name,
+			config:     consumer.Plugins[name],
+			scope:      plugin.ScopeRoute,
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: consumer.Username},
+		}
+	}
+
+	names := slices.Sorted(maps.Keys(sourcesByName))
+	sources := make([]materializedPluginSource, 0, len(names))
+	for _, name := range names {
+		sources = append(sources, sourcesByName[name])
+	}
+	return sources
+}
+
+func isConsumerCredentialOnly(name string) bool {
 	switch name {
 	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
 		return true
 	default:
 		return false
 	}
-}
-
-func (b *Builder) consumerPluginChainForIdentity(
-	pluginConfigs map[string]resource.PluginConfig,
-	consumer resource.Consumer,
-	groupDigest [32]byte,
-	routeContext pluginRouteContext,
-) (plugin.Executor, error) {
-	if consumer.ConfigDigest == ([32]byte{}) {
-		encoded, err := json.Marshal(consumer.Plugins)
-		if err != nil {
-			return plugin.NewExecutor(), fmt.Errorf("marshal consumer plugin configs: %w", err)
-		}
-		consumer.ConfigDigest = sha256.Sum256(encoded)
-	}
-	key := consumerPluginChainKey{
-		consumerID:     consumer.Username,
-		consumerDigest: consumer.ConfigDigest,
-		groupID:        consumer.GroupID,
-		groupDigest:    groupDigest,
-		routeID:        routeContext.routeID,
-		serviceID:      routeContext.service.ID,
-	}
-
-	b.consumerPluginChainMu.Lock()
-	defer b.consumerPluginChainMu.Unlock()
-	if chain, ok := b.consumerPluginChains[key]; ok {
-		return chain, nil
-	}
-	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
-	if err != nil {
-		return plugin.NewExecutor(), err
-	}
-	chain := plugin.NewExecutor(plugins...)
-	b.consumerPluginChains[key] = chain
-	return chain, nil
 }
 
 type materializedPluginSource struct {
@@ -997,18 +1010,6 @@ func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
 	return plugins
 }
 
-func assembleRouteExecutor(
-	routeBindings []plugin.Binding,
-	globalBindings []plugin.Binding,
-	systemBindings []plugin.Binding,
-) plugin.Executor {
-	bindings := make([]plugin.Binding, 0, len(routeBindings)+len(globalBindings)+len(systemBindings))
-	bindings = append(bindings, systemBindings...)
-	bindings = append(bindings, globalBindings...)
-	bindings = append(bindings, routeBindings...)
-	return plugin.NewScopedExecutor(bindings...)
-}
-
 func buildSystemPluginConfigs(
 	r resource.Route,
 	service resource.Service,
@@ -1027,22 +1028,6 @@ func buildSystemPluginConfigs(
 		"max_body_size": appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize,
 	}
 	return plugins
-}
-
-type pluginExecutor interface {
-	Then(http.Handler) http.Handler
-}
-
-func withAIExecutionTerminal(chain pluginExecutor, fallback http.Handler) http.Handler {
-	return ai_runtime.EnableTerminal(chain.Then(withBeforeProxyHooks(ai_runtime.TerminalHandler(fallback))))
-}
-
-func withBeforeProxyHooks(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx.FinalizeProxyRewrite(r)
-		ctx.RunBeforeProxyHooks(r)
-		next.ServeHTTP(w, r)
-	})
 }
 
 func buildRequestContextConfig(
@@ -1623,6 +1608,16 @@ func (b *Builder) initPluginBindingsStrict(
 	bindings := make([]plugin.Binding, 0, len(sources))
 	normalizedRouteContext := routeContext
 	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(sources))
+	pendingStoppers := make([]pluginStopper, 0, len(sources))
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		for _, stopper := range slices.Backward(pendingStoppers) {
+			stopper.Stop()
+		}
+	}()
 	for _, source := range sources {
 		name := source.name
 		config := source.config
@@ -1706,7 +1701,7 @@ func (b *Builder) initPluginBindingsStrict(
 		}
 		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
-			b.addStopper(stopper)
+			pendingStoppers = append(pendingStoppers, stopper)
 		}
 
 		initialized := newMetadataPlugin(p, metadata)
@@ -1715,6 +1710,10 @@ func (b *Builder) initPluginBindingsStrict(
 	for _, setter := range resourceContextSetters {
 		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
 	}
+	for _, stopper := range pendingStoppers {
+		b.addStopper(stopper)
+	}
+	committed = true
 	return bindings, nil
 }
 

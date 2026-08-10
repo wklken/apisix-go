@@ -137,41 +137,39 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
+	return base.AdaptRequestPhase(p, next)
+}
 
-		requestID := r.Header.Get(p.config.HeaderName)
-		if requestID == "" {
-			var err error
-			switch p.config.Algorithm {
-			case "uuid":
-				requestID, err = p.uuidV4ID(crand.Reader)
-			case "uuidv7":
-				requestID = p.uuidv7ID()
-			case "nanoid":
-				requestID, _ = gonanoid.New()
-			case "ksuid":
-				requestID, err = p.ksuidID(crand.Reader)
-			case "range_id":
-				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
-			}
-			if err != nil {
-				http.Error(w, "failed to generate request id", http.StatusInternalServerError)
-				return
-			}
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	requestID := r.Header.Get(p.config.HeaderName)
+	if requestID == "" {
+		var err error
+		switch p.config.Algorithm {
+		case "uuid":
+			requestID, err = p.uuidV4ID(crand.Reader)
+		case "uuidv7":
+			requestID = p.uuidv7ID()
+		case "nanoid":
+			requestID, _ = gonanoid.New()
+		case "ksuid":
+			requestID, err = p.ksuidID(crand.Reader)
+		case "range_id":
+			requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
 		}
-
-		r.Header.Set(p.config.HeaderName, requestID)
-
-		if *p.config.IncludeInResponse {
-			w.Header().Set(p.config.HeaderName, requestID)
+		if err != nil {
+			http.Error(w, "failed to generate request id", http.StatusInternalServerError)
+			return base.StopRequest(r)
 		}
-
-		ctx = context.WithValue(ctx, apisixctx.RequestIDKey, requestID)
-
-		next.ServeHTTP(w, r.WithContext(ctx))
 	}
-	return http.HandlerFunc(fn)
+
+	r.Header.Set(p.config.HeaderName, requestID)
+
+	if *p.config.IncludeInResponse {
+		w.Header().Set(p.config.HeaderName, requestID)
+	}
+
+	requestContext := context.WithValue(r.Context(), apisixctx.RequestIDKey, requestID)
+	return base.ContinueRequest(r.WithContext(requestContext))
 }
 
 func (p *Plugin) rangeID(charSet string, length int) string {

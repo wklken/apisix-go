@@ -24,13 +24,13 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
-	"github.com/justinas/alice"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
@@ -440,7 +440,7 @@ type Builder struct {
 	ownsClusterRegistry   bool
 	stoppers              []pluginStopper
 	stopperMu             sync.Mutex
-	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
+	consumerPluginChains  map[consumerPluginChainKey]plugin.Executor
 	consumerPluginChainMu sync.Mutex
 	servicePlugins        map[servicePluginKey]plugin.Plugin
 	servicePluginMu       sync.Mutex
@@ -486,7 +486,7 @@ func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, regi
 	builder := &Builder{
 		serverAddr:           normalizeServerAddr(serverAddr),
 		clusterRegistry:      registry,
-		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
+		consumerPluginChains: make(map[consumerPluginChainKey]plugin.Executor),
 		servicePlugins:       make(map[servicePluginKey]plugin.Plugin),
 	}
 	if registry == nil {
@@ -584,7 +584,12 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 		return nil, err
 	}
 	chain := assembleRoutePluginChain(nil, globalPlugins)
-	return withAIExecutionTerminal(chain, http.NotFoundHandler()), nil
+	return withAIExecutionTerminal(chain, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if lifecycle := ctx.GetRequestLifecycle(r); lifecycle != nil {
+			lifecycle.SetResponseSource(ctx.ResponseSourceEarlyStop)
+		}
+		http.NotFoundHandler().ServeHTTP(w, r)
+	})), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -673,8 +678,6 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	// add a context plugin, set the default vars
 	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
 
-	var chain alice.Chain
-
 	routeContext := b.pluginRouteContext(r)
 	routeContext.service = service
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
@@ -683,14 +686,14 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	for _, initializedPlugin := range initialized {
-		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+		localPlugins = append(localPlugins, newRouteConsumerOverridePlugin(initializedPlugin))
 	}
 	initialized, err = b.initServicePluginsStrict(servicePluginConfigs, routeContext)
 	if err != nil {
 		return nil, err
 	}
 	for _, initializedPlugin := range initialized {
-		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+		localPlugins = append(localPlugins, newRouteConsumerOverridePlugin(initializedPlugin))
 	}
 	initialized, err = b.initPluginsStrictWithOptions(
 		systemPlugins,
@@ -710,7 +713,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	chain = assembleRoutePluginChain(localPlugins, globalPlugins)
+	chain := assembleRoutePluginChain(localPlugins, globalPlugins)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -746,6 +749,40 @@ func (p routeConsumerOverridePlugin) Handler(next http.Handler) http.Handler {
 		}
 		handler.ServeHTTP(w, r)
 	})
+}
+
+type routeConsumerOverrideRequestPlugin struct {
+	plugin.Plugin
+	phase base.RequestPhasePlugin
+}
+
+func newRouteConsumerOverridePlugin(p plugin.Plugin) plugin.Plugin {
+	phase, ok := p.(base.RequestPhasePlugin)
+	if !ok {
+		return routeConsumerOverridePlugin{Plugin: p}
+	}
+	return routeConsumerOverrideRequestPlugin{Plugin: p, phase: phase}
+}
+
+func (p routeConsumerOverrideRequestPlugin) Handler(next http.Handler) http.Handler {
+	handler := p.Plugin.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (p routeConsumerOverrideRequestPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	if ctx.ConsumerPluginOverrides(r, p.GetName()) {
+		return base.ContinueRequest(r)
+	}
+	return p.phase.RunRequestPhase(w, r)
 }
 
 func (b *Builder) runConsumerPlugins(
@@ -834,11 +871,11 @@ func (b *Builder) consumerPluginChainForIdentity(
 	consumer resource.Consumer,
 	groupDigest [32]byte,
 	routeContext pluginRouteContext,
-) (alice.Chain, error) {
+) (plugin.Executor, error) {
 	if consumer.ConfigDigest == ([32]byte{}) {
 		encoded, err := json.Marshal(consumer.Plugins)
 		if err != nil {
-			return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
+			return plugin.NewExecutor(), fmt.Errorf("marshal consumer plugin configs: %w", err)
 		}
 		consumer.ConfigDigest = sha256.Sum256(encoded)
 	}
@@ -858,18 +895,18 @@ func (b *Builder) consumerPluginChainForIdentity(
 	}
 	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
 	if err != nil {
-		return alice.New(), err
+		return plugin.NewExecutor(), err
 	}
-	chain := plugin.BuildPluginChain(plugins...)
+	chain := plugin.NewExecutor(plugins...)
 	b.consumerPluginChains[key] = chain
 	return chain, nil
 }
 
-func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice.Chain {
+func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) plugin.Executor {
 	plugins := make([]plugin.Plugin, 0, len(localPlugins)+len(globalPlugins))
 	plugins = append(plugins, localPlugins...)
 	plugins = append(plugins, globalPlugins...)
-	return plugin.BuildPluginChain(plugins...)
+	return plugin.NewExecutor(plugins...)
 }
 
 func buildSystemPluginConfigs(
@@ -892,7 +929,11 @@ func buildSystemPluginConfigs(
 	return plugins
 }
 
-func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
+type pluginExecutor interface {
+	Then(http.Handler) http.Handler
+}
+
+func withAIExecutionTerminal(chain pluginExecutor, fallback http.Handler) http.Handler {
 	return ai_runtime.EnableTerminal(chain.Then(withBeforeProxyHooks(ai_runtime.TerminalHandler(fallback))))
 }
 
@@ -1074,6 +1115,70 @@ func (p metadataPlugin) errorResponseHandler(next http.Handler) http.Handler {
 			},
 		})
 		p.Plugin.Handler(wrappedNext).ServeHTTP(wrappedWriter, r)
+	})
+}
+
+type metadataRequestPlugin struct {
+	plugin.Plugin
+	phase         base.RequestPhasePlugin
+	filter        *pluginexpr.Expression
+	errorResponse any
+}
+
+func (p metadataRequestPlugin) Handler(next http.Handler) http.Handler {
+	// Keep direct callers on the wrapped plugin's original Handler path. Some
+	// request-phase plugins own package-local lifecycle/release fallbacks there.
+	return (metadataPlugin{
+		Plugin:        p.Plugin,
+		filter:        p.filter,
+		errorResponse: p.errorResponse,
+	}).Handler(next)
+}
+
+func (p metadataRequestPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	if p.filter != nil && !p.filter.Eval(func(name string) any {
+		return pluginexpr.RequestValue(r, name)
+	}) {
+		return base.ContinueRequest(r)
+	}
+	if p.errorResponse == nil {
+		return p.phase.RunRequestPhase(w, r)
+	}
+	return p.phase.RunRequestPhase(metadataErrorResponseWriter(w, p.errorResponse), r)
+}
+
+func metadataErrorResponseWriter(w http.ResponseWriter, value any) http.ResponseWriter {
+	replaced := false
+	responseHeaderWritten := false
+	return httpsnoop.Wrap(w, httpsnoop.Hooks{
+		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(status int) {
+				if replaced {
+					return
+				}
+				responseHeaderWritten = true
+				if status >= http.StatusBadRequest {
+					replaced = true
+					writeMetadataErrorResponse(w, status, value)
+					return
+				}
+				writeHeader(status)
+			}
+		},
+		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(body []byte) (int, error) {
+				if replaced {
+					return len(body), nil
+				}
+				if !responseHeaderWritten {
+					responseHeaderWritten = true
+				}
+				return write(body)
+			}
+		},
 	})
 }
 
@@ -1459,20 +1564,32 @@ func (b *Builder) initPluginsStrictWithOptions(
 			b.addStopper(stopper)
 		}
 
-		initialized := plugin.Plugin(p)
-		if metadata.filter != nil || metadata.errorResponse != nil {
-			initialized = metadataPlugin{
-				Plugin:        p,
-				filter:        metadata.filter,
-				errorResponse: metadata.errorResponse,
-			}
-		}
+		initialized := newMetadataPlugin(p, metadata)
 		plugins = append(plugins, initialized)
 	}
 	for _, setter := range resourceContextSetters {
 		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
 	}
 	return plugins, nil
+}
+
+func newMetadataPlugin(p plugin.Plugin, metadata pluginMetadata) plugin.Plugin {
+	if metadata.filter == nil && metadata.errorResponse == nil {
+		return p
+	}
+	if phase, ok := p.(base.RequestPhasePlugin); ok {
+		return metadataRequestPlugin{
+			Plugin:        p,
+			phase:         phase,
+			filter:        metadata.filter,
+			errorResponse: metadata.errorResponse,
+		}
+	}
+	return metadataPlugin{
+		Plugin:        p,
+		filter:        metadata.filter,
+		errorResponse: metadata.errorResponse,
+	}
 }
 
 func (b *Builder) pluginAllowed(name string, options pluginInitOptions) bool {

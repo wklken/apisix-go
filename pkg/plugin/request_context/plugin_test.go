@@ -10,6 +10,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func TestMetricLabelsDefaultUseIDs(t *testing.T) {
@@ -528,6 +529,56 @@ func TestRequestContextLegacyPreWritePanicKeepsRequestTotalWithoutSuccessMetrics
 			t.Fatalf("%s metrics recorded a completed/code=200 sample for a pre-write panic", metricName)
 		}
 	}
+}
+
+func TestRequestPhaseRequestContextInitializesStateAndFinalizer(t *testing.T) {
+	installTestMetrics(t)
+
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	p := &Plugin{config: Config{RouteID: "phase-route"}}
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	if result.Request == nil || apisixctx.GetRequestState(result.Request) == nil {
+		t.Fatal("request phase did not initialize shared request state")
+	}
+
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeCompleted,
+		Status:    http.StatusNoContent,
+		Committed: true,
+	})
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle finalizer failures = %#v", failures)
+	}
+	if got := counterValue(t, metrics.Requests); got != 1 {
+		t.Fatalf("request total = %v, want 1 after finalization", got)
+	}
+	apisixctx.RecycleVars(result.Request)
+}
+
+func TestRequestPhaseRequestContextAdapterReachesTerminal(t *testing.T) {
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	called := false
+	base.AdaptRequestPhase(&Plugin{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if apisixctx.GetRequestState(r) == nil {
+			t.Fatal("terminal request has no shared request state")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if !called {
+		t.Fatal("request phase adapter did not reach terminal")
+	}
+	lifecycle.Finalize()
+	apisixctx.RecycleVars(request)
 }
 
 func metricVecHasSeries(t *testing.T, collector prometheus.Collector, route string) bool {

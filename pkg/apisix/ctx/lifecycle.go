@@ -27,6 +27,15 @@ type ResponseOutcome struct {
 	Hijacked  bool
 }
 
+type ResponseSource string
+
+const (
+	ResponseSourceUnknown   ResponseSource = "unknown"
+	ResponseSourceUpstream  ResponseSource = "upstream"
+	ResponseSourceEarlyStop ResponseSource = "early_stop"
+	ResponseSourceCacheHit  ResponseSource = "cache_hit"
+)
+
 type RequestFinalizer func() error
 
 type FinalizerFailure struct {
@@ -42,19 +51,21 @@ type registeredFinalizer struct {
 }
 
 type RequestLifecycle struct {
-	mu         sync.RWMutex
-	once       sync.Once
-	startedAt  time.Time
-	finalizing bool
-	finalizers []registeredFinalizer
-	outcome    ResponseOutcome
-	failures   []FinalizerFailure
+	mu             sync.RWMutex
+	once           sync.Once
+	startedAt      time.Time
+	finalizing     bool
+	finalizers     []registeredFinalizer
+	outcome        ResponseOutcome
+	failures       []FinalizerFailure
+	finalRequest   *http.Request
+	responseSource ResponseSource
 }
 
 type requestLifecycleKey struct{}
 
 func NewRequestLifecycle(startedAt time.Time) *RequestLifecycle {
-	return &RequestLifecycle{startedAt: startedAt}
+	return &RequestLifecycle{startedAt: startedAt, responseSource: ResponseSourceUnknown}
 }
 
 func WithRequestLifecycle(r *http.Request, lifecycle *RequestLifecycle) *http.Request {
@@ -74,7 +85,52 @@ func EnsureRequestLifecycle(r *http.Request, startedAt time.Time) (*http.Request
 	}
 	r = WithApisixVars(r, nil)
 	r = WithRequestVars(r)
+	lifecycle.SetFinalRequest(r)
 	return r, lifecycle
+}
+
+func (l *RequestLifecycle) SetFinalRequest(r *http.Request) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.finalRequest = r
+	l.mu.Unlock()
+}
+
+func (l *RequestLifecycle) FinalRequest() *http.Request {
+	if l == nil {
+		return nil
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.finalRequest
+}
+
+func (l *RequestLifecycle) SetResponseSource(source ResponseSource) {
+	if l == nil {
+		return
+	}
+	switch source {
+	case ResponseSourceUnknown, ResponseSourceUpstream, ResponseSourceEarlyStop, ResponseSourceCacheHit:
+	default:
+		source = ResponseSourceUnknown
+	}
+	l.mu.Lock()
+	l.responseSource = source
+	l.mu.Unlock()
+}
+
+func (l *RequestLifecycle) ResponseSource() ResponseSource {
+	if l == nil {
+		return ResponseSourceUnknown
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.responseSource == "" {
+		return ResponseSourceUnknown
+	}
+	return l.responseSource
 }
 
 func (l *RequestLifecycle) AddFinalizer(owner string, finalizer RequestFinalizer) bool {

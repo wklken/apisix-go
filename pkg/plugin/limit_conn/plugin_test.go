@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -1099,12 +1100,14 @@ func performRequestWithHeaders(
 }
 
 type fakeRedisConnLimiter struct {
-	key        string
-	leavingKey string
-	delay      time.Duration
-	allowed    bool
-	err        error
-	left       int
+	key         string
+	leavingKey  string
+	leavingKeys []string
+	delay       time.Duration
+	allowed     bool
+	err         error
+	left        int
+	observe     func(string)
 }
 
 type scriptedConnRedisClient struct {
@@ -1256,7 +1259,11 @@ func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.D
 
 func (f *fakeRedisConnLimiter) leaving(key string, _ *time.Duration) error {
 	f.leavingKey = key
+	f.leavingKeys = append(f.leavingKeys, key)
 	f.left++
+	if f.observe != nil {
+		f.observe(key)
+	}
 	return f.err
 }
 
@@ -1309,4 +1316,340 @@ func TestLimitKeyLogIsDebugLevel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("limit key not logged at debug level")
 	}
+}
+
+func TestRequestPhaseLimitConnReleasesAfterNormalCompletion(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+	})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.101:1234"
+	called := false
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if !called {
+		t.Fatal("request phase did not reach terminal")
+	}
+	if len(p.conns) != 1 {
+		t.Fatalf("connections before finalization = %d, want 1", len(p.conns))
+	}
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:   apisixctx.RequestOutcomeCompleted,
+		Status: http.StatusNoContent,
+	})
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle finalizer failures = %#v", failures)
+	}
+	if len(p.conns) != 0 {
+		t.Fatalf("connections after finalization = %d, want 0", len(p.conns))
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestPhaseLimitConnReleasesAfterDownstreamPanic(t *testing.T) {
+	p := newTestPlugin(t, Config{Conn: 1, Burst: 0, DefaultConnDelay: 0.1, Key: "remote_addr"})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.102:1234"
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("downstream panic was not propagated")
+			}
+		}()
+		base.AdaptRequestPhase(p, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("downstream panic")
+		})).ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	lifecycle.Finalize()
+	if len(p.conns) != 0 {
+		t.Fatalf("connections after panic finalization = %d, want 0", len(p.conns))
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestPhaseLimitConnReleasesOnceAfterAbortHandler(t *testing.T) {
+	limiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = limiter
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.103:1234"
+	func() {
+		defer func() {
+			if recover() != http.ErrAbortHandler {
+				t.Errorf("panic = %v, want http.ErrAbortHandler", recover())
+			}
+		}()
+		base.AdaptRequestPhase(p, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		})).ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	if limiter.left != 0 {
+		t.Fatalf("release calls before finalization = %d, want 0", limiter.left)
+	}
+	lifecycle.Finalize()
+	if limiter.left != 1 {
+		t.Fatalf("release calls after finalization = %d, want 1", limiter.left)
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestPhaseLimitConnFinalizesBeforeRequestStateRecycle(t *testing.T) {
+	limiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = limiter
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.104:1234"
+	seenVars := false
+	limiter.observe = func(string) {
+		seenVars = apisixctx.GetRequestVars(request) != nil
+	}
+	if !lifecycle.AddFinalizer("request-context", func() error {
+		return nil
+	}) {
+		t.Fatal("failed to register request-context marker")
+	}
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	lifecycle.Finalize()
+	if !seenVars {
+		t.Fatal("limit-conn release did not observe request vars before outer recycle")
+	}
+	if limiter.left != 1 {
+		t.Fatalf("release calls after finalization = %d, want 1", limiter.left)
+	}
+	apisixctx.RecycleVars(request)
+	if apisixctx.GetRequestVars(request) != nil {
+		t.Fatal("request vars were not recycled by outer owner")
+	}
+}
+
+func TestRequestPhaseLimitConnDegradationDoesNotRegisterRelease(t *testing.T) {
+	allowDegradation := true
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		AllowDegradation: &allowDegradation,
+		Rules:            []Rule{{Conn: 1, Burst: 0, Key: "tenant"}},
+	})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	called := false
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if !called {
+		t.Fatal("degraded request did not reach terminal")
+	}
+	lifecycle.Finalize()
+	if len(p.conns) != 0 {
+		t.Fatalf("connections after degraded request = %d, want 0", len(p.conns))
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestPhaseLimitConnCapturesExactAdmissionSet(t *testing.T) {
+	limiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		Rules: []Rule{
+			{Conn: 1, Burst: 0, Key: "${http_x_tenant}"},
+			{Conn: 1, Burst: 0, Key: "${http_x_user}"},
+		},
+		Policy:    "redis",
+		RedisHost: "127.0.0.1",
+	})
+	p.redisLimiter = limiter
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.Header.Set("X-Tenant", "tenant-a")
+	request.Header.Set("X-User", "user-a")
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	request.Header.Set("X-Tenant", "tenant-b")
+	request.Header.Set("X-User", "user-b")
+	lifecycle.Finalize()
+	if limiter.left != 2 {
+		t.Fatalf("release calls = %d, want 2", limiter.left)
+	}
+	if len(limiter.leavingKeys) != 2 || !strings.Contains(limiter.leavingKeys[0], "tenant-a") ||
+		!strings.Contains(limiter.leavingKeys[1], "user-a") {
+		t.Fatalf("release keys = %#v, want captured tenant-a/user-a keys", limiter.leavingKeys)
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestPhaseLimitConnReleaseUsesAdmissionScope(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		p := newTestPlugin(t, Config{Conn: 1, Burst: 0, DefaultConnDelay: 0.1, Key: "remote_addr"})
+		p.routeID = "route-before"
+		request, lifecycle := apisixctx.EnsureRequestLifecycle(
+			httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+			time.Now(),
+		)
+		request.RemoteAddr = "192.0.2.108:1234"
+		base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(httptest.NewRecorder(), request)
+		p.routeID = "route-after"
+		lifecycle.Finalize()
+		if len(p.conns) != 0 {
+			t.Fatalf("connections after route scope changed = %d, want 0", len(p.conns))
+		}
+		apisixctx.RecycleVars(request)
+	})
+
+	t.Run("redis", func(t *testing.T) {
+		limiter := &fakeRedisConnLimiter{allowed: true}
+		p := newTestPlugin(t, Config{
+			Conn:             1,
+			Burst:            0,
+			DefaultConnDelay: 0.1,
+			Key:              "remote_addr",
+			Policy:           "redis",
+			RedisHost:        "127.0.0.1",
+		})
+		p.redisLimiter = limiter
+		p.routeID = "route-before"
+		oldScope := p.limitScope
+		request, lifecycle := apisixctx.EnsureRequestLifecycle(
+			httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+			time.Now(),
+		)
+		request.RemoteAddr = "192.0.2.109:1234"
+		base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(httptest.NewRecorder(), request)
+		p.routeID = "route-after"
+		p.limitScope = "scope-after"
+		lifecycle.Finalize()
+		want := "route:route-before:192.0.2.109:config:" + oldScope
+		if len(limiter.leavingKeys) != 1 || limiter.leavingKeys[0] != want {
+			t.Fatalf("release keys = %#v, want [%q]", limiter.leavingKeys, want)
+		}
+		apisixctx.RecycleVars(request)
+	})
+}
+
+func TestRequestPhaseLimitConnAddFinalizerFailureRollsBackAdmission(t *testing.T) {
+	p := newTestPlugin(t, Config{Conn: 1, Burst: 0, DefaultConnDelay: 0.1, Key: "remote_addr"})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.105:1234"
+	baselineDelay := p.unitDelay
+	lifecycle.Finalize()
+	called := false
+	rr := httptest.NewRecorder()
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	})).ServeHTTP(rr, request)
+	if called {
+		t.Fatal("terminal was called after release finalizer registration failed")
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if len(p.conns) != 0 {
+		t.Fatalf("connections after failed registration = %d, want 0", len(p.conns))
+	}
+	if p.unitDelay != baselineDelay {
+		t.Fatalf("unit delay after rollback = %v, want unchanged %v", p.unitDelay, baselineDelay)
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestLimitConnHandlerDirectReleasesAfterAbortHandler(t *testing.T) {
+	limiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = limiter
+	func() {
+		defer func() {
+			if recover() != http.ErrAbortHandler {
+				t.Errorf("panic = %v, want http.ErrAbortHandler", recover())
+			}
+		}()
+		handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+		request.RemoteAddr = "192.0.2.107:1234"
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	if limiter.left != 1 {
+		t.Fatalf("direct release calls = %d, want 1", limiter.left)
+	}
+}
+
+func TestLimitConnHandlerUsesOnlyLifecycleReleaseOwner(t *testing.T) {
+	limiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = limiter
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	request.RemoteAddr = "192.0.2.106:1234"
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if limiter.left != 0 {
+		t.Fatalf("release calls before lifecycle finalization = %d, want 0", limiter.left)
+	}
+	lifecycle.Finalize()
+	if limiter.left != 1 {
+		t.Fatalf("release calls after lifecycle finalization = %d, want 1", limiter.left)
+	}
+	apisixctx.RecycleVars(request)
 }

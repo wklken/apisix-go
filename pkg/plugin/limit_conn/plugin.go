@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -271,7 +272,13 @@ type Rule struct {
 }
 
 type admission struct {
-	key string
+	key     string
+	release func(*time.Duration)
+}
+
+type admissionRelease struct {
+	release  func() error
+	rollback func()
 }
 
 type connLimiter interface {
@@ -480,82 +487,123 @@ func (p *Plugin) scopedRedisKey(key string) string {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		if len(p.config.Rules) > 0 {
-			admissions, delay, allowed, err := p.increaseRules(r)
-			if err != nil {
-				if *p.config.AllowDegradation {
-					next.ServeHTTP(w, r)
-					return
-				}
-				logger.Errorf("failed to limit conn: %v", err)
-				http.Error(w, "failed to limit conn", http.StatusInternalServerError)
-				return
-			}
-			if !allowed {
-				p.reject(w)
-				return
-			}
-			if len(admissions) == 0 {
-				if *p.config.AllowDegradation {
-					next.ServeHTTP(w, r)
-					return
-				}
-				logger.Error("failed to get limit conn rules")
-				http.Error(w, "failed to get limit conn rules", http.StatusInternalServerError)
-				return
-			}
-			if delay > 0 {
-				time.Sleep(delay)
-			}
-
-			started := time.Now()
-			defer func() {
-				latency := time.Since(started)
-				p.decreaseAdmissions(admissions, &latency)
-			}()
-			next.ServeHTTP(w, r)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
 
-		key := p.resolveKey(r)
-		logger.Debugf("limit key: %s", key)
-		conn, burst, err := p.resolveLimits(r)
-		if err != nil {
-			if *p.config.AllowDegradation {
-				next.ServeHTTP(w, r)
-				return
-			}
-			logger.Error(err.Error())
-			http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
+		result, release := p.admit(w, r)
+		if result.Decision != base.RequestContinue {
 			return
 		}
-		delay, allowed, err := p.increase(key, conn, burst)
+		if release != nil {
+			defer func() { _ = release.release() }()
+		}
+		request := result.Request
+		if request == nil {
+			request = r
+		}
+		next.ServeHTTP(w, request)
+	})
+}
+
+// RunRequestPhase admits the request and transfers release ownership to the
+// outer request lifecycle. A successful admission without a lifecycle is
+// rolled back and rejected to avoid leaking capacity.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	result, release := p.admit(w, r)
+	if result.Decision != base.RequestContinue || release == nil {
+		return result
+	}
+
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil || !lifecycle.AddFinalizer(name, release.release) {
+		release.rollback()
+		logger.Error("failed to register limit conn release finalizer")
+		http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+		return base.StopRequest(r)
+	}
+	return result
+}
+
+func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, *admissionRelease) {
+	if len(p.config.Rules) > 0 {
+		admissions, delay, allowed, err := p.increaseRules(r)
 		if err != nil {
 			if *p.config.AllowDegradation {
-				next.ServeHTTP(w, r)
-				return
+				return base.ContinueRequest(r), nil
 			}
 			logger.Errorf("failed to limit conn: %v", err)
 			http.Error(w, "failed to limit conn", http.StatusInternalServerError)
-			return
+			return base.StopRequest(r), nil
 		}
 		if !allowed {
 			p.reject(w)
-			return
+			return base.StopRequest(r), nil
+		}
+		if len(admissions) == 0 {
+			if *p.config.AllowDegradation {
+				return base.ContinueRequest(r), nil
+			}
+			logger.Error("failed to get limit conn rules")
+			http.Error(w, "failed to get limit conn rules", http.StatusInternalServerError)
+			return base.StopRequest(r), nil
 		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}
 
 		started := time.Now()
-		defer func() {
-			latency := time.Since(started)
-			p.decrease(key, &latency)
-		}()
-		next.ServeHTTP(w, r)
+		admissions = append([]admission(nil), admissions...)
+		return base.ContinueRequest(r), &admissionRelease{
+			release: func() error {
+				latency := time.Since(started)
+				p.decreaseAdmissions(admissions, &latency)
+				return nil
+			},
+			rollback: func() { p.decreaseAdmissions(admissions, nil) },
+		}
 	}
-	return http.HandlerFunc(fn)
+
+	key := p.resolveKey(r)
+	logger.Debugf("limit key: %s", key)
+	conn, burst, err := p.resolveLimits(r)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return base.ContinueRequest(r), nil
+		}
+		logger.Error(err.Error())
+		http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
+		return base.StopRequest(r), nil
+	}
+	delay, allowed, err := p.increase(key, conn, burst)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return base.ContinueRequest(r), nil
+		}
+		logger.Errorf("failed to limit conn: %v", err)
+		http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+		return base.StopRequest(r), nil
+	}
+	if !allowed {
+		p.reject(w)
+		return base.StopRequest(r), nil
+	}
+	releaseAdmission := p.releaseForKey(key)
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+
+	started := time.Now()
+	return base.ContinueRequest(r), &admissionRelease{
+		release: func() error {
+			latency := time.Since(started)
+			releaseAdmission(&latency)
+			return nil
+		},
+		rollback: func() { releaseAdmission(nil) },
+	}
 }
 
 func validateRules(rules []Rule) error {
@@ -739,7 +787,10 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			p.decreaseAdmissions(admissions, nil)
 			return nil, 0, false, nil
 		}
-		admissions = append(admissions, admission{key: key})
+		admissions = append(admissions, admission{
+			key:     key,
+			release: p.releaseForKey(key),
+		})
 		delay += nextDelay
 	}
 
@@ -748,6 +799,10 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 
 func (p *Plugin) decreaseAdmissions(admissions []admission, latency *time.Duration) {
 	for _, admission := range admissions {
+		if admission.release != nil {
+			admission.release(latency)
+			continue
+		}
 		p.decrease(admission.key, latency)
 	}
 }
@@ -788,7 +843,24 @@ func (p *Plugin) decrease(key string, latency *time.Duration) {
 		return
 	}
 	key = p.scopedKey(key)
+	p.decreaseLocal(key, latency)
+}
 
+func (p *Plugin) releaseForKey(key string) func(*time.Duration) {
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		key = p.scopedRedisKey(key)
+		limiter := p.redisLimiter
+		return func(latency *time.Duration) {
+			_ = limiter.leaving(key, latency)
+		}
+	}
+	key = p.scopedKey(key)
+	return func(latency *time.Duration) {
+		p.decreaseLocal(key, latency)
+	}
+}
+
+func (p *Plugin) decreaseLocal(key string, latency *time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.config.OnlyUseDefaultDelay {

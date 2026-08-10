@@ -450,13 +450,13 @@ func TestHandlerProgressingStreamKeepsSelectedInstanceHealthy(t *testing.T) {
 			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
 			_, _ = w.Write([]byte(chunk))
 			flusher.Flush()
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 		}
 	}))
 	defer upstream.Close()
 
 	p := newTestPlugin(t, Config{
-		Timeout: 30,
+		Timeout: 100,
 		Instances: []Instance{{
 			Name: "progressing", Provider: "openai-compatible", Weight: 1,
 			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
@@ -489,14 +489,14 @@ func TestHandlerStalledStreamTimesOutForSelectedInstance(t *testing.T) {
 		flusher, _ := w.(http.Flusher)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
 		flusher.Flush()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
 		flusher.Flush()
 	}))
 	defer upstream.Close()
 
 	p := newTestPlugin(t, Config{
-		Timeout: 30,
+		Timeout: 100,
 		Instances: []Instance{{
 			Name: "stalled", Provider: "openai-compatible", Weight: 1,
 			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},

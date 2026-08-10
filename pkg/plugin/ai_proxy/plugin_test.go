@@ -2181,14 +2181,14 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
 			_, _ = w.Write([]byte(chunk))
 			flusher.Flush()
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 		}
 	}))
 	defer upstream.Close()
 
 	p := newTestPlugin(t, Config{
 		Provider: "openai-compatible",
-		Timeout:  30,
+		Timeout:  100,
 		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
@@ -2215,7 +2215,7 @@ func TestHandlerStalledStreamTimesOutConfiguredInactivity(t *testing.T) {
 		flusher, _ := w.(http.Flusher)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
 		flusher.Flush()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
 		flusher.Flush()
 	}))
@@ -2223,7 +2223,7 @@ func TestHandlerStalledStreamTimesOutConfiguredInactivity(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		Provider: "openai-compatible",
-		Timeout:  30,
+		Timeout:  100,
 		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{

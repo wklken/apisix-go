@@ -18,7 +18,8 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config         Config
+	enabledChecker func(string) bool
 }
 
 const (
@@ -121,6 +122,10 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) SetPluginEnabledChecker(checker func(string) bool) {
+	p.enabledChecker = checker
+}
+
 func (p *Plugin) PostInit() error {
 	for ruleIndex := range p.config.Rules {
 		rule := &p.config.Rules[ruleIndex]
@@ -135,6 +140,9 @@ func (p *Plugin) PostInit() error {
 			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
 			switch action.Name {
 			case "limit-req":
+				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
+					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
+				}
 				plugin := &limit_req.Plugin{}
 				if err := plugin.Init(); err != nil {
 					return err
@@ -147,6 +155,9 @@ func (p *Plugin) PostInit() error {
 				}
 				action.limitReq = plugin
 			case "limit-conn":
+				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
+					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
+				}
 				plugin := &limit_conn.Plugin{}
 				if err := plugin.Init(); err != nil {
 					return err
@@ -159,6 +170,9 @@ func (p *Plugin) PostInit() error {
 				}
 				action.limitConn = plugin
 			case "limit-count":
+				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
+					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
+				}
 				plugin := &limit_count.Plugin{}
 				if err := plugin.Init(); err != nil {
 					return err

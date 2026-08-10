@@ -435,6 +435,7 @@ func matchesWildcardRoute(pattern string, path string) bool {
 
 type Builder struct {
 	serverAddr            string
+	enabledPlugins        *plugin.EnabledSet
 	clusterRegistry       *pxy.ClusterRegistry
 	ownsClusterRegistry   bool
 	stoppers              []pluginStopper
@@ -519,6 +520,13 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) BuildStrict() (*chi.Mux, error) {
+	var configuredPlugins []string
+	if appconfig.GlobalConfig != nil {
+		configuredPlugins = appconfig.GlobalConfig.Plugins
+	}
+	enabledPlugins := plugin.NewEnabledSet(configuredPlugins)
+	b.enabledPlugins = &enabledPlugins
+
 	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
 		return nil, fmt.Errorf("validate proxy-cache zone registry: %w", err)
 	}
@@ -612,6 +620,13 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 			logger.Errorf("get plugin config rule fail: %s", err)
 			return nil, err
 		}
+		if err := b.validatePluginConfigSource(
+			pluginConfigRule.Plugins,
+			"plugin_config",
+			r.PluginConfigID,
+		); err != nil {
+			return nil, err
+		}
 		for name, config := range pluginConfigRule.Plugins {
 			// priority: Consumer > Route > Plugin Config > Service
 			// so if not in r.Plugins, add, else skip
@@ -630,6 +645,12 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 			logger.Errorf("get service fail: %s", err)
 			return nil, err
 		}
+		if err := b.validatePluginConfigSource(service.Plugins, "service", r.ServiceID); err != nil {
+			return nil, err
+		}
+	}
+	if err := b.validatePluginConfigSource(r.Plugins, "route", r.ID); err != nil {
+		return nil, err
 	}
 
 	servicePluginConfigs := make(map[string]resource.PluginConfig)
@@ -671,7 +692,11 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	for _, initializedPlugin := range initialized {
 		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
 	}
-	initialized, err = b.initPluginsStrict(systemPlugins, routeContext)
+	initialized, err = b.initPluginsStrictWithOptions(
+		systemPlugins,
+		routeContext,
+		pluginInitOptions{allowRequestContext: true},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -735,6 +760,11 @@ func (b *Builder) runConsumerPlugins(
 		return
 	}
 
+	if err := b.validateConsumerPluginSources(consumer); err != nil {
+		logger.Errorf("validate consumer plugins for %s: %s", consumer.Username, err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 	pluginConfigs, groupDigest := consumerPluginConfigsWithDigest(consumer)
 	if len(pluginConfigs) == 0 {
 		next.ServeHTTP(w, r)
@@ -774,6 +804,20 @@ func consumerPluginConfigsWithDigest(
 		}
 	}
 	return pluginConfigs, groupDigest
+}
+
+func (b *Builder) validateConsumerPluginSources(consumer resource.Consumer) error {
+	if err := b.validatePluginConfigSource(consumer.Plugins, "consumer", consumer.Username); err != nil {
+		return err
+	}
+	if consumer.GroupID == "" {
+		return nil
+	}
+	group, err := store.GetConsumerGroup(consumer.GroupID)
+	if err != nil {
+		return nil
+	}
+	return b.validatePluginConfigSource(group.Plugins, "consumer_group", consumer.GroupID)
 }
 
 func isConsumerAuthenticationPlugin(name string) bool {
@@ -936,6 +980,30 @@ type pluginRouteContextSetter interface {
 
 type pluginResourceContextSetter interface {
 	SetResourceContext(route resource.Route, service resource.Service)
+}
+
+type pluginEnabledCheckerSetter interface {
+	SetPluginEnabledChecker(func(string) bool)
+}
+
+type pluginInitOptions struct {
+	allowRequestContext bool
+}
+
+func (b *Builder) validatePluginConfigSource(
+	pluginConfigs map[string]resource.PluginConfig,
+	kind string,
+	id string,
+) error {
+	if b.enabledPlugins == nil {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(pluginConfigs)) {
+		if !b.enabledPlugins.Contains(name) {
+			return fmt.Errorf("plugin %q is disabled in %s %q", name, kind, id)
+		}
+	}
+	return nil
 }
 
 type pluginPrioritySetter interface {
@@ -1308,10 +1376,21 @@ func (b *Builder) initPluginsStrict(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
+	return b.initPluginsStrictWithOptions(pluginConfigs, routeContext, pluginInitOptions{})
+}
+
+func (b *Builder) initPluginsStrictWithOptions(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+	options pluginInitOptions,
+) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
 	normalizedRouteContext := routeContext
 	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
+		if !b.pluginAllowed(name, options) {
+			return nil, fmt.Errorf("plugin %q is disabled", name)
+		}
 		p := plugin.New(name)
 		if p == nil {
 			return nil, fmt.Errorf("plugin %s is not supported", name)
@@ -1367,6 +1446,10 @@ func (b *Builder) initPluginsStrict(
 			}
 			setter.SetPriority(*metadata.priority)
 		}
+		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
+			checker := b.enabledPlugins.Contains
+			setter.SetPluginEnabledChecker(checker)
+		}
 
 		if err := p.PostInit(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
@@ -1392,6 +1475,16 @@ func (b *Builder) initPluginsStrict(
 	return plugins, nil
 }
 
+func (b *Builder) pluginAllowed(name string, options pluginInitOptions) bool {
+	if b.enabledPlugins == nil {
+		return true
+	}
+	if options.allowRequestContext && name == "request-context" {
+		return true
+	}
+	return b.enabledPlugins.Contains(name)
+}
+
 func (b *Builder) addStopper(stopper pluginStopper) {
 	b.stopperMu.Lock()
 	b.stoppers = append(b.stoppers, stopper)
@@ -1415,6 +1508,9 @@ func (b *Builder) initGlobalPluginsStrict(
 ) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(globalRules))
 	for _, rule := range globalRules {
+		if err := b.validatePluginConfigSource(rule.Plugins, "global_rule", rule.ID); err != nil {
+			return nil, err
+		}
 		initialized, err := b.initPluginsStrict(rule.Plugins, routeContext)
 		if err != nil {
 			return nil, err

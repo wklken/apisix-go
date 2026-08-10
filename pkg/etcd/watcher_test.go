@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -283,6 +286,56 @@ func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) 
 	}
 }
 
+func TestProviderBatchFailureStaysUnreadyAfterQueuedRouteSuccess(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_provider_batch_failure_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_provider_batch_failure_ready",
+	})
+	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+
+	_, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{},
+		lastRevision: 10,
+	}
+	err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 14},
+		Events: []*clientv3.Event{
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/routes/good"),
+					Value:       []byte(`{"id":"good"}`),
+					ModRevision: 12,
+				},
+			},
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/ssls/bad"),
+					Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+					ModRevision: 13,
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("applyWatchResponse() error = nil, want provider batch failure")
+	}
+
+	// The route event was already durably acknowledged and can publish after
+	// the provider batch reports its later failure.
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	if got := watcherConfigApplyReadyValue(t, metrics.ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after delayed route success = %v, want 0", got)
+	}
+}
+
 func TestApplySnapshotStagesStateUntilEveryEventAcknowledges(t *testing.T) {
 	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
@@ -550,4 +603,13 @@ func TestNewTLSConfigLoadsCertificateAndRejectsMissingFiles(t *testing.T) {
 	if _, err := NewTLSConfig(certPath, keyPath, "", nil); err == nil {
 		t.Fatal("NewTLSConfig(invalid cert files) error = nil")
 	}
+}
+
+func watcherConfigApplyReadyValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatalf("write config-apply ready gauge: %v", err)
+	}
+	return metric.GetGauge().GetValue()
 }

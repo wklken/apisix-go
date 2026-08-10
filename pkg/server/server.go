@@ -37,6 +37,8 @@ import (
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
 
+var errStandaloneHTTPRoutePublication = errors.New("standalone HTTP route publication")
+
 type configProducer interface {
 	Stop() error
 }
@@ -551,8 +553,10 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	initialReloadGeneration := reloadGeneration.Load()
 	builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
 	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
 		return err
 	}
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -963,16 +967,16 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 			return fmt.Errorf("load standalone config: %w", err)
 		}
 		if err := s.storage.Sync(); err != nil {
-			metrics.RecordConfigApplyFailure()
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return fmt.Errorf("sync initial standalone config: %w", err)
 		}
-		metrics.RecordConfigApplySuccess()
+		metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 		watcher.SetAcknowledgedReloadCallback(func(result config.StandaloneReloadResult, err error) error {
 			if applyErr := applyStandaloneSnapshot(
 				result,
 				err,
 				s.storage.Sync,
-				func() { s.reload(ctx) },
+				func() error { return s.reload(ctx) },
 				func() {
 					if s.streamRuntime == nil {
 						return
@@ -982,11 +986,19 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 					}
 				},
 			); applyErr != nil {
-				metrics.RecordConfigApplyFailure()
+				if errors.Is(applyErr, errStandaloneHTTPRoutePublication) {
+					metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+				} else {
+					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
+				}
 				logger.Errorf("apply standalone config: %s", applyErr)
 				return applyErr
 			}
-			metrics.RecordConfigApplySuccess()
+			metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+			if result.AffectsHTTPRoutes() {
+				metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+			}
 			return nil
 		})
 		return nil
@@ -998,7 +1010,7 @@ func applyStandaloneSnapshot(
 	result config.StandaloneReloadResult,
 	err error,
 	syncStore func() error,
-	reloadRoutes func(),
+	reloadRoutes func() error,
 	reloadStreams func(),
 ) error {
 	if err != nil {
@@ -1008,7 +1020,9 @@ func applyStandaloneSnapshot(
 		return err
 	}
 	if result.AffectsHTTPRoutes() {
-		reloadRoutes()
+		if err := reloadRoutes(); err != nil {
+			return fmt.Errorf("%w: %w", errStandaloneHTTPRoutePublication, err)
+		}
 	}
 	if result.AffectsStreams() {
 		reloadStreams()
@@ -1105,7 +1119,7 @@ func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) e
 		return err
 	}
 	if err := syncStore(); err != nil {
-		metrics.RecordConfigApplyFailure()
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 		return err
 	}
 	return nil

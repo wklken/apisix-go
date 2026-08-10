@@ -23,9 +23,19 @@ func Load() (*Config, error) {
 }
 
 func load(v *viper.Viper) (*Config, error) {
+	rawPlugins := v.Get("plugins")
+
 	var cfg Config
 	err := v.Unmarshal(&cfg, viper.DecodeHook(configDecodeHook))
 	if err != nil {
+		return nil, err
+	}
+	if rawPlugins != nil {
+		if plugins, ok := decodeHTTPPluginAllowlist(rawPlugins); ok {
+			cfg.Plugins = plugins
+		}
+	}
+	if err := validateHTTPPluginAllowlist(cfg.Plugins); err != nil {
 		return nil, err
 	}
 
@@ -47,6 +57,50 @@ func load(v *viper.Viper) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func decodeHTTPPluginAllowlist(raw any) ([]string, bool) {
+	switch value := raw.(type) {
+	case string:
+		if strings.Contains(value, ",") {
+			return strings.Split(value, ","), true
+		}
+		if value == "" || value != strings.TrimSpace(value) {
+			return []string{value}, true
+		}
+		return strings.Fields(value), true
+	case []string:
+		return append([]string(nil), value...), true
+	case []any:
+		plugins := make([]string, len(value))
+		for index, item := range value {
+			name, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			plugins[index] = name
+		}
+		return plugins, true
+	default:
+		return nil, false
+	}
+}
+
+func validateHTTPPluginAllowlist(names []string) error {
+	seen := make(map[string]int, len(names))
+	for index, name := range names {
+		if name == "" {
+			return fmt.Errorf("plugins[%d] %q must not be empty", index, name)
+		}
+		if name != strings.TrimSpace(name) {
+			return fmt.Errorf("plugins[%d] %q must not have leading or trailing whitespace", index, name)
+		}
+		if previous, ok := seen[name]; ok {
+			return fmt.Errorf("plugins[%d] %q duplicates plugins[%d]", index, name, previous)
+		}
+		seen[name] = index
+	}
+	return nil
 }
 
 func configDecodeHook(from reflect.Type, to reflect.Type, data any) (any, error) {

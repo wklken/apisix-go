@@ -7,10 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +50,436 @@ func TestServerShutdownClosesClusterRegistry(t *testing.T) {
 	}
 	if !lease.Cluster().Closed() {
 		t.Fatal("shutdown() did not close the cluster registry")
+	}
+}
+
+type fakeConfigProducer struct {
+	mu       sync.Mutex
+	stopped  int
+	stopErr  error
+	stopSeen chan struct{}
+	onStop   func()
+}
+
+func (p *fakeConfigProducer) Stop() error {
+	p.mu.Lock()
+	p.stopped++
+	p.mu.Unlock()
+	if p.stopSeen != nil {
+		close(p.stopSeen)
+		p.stopSeen = nil
+	}
+	if p.onStop != nil {
+		p.onStop()
+	}
+	return p.stopErr
+}
+
+func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
+	producerErr := errors.New("producer stop failed")
+	streamErr := errors.New("stream stop failed")
+	traceErr := errors.New("trace stop failed")
+	events := make(chan *store.Event)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "shutdown.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	producer := &fakeConfigProducer{stopErr: producerErr, stopSeen: make(chan struct{})}
+	producer.onStop = func() {
+		if _, err := storage.SnapshotBuckets([]string{"routes"}); err != nil {
+			t.Errorf("Store was closed before producer Stop(): %v", err)
+		}
+	}
+	stream := &streamRuntimeCloseError{err: streamErr}
+	server := &Server{
+		server:        &http.Server{},
+		routes:        newRouteHandler(http.NotFoundHandler(), nil),
+		producer:      producer,
+		streamRuntime: stream,
+		storage:       storage,
+		otelShutdown:  func(context.Context) error { return traceErr },
+	}
+
+	err = server.Shutdown(context.Background())
+	for _, want := range []error{producerErr, streamErr, traceErr} {
+		if !errors.Is(err, want) {
+			t.Fatalf("Shutdown() error = %v, want joined %v", err, want)
+		}
+	}
+	if producer.stopped != 1 {
+		t.Fatalf("producer Stop calls = %d, want 1", producer.stopped)
+	}
+	if err := server.Shutdown(context.Background()); !errors.Is(err, producerErr) {
+		t.Fatalf("repeated Shutdown() error = %v, want original joined error", err)
+	}
+	if producer.stopped != 1 {
+		t.Fatalf("repeated Shutdown() called producer Stop %d times, want 1", producer.stopped)
+	}
+}
+
+func TestServerShutdownCancelsAndJoinsQueuedReloadScheduler(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "scheduler.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+	server := &Server{
+		server:          &http.Server{},
+		routes:          newRouteHandler(http.NotFoundHandler(), nil),
+		storage:         storage,
+		reloadEventChan: make(chan struct{}, 1),
+	}
+	server.startReloadScheduler(context.Background())
+	server.reloadEventChan <- struct{}{}
+
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	select {
+	case <-server.schedulerDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() returned before reload scheduler exited")
+	}
+	if _, err := storage.SnapshotBuckets([]string{"routes"}); err == nil {
+		t.Fatal("Store remained open after scheduler shutdown")
+	}
+}
+
+func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "conf"), 0o700); err != nil {
+		t.Fatalf("make config directory: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	configPath := filepath.Join(root, "conf", "apisix.yaml")
+	configData := []byte("routes:\n  - id: route-1\n    uri: /one\n#END\n")
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	config.GlobalConfig = &config.Config{
+		Deployment: config.Deployment{
+			Role:          "data_plane",
+			RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
+		},
+		Apisix: config.Apisix{ProxyMode: "stream"},
+	}
+	events := make(chan *store.Event, 8)
+	storage, err := store.Open(filepath.Join(root, "startup.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	storage.AddEventUpdateHook(func(event *store.Event) {
+		if string(event.Key) != "/apisix/routes/route-1" {
+			return
+		}
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+	})
+	server := &Server{
+		addr:     "127.0.0.1:0",
+		addrs:    []string{"127.0.0.1:0"},
+		server:   &http.Server{},
+		routes:   newRouteHandler(http.NotFoundHandler(), nil),
+		clusters: proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:   events,
+		storage:  storage,
+	}
+	startCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDone := make(chan error, 1)
+	go func() { startDone <- server.Start(startCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("initial standalone Reload() did not reach the paused Store hook")
+	}
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- server.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdownDone:
+		if err == nil {
+			t.Fatal("Shutdown() returned before initial Reload() was released")
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown() remained blocked after initial Reload() was released")
+	}
+	cancel()
+	select {
+	case <-startDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start() remained blocked after concurrent Shutdown()")
+	}
+}
+
+func TestStartFailureCleanupIsBoundedWithActiveHTTPRequest(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "startup-cleanup.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseRequest) }) }
+	routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	httpServer := &http.Server{Handler: routes}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = httpServer.Serve(listener) }()
+	t.Cleanup(func() {
+		release()
+		_ = httpServer.Close()
+	})
+	requestDone := make(chan struct{})
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if requestErr == nil {
+			_ = response.Body.Close()
+		}
+		close(requestDone)
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("active request did not start")
+	}
+
+	server := &Server{server: httpServer, routes: routes, storage: storage}
+	cleanupDone := make(chan error, 1)
+	go func() { cleanupDone <- server.cleanupAfterStart() }()
+	select {
+	case err := <-cleanupDone:
+		if err == nil {
+			t.Fatal("cleanupAfterStart() error = nil with an active request")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup cleanup remained blocked behind an active request")
+	}
+	if _, err := storage.SnapshotBuckets([]string{"routes"}); err != nil {
+		t.Fatalf("startup cleanup closed the Store while the active handler still owned it: %v", err)
+	}
+	release()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("active request did not exit after release")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := storage.SnapshotBuckets([]string{"routes"}); err != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("startup cleanup did not close the Store after the active handler exited")
+}
+
+type fakeEtcdClient struct {
+	watchStarted chan struct{}
+	releaseWatch chan struct{}
+	closeCalled  chan struct{}
+	mu           sync.Mutex
+	order        []string
+}
+
+func (c *fakeEtcdClient) Watch(context.Context) {
+	close(c.watchStarted)
+	<-c.releaseWatch
+	c.mu.Lock()
+	c.order = append(c.order, "watch-exit")
+	c.mu.Unlock()
+}
+
+func (c *fakeEtcdClient) Close() error {
+	c.mu.Lock()
+	c.order = append(c.order, "client-close")
+	c.mu.Unlock()
+	close(c.closeCalled)
+	return nil
+}
+
+func TestEtcdWatchExitIsJoinedBeforeClientClose(t *testing.T) {
+	client := &fakeEtcdClient{
+		watchStarted: make(chan struct{}),
+		releaseWatch: make(chan struct{}),
+		closeCalled:  make(chan struct{}),
+	}
+	producer := newEtcdConfigProducer(context.Background(), client)
+	producer.Start()
+	select {
+	case <-client.watchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("etcd Watch() did not start")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- producer.Stop() }()
+	select {
+	case <-client.closeCalled:
+		t.Fatal("client Close() ran before Watch() exited")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(client.releaseWatch)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("producer Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("producer Stop() did not wait for Watch() exit")
+	}
+	client.mu.Lock()
+	gotOrder := append([]string(nil), client.order...)
+	client.mu.Unlock()
+	if !slices.Equal(gotOrder, []string{"watch-exit", "client-close"}) {
+		t.Fatalf("shutdown order = %v, want watch-exit then client-close", gotOrder)
+	}
+}
+
+func TestStandaloneStartupDeletesPersistedResourceRemovedFromFile(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "conf"), 0o700); err != nil {
+		t.Fatalf("make config directory: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	configPath := filepath.Join(root, "conf", "apisix.yaml")
+	if err := os.WriteFile(configPath, []byte("routes: []\n#END\n"), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	config.GlobalConfig = &config.Config{Deployment: config.Deployment{
+		Role:          "data_plane",
+		RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
+	}}
+	events := make(chan *store.Event, 8)
+	storage, err := store.Open(filepath.Join(root, "store.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	server := &Server{events: events, storage: storage}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	events <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/routes/stale"),
+		Value: []byte(`{"id":"stale","uri":"/old"}`),
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	if err := server.startConfigProvider(context.Background()); err != nil {
+		t.Fatalf("startConfigProvider() error = %v", err)
+	}
+	value, err := storage.GetFromBucket("routes", []byte("stale"))
+	if err != nil {
+		t.Fatalf("read stale resource: %v", err)
+	}
+	if value != nil {
+		t.Fatalf("stale resource = %s, want deleted during initial reconciliation", value)
+	}
+}
+
+func TestStartFailureStopsStandaloneProducerAndStore(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "conf"), 0o700); err != nil {
+		t.Fatalf("make config directory: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	configPath := filepath.Join(root, "conf", "apisix.yaml")
+	if err := os.WriteFile(configPath, []byte("routes: []\n#END\n"), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	config.GlobalConfig = &config.Config{
+		Deployment: config.Deployment{
+			Role:          "data_plane",
+			RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
+		},
+		Apisix: config.Apisix{ProxyMode: "stream"},
+	}
+	events := make(chan *store.Event, 8)
+	storage, err := store.Open(filepath.Join(root, "store.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	server := &Server{
+		addr:     "127.0.0.1:0",
+		addrs:    []string{"127.0.0.1:0"},
+		server:   &http.Server{},
+		routes:   newRouteHandler(http.NotFoundHandler(), nil),
+		clusters: proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:   events,
+		storage:  storage,
+	}
+
+	err = server.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "stream mode requires") {
+		t.Fatalf("Start() error = %v, want stream startup error", err)
+	}
+	if server.producer == nil {
+		t.Fatal("Start() did not retain standalone producer before startup failure")
+	}
+	if err := server.producer.Stop(); err != nil {
+		t.Fatalf("producer Stop() after Start() failure = %v", err)
+	}
+	if _, err := storage.SnapshotBuckets(config.StandaloneBuckets()); err == nil {
+		t.Fatal("Store remained open after Start() failure cleanup")
 	}
 }
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,198 @@ func TestOpenErrorForMissingDatabaseDirectory(t *testing.T) {
 	}
 	if storage != nil {
 		t.Fatal("Open() returned a store together with an error")
+	}
+}
+
+func TestGetStoreReopensAfterStopWithDifferentEventChannel(t *testing.T) {
+	previous := ReplaceGlobalStoreForTest(nil)
+	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
+
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	firstEvents := make(chan *Event)
+	first, err := GetStore(path, firstEvents)
+	if err != nil {
+		t.Fatalf("first GetStore() error = %v", err)
+	}
+	if err := first.Stop(); err != nil {
+		t.Fatalf("first Store.Stop() error = %v", err)
+	}
+
+	secondEvents := make(chan *Event)
+	second, err := GetStore(path, secondEvents)
+	if err != nil {
+		t.Fatalf("second GetStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = second.Stop() })
+	if second == first {
+		t.Fatal("GetStore() returned the stopped Store instance")
+	}
+	if second.events != secondEvents {
+		t.Fatal("reopened Store retained the old event channel")
+	}
+	if second.events == firstEvents {
+		t.Fatal("reopened Store shares the old event channel")
+	}
+}
+
+func TestStopClearsOnlyMatchingGlobalStore(t *testing.T) {
+	previous := ReplaceGlobalStoreForTest(nil)
+	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
+
+	old, err := Open(filepath.Join(t.TempDir(), "old.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open(old) error = %v", err)
+	}
+	newer, err := GetStore(filepath.Join(t.TempDir(), "new.db"), make(chan *Event))
+	if err != nil {
+		_ = old.Stop()
+		t.Fatalf("GetStore(new) error = %v", err)
+	}
+	t.Cleanup(func() { _ = newer.Stop() })
+
+	if err := old.Stop(); err != nil {
+		t.Fatalf("old Store.Stop() error = %v", err)
+	}
+	got, err := GetStore(filepath.Join(t.TempDir(), "unexpected.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("GetStore() after non-global Stop error = %v", err)
+	}
+	if got != newer {
+		t.Fatal("stopping a non-global Store cleared the newer global singleton")
+	}
+}
+
+func TestStopHookCanReenterGetStore(t *testing.T) {
+	previous := ReplaceGlobalStoreForTest(nil)
+	path := filepath.Join(t.TempDir(), "hook-reentrancy.db")
+	storage, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	ReplaceGlobalStoreForTest(storage)
+
+	hookEntered := make(chan struct{})
+	stopSignal := make(chan bool, 1)
+	lookupResult := make(chan struct {
+		storage *Store
+		err     error
+	}, 1)
+	releaseHook := make(chan struct{})
+	storage.AddEventUpdateHook(func(*Event) {
+		close(hookEntered)
+		observedStop := false
+		select {
+		case <-storage.stopProducers:
+			observedStop = true
+		case <-time.After(500 * time.Millisecond):
+		}
+		stopSignal <- observedStop
+		go func() {
+			got, lookupErr := GetStore(path, make(chan *Event))
+			lookupResult <- struct {
+				storage *Store
+				err     error
+			}{storage: got, err: lookupErr}
+		}()
+		if observedStop {
+			<-releaseHook
+		}
+	})
+	storage.Start()
+	go func() {
+		storage.events <- &Event{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/routes/route-1"),
+			Value: []byte(`{"id":"route-1"}`),
+		}
+	}()
+	select {
+	case <-hookEntered:
+	case <-time.After(time.Second):
+		t.Fatal("store hook did not start")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- storage.Stop() }()
+	observedStop := <-stopSignal
+	lookup := <-lookupResult
+	if observedStop {
+		close(releaseHook)
+	}
+	stopErr := <-stopDone
+	if lookup.storage != nil && lookup.storage != storage {
+		_ = lookup.storage.Stop()
+	}
+	if stopErr != nil {
+		t.Fatalf("Store.Stop() error = %v", stopErr)
+	}
+	if !observedStop {
+		t.Fatal("Store.Stop() did not signal the hook before waiting for it")
+	}
+	if !errors.Is(lookup.err, errStoreStopped) {
+		t.Fatalf("GetStore() from Store hook error = %v, want errStoreStopped", lookup.err)
+	}
+	if lookup.storage != nil {
+		t.Fatal("GetStore() returned the stopping Store to the reentrant hook")
+	}
+
+	reopened, err := GetStore(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("GetStore() after Stop error = %v", err)
+	}
+	if reopened == storage {
+		t.Fatal("GetStore() after Stop returned the closed Store")
+	}
+	_ = reopened.Stop()
+	ReplaceGlobalStoreForTest(previous)
+}
+
+func TestSyncReturnsStoreStoppedBeforeAndDuringStop(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "sync-stop.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := storage.Stop(); err != nil {
+		t.Fatalf("Store.Stop() error = %v", err)
+	}
+	assertSyncStopped := func(label string) {
+		done := make(chan error, 1)
+		go func() { done <- storage.Sync() }()
+		select {
+		case syncErr := <-done:
+			if !errors.Is(syncErr, errStoreStopped) {
+				t.Fatalf("Sync() %s error = %v, want errStoreStopped", label, syncErr)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Sync() %s remained blocked after Store.Stop", label)
+		}
+	}
+	assertSyncStopped("before")
+
+	active, err := Open(filepath.Join(t.TempDir(), "sync-concurrent-stop.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open(active) error = %v", err)
+	}
+	active.Start()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- active.Stop() }()
+	select {
+	case <-active.stopProducers:
+	case <-time.After(time.Second):
+		t.Fatal("Store.Stop() did not enter stopping state")
+	}
+	done := make(chan error, 1)
+	go func() { done <- active.Sync() }()
+	select {
+	case syncErr := <-done:
+		if !errors.Is(syncErr, errStoreStopped) {
+			t.Fatalf("concurrent Sync() error = %v, want errStoreStopped", syncErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent Sync() remained blocked while Store.Stop was active")
+	}
+	if err := <-stopDone; err != nil {
+		t.Fatalf("active Store.Stop() error = %v", err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,9 +37,76 @@ import (
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
 
+type configProducer interface {
+	Stop() error
+}
+
 type streamRuntimeOwner interface {
 	Reload([]resource.StreamRoute) error
 	Close(context.Context) error
+}
+
+type etcdClientOwner interface {
+	Watch(context.Context)
+	Close() error
+}
+
+type etcdConfigProducer struct {
+	client etcdClientOwner
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	stopOnce    sync.Once
+	stopErr     error
+}
+
+func newEtcdConfigProducer(parent context.Context, client etcdClientOwner) *etcdConfigProducer {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	return &etcdConfigProducer{
+		client: client,
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+}
+
+func (p *etcdConfigProducer) Start() {
+	p.lifecycleMu.Lock()
+	if p.started || p.stopped || p.client == nil {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	p.started = true
+	p.lifecycleMu.Unlock()
+	go func() {
+		defer close(p.done)
+		p.client.Watch(p.ctx)
+	}()
+}
+
+func (p *etcdConfigProducer) Stop() error {
+	p.stopOnce.Do(func() {
+		p.lifecycleMu.Lock()
+		p.stopped = true
+		started := p.started
+		p.lifecycleMu.Unlock()
+
+		p.cancel()
+		if started {
+			<-p.done
+		}
+		if p.client != nil {
+			p.stopErr = p.client.Close()
+		}
+	})
+	return p.stopErr
 }
 
 type Server struct {
@@ -54,10 +122,29 @@ type Server struct {
 	storage           *store.Store
 	etcdClient        *etcd.ConfigClient
 	standaloneWatcher *config.StandaloneFileWatcher
+	producer          configProducer
+
+	lifecycleMu       sync.Mutex
+	lifecycleCancel   context.CancelFunc
+	startupDone       chan struct{}
+	schedulerDone     chan struct{}
+	startupInProgress bool
+	shutdownRequested bool
+
+	shutdownMu         sync.Mutex
+	shutdownDone       chan struct{}
+	shutdownInProgress bool
+	shutdownComplete   bool
+	shutdownErr        error
+
+	listenerMu sync.Mutex
+	listeners  []net.Listener
 
 	prometheusServer *http.Server
 	otelShutdown     func(context.Context) error
 }
+
+const startupCleanupTimeout = time.Second
 
 func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
@@ -81,6 +168,7 @@ func NewServer() (*Server, error) {
 	addrs := configuredListenAddresses()
 	otelShutdown, err := otel.Init("apisix-go")
 	if err != nil {
+		_ = storage.Stop()
 		return nil, fmt.Errorf("initialize tracing: %w", err)
 	}
 	return &Server{
@@ -275,12 +363,156 @@ func pluginConfigured(name string) bool {
 	return slices.Contains(config.GlobalConfig.Plugins, name)
 }
 
+func (s *Server) beginStart(parent context.Context) (context.Context, bool) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.shutdownRequested || s.startupInProgress {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.lifecycleCancel = cancel
+	s.startupDone = make(chan struct{})
+	s.startupInProgress = true
+	return ctx, true
+}
+
+func (s *Server) finishStart() {
+	s.lifecycleMu.Lock()
+	if s.startupInProgress {
+		s.startupInProgress = false
+		close(s.startupDone)
+	}
+	s.lifecycleMu.Unlock()
+}
+
+func (s *Server) retainProducer(producer configProducer) error {
+	s.lifecycleMu.Lock()
+	if s.shutdownRequested {
+		s.lifecycleMu.Unlock()
+		_ = producer.Stop()
+		return context.Canceled
+	}
+	s.producer = producer
+	s.lifecycleMu.Unlock()
+	return nil
+}
+
+func (s *Server) startReloadScheduler(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.lifecycleMu.Lock()
+	if s.shutdownRequested || s.schedulerDone != nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	schedulerDone := make(chan struct{})
+	s.schedulerDone = schedulerDone
+	if s.lifecycleCancel == nil {
+		ctx, s.lifecycleCancel = context.WithCancel(ctx)
+	}
+	s.lifecycleMu.Unlock()
+	go func() {
+		defer close(schedulerDone)
+		s.listenReloadEvent(ctx)
+	}()
+}
+
+func (s *Server) lifecycleResourcesForShutdown() (
+	context.CancelFunc,
+	configProducer,
+	chan struct{},
+	chan struct{},
+) {
+	s.lifecycleMu.Lock()
+	s.shutdownRequested = true
+	cancel := s.lifecycleCancel
+	producer := s.producer
+	startupDone := s.startupDone
+	schedulerDone := s.schedulerDone
+	s.lifecycleMu.Unlock()
+	return cancel, producer, startupDone, schedulerDone
+}
+
+func (s *Server) cleanupAfterStart() error {
+	ctx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
+	err := s.shutdown(ctx)
+	cancel()
+	if err == nil {
+		return nil
+	}
+	// Stop producers and reload work even when HTTP quiescence is not yet
+	// possible. Route generations and Store remain owned until active handlers
+	// have exited and a later shutdown attempt can safely release them.
+	lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
+	if lifecycleErr, _ := s.stopProducerAndScheduler(lifecycleCtx); lifecycleErr != nil {
+		err = errors.Join(err, lifecycleErr)
+	}
+	lifecycleCancel()
+	s.closeOwnedListeners()
+	if s.server != nil {
+		// A startup error must not be held hostage by a request that cannot
+		// drain. Close listeners and active connections as a bounded fallback.
+		// net/http does not terminate handler goroutines, so dependency cleanup
+		// continues only after those handlers release their route generation.
+		_ = s.server.Close()
+	}
+	go func() {
+		if cleanupErr := s.shutdown(context.Background()); cleanupErr != nil {
+			logger.Errorf("finish server cleanup after startup failure: %s", cleanupErr)
+		}
+	}()
+	return err
+}
+
+func (s *Server) retainListener(listener net.Listener) {
+	s.listenerMu.Lock()
+	s.listeners = append(s.listeners, listener)
+	s.listenerMu.Unlock()
+}
+
+func (s *Server) releaseListener(listener net.Listener) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	for index, owned := range s.listeners {
+		if owned != listener {
+			continue
+		}
+		s.listeners = append(s.listeners[:index], s.listeners[index+1:]...)
+		return
+	}
+}
+
+func (s *Server) closeOwnedListeners() {
+	s.listenerMu.Lock()
+	listeners := append([]net.Listener(nil), s.listeners...)
+	s.listeners = nil
+	s.listenerMu.Unlock()
+	for _, listener := range listeners {
+		_ = listener.Close()
+	}
+}
+
 // Start runs the server until ctx is cancelled or a listener fails. Startup
 // failures are returned with operation context instead of panicking; the
 // command owns the process shutdown path.
-func (s *Server) Start(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+func (s *Server) Start(ctx context.Context) (startErr error) {
+	runCtx, ok := s.beginStart(ctx)
+	if !ok {
+		return context.Canceled
+	}
+	ctx = runCtx
+	defer func() {
+		s.finishStart()
+		if err := s.cleanupAfterStart(); err != nil {
+			startErr = errors.Join(startErr, err)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
@@ -311,6 +543,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := s.startConfigProvider(ctx); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	logger.Info("build the routes")
 	initialReloadGeneration := reloadGeneration.Load()
@@ -318,19 +553,27 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	previousStreamRuntime := s.streamRuntime
 	if err := s.startStreamProxy(ctx); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.standaloneWatcher != nil {
-		s.standaloneWatcher.Watch()
+		if err := s.standaloneWatcher.Start(); err != nil {
+			return fmt.Errorf("start standalone config watcher: %w", err)
+		}
 		provider := standaloneConfigProvider(config.GlobalConfig)
 		logger.Infof("watch standalone config %s", config.StandaloneConfigFile(provider))
 	}
 
 	// start the reloader
-	go s.listenReloadEvent(ctx)
+	s.startReloadScheduler(ctx)
 
 	return s.startServing(
 		ctx,
@@ -381,23 +624,74 @@ func buildAndInstallInitialRoutes(routes *routeHandler, builder strictRouteBuild
 }
 
 func (s *Server) shutdown(ctx context.Context) error {
-	var errs []error
-	httpErr := s.server.Shutdown(ctx)
-	if httpErr != nil {
-		errs = append(errs, fmt.Errorf("stop HTTP server: %w", httpErr))
-	} else {
-		// HTTP quiescence reached, so no in-flight request can block the
-		// graceful route drain; a timed-out HTTP shutdown skips the drain and
-		// the command's exit releases stragglers.
-		s.routes.Close()
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	for {
+		s.shutdownMu.Lock()
+		if s.shutdownComplete {
+			err := s.shutdownErr
+			s.shutdownMu.Unlock()
+			return err
+		}
+		if s.shutdownInProgress {
+			done := s.shutdownDone
+			s.shutdownMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		s.shutdownInProgress = true
+		s.shutdownDone = make(chan struct{})
+		done := s.shutdownDone
+		s.shutdownMu.Unlock()
+
+		err, complete := s.shutdownAttempt(ctx)
+
+		s.shutdownMu.Lock()
+		s.shutdownErr = err
+		s.shutdownComplete = complete
+		s.shutdownInProgress = false
+		close(done)
+		s.shutdownMu.Unlock()
+		return err
+	}
+}
+
+func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
+	if s.server != nil {
+		if err := s.server.Shutdown(ctx); err != nil {
+			return fmt.Errorf("stop HTTP server: %w", err), false
+		}
+	}
+
+	producerErr, lifecycleComplete := s.stopProducerAndScheduler(ctx)
+	if !lifecycleComplete {
+		return producerErr, false
+	}
+	var errs []error
+	if producerErr != nil {
+		errs = append(errs, producerErr)
+	}
+
 	if s.streamRuntime != nil {
 		if err := s.streamRuntime.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
 	}
+	if s.routes != nil {
+		s.routes.Close()
+	}
 	if s.clusters != nil {
 		s.clusters.Close()
+	}
+	if s.storage != nil {
+		if err := s.storage.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop store: %w", err))
+		}
 	}
 	if s.prometheusServer != nil {
 		if err := s.prometheusServer.Shutdown(ctx); err != nil {
@@ -409,12 +703,55 @@ func (s *Server) shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("stop tracing: %w", err))
 		}
 	}
-	if s.etcdClient != nil {
-		if err := s.etcdClient.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close etcd client: %w", err))
+	return errors.Join(errs...), true
+}
+
+func (s *Server) stopProducerAndScheduler(ctx context.Context) (error, bool) {
+	cancel, producer, startupDone, schedulerDone := s.lifecycleResourcesForShutdown()
+	var errs []error
+	if producer != nil {
+		if err := producer.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop config producer: %w", err))
+		}
+	} else {
+		s.lifecycleMu.Lock()
+		standaloneWatcher := s.standaloneWatcher
+		etcdClient := s.etcdClient
+		s.lifecycleMu.Unlock()
+		if standaloneWatcher != nil {
+			if err := standaloneWatcher.Stop(); err != nil {
+				errs = append(errs, fmt.Errorf("stop standalone config watcher: %w", err))
+			}
+		} else if etcdClient != nil {
+			if err := etcdClient.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close etcd client: %w", err))
+			}
 		}
 	}
-	return errors.Join(errs...)
+	if cancel != nil {
+		cancel()
+	}
+	if err := waitForLifecycle(ctx, startupDone); err != nil {
+		errs = append(errs, fmt.Errorf("wait for startup: %w", err))
+		return errors.Join(errs...), false
+	}
+	if err := waitForLifecycle(ctx, schedulerDone); err != nil {
+		errs = append(errs, fmt.Errorf("wait for reload scheduler: %w", err))
+		return errors.Join(errs...), false
+	}
+	return errors.Join(errs...), true
+}
+
+func waitForLifecycle(ctx context.Context, done chan struct{}) error {
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Server) startStreamProxy(ctx context.Context) error {
@@ -450,7 +787,14 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("start stream proxy: %w", err)
 	}
+	s.lifecycleMu.Lock()
+	if s.shutdownRequested {
+		s.lifecycleMu.Unlock()
+		_ = runtime.Close(context.Background())
+		return context.Canceled
+	}
 	s.streamRuntime = runtime
+	s.lifecycleMu.Unlock()
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
 	return nil
 }
@@ -486,7 +830,14 @@ func (s *Server) startPrometheusExportServer() error {
 	if err != nil {
 		return fmt.Errorf("start prometheus export server: %w", err)
 	}
+	s.lifecycleMu.Lock()
+	if s.shutdownRequested {
+		s.lifecycleMu.Unlock()
+		_ = exporter.Close()
+		return context.Canceled
+	}
 	s.prometheusServer = exporter
+	s.lifecycleMu.Unlock()
 	return nil
 }
 
@@ -597,6 +948,17 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 	if provider != "" {
 		path := config.StandaloneConfigFile(provider)
 		watcher := config.NewStandaloneFileWatcher(path, provider, s.events)
+		s.lifecycleMu.Lock()
+		s.standaloneWatcher = watcher
+		s.lifecycleMu.Unlock()
+		if err := s.retainProducer(watcher); err != nil {
+			return fmt.Errorf("retain standalone config watcher: %w", err)
+		}
+		snapshot, err := s.storage.SnapshotBuckets(config.StandaloneBuckets())
+		if err != nil {
+			return fmt.Errorf("snapshot standalone store: %w", err)
+		}
+		watcher.SeedCurrentSnapshot(snapshot)
 		if err := watcher.Reload(); err != nil {
 			return fmt.Errorf("load standalone config: %w", err)
 		}
@@ -627,7 +989,6 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 			metrics.RecordConfigApplySuccess()
 			return nil
 		})
-		s.standaloneWatcher = watcher
 		return nil
 	}
 	return s.startEtcdWatcher(ctx)
@@ -708,7 +1069,13 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("start etcd client: %w", err)
 	}
+	s.lifecycleMu.Lock()
 	s.etcdClient = etcdClient
+	s.lifecycleMu.Unlock()
+	producer := newEtcdConfigProducer(ctx, etcdClient)
+	if err := s.retainProducer(producer); err != nil {
+		return fmt.Errorf("retain etcd config watcher: %w", err)
+	}
 	logger.Info("fetch full data from etcd")
 	err = fetchAndSyncInitialEtcdConfig(etcdClient.FetchAll, s.storage.Sync)
 	if err != nil {
@@ -729,7 +1096,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		}
 	}
 	logger.Info("watch etcd")
-	go etcdClient.Watch(ctx)
+	producer.Start()
 	return nil
 }
 
@@ -777,30 +1144,35 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 	}
 	tlsAddrs := configuredTLSListenAddresses()
 	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
+	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
 		logger.Infof("listening on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
+			s.closeOwnedListeners()
 			return fmt.Errorf("open listener %s: %w", addr, err)
 		}
-		go func(listener net.Listener) {
-			if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				serveErrors <- err
-			}
-		}(listener)
+		s.retainListener(listener)
+		listeners = append(listeners, listener)
 	}
 	for _, addr := range tlsAddrs {
 		logger.Infof("listening with TLS on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
+			s.closeOwnedListeners()
 			return fmt.Errorf("open TLS listener %s: %w", addr, err)
 		}
 		tlsListener := tls.NewListener(listener, frontendTLSConfig())
+		s.retainListener(tlsListener)
+		listeners = append(listeners, tlsListener)
+	}
+	for _, listener := range listeners {
 		go func(listener net.Listener) {
+			defer s.releaseListener(listener)
 			if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serveErrors <- err
 			}
-		}(tlsListener)
+		}(listener)
 	}
 
 	select {

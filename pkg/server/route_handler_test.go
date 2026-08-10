@@ -6,12 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func TestRouteHandlerReplacementDoesNotBlockBehindOlderGeneration(t *testing.T) {
@@ -254,6 +256,7 @@ func TestRouteHandlerStopsReplacementAfterClose(t *testing.T) {
 
 func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	requestStarted := make(chan struct{})
+	allowLookup := make(chan struct{})
 	releaseRequest := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() {
@@ -261,8 +264,21 @@ func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	}
 	t.Cleanup(release)
 
+	events := make(chan *store.Event)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "timeout.db"), events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+	lookupDone := make(chan error, 1)
 	routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(requestStarted)
+		<-allowLookup
+		_, lookupErr := store.GetConfigSnapshot()
+		lookupDone <- lookupErr
 		<-releaseRequest
 		w.WriteHeader(http.StatusNoContent)
 	}), nil)
@@ -284,7 +300,7 @@ func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	}()
 	<-requestStarted
 
-	s := &Server{server: httpServer, routes: routes}
+	s := &Server{server: httpServer, routes: routes, storage: storage}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	shutdownDone := make(chan error, 1)
@@ -298,8 +314,22 @@ func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("shutdown did not return after its context deadline")
 	}
+	close(allowLookup)
+	select {
+	case lookupErr := <-lookupDone:
+		if lookupErr != nil {
+			t.Fatalf("active handler Store lookup after timeout = %v", lookupErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active handler did not complete Store lookup after timeout")
+	}
 
 	release()
 	<-requestDone
-	routes.Close()
+	if err := s.shutdown(context.Background()); err != nil {
+		t.Fatalf("second shutdown() error = %v", err)
+	}
+	if _, err := storage.SnapshotBuckets([]string{"routes"}); err == nil {
+		t.Fatal("Store remained open after completed second shutdown")
+	}
 }

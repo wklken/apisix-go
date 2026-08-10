@@ -3,9 +3,12 @@ package gzip
 import (
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
 type Plugin struct {
@@ -181,7 +184,7 @@ func (p *Plugin) PostInit() error {
 				p.config.WildcardType = true
 				continue
 			}
-			contentTypes[t] = struct{}{}
+			contentTypes[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
 		}
 	}
 	p.config.ConfigTypes = contentTypes
@@ -194,31 +197,87 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		// get the request http version like 1.0 or 1.1 or 2
-		reqHttpVersion := base.ProtocolVersion(r)
-		// only request header Content-Type with an acceptable encoding will be compressed
-		encoding := selectEncoding(r.Header)
-		if encoding != encodingNone && reqHttpVersion >= p.config.HTTPVersionStr {
-			mcw := &maybeCompressResponseWriter{
-				ResponseWriter: w,
-				w:              w,
-				contentTypes:   p.config.ConfigTypes,
-				wildcardType:   p.config.WildcardType,
-				encoding:       encoding,
-				level:          *p.config.CompLevel,
-				minLength:      *p.config.MinLength,
-			}
-			defer func() { _ = mcw.Close() }()
-
-			if *p.config.Vary {
-				mcw.Header().Add("Vary", "Accept-Encoding")
-			}
-
-			next.ServeHTTP(mcw, r)
-		} else {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if base.ProtocolVersion(r) < p.config.HTTPVersionStr {
 			next.ServeHTTP(w, r)
+			return
+		}
+		eligible := func(meta compression.ResponseMeta) bool {
+			return p.responseEligible(meta)
+		}
+		r, state := compression.Register(r,
+			compression.Offer{Coding: compression.Gzip, Rank: 995, Eligible: eligible},
+			compression.Offer{Coding: compression.Deflate, Rank: 994, Eligible: eligible},
+		)
+		mcw := &maybeCompressResponseWriter{
+			ResponseWriter: w,
+			w:              w,
+			contentTypes:   p.config.ConfigTypes,
+			wildcardType:   p.config.WildcardType,
+			level:          *p.config.CompLevel,
+			minLength:      *p.config.MinLength,
+			requestMethod:  r.Method,
+			state:          state,
+		}
+		defer func() {
+			if !mcw.hijacked && !mcw.wroteHeader {
+				mcw.WriteHeader(http.StatusOK)
+			}
+			_ = mcw.Close()
+		}()
+		next.ServeHTTP(mcw, r)
+	})
+}
+
+func (p *Plugin) responseEligible(meta compression.ResponseMeta) bool {
+	status := meta.Status
+	if status == http.StatusNotModified {
+		return p.contentTypeEligible(meta.Header)
+	}
+	if status == http.StatusSwitchingProtocols || status == http.StatusNoContent ||
+		(status >= 100 && status <= 199) {
+		return false
+	}
+	if !base.ResponseAllowsBody(meta.Method, status) && !strings.EqualFold(meta.Method, http.MethodHead) {
+		return false
+	}
+	if headerValue(meta.Header, "Content-Encoding") != "" {
+		return false
+	}
+	if !p.contentTypeEligible(meta.Header) {
+		return false
+	}
+	contentLength := headerValue(meta.Header, "Content-Length")
+	if contentLength != "" {
+		length, err := strconv.Atoi(strings.TrimSpace(contentLength))
+		if err == nil && length < *p.config.MinLength {
+			return false
 		}
 	}
-	return http.HandlerFunc(fn)
+	return true
+}
+
+func (p *Plugin) contentTypeEligible(header http.Header) bool {
+	contentType := headerValue(header, "Content-Type")
+	if semi := strings.IndexByte(contentType, ';'); semi >= 0 {
+		contentType = contentType[:semi]
+	}
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if contentType == "" {
+		return false
+	}
+	if p.config.WildcardType {
+		return true
+	}
+	_, ok := p.config.ConfigTypes[contentType]
+	return ok
+}
+
+func headerValue(header http.Header, name string) string {
+	for actual, values := range header {
+		if strings.EqualFold(actual, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
 }

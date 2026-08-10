@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -50,10 +51,22 @@ func ParseVaryHeader(header http.Header) ([]string, bool) {
 // VarySignature returns the existing MD5 cache-key suffix for the ordered
 // request header values named by headers.
 func VarySignature(headers []string, r *http.Request) string {
-	values := make([]string, 0, len(headers))
+	var framed strings.Builder
 	for _, header := range headers {
-		values = append(values, r.Header.Get(header))
+		appendFrame(&framed, header)
+		values := r.Header.Values(header)
+		framed.WriteString(strconv.Itoa(len(values)))
+		framed.WriteByte(':')
+		for _, value := range values {
+			appendFrame(&framed, value)
+		}
 	}
-	sum := md5.Sum([]byte(strings.Join(values, "\x00")))
+	sum := md5.Sum([]byte(framed.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+func appendFrame(builder *strings.Builder, value string) {
+	builder.WriteString(strconv.Itoa(len(value)))
+	builder.WriteByte(':')
+	builder.WriteString(value)
 }

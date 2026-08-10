@@ -1,6 +1,7 @@
 package echo
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 
@@ -91,7 +92,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) rewrite(resp *base.BufferedResponseWriter) {
-	body := resp.Body()
+	original := resp.Body()
+	body := original
 	bodyChanged := false
 	if p.config.Body != nil {
 		body = []byte(*p.config.Body)
@@ -106,9 +108,8 @@ func (p *Plugin) rewrite(resp *base.BufferedResponseWriter) {
 		bodyChanged = true
 	}
 
-	if bodyChanged {
-		resp.SetBody(body)
-		resp.Header().Del("Content-Length")
+	if bodyChanged && !bytes.Equal(body, original) {
+		resp.ReplaceBody(body)
 	}
 
 	for field, value := range p.config.Headers {

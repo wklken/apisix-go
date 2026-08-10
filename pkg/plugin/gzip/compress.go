@@ -9,14 +9,16 @@ package gzip
 
 import (
 	"bufio"
-	"compress/flate"
 	cgzip "compress/gzip"
+	"compress/zlib"
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
 type encoding int
@@ -39,75 +41,6 @@ var defaultContentTypes = map[string]struct{}{
 	"application/rss+xml ":     {},
 }
 
-func selectEncoding(h http.Header) encoding {
-	enc := h.Get("Accept-Encoding")
-	if enc == "" {
-		return encodingNone
-	}
-
-	gzipQuality := -1.0
-	deflateQuality := -1.0
-	wildcardQuality := -1.0
-	for part := range strings.SplitSeq(enc, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		coding, quality := part, 1.0
-		if before, after, found := strings.Cut(part, ";"); found {
-			coding = strings.TrimSpace(before)
-			if params := strings.TrimSpace(after); strings.HasPrefix(strings.ToLower(params), "q=") {
-				if parsed, err := strconv.ParseFloat(strings.TrimSpace(params[2:]), 64); err == nil {
-					quality = max(0, min(parsed, 1))
-				}
-			}
-		}
-		switch strings.ToLower(strings.TrimSpace(coding)) {
-		case "gzip":
-			if quality > gzipQuality {
-				gzipQuality = quality
-			}
-		case "deflate":
-			if quality > deflateQuality {
-				deflateQuality = quality
-			}
-		case "*":
-			if quality > wildcardQuality {
-				wildcardQuality = quality
-			}
-		}
-	}
-
-	switch {
-	case gzipQuality >= 0 || deflateQuality >= 0:
-		// Explicit codings decide before the wildcard: a zero quality
-		// disables that coding, and equal qualities prefer gzip.
-		if gzipQuality > deflateQuality {
-			if gzipQuality == 0 {
-				return encodingNone
-			}
-			return encodingGzip
-		}
-		if deflateQuality > gzipQuality {
-			if deflateQuality == 0 {
-				return encodingNone
-			}
-			return encodingDeflate
-		}
-		if gzipQuality == 0 {
-			return encodingNone
-		}
-		return encodingGzip
-	case wildcardQuality >= 0:
-		if wildcardQuality == 0 {
-			return encodingNone
-		}
-		return encodingGzip
-	default:
-		return encodingNone
-	}
-}
-
 type resettableWriteCloser interface {
 	io.WriteCloser
 	Reset(io.Writer)
@@ -123,7 +56,7 @@ func acquireCompressionWriter(enc encoding, level int, destination io.Writer) (r
 		if enc == encodingGzip {
 			return cgzip.NewWriterLevel(destination, level)
 		}
-		return flate.NewWriter(destination, level)
+		return zlib.NewWriterLevel(destination, level)
 	}
 	var pool *sync.Pool
 	switch enc {
@@ -142,7 +75,7 @@ func acquireCompressionWriter(enc encoding, level int, destination io.Writer) (r
 	if enc == encodingGzip {
 		return cgzip.NewWriterLevel(destination, level)
 	}
-	return flate.NewWriter(destination, level)
+	return zlib.NewWriterLevel(destination, level)
 }
 
 func releaseCompressionWriter(enc encoding, level int, writer resettableWriteCloser) error {
@@ -167,14 +100,19 @@ func releaseCompressionWriter(enc encoding, level int, writer resettableWriteClo
 
 type maybeCompressResponseWriter struct {
 	http.ResponseWriter
-	w            io.Writer
-	compressor   resettableWriteCloser
-	encoding     encoding
-	contentTypes map[string]struct{}
-	level        int
-	wroteHeader  bool
-	wildcardType bool
-	minLength    int
+	w              io.Writer
+	compressor     resettableWriteCloser
+	encoding       encoding
+	contentTypes   map[string]struct{}
+	level          int
+	wroteHeader    bool
+	wildcardType   bool
+	minLength      int
+	requestMethod  string
+	status         int
+	state          *compression.State
+	hijacked       bool
+	bodySuppressed bool
 }
 
 var (
@@ -189,6 +127,7 @@ func (w *maybeCompressResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 func (w *maybeCompressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
@@ -197,59 +136,77 @@ func (w *maybeCompressResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, err
 }
 
 func (w *maybeCompressResponseWriter) WriteHeader(code int) {
+	if code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols {
+		w.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if w.wroteHeader {
 		return
 	}
 	w.wroteHeader = true
-	defer w.ResponseWriter.WriteHeader(code)
-
-	// Already compressed data?
-	if w.ResponseWriter.Header().Get("Content-Encoding") != "" {
+	w.status = code
+	meta := compression.ResponseMeta{Method: w.requestMethod, Status: code, Header: w.ResponseWriter.Header().Clone()}
+	decision := compression.Decision{Coding: compression.Identity}
+	if w.state != nil {
+		decision = w.state.Decide(meta)
+	}
+	if decision.Vary {
+		base.AppendVaryToken(w.Header(), "Accept-Encoding")
+	}
+	if decision.NotAcceptable {
+		code = http.StatusNotAcceptable
+		w.status = code
+		w.bodySuppressed = true
+		base.InvalidateBodyDerivedHeaders(w.Header())
+		w.w = w.ResponseWriter
+		w.ResponseWriter.WriteHeader(code)
 		return
 	}
 
-	// Parse the first part of the Content-Type response header.
-	contentType := ""
-	parts := strings.Split(w.ResponseWriter.Header().Get("Content-Type"), ";")
-	if len(parts) > 0 {
-		contentType = parts[0]
+	// Existing representations are never encoded again.  304 keeps upstream
+	// representation metadata and only receives the Vary safety token.
+	if headerValue(w.Header(), "Content-Encoding") != "" ||
+		code == http.StatusNotModified || code == http.StatusNoContent || code == http.StatusSwitchingProtocols ||
+		!base.ResponseAllowsBody(w.requestMethod, code) && !strings.EqualFold(w.requestMethod, http.MethodHead) {
+		w.w = w.ResponseWriter
+		w.ResponseWriter.WriteHeader(code)
+		return
 	}
 
-	// Is the content type compressable?
-	if !w.wildcardType {
-		if _, ok := w.contentTypes[contentType]; !ok {
-			return
-		}
+	switch decision.Coding {
+	case compression.Gzip:
+		w.encoding = encodingGzip
+	case compression.Deflate:
+		w.encoding = encodingDeflate
+	default:
+		w.encoding = encodingNone
 	}
-
-	contentLength := w.ResponseWriter.Header().Get("Content-Length")
-	if contentLength != "" {
-		length, err := strconv.Atoi(contentLength)
-		if err == nil && length < w.minLength {
-			return
-		}
-	}
-
 	if w.encoding != encodingNone {
-		w.ResponseWriter.Header().Del("Content-Length")
+		base.InvalidateBodyDerivedHeaders(w.Header())
+		if strings.EqualFold(w.requestMethod, http.MethodHead) {
+			w.ResponseWriter.Header().Set("Content-Encoding", codingHeader(w.encoding))
+			w.w = w.ResponseWriter
+			w.ResponseWriter.WriteHeader(code)
+			return
+		}
 	}
 
 	if w.encoding == encodingNone {
+		w.w = w.ResponseWriter
+		w.ResponseWriter.WriteHeader(code)
 		return
 	}
 
 	compressor, err := acquireCompressionWriter(w.encoding, w.level, w.ResponseWriter)
 	if err != nil {
 		w.w = w.ResponseWriter
+		w.ResponseWriter.WriteHeader(code)
 		return
 	}
 	w.compressor = compressor
 	w.w = compressor
-	if w.encoding == encodingGzip {
-		w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
-	} else {
-		w.ResponseWriter.Header().Set("Content-Encoding", "deflate")
-	}
+	w.ResponseWriter.Header().Set("Content-Encoding", codingHeader(w.encoding))
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *maybeCompressResponseWriter) Write(p []byte) (int, error) {
@@ -257,6 +214,15 @@ func (w *maybeCompressResponseWriter) Write(p []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 
+	if !base.ResponseAllowsBody(w.requestMethod, w.statusCode()) {
+		if strings.EqualFold(w.requestMethod, http.MethodHead) {
+			return len(p), nil
+		}
+		return 0, http.ErrBodyNotAllowed
+	}
+	if w.bodySuppressed {
+		return len(p), nil
+	}
 	return w.w.Write(p)
 }
 
@@ -277,4 +243,18 @@ func (w *maybeCompressResponseWriter) Close() error {
 	w.compressor = nil
 	w.w = w.ResponseWriter
 	return releaseCompressionWriter(w.encoding, w.level, compressor)
+}
+
+func (w *maybeCompressResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func codingHeader(enc encoding) string {
+	if enc == encodingDeflate {
+		return "deflate"
+	}
+	return "gzip"
 }

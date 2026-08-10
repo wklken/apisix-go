@@ -100,6 +100,48 @@ func TestHandlerRemapsStatusAndBodyWithDocumentedLuaPattern(t *testing.T) {
 	}
 }
 
+func TestHandlerNilBodyPreservesRepresentationHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{
+		`return function(code, body, header) return code, nil, header end`,
+	}})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		setExitRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	if got := res.Body.String(); got != "upstream" {
+		t.Fatalf("body = %q, want upstream", got)
+	}
+	for _, field := range exitRepresentationHeaders() {
+		if got := res.Header().Get(field); got != "stale" {
+			t.Errorf("%s = %q, want stale header preserved", field, got)
+		}
+	}
+}
+
+func TestHandlerBodyReplacementInvalidatesRepresentationHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Functions: []string{
+		`return function(code, body, header) return code, "replacement", header end`,
+	}})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		setExitRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	if got := res.Body.String(); got != "replacement" {
+		t.Fatalf("body = %q, want replacement", got)
+	}
+	for _, field := range exitRepresentationHeaders() {
+		if values := res.Header().Values(field); len(values) != 0 {
+			t.Errorf("%s = %v, want removed after body replacement", field, values)
+		}
+	}
+}
+
 func TestHandlerRemapsStatusForDocumentedRequestContentTypeCondition(t *testing.T) {
 	p := newTestPlugin(t, Config{Functions: []string{`
 		return (function(code, body, header)
@@ -241,6 +283,19 @@ func performRequest(p *Plugin, handler func(http.ResponseWriter, *http.Request))
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(handler)).ServeHTTP(rr, req)
 	return rr
+}
+
+func exitRepresentationHeaders() []string {
+	return []string{
+		"Content-Length", "Content-Encoding", "Content-Range", "Content-MD5",
+		"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	}
+}
+
+func setExitRepresentationHeaders(header http.Header) {
+	for _, field := range exitRepresentationHeaders() {
+		header.Set(field, "stale")
+	}
 }
 
 func TestExitTransformerCompilesFunctionsOnceOutsideRequestPath(t *testing.T) {

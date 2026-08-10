@@ -1,12 +1,17 @@
 package brotli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	brotlidec "github.com/andybalholm/brotli"
@@ -163,8 +168,8 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
 		t.Fatalf("Vary = %q, want Accept-Encoding", got)
 	}
-	if got := res.Header().Get("Etag"); got != `W/"strong"` {
-		t.Fatalf("Etag = %q, want weak ETag", got)
+	if got := res.Header().Get("Etag"); got != "" {
+		t.Fatalf("Etag = %q, want body-derived ETag removed", got)
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != "hello world" {
 		t.Fatalf("decoded body = %q, want hello world", decoded)
@@ -360,6 +365,140 @@ func TestWriteCompressedResponseFlushesThroughWrapperChain(t *testing.T) {
 
 	if fake.flushes != 1 {
 		t.Fatalf("flushes = %d, want 1 reached through the wrapper chain", fake.flushes)
+	}
+}
+
+type hijackCaptureWriter struct {
+	header    http.Header
+	statuses  []int
+	hijacks   int
+	hijackErr error
+	body      bytes.Buffer
+}
+
+func (w *hijackCaptureWriter) Header() http.Header { return w.header }
+func (w *hijackCaptureWriter) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+}
+func (w *hijackCaptureWriter) Write(body []byte) (int, error) { return w.body.Write(body) }
+func (w *hijackCaptureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacks++
+	return nil, nil, w.hijackErr
+}
+
+func TestBrotliHijackDoesNotCommitDefaultResponse(t *testing.T) {
+	for _, explicit101 := range []bool{false, true} {
+		t.Run(strconv.FormatBool(explicit101), func(t *testing.T) {
+			baseWriter := &hijackCaptureWriter{header: make(http.Header)}
+			writer := newBoundedResponseWriter(baseWriter, 1024)
+			if explicit101 {
+				writer.WriteHeader(http.StatusSwitchingProtocols)
+			}
+			if _, _, err := writer.Hijack(); err != nil {
+				t.Fatalf("Hijack() error = %v", err)
+			}
+			wantStatuses := []int(nil)
+			if explicit101 {
+				wantStatuses = []int{http.StatusSwitchingProtocols}
+			}
+			if !slices.Equal(baseWriter.statuses, wantStatuses) || baseWriter.hijacks != 1 {
+				t.Fatalf("statuses/hijacks = %v/%d, want %v/1", baseWriter.statuses,
+					baseWriter.hijacks, wantStatuses)
+			}
+		})
+	}
+}
+
+func TestBrotliHandlerStopsAfterDirectHijack(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	baseWriter := &hijackCaptureWriter{header: make(http.Header)}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("brotli writer does not expose Hijacker")
+		}
+		_, _, _ = hijacker.Hijack()
+	})).ServeHTTP(baseWriter, req)
+	if len(baseWriter.statuses) != 0 || baseWriter.hijacks != 1 {
+		t.Fatalf("statuses/hijacks = %v/%d, want no response and one hijack",
+			baseWriter.statuses, baseWriter.hijacks)
+	}
+}
+
+func TestBrotliHandlerCanRecoverAfterFailedHijack(t *testing.T) {
+	t.Run("unsupported", func(t *testing.T) {
+		p := newTestPlugin(t, Config{})
+		res := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _, err := w.(http.Hijacker).Hijack()
+			if err != http.ErrNotSupported {
+				t.Fatalf("Hijack() error = %v, want ErrNotSupported", err)
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("fallback"))
+		})).ServeHTTP(res, req)
+		if res.Code != http.StatusServiceUnavailable || res.Body.String() != "fallback" {
+			t.Fatalf("response = %d/%q, want 503/fallback", res.Code, res.Body.String())
+		}
+	})
+
+	t.Run("delegated error", func(t *testing.T) {
+		p := newTestPlugin(t, Config{})
+		baseWriter := &hijackCaptureWriter{header: make(http.Header), hijackErr: errors.New("hijack failed")}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				t.Fatal("Hijack() error = nil")
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("fallback"))
+		})).ServeHTTP(baseWriter, req)
+		if !slices.Equal(baseWriter.statuses, []int{http.StatusBadGateway}) ||
+			baseWriter.body.String() != "fallback" || baseWriter.hijacks != 1 {
+			t.Fatalf("response = %v/%q hijacks=%d, want [502]/fallback/1",
+				baseWriter.statuses, baseWriter.body.String(), baseWriter.hijacks)
+		}
+	})
+}
+
+type informationalCaptureWriter struct {
+	header    http.Header
+	statuses  []int
+	snapshots []http.Header
+	body      bytes.Buffer
+}
+
+func (w *informationalCaptureWriter) Header() http.Header { return w.header }
+func (w *informationalCaptureWriter) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+	w.snapshots = append(w.snapshots, w.header.Clone())
+}
+func (w *informationalCaptureWriter) Write(body []byte) (int, error) { return w.body.Write(body) }
+
+func TestBrotliInformationalHeadersDoNotLeakIntoFinal(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	res := &informationalCaptureWriter{header: make(http.Header)}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Link", "</early>")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Set("Link", "</final>")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("body"))
+	})).ServeHTTP(res, req)
+	if !slices.Equal(res.statuses, []int{http.StatusEarlyHints, http.StatusOK}) {
+		t.Fatalf("statuses = %v, want [103 200]", res.statuses)
+	}
+	if got := res.snapshots[0].Values("Link"); !slices.Equal(got, []string{"</early>"}) {
+		t.Fatalf("103 Link = %v, want early only", got)
+	}
+	if got := res.snapshots[1].Values("Link"); !slices.Equal(got, []string{"</final>"}) {
+		t.Fatalf("final Link = %v, want final only", got)
 	}
 }
 
@@ -584,4 +723,149 @@ func decodeBrotli(t *testing.T, body []byte) string {
 		t.Fatalf("decode brotli body: %v", err)
 	}
 	return string(decoded)
+}
+
+func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		acceptEncoding string
+		status         int
+		contentEnc     string
+		wantEnc        string
+		wantBody       string
+	}{
+		{name: "identity varies", method: http.MethodGet, status: http.StatusOK, wantBody: "body"},
+		{name: "not acceptable", method: http.MethodGet, acceptEncoding: "*;q=0", status: http.StatusNotAcceptable},
+		{name: "head advertises", method: http.MethodHead, acceptEncoding: "br", status: http.StatusOK, wantEnc: "br"},
+		{name: "no content", method: http.MethodGet, acceptEncoding: "br", status: http.StatusNoContent},
+		{
+			name:           "not modified preserves encoding",
+			method:         http.MethodGet,
+			acceptEncoding: "br",
+			status:         http.StatusNotModified,
+			contentEnc:     "gzip",
+			wantEnc:        "gzip",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+			req := httptest.NewRequest(tt.method, "/", nil)
+			if tt.acceptEncoding != "" {
+				req.Header.Set("Accept-Encoding", tt.acceptEncoding)
+			}
+			res := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				if tt.contentEnc != "" {
+					w.Header().Set("Content-Encoding", tt.contentEnc)
+				}
+				w.Header().Set("Content-Length", "4")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte("body"))
+			})).ServeHTTP(res, req)
+			if res.Code != tt.status {
+				t.Fatalf("status = %d, want %d", res.Code, tt.status)
+			}
+			if got := res.Header().Get("Content-Encoding"); got != tt.wantEnc {
+				t.Fatalf("Content-Encoding = %q, want %q", got, tt.wantEnc)
+			}
+			if got := res.Header().Get("Vary"); tt.status != http.StatusNoContent && got != "Accept-Encoding" {
+				t.Fatalf("Vary = %q, want Accept-Encoding", got)
+			}
+			if tt.method == http.MethodHead && res.Header().Get("Content-Length") != "" {
+				t.Fatalf("HEAD Content-Length = %q, want removed", res.Header().Get("Content-Length"))
+			}
+			if tt.status == http.StatusNotAcceptable && res.Body.Len() != 0 {
+				t.Fatalf("406 body length = %d, want empty", res.Body.Len())
+			}
+			if tt.wantBody != "" && res.Body.String() != tt.wantBody &&
+				tt.status == http.StatusOK && tt.method != http.MethodHead {
+				if got := decodeBrotli(t, res.Body.Bytes()); got != tt.wantBody {
+					t.Fatalf("decoded body = %q, want %q", got, tt.wantBody)
+				}
+			}
+		})
+	}
+}
+
+func TestBrotliNotAcceptableInvalidatesBodyDerivedHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "*;q=0")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for _, field := range []string{
+			"Content-Length", "Content-Range", "Content-MD5",
+			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+		} {
+			w.Header()[field] = []string{"stale"}
+			w.Header()[strings.ToLower(field)] = []string{"lowercase stale"}
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("upstream"))
+	})).ServeHTTP(res, req)
+	if res.Code != http.StatusNotAcceptable || res.Body.Len() != 0 {
+		t.Fatalf("response = %d/%d bytes, want empty 406", res.Code, res.Body.Len())
+	}
+	for actual := range res.Header() {
+		for _, field := range []string{
+			"Content-Length", "Content-Range", "Content-MD5",
+			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+		} {
+			if strings.EqualFold(actual, field) {
+				t.Errorf("body-derived header %q remains on 406", actual)
+			}
+		}
+	}
+}
+
+func TestBrotliBodylessNegotiationPreservesStatusAndMetadata(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusNoContent} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Accept-Encoding", "*;q=0")
+			res := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("must not pass"))
+			})).ServeHTTP(res, req)
+			if res.Code != status {
+				t.Fatalf("status = %d, want %d", res.Code, status)
+			}
+			if res.Body.Len() != 0 {
+				t.Fatalf("body length = %d, want empty", res.Body.Len())
+			}
+			if got := res.Header().Get("Vary"); got != "" {
+				t.Fatalf("Vary = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestBrotliNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "*;q=0")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusNotModified)
+		_, _ = w.Write([]byte("must not pass"))
+	})).ServeHTTP(res, req)
+	if res.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", res.Code)
+	}
+	if got := res.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := res.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("Vary = %q, want exactly Accept-Encoding", got)
+	}
+	if res.Body.Len() != 0 {
+		t.Fatalf("body length = %d, want empty", res.Body.Len())
+	}
 }

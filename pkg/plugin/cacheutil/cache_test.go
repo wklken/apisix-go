@@ -2,6 +2,7 @@ package cacheutil
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"testing"
@@ -76,16 +77,62 @@ func TestVarySignaturePreservesOrderDelimiterAndMD5(t *testing.T) {
 		URL: &url.URL{},
 	}
 
+	const want = "31bef7af3976f782c9a2e9f718934893"
 	if got := VarySignature(
 		[]string{"accept-encoding", "accept-language"},
 		r,
-	); got != "36a6aff3ac5f3f6e1d36839831d8e6d6" {
-		t.Fatalf("signature = %q, want the existing NUL-separated MD5 output", got)
+	); got != want {
+		t.Fatalf("signature = %q, want the collision-safe framed MD5 output", got)
 	}
 	if got := VarySignature(
 		[]string{"accept-language", "accept-encoding"},
 		r,
-	); got == "36a6aff3ac5f3f6e1d36839831d8e6d6" {
+	); got == want {
 		t.Fatal("signature ignored header order")
+	}
+}
+
+func TestVarySignatureUsesEveryHeaderValueAndCollisionSafeFraming(t *testing.T) {
+	requestWithValues := func(values ...string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		for _, value := range values {
+			r.Header.Add("X-Variant", value)
+		}
+		return r
+	}
+
+	first := requestWithValues("gzip", "br")
+	secondValueChanged := requestWithValues("gzip", "deflate")
+	if got, want := VarySignature(
+		[]string{"x-variant"},
+		first,
+	), VarySignature(
+		[]string{"x-variant"},
+		secondValueChanged,
+	); got == want {
+		t.Fatalf("signatures = %q/%q, want repeated second values to affect the signature", got, want)
+	}
+
+	ambiguousA := requestWithValues("ab", "c")
+	ambiguousB := requestWithValues("a", "bc")
+	if got, want := VarySignature(
+		[]string{"x-variant"},
+		ambiguousA,
+	), VarySignature(
+		[]string{"x-variant"},
+		ambiguousB,
+	); got == want {
+		t.Fatalf("signatures = %q/%q, want value boundaries to remain distinguishable", got, want)
+	}
+
+	equal := requestWithValues("gzip", "br")
+	if got, want := VarySignature(
+		[]string{"x-variant"},
+		first,
+	), VarySignature(
+		[]string{"x-variant"},
+		equal,
+	); got != want {
+		t.Fatalf("equal semantic inputs produced signatures %q and %q", got, want)
 	}
 }

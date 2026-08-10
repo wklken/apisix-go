@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+type commitRecorder struct {
+	header   http.Header
+	statuses []int
+	headers  []http.Header
+	body     bytes.Buffer
+}
+
+func newCommitRecorder() *commitRecorder {
+	return &commitRecorder{header: make(http.Header)}
+}
+
+func (r *commitRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *commitRecorder) WriteHeader(statusCode int) {
+	r.statuses = append(r.statuses, statusCode)
+	r.headers = append(r.headers, r.header.Clone())
+}
+
+func (r *commitRecorder) Write(body []byte) (int, error) {
+	if len(r.statuses) == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.body.Write(body)
+}
+
 func TestBufferedResponseWriterCapturesBeforeCommit(t *testing.T) {
 	w := NewBufferedResponseWriter()
 
@@ -61,19 +88,64 @@ func TestBufferedResponseWriterSetBodyReplacesContent(t *testing.T) {
 	}
 }
 
+func TestBufferedResponseWriterReplaceBodyInvalidatesHeaders(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	w.Header().Set("Content-Length", "8")
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Content-Range", "bytes 0-7/8")
+	w.Header().Set("Content-MD5", "md5")
+	w.Header().Set("Digest", "sha-256=x")
+	w.Header().Set("Content-Digest", "sha-256=:x:")
+	w.Header().Set("Repr-Digest", "sha-256=:x:")
+	w.Header().Set("ETag", `"upstream"`)
+	w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+	w.Header().Set("Content-Type", "text/plain")
+	w.ReplaceBody([]byte("rewritten"))
+
+	for _, field := range []string{
+		"Content-Length", "Content-Encoding", "Content-Range", "Content-MD5",
+		"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	} {
+		if got := w.Header().Values(field); len(got) != 0 {
+			t.Errorf("%s = %v, want removed", field, got)
+		}
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want preserved", got)
+	}
+	if got := string(w.Body()); got != "rewritten" {
+		t.Fatalf("Body() = %q, want rewritten", got)
+	}
+}
+
+func TestBufferedResponseWriterReplaceBodyPreservesSharedBuffer(t *testing.T) {
+	req := newPipelineRequest("/test", 2)
+	w1 := GetOrCreateTransformResponseWriter(req)
+	w2 := GetOrCreateTransformResponseWriter(req)
+	_, _ = w1.Write([]byte("original"))
+	w2.ReplaceBody([]byte("rewritten"))
+
+	if w2.bodyPtr == nil || w1.bodyPtr != w2.bodyPtr {
+		t.Fatal("ReplaceBody must retain the shared pipeline buffer")
+	}
+	if got := string(w1.Body()); got != "rewritten" {
+		t.Fatalf("shared Body() = %q, want rewritten", got)
+	}
+}
+
 func TestBufferedResponseWriterCommitReplaysToDestination(t *testing.T) {
 	w := NewBufferedResponseWriter()
 	w.Header().Set("X-A", "1")
 	w.Header().Add("X-B", "2")
 	w.Header().Add("X-B", "3")
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte("payload"))
 
 	rr := httptest.NewRecorder()
 	w.Commit(rr)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("committed status = %d, want 204", rr.Code)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("committed status = %d, want 202", rr.Code)
 	}
 	if got := rr.Header().Get("X-A"); got != "1" {
 		t.Fatalf("committed X-A = %q, want 1", got)
@@ -84,6 +156,189 @@ func TestBufferedResponseWriterCommitReplaysToDestination(t *testing.T) {
 	if got := rr.Body.String(); got != "payload" {
 		t.Fatalf("committed body = %q, want payload", got)
 	}
+}
+
+func TestBufferedResponseWriterCommitReplaysInformationalBeforeFinal(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	w.Header().Set("Link", "</early>; rel=preload")
+	w.WriteHeader(http.StatusEarlyHints)
+	w.Header().Set("Link", "</final>")
+	w.Header().Set("X-Final", "yes")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("payload"))
+
+	dst := newCommitRecorder()
+	w.Commit(dst)
+
+	if got, want := dst.statuses, []int{http.StatusEarlyHints, http.StatusOK}; !equalInts(got, want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	if got := dst.headers[0].Get("Link"); got != "</early>; rel=preload" {
+		t.Fatalf("informational Link = %q, want early link", got)
+	}
+	if got := dst.headers[1].Get("Link"); got != "</final>" {
+		t.Fatalf("final Link = %q, want final link", got)
+	}
+	if got := dst.headers[1].Get("X-Final"); got != "yes" {
+		t.Fatalf("final X-Final = %q, want yes", got)
+	}
+	if got := dst.body.String(); got != "payload" {
+		t.Fatalf("body = %q, want payload", got)
+	}
+}
+
+func TestBufferedResponseWriterCommitSuppressesBodyForBodylessStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusNotModified} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			w := NewBufferedResponseWriter()
+			w.Header().Set("Content-Length", "7")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte("payload"))
+
+			dst := newCommitRecorder()
+			w.Commit(dst)
+
+			if got, want := dst.statuses, []int{status}; !equalInts(got, want) {
+				t.Fatalf("statuses = %v, want %v", got, want)
+			}
+			if got := dst.body.String(); got != "" {
+				t.Fatalf("body = %q, want empty for %d", got, status)
+			}
+			if got := dst.headers[0].Get("Content-Length"); got != "" {
+				t.Fatalf("Content-Length = %q, want removed for %d", got, status)
+			}
+		})
+	}
+}
+
+func TestBufferedResponseWriterWriteRejectsBodyForFinalBodylessStatus(t *testing.T) {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusNotModified} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			w := GetOrCreateTransformResponseWriter(req)
+			w.WriteHeader(status)
+
+			n, err := w.Write([]byte("payload"))
+			if n != 0 {
+				t.Fatalf("Write() n = %d, want 0 for %d", n, status)
+			}
+			if err != http.ErrBodyNotAllowed {
+				t.Fatalf("Write() error = %v, want %v for %d", err, http.ErrBodyNotAllowed, status)
+			}
+
+			dst := newCommitRecorder()
+			w.Commit(dst)
+			if got := dst.body.String(); got != "" {
+				t.Fatalf("committed body = %q, want empty for %d", got, status)
+			}
+		})
+	}
+}
+
+func TestBufferedResponseWriterHeadWriteReportsLengthWithoutCommit(t *testing.T) {
+	req := httptest.NewRequest(http.MethodHead, "/test", nil)
+	w := GetOrCreateTransformResponseWriter(req)
+	w.WriteHeader(http.StatusOK)
+
+	payload := []byte("payload")
+	n, err := w.Write(payload)
+	if n != len(payload) {
+		t.Fatalf("HEAD Write() n = %d, want %d", n, len(payload))
+	}
+	if err != nil {
+		t.Fatalf("HEAD Write() error = %v, want nil", err)
+	}
+
+	dst := newCommitRecorder()
+	w.Commit(dst)
+	if got := dst.body.String(); got != "" {
+		t.Fatalf("HEAD committed body = %q, want empty", got)
+	}
+}
+
+func TestBufferedResponseWriterSetStatusCodeSuppressesRemappedBody(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	w.Header().Set("Content-Length", "7")
+	_, _ = w.Write([]byte("payload"))
+	w.SetStatusCode(http.StatusNoContent)
+
+	dst := newCommitRecorder()
+	w.Commit(dst)
+
+	if got, want := dst.statuses, []int{http.StatusNoContent}; !equalInts(got, want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	if got := dst.body.String(); got != "" {
+		t.Fatalf("body = %q, want empty after 200 -> 204", got)
+	}
+	if got := dst.headers[0].Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want removed after 200 -> 204", got)
+	}
+}
+
+func TestTransformResponseWriterSuppressesBodyForNestedHead(t *testing.T) {
+	req := newPipelineRequest("/test", 2)
+	req.Method = http.MethodHead
+	inner := GetOrCreateTransformResponseWriter(req)
+	outer := GetOrCreateTransformResponseWriter(req)
+	inner.WriteHeader(http.StatusOK)
+	_, _ = inner.Write([]byte("payload"))
+	inner.Commit(outer)
+
+	dst := newCommitRecorder()
+	outer.Commit(dst)
+
+	if got, want := dst.statuses, []int{http.StatusOK}; !equalInts(got, want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	if got := dst.body.String(); got != "" {
+		t.Fatalf("HEAD body = %q, want empty", got)
+	}
+}
+
+func TestTransformResponseWriterRecordsStandaloneHead(t *testing.T) {
+	req := httptest.NewRequest(http.MethodHead, "/test", nil)
+	writer := GetOrCreateTransformResponseWriter(req)
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte("payload"))
+
+	dst := newCommitRecorder()
+	writer.Commit(dst)
+
+	if got := dst.body.String(); got != "" {
+		t.Fatalf("standalone HEAD body = %q, want empty", got)
+	}
+}
+
+func TestTransformResponseWriterPropagatesNestedNoBodyStatus(t *testing.T) {
+	req := newPipelineRequest("/test", 2)
+	inner := GetOrCreateTransformResponseWriter(req)
+	outer := GetOrCreateTransformResponseWriter(req)
+	inner.WriteHeader(http.StatusNoContent)
+	_, _ = inner.Write([]byte("payload"))
+	inner.Commit(outer)
+
+	dst := newCommitRecorder()
+	outer.Commit(dst)
+
+	if got, want := dst.statuses, []int{http.StatusNoContent}; !equalInts(got, want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	if got := dst.body.String(); got != "" {
+		t.Fatalf("nested 204 body = %q, want empty", got)
+	}
+}
+
+func equalInts(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func newPipelineRequest(target string, transformCount int) *http.Request {

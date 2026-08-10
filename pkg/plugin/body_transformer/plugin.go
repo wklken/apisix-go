@@ -263,8 +263,9 @@ func (p *Plugin) transformResponse(r *http.Request, recorder *base.BufferedRespo
 		return err
 	}
 
-	recorder.SetBody([]byte(out))
-	recorder.Header().Del("Content-Length")
+	if !bytes.Equal([]byte(out), recorder.Body()) {
+		recorder.ReplaceBody([]byte(out))
+	}
 	return nil
 }
 

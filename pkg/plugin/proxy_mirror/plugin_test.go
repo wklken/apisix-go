@@ -21,6 +21,18 @@ type mirrorRequest struct {
 	Body   string
 }
 
+type readSpyBody struct {
+	io.Reader
+	reads int
+}
+
+func (b *readSpyBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.Reader.Read(p)
+}
+
+func (*readSpyBody) Close() error { return nil }
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -122,6 +134,36 @@ func TestHandlerMirrorsFinalizedRequestAfterLowerPriorityPlugins(t *testing.T) {
 	mirrored := waitForMirror(t, seen)
 	if mirrored.Path != "/final" || mirrored.Body != "after" {
 		t.Fatalf("mirrored finalized request = %s %q, want /final after", mirrored.Path, mirrored.Body)
+	}
+}
+
+func TestHandlerRegistersBeforeProxyHookWithoutExecutingIt(t *testing.T) {
+	mirror, seen := newMirrorServer(t)
+	defer mirror.Close()
+
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	body := &readSpyBody{Reader: strings.NewReader("payload")}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", body)
+	var forwarded *http.Request
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	if body.reads != 0 {
+		t.Fatalf("request body reads during rewrite phase = %d, want 0", body.reads)
+	}
+	if forwarded == nil {
+		t.Fatal("next handler did not receive the request carrying the hook")
+	}
+
+	apisixctx.RunBeforeProxyHooks(forwarded)
+	if body.reads == 0 {
+		t.Fatal("registered before-proxy hook did not read the request body")
+	}
+	if mirrored := waitForMirror(t, seen); mirrored.Path != "/original" {
+		t.Fatalf("mirrored path = %q, want /original", mirrored.Path)
 	}
 }
 

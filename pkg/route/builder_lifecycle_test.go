@@ -69,9 +69,19 @@ func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 
 func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T) {
 	order := []string{}
-	local := []pluginpkg.Plugin{&recordingPlugin{name: "local-auth", priority: 2500, order: &order}}
-	global := []pluginpkg.Plugin{&recordingPlugin{name: "global-label", priority: 2399, order: &order}}
-	handler := assembleRoutePluginChain(local, global).Then(http.HandlerFunc(
+	local := []pluginpkg.Binding{pluginpkg.BindPlugin(
+		"local-auth",
+		&recordingPlugin{name: "local-auth", priority: 2500, order: &order},
+		pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-order"},
+	)}
+	global := []pluginpkg.Binding{pluginpkg.BindPlugin(
+		"global-label",
+		&recordingPlugin{name: "global-label", priority: 2399, order: &order},
+		pluginpkg.ScopeGlobal,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceGlobalRule, ID: "global-order"},
+	)}
+	handler := assembleRouteExecutor(local, global, nil).Then(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
 			order = append(order, "upstream")
 			w.WriteHeader(http.StatusNoContent)
@@ -90,6 +100,7 @@ func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T
 func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 	builder := NewBuilder(nil)
 	handler, err := builder.buildGlobalNotFoundHandler([]resource.GlobalRule{{
+		ID: "global-transform",
 		Plugins: map[string]resource.PluginConfig{
 			"exit-transformer": map[string]any{
 				"functions": []any{

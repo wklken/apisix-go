@@ -178,9 +178,10 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 	})
 
 	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
-	plugins := builder.initGlobalPlugins(
+	plugins, err := builder.initGlobalPluginsStrict(
 		[]resource.GlobalRule{
 			{
+				ID: "global-logger-metrics",
 				Plugins: map[string]resource.PluginConfig{
 					"http-logger": map[string]any{
 						"uri":              loggerEndpoint,
@@ -193,6 +194,9 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 		},
 		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
 	)
+	if err != nil {
+		t.Fatalf("initGlobalPluginsStrict() error = %v", err)
+	}
 	if len(plugins) != 1 {
 		t.Fatalf("plugins len = %d, want 1", len(plugins))
 	}

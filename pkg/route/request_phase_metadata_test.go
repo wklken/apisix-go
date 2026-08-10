@@ -153,8 +153,28 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		high := &requestPhaseMetadataPlugin{name: "explicit-high", priority: 300, order: &order}
 		legacy := &requestPhaseMetadataLegacyPlugin{name: "legacy", priority: 200, order: &order}
 		low := &requestPhaseMetadataPlugin{name: "explicit-low", priority: 100, order: &order}
-		handler := assembleRoutePluginChain(
-			[]plugin.Plugin{high, legacy, low},
+		handler := assembleRouteExecutor(
+			[]plugin.Binding{
+				plugin.BindPlugin(
+					"synthetic-high",
+					high,
+					plugin.ScopeRoute,
+					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-high"},
+				),
+				plugin.BindPlugin(
+					"synthetic-legacy",
+					legacy,
+					plugin.ScopeRoute,
+					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-legacy"},
+				),
+				plugin.BindPlugin(
+					"synthetic-low",
+					low,
+					plugin.ScopeRoute,
+					plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-low"},
+				),
+			},
+			nil,
 			nil,
 		).Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			order = append(order, "terminal")

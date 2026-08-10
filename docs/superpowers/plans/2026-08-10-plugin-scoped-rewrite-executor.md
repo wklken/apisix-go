@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Execute audited rewrite-only plugins in APISIX scope order—system setup, global rewrite, then route rewrite—while leaving every unclassified legacy middleware in its current priority/unwind chain.
+**Goal:** Execute audited system and global rewrite plugins before the existing route middleware chain while retaining exact route/service/plugin-config provenance for the later auth/consumer migration.
 
-**Architecture:** Extend the mixed executor with immutable `Binding` records carrying source scope and a bounded request stage. A registry-owned adapter may convert a legacy Handler only when a static audit proves it performs request-side work before `next` and has no post-`next`, buffering, logging, tracing, cleanup, streaming, or hijack behavior. Explicit rewrite bindings are removed from the legacy remainder and run scope-by-scope; unclassified plugins keep the exact mixed-chain behavior from the previous PR.
+**Architecture:** Extend the mixed executor with immutable `Binding` records carrying source scope and a bounded request stage. A registry-owned adapter may convert a legacy Handler only when a static audit proves it performs request-side work before `next` and has no post-`next`, buffering, logging, tracing, cleanup, streaming, or hijack behavior. System and global rewrite bindings are removed from the legacy remainder and run scope-by-scope. Route/service/plugin-config bindings retain their stage and provenance but remain in the legacy priority/unwind recursion until authentication and consumer resolution are migrated together in the next PR.
 
 **Tech Stack:** Go 1.26, request-phase bridge, route builder resource provenance, pinned APISIX 3.17 phase contract.
 
@@ -13,11 +13,17 @@
 - Depends on the merged request-phase bridge.
 - The upstream contract for this PR is global-rule `rewrite` before route/service/plugin-config `rewrite`; within each scope priority is descending.
 - Do not move authentication or consumer execution. Auth plugins remain in the legacy remainder until the consumer/access plan.
+- Route rewrite also remains inside that legacy auth/consumer envelope. Moving it
+  ahead independently would break auth-produced variables such as
+  `$jwt_auth_payload` and would execute same-name consumer overrides twice.
 - Do not move access guards, response transforms, compression, streaming, logger, tracer, or finalizer plugins.
 - The adapter allowlist is exact and static. A plugin absent from it is legacy; unknown registry names fail the completeness test rather than defaulting to rewrite.
 - `_meta.priority`, `_meta.filter`, `_meta.error_response`, route consumer override, system `request-context`, and plugin enablement checks remain effective.
 - Orphan services/plugin-configs remain inert exactly as in the strict builder contract; scope bindings are created only for materialized route generations.
-- A migrated rewrite plugin may replace the request and may stop. If it stops, no lower rewrite, legacy middleware, before-proxy hook, or upstream executes; outer panic/finalizer handling still runs.
+- A scoped system/global rewrite plugin may replace the request and may stop. If
+  it stops, no lower rewrite, route middleware, before-proxy hook, or upstream
+  executes; outer panic/finalizer handling still runs. Route rewrite keeps its
+  previous priority-relative stop boundary in this PR.
 - This PR is a partial PR-014 migration. Do not claim access, consumer, response, or log parity.
 
 ---
@@ -73,9 +79,20 @@ type ResourceProvenance struct {
 }
 
 func NewScopedExecutor(bindings ...Binding) Executor
+func BindPlugin(
+    factoryName string,
+    p Plugin,
+    scope Scope,
+    provenance ResourceProvenance,
+) Binding
 ```
 
 `NewExecutor(plugins...)` remains and creates legacy bindings for compatibility.
+`factoryName` is the exact registry/config key and is never reconstructed from
+`Plugin.GetName()`. This is required because the `request-context` factory
+returns the implementation name `request_context`. The builder always supplies
+the exact materialized source provenance; system request-context uses
+`{Kind: ResourceSystem, ID: "request-context"}`.
 
 - [ ] **Step 1: Write binding immutability and ordering tests**
 
@@ -100,7 +117,17 @@ bash -lc 'source .envrc && go test ./pkg/plugin -run "^TestScopedExecutor" -coun
 
 - [ ] **Step 3: Implement rewrite extraction plus legacy remainder**
 
-Clone bindings including provenance. For each rewrite scope, stable-sort only that scope by descending effective priority and execute through `base.AdaptRequestPhase`. Build the remainder with the prior mixed recursion so legacy enter/unwind behavior is byte-for-byte equivalent. Do not reorder one scope by another scope's priority. Every later build/runtime compatibility error reports `Provenance.Kind` and `Provenance.ID`; never reconstruct provenance from a merged plugin map.
+Clone the binding slice including value-type provenance; plugin instances and
+their configs are not deep-cloned. Stable-sort the system and global rewrite
+scopes independently by descending effective priority and execute them through
+`base.AdaptRequestPhase`. Keep every `ScopeRoute` binding, including audited
+rewrite identities, in the prior mixed recursion so auth-produced state,
+consumer override timing, legacy priority, enter/unwind, and transform-count
+behavior remain compatible. Equal-priority order is stable only relative to
+the supplied binding order; map iteration is not a cross-build ordering
+guarantee. Every later build/runtime compatibility error reports
+`Provenance.Kind` and `Provenance.ID`; never reconstruct provenance from a
+merged plugin map.
 
 - [ ] **Step 4: Run executor tests**
 
@@ -119,12 +146,11 @@ bash -lc 'source .envrc && go test ./pkg/plugin -run "(ScopedExecutor|ExecutorMi
 
 ```go
 type RequestStageSpec struct {
-    Stage       RequestStage
-    LegacyAudit bool
+    Stage              RequestStage
+    AdaptLegacyHandler bool
 }
 
 func RequestStageFor(name string) (RequestStageSpec, bool)
-func BindPlugin(p Plugin, scope Scope) Binding
 ```
 
 The audited Plan 13 set is exact and matches the Plan 13 section of `2026-08-10-plugin-capability-manifest.md`:
@@ -136,7 +162,16 @@ ai-prompt-template, ai-rag, ai-request-rewrite, data-mask, degraphql,
 example-plugin, jwe-decrypt
 ```
 
-The registry is keyed by factory name: `request-context`; `request_context` is accepted only when asserting that implementation's `GetName`. `request-context` and `request-id` already implement `base.RequestPhasePlugin`. The remaining names use a private adapter that calls the legacy Handler with a sentinel next, captures the request passed to that next, returns Continue, and returns Stop when next was not called. The adapter must reject double-next. `proxy-mirror` retains its existing before-proxy hook seam; it is not a finalizer.
+The registry is keyed only by the exact factory name: `request-context`;
+`request_context` is accepted only by the registry/constructor consistency test
+for that implementation's `GetName`. `request-context` and `request-id` already
+implement `base.RequestPhasePlugin`. The remaining names use a private adapter
+that calls the legacy Handler with a sentinel next, captures the request passed
+to that next, returns Continue, and returns Stop when next was not called. The
+adapter must reject double-next with a generic 500 early stop; the internal log
+diagnostic includes the binding resource kind and ID, but the client response
+must not expose control-plane identifiers. `proxy-mirror` retains its existing
+before-proxy hook seam; it is not a finalizer.
 
 - [ ] **Step 1: Add registry and adapter red tests**
 
@@ -152,7 +187,11 @@ Expected: compile-red for missing registry and adapter.
 
 - [ ] **Step 3: Implement the exact registry**
 
-Use a map keyed by canonical implementation name plus the existing alias handling for `request-context`. Do not infer stage from priority or package name. Add comments naming the audited property: no work after `next`, no deferred cleanup, no response writer wrapper.
+Use a map keyed by exact factory name. Do not infer the factory name from
+`GetName`, stage from priority, or stage from package name. The only name drift
+accepted by the constructor consistency test is factory `request-context` to
+implementation `request_context`. Add comments naming the audited property: no
+work after `next`, no deferred cleanup, no response writer wrapper.
 
 - [ ] **Step 4: Run registry plus every adapted package test**
 
@@ -166,12 +205,19 @@ bash -lc 'source .envrc && go test ./pkg/plugin ./pkg/plugin/{request_context,re
 - Modify: `pkg/route/builder.go`
 - Create: `pkg/route/scoped_rewrite_test.go`
 - Modify: `pkg/route/builder_lifecycle_test.go`
+- Modify: `pkg/route/prometheus_test.go`
 
 **Interfaces:**
-- Route, service, plugin-config, and system instances bind as `ScopeRoute`.
+- Route, service, and plugin-config winners bind as `ScopeRoute`.
 - Global-rule instances bind as `ScopeGlobal`.
 - System request-context binds as `ScopeSystem` and executes before global rewrite.
+- `ScopeRoute` records are retained for provenance and the next plan but execute
+  in the legacy priority recursion in this PR.
 - Consumer remains legacy in this PR.
+- Route/service/plugin-config maps are validated separately before precedence
+  merging. Only the materialized winner receives a binding, with its original
+  resource kind and ID. Overridden losers remain subject to strict allowlist
+  validation but do not create bindings.
 
 - [ ] **Step 1: Add route-level red tests**
 
@@ -186,7 +232,11 @@ func TestScopedRewriteEarlyStopSkipsLegacyAndUpstream(t *testing.T)
 func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T)
 ```
 
-The provenance test uses the same plugin name in service/plugin-config/route and proves the materialized winner has `ScopeRoute` without losing the original strict allowlist error context.
+Split provenance coverage into: independently materialized service and
+plugin-config sources; a same-name route/plugin-config/service precedence case
+that proves only the route winner is bound; and an overridden disabled source
+case that proves strict allowlist validation still reports that loser's original
+resource kind and ID.
 
 - [ ] **Step 2: Run route tests and record the red order**
 
@@ -198,7 +248,18 @@ Expected before the change: combined priority order lets a high-priority route p
 
 - [ ] **Step 3: Construct scoped bindings in the builder**
 
-Retain source scope until after plugin initialization; do not recover it from merged maps. `assembleRoutePluginChain` becomes `assembleRouteExecutor(routeBindings, globalBindings)`. Preserve consumer override wrapper selection from the bridge plan and do not modify consumer invocation.
+Retain `{factory name, config, provenance}` through precedence selection and
+plugin initialization; do not recover it from merged maps or `GetName`.
+`assembleRoutePluginChain` becomes
+`assembleRouteExecutor(routeBindings, globalBindings, systemBindings)`.
+Preserve consumer override wrapper selection and the route legacy envelope;
+do not modify consumer invocation. Service provenance uses the authoritative
+route `service_id`, not an optional embedded service payload ID. Global rules
+without an embedded ID fail closed instead of creating an empty provenance.
+The global-not-found path constructs only a system
+`request-context` binding plus global bindings; it must not reuse
+`buildSystemPluginConfigs`, which can also inject access-stage
+`client-control`.
 
 - [ ] **Step 4: Run focused and full route package tests**
 
@@ -215,7 +276,13 @@ bash -lc 'source .envrc && go test ./pkg/route -count=1'
 
 - [ ] **Step 1: Characterize response and logger unwind**
 
-Build a chain with migrated rewrite nodes around synthetic legacy response/logger nodes. Assert rewrite executes in scoped order, while legacy enter/exit and transform pipeline count remain the same as the pre-PR `BuildPluginChain` result.
+Build a chain with system/global rewrite outside synthetic legacy nodes and a
+route rewrite inside the legacy auth-like envelope. Assert global executes
+first, auth-like state is visible to route rewrite, legacy enter/exit remains
+balanced, and transform pipeline count remains the same as the pre-PR
+`BuildPluginChain` result. Add the real JWT `$jwt_auth_payload` to
+proxy-rewrite integration gate and a same-name consumer proxy-rewrite case that
+executes only the consumer instance.
 
 - [ ] **Step 2: Characterize auth/consumer deferral**
 
@@ -231,6 +298,7 @@ bash -lc 'source .envrc && go test ./pkg/plugin ./pkg/route -run "(LegacyRemaind
 
 **Files:**
 - Include: `docs/superpowers/plans/2026-08-10-plugin-scoped-rewrite-executor.md`
+- Include: `docs/superpowers/plans/2026-08-10-plugin-capability-manifest.md`
 
 - [ ] **Step 1: Run changed-package and race gates**
 
@@ -245,7 +313,9 @@ bash -lc 'source .envrc && go test -race ./pkg/plugin ./pkg/route -run "(ScopedE
 rg -n 'NewExecutor|NewScopedExecutor|RequestStageFor|assembleRouteExecutor|BuildPluginChain' pkg cmd t
 ```
 
-Verify no audited rewrite plugin remains duplicated in the legacy remainder.
+Verify system/global audited rewrite bindings do not remain duplicated. Route
+rewrite bindings intentionally remain in the legacy remainder until the next
+plan migrates authentication and consumer resolution with them.
 
 - [ ] **Step 3: Run lint/build/diff gates**
 
@@ -267,9 +337,21 @@ Open one ready PR, wait for CI, and merge before the access/consumer plan.
 
 ## Fast-plan-impl Dispatch Ownership
 
-1. **WU-01 scoped executor and audited registry** owns `pkg/plugin/executor*`, `request_stage_registry*`, and `pkg/plugin/init_test.go` and freezes the binding interface first.
-2. **WU-02 route provenance integration** owns only `pkg/route/**` files named in Tasks 3–4 and starts after WU-01.
-3. **WU-03 adapter package characterization** owns only tests in the explicitly audited plugin package directories when package-level coverage is needed; it cannot modify executor or route files and may run parallel with WU-02. No worker performs delivery.
+1. **WU-01 scoped executor and audited registry** owns
+   `pkg/plugin/executor.go`, `pkg/plugin/executor_test.go`,
+   `pkg/plugin/request_stage_registry.go`,
+   `pkg/plugin/request_stage_registry_test.go`, and `pkg/plugin/init_test.go`.
+   It freezes the binding/registry/adapter interface first.
+2. **WU-02 route provenance integration** owns only `pkg/route/builder.go`,
+   `pkg/route/scoped_rewrite_test.go`, `pkg/route/legacy_remainder_test.go`, and
+   `pkg/route/builder_lifecycle_test.go` when adaptation is required. The root
+   owner may adapt the single `pkg/route/prometheus_test.go` strict-helper
+   caller after the dead-code scan. It starts only after WU-01 is accepted.
+3. **WU-03 adapter package characterization** owns only `plugin_test.go` files
+   under the 16 explicitly audited plugin package directories. It adds only
+   missing phase/legacy-equivalence, replacement, stop, hook, nested-JWE, and
+   public-API coverage; it cannot modify production, executor, or route files
+   and may run parallel with WU-02 after WU-01. No worker performs delivery.
 
 ## Explicit Deferrals
 

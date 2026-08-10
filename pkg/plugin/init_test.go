@@ -51,6 +51,31 @@ func TestNewReturnsRegisteredPlugin(t *testing.T) {
 	}
 }
 
+func TestRequestStageRegistryFactoriesMatchConstructors(t *testing.T) {
+	for name := range requestStageRegistry {
+		t.Run(name, func(t *testing.T) {
+			factory, ok := pluginRegistry[name]
+			if !ok {
+				t.Fatalf("request-stage factory %q is not registered", name)
+			}
+			plugin := factory()
+			if plugin == nil {
+				t.Fatal("request-stage factory returned nil")
+			}
+			if err := plugin.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			want := name
+			if renamed, ok := pluginNameAliases[name]; ok {
+				want = renamed
+			}
+			if got := plugin.GetName(); got != want {
+				t.Fatalf("GetName() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 type chainTestPlugin struct {
 	base.BasePlugin
 }

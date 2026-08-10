@@ -2,6 +2,7 @@ package expr
 
 import (
 	"fmt"
+	"math"
 	"net/netip"
 	"regexp"
 	"strconv"
@@ -190,11 +191,6 @@ func parseIPPrefix(value string) (netip.Prefix, error) {
 func (e *Expression) Eval(resolve Resolver) bool {
 	if e.condition != nil {
 		actual := resolve(e.condition.variable)
-		if e.condition.reverse && isNumericOperator(e.condition.operator) {
-			if _, err := strconv.ParseFloat(stringValue(actual), 64); err != nil {
-				return false
-			}
-		}
 		matched := e.condition.eval(func(name string) any {
 			if name == e.condition.variable {
 				return actual
@@ -230,15 +226,6 @@ func (e *Expression) Eval(resolve Resolver) bool {
 	return matched
 }
 
-func isNumericOperator(operator string) bool {
-	switch operator {
-	case ">", ">=", "<", "<=":
-		return true
-	default:
-		return false
-	}
-}
-
 func (c *condition) eval(resolve Resolver) bool {
 	actual := resolve(c.variable)
 	switch c.operator {
@@ -249,7 +236,8 @@ func (c *condition) eval(resolve Resolver) bool {
 	case ">", ">=", "<", "<=":
 		left, leftErr := strconv.ParseFloat(stringValue(actual), 64)
 		right, rightErr := strconv.ParseFloat(stringValue(c.right), 64)
-		if leftErr != nil || rightErr != nil {
+		if leftErr != nil || rightErr != nil || math.IsNaN(left) || math.IsInf(left, 0) ||
+			math.IsNaN(right) || math.IsInf(right, 0) {
 			return false
 		}
 		switch c.operator {

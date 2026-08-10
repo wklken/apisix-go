@@ -533,6 +533,61 @@ func TestRouteDispatcherKeepsExactHostFallbackInBothRegistrationOrders(t *testin
 	}
 }
 
+func TestRouteRegistrarMatchesHostConstrainedParameters(t *testing.T) {
+	t.Parallel()
+
+	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
+	register := func(methods []string, pattern string, status int) {
+		t.Helper()
+		handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(status)
+		})
+		if err := registrar.registerRouteWithHosts(
+			methods,
+			pattern,
+			[]string{"api.example.com"},
+			handler,
+		); err != nil {
+			t.Fatalf("register %s: %v", pattern, err)
+		}
+	}
+	register([]string{http.MethodGet}, "/users/:id", http.StatusNoContent)
+	register([]string{http.MethodPost}, "/teams/:team/members/:member", http.StatusAccepted)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		host   string
+		want   int
+	}{
+		{"single parameter", http.MethodGet, "/users/42", "api.example.com", http.StatusNoContent},
+		{"multiple parameters", http.MethodPost, "/teams/core/members/alice", "api.example.com", http.StatusAccepted},
+		{"wrong host", http.MethodGet, "/users/42", "other.example.com", http.StatusNotFound},
+		{"wrong method", http.MethodDelete, "/users/42", "api.example.com", http.StatusMethodNotAllowed},
+		{"empty parameter", http.MethodGet, "/users/", "api.example.com", http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Host = test.host
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf(
+					"%s %s Host %s status = %d, want %d",
+					test.method,
+					test.path,
+					test.host,
+					response.Code,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
 func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	t.Parallel()
 

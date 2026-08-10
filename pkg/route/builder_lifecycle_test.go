@@ -676,6 +676,48 @@ func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
 	}
 }
 
+func TestInitPluginsStrictAppliesNegatedNumericMetaFilterForMissingAge(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"request-id": map[string]any{
+				"_meta": map[string]any{
+					"filter": []any{[]any{"arg_age", "!", ">=", 18}},
+				},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-age-filter"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+
+	handler := plugins[0].Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, test := range []struct {
+		name        string
+		target      string
+		wantApplied bool
+	}{
+		{name: "missing age", target: "/meta", wantApplied: true},
+		{name: "malformed age", target: "/meta?age=abc", wantApplied: true},
+		{name: "numeric age", target: "/meta?age=21", wantApplied: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.target, nil))
+			gotApplied := response.Header().Get("X-Request-Id") != ""
+			if gotApplied != test.wantApplied {
+				t.Fatalf("request-id applied = %v, want %v", gotApplied, test.wantApplied)
+			}
+		})
+	}
+}
+
 func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
 	builder := NewBuilder(nil)
 	plugins, err := builder.initPluginsStrict(

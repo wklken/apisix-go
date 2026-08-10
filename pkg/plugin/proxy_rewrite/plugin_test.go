@@ -122,6 +122,59 @@ func TestHandlerPreservesAndMergesQueryForConfiguredURI(t *testing.T) {
 	}
 }
 
+func TestRegexURIQueryContract(t *testing.T) {
+	tests := []struct {
+		name   string
+		unsafe bool
+		source string
+		repl   string
+		want   string
+	}{
+		{
+			name:   "append incoming query",
+			source: "/items/42?tenant=a",
+			repl:   "/products/$1",
+			want:   "/products/42?tenant=a",
+		},
+		{
+			name:   "merge replacement query",
+			source: "/items/42?tenant=a",
+			repl:   "/products/$1?fixed=1",
+			want:   "/products/42?fixed=1&tenant=a",
+		},
+		{name: "empty incoming query", source: "/items/42", repl: "/products/$1", want: "/products/42"},
+		{
+			name:   "unsafe source includes query once",
+			unsafe: true,
+			source: "/items/42?tenant=a",
+			repl:   "/raw/$1$2",
+			want:   "/raw/42?tenant=a",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pattern := `^/items/(\d+)$`
+			if test.unsafe {
+				pattern = `^/items/([^?]+)(\?.*)?$`
+			}
+			p := newTestPlugin(t, Config{
+				UseRealRequestURIUnsafe: test.unsafe,
+				RegexURI:                []string{pattern, test.repl},
+			})
+			var rewrite map[string]any
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+			}))
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.source, nil))
+			if got := rewrite["uri"].(string); got != test.want {
+				t.Fatalf("rewrite uri = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHandlerFinalizesURIAndMethodBeforeNextPlugin(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Uri:    "/rewritten?fixed=1",

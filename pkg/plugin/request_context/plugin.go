@@ -2,8 +2,8 @@ package request_context
 
 import (
 	"net/http"
+	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -51,6 +51,25 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		lifecycle := ctx.GetRequestLifecycle(r)
+		direct := lifecycle == nil
+		r, lifecycle = ctx.EnsureRequestLifecycle(r, time.Now())
+		metricsEnabled := metrics.HTTPRequestMetricsEnabled()
+		returnedNormally := false
+		var snapshot func() ctx.ResponseOutcome
+		if direct && metricsEnabled {
+			w, snapshot, _ = base.CaptureResponseOutcome(w)
+		}
+		if direct {
+			defer func() {
+				if snapshot != nil {
+					lifecycle.SetOutcome(snapshot())
+				}
+				lifecycle.Finalize()
+				ctx.RecycleVars(r)
+			}()
+		}
+
 		r = ctx.WithApisixVars(r, map[string]string{
 			"$route_id":     p.config.RouteID,
 			"$route_name":   p.config.RouteName,
@@ -61,36 +80,41 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		})
 		r = ctx.WithRequestVars(r)
 
-		if !metrics.HTTPRequestMetricsEnabled() {
+		if !metricsEnabled {
 			next.ServeHTTP(w, r)
-			ctx.RecycleVars(r)
 			return
 		}
 
 		labels := p.metricLabels()
-		metrics.Requests.Inc()
-
-		captured := httpsnoop.CaptureMetrics(next, w, r)
-		consumer := apisixStringVar(r, "$consumer_name")
-		node := apisixStringVar(r, "$balancer_ip")
-		latency := captured.Duration.Milliseconds()
-		upstreamLatency := requestInt64Var(r, "$upstream_latency")
-
-		metrics.RecordHTTPRequest(r, metrics.HTTPRequestMetrics{
-			Status:          captured.Code,
-			Route:           labels.route,
-			MatchedURI:      apisixStringVar(r, "$matched_uri"),
-			MatchedHost:     apisixStringVar(r, "$matched_host"),
-			Service:         labels.service,
-			Consumer:        consumer,
-			Node:            node,
-			RequestLatency:  latency,
-			UpstreamLatency: upstreamLatency,
-			IngressBytes:    util.RequestSize(r),
-			EgressBytes:     captured.Written,
+		startedAt := lifecycle.StartedAt()
+		_ = lifecycle.AddFinalizer(name, func() error {
+			if direct && !returnedNormally {
+				metrics.Requests.Inc()
+				return nil
+			}
+			outcome := lifecycle.Outcome()
+			consumer := apisixStringVar(r, "$consumer_name")
+			node := apisixStringVar(r, "$balancer_ip")
+			upstreamLatency := requestInt64Var(r, "$upstream_latency")
+			metrics.Requests.Inc()
+			metrics.RecordHTTPRequest(r, metrics.HTTPRequestMetrics{
+				Status:          outcome.Status,
+				Route:           labels.route,
+				MatchedURI:      apisixStringVar(r, "$matched_uri"),
+				MatchedHost:     apisixStringVar(r, "$matched_host"),
+				Service:         labels.service,
+				Consumer:        consumer,
+				Node:            node,
+				RequestLatency:  time.Since(startedAt).Milliseconds(),
+				UpstreamLatency: upstreamLatency,
+				IngressBytes:    util.RequestSize(r),
+				EgressBytes:     outcome.Bytes,
+			})
+			return nil
 		})
 
-		ctx.RecycleVars(r)
+		next.ServeHTTP(w, r)
+		returnedNormally = true
 	}
 	return http.HandlerFunc(fn)
 }

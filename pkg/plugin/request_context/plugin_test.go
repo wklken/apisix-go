@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -295,4 +296,305 @@ func TestHandlerWorksWhenPrometheusCollectorsAreDisabled(t *testing.T) {
 	if !called || response.Code != http.StatusNoContent {
 		t.Fatalf("downstream called = %v, status = %d", called, response.Code)
 	}
+}
+
+func TestRequestContextRegistersMetricsAndRecycleFinalizer(t *testing.T) {
+	installTestMetrics(t)
+
+	startedAt := time.Now()
+	lifecycle := apisixctx.NewRequestLifecycle(startedAt)
+	request := apisixctx.WithRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		lifecycle,
+	)
+	request, _ = apisixctx.EnsureRequestLifecycle(request, startedAt)
+	var state *apisixctx.RequestState
+
+	handler := (&Plugin{config: Config{RouteID: "finalizer-route"}}).Handler(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			state = apisixctx.GetRequestState(r)
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if state == nil || state.ApisixVars == nil || state.RequestVars == nil {
+		t.Fatal("request state was recycled before the outer lifecycle finalized")
+	}
+	if got := counterValue(t, metrics.Requests); got != 0 {
+		t.Fatalf("request total before lifecycle finalization = %v, want 0", got)
+	}
+
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeCompleted,
+		Status:    http.StatusNoContent,
+		Committed: true,
+	})
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle finalizer failures = %#v, want none", failures)
+	}
+	if got := counterValue(t, metrics.Requests); got != 1 {
+		t.Fatalf("request total after lifecycle finalization = %v, want 1", got)
+	}
+	if state.ApisixVars == nil || state.RequestVars == nil {
+		t.Fatal("request-context finalizer recycled state; outer owner must recycle after finalizers")
+	}
+
+	apisixctx.RecycleVars(request)
+	if state.ApisixVars != nil || state.RequestVars != nil {
+		t.Fatal("outer lifecycle owner did not recycle request state")
+	}
+}
+
+func TestRequestContextFinalizerRecordsEarlyReturnOutcome(t *testing.T) {
+	installTestMetrics(t)
+
+	startedAt := time.Now()
+	lifecycle := apisixctx.NewRequestLifecycle(startedAt)
+	request := apisixctx.WithRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		lifecycle,
+	)
+	request, _ = apisixctx.EnsureRequestLifecycle(request, startedAt)
+
+	handler := (&Plugin{config: Config{RouteID: "early-return-route"}}).Handler(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			// The outer owner supplies the final response outcome after this early return.
+		}),
+	)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if got := counterValue(t, metrics.Requests); got != 0 {
+		t.Fatalf("request total before early-return finalization = %v, want 0", got)
+	}
+
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeCompleted,
+		Status:    http.StatusTeapot,
+		Bytes:     7,
+		Committed: true,
+	})
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle finalizer failures = %#v, want none", failures)
+	}
+	if got := counterValue(t, metrics.HttpStatus.WithLabelValues(
+		"418", "early-return-route", "", "", "", "", "", "", "", "", "apisix",
+	)); got != 1 {
+		t.Fatalf("early-return status count = %v, want 1", got)
+	}
+	if got := counterValue(t, metrics.Bandwidth.WithLabelValues(
+		"egress", "early-return-route", "", "", "", "", "", "",
+	)); got != 7 {
+		t.Fatalf("early-return egress bytes = %v, want 7", got)
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestContextFinalizerRunsAfterDownstreamPanic(t *testing.T) {
+	installTestMetrics(t)
+
+	startedAt := time.Now()
+	lifecycle := apisixctx.NewRequestLifecycle(startedAt)
+	request := apisixctx.WithRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		lifecycle,
+	)
+	request, _ = apisixctx.EnsureRequestLifecycle(request, startedAt)
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler := (&Plugin{config: Config{RouteID: "panic-route"}}).Handler(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				panic("downstream panic")
+			}),
+		)
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	if recovered == nil {
+		t.Fatal("downstream panic was not propagated to the outer owner")
+	}
+	if got := counterValue(t, metrics.Requests); got != 0 {
+		t.Fatalf("request total before panic finalization = %v, want 0", got)
+	}
+
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeRecoveredPanic,
+		Status:    http.StatusInternalServerError,
+		Bytes:     38,
+		Committed: true,
+	})
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle finalizer failures = %#v, want none", failures)
+	}
+	if got := counterValue(t, metrics.HttpStatus.WithLabelValues(
+		"500", "panic-route", "", "", "", "", "", "", "", "", "apisix",
+	)); got != 1 {
+		t.Fatalf("panic status count = %v, want 1", got)
+	}
+	if got := counterValue(t, metrics.Requests); got != 1 {
+		t.Fatalf("request total after panic finalization = %v, want 1", got)
+	}
+	apisixctx.RecycleVars(request)
+}
+
+func TestRequestContextLegacyDirectHandlerStillFinalizes(t *testing.T) {
+	installTestMetrics(t)
+
+	var seen *http.Request
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	handler := (&Plugin{config: Config{RouteID: "legacy-route"}}).Handler(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = r
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if seen == nil {
+		t.Fatal("direct handler did not pass a request downstream")
+	}
+	if apisixctx.GetRequestLifecycle(seen) == nil {
+		t.Fatal("direct handler did not create a local request lifecycle")
+	}
+	state := apisixctx.GetRequestState(seen)
+	if state == nil || state.ApisixVars != nil || state.RequestVars != nil {
+		t.Fatal("direct handler did not recycle request state after finalizers")
+	}
+	if got := counterValue(t, metrics.HttpStatus.WithLabelValues(
+		"204", "legacy-route", "", "", "", "", "", "", "", "", "apisix",
+	)); got != 1 {
+		t.Fatalf("legacy status count = %v, want 1", got)
+	}
+
+	var panicRequest *http.Request
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("direct downstream panic was not propagated")
+			}
+		}()
+		handler := (&Plugin{}).Handler(
+			http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				panicRequest = r
+				panic("legacy downstream panic")
+			}),
+		)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
+	}()
+	if panicRequest == nil {
+		t.Fatal("panic path did not pass a request downstream")
+	}
+	panicState := apisixctx.GetRequestState(panicRequest)
+	if panicState == nil || panicState.ApisixVars != nil || panicState.RequestVars != nil {
+		t.Fatal("direct panic path leaked request state")
+	}
+}
+
+func TestRequestContextLegacyPreWritePanicKeepsRequestTotalWithoutSuccessMetrics(t *testing.T) {
+	installTestMetrics(t)
+	requestTotalBefore := counterValue(t, metrics.Requests)
+
+	var panicRequest *http.Request
+	handler := (&Plugin{config: Config{RouteID: "legacy-prewrite-panic-route"}}).Handler(
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			panicRequest = r
+			panic("legacy pre-write panic")
+		}),
+	)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("direct pre-write panic was not propagated")
+			}
+		}()
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
+	}()
+
+	if panicRequest == nil {
+		t.Fatal("pre-write panic path did not pass a request downstream")
+	}
+	state := apisixctx.GetRequestState(panicRequest)
+	if state == nil || state.ApisixVars != nil || state.RequestVars != nil {
+		t.Fatal("direct pre-write panic path leaked request state")
+	}
+	if got := counterValue(t, metrics.Requests); got != requestTotalBefore+1 {
+		t.Fatalf("request total after pre-write panic = %v, want %v", got, requestTotalBefore+1)
+	}
+	for metricName, collector := range map[string]prometheus.Collector{
+		"status":    metrics.HttpStatus,
+		"latency":   metrics.HttpLatency,
+		"bandwidth": metrics.Bandwidth,
+	} {
+		if metricVecHasSeries(t, collector, "legacy-prewrite-panic-route") {
+			t.Fatalf("%s metrics recorded a completed/code=200 sample for a pre-write panic", metricName)
+		}
+	}
+}
+
+func metricVecHasSeries(t *testing.T, collector prometheus.Collector, route string) bool {
+	t.Helper()
+	collected := make(chan prometheus.Metric)
+	go func() {
+		collector.Collect(collected)
+		close(collected)
+	}()
+	for metric := range collected {
+		decoded := &dto.Metric{}
+		if err := metric.Write(decoded); err != nil {
+			t.Fatalf("decode metric: %v", err)
+		}
+		for _, label := range decoded.Label {
+			if label.GetName() == "route" && label.GetValue() == route {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func installTestMetrics(t *testing.T) {
+	t.Helper()
+	oldRequests := metrics.Requests
+	oldStatus := metrics.HttpStatus
+	oldLatency := metrics.HttpLatency
+	oldBandwidth := metrics.Bandwidth
+	oldLLMLatency := metrics.LLMLatency
+	oldLLMPromptTokens := metrics.LLMPromptTokens
+	oldLLMCompletionTokens := metrics.LLMCompletionTokens
+	metrics.Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_request_context_requests"})
+	metrics.HttpStatus = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_request_context_http_status"},
+		[]string{
+			"code", "route", "matched_uri", "matched_host", "service", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model", "response_source",
+		},
+	)
+	metrics.HttpLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "test_request_context_http_latency"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	metrics.Bandwidth = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_request_context_bandwidth"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	llmLabels := []string{
+		"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+	}
+	metrics.LLMLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "test_request_context_llm_latency"}, llmLabels,
+	)
+	metrics.LLMPromptTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_request_context_llm_prompt_tokens"}, llmLabels,
+	)
+	metrics.LLMCompletionTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_request_context_llm_completion_tokens"}, llmLabels,
+	)
+	t.Cleanup(func() {
+		metrics.Requests = oldRequests
+		metrics.HttpStatus = oldStatus
+		metrics.HttpLatency = oldLatency
+		metrics.Bandwidth = oldBandwidth
+		metrics.LLMLatency = oldLLMLatency
+		metrics.LLMPromptTokens = oldLLMPromptTokens
+		metrics.LLMCompletionTokens = oldLLMCompletionTokens
+	})
 }

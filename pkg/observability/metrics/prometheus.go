@@ -304,6 +304,7 @@ func initMetrics() {
 		},
 		[]string{"upstream", "target"},
 	)
+	requestPanics = newRequestPanicMetrics(nil, metricConfig.MetricPrefix)
 	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
 
 	hostName, err := os.Hostname()
@@ -334,6 +335,7 @@ func initMetrics() {
 		ProxyRejected,
 		ProxyRetry,
 		ProxyHealth,
+		requestPanics,
 		ConfigApplyFailures,
 		ConfigApplyReady,
 	)

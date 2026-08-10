@@ -71,7 +71,7 @@ func (environment *proxyBenchmarkEnvironment) Close() {
 		remove.Key = []byte("/apisix/routes/" + id)
 		events <- remove
 	}
-	environment.storage.Sync()
+	_ = environment.storage.Sync()
 }
 
 func newProxyBenchmarkEnvironment(
@@ -138,7 +138,9 @@ func newProxyBenchmarkEnvironment(
 		events <- event
 		environment.routeIDs = append(environment.routeIDs, id)
 	}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		b.Fatalf("Sync() error = %v", err)
+	}
 
 	builder := NewBuilder(storage)
 	mux, err := builder.BuildStrict()

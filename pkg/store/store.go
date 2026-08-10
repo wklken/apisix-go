@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -58,9 +60,10 @@ type Store struct {
 
 	// configSnapshot is the published immutable route-build generation
 	// (routes, global rules, plugin metadata), rebuilt once per bucket change.
-	configSnapshot      atomic.Pointer[ConfigSnapshot]
-	configSnapshotDirty atomic.Bool
-	configSnapshotMu    sync.Mutex
+	configSnapshot                atomic.Pointer[ConfigSnapshot]
+	configGeneration              atomic.Uint64
+	afterConfigSnapshotBucketRead func(string)
+	configSnapshotMu              sync.Mutex
 
 	// protosGeneration increments on every protos bucket change so consumers
 	// can detect proto resource updates without re-reading the bucket.
@@ -233,11 +236,14 @@ func (s *Store) Start() {
 	}()
 }
 
-// Sync waits until all events sent before the call have been processed.
-func (s *Store) Sync() {
-	done := make(chan struct{})
-	s.events <- &Event{done: done}
-	<-done
+// Sync waits until all events sent before the call have been processed and
+// returns errors from those unacknowledged events. Errors delivered directly
+// through acknowledged events are not included in this barrier.
+func (s *Store) Sync() error {
+	event := NewAcknowledgedEvent()
+	event.barrier = true
+	s.events <- event
+	return event.Wait(context.Background())
 }
 
 // Stop is idempotent: it stops the event loop and closes the database. The
@@ -271,27 +277,54 @@ func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 }
 
 func (s *Store) processEvents() {
+	var pendingUnacknowledged error
 	for {
 		select {
 		case event := <-s.events:
 			if event == nil {
 				return
 			}
-			s.processEvent(event)
+			if event.barrier {
+				err := pendingUnacknowledged
+				pendingUnacknowledged = nil
+				s.completeAcknowledgedEvent(event, err)
+				continue
+			}
+			err := s.processEvent(event)
+			if event.result != nil {
+				s.completeAcknowledgedEvent(event, err)
+				continue
+			}
+			if err != nil {
+				pendingUnacknowledged = errors.Join(pendingUnacknowledged, err)
+				logger.Errorf("store process event: %s", err)
+			}
+			PutBack(event)
 		case <-s.stopProducers:
 			return
 		}
 	}
 }
 
-func (s *Store) processEvent(event *Event) {
+func (s *Store) completeAcknowledgedEvent(event *Event, err error) {
+	event.result <- err
+	<-event.waitDone
+	PutBack(event)
+}
+
+func (s *Store) processEvent(event *Event) error {
 	if event.done != nil {
 		close(event.done)
-		return
+		return nil
 	}
 
 	bucketName, id := getTypeAndIDFromKey(event.Key)
-	processed := false
+	if bytes.Equal(bucketName, []byte("ssls")) {
+		if err := validateSSLCertificateEvent(event.Type, util.BytesToString(id), event.Value); err != nil {
+			return err
+		}
+	}
+
 	switch event.Type {
 	case EventTypePut:
 		var snapshot consumerSnapshot
@@ -300,17 +333,10 @@ func (s *Store) processEvent(event *Event) {
 			var err error
 			snapshot, err = s.prepareConsumerSnapshot(id, event.Value)
 			if err != nil {
-				logger.Errorf("store process the consumer fail, err=%s", err)
-				PutBack(event)
-				return
+				return fmt.Errorf("store process the consumer fail: %w", err)
 			}
 		}
 
-		// Index consumers before the bolt write becomes visible so
-		// GetConsumer's bucket fallback cannot race ahead of plugin-key lookup.
-		if isConsumer {
-			s.applyConsumerSnapshot(snapshot)
-		}
 		err := s.db.Update(func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucketName)
 			if b == nil {
@@ -321,12 +347,12 @@ func (s *Store) processEvent(event *Event) {
 			}
 			return nil
 		})
-		if err != nil && isConsumer {
-			if delErr := s.consumerKVDelete(id); delErr != nil {
-				logger.Errorf("rollback consumer index after put fail: %s", delErr)
-			}
+		if err != nil {
+			return err
 		}
-		processed = err == nil
+		if isConsumer {
+			s.applyConsumerSnapshot(snapshot)
+		}
 	case EventTypeDelete:
 		isConsumer := bytes.Equal(bucketName, []byte("consumers"))
 		err := s.db.Update(func(tx *bolt.Tx) error {
@@ -342,29 +368,53 @@ func (s *Store) processEvent(event *Event) {
 
 			return nil
 		})
-		if err == nil && isConsumer {
+		if err != nil {
+			return err
+		}
+		if isConsumer {
 			if err := s.consumerKVDelete(id); err != nil {
-				logger.Errorf("store process the consumer fail, err=%s", err)
+				return fmt.Errorf("store process the consumer fail: %w", err)
 			}
 		}
-		processed = err == nil
+	default:
+		return fmt.Errorf("unsupported store event type %d", event.Type)
 	}
 
 	// FIXME: what type of event should trigger the hooks?
 	bucket := string(bucketName)
-	if processed && bucket == "ssls" {
+	if bucket == "ssls" {
 		s.applySSLCertificateEvent(event.Type, util.BytesToString(id), event.Value)
 	}
-	if processed && (bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata") {
-		s.configSnapshotDirty.Store(true)
+	if bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata" {
+		s.configGeneration.Add(1)
 	}
-	if processed && bucket == "protos" {
+	if bucket == "protos" {
 		s.protosGeneration.Add(1)
 	}
-	if processed && (IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket)) {
+	if IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket) {
 		s.triggerEventUpdateHooks(event)
 	}
-	PutBack(event)
+	return nil
+}
+
+func validateSSLCertificateEvent(eventType EventType, id string, value []byte) error {
+	if eventType == EventTypeDelete {
+		return nil
+	}
+	if eventType != EventTypePut {
+		return fmt.Errorf("unsupported SSL event type %d for %q", eventType, id)
+	}
+	ssl, err := ParseSSL(value)
+	if err != nil {
+		return fmt.Errorf("reject SSL resource %q: parse: %w", id, err)
+	}
+	if ssl.Status == 0 {
+		return nil
+	}
+	if _, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key)); err != nil {
+		return fmt.Errorf("reject SSL resource %q: load: %w", id, err)
+	}
+	return nil
 }
 
 // trigger the hooks

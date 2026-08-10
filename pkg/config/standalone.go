@@ -66,9 +66,11 @@ type StandaloneFileWatcher struct {
 	provider string
 	events   chan *store.Event
 
-	mu       sync.Mutex
-	current  standaloneSnapshot
-	onReload func(StandaloneReloadResult, error)
+	reloadMu             sync.Mutex
+	mu                   sync.Mutex
+	current              standaloneSnapshot
+	onReload             func(StandaloneReloadResult, error)
+	onAcknowledgedReload func(StandaloneReloadResult, error) error
 }
 
 func StandaloneConfigFile(provider string) string {
@@ -98,6 +100,12 @@ func (w *StandaloneFileWatcher) Reload() error {
 
 // ReloadSnapshot emits the complete resource diff before returning its result.
 func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error) {
+	w.reloadMu.Lock()
+	defer w.reloadMu.Unlock()
+	return w.reloadSnapshot()
+}
+
+func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, error) {
 	next, err := readStandaloneSnapshot(w.path, w.provider)
 	if err != nil {
 		return StandaloneReloadResult{}, err
@@ -139,6 +147,19 @@ func (w *StandaloneFileWatcher) SetReloadCallback(callback func(StandaloneReload
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.onReload = callback
+	w.onAcknowledgedReload = nil
+}
+
+// SetAcknowledgedReloadCallback installs a serialized apply callback. A
+// non-nil callback error keeps the previous snapshot so the next file event
+// replays the complete diff.
+func (w *StandaloneFileWatcher) SetAcknowledgedReloadCallback(
+	callback func(StandaloneReloadResult, error) error,
+) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.onReload = nil
+	w.onAcknowledgedReload = callback
 }
 
 func (w *StandaloneFileWatcher) Watch() {
@@ -152,11 +173,7 @@ func (w *StandaloneFileWatcher) Watch() {
 		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
 		return
 	}
-	result, err := w.ReloadSnapshot()
-	if err != nil {
-		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
-	}
-	w.notifyReload(result, err)
+	w.reloadAndNotify()
 
 	configuredBase := filepath.Base(w.path)
 	go func() {
@@ -173,11 +190,7 @@ func (w *StandaloneFileWatcher) Watch() {
 					!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
 					continue
 				}
-				result, err := w.ReloadSnapshot()
-				if err != nil {
-					logger.Errorf("reload standalone config %q failed: %s", w.path, err)
-				}
-				w.notifyReload(result, err)
+				w.reloadAndNotify()
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
@@ -188,13 +201,33 @@ func (w *StandaloneFileWatcher) Watch() {
 	}()
 }
 
-func (w *StandaloneFileWatcher) notifyReload(result StandaloneReloadResult, err error) {
+func (w *StandaloneFileWatcher) reloadAndNotify() {
+	w.reloadMu.Lock()
+
+	w.mu.Lock()
+	previous := w.current
+	w.mu.Unlock()
+	result, err := w.reloadSnapshot()
+	if err != nil {
+		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
+	}
 	w.mu.Lock()
 	callback := w.onReload
+	acknowledgedCallback := w.onAcknowledgedReload
 	w.mu.Unlock()
-	if callback != nil {
-		callback(result, err)
+	if acknowledgedCallback == nil {
+		w.reloadMu.Unlock()
+		if callback != nil {
+			callback(result, err)
+		}
+		return
 	}
+	if applyErr := acknowledgedCallback(result, err); err == nil && applyErr != nil {
+		w.mu.Lock()
+		w.current = previous
+		w.mu.Unlock()
+	}
+	w.reloadMu.Unlock()
 }
 
 func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {

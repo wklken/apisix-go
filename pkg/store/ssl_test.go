@@ -85,7 +85,9 @@ func TestSSLCertificateIndexPublishesExactAndWildcard(t *testing.T) {
 		"ssl-exact",
 		sslValue("ssl-exact", []string{"api.example.test", "*.wild.example.test"}, cert, key, 1),
 	)
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	certificate, err := GetSSLCertificateForSNI("api.example.test")
 	if err != nil {
@@ -116,7 +118,9 @@ func TestSSLCertificateIndexExactBeatsWildcard(t *testing.T) {
 	cert, key := testCertificatePEM(t, "api.example.test")
 	putSSL(t, events, "ssl-wild", sslValue("ssl-wild", []string{"*.example.test"}, cert, key, 1))
 	putSSL(t, events, "ssl-exact", sslValue("ssl-exact", []string{"api.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	if _, err := GetSSLCertificateForSNI("api.example.test"); err != nil {
 		t.Fatalf("GetSSLCertificateForSNI() error = %v", err)
@@ -131,10 +135,14 @@ func TestSSLCertificateIndexRejectsInvalidCertificate(t *testing.T) {
 	storage, events := sslIndexTestStore(t)
 	cert, key := testCertificatePEM(t, "valid.example.test")
 	putSSL(t, events, "ssl-valid", sslValue("ssl-valid", []string{"valid.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after valid SSL error = %v", err)
+	}
 
 	putSSL(t, events, "ssl-bad", sslValue("ssl-bad", []string{"bad.example.test"}, "not-a-cert", "not-a-key", 1))
-	storage.Sync()
+	if err := storage.Sync(); err == nil {
+		t.Fatal("Sync() after invalid SSL returned nil")
+	}
 
 	if _, err := GetSSLCertificateForSNI("valid.example.test"); err != nil {
 		t.Fatalf("last valid snapshot lost after invalid publication: %v", err)
@@ -148,19 +156,25 @@ func TestSSLCertificateIndexDeleteAndDisable(t *testing.T) {
 	storage, events := sslIndexTestStore(t)
 	cert, key := testCertificatePEM(t, "gone.example.test")
 	putSSL(t, events, "ssl-gone", sslValue("ssl-gone", []string{"gone.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after SSL PUT error = %v", err)
+	}
 	if _, err := GetSSLCertificateForSNI("gone.example.test"); err != nil {
 		t.Fatalf("GetSSLCertificateForSNI() error = %v", err)
 	}
 
 	deleteSSL(t, events, "ssl-gone")
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after SSL DELETE error = %v", err)
+	}
 	if _, err := GetSSLCertificateForSNI("gone.example.test"); err == nil {
 		t.Fatal("deleted SSL still selectable")
 	}
 
 	putSSL(t, events, "ssl-disabled", sslValue("ssl-disabled", []string{"disabled.example.test"}, cert, key, 0))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after disabled SSL error = %v", err)
+	}
 	if _, err := GetSSLCertificateForSNI("disabled.example.test"); err == nil {
 		t.Fatal("disabled SSL (status 0) still selectable")
 	}
@@ -170,9 +184,13 @@ func TestSSLCertificateIndexUpdateReplacesOldSNIs(t *testing.T) {
 	storage, events := sslIndexTestStore(t)
 	cert, key := testCertificatePEM(t, "moved.example.test")
 	putSSL(t, events, "ssl-moved", sslValue("ssl-moved", []string{"old.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after first SSL PUT error = %v", err)
+	}
 	putSSL(t, events, "ssl-moved", sslValue("ssl-moved", []string{"new.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after second SSL PUT error = %v", err)
+	}
 
 	if _, err := GetSSLCertificateForSNI("old.example.test"); err == nil {
 		t.Fatal("old SNI still selectable after update")
@@ -186,7 +204,9 @@ func TestSSLCertificateIndexDecodesOnce(t *testing.T) {
 	storage, events := sslIndexTestStore(t)
 	cert, key := testCertificatePEM(t, "shared.example.test")
 	putSSL(t, events, "ssl-1", sslValue("ssl-1", []string{"a.example.test", "*.b.example.test"}, cert, key, 1))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	exact, err := GetSSLCertificateForSNI("a.example.test")
 	if err != nil {

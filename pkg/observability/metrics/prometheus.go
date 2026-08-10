@@ -302,6 +302,7 @@ func initMetrics() {
 		},
 		[]string{"upstream", "target"},
 	)
+	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
 
 	hostName, err := os.Hostname()
 	if err != nil || hostName == "" {
@@ -329,6 +330,8 @@ func initMetrics() {
 		ProxyRejected,
 		ProxyRetry,
 		ProxyHealth,
+		ConfigApplyFailures,
+		ConfigApplyReady,
 	)
 }
 

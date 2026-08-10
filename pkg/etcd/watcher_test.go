@@ -78,7 +78,7 @@ func TestWatchStartsAtRevisionAfterLastKnown(t *testing.T) {
 
 func TestWatchReconcilesSnapshotAfterUnexpectedClosure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	events := make(chan *store.Event, 4)
+	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
 		prefix: "/apisix",
 		events: events,
@@ -116,16 +116,12 @@ func TestWatchReconcilesSnapshotAfterUnexpectedClosure(t *testing.T) {
 	if resumedRevision != 11 {
 		t.Fatalf("resumed revision = %d, want 11", resumedRevision)
 	}
-	deleted := <-events
-	created := <-events
-	if deleted.Type != store.EventTypeDelete || string(deleted.Key) != "/apisix/routes/old" {
-		t.Fatalf("delete event = %s", deleted)
+	if value, err := storage.GetFromBucket("routes", []byte("old")); err != nil || value != nil {
+		t.Fatalf("old route = %q, %v; want deleted", value, err)
 	}
-	if created.Type != store.EventTypePut || string(created.Key) != "/apisix/routes/new" {
-		t.Fatalf("put event = %s", created)
+	if value, err := storage.GetFromBucket("routes", []byte("new")); err != nil || string(value) != `{"id":"new"}` {
+		t.Fatalf("new route = %q, %v; want replacement", value, err)
 	}
-	store.PutBack(deleted)
-	store.PutBack(created)
 }
 
 func TestWatchStopsWhileSnapshotRecoveryIsFailing(t *testing.T) {
@@ -159,7 +155,7 @@ func TestWatchStopsWhileSnapshotRecoveryIsFailing(t *testing.T) {
 
 func TestWatchReconcilesSnapshotAfterCompaction(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	events := make(chan *store.Event, 4)
+	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
 		prefix:       "/apisix",
 		events:       events,
@@ -196,20 +192,17 @@ func TestWatchReconcilesSnapshotAfterCompaction(t *testing.T) {
 	if resumedRevision != 11 {
 		t.Fatalf("resumed revision = %d, want 11", resumedRevision)
 	}
-	deleted := <-events
-	created := <-events
-	if deleted.Type != store.EventTypeDelete || string(deleted.Key) != "/apisix/routes/stale" {
-		t.Fatalf("delete event = %s", deleted)
+	if value, err := storage.GetFromBucket("routes", []byte("stale")); err != nil || value != nil {
+		t.Fatalf("stale route = %q, %v; want deleted", value, err)
 	}
-	if created.Type != store.EventTypePut || string(created.Key) != "/apisix/routes/replacement" {
-		t.Fatalf("put event = %s", created)
+	replacement, err := storage.GetFromBucket("routes", []byte("replacement"))
+	if err != nil || string(replacement) != `{"id":"replacement"}` {
+		t.Fatalf("replacement route = %q, %v; want replacement", replacement, err)
 	}
-	store.PutBack(deleted)
-	store.PutBack(created)
 }
 
 func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
-	events := make(chan *store.Event, 8)
+	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
 		prefix:       "/apisix",
 		events:       events,
@@ -227,16 +220,14 @@ func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
 		},
 	}
 
-	if !client.applyWatchResponse(context.Background(), response) {
-		t.Fatal("applyWatchResponse() = false")
+	if err := client.applyWatchResponse(context.Background(), response); err != nil {
+		t.Fatalf("applyWatchResponse() error = %v", err)
 	}
-	first := <-events
-	second := <-events
-	if first.Type != store.EventTypePut || string(first.Key) != "/apisix/routes/a" {
-		t.Fatalf("first event = %s, want put of routes/a", first)
+	if value, err := storage.GetFromBucket("routes", []byte("a")); err != nil || string(value) != `{"id":"a"}` {
+		t.Fatalf("route a = %q, %v; want put", value, err)
 	}
-	if second.Type != store.EventTypeDelete || string(second.Key) != "/apisix/routes/b" {
-		t.Fatalf("second event = %s, want delete of routes/b", second)
+	if value, err := storage.GetFromBucket("routes", []byte("b")); err != nil || value != nil {
+		t.Fatalf("route b = %q, %v; want delete", value, err)
 	}
 	if _, ok := client.knownKeys["/apisix/routes/a"]; !ok {
 		t.Fatal("knownKeys does not retain the put key")
@@ -247,12 +238,145 @@ func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
 	if client.lastRevision != 14 {
 		t.Fatalf("lastRevision = %d, want header revision 14", client.lastRevision)
 	}
-	store.PutBack(first)
-	store.PutBack(second)
+}
+
+func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{"/apisix/routes/old": {}},
+		lastRevision: 10,
+	}
+	err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 14},
+		Events: []*clientv3.Event{
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/routes/good"),
+					Value:       []byte(`{"id":"good"}`),
+					ModRevision: 12,
+				},
+			},
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/ssls/bad"),
+					Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+					ModRevision: 13,
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("applyWatchResponse() error = nil, want second event failure")
+	}
+	if client.lastRevision != 10 {
+		t.Fatalf("lastRevision = %d, want unchanged 10", client.lastRevision)
+	}
+	if _, ok := client.knownKeys["/apisix/routes/good"]; ok {
+		t.Fatal("knownKeys committed partial batch")
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
+		t.Fatalf("durable first event = %q, %v; want acknowledged partial event", value, err)
+	}
+}
+
+func TestApplySnapshotStagesStateUntilEveryEventAcknowledges(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{"/apisix/routes/old": {}},
+		lastRevision: 10,
+	}
+	err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 14},
+		Kvs: []*mvccpb.KeyValue{
+			{
+				Key:         []byte("/apisix/routes/good"),
+				Value:       []byte(`{"id":"good"}`),
+				ModRevision: 12,
+			},
+			{
+				Key:         []byte("/apisix/ssls/bad"),
+				Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+				ModRevision: 13,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("applySnapshot() error = nil, want second event failure")
+	}
+	if client.lastRevision != 10 {
+		t.Fatalf("lastRevision = %d, want unchanged 10", client.lastRevision)
+	}
+	if len(client.knownKeys) != 1 {
+		t.Fatalf("knownKeys = %v, want only previous key", client.knownKeys)
+	}
+	if _, ok := client.knownKeys["/apisix/routes/old"]; !ok {
+		t.Fatal("knownKeys lost previous key after failed snapshot")
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
+		t.Fatalf("durable first snapshot event = %q, %v; want acknowledged partial event", value, err)
+	}
+}
+
+func TestWatchRecoversSnapshotAfterApplyFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	storage, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:         "/apisix",
+		events:         events,
+		knownKeys:      map[string]struct{}{},
+		lastRevision:   4,
+		requestTimeout: time.Second,
+	}
+	var opens atomic.Int32
+	var resumed int64
+	client.openWatch = func(_ context.Context, revision int64) clientv3.WatchChan {
+		stream := make(chan clientv3.WatchResponse, 1)
+		if opens.Add(1) == 1 {
+			stream <- clientv3.WatchResponse{
+				Header: etcdserverpb.ResponseHeader{Revision: 6},
+				Events: []*clientv3.Event{
+					{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/good"), Value: []byte(`{"id":"good"}`), ModRevision: 5}},
+					{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/ssls/bad"), Value: []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`), ModRevision: 6}},
+				},
+			}
+			close(stream)
+			return stream
+		}
+		resumed = revision
+		cancel()
+		close(stream)
+		return stream
+	}
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		return &clientv3.GetResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: 8},
+			Kvs: []*mvccpb.KeyValue{{
+				Key:         []byte("/apisix/routes/good"),
+				Value:       []byte(`{"id":"recovered"}`),
+				ModRevision: 8,
+			}},
+		}, nil
+	}
+
+	client.Watch(ctx)
+	if resumed != 9 {
+		t.Fatalf("recovered watch revision = %d, want 9", resumed)
+	}
+	recovered, err := storage.GetFromBucket("routes", []byte("good"))
+	if err != nil || string(recovered) != `{"id":"recovered"}` {
+		t.Fatalf("recovered route = %q, %v", recovered, err)
+	}
 }
 
 func TestFetchAllRetriesThenAppliesSnapshot(t *testing.T) {
-	events := make(chan *store.Event, 4)
+	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
 		prefix:         "/apisix",
 		events:         events,
@@ -282,19 +406,15 @@ func TestFetchAllRetriesThenAppliesSnapshot(t *testing.T) {
 	if loads.Load() != 2 {
 		t.Fatalf("snapshot loads = %d, want retry on first failure", loads.Load())
 	}
-	deleted := <-events
-	created := <-events
-	if deleted.Type != store.EventTypeDelete || string(deleted.Key) != "/apisix/routes/stale" {
-		t.Fatalf("delete event = %s", deleted)
+	if value, err := storage.GetFromBucket("routes", []byte("stale")); err != nil || value != nil {
+		t.Fatalf("stale route = %q, %v; want delete", value, err)
 	}
-	if created.Type != store.EventTypePut || string(created.Key) != "/apisix/routes/fresh" {
-		t.Fatalf("put event = %s", created)
+	if value, err := storage.GetFromBucket("routes", []byte("fresh")); err != nil || string(value) != `{"id":"fresh"}` {
+		t.Fatalf("fresh route = %q, %v; want put", value, err)
 	}
 	if client.lastRevision != 20 {
 		t.Fatalf("lastRevision = %d, want 20", client.lastRevision)
 	}
-	store.PutBack(deleted)
-	store.PutBack(created)
 }
 
 func TestFetchAllWithoutRetryPropagatesSnapshotError(t *testing.T) {
@@ -400,9 +520,21 @@ func TestSendEventHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	client := &ConfigClient{events: make(chan *store.Event)}
-	if client.sendEvent(ctx, store.EventTypePut, []byte("k"), []byte("v")) {
-		t.Fatal("sendEvent() = true with a canceled context")
+	if err := client.sendEvent(ctx, store.EventTypePut, []byte("k"), []byte("v")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sendEvent() error = %v, want context.Canceled", err)
 	}
+}
+
+func newWatcherStore(t *testing.T) (*store.Store, chan *store.Event) {
+	t.Helper()
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/watcher.db", events)
+	if err != nil {
+		t.Fatalf("open watcher store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	return storage, events
 }
 
 func TestNewTLSConfigLoadsCertificateAndRejectsMissingFiles(t *testing.T) {

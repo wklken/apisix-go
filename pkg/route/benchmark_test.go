@@ -205,7 +205,9 @@ func BenchmarkRouteBuildIndexes(b *testing.B) {
 		for _, id := range ids {
 			del(bucket, id)
 		}
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			b.Fatalf("Sync() error = %v", err)
+		}
 	}
 	seedRoutes := func(count int, withCors bool) []string {
 		ids := make([]string, count)
@@ -218,7 +220,9 @@ func BenchmarkRouteBuildIndexes(b *testing.B) {
 			}
 			put("routes", id, []byte(`{"id":"`+id+`","uri":"/bench/`+id+`","plugins":`+plugins+`}`))
 		}
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			b.Fatalf("Sync() error = %v", err)
+		}
 		return ids
 	}
 	seedRules := func(count int) []string {
@@ -228,12 +232,16 @@ func BenchmarkRouteBuildIndexes(b *testing.B) {
 			ids[i] = id
 			put("global_rules", id, []byte(`{"id":"`+id+`","plugins":{}}`))
 		}
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			b.Fatalf("Sync() error = %v", err)
+		}
 		return ids
 	}
 	seedMetadata := func() {
 		put("plugin_metadata", "cors", []byte(`{"id":"cors","allow_origins":{"key":"https://a.example.com"}}`))
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			b.Fatalf("Sync() error = %v", err)
+		}
 	}
 
 	build := func(b *testing.B) {

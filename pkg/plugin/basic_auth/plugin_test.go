@@ -92,7 +92,9 @@ func addBasicAuthConsumerWithoutResolving(t *testing.T, username, password strin
 	event.Key = []byte("/apisix/consumers/" + username)
 	event.Value = body
 	testEvents <- event
-	testStore.Sync()
+	if err := testStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	if _, err := testStore.GetConsumerNameByPluginKey(name, username); err != nil {
 		t.Fatalf("consumer %q was not indexed for basic-auth: %v", username, err)
 	}
@@ -225,7 +227,9 @@ func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
 	event.Key = []byte("/apisix/consumers/basic-late-env-user")
 	event.Value = body
 	testEvents <- event
-	testStore.Sync()
+	if err := testStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	if _, err := testStore.GetConsumerNameByPluginKey(name, "basic-late-env-user"); err != nil {
 		t.Fatalf("raw consumer index was not installed: %v", err)
 	}

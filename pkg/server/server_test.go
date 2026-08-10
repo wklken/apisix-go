@@ -417,10 +417,10 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var calls []string
-			applyStandaloneSnapshot(
+			_ = applyStandaloneSnapshot(
 				test.result,
 				test.err,
-				func() { calls = append(calls, "sync") },
+				func() error { calls = append(calls, "sync"); return nil },
 				func() { calls = append(calls, "routes") },
 				func() { calls = append(calls, "streams") },
 			)
@@ -506,7 +506,9 @@ func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 	put("ssls", "ssl-wild", ssl("ssl-wild", []string{"*.example.test"}, 1))
 	put("ssls", "ssl-exact", ssl("ssl-exact", []string{"api.example.test"}, 1))
 	put("ssls", "ssl-disabled", ssl("ssl-disabled", []string{"disabled.example.org"}, 0))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("SSL storage sync: %v", err)
+	}
 
 	getCertificate := frontendTLSConfig().GetCertificate
 	selected, err := getCertificate(&tls.ClientHelloInfo{ServerName: "api.example.test"})

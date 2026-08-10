@@ -69,6 +69,35 @@ func addBasicAuthConsumer(t *testing.T, username, password string) {
 	t.Fatalf("consumer %q was not indexed for basic-auth", username)
 }
 
+func addBasicAuthConsumerWithoutResolving(t *testing.T, username, password string) {
+	t.Helper()
+	setupStore(t)
+
+	consumer := map[string]any{
+		"username": username,
+		"plugins": map[string]any{
+			"basic-auth": map[string]any{
+				"username": username,
+				"password": password,
+			},
+		},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/" + username)
+	event.Value = body
+	testEvents <- event
+	testStore.Sync()
+	if _, err := testStore.GetConsumerNameByPluginKey(name, username); err != nil {
+		t.Fatalf("consumer %q was not indexed for basic-auth: %v", username, err)
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -369,6 +398,102 @@ func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
+	const unresolvedPasswordEnv = "BASIC_AUTH_HIDDEN_CREDENTIALS_TEST_PASSWORD"
+	previous, existed := os.LookupEnv(unresolvedPasswordEnv)
+	if err := os.Unsetenv(unresolvedPasswordEnv); err != nil {
+		t.Fatalf("Unsetenv() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(unresolvedPasswordEnv, previous)
+		} else {
+			_ = os.Unsetenv(unresolvedPasswordEnv)
+		}
+	})
+
+	addBasicAuthConsumer(t, "hide-fallback-wrong-password", "secret")
+	addBasicAuthConsumerWithoutResolving(t, "hide-fallback-invalid-config", "$ENV://"+unresolvedPasswordEnv)
+	addBasicAuthConsumer(t, "hide-fallback-anonymous", "unused")
+	hideCredentials := true
+
+	tests := []struct {
+		name              string
+		username          string
+		password          string
+		anonymousConsumer string
+		wantCode          int
+		wantConsumer      string
+	}{
+		{
+			name:              "unknown user",
+			username:          "hide-fallback-unknown-user",
+			password:          "secret",
+			anonymousConsumer: "hide-fallback-anonymous",
+			wantCode:          http.StatusNoContent,
+			wantConsumer:      "hide-fallback-anonymous",
+		},
+		{
+			name:              "wrong password",
+			username:          "hide-fallback-wrong-password",
+			password:          "wrong",
+			anonymousConsumer: "hide-fallback-anonymous",
+			wantCode:          http.StatusNoContent,
+			wantConsumer:      "hide-fallback-anonymous",
+		},
+		{
+			name:              "consumer config resolution failure",
+			username:          "hide-fallback-invalid-config",
+			password:          "secret",
+			anonymousConsumer: "hide-fallback-anonymous",
+			wantCode:          http.StatusNoContent,
+			wantConsumer:      "hide-fallback-anonymous",
+		},
+		{
+			name:              "anonymous consumer missing",
+			username:          "hide-fallback-unknown-anonymous",
+			password:          "secret",
+			anonymousConsumer: "hide-fallback-missing-anonymous",
+			wantCode:          http.StatusUnauthorized,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			request = ctx.WithApisixVars(request, map[string]string{})
+			request.Header.Set("Authorization", basicHeader(test.username, test.password))
+			response := httptest.NewRecorder()
+			nextCalled := false
+
+			p := newTestPlugin(t, Config{
+				HideCredentials:   &hideCredentials,
+				AnonymousConsumer: test.anonymousConsumer,
+			})
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				if got := r.Header.Get("Authorization"); got != "" {
+					t.Fatalf("Authorization = %q, want removed", got)
+				}
+				if got := ctx.GetApisixVar(r, "$consumer_name"); got != test.wantConsumer {
+					t.Fatalf("consumer_name = %v, want %q", got, test.wantConsumer)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, request)
+
+			if response.Code != test.wantCode {
+				t.Fatalf("response code = %d, want %d; body=%s", response.Code, test.wantCode, response.Body.String())
+			}
+			if got := request.Header.Get("Authorization"); got != "" {
+				t.Fatalf("request Authorization = %q, want removed", got)
+			}
+			if nextCalled != (test.wantConsumer != "") {
+				t.Fatalf("nextCalled = %v, want %v", nextCalled, test.wantConsumer != "")
+			}
+		})
 	}
 }
 

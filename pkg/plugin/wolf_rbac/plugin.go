@@ -130,6 +130,13 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := p.config.HeaderPrefix
+		if prefix == "" {
+			prefix = "X-"
+		}
+		clearUserHeaders(r, prefix)
+		clearResponseHeaders(w, prefix)
+
 		rawToken := fetchRBACToken(r)
 		if rawToken == "" {
 			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Missing rbac token in request")
@@ -148,13 +155,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Invalid appid in rbac token")
 			return
 		}
+		clearUserHeaders(r, cfg.headerPrefix())
+		clearResponseHeaders(w, cfg.headerPrefix())
 
 		status, reason, userInfo, err := p.checkPermission(r, cfg, token)
 		if err != nil {
-			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if err := p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo); err != nil {
 			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -164,6 +169,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			logger.Errorf("wolf-rbac permission denied, status:%d, reason:%s", status, reason)
 			_ = util.WriteJSONMessage(w, status, reason)
+			return
+		}
+		if err := p.setUserHeaders(w, r, cfg.headerPrefix(), userInfo); err != nil {
+			_ = util.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -305,22 +314,34 @@ func insecureWolfClient(base *http.Client) *http.Client {
 
 func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix string, userInfo map[string]any) error {
 	if len(userInfo) == 0 {
-		return nil
+		return fmt.Errorf("wolf-rbac userinfo is missing")
 	}
 
 	userID, err := identityFieldString(userInfo["id"], "id")
 	if err != nil {
 		return err
 	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "id")
+	}
 	username, err := identityFieldString(userInfo["username"], "username")
 	if err != nil {
 		return err
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "username")
 	}
 	nickname := username
 	if userInfo["nickname"] != nil {
 		nickname, err = identityFieldString(userInfo["nickname"], "nickname")
 		if err != nil {
 			return err
+		}
+		nickname = strings.TrimSpace(nickname)
+		if nickname == "" {
+			nickname = username
 		}
 	}
 	escapedNickname := url.QueryEscape(nickname)
@@ -335,6 +356,18 @@ func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix s
 		r.Header.Set(key, value)
 	}
 	return nil
+}
+
+func clearUserHeaders(r *http.Request, prefix string) {
+	for _, suffix := range []string{"UserId", "Username", "Nickname"} {
+		r.Header.Del(prefix + suffix)
+	}
+}
+
+func clearResponseHeaders(w http.ResponseWriter, prefix string) {
+	for _, suffix := range []string{"UserId", "Username", "Nickname"} {
+		w.Header().Del(prefix + suffix)
+	}
 }
 
 func identityFieldString(value any, name string) (string, error) {

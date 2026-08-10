@@ -919,6 +919,79 @@ func TestHandlerValidatesIssuerAgainstConfiguredIssuers(t *testing.T) {
 	}
 }
 
+func TestValidateIssuerRequiresConfiguredIssuerClaim(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured []any
+		discovery  string
+		issuer     string
+		wantActive bool
+	}{
+		{
+			name:       "configured issuer rejects missing claim",
+			configured: []any{"https://issuer.example.test"},
+			wantActive: false,
+		},
+		{
+			name:       "configured issuer accepts matching claim",
+			configured: []any{"https://issuer.example.test"},
+			issuer:     "https://issuer.example.test",
+			wantActive: true,
+		},
+		{
+			name:       "configured issuer rejects mismatched claim",
+			configured: []any{"https://issuer.example.test"},
+			issuer:     "https://other.example.test",
+			wantActive: false,
+		},
+		{
+			name:       "discovery issuer rejects missing claim",
+			discovery:  "https://issuer.example.test",
+			wantActive: false,
+		},
+		{
+			name:       "discovery issuer accepts matching claim",
+			discovery:  "https://issuer.example.test",
+			issuer:     "https://issuer.example.test",
+			wantActive: true,
+		},
+		{
+			name:       "no issuer constraint accepts missing claim",
+			wantActive: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var claimValidator map[string]any
+			if test.configured != nil {
+				claimValidator = map[string]any{
+					"issuer": map[string]any{
+						"valid_issuers": test.configured,
+					},
+				}
+			}
+			p := &Plugin{
+				config: Config{ClaimValidator: claimValidator},
+				discovery: discoveryData{
+					Issuer: test.discovery,
+				},
+				discoveryLoaded: true,
+			}
+			payload := map[string]any{"active": true}
+			if test.issuer != "" {
+				payload["iss"] = test.issuer
+			}
+
+			p.validateIssuer(payload)
+
+			if got := payload["active"]; got != test.wantActive {
+				t.Fatalf("active = %#v, want %t", got, test.wantActive)
+			}
+		})
+	}
+}
+
 func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		ClientID:     "apisix",

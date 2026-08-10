@@ -219,12 +219,9 @@ func parsePublicKey(publicKeyBytes []byte) (any, error) {
 
 func (p *Plugin) validateIssuer(payload map[string]any) {
 	issuer, _ := payload["iss"].(string)
-	if issuer == "" {
-		return
-	}
 	configured, _ := p.configuredIssuers()
 	if len(configured) > 0 {
-		if !slices.Contains(configured, issuer) {
+		if issuer == "" || !slices.Contains(configured, issuer) {
 			payload["active"] = false
 		}
 		return
@@ -233,7 +230,7 @@ func (p *Plugin) validateIssuer(payload map[string]any) {
 	if err != nil || discovery.Issuer == "" {
 		return
 	}
-	if issuer != discovery.Issuer {
+	if issuer == "" || issuer != discovery.Issuer {
 		payload["active"] = false
 	}
 }

@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,6 +73,20 @@ type StandaloneFileWatcher struct {
 	current              standaloneSnapshot
 	onReload             func(StandaloneReloadResult, error)
 	onAcknowledgedReload func(StandaloneReloadResult, error) error
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	lifecycleMu sync.Mutex
+	watcher     *fsnotify.Watcher
+	started     bool
+	stopped     bool
+	startOnce   sync.Once
+	stopOnce    sync.Once
+	doneOnce    sync.Once
+	startErr    error
+	stopErr     error
 }
 
 func StandaloneConfigFile(provider string) string {
@@ -84,13 +100,32 @@ func StandaloneConfigFile(provider string) string {
 	}
 }
 
+// StandaloneBuckets returns the buckets owned by the standalone configuration
+// file. The returned slice is independent from the package-level definition.
+func StandaloneBuckets() []string {
+	return append([]string(nil), standaloneBuckets...)
+}
+
 func NewStandaloneFileWatcher(path, provider string, events chan *store.Event) *StandaloneFileWatcher {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &StandaloneFileWatcher{
 		path:     path,
 		provider: strings.ToLower(strings.TrimSpace(provider)),
 		events:   events,
 		current:  make(standaloneSnapshot),
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
 	}
+}
+
+// SeedCurrentSnapshot sets the last-good standalone baseline. All map and byte
+// slices are cloned so callers can safely reuse or mutate their input.
+func (w *StandaloneFileWatcher) SeedCurrentSnapshot(snapshot map[string]map[string][]byte) {
+	cloned := cloneStandaloneSnapshot(snapshot)
+	w.mu.Lock()
+	w.current = cloned
+	w.mu.Unlock()
 }
 
 func (w *StandaloneFileWatcher) Reload() error {
@@ -102,34 +137,36 @@ func (w *StandaloneFileWatcher) Reload() error {
 func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error) {
 	w.reloadMu.Lock()
 	defer w.reloadMu.Unlock()
-	return w.reloadSnapshot()
+	result, _, err := w.reloadSnapshot()
+	return result, err
 }
 
-func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, error) {
+func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standaloneSnapshot, error) {
 	next, err := readStandaloneSnapshot(w.path, w.provider)
 	if err != nil {
-		return StandaloneReloadResult{}, err
+		return StandaloneReloadResult{}, nil, err
 	}
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	previous := w.current
 	result := StandaloneReloadResult{}
+	events := make([]*store.Event, 0)
 	for _, bucket := range standaloneBuckets {
-		previous := w.current[bucket]
+		previousBucket := previous[bucket]
 		updated := next[bucket]
 		changed := false
 
-		for _, id := range sortedSnapshotIDs(previous) {
+		for _, id := range sortedSnapshotIDs(previousBucket) {
 			if _, ok := updated[id]; !ok {
-				w.emit(store.EventTypeDelete, bucket, id, nil)
+				events = append(events, newStandaloneEvent(store.EventTypeDelete, bucket, id, nil))
 				changed = true
 			}
 		}
 		for _, id := range sortedSnapshotIDs(updated) {
-			if previousValue, ok := previous[id]; ok && bytes.Equal(previousValue, updated[id]) {
+			if previousValue, ok := previousBucket[id]; ok && bytes.Equal(previousValue, updated[id]) {
 				continue
 			}
-			w.emit(store.EventTypePut, bucket, id, updated[id])
+			events = append(events, newStandaloneEvent(store.EventTypePut, bucket, id, updated[id]))
 			changed = true
 		}
 		if changed && store.IsHTTPRouteReloadBucket(bucket) {
@@ -139,8 +176,28 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, error)
 			result.ChangedStreamBuckets = append(result.ChangedStreamBuckets, bucket)
 		}
 	}
+	w.mu.Unlock()
+
+	for index, event := range events {
+		enqueued, err := w.enqueueAndWait(event)
+		if err != nil {
+			if !enqueued {
+				store.PutBack(event)
+			}
+			for _, pending := range events[index+1:] {
+				store.PutBack(pending)
+			}
+			return result, previous, err
+		}
+	}
+	if err := w.contextErr(); err != nil {
+		return result, previous, err
+	}
+
+	w.mu.Lock()
 	w.current = next
-	return result, nil
+	w.mu.Unlock()
+	return result, previous, nil
 }
 
 func (w *StandaloneFileWatcher) SetReloadCallback(callback func(StandaloneReloadResult, error)) {
@@ -162,52 +219,114 @@ func (w *StandaloneFileWatcher) SetAcknowledgedReloadCallback(
 	w.onAcknowledgedReload = callback
 }
 
-func (w *StandaloneFileWatcher) Watch() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
-		return
-	}
-	if err := watcher.Add(filepath.Dir(w.path)); err != nil {
-		_ = watcher.Close()
-		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
-		return
-	}
-	w.reloadAndNotify()
+// Start registers the standalone file watcher. It is safe to call more than
+// once; only the first call acquires filesystem resources.
+func (w *StandaloneFileWatcher) Start() error {
+	w.startOnce.Do(func() {
+		w.lifecycleMu.Lock()
+		if w.stopped {
+			w.lifecycleMu.Unlock()
+			return
+		}
 
-	configuredBase := filepath.Base(w.path)
-	go func() {
-		defer func() {
-			_ = watcher.Close()
-		}()
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				if filepath.Base(event.Name) != configuredBase ||
-					!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
-					continue
-				}
-				w.reloadAndNotify()
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				logger.Errorf("watch standalone config %q failed: %s", w.path, err)
+		watcher, err := fsnotify.NewWatcher()
+		if err == nil {
+			err = watcher.Add(filepath.Dir(w.path))
+		}
+		if err != nil {
+			if watcher != nil {
+				_ = watcher.Close()
+			}
+			w.startErr = fmt.Errorf("watch standalone config %q failed: %w", w.path, err)
+			w.started = true
+			w.lifecycleMu.Unlock()
+			w.closeDone()
+			return
+		}
+
+		w.watcher = watcher
+		w.started = true
+		w.lifecycleMu.Unlock()
+		go w.watchLoop(watcher)
+	})
+	return w.startErr
+}
+
+// Stop cancels and joins the file watcher. It never closes the shared Store
+// event channel and is safe before Start or when called repeatedly.
+func (w *StandaloneFileWatcher) Stop() error {
+	w.stopOnce.Do(func() {
+		w.lifecycleMu.Lock()
+		w.stopped = true
+		started := w.started
+		watcher := w.watcher
+		w.lifecycleMu.Unlock()
+
+		w.cancel()
+		if watcher != nil {
+			if err := watcher.Close(); err != nil && !errors.Is(err, fsnotify.ErrClosed) {
+				w.stopErr = err
 			}
 		}
+		if !started {
+			w.closeDone()
+			return
+		}
+		<-w.done
+	})
+	return w.stopErr
+}
+
+// Watch preserves the historical logging-only API while Start exposes setup
+// errors to lifecycle owners such as Server.
+func (w *StandaloneFileWatcher) Watch() {
+	if err := w.Start(); err != nil {
+		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
+		return
+	}
+	// Preserve the historical Watch behavior of reconciling once immediately
+	// after registration. Server uses Start directly after its explicit initial
+	// load and therefore does not rely on this compatibility pass.
+	w.reloadAndNotify()
+}
+
+func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
+	defer w.closeDone()
+	defer func() {
+		_ = watcher.Close()
+		w.lifecycleMu.Lock()
+		if w.watcher == watcher {
+			w.watcher = nil
+		}
+		w.lifecycleMu.Unlock()
 	}()
+
+	configuredBase := filepath.Base(w.path)
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if filepath.Base(event.Name) != configuredBase ||
+				!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
+				continue
+			}
+			w.reloadAndNotify()
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logger.Errorf("watch standalone config %q failed: %s", w.path, err)
+		}
+	}
 }
 
 func (w *StandaloneFileWatcher) reloadAndNotify() {
 	w.reloadMu.Lock()
-
-	w.mu.Lock()
-	previous := w.current
-	w.mu.Unlock()
-	result, err := w.reloadSnapshot()
+	result, previous, err := w.reloadSnapshot()
 	if err != nil {
 		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
 	}
@@ -230,12 +349,50 @@ func (w *StandaloneFileWatcher) reloadAndNotify() {
 	w.reloadMu.Unlock()
 }
 
-func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {
-	event := store.NewEvent()
+func (w *StandaloneFileWatcher) enqueueAndWait(event *store.Event) (bool, error) {
+	select {
+	case w.events <- event:
+		return true, event.Wait(w.ctx)
+	case <-w.ctx.Done():
+		return false, w.ctx.Err()
+	}
+}
+
+func (w *StandaloneFileWatcher) contextErr() error {
+	select {
+	case <-w.ctx.Done():
+		return w.ctx.Err()
+	default:
+		return nil
+	}
+}
+
+func (w *StandaloneFileWatcher) closeDone() {
+	w.doneOnce.Do(func() { close(w.done) })
+}
+
+func newStandaloneEvent(eventType store.EventType, bucket, id string, value []byte) *store.Event {
+	event := store.NewAcknowledgedEvent()
 	event.Type = eventType
 	event.Key = []byte("/apisix/" + bucket + "/" + id)
 	event.Value = append([]byte(nil), value...)
-	w.events <- event
+	return event
+}
+
+func cloneStandaloneSnapshot(snapshot map[string]map[string][]byte) standaloneSnapshot {
+	cloned := make(standaloneSnapshot, len(snapshot))
+	for bucket, resources := range snapshot {
+		if resources == nil {
+			cloned[bucket] = nil
+			continue
+		}
+		clonedResources := make(map[string][]byte, len(resources))
+		for id, value := range resources {
+			clonedResources[id] = append([]byte(nil), value...)
+		}
+		cloned[bucket] = clonedResources
+	}
+	return cloned
 }
 
 func standaloneProviderFromPath(path string) string {

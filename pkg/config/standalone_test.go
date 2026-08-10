@@ -1,18 +1,260 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
+	events := make(chan *store.Event)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- watcher.Reload() }()
+	waitForStandaloneReloadBlocked(t, watcher)
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case err := <-reloadDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Reload() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload() remained blocked after watcher cancellation")
+	}
+}
+
+func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
+	events := make(chan *store.Event, 1)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- watcher.Reload() }()
+	var queued *store.Event
+	select {
+	case queued = <-events:
+	case <-time.After(time.Second):
+		t.Fatal("Reload() did not enqueue an acknowledged event")
+	}
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case err := <-reloadDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Reload() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload() remained blocked in Event.Wait after cancellation")
+	}
+	store.PutBack(queued)
+}
+
+func TestStandaloneReloadDoesNotHoldStateMutexWhileSendBlocked(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
+	events := make(chan *store.Event)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- watcher.Reload() }()
+	mutexAvailable := make(chan struct{})
+	go func() {
+		watcher.mu.Lock()
+		close(mutexAvailable)
+		watcher.mu.Unlock()
+	}()
+	select {
+	case <-mutexAvailable:
+	case <-time.After(time.Second):
+		t.Fatal("state mutex remained locked while event send was blocked")
+	}
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-reloadDone:
+	case <-time.After(time.Second):
+		t.Fatal("Reload() remained blocked after watcher cancellation")
+	}
+}
+
+func TestStandaloneFailedSecondEventRetainsBaselineForReplay(t *testing.T) {
+	path := writeStandaloneTestConfig(t, `routes:
+  - id: route-1
+    uri: /orders
+ssls:
+  - id: ssl-1
+    status: 1
+    cert: invalid
+    key: invalid
+#END
+`)
+	events := make(chan *store.Event, 4)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	var routePuts atomic.Int32
+	storage.AddEventUpdateHook(func(event *store.Event) {
+		if event.Type == store.EventTypePut && string(event.Key) == "/apisix/routes/route-1" {
+			routePuts.Add(1)
+		}
+	})
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Reload(); err == nil {
+		t.Fatal("Reload() error = nil, want second-event acknowledgement failure")
+	}
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+		t.Fatalf("route after partial apply = %q, %v; want durable first event", route, err)
+	}
+
+	if err := os.WriteFile(path, []byte(`routes:
+  - id: route-1
+    uri: /orders
+ssls:
+  - id: ssl-1
+    status: 1
+    cert: invalid
+    key: invalid
+#END
+`), 0o600); err != nil {
+		t.Fatalf("rewrite standalone config: %v", err)
+	}
+	if err := watcher.Reload(); err == nil {
+		t.Fatal("second Reload() error = nil, want SSL acknowledgement failure")
+	}
+	if got := routePuts.Load(); got != 2 {
+		t.Fatalf("route PUT applications = %d, want 2 replayed applications", got)
+	}
+	// The route remains part of the replay because the failed batch never
+	// committed its full snapshot baseline.
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+		t.Fatalf("route after replay attempt = %q, %v; want durable route", route, err)
+	}
+}
+
+func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
+	watcher := NewStandaloneFileWatcher(filepath.Join(t.TempDir(), "apisix.yaml"), "yaml", make(chan *store.Event))
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("Stop() before Start error = %v", err)
+	}
+	if err := watcher.Stop(); err != nil {
+		t.Fatalf("repeated Stop() error = %v", err)
+	}
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start() after Stop() error = %v", err)
+	}
+}
+
+func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
+	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
+	snapshot, err := readStandaloneSnapshot(path, "yaml")
+	if err != nil {
+		t.Fatalf("readStandaloneSnapshot() error = %v", err)
+	}
+	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event))
+	watcher.SeedCurrentSnapshot(snapshot)
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
+		close(callbackEntered)
+		<-releaseCallback
+	})
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /orders\n#END\n"), 0o600); err != nil {
+		t.Fatalf("rewrite standalone config: %v", err)
+	}
+	select {
+	case <-callbackEntered:
+	case <-time.After(time.Second):
+		t.Fatal("watch callback did not start")
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- watcher.Stop() }()
+	select {
+	case err := <-stopDone:
+		t.Fatalf("Stop() returned before watch callback exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseCallback)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not wait for watch goroutine exit")
+	}
+}
+
+func writeStandaloneTestConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+	return path
+}
+
+func waitForStandaloneReloadBlocked(t *testing.T, watcher *StandaloneFileWatcher) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !watcher.reloadMu.TryLock() {
+			if watcher.mu.TryLock() {
+				watcher.mu.Unlock()
+				return
+			}
+		} else {
+			watcher.reloadMu.Unlock()
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("standalone reload did not reach its blocked send")
+}
+
+func newStandaloneTestStore(t *testing.T, events chan *store.Event) *store.Store {
+	t.Helper()
+	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() {
+		if err := storage.Stop(); err != nil {
+			t.Errorf("Store.Stop() error = %v", err)
+		}
+	})
+	return storage
+}
 
 func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
@@ -22,6 +264,7 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 	}
 
 	events := make(chan *store.Event, 2)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	var attempts []StandaloneReloadResult
 	watcher.SetAcknowledgedReloadCallback(func(result StandaloneReloadResult, err error) error {
@@ -37,6 +280,9 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 
 	watcher.reloadAndNotify()
 	watcher.reloadAndNotify()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Store.Sync() error = %v", err)
+	}
 	if len(attempts) != 2 {
 		t.Fatalf("reload attempts = %d, want 2", len(attempts))
 	}
@@ -54,7 +300,9 @@ func TestStandaloneLegacyReloadCallbackCanReenterReload(t *testing.T) {
 		t.Fatalf("write standalone config: %v", err)
 	}
 
-	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event, 1))
+	events := make(chan *store.Event, 1)
+	newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	done := make(chan error, 1)
 	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
 		_, err := watcher.ReloadSnapshot()
@@ -127,23 +375,21 @@ upstreams:
 			}
 
 			events := make(chan *store.Event, 8)
+			storage := newStandaloneTestStore(t, events)
 			watcher := NewStandaloneFileWatcher(path, tt.provider, events)
 			if err := watcher.Reload(); err != nil {
 				t.Fatalf("Reload() error = %v", err)
 			}
 
-			got := collectStandaloneEvents(events)
-			if len(got) != 2 {
-				t.Fatalf("loaded event count = %d, want 2", len(got))
+			if err := storage.Sync(); err != nil {
+				t.Fatalf("Store.Sync() error = %v", err)
 			}
-			for _, key := range []string{"/apisix/routes/1", "/apisix/upstreams/2"} {
-				if _, ok := got[key]; !ok {
-					t.Fatalf("loaded events do not contain %q: %#v", key, got)
-				}
+			raw, err := storage.GetFromBucket("routes", []byte("1"))
+			if err != nil {
+				t.Fatalf("GetFromBucket(routes) error = %v", err)
 			}
-
 			var route map[string]any
-			if err := json.Unmarshal(got["/apisix/routes/1"].Value, &route); err != nil {
+			if err := json.Unmarshal(raw, &route); err != nil {
 				t.Fatalf("decode loaded route: %v", err)
 			}
 			if got, want := route["id"], "1"; got != want {
@@ -179,12 +425,15 @@ func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
 	}
 
 	events := make(chan *store.Event, 2)
+	storage := newStandaloneTestStore(t, events)
 	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
-	got := collectStandaloneEvents(events)
-	if _, ok := got["/apisix/secrets/vault/test1"]; !ok {
-		t.Fatalf("loaded events = %#v, want Vault secret resource", got)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Store.Sync() error = %v", err)
+	}
+	if got, err := storage.GetFromBucket("secrets", []byte("vault/test1")); err != nil || len(got) == 0 {
+		t.Fatalf("stored secret = %q, %v; want Vault secret resource", got, err)
 	}
 }
 
@@ -211,11 +460,17 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	}
 
 	events := make(chan *store.Event, 2)
+	storage := newStandaloneTestStore(t, events)
 	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
-	got := collectStandaloneEvents(events)
-	raw := got["/apisix/routes/route-1"].Value
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Store.Sync() error = %v", err)
+	}
+	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("GetFromBucket(routes) error = %v", err)
+	}
 	if strings.Contains(string(raw), "redis-plaintext") ||
 		strings.Contains(string(raw), "sentinel-plaintext") ||
 		strings.Contains(string(raw), "loggly-plaintext") {
@@ -332,11 +587,14 @@ upstreams:
 	}
 
 	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
-	collectStandaloneEvents(events)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
 
 	updated := `routes:
   - id: route-2
@@ -349,16 +607,23 @@ upstreams:
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("updated Reload() error = %v", err)
 	}
-
-	got := collectStandaloneEvents(events)
-	if got["/apisix/routes/route-1"].Type != store.EventTypeDelete {
-		t.Fatalf("removed route event = %#v, want delete", got["/apisix/routes/route-1"])
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("updated Store.Sync() error = %v", err)
 	}
-	if got["/apisix/upstreams/upstream-1"].Type != store.EventTypeDelete {
-		t.Fatalf("removed upstream event = %#v, want delete", got["/apisix/upstreams/upstream-1"])
+	for bucket, id := range map[string]string{
+		"routes":    "route-1",
+		"upstreams": "upstream-1",
+	} {
+		value, err := storage.GetFromBucket(bucket, []byte(id))
+		if err != nil {
+			t.Fatalf("GetFromBucket(%s/%s) error = %v", bucket, id, err)
+		}
+		if value != nil {
+			t.Fatalf("removed %s/%s = %q, want deleted", bucket, id, value)
+		}
 	}
-	if got["/apisix/routes/route-2"].Type != store.EventTypePut {
-		t.Fatalf("new route event = %#v, want put", got["/apisix/routes/route-2"])
+	if value, err := storage.GetFromBucket("routes", []byte("route-2")); err != nil || len(value) == 0 {
+		t.Fatalf("new route = %q, %v; want persisted route", value, err)
 	}
 }
 
@@ -381,6 +646,7 @@ plugin_metadata:
 	}
 
 	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
@@ -393,11 +659,9 @@ plugin_metadata:
 	if got, want := result.ChangedStreamBuckets, []string{"upstreams"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("changed stream buckets = %v, want %v", got, want)
 	}
-	if got := len(events); got != 3 {
-		t.Fatalf("queued event count at snapshot acknowledgement = %d, want 3", got)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
 	}
-
-	collectStandaloneEvents(events)
 	updated := `routes:
   - id: route-1
     uri: /two
@@ -424,8 +688,8 @@ plugin_metadata:
 	if len(result.ChangedStreamBuckets) != 0 {
 		t.Fatalf("updated changed stream buckets = %v, want none", result.ChangedStreamBuckets)
 	}
-	if got := len(events); got != 2 {
-		t.Fatalf("updated queued event count at snapshot acknowledgement = %d, want 2", got)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("updated Store.Sync() error = %v", err)
 	}
 }
 
@@ -441,11 +705,14 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 	}
 
 	events := make(chan *store.Event, 4)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	if _, err := watcher.ReloadSnapshot(); err != nil {
 		t.Fatalf("initial ReloadSnapshot() error = %v", err)
 	}
-	collectStandaloneEvents(events)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
 
 	updated := `plugin_metadata:
   - id: metadata-1
@@ -469,8 +736,8 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 	if len(result.ChangedStreamBuckets) != 0 {
 		t.Fatalf("metadata-only changed stream buckets = %v, want none", result.ChangedStreamBuckets)
 	}
-	if got := len(events); got != 1 {
-		t.Fatalf("metadata event count = %d, want 1", got)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("updated Store.Sync() error = %v", err)
 	}
 }
 
@@ -491,6 +758,7 @@ func TestStandaloneReloadSnapshotReportsStreamRoutesWithoutHTTPRoutes(t *testing
 	}
 
 	events := make(chan *store.Event, 2)
+	newStandaloneTestStore(t, events)
 	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
@@ -518,6 +786,7 @@ plugin_configs:
 	}
 
 	events := make(chan *store.Event, 4)
+	newStandaloneTestStore(t, events)
 	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
@@ -539,11 +808,15 @@ func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 	}
 
 	events := make(chan *store.Event, 4)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	t.Cleanup(func() { _ = watcher.Stop() })
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
-	collectStandaloneEvents(events)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
 
 	updated := "routes:\n  - id: route-1\n    uri: /two\n#END\n"
 	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
@@ -571,17 +844,19 @@ func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 		t.Fatal("Watch did not reconcile the update written before registration")
 	}
 
-	select {
-	case event := <-events:
-		var route map[string]any
-		if err := json.Unmarshal(event.Value, &route); err != nil {
-			t.Fatalf("decode reconciled route: %v", err)
-		}
-		if got, want := route["uri"], "/two"; got != want {
-			t.Fatalf("reconciled route URI = %#v, want %q", got, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Watch reconciliation did not emit the pre-registration update")
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("reconciled Store.Sync() error = %v", err)
+	}
+	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("GetFromBucket(routes) error = %v", err)
+	}
+	var route map[string]any
+	if err := json.Unmarshal(raw, &route); err != nil {
+		t.Fatalf("decode reconciled route: %v", err)
+	}
+	if got, want := route["uri"], "/two"; got != want {
+		t.Fatalf("reconciled route URI = %#v, want %q", got, want)
 	}
 }
 
@@ -597,7 +872,9 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 	}
 
 	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	t.Cleanup(func() { _ = watcher.Stop() })
 	type reloadAttempt struct {
 		result StandaloneReloadResult
 		err    error
@@ -609,7 +886,9 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
-	collectStandaloneEvents(events)
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
 	watcher.Watch()
 
 	invalid := []byte("routes:\n  - id: route-1\n    uri: /partial\n")
@@ -635,10 +914,8 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 	}
 
 invalidObserved:
-	select {
-	case event := <-events:
-		t.Fatalf("incomplete snapshot emitted event %#v", event)
-	default:
+	if value, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || string(value) == "" {
+		t.Fatalf("route after invalid replacement = %q, %v; want previous durable value", value, err)
 	}
 
 	updated := []byte(`routes:
@@ -666,20 +943,19 @@ invalidObserved:
 	}
 
 validObserved:
-	select {
-	case event := <-events:
-		if got, want := string(event.Key), "/apisix/routes/route-1"; got != want {
-			t.Fatalf("updated event key = %q, want %q", got, want)
-		}
-		var route map[string]any
-		if err := json.Unmarshal(event.Value, &route); err != nil {
-			t.Fatalf("decode updated route: %v", err)
-		}
-		if got, want := route["uri"], "/two"; got != want {
-			t.Fatalf("updated route URI = %#v, want %q", got, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("watcher did not recover after an atomic invalid replacement")
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("updated Store.Sync() error = %v", err)
+	}
+	value, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("GetFromBucket(routes) error = %v", err)
+	}
+	var route map[string]any
+	if err := json.Unmarshal(value, &route); err != nil {
+		t.Fatalf("decode updated route: %v", err)
+	}
+	if got, want := route["uri"], "/two"; got != want {
+		t.Fatalf("updated route URI = %#v, want %q", got, want)
 	}
 }
 
@@ -838,26 +1114,6 @@ func TestPluginMetadataYAMLRoundTrip(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "ID field is not string") {
 		t.Fatalf("UnmarshalYAML(non-string ID) error = %v", err)
-	}
-}
-
-type standaloneEvent struct {
-	Type  store.EventType
-	Value []byte
-}
-
-func collectStandaloneEvents(events chan *store.Event) map[string]standaloneEvent {
-	collected := make(map[string]standaloneEvent)
-	for {
-		select {
-		case event := <-events:
-			collected[string(event.Key)] = standaloneEvent{
-				Type:  event.Type,
-				Value: append([]byte(nil), event.Value...),
-			}
-		default:
-			return collected
-		}
 	}
 }
 

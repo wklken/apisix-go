@@ -26,6 +26,10 @@ type Store struct {
 	// Add other fields for kv storage in memory
 	db *bolt.DB
 
+	lifecycleMu sync.RWMutex
+	started     bool
+	stopped     bool
+
 	// stopProducers ends the event loop; it is closed once by Stop and is
 	// never closed while external producers may still send.
 	stopProducers chan struct{}
@@ -72,9 +76,11 @@ type Store struct {
 
 // should it be global store?
 var (
-	globalStoreMu     sync.Mutex
-	s                 *Store
-	errBucketNotFound = errors.New("bucket not found")
+	globalStoreMu      sync.Mutex
+	s                  *Store
+	errBucketNotFound  = errors.New("bucket not found")
+	errStoreNotStarted = errors.New("store is not started")
+	errStoreStopped    = errors.New("store is stopped")
 )
 
 // Open constructs a store that owns its database file. It has no global side
@@ -86,8 +92,9 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 		return nil, fmt.Errorf("open store database %q: %w", dbPath, err)
 	}
 	storage := &Store{
-		events: events,
-		db:     db,
+		events:        events,
+		db:            db,
+		stopProducers: make(chan struct{}),
 
 		consumerKV:              map[string][]byte{},
 		consumerToKeys:          map[string][]string{},
@@ -100,6 +107,10 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := storage.rebuildPersistedConsumerIndexes(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("rebuild persisted consumer indexes: %w", err)
+	}
 	storage.rebuildSSLCertificateIndex()
 	return storage, nil
 }
@@ -110,6 +121,14 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 func GetStore(dbPath string, events chan *Event) (*Store, error) {
 	globalStoreMu.Lock()
 	defer globalStoreMu.Unlock()
+	if s != nil {
+		s.lifecycleMu.RLock()
+		stopped := s.stopped
+		s.lifecycleMu.RUnlock()
+		if stopped {
+			return nil, errStoreStopped
+		}
+	}
 	if s == nil {
 		storage, err := Open(dbPath, events)
 		if err != nil {
@@ -226,12 +245,20 @@ func (s *Store) GetFromBucket(bucketName string, id []byte) ([]byte, error) {
 
 func (s *Store) Start() {
 	// Start goroutine to receive and process events
+	s.lifecycleMu.Lock()
+	if s.started || s.stopped {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.started = true
 	s.runDone = make(chan struct{})
 	if s.stopProducers == nil {
 		s.stopProducers = make(chan struct{})
 	}
+	runDone := s.runDone
+	s.lifecycleMu.Unlock()
 	go func() {
-		defer close(s.runDone)
+		defer close(runDone)
 		s.processEvents()
 	}()
 }
@@ -242,8 +269,27 @@ func (s *Store) Start() {
 func (s *Store) Sync() error {
 	event := NewAcknowledgedEvent()
 	event.barrier = true
-	s.events <- event
-	return event.Wait(context.Background())
+	s.lifecycleMu.RLock()
+	if s.stopped {
+		s.lifecycleMu.RUnlock()
+		PutBack(event)
+		return errStoreStopped
+	}
+	if !s.started || s.events == nil {
+		s.lifecycleMu.RUnlock()
+		PutBack(event)
+		return errStoreNotStarted
+	}
+	select {
+	case <-s.stopProducers:
+		s.lifecycleMu.RUnlock()
+		PutBack(event)
+		return errStoreStopped
+	case s.events <- event:
+		err := event.Wait(context.Background())
+		s.lifecycleMu.RUnlock()
+		return err
+	}
 }
 
 // Stop is idempotent: it stops the event loop and closes the database. The
@@ -251,17 +297,28 @@ func (s *Store) Sync() error {
 // watcher) select on their own context, so closing the channel while a
 // producer may still send would be a send-on-closed-channel panic. The stop
 // signal ends the consumer first and waits for it before closing the db.
-func (s *Store) Stop() error {
-	s.stopOnce.Do(func() {
-		if s.stopProducers != nil {
-			close(s.stopProducers)
+func (storage *Store) Stop() error {
+	storage.stopOnce.Do(func() {
+		storage.lifecycleMu.Lock()
+		storage.stopped = true
+		if storage.stopProducers == nil {
+			storage.stopProducers = make(chan struct{})
 		}
-		if s.runDone != nil {
-			<-s.runDone
+		close(storage.stopProducers)
+		runDone := storage.runDone
+		storage.lifecycleMu.Unlock()
+		if runDone != nil {
+			<-runDone
 		}
-		s.stopErr = s.db.Close()
+
+		globalStoreMu.Lock()
+		defer globalStoreMu.Unlock()
+		storage.stopErr = storage.db.Close()
+		if s == storage {
+			s = nil
+		}
 	})
-	return s.stopErr
+	return storage.stopErr
 }
 
 // []byte{}  get the last part split by / in the key

@@ -75,13 +75,65 @@ func TestEmptyExpressionMatches(t *testing.T) {
 	}
 }
 
-func TestNegatedNumericComparisonDoesNotMatchMissingValue(t *testing.T) {
-	expression, err := Compile([]any{[]any{"age", "!", "<", 18}})
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
+func TestNegatedNumericComparisonTruthTable(t *testing.T) {
+	tests := []struct {
+		name   string
+		actual any
+		want   map[string]bool
+	}{
+		{
+			name:   "missing",
+			actual: nil,
+			want:   map[string]bool{">": true, ">=": true, "<": true, "<=": true},
+		},
+		{
+			name:   "empty",
+			actual: "",
+			want:   map[string]bool{">": true, ">=": true, "<": true, "<=": true},
+		},
+		{
+			name:   "malformed",
+			actual: "abc",
+			want:   map[string]bool{">": true, ">=": true, "<": true, "<=": true},
+		},
+		{
+			name:   "nan",
+			actual: "NaN",
+			want:   map[string]bool{">": true, ">=": true, "<": true, "<=": true},
+		},
+		{
+			name:   "positive infinity",
+			actual: "+Inf",
+			want:   map[string]bool{">": true, ">=": true, "<": true, "<=": true},
+		},
+		{
+			name:   "below threshold",
+			actual: "17",
+			want:   map[string]bool{">": true, ">=": true, "<": false, "<=": false},
+		},
+		{
+			name:   "threshold",
+			actual: 18,
+			want:   map[string]bool{">": true, ">=": false, "<": true, "<=": false},
+		},
+		{
+			name:   "above threshold",
+			actual: 19.0,
+			want:   map[string]bool{">": false, ">=": false, "<": true, "<=": true},
+		},
 	}
-	if expression.Eval(func(string) any { return nil }) {
-		t.Fatal("Eval() = true, want missing numeric value not to match")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, operator := range []string{">", ">=", "<", "<="} {
+				expression, err := Compile([]any{[]any{"age", "!", operator, 18}})
+				if err != nil {
+					t.Fatalf("Compile(%q) error = %v", operator, err)
+				}
+				if got := expression.Eval(func(string) any { return test.actual }); got != test.want[operator] {
+					t.Fatalf("Eval(%#v, %q) = %v, want %v", test.actual, operator, got, test.want[operator])
+				}
+			}
+		})
 	}
 }
 

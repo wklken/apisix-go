@@ -369,10 +369,33 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 }
 
 func matchesRoutePath(pattern string, requestPath string) bool {
+	if strings.ContainsRune(pattern, ':') {
+		return matchesParameterizedRoute(pattern, requestPath)
+	}
 	if !strings.ContainsRune(pattern, '*') {
 		return pattern == requestPath
 	}
 	return matchesWildcardRoute(pattern, requestPath)
+}
+
+func matchesParameterizedRoute(pattern, requestPath string) bool {
+	patternParts := strings.Split(pattern, "/")
+	requestParts := strings.Split(requestPath, "/")
+	if len(patternParts) != len(requestParts) {
+		return false
+	}
+	for i := range patternParts {
+		if strings.HasPrefix(patternParts[i], ":") {
+			if len(patternParts[i]) == 1 || requestParts[i] == "" {
+				return false
+			}
+			continue
+		}
+		if patternParts[i] != requestParts[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func routeHostRank(patterns []string, requestHost string) int {

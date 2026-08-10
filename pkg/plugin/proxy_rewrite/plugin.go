@@ -193,6 +193,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.config.Uri != "" {
 			uri = appendRequestQuery(resolveHeaderValue(r, p.config.Uri, nil), r.URL.RawQuery)
 		}
+		if uri != "" && p.config.Uri == "" && !p.config.UseRealRequestURIUnsafe {
+			uri = appendRequestQuery(uri, r.URL.RawQuery)
+		}
 		// Without use_real_request_uri_unsafe the upstream sees the normalized
 		// decoded URI, never the raw percent-encoded request target.
 		if !p.config.UseRealRequestURIUnsafe {

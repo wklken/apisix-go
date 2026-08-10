@@ -1,6 +1,7 @@
 package ai_aliyun_content_moderation
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
@@ -285,7 +289,7 @@ func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	}
 }
 
-func TestHandlerPassesThroughOnModerationServiceError(t *testing.T) {
+func TestHandlerRejectsOnModerationServiceErrorByDefault(t *testing.T) {
 	moderation := aliyunServer(t, `{"Data":{}}`, http.StatusOK)
 	defer moderation.Close()
 
@@ -299,13 +303,15 @@ func TestHandlerPassesThroughOnModerationServiceError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"input":"hello"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
+	nextCalls := 0
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalls++
 		w.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("response code = %d, want 202", rr.Code)
+	if rr.Code != http.StatusServiceUnavailable || nextCalls != 0 {
+		t.Fatalf("response = (%d, %q), next calls = %d; want 503 and no next", rr.Code, rr.Body.String(), nextCalls)
 	}
 }
 
@@ -448,6 +454,7 @@ func TestHandlerReplacesRiskyRealtimeStream(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime", StreamCheckCacheSize: 1,
+		FailMode:     "warn",
 		RiskLevelBar: "high",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
@@ -487,6 +494,7 @@ func TestHandlerChecksRealtimeStreamWhenIntervalElapses(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		FailMode:             "warn",
 		StreamCheckCacheSize: 128, StreamCheckInterval: 0.1, RiskLevelBar: "high",
 	})
 	started := time.Unix(100, 0)
@@ -586,6 +594,7 @@ func TestRealtimeWriterSplitsUTF8AcrossChunkBoundary(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		FailMode:             "warn",
 		StreamCheckCacheSize: 128, RiskLevelBar: "high",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
@@ -624,6 +633,7 @@ func TestRealtimeWriterModeratesRiskSpanningChunks(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		FailMode:             "warn",
 		StreamCheckCacheSize: 128, StreamCheckInterval: 1e9, RiskLevelBar: "high",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
@@ -666,6 +676,7 @@ func TestRealtimeWriterFlushesPendingOnClose(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		FailMode:             "warn",
 		StreamCheckCacheSize: 128, StreamCheckInterval: 1e9, RiskLevelBar: "high",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
@@ -685,4 +696,632 @@ func TestRealtimeWriterFlushesPendingOnClose(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "flush blocked") {
 		t.Fatalf("blocked stream = %q, want deny message", rr.Body.String())
 	}
+}
+
+func TestPostInitDefaultsFailModeToError(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+	})
+	if p.config.FailMode != "error" {
+		t.Fatalf("fail_mode = %q, want error", p.config.FailMode)
+	}
+}
+
+func TestPostInitRejectsRealtimeResponseFailClosedMode(t *testing.T) {
+	p := &Plugin{config: Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckResponse:   true,
+		StreamCheckMode: "realtime",
+		FailMode:        "error",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want realtime fail-closed configuration error")
+	}
+}
+
+func TestHandlerRejectsUnknownOrEmptyRequestContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{name: "invalid JSON", body: `{"messages":`, message: requestInvalidPayloadMessage},
+		{name: "unknown protocol", body: `{"unexpected":"value"}`, message: requestUnknownProtocolMessage},
+		{
+			name:    "empty extracted content",
+			body:    `{"messages":[{"role":"user","content":""}]}`,
+			message: requestEmptyContentMessage,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				Endpoint:        "http://127.0.0.1:1",
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			nextCalls := 0
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				nextCalls++
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest || nextCalls != 0 {
+				t.Fatalf(
+					"response = (%d, %q), next calls = %d; want 400 and no next",
+					rr.Code,
+					rr.Body.String(),
+					nextCalls,
+				)
+			}
+			if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"`+tt.message+`"}` {
+				t.Fatalf("response body = %q, want stable message %q", got, tt.message)
+			}
+		})
+	}
+}
+
+func TestHandlerMapsRequestModerationFailures(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+	})
+	p.client.Transport = failingRoundTripper{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	nextCalls := 0
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalls++ })).ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable || nextCalls != 0 {
+		t.Fatalf("response = (%d, %q), next calls = %d; want 503 and no next", rr.Code, rr.Body.String(), nextCalls)
+	}
+}
+
+func TestHandlerDegradesExplicitlyOnRequestModerationFailure(t *testing.T) {
+	const body = `{"input":"hello"}`
+	p := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		FailMode:        "warn",
+	})
+	p.client.Transport = failingRoundTripper{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	nextCalls := 0
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalls++
+		forwarded, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read forwarded request body: %v", err)
+		}
+		if string(forwarded) != body {
+			t.Fatalf("forwarded body = %q, want %q", forwarded, body)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted || nextCalls != 1 {
+		t.Fatalf("response = (%d, %q), next calls = %d; want 202 and one next", rr.Code, rr.Body.String(), nextCalls)
+	}
+}
+
+func TestHandlerRejectsInvalidNonStreamingUpstreamResponseWith502(t *testing.T) {
+	for _, upstreamBody := range []string{
+		"not-json",
+		`{"choices":[42]}`,
+	} {
+		t.Run(upstreamBody, func(t *testing.T) {
+			checkRequest := false
+			p := newTestPlugin(t, Config{
+				Endpoint:        "http://127.0.0.1:1",
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+				CheckRequest:    &checkRequest,
+				CheckResponse:   true,
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(upstreamBody))
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadGateway {
+				t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerContinuesResponseModerationAfterRequestFailureDegradation(t *testing.T) {
+	for _, failMode := range []string{"warn", "skip"} {
+		t.Run(failMode, func(t *testing.T) {
+			moderationCalls := 0
+			moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				moderationCalls++
+				if moderationCalls == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`))
+			}))
+			defer moderation.Close()
+
+			p := newTestPlugin(t, Config{
+				Endpoint:        moderation.URL,
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+				CheckResponse:   true,
+				FailMode:        failMode,
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			nextCalls := 0
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalls++
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"unsafe"}}]}`))
+			})).ServeHTTP(rr, req)
+
+			if moderationCalls != 2 || nextCalls != 1 {
+				t.Fatalf("moderation calls = %d, next calls = %d; want 2 and 1", moderationCalls, nextCalls)
+			}
+			if strings.Contains(rr.Body.String(), "unsafe") || !strings.Contains(rr.Body.String(), "blocked") {
+				t.Fatalf("response body = %q, want protocol deny without unsafe content", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsRiskyFinalPacketInsteadOfForwardingCapturedStream(t *testing.T) {
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint:        moderation.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"unsafe\"}}]}\n\ndata: [DONE]\n\n"))
+	})).ServeHTTP(rr, req)
+
+	if strings.Contains(rr.Body.String(), "unsafe") || !strings.Contains(rr.Body.String(), "blocked") {
+		t.Fatalf("response body = %q, want streaming deny without captured unsafe content", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsMixedMalformedFinalPacketWith502(t *testing.T) {
+	for _, invalidEvent := range []string{"not-json", `{"unexpected":"value"}`} {
+		t.Run(invalidEvent, func(t *testing.T) {
+			moderation := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+			defer moderation.Close()
+			checkRequest := false
+			p := newTestPlugin(t, Config{
+				Endpoint:        moderation.URL,
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+				CheckRequest:    &checkRequest,
+				CheckResponse:   true,
+			})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(
+					"data: {\"choices\":[{\"delta\":{\"content\":\"safe\"}}]}\n\ndata: " +
+						invalidEvent + "\n\ndata: [DONE]\n\n",
+				))
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadGateway || strings.Contains(rr.Body.String(), "safe") {
+				t.Fatalf("response = (%d, %q), want 502 without captured stream", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerFailsClosedOnBufferedResponseModerationFailure(t *testing.T) {
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+	})
+	p.client.Transport = failingRoundTripper{}
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"safe"}}]}`))
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want 503; body = %q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestModerateContentPreservesFailureClass(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+	})
+	p.client.Transport = failingRoundTripper{}
+	_, _, _, err := p.checkSingleContent(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		"session",
+		"hello",
+		"llm_query_moderation",
+	)
+	if err == nil {
+		t.Fatal("checkSingleContent() error = nil, want classified moderation failure")
+	}
+	var classified interface{ Classify() string }
+	if !errors.As(err, &classified) || classified.Classify() != "backend_unavailable" {
+		t.Fatalf("error = %T %v, want backend_unavailable classification", err, err)
+	}
+}
+
+func TestHandlerRecordsAliyunAllowDenyDegradedAndErrorOutcomes(t *testing.T) {
+	vector := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_aliyun_safety_total"},
+		[]string{"plugin", "phase", "outcome", "reason"},
+	)
+	previous := metrics.AISafetyOutcomes
+	metrics.AISafetyOutcomes = vector
+	t.Cleanup(func() { metrics.AISafetyOutcomes = previous })
+
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint:        moderation.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+	})
+	request := func(plugin *Plugin, body string) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		})).ServeHTTP(rr, req)
+	}
+	request(p, `{"input":"safe"}`)
+
+	denyModeration := aliyunServer(t, `{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`, http.StatusOK)
+	defer denyModeration.Close()
+	deny := newTestPlugin(t, Config{
+		Endpoint:        denyModeration.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		RiskLevelBar:    "high",
+	})
+	request(deny, `{"input":"unsafe"}`)
+
+	warn := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		FailMode:        "warn",
+	})
+	warn.client.Transport = failingRoundTripper{}
+	request(warn, `{"input":"degraded"}`)
+
+	errorMode := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+	})
+	errorMode.client.Transport = failingRoundTripper{}
+	request(errorMode, `{"input":"error"}`)
+
+	for _, labels := range [][4]string{
+		{name, "request", "allow", "clean"},
+		{name, "request", "deny", "risk_threshold"},
+		{name, "request", "degraded", "backend_unavailable"},
+		{name, "request", "error", "backend_unavailable"},
+	} {
+		if got := counterValue(t, vector.WithLabelValues(labels[:]...)); got != 1 {
+			t.Errorf("outcome %v = %v, want 1", labels, got)
+		}
+	}
+}
+
+func counterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := counter.Write(metric); err != nil {
+		t.Fatalf("write counter metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
+func TestHandlerRecordsAliyunResponseOutcomes(t *testing.T) {
+	vector := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_aliyun_response_safety_total"},
+		[]string{"plugin", "phase", "outcome", "reason"},
+	)
+	previous := metrics.AISafetyOutcomes
+	metrics.AISafetyOutcomes = vector
+	t.Cleanup(func() { metrics.AISafetyOutcomes = previous })
+
+	run := func(p *Plugin, upstreamBody string) {
+		t.Helper()
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/v1/chat/completions",
+			strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(upstreamBody))
+		})).ServeHTTP(rr, req)
+	}
+
+	checkRequest := false
+	cleanServer := aliyunServer(t, `{"Data":{"RiskLevel":"low"}}`, http.StatusOK)
+	defer cleanServer.Close()
+	run(newTestPlugin(t, Config{
+		Endpoint:        cleanServer.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+	}), `{"choices":[{"message":{"content":"safe"}}]}`)
+
+	denyServer := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`,
+		http.StatusOK,
+	)
+	defer denyServer.Close()
+	run(newTestPlugin(t, Config{
+		Endpoint:        denyServer.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+	}), `{"choices":[{"message":{"content":"unsafe"}}]}`)
+
+	warn := newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+		FailMode:        "warn",
+	})
+	warn.client.Transport = failingRoundTripper{}
+	run(warn, `{"choices":[{"message":{"content":"degraded"}}]}`)
+
+	run(newTestPlugin(t, Config{
+		Endpoint:        "http://127.0.0.1:1",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		CheckRequest:    &checkRequest,
+		CheckResponse:   true,
+	}), `{"choices":[42]}`)
+
+	for _, labels := range [][4]string{
+		{name, "response", "allow", "clean"},
+		{name, "response", "deny", "risk_threshold"},
+		{name, "response", "degraded", "backend_unavailable"},
+		{name, "response", "error", "upstream_invalid_response"},
+	} {
+		if got := counterValue(t, vector.WithLabelValues(labels[:]...)); got != 1 {
+			t.Errorf("response outcome %v = %v, want 1", labels, got)
+		}
+	}
+}
+
+func TestHandlerMapsBackendResponseFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "backend 500", status: http.StatusInternalServerError, body: `{"error":"backend"}`},
+		{name: "malformed JSON", status: http.StatusOK, body: `{"Data":`},
+		{name: "missing risk", status: http.StatusOK, body: `{"Data":{}}`},
+		{name: "unknown risk", status: http.StatusOK, body: `{"Data":{"RiskLevel":"mystery"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			moderation := aliyunServer(t, tt.body, tt.status)
+			defer moderation.Close()
+			p := newTestPlugin(t, Config{
+				Endpoint:        moderation.URL,
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"input":"hello"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			nextCalls := 0
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalls++ })).ServeHTTP(rr, req)
+			if rr.Code != http.StatusServiceUnavailable || nextCalls != 0 {
+				t.Fatalf(
+					"response = (%d, %q), next calls = %d; want 503 and no next",
+					rr.Code,
+					rr.Body.String(),
+					nextCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestHandlerDegradesExplicitSkipOnBackendResponseFailure(t *testing.T) {
+	const body = `{"input":"hello"}`
+	moderation := aliyunServer(t, `{"Data":{}}`, http.StatusOK)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint:        moderation.URL,
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "test-access",
+		AccessKeySecret: "test-secret",
+		FailMode:        "skip",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	nextCalls := 0
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalls++
+		forwarded, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read forwarded request body: %v", err)
+		}
+		if string(forwarded) != body {
+			t.Fatalf("forwarded body = %q, want %q", forwarded, body)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted || nextCalls != 1 {
+		t.Fatalf("response = (%d, %q), next calls = %d; want 202 and one next", rr.Code, rr.Body.String(), nextCalls)
+	}
+}
+
+func TestHandlerAcceptsValidNoTextResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "openai tool call",
+			path: "/v1/chat/completions",
+			body: `{"id":"resp-1","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		},
+		{
+			name: "embeddings",
+			path: "/v1/embeddings",
+			body: `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkRequest := false
+			p := newTestPlugin(t, Config{
+				Endpoint:        "http://127.0.0.1:1",
+				RegionID:        "cn-shanghai",
+				AccessKeyID:     "test-access",
+				AccessKeySecret: "test-secret",
+				CheckRequest:    &checkRequest,
+				CheckResponse:   true,
+			})
+			requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+			if tt.path == "/v1/embeddings" {
+				requestBody = `{"input":"hello"}`
+			}
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(requestBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK || rr.Body.String() != tt.body {
+				t.Fatalf("response = (%d, %q), want unchanged valid no-text response", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestRealtimeWriterDegradesOnModerationFailure(t *testing.T) {
+	for _, failMode := range []string{"warn", "skip"} {
+		t.Run(failMode, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				Endpoint:             "http://127.0.0.1:1",
+				RegionID:             "cn-shanghai",
+				AccessKeyID:          "test-access",
+				AccessKeySecret:      "test-secret",
+				CheckResponse:        true,
+				StreamCheckMode:      "realtime",
+				FailMode:             failMode,
+				StreamCheckCacheSize: 1,
+			})
+			p.client.Transport = failingRoundTripper{}
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+			rr := httptest.NewRecorder()
+			writer := newRealtimeResponseWriter(rr, req, p, ai_protocols.OpenAIChat, map[string]any{"stream": true})
+			body := `data: {"choices":[{"delta":{"content":"safe"}}]}` + "\n\n"
+			if _, err := writer.Write([]byte(body)); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+			writer.Close()
+			if rr.Code != http.StatusOK || rr.Body.String() != body {
+				t.Fatalf("stream response = (%d, %q), want original body", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("deterministic moderation transport failure")
 }

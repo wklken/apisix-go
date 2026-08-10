@@ -107,22 +107,28 @@ type opaRequest struct {
 }
 
 type opaInput struct {
-	Type     string         `json:"type"`
-	Request  opaHTTPRequest `json:"request"`
-	Vars     map[string]any `json:"var"`
-	Route    any            `json:"route,omitempty"`
-	Service  any            `json:"service,omitempty"`
-	Consumer any            `json:"consumer,omitempty"`
+	Version  int                         `json:"version"`
+	Type     string                      `json:"type"`
+	Request  opaHTTPRequest              `json:"request"`
+	Vars     map[string]any              `json:"var"`
+	Route    *base.AuthorizationResource `json:"route,omitempty"`
+	Service  *base.AuthorizationResource `json:"service,omitempty"`
+	Consumer any                         `json:"consumer,omitempty"`
 }
 
 type opaHTTPRequest struct {
-	Scheme  string            `json:"scheme"`
-	Method  string            `json:"method"`
-	Host    string            `json:"host"`
-	Port    int               `json:"port"`
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	Query   map[string]any    `json:"query"`
+	Scheme  string              `json:"scheme"`
+	Method  string              `json:"method"`
+	Host    string              `json:"host"`
+	Port    int                 `json:"port"`
+	Path    string              `json:"path"`
+	Headers map[string][]string `json:"headers"`
+	Query   map[string]any      `json:"query"`
+}
+
+type opaConsumer struct {
+	Username string `json:"username"`
+	GroupID  string `json:"group_id,omitempty"`
 }
 
 type opaResponse struct {
@@ -238,91 +244,132 @@ func (p *Plugin) queryOPA(r *http.Request) (*opaDecision, int, error) {
 }
 
 func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
-	host, port := splitHostPort(r)
+	route := base.AuthorizationResource{}
+	if p.config.WithRoute {
+		route = p.opaRoute(r)
+	}
+	service := base.AuthorizationResource{}
+	if p.config.WithService {
+		service = p.opaService(r)
+	}
+
+	serverAddr := ""
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && local != nil {
+		serverAddr = local.String()
+	}
+	facts := base.CaptureAuthorizationFacts(r, serverAddr, route, service)
+	host, port := splitHostPort(facts.Host, facts.Scheme)
 	input := opaInput{
-		Type: "http",
+		Version: facts.Version,
+		Type:    "http",
 		Request: opaHTTPRequest{
-			Scheme:  scheme(r),
-			Method:  r.Method,
+			Scheme:  facts.Scheme,
+			Method:  facts.Method,
 			Host:    host,
 			Port:    port,
-			Path:    r.URL.Path,
-			Headers: headers(r),
-			Query:   queryArgs(r.URL.Query()),
+			Path:    facts.Path,
+			Headers: headers(facts.Headers),
+			Query:   queryArgs(queryValues(facts.RawQuery)),
 		},
 		Vars: map[string]any{
-			"server_addr": "",
-			"server_port": "",
-			"remote_addr": base.RemoteIP(r.RemoteAddr),
-			"remote_port": remotePort(r),
+			"server_addr": facts.ServerAddr,
+			"server_port": facts.ServerPort,
+			"remote_addr": facts.ClientIP,
+			"remote_port": facts.ClientPort,
 			"timestamp":   time.Now().Unix(),
 		},
 	}
 
 	if p.config.WithConsumer {
-		if consumer := ctx.GetApisixVar(r, "$consumer"); consumer != "" {
+		if consumer, ok := authorizationConsumer(r); ok {
 			input.Consumer = consumer
 		}
 	}
 	if p.config.WithRoute {
-		if route := p.opaRoute(r); route != nil {
-			input.Route = route
+		if resourcePresent(facts.Route) {
+			resource := facts.Route
+			input.Route = &resource
 		}
 	}
 	if p.config.WithService {
-		if service := p.opaService(r); service != nil {
-			input.Service = service
+		if resourcePresent(facts.Service) {
+			resource := facts.Service
+			input.Service = &resource
 		}
 	}
 
 	return opaRequest{Input: input}
 }
 
-func (p *Plugin) opaRoute(r *http.Request) any {
-	if p.route.ID != "" {
-		return p.route
-	}
-	if route := localRoute(r); len(route) > 0 {
+func (p *Plugin) opaRoute(r *http.Request) base.AuthorizationResource {
+	route := base.AuthorizationResource{ID: p.route.ID, Name: p.route.Name, URI: p.route.Uri}
+	if resourcePresent(route) {
 		return route
 	}
-	return nil
+	return localRoute(r)
 }
 
-func (p *Plugin) opaService(r *http.Request) any {
-	if p.service.ID != "" {
-		return p.service
-	}
-	if service := localService(r); len(service) > 0 {
+func (p *Plugin) opaService(r *http.Request) base.AuthorizationResource {
+	service := base.AuthorizationResource{ID: p.service.ID, Name: p.service.Name}
+	if resourcePresent(service) {
 		return service
 	}
-	return nil
+	return localService(r)
 }
 
-func localRoute(r *http.Request) map[string]string {
-	route := map[string]string{}
+func localRoute(r *http.Request) base.AuthorizationResource {
+	route := base.AuthorizationResource{}
 	for output, key := range map[string]string{
 		"id":   "$route_id",
 		"name": "$route_name",
 		"uri":  "$matched_uri",
 	} {
-		if value, ok := ctx.GetApisixVar(r, key).(string); ok && value != "" {
-			route[output] = value
+		value, _ := ctx.GetApisixVar(r, key).(string)
+		switch output {
+		case "id":
+			route.ID = value
+		case "name":
+			route.Name = value
+		case "uri":
+			route.URI = value
 		}
 	}
 	return route
 }
 
-func localService(r *http.Request) map[string]string {
-	service := map[string]string{}
+func localService(r *http.Request) base.AuthorizationResource {
+	service := base.AuthorizationResource{}
 	for output, key := range map[string]string{
 		"id":   "$service_id",
 		"name": "$service_name",
 	} {
-		if value, ok := ctx.GetApisixVar(r, key).(string); ok && value != "" {
-			service[output] = value
+		value, _ := ctx.GetApisixVar(r, key).(string)
+		switch output {
+		case "id":
+			service.ID = value
+		case "name":
+			service.Name = value
 		}
 	}
 	return service
+}
+
+func resourcePresent(resource base.AuthorizationResource) bool {
+	return resource.ID != "" || resource.Name != "" || resource.URI != ""
+}
+
+func authorizationConsumer(r *http.Request) (opaConsumer, bool) {
+	switch consumer := ctx.GetApisixVar(r, "$consumer").(type) {
+	case resource.Consumer:
+		return opaConsumer{Username: consumer.Username, GroupID: consumer.GroupID}, true
+	case *resource.Consumer:
+		if consumer == nil {
+			return opaConsumer{}, false
+		}
+		return opaConsumer{Username: consumer.Username, GroupID: consumer.GroupID}, true
+	default:
+		return opaConsumer{}, false
+	}
 }
 
 func (p *Plugin) endpoint() string {
@@ -351,12 +398,7 @@ func (p *Plugin) copyHeadersToUpstream(r *http.Request, headers map[string]strin
 	}
 }
 
-func splitHostPort(r *http.Request) (string, int) {
-	host := r.Host
-	if host == "" && r.URL != nil {
-		host = r.URL.Host
-	}
-
+func splitHostPort(host, requestScheme string) (string, int) {
 	hostname, portValue, err := net.SplitHostPort(host)
 	if err == nil {
 		port, _ := strconv.Atoi(portValue)
@@ -367,29 +409,24 @@ func splitHostPort(r *http.Request) (string, int) {
 		return host, 0
 	}
 
-	if r.TLS != nil {
+	if requestScheme == "https" {
 		return host, 443
 	}
 	return host, 80
 }
 
-func scheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
+func headers(values map[string][]string) map[string][]string {
+	dst := make(map[string][]string, len(values))
+	for key, current := range values {
+		key = strings.ToLower(key)
+		dst[key] = append(dst[key], current...)
 	}
-	if r.URL != nil && r.URL.Scheme != "" {
-		return r.URL.Scheme
-	}
-	return "http"
+	return dst
 }
 
-func headers(r *http.Request) map[string]string {
-	dst := make(map[string]string, len(r.Header)+1)
-	for key := range r.Header {
-		dst[strings.ToLower(key)] = r.Header.Get(key)
-	}
-	dst["host"] = r.Host
-	return dst
+func queryValues(rawQuery string) url.Values {
+	values, _ := url.ParseQuery(rawQuery)
+	return values
 }
 
 func queryArgs(values url.Values) map[string]any {
@@ -402,14 +439,6 @@ func queryArgs(values url.Values) map[string]any {
 		query[key] = current
 	}
 	return query
-}
-
-func remotePort(r *http.Request) string {
-	_, port, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return port
-	}
-	return ""
 }
 
 func reasonString(reason any) string {

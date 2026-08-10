@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,236 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func countVaryToken(header http.Header, want string) int {
+	count := 0
+	for _, value := range header.Values("Vary") {
+		for token := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), want) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func TestHandlerRegexOriginPrecedence(t *testing.T) {
+	const regex = `^https://allowed[.]example$`
+
+	tests := []struct {
+		name         string
+		allowOrigins string
+		origin       string
+		wantAllowed  bool
+	}{
+		{
+			name:         "fixed origin is denied",
+			allowOrigins: "https://fixed.example",
+			origin:       "https://fixed.example",
+		},
+		{
+			name:         "regex origin is admitted",
+			allowOrigins: "https://fixed.example",
+			origin:       "https://allowed.example",
+			wantAllowed:  true,
+		},
+		{
+			name:         "double star cannot bypass regex",
+			allowOrigins: "**",
+			origin:       "https://other.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				AllowOrigins:        tt.allowOrigins,
+				AllowMethods:        http.MethodGet,
+				AllowOriginsByRegex: []string{regex},
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			req.Header.Set("Origin", tt.origin)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			got := rr.Header().Get("Access-Control-Allow-Origin")
+			if tt.wantAllowed {
+				if got != tt.origin {
+					t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.origin)
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want denied origin", got)
+			}
+		})
+	}
+}
+
+func TestHandlerMetadataRegexOriginPrecedence(t *testing.T) {
+	const regex = `^https://allowed[.]example$`
+
+	tests := []struct {
+		name         string
+		allowOrigins string
+		origin       string
+		wantOrigin   string
+	}{
+		{
+			name:         "metadata hit wins over regex miss",
+			allowOrigins: "https://fixed.example",
+			origin:       "https://app.example",
+			wantOrigin:   "https://app.example",
+		},
+		{
+			name:         "metadata miss falls through to regex match",
+			allowOrigins: "https://fixed.example",
+			origin:       "https://allowed.example",
+			wantOrigin:   "https://allowed.example",
+		},
+		{
+			name:         "metadata miss and regex miss cannot fall through to fixed origin",
+			allowOrigins: "https://fixed.example",
+			origin:       "https://fixed.example",
+		},
+		{
+			name:         "metadata miss and regex miss cannot fall through to double star",
+			allowOrigins: "**",
+			origin:       "https://other.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				AllowOrigins:           tt.allowOrigins,
+				AllowMethods:           http.MethodGet,
+				AllowOriginsByMetadata: []string{"tenant_a"},
+				AllowOriginsByRegex:    []string{regex},
+			})
+			p.metadata.AllowOrigins = map[string]string{
+				"tenant_a": "https://app.example",
+			}
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			req.Header.Set("Origin", tt.origin)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != tt.wantOrigin {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.wantOrigin)
+			}
+		})
+	}
+}
+
+func TestHandlerPreflightRegexOriginPrecedenceAndVary(t *testing.T) {
+	tests := []struct {
+		name        string
+		origin      string
+		wantAllowed bool
+	}{
+		{
+			name:        "regex origin is admitted",
+			origin:      "https://allowed.example",
+			wantAllowed: true,
+		},
+		{
+			name:   "fixed origin is denied",
+			origin: "https://fixed.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				AllowOrigins:        "https://fixed.example",
+				AllowMethods:        http.MethodGet,
+				AllowHeaders:        "X-Token",
+				AllowCredential:     true,
+				AllowOriginsByRegex: []string{`^https://allowed[.]example$`},
+			})
+			req := httptest.NewRequest(http.MethodOptions, "http://example.com/get", nil)
+			req.Header.Set("Origin", tt.origin)
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+			req.Header.Set("Access-Control-Request-Headers", "x-token")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("preflight should not reach upstream handler")
+			})).ServeHTTP(rr, req)
+
+			if got := rr.Code; got != http.StatusOK {
+				t.Fatalf("response code = %d, want %d", got, http.StatusOK)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); tt.wantAllowed {
+				if got != tt.origin {
+					t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.origin)
+				}
+				if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+					t.Fatalf("Access-Control-Allow-Credentials = %q, want true", got)
+				}
+			} else if got != "" {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want denied origin", got)
+			}
+			if got := countVaryToken(rr.Header(), "Origin"); got != 1 {
+				t.Fatalf("Vary Origin token count = %d, want 1 (Vary = %q)", got, rr.Header().Values("Vary"))
+			}
+		})
+	}
+}
+
+func TestHandlerActualResponseReassertsVaryOrigin(t *testing.T) {
+	tests := []struct {
+		name        string
+		origin      string
+		wantAllowed bool
+	}{
+		{
+			name:        "admitted origin",
+			origin:      "https://allowed.example",
+			wantAllowed: true,
+		},
+		{
+			name:   "denied origin",
+			origin: "https://blocked.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				AllowOrigins:        "https://fixed.example",
+				AllowMethods:        http.MethodGet,
+				AllowOriginsByRegex: []string{`^https://allowed[.]example$`},
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			req.Header.Set("Origin", tt.origin)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Vary", "Via")
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if got := countVaryToken(rr.Header(), "Origin"); got != 1 {
+				t.Fatalf("Vary Origin token count = %d, want 1 (Vary = %q)", got, rr.Header().Values("Vary"))
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); tt.wantAllowed {
+				if got != tt.origin {
+					t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.origin)
+				}
+			} else if got != "" {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want denied origin", got)
+			}
+		})
+	}
 }
 
 func TestHandlerAllowsRegexOrigin(t *testing.T) {

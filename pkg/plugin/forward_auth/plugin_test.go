@@ -1,6 +1,7 @@
 package forward_auth
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -275,6 +276,107 @@ func TestHandlerGeneratedHeadersCannotBeSpoofedThroughRequestHeaders(t *testing.
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.Header.Set("X-Forwarded-Host", "attacker.example")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerUsesRealIPForForwardedFor(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Forwarded-For"); got != "198.51.100.9" {
+			t.Fatalf("X-Forwarded-For = %q, want real-ip address", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{URI: auth.URL})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.RemoteAddrKey, "198.51.100.9"))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerPreservesRepeatedConfiguredHeaders(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values("X-Role")
+		if len(values) != 2 || values[0] != "admin" || values[1] != "viewer" {
+			t.Fatalf("X-Role = %#v, want [admin viewer]", values)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:            auth.URL,
+		RequestHeaders: []string{"X-Role"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Add("X-Role", "admin")
+	req.Header.Add("X-Role", "viewer")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerGeneratedHeadersOverrideRequestAndExtraHeaders(t *testing.T) {
+	generated := map[string]string{
+		"X-Forwarded-Proto":  "proto",
+		"X-Forwarded-Method": "method",
+		"X-Forwarded-Host":   "host",
+		"X-Forwarded-Uri":    "uri",
+		"X-Forwarded-For":    "for",
+	}
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want := map[string]string{
+			"X-Forwarded-Proto":  "http",
+			"X-Forwarded-Method": http.MethodGet,
+			"X-Forwarded-Host":   "example.com",
+			"X-Forwarded-Uri":    "/get?x=1",
+			"X-Forwarded-For":    "192.0.2.10",
+		}
+		for name, value := range want {
+			if got := r.Header.Get(name); got != value {
+				t.Errorf("%s = %q, want generated value %q", name, got, value)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	requestHeaders := make([]string, 0, len(generated))
+	extraHeaders := make(map[string]string, len(generated))
+	for name, value := range generated {
+		requestHeaders = append(requestHeaders, name)
+		extraHeaders[name] = "extra-" + value
+	}
+	p := newTestPlugin(t, Config{
+		URI:            auth.URL,
+		RequestHeaders: requestHeaders,
+		ExtraHeaders:   extraHeaders,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?x=1", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	for name, value := range generated {
+		req.Header.Set(name, "request-"+value)
+	}
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

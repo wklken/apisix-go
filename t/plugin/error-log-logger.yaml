@@ -393,13 +393,12 @@ cases:
 
   - name: global-plugin-not-enabled-does-not-observe-errors
     source: {file: t/plugin/error-log-logger.t, tests: [1]}
-    runtime: {plugins: []}
+    runtime: {plugins: [basic-auth]}
     config:
       plugin_metadata:
         - {id: error-log-logger, tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1}
       routes:
         - {id: not-enabled-warning, uri: /warn, plugins: {basic-auth: {}}}
-        - {id: dormant-error-log-route, uri: /dormant, plugins: {error-log-logger: {tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1}}}
     steps:
       - {name: warning-remains-local-when-global-plugin-is-disabled, input: {path: /warn, headers: {Authorization: 'Basic disabled_warning'}}, output: {status: 401, logs: {not_matches: 'logger batch processor \[error-log-logger\]'}}, wait: 300ms}
 

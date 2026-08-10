@@ -7,16 +7,20 @@ func TestEnabledSetClonesSourceAndSupportsStrictEmpty(t *testing.T) {
 	set := NewEnabledSet(names)
 
 	if !set.Contains("request-id") || !set.Contains("native-only") {
-		t.Fatalf("enabled set membership = request-id:%t native-only:%t, want both enabled", set.Contains("request-id"), set.Contains("native-only"))
+		t.Fatalf(
+			"enabled set membership = request-id:%t native-only:%t, want both enabled",
+			set.Contains("request-id"),
+			set.Contains("native-only"),
+		)
 	}
 	if set.Contains("gzip") {
 		t.Fatal("enabled set contains gzip, want it disabled")
 	}
 
 	names[0] = "gzip"
-	names = append(names, "late-mutation")
-	if !set.Contains("request-id") {
-		t.Fatal("mutating the source slice removed request-id from the cloned set")
+	names[1] = "late-mutation"
+	if !set.Contains("request-id") || !set.Contains("native-only") {
+		t.Fatal("mutating the source slice removed a plugin from the cloned set")
 	}
 	if set.Contains("gzip") || set.Contains("late-mutation") {
 		t.Fatal("mutating the source slice changed cloned set membership")

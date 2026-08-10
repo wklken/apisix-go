@@ -230,6 +230,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 var errRequestBodyTooLarge = errors.New("request body too large")
 
 func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
+	facts := base.CaptureAuthorizationFacts(r, "", base.AuthorizationResource{}, base.AuthorizationResource{})
 	var body io.Reader
 	if p.config.RequestMethod == http.MethodPost {
 		reqBody, err := io.ReadAll(io.LimitReader(r.Body, p.config.MaxReqBodySize+1))
@@ -248,38 +249,36 @@ func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	p.setForwardedHeaders(authReq, r)
 	if p.config.RequestMethod == http.MethodPost {
 		if values := r.Header.Values("Content-Encoding"); len(values) > 0 {
 			authReq.Header["Content-Encoding"] = append([]string(nil), values...)
 		}
 	}
 	for _, header := range p.config.RequestHeaders {
-		if _, generated := authReq.Header[http.CanonicalHeaderKey(header)]; generated {
-			continue
-		}
-		if value := r.Header.Get(header); value != "" {
-			authReq.Header.Set(header, value)
+		authReq.Header.Del(header)
+		if values := r.Header.Values(header); len(values) > 0 {
+			authReq.Header[http.CanonicalHeaderKey(header)] = append([]string(nil), values...)
 		}
 	}
 	postArgs := postArgumentCache{}
 	for header, value := range p.config.ExtraHeaders {
 		authReq.Header.Set(header, resolveValue(r, value, &postArgs))
 	}
+	p.setForwardedHeaders(authReq, facts)
 
 	return p.client.Do(authReq)
 }
 
-func (p *Plugin) setForwardedHeaders(authReq *http.Request, r *http.Request) {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+func (p *Plugin) setForwardedHeaders(authReq *http.Request, facts base.AuthorizationFacts) {
+	authReq.Header.Set("X-Forwarded-Proto", facts.Scheme)
+	authReq.Header.Set("X-Forwarded-Method", facts.Method)
+	authReq.Header.Set("X-Forwarded-Host", facts.Host)
+	uri := facts.Path
+	if facts.RawQuery != "" {
+		uri += "?" + facts.RawQuery
 	}
-	authReq.Header.Set("X-Forwarded-Proto", scheme)
-	authReq.Header.Set("X-Forwarded-Method", r.Method)
-	authReq.Header.Set("X-Forwarded-Host", r.Host)
-	authReq.Header.Set("X-Forwarded-Uri", r.URL.RequestURI())
-	authReq.Header.Set("X-Forwarded-For", base.RemoteIP(r.RemoteAddr))
+	authReq.Header.Set("X-Forwarded-Uri", uri)
+	authReq.Header.Set("X-Forwarded-For", facts.ClientIP)
 }
 
 var variablePattern = regexp.MustCompile(`\$post_arg\.[A-Za-z0-9_]+|\$[A-Za-z0-9_]+`)

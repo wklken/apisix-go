@@ -290,6 +290,7 @@ func (w *varyResponseWriter) WriteHeader(statusCode int) {
 	// have produced their headers, so the plugin wins over any upstream CORS
 	// headers and emits Allow-Methods/Allow-Headers/Max-Age on every response.
 	w.p.setAPISIXResponseHeaders(w.Header(), w.origin, w.requestedHeaders)
+	w.Header().Add("Vary", "Origin")
 	normalizeVary(w.Header())
 	w.ResponseWriter.WriteHeader(statusCode)
 }
@@ -374,6 +375,16 @@ func (p *Plugin) responseOrigin(origin string) (string, bool) {
 			return "", false
 		}
 	}
+	if len(p.originRegex) > 0 {
+		if origin != "" {
+			for _, rule := range p.originRegex {
+				if rule.MatchString(origin) {
+					return origin, true
+				}
+			}
+		}
+		return "", false
+	}
 	if p.config.AllowOrigins == "**" {
 		if origin == "" {
 			return "*", true
@@ -388,11 +399,6 @@ func (p *Plugin) responseOrigin(origin string) (string, bool) {
 			continue
 		}
 		if allowedOrigin == origin && origin != "" {
-			return origin, true
-		}
-	}
-	for _, rule := range p.originRegex {
-		if origin != "" && rule.MatchString(origin) {
 			return origin, true
 		}
 	}

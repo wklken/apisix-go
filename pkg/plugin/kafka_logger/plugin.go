@@ -328,6 +328,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 	return nil
 }
@@ -352,10 +353,11 @@ func validateBodyExpression(field string, expression [][]any) error {
 
 func (p *Plugin) Stop() {
 	p.stop.Do(func() {
-		p.BaseLoggerPlugin.Stop()
-		if closer, ok := p.sender.(interface{ Close() error }); ok {
-			_ = closer.Close()
-		}
+		p.StopWithCleanup(func() {
+			if closer, ok := p.sender.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
+		})
 	})
 }
 
@@ -444,18 +446,21 @@ func (p *Plugin) defaultLogFields(r *http.Request, metrics httpsnoop.Metrics) ma
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	message, err := encodeKafkaBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal kafka log message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
 	defer cancel()
 
 	err = p.sender.Send(ctx, kafkaMessage{

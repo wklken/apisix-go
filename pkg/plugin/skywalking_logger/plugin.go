@@ -1,6 +1,7 @@
 package skywalking_logger
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -249,6 +250,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor("skywalking logger", base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -261,11 +263,12 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.StopWithCleanup(func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	})
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -332,12 +335,12 @@ func (p *Plugin) logFields(r *http.Request, status int) map[string]any {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	_ = batchMaxSize
 
 	endpoint := p.endpointURL()
@@ -345,7 +348,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	if err != nil {
 		return 0, err
 	}
-	resp, err := p.client.R().SetBody(entriesPayload).Post(endpoint)
+	resp, err := p.client.R().SetContext(ctx).SetBody(entriesPayload).Post(endpoint)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log to SkyWalking endpoint %s: %w", endpoint, err)
 	}

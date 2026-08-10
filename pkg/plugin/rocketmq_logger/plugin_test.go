@@ -28,9 +28,33 @@ type captureSender struct {
 	messages []rocketmqMessage
 }
 
+type contextCaptureSender struct {
+	ctx context.Context
+}
+
+func (s *contextCaptureSender) Send(ctx context.Context, _ rocketmqMessage) error {
+	s.ctx = ctx
+	return ctx.Err()
+}
+
+func TestSendBatchPassesParentContextToRocketMQ(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sender := &contextCaptureSender{}
+	p := &Plugin{config: Config{Timeout: 30}, sender: sender}
+	_, err := p.SendBatch(parent, []map[string]any{{"route_id": "r1"}}, 1)
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want canceled parent error")
+	}
+	if sender.ctx == nil || sender.ctx.Err() == nil {
+		t.Fatal("RocketMQ sender did not receive the canceled parent context")
+	}
+}
+
 func TestSendBatchPreservesRocketMQMarshalErrorContext(t *testing.T) {
 	p := &Plugin{}
-	_, err := p.SendBatch([]map[string]any{{"bad": make(chan int)}}, 1)
+	_, err := p.SendBatch(context.Background(), []map[string]any{{"bad": make(chan int)}}, 1)
 	if err == nil || !strings.Contains(err.Error(), "failed to marshal rocketmq log message") {
 		t.Fatalf("SendBatch() error = %v, want rocketmq marshal context", err)
 	}
@@ -326,7 +350,7 @@ func TestSendBatchEncodesEntriesAsSingleRocketMQMessage(t *testing.T) {
 		BatchMaxSize:   2,
 	}, sender)
 
-	firstFail, err := p.SendBatch([]map[string]any{{"route_id": "r1"}, {"route_id": "r2"}}, 2)
+	firstFail, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}, {"route_id": "r2"}}, 2)
 	if err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
@@ -745,7 +769,7 @@ func TestSenderCancellationUnblocksSendWithoutLeakedGoroutine(t *testing.T) {
 		t.Fatalf("Send took %v, want cancellation to unblock it", elapsed)
 	}
 
-	if _, batchErr := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); batchErr == nil {
+	if _, batchErr := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); batchErr == nil {
 		t.Fatal("SendBatch() error = nil, want delivery failure after cancellation")
 	}
 	if got := runtime.NumGoroutine(); got > before {

@@ -2,6 +2,7 @@ package syslog
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -189,7 +190,7 @@ func TestTLSHandshakeHonorsConfiguredTimeout(t *testing.T) {
 	})
 
 	started := time.Now()
-	err = p.sendBody([]byte("frame"))
+	err = p.sendBody(context.Background(), []byte("frame"))
 	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("sendBody() error = nil, want TLS handshake timeout")

@@ -3,10 +3,12 @@ package http_logger
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +19,109 @@ import (
 	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestStopDefersHTTPClientReleaseUntilDeliveryCallbackReturns(t *testing.T) {
+	started := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	clientReleased := make(chan struct{})
+	p := &Plugin{}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize:    1,
+		ShutdownTimeout: 20 * time.Millisecond,
+		InactiveTimeout: time.Hour,
+		BufferDuration:  time.Hour,
+	}, func(ctx context.Context, _ []map[string]any, _ int) (int, error) {
+		close(started)
+		<-ctx.Done()
+		<-releaseCallback
+		return 0, ctx.Err()
+	})
+	p.clientRelease = func() { close(clientReleased) }
+	if !p.BatchProcessor.Push(map[string]any{"id": "blocked"}) {
+		t.Fatal("push was rejected")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("delivery did not start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Plugin.Stop() exceeded the processor shutdown bound")
+	}
+	select {
+	case <-clientReleased:
+		t.Fatal("HTTP client was released before delivery callback exit")
+	default:
+	}
+	close(releaseCallback)
+	select {
+	case <-clientReleased:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP client was not released after delivery callback exit")
+	}
+}
+
+func TestSendBatchCancelsRestyRequestWithContext(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	p := newTestPlugin(t, Config{URI: server.URL, Timeout: 10})
+	t.Cleanup(p.BatchProcessor.Stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(ctx, []map[string]any{{"path": "/cancel"}}, 1)
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP logger request")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("SendBatch() did not return after context cancellation")
+	}
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want context cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SendBatch() error = %v, want context cancellation when backend did not observe it", err)
+		}
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -317,8 +420,8 @@ func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/three", nil))
 
 	stats := p.BatchProcessor.Stats()
-	if stats.Dropped != 1 {
-		t.Fatalf("dropped = %d, want 1", stats.Dropped)
+	if stats.Dropped != 2 {
+		t.Fatalf("dropped = %d, want 2", stats.Dropped)
 	}
 }
 

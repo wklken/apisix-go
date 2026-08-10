@@ -1,6 +1,7 @@
 package splunk_hec_logging
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -362,7 +363,7 @@ func TestSendBatchPostsConcatenatedSplunkHECEvents(t *testing.T) {
 		BatchMaxSize: 2,
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 

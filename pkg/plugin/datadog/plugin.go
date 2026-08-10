@@ -1,6 +1,7 @@
 package datadog
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -271,6 +272,7 @@ func (p *Plugin) PostInit() error {
 		RetryDelaySet:      p.config.retryDelaySet,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.deliver)
 	return nil
 }
@@ -281,16 +283,19 @@ func (p *Plugin) SetRouteContext(routeID string, serverAddr string) {
 }
 
 func (p *Plugin) Stop() {
+	cleanup := func() {
+		p.connMu.Lock()
+		if p.conn != nil {
+			_ = p.conn.Close()
+			p.conn = nil
+		}
+		p.connMu.Unlock()
+	}
 	if p.BatchProcessor != nil {
-		p.BatchProcessor.Stop()
+		p.BatchProcessor.StopWithCleanup(cleanup)
+		return
 	}
-
-	p.connMu.Lock()
-	if p.conn != nil {
-		_ = p.conn.Close()
-		p.conn = nil
-	}
-	p.connMu.Unlock()
+	cleanup()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -321,12 +326,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) Send(entry metricEntry) {
-	if err := p.send(entry); err != nil {
+	if err := p.send(context.Background(), entry); err != nil {
 		logger.Errorf("failed to send DogStatsD metrics: %s", err)
 	}
 }
 
-func (p *Plugin) send(entry metricEntry) error {
+func (p *Plugin) send(ctx context.Context, entry metricEntry) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lines := p.metricLines(entry)
 	payload := strings.Join(lines, "\n")
 
@@ -336,13 +347,19 @@ func (p *Plugin) send(entry metricEntry) error {
 	conn := p.conn
 	if conn == nil {
 		var err error
-		conn, err = p.dial()
+		conn, err = p.dial(ctx)
 		if err != nil {
 			return fmt.Errorf("connect to DogStatsD endpoint %s: %w", p.dogstatsdAddr(), err)
 		}
 		p.conn = conn
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(datadogSendTimeout))
+	deadline := time.Now().Add(datadogSendTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetWriteDeadline(deadline)
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	defer stopWatcher()
 
 	if len(payload) <= maxDatagramSize {
 		if _, err := conn.Write([]byte(payload)); err != nil {
@@ -365,11 +382,12 @@ func (p *Plugin) dogstatsdAddr() string {
 	return net.JoinHostPort(p.metadata.Host, strconv.Itoa(p.metadata.Port))
 }
 
-func (p *Plugin) dial() (net.Conn, error) {
+func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 	if p.dialFunc != nil {
 		return p.dialFunc()
 	}
-	return net.DialTimeout("udp", p.dogstatsdAddr(), datadogSendTimeout)
+	dialer := &net.Dialer{Timeout: datadogSendTimeout}
+	return dialer.DialContext(ctx, "udp", p.dogstatsdAddr())
 }
 
 func (p *Plugin) resetConnLocked(conn net.Conn) {
@@ -379,17 +397,36 @@ func (p *Plugin) resetConnLocked(conn net.Conn) {
 	}
 }
 
-func (p *Plugin) deliver(entries []map[string]any, _ int) (int, error) {
+func (p *Plugin) deliver(ctx context.Context, entries []map[string]any, _ int) (int, error) {
 	for i, raw := range entries {
 		entry, ok := raw["entry"].(metricEntry)
 		if !ok {
 			return i + 1, fmt.Errorf("invalid Datadog metric entry %T", raw["entry"])
 		}
-		if err := p.send(entry); err != nil {
+		if err := p.send(ctx, entry); err != nil {
 			return i + 1, err
 		}
 	}
 	return 0, nil
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }
 
 func (p *Plugin) metricLines(entry metricEntry) []string {

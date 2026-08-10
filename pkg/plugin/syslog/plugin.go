@@ -1,6 +1,7 @@
 package syslog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -323,16 +324,18 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.transport != nil {
-		p.transport.Close()
-	}
+	p.StopWithCleanup(func() {
+		if p.transport != nil {
+			p.transport.Close()
+		}
+	})
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -446,17 +449,17 @@ func (p *Plugin) Send(log map[string]any) {
 	}
 	logMessage := encodeRFC5424(time.Now(), "", os.Getpid(), message)
 
-	if err := p.sendBody(logMessage); err != nil {
+	if err := p.sendBody(context.Background(), logMessage); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := encodeBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, err
 	}
-	return 0, p.sendBody(body)
+	return 0, p.sendBody(ctx, body)
 }
 
 func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
@@ -507,11 +510,11 @@ func requestHostname(r *http.Request) string {
 	return strings.Trim(r.Host, "[]")
 }
 
-func (p *Plugin) sendBody(body []byte) error {
+func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
 	if p.transport == nil {
 		return errors.New("syslog transport is not initialized")
 	}
-	accepted, err := p.transport.Log(body)
+	accepted, err := p.transport.LogContext(ctx, body)
 	if accepted == len(body) {
 		if err != nil {
 			logger.Errorf("failed to flush accepted syslog message: %s", err)

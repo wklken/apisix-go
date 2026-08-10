@@ -2,10 +2,12 @@ package loggly
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +20,62 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSendBatchCancelsLogglyHTTPBulkWithContext(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          server.URL,
+		Protocol:      "http",
+		Timeout:       10000,
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(ctx, []map[string]any{{"path": "/cancel"}}, 1)
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Loggly bulk request")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("SendBatch() did not return after context cancellation")
+	}
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want context cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SendBatch() error = %v, want context cancellation when backend did not observe it", err)
+		}
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -378,7 +436,7 @@ func TestSendBatchWritesUDPMessagesIndividually(t *testing.T) {
 		Timeout:       1000,
 	})
 
-	firstFail, err := p.SendBatch([]map[string]any{
+	firstFail, err := p.SendBatch(context.Background(), []map[string]any{
 		{"status": 200, "path": "/first"},
 		{"status": 201, "path": "/second"},
 	}, 2)
@@ -739,10 +797,10 @@ func TestSendBatchReusesLogglyUDPSocket(t *testing.T) {
 		return net.Dial("udp", addr)
 	}
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch #1 error = %v", err)
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r2"}}, 1); err != nil {
 		t.Fatalf("SendBatch #2 error = %v", err)
 	}
 	if got := dials.Load(); got != 1 {
@@ -754,6 +812,86 @@ func TestSendBatchReusesLogglyUDPSocket(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for loggly UDP message")
 		}
+	}
+}
+
+func TestSendBatchLogglyUDPUnblocksOnContextCancellation(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = peer.Close()
+	})
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "syslog",
+		Host:          "unused",
+		Port:          1,
+		Timeout:       1000,
+	})
+	p.conn = client
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(ctx, []map[string]any{{"route_id": "blocked"}}, 1)
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SendBatch() error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SendBatch() remained blocked after context cancellation")
+	}
+}
+
+type cancelAfterWriteConn struct {
+	cancel context.CancelFunc
+	closed atomic.Bool
+}
+
+func (c *cancelAfterWriteConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c *cancelAfterWriteConn) Write(payload []byte) (int, error) {
+	c.cancel()
+	return len(payload), nil
+}
+
+func (c *cancelAfterWriteConn) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+func (*cancelAfterWriteConn) LocalAddr() net.Addr              { return nil }
+func (*cancelAfterWriteConn) RemoteAddr() net.Addr             { return nil }
+func (*cancelAfterWriteConn) SetDeadline(time.Time) error      { return nil }
+func (*cancelAfterWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (*cancelAfterWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestSendBatchLogglyUDPDiscardsConnectionCanceledAfterWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := &cancelAfterWriteConn{cancel: cancel}
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Protocol:      "syslog",
+		Host:          "unused",
+		Port:          1,
+		Timeout:       1000,
+	})
+	p.conn = conn
+	_, err := p.SendBatch(ctx, []map[string]any{{"route_id": "deadline-race"}}, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendBatch() error = %v, want context canceled", err)
+	}
+	if !conn.closed.Load() {
+		t.Fatal("canceled connection was not closed")
+	}
+	p.connMu.Lock()
+	retained := p.conn
+	p.connMu.Unlock()
+	if retained != nil {
+		t.Fatal("canceled connection remained available for reuse")
 	}
 }
 
@@ -777,17 +915,17 @@ func TestSendBatchRedialsLogglyUDPSocketAfterFailure(t *testing.T) {
 		return net.Dial("udp", addr)
 	}
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch #1 error = %v", err)
 	}
 	p.connMu.Lock()
 	_ = p.conn.Close()
 	p.connMu.Unlock()
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err == nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r2"}}, 1); err == nil {
 		t.Fatal("SendBatch #2 error = nil on a closed socket")
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r3"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r3"}}, 1); err != nil {
 		t.Fatalf("SendBatch #3 error = %v, want redial delivery", err)
 	}
 	if got := dials.Load(); got != 2 {
@@ -824,10 +962,10 @@ func TestSendBatchReusesLogglyHTTPTransport(t *testing.T) {
 		Timeout:       1000,
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch #1 error = %v", err)
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r2"}}, 1); err != nil {
 		t.Fatalf("SendBatch #2 error = %v", err)
 	}
 	if got := counting.accepts.Load(); got != 1 {
@@ -852,7 +990,7 @@ func TestStopClosesLogglyUDPSocket(t *testing.T) {
 	p.dialFunc = func() (net.Conn, error) {
 		return net.Dial("udp", addr)
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 	select {

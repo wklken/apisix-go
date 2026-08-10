@@ -262,6 +262,8 @@ func initMetrics() {
 		},
 	)
 
+	initLoggerBatchMetrics(metricConfig.MetricPrefix)
+
 	LLMActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "llm_active_connections",
@@ -321,6 +323,8 @@ func initMetrics() {
 		HttpLatency,
 		Bandwidth,
 		BatchProcessEntries,
+		LoggerBatchPendingEntries,
+		LoggerBatchEvents,
 		LLMLatency,
 		LLMPromptTokens,
 		LLMCompletionTokens,

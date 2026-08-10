@@ -2,10 +2,12 @@ package elasticsearch_logger
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,67 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSendBatchCancelsElasticsearchBulkWithContext(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		Timeout:       10,
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(ctx, []map[string]any{{"path": "/cancel"}}, 1)
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("SendBatch() did not return after context cancellation")
+	}
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want context cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SendBatch() error = %v, want context cancellation when backend did not observe it", err)
+		}
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -185,7 +248,11 @@ func TestSendBatchDetectsBulkItemFailures(t *testing.T) {
 		Timeout:       10,
 	})
 
-	firstFail, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}, {"path": "/c"}}, 3)
+	firstFail, err := p.SendBatch(
+		context.Background(),
+		[]map[string]any{{"path": "/a"}, {"path": "/b"}, {"path": "/c"}},
+		3,
+	)
 	if err == nil {
 		t.Fatal("SendBatch() error = nil, want detected bulk item failure")
 	}
@@ -220,7 +287,7 @@ func TestSendBatchMalformedBulkResponse(t *testing.T) {
 		Timeout:       10,
 	})
 
-	firstFail, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	firstFail, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)
 	if err == nil {
 		t.Fatal("SendBatch() error = nil, want malformed bulk response error")
 	}
@@ -255,7 +322,7 @@ func TestSendBatchWritesMultipleBulkEntries(t *testing.T) {
 		BatchMaxSize:  2,
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 

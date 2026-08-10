@@ -2,6 +2,7 @@ package loggly
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -298,6 +299,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor("loggly", base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -382,19 +384,19 @@ func resolveLogFormat(r *http.Request, request accessRequest, format map[string]
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	if p.config.Protocol == "http" || p.config.Protocol == "https" {
-		return 0, p.sendHTTPBulk(entries, batchMaxSize)
+		return 0, p.sendHTTPBulk(ctx, entries, batchMaxSize)
 	}
 
 	for i, entry := range entries {
 		message := p.buildMessage(entry)
-		if err := p.sendUDPMessage(message); err != nil {
+		if err := p.sendUDPMessage(ctx, message); err != nil {
 			return i + 1, err
 		}
 	}
@@ -402,36 +404,49 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	return 0, nil
 }
 
-func (p *Plugin) sendUDPMessage(message string) error {
+func (p *Plugin) sendUDPMessage(ctx context.Context, message string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 
 	conn := p.conn
 	if conn == nil {
 		var err error
-		conn, err = p.dial()
+		conn, err = p.dial(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %w", p.config.Host, p.config.Port, err)
 		}
 		p.conn = conn
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond))
-
-	if _, err := conn.Write([]byte(message)); err != nil {
+	deadline := time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetWriteDeadline(deadline)
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	_, writeErr := conn.Write([]byte(message))
+	stopWatcher()
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		p.resetConnLocked(conn)
-		return fmt.Errorf("failed to send loggly message: %w", err)
+		return ctxErr
+	}
+	if writeErr != nil {
+		p.resetConnLocked(conn)
+		return fmt.Errorf("failed to send loggly message: %w", writeErr)
 	}
 	return nil
 }
 
-func (p *Plugin) dial() (net.Conn, error) {
+func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 	if p.dialFunc != nil {
 		return p.dialFunc()
 	}
-	return net.DialTimeout(
+	return (&net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}).DialContext(
+		ctx,
 		"udp",
 		net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port)),
-		time.Duration(p.config.Timeout)*time.Millisecond,
 	)
 }
 
@@ -445,27 +460,43 @@ func (p *Plugin) resetConnLocked(conn net.Conn) {
 // Stop drains the batch processor, then closes the retained syslog socket
 // and any idle HTTP connections.
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
+	p.StopWithCleanup(func() {
+		p.connMu.Lock()
+		if p.conn != nil {
+			_ = p.conn.Close()
+			p.conn = nil
+		}
+		p.connMu.Unlock()
 
-	p.connMu.Lock()
-	if p.conn != nil {
-		_ = p.conn.Close()
-		p.conn = nil
-	}
-	p.connMu.Unlock()
+		if p.httpClient != nil {
+			p.httpClient.CloseIdleConnections()
+		}
+	})
+}
 
-	if p.httpClient != nil {
-		p.httpClient.CloseIdleConnections()
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
 	}
 }
 
-func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error {
+func (p *Plugin) sendHTTPBulk(ctx context.Context, entries []map[string]any, batchMaxSize int) error {
 	payload, err := p.encodeHTTPBulk(entries, batchMaxSize)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, p.bulkEndpoint(), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.bulkEndpoint(), bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to build Loggly bulk request: %w", err)
 	}

@@ -1,6 +1,7 @@
 package tcp_logger
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -264,6 +265,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
@@ -350,17 +352,17 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 
-	if err := p.sendBody(logMessage); err != nil {
+	if err := p.sendBody(context.Background(), logMessage); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := encodeBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, err
 	}
-	return 0, p.sendBody(body)
+	return 0, p.sendBody(ctx, body)
 }
 
 func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
@@ -375,14 +377,20 @@ func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 	return body, nil
 }
 
-func (p *Plugin) sendBody(body []byte) error {
+func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 
 	conn := p.conn
 	if conn == nil {
 		var err error
-		conn, err = p.dial()
+		conn, err = p.dial(ctx)
 		if err != nil {
 			return fmt.Errorf(
 				"failed to connect to TCP server: host[%s] port[%d]: %w",
@@ -395,8 +403,13 @@ func (p *Plugin) sendBody(body []byte) error {
 	}
 
 	deadline := time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
 	_ = conn.SetWriteDeadline(deadline)
 	_ = conn.SetReadDeadline(deadline)
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	defer stopWatcher()
 
 	written := 0
 	for written < len(body) {
@@ -405,7 +418,7 @@ func (p *Plugin) sendBody(body []byte) error {
 		if err != nil {
 			_ = conn.Close()
 			p.conn = nil
-			return fmt.Errorf("failed to send log message: %s in tcp-logger", err)
+			return fmt.Errorf("failed to send log message in tcp-logger: %w", err)
 		}
 	}
 	return nil
@@ -413,25 +426,67 @@ func (p *Plugin) sendBody(body []byte) error {
 
 // Stop drains the batch processor first, then closes the shared connection.
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-
-	p.connMu.Lock()
-	if p.conn != nil {
-		_ = p.conn.Close()
-		p.conn = nil
-	}
-	p.connMu.Unlock()
+	p.StopWithCleanup(func() {
+		p.connMu.Lock()
+		if p.conn != nil {
+			_ = p.conn.Close()
+			p.conn = nil
+		}
+		p.connMu.Unlock()
+	})
 }
 
-func (p *Plugin) dial() (net.Conn, error) {
+func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
 	if !p.config.TLS {
-		return dialer.Dial("tcp", p.config.addr)
+		return dialer.DialContext(ctx, "tcp", p.config.addr)
 	}
 
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
 	if p.config.TLSOptions != nil {
 		tlsConfig.ServerName = *p.config.TLSOptions
 	}
-	return tls.DialWithDialer(dialer, "tcp", p.config.addr, tlsConfig)
+	timeout := time.Duration(p.config.Timeout) * time.Millisecond
+	if contextDeadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(contextDeadline); remaining < timeout {
+			timeout = remaining
+		}
+	}
+	if timeout <= 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, context.DeadlineExceeded
+	}
+	handshakeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	raw, err := dialer.DialContext(handshakeCtx, "tcp", p.config.addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, tlsConfig)
+	if err := conn.HandshakeContext(handshakeCtx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }

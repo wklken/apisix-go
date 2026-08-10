@@ -2,6 +2,7 @@ package clickhouse_logger
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -272,7 +273,7 @@ func TestSendBatchDeliversToEachConfiguredEndpoint(t *testing.T) {
 	t.Cleanup(func() { p.BatchProcessor.Stop() })
 
 	for range servers {
-		if _, err := p.SendBatch([]map[string]any{{"path": "/orders"}}, 1); err != nil {
+		if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
 			t.Fatalf("SendBatch() error = %v", err)
 		}
 	}

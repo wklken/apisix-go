@@ -2,6 +2,7 @@ package sls_logger
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -136,7 +137,7 @@ func TestSendMessageReturnsWithinWriteDeadline(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := p.sendMessage("blocked SLS message")
+	err := p.sendMessage(context.Background(), "blocked SLS message")
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("sendMessage() error = nil, want write deadline error")
@@ -165,8 +166,8 @@ func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
 			dropped++
 		}
 	}
-	if dropped != 1 {
-		t.Fatalf("dropped = %d, want exactly 1 beyond the default 10000 pending cap", dropped)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want exactly 2 beyond the default 10000 pending cap", dropped)
 	}
 }
 

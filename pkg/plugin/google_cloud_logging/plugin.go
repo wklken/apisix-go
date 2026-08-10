@@ -32,11 +32,9 @@ type Plugin struct {
 
 	client *resty.Client
 
-	// resolvedAuth and tokenSource are built once in PostInit: immutable auth
-	// file parsing never runs on the delivery path, and token refreshes reuse
-	// the same token source.
+	// resolvedAuth is built once in PostInit so auth file parsing never runs on
+	// the delivery path. Token sources are bound to each delivery context.
 	resolvedAuth   *AuthConfig
-	tokenSource    oauth2.TokenSource
 	requestTimeout time.Duration
 
 	tokenMu      sync.Mutex
@@ -389,10 +387,9 @@ func (p *Plugin) PostInit() error {
 	p.clientRelease = release
 
 	// Parse the immutable auth config once so the delivery path never reads
-	// the file or rebuilds the token source.
+	// the auth file.
 	if auth, err := p.resolveAuthConfig(); err == nil {
 		p.resolvedAuth = auth
-		p.tokenSource = googleTokenSource(auth, p.client.GetClient())
 	}
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
@@ -406,6 +403,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -417,11 +415,12 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.StopWithCleanup(func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	})
 }
 
 func googleCloudTLSConfig(verify bool) (*tls.Config, string, error) {
@@ -448,18 +447,18 @@ func googleCloudTLSConfig(verify bool) (*tls.Config, string, error) {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
 	auth, err := p.authConfig()
 	if err != nil {
 		return 0, fmt.Errorf("failed to load google-cloud-logging auth config: %w", err)
 	}
 
-	accessToken, tokenType, err := p.accessTokenFor(auth)
+	accessToken, tokenType, err := p.accessTokenFor(ctx, auth)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get google-cloud-logging oauth token: %w", err)
 	}
@@ -476,6 +475,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 		"partialSuccess": false,
 	}
 	resp, err := p.client.R().
+		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", tokenType+" "+accessToken).
 		SetBody(body).
@@ -548,7 +548,7 @@ func (a *AuthConfig) scopes() []string {
 	return a.Scope
 }
 
-func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
+func (p *Plugin) accessTokenFor(ctx context.Context, auth *AuthConfig) (string, string, error) {
 	p.tokenMu.Lock()
 	if p.accessToken != "" && time.Now().Before(p.tokenExpires.Add(-tokenRefreshSkew)) {
 		accessToken := p.accessToken
@@ -560,7 +560,7 @@ func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
 
 	// The network refresh runs outside the mutex so one slow token endpoint
 	// does not serialize every concurrent batch.
-	token, err := p.fetchAccessToken(auth)
+	token, err := p.fetchAccessToken(ctx, auth)
 	if err != nil {
 		return "", "", err
 	}
@@ -575,11 +575,8 @@ func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
 	return accessToken, tokenType, nil
 }
 
-func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
-	source := p.tokenSource
-	if source == nil {
-		source = googleTokenSource(auth, p.client.GetClient())
-	}
+func (p *Plugin) fetchAccessToken(ctx context.Context, auth *AuthConfig) (tokenResponse, error) {
+	source := googleTokenSource(ctx, auth, p.client.GetClient())
 	if source == nil {
 		return tokenResponse{}, errors.New("failed to build Google token source")
 	}
@@ -598,7 +595,7 @@ func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
 	}, nil
 }
 
-func googleTokenSource(auth *AuthConfig, client *http.Client) oauth2.TokenSource {
+func googleTokenSource(ctx context.Context, auth *AuthConfig, client *http.Client) oauth2.TokenSource {
 	rawJSON, err := json.Marshal(map[string]any{
 		"type":         "service_account",
 		"client_email": auth.ClientEmail,
@@ -610,7 +607,7 @@ func googleTokenSource(auth *AuthConfig, client *http.Client) oauth2.TokenSource
 	if err != nil {
 		return nil
 	}
-	source, err := ai_auth.NewGoogleTokenSource(context.Background(), rawJSON, auth.scopes(), client)
+	source, err := ai_auth.NewGoogleTokenSource(ctx, rawJSON, auth.scopes(), client)
 	if err != nil {
 		return nil
 	}

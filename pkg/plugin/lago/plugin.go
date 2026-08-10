@@ -2,6 +2,7 @@ package lago
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"math/rand"
@@ -306,6 +307,7 @@ func (p *Plugin) PostInit() error {
 	p.clientRelease = release
 
 	p.BatchProcessor = base.NewBatchProcessor("lago logger", base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -316,11 +318,12 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.StopWithCleanup(func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	})
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -359,12 +362,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) Send(fields map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{fields}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{fields}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
 	if len(p.config.EndpointAddrs) == 0 {
 		return 0, nil
 	}
@@ -375,6 +378,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	}
 	endpoint := p.endpointURL()
 	resp, err := p.client.R().
+		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+p.config.Token).
 		SetBody(lagoPayload{Events: events}).

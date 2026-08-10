@@ -36,7 +36,7 @@ type Plugin struct {
 	observerStop   func()
 	stopOnce       sync.Once
 
-	dialTCP func(network, address string, timeout time.Duration, tlsConfig *tls.Config, useTLS bool) (net.Conn, error)
+	dialTCP func(ctx context.Context, network, address string, timeout time.Duration, tlsConfig *tls.Config, useTLS bool) (net.Conn, error)
 }
 
 const (
@@ -272,6 +272,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, "", "", p.SendBatch)
 
 	return nil
@@ -333,13 +334,17 @@ func (p *Plugin) Stop() {
 		if p.observerStop != nil {
 			p.observerStop()
 		}
-		if p.BatchProcessor != nil {
-			p.BatchProcessor.Stop()
-		}
-		if p.kafkaSender != nil {
-			if err := p.kafkaSender.Close(); err != nil {
-				logger.Errorf("failed to close error-log-logger kafka writer: %s", err)
+		cleanup := func() {
+			if p.kafkaSender != nil {
+				if err := p.kafkaSender.Close(); err != nil {
+					logger.Errorf("failed to close error-log-logger kafka writer: %s", err)
+				}
 			}
+		}
+		if p.BatchProcessor != nil {
+			p.BatchProcessor.StopWithCleanup(cleanup)
+		} else {
+			cleanup()
 		}
 	})
 }
@@ -358,11 +363,11 @@ func (p *Plugin) SendLogs(ctx context.Context, lines []string) error {
 	case p.config.Kafka != nil:
 		return p.sendToKafka(ctx, filtered)
 	default:
-		return p.sendToTCP(filtered)
+		return p.sendToTCP(ctx, filtered)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		line, err := logLine(entry)
@@ -371,7 +376,10 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 		}
 		lines = append(lines, line)
 	}
-	return 0, p.SendLogs(context.Background(), lines)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return 0, p.SendLogs(ctx, lines)
 }
 
 func (p *Plugin) applyDefaults() {
@@ -467,21 +475,47 @@ func logLineLevel(line string) (int, bool) {
 	return level, ok
 }
 
-func (p *Plugin) sendToTCP(lines []string) error {
+func (p *Plugin) sendToTCP(ctx context.Context, lines []string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cfg := p.config.TCP
 	if cfg == nil {
 		return fmt.Errorf("missing tcp config")
 	}
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	timeout := time.Duration(p.config.Timeout) * time.Second
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	operationTimeout := time.Until(deadline)
+	if operationTimeout <= 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	}
 
-	conn, err := p.dialTCPConnection("tcp", addr, timeout, &tls.Config{ServerName: cfg.TLSServerName}, cfg.TLS)
+	conn, err := p.dialTCPConnection(
+		ctx,
+		"tcp",
+		addr,
+		operationTimeout,
+		&tls.Config{ServerName: cfg.TLSServerName},
+		cfg.TLS,
+	)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	defer stopWatcher()
 
-	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
 
@@ -490,19 +524,50 @@ func (p *Plugin) sendToTCP(lines []string) error {
 }
 
 func (p *Plugin) dialTCPConnection(
+	ctx context.Context,
 	network, address string,
 	timeout time.Duration,
 	tlsConfig *tls.Config,
 	useTLS bool,
 ) (net.Conn, error) {
 	if p.dialTCP != nil {
-		return p.dialTCP(network, address, timeout, tlsConfig, useTLS)
+		return p.dialTCP(ctx, network, address, timeout, tlsConfig, useTLS)
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	if useTLS {
-		return tls.DialWithDialer(dialer, network, address, tlsConfig)
+		handshakeCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		raw, err := dialer.DialContext(handshakeCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		conn := tls.Client(raw, tlsConfig)
+		if err := conn.HandshakeContext(handshakeCtx); err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+		return conn, nil
 	}
-	return dialer.Dial(network, address)
+	return dialer.DialContext(ctx, network, address)
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }
 
 func (p *Plugin) sendToSkywalking(ctx context.Context, lines []string) error {

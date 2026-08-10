@@ -2,6 +2,7 @@ package syslog
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -219,7 +220,7 @@ func TestSendBodyReturnsErrorAfterAmbiguousPartialWrite(t *testing.T) {
 	transport.idle <- partial
 
 	plugin := &Plugin{transport: transport}
-	if err := plugin.sendBody([]byte("new")); !errors.Is(err, writeFailure) {
+	if err := plugin.sendBody(context.Background(), []byte("new")); !errors.Is(err, writeFailure) {
 		t.Fatalf("sendBody(new) error = %v, want caller-owned retry for an ambiguous partial write", err)
 	}
 	if got := partial.Written(); got != "oldn" {
@@ -231,7 +232,7 @@ func TestSendBodyReturnsErrorAfterAmbiguousPartialWrite(t *testing.T) {
 
 	recovery := &scriptedConn{}
 	transport.idle <- recovery
-	if err := plugin.sendBody([]byte("new")); err != nil {
+	if err := plugin.sendBody(context.Background(), []byte("new")); err != nil {
 		t.Fatalf("retry sendBody(new) error = %v", err)
 	}
 	if err := transport.Flush(); err != nil {
@@ -265,7 +266,7 @@ func TestSendBodyRetriesAfterPartialWriteDiscardsPriorBuffer(t *testing.T) {
 	transport.idle <- partial
 
 	plugin := &Plugin{transport: transport}
-	if err := plugin.sendBody([]byte("new")); !errors.Is(err, writeFailure) {
+	if err := plugin.sendBody(context.Background(), []byte("new")); !errors.Is(err, writeFailure) {
 		t.Fatalf("sendBody(new) error = %v, want caller-owned retry", err)
 	}
 	if got := partial.Written(); got != "ol" {
@@ -277,7 +278,7 @@ func TestSendBodyRetriesAfterPartialWriteDiscardsPriorBuffer(t *testing.T) {
 
 	recovery := &scriptedConn{}
 	transport.idle <- recovery
-	if err := plugin.sendBody([]byte("new")); err != nil {
+	if err := plugin.sendBody(context.Background(), []byte("new")); err != nil {
 		t.Fatalf("retry sendBody(new) error = %v", err)
 	}
 	if err := transport.Flush(); err != nil {

@@ -93,18 +93,59 @@ func TestSendToTCPReturnsWithinWriteDeadline(t *testing.T) {
 			Timeout: 1,
 		},
 	}
-	p.dialTCP = func(string, string, time.Duration, *tls.Config, bool) (net.Conn, error) {
+	p.dialTCP = func(context.Context, string, string, time.Duration, *tls.Config, bool) (net.Conn, error) {
 		return conn, nil
 	}
 
 	start := time.Now()
-	err := p.sendToTCP([]string{"blocked write"})
+	err := p.sendToTCP(context.Background(), []string{"blocked write"})
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("sendToTCP() error = nil, want write deadline error")
 	}
 	if elapsed >= 2*time.Second {
 		t.Fatalf("sendToTCP() took %s, want return within twice the configured 1s timeout", elapsed)
+	}
+}
+
+func TestSendBatchHonorsParentContextForHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("canceled error-log request reached the backend")
+	}))
+	t.Cleanup(server.Close)
+
+	p := &Plugin{config: Config{
+		Skywalking: &SkywalkingConfig{EndpointAddr: server.URL},
+		Timeout:    30,
+	}, client: &http.Client{}}
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.SendBatch(parent, []map[string]any{{"message": "line"}}, 1); err == nil {
+		t.Fatal("SendBatch() error = nil, want canceled parent error")
+	}
+}
+
+func TestSendToTCPHonorsParentDeadline(t *testing.T) {
+	conn := &deadlineWriteConn{}
+	p := &Plugin{
+		config: Config{
+			TCP:     &TCPConfig{Host: "127.0.0.1", Port: 1},
+			Timeout: 30,
+		},
+	}
+	p.dialTCP = func(context.Context, string, string, time.Duration, *tls.Config, bool) (net.Conn, error) {
+		return conn, nil
+	}
+
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := p.sendToTCP(parent, []string{"blocked write"})
+	if err == nil {
+		t.Fatal("sendToTCP() error = nil, want parent deadline error")
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("sendToTCP() took %s, want parent deadline to win", elapsed)
 	}
 }
 
@@ -121,8 +162,8 @@ func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
 			dropped++
 		}
 	}
-	if dropped != 1 {
-		t.Fatalf("dropped = %d, want exactly 1 beyond the default 10000 pending cap", dropped)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want exactly 2 beyond the default 10000 pending cap", dropped)
 	}
 }
 

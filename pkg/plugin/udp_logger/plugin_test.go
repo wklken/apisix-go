@@ -1,6 +1,8 @@
 package udp_logger
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +17,41 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type recordingConn struct {
+	deadline time.Time
+	payload  []byte
+}
+
+func (c *recordingConn) Read([]byte) (int, error) { return 0, io.EOF }
+func (c *recordingConn) Write(payload []byte) (int, error) {
+	c.payload = append(c.payload[:0], payload...)
+	return len(payload), nil
+}
+func (c *recordingConn) Close() error                              { return nil }
+func (c *recordingConn) LocalAddr() net.Addr                       { return nil }
+func (c *recordingConn) RemoteAddr() net.Addr                      { return nil }
+func (c *recordingConn) SetDeadline(time.Time) error               { return nil }
+func (c *recordingConn) SetReadDeadline(time.Time) error           { return nil }
+func (c *recordingConn) SetWriteDeadline(deadline time.Time) error { c.deadline = deadline; return nil }
+
+func TestSendBodyUsesEarlierParentDeadlineWithoutChangingPayload(t *testing.T) {
+	conn := &recordingConn{}
+	p := &Plugin{config: Config{Timeout: 30}, conn: conn}
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	want := []byte(`{"route_id":"r1"}`)
+	if err := p.sendBody(parent, want); err != nil {
+		t.Fatalf("sendBody() error = %v", err)
+	}
+	if !bytes.Equal(conn.payload, want) {
+		t.Fatalf("payload = %q, want %q", conn.payload, want)
+	}
+	if deadline, ok := parent.Deadline(); !ok || conn.deadline.After(deadline.Add(10*time.Millisecond)) {
+		t.Fatalf("write deadline = %v, want no later than parent deadline %v", conn.deadline, deadline)
+	}
+}
 
 func TestEncodeBatchPreservesUDPMarshalErrorContext(t *testing.T) {
 	badEntry := map[string]any{"bad": make(chan int)}
@@ -320,7 +357,7 @@ func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
 func TestSendBodyConnectionErrorIncludesDestination(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "312.0.0.1", Port: 2000, Timeout: 1})
 
-	err := p.sendBody([]byte("log"))
+	err := p.sendBody(context.Background(), []byte("log"))
 	if err == nil {
 		t.Fatal("sendBody() error = nil, want invalid destination error")
 	}
@@ -601,7 +638,7 @@ func TestSendBatchRejectsOversizeDatagram(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 9, Timeout: 1})
 
 	entry := map[string]any{"big": strings.Repeat("x", 70*1024)}
-	_, err := p.SendBatch([]map[string]any{entry}, 1)
+	_, err := p.SendBatch(context.Background(), []map[string]any{entry}, 1)
 
 	var oversize *payloadTooLargeError
 	if !errors.As(err, &oversize) {
@@ -629,7 +666,7 @@ func TestSendBatchReportsWriteFailure(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 9, Timeout: 1})
 	p.conn = failingConn{}
 
-	_, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1)
+	_, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1)
 	if err == nil || !strings.Contains(err.Error(), "failed to send log message") {
 		t.Fatalf("SendBatch() error = %v, want write failure diagnostic", err)
 	}
@@ -664,7 +701,7 @@ func TestSendBatchDeliversOneDatagram(t *testing.T) {
 	}
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 3})
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 

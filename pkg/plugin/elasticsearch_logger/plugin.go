@@ -297,6 +297,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -372,12 +373,12 @@ func elasticsearchLogFields(r *http.Request, logFormat map[string]string) map[st
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
 	endpoint := p.endpointAddr()
 	if endpoint == "" {
 		return 0, nil
@@ -394,6 +395,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 
 	resp, err := client.Bulk(
 		bytes.NewReader(body),
+		client.Bulk.WithContext(ctx),
 		client.Bulk.WithHeader(map[string]string{"Content-Type": "application/x-ndjson"}),
 		client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
 	)
@@ -507,19 +509,19 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
+	p.StopWithCleanup(func() {
+		p.clientMu.Lock()
+		refs := make([]*esClientRef, 0, len(p.clients))
+		for _, ref := range p.clients {
+			refs = append(refs, ref)
+		}
+		p.clients = nil
+		p.clientMu.Unlock()
 
-	p.clientMu.Lock()
-	refs := make([]*esClientRef, 0, len(p.clients))
-	for _, ref := range p.clients {
-		refs = append(refs, ref)
-	}
-	p.clients = nil
-	p.clientMu.Unlock()
-
-	for _, ref := range refs {
-		ref.release()
-	}
+		for _, ref := range refs {
+			ref.release()
+		}
+	})
 }
 
 func (p *Plugin) bulkBodyEntries(entries []map[string]any) ([]byte, error) {

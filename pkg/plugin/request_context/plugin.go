@@ -70,53 +70,74 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}()
 		}
 
-		r = ctx.WithApisixVars(r, map[string]string{
-			"$route_id":     p.config.RouteID,
-			"$route_name":   p.config.RouteName,
-			"$matched_uri":  p.config.MatchedURI,
-			"$matched_host": p.config.MatchedHost,
-			"$service_id":   p.config.ServiceID,
-			"$service_name": p.config.ServiceName,
-		})
-		r = ctx.WithRequestVars(r)
-
-		if !metricsEnabled {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		labels := p.metricLabels()
-		startedAt := lifecycle.StartedAt()
-		_ = lifecycle.AddFinalizer(name, func() error {
-			if direct && !returnedNormally {
-				metrics.Requests.Inc()
-				return nil
-			}
-			outcome := lifecycle.Outcome()
-			consumer := apisixStringVar(r, "$consumer_name")
-			node := apisixStringVar(r, "$balancer_ip")
-			upstreamLatency := requestInt64Var(r, "$upstream_latency")
-			metrics.Requests.Inc()
-			metrics.RecordHTTPRequest(r, metrics.HTTPRequestMetrics{
-				Status:          outcome.Status,
-				Route:           labels.route,
-				MatchedURI:      apisixStringVar(r, "$matched_uri"),
-				MatchedHost:     apisixStringVar(r, "$matched_host"),
-				Service:         labels.service,
-				Consumer:        consumer,
-				Node:            node,
-				RequestLatency:  time.Since(startedAt).Milliseconds(),
-				UpstreamLatency: upstreamLatency,
-				IngressBytes:    util.RequestSize(r),
-				EgressBytes:     outcome.Bytes,
-			})
-			return nil
-		})
-
+		r = p.initializeRequest(r, lifecycle, direct, &returnedNormally)
 		next.ServeHTTP(w, r)
 		returnedNormally = true
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase initializes shared request state and registers the existing
+// request metrics finalizer. The outer request owner creates/finalizes the
+// lifecycle and recycles request state after all finalizers run.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	lifecycle := ctx.GetRequestLifecycle(r)
+	r = p.initializeRequest(r, lifecycle, false, nil)
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) initializeRequest(
+	r *http.Request,
+	lifecycle *ctx.RequestLifecycle,
+	direct bool,
+	returnedNormally *bool,
+) *http.Request {
+	r = ctx.WithApisixVars(r, map[string]string{
+		"$route_id":     p.config.RouteID,
+		"$route_name":   p.config.RouteName,
+		"$matched_uri":  p.config.MatchedURI,
+		"$matched_host": p.config.MatchedHost,
+		"$service_id":   p.config.ServiceID,
+		"$service_name": p.config.ServiceName,
+	})
+	r = ctx.WithRequestVars(r)
+
+	if !metrics.HTTPRequestMetricsEnabled() || lifecycle == nil {
+		return r
+	}
+
+	labels := p.metricLabels()
+	startedAt := lifecycle.StartedAt()
+	_ = lifecycle.AddFinalizer(name, func() error {
+		if direct && (returnedNormally == nil || !*returnedNormally) {
+			metrics.Requests.Inc()
+			return nil
+		}
+		request := lifecycle.FinalRequest()
+		if request == nil {
+			request = r
+		}
+		outcome := lifecycle.Outcome()
+		consumer := apisixStringVar(request, "$consumer_name")
+		node := apisixStringVar(request, "$balancer_ip")
+		upstreamLatency := requestInt64Var(request, "$upstream_latency")
+		metrics.Requests.Inc()
+		metrics.RecordHTTPRequest(request, metrics.HTTPRequestMetrics{
+			Status:          outcome.Status,
+			Route:           labels.route,
+			MatchedURI:      apisixStringVar(request, "$matched_uri"),
+			MatchedHost:     apisixStringVar(request, "$matched_host"),
+			Service:         labels.service,
+			Consumer:        consumer,
+			Node:            node,
+			RequestLatency:  time.Since(startedAt).Milliseconds(),
+			UpstreamLatency: upstreamLatency,
+			IngressBytes:    util.RequestSize(request),
+			EgressBytes:     outcome.Bytes,
+		})
+		return nil
+	})
+	return r
 }
 
 type metricLabels struct {

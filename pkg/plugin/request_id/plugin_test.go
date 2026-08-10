@@ -15,6 +15,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -195,6 +196,53 @@ func TestHandlerCanOmitResponseHeader(t *testing.T) {
 
 	if got := rr.Header().Get("X-Request-Id"); got != "" {
 		t.Fatalf("response request id = %q, want empty", got)
+	}
+}
+
+func TestRequestPhaseAndHandlerCompatibility(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuid"})
+
+	phaseRequest, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/request-id", nil),
+		time.Now(),
+	)
+	phaseResponse := httptest.NewRecorder()
+	phaseCalled := false
+	base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		phaseCalled = true
+		if r.Header.Get("X-Request-Id") == "" {
+			t.Fatal("phase request is missing X-Request-Id")
+		}
+		if r.Context().Value(apisixctx.RequestIDKey) == nil {
+			t.Fatal("phase request is missing request-id context value")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(phaseResponse, phaseRequest)
+	if !phaseCalled || phaseResponse.Code != http.StatusNoContent {
+		t.Fatalf("phase called = %v, status = %d", phaseCalled, phaseResponse.Code)
+	}
+	if phaseResponse.Header().Get("X-Request-Id") == "" {
+		t.Fatal("phase response is missing X-Request-Id")
+	}
+	lifecycle.Finalize()
+
+	handlerResponse := httptest.NewRecorder()
+	handlerCalled := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		if r.Header.Get("X-Request-Id") == "" {
+			t.Fatal("handler request is missing X-Request-Id")
+		}
+		if r.Context().Value(apisixctx.RequestIDKey) == nil {
+			t.Fatal("handler request is missing request-id context value")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(handlerResponse, httptest.NewRequest(http.MethodGet, "/request-id", nil))
+	if !handlerCalled || handlerResponse.Code != http.StatusNoContent {
+		t.Fatalf("handler called = %v, status = %d", handlerCalled, handlerResponse.Code)
+	}
+	if handlerResponse.Header().Get("X-Request-Id") == "" {
+		t.Fatal("handler response is missing X-Request-Id")
 	}
 }
 

@@ -128,3 +128,54 @@ func TestRequestLifecycleInitializesSharedRequestState(t *testing.T) {
 	}
 	RecycleVars(request)
 }
+
+func TestRequestLifecycleInitializesAndTracksFinalRequestAndSource(t *testing.T) {
+	request := httptest.NewRequest("GET", "/", nil)
+	ensured, lifecycle := EnsureRequestLifecycle(request, time.Now())
+	if got := lifecycle.FinalRequest(); got != ensured {
+		t.Fatalf("FinalRequest() = %p, want ensured request %p", got, ensured)
+	}
+	if got := lifecycle.ResponseSource(); got != ResponseSourceUnknown {
+		t.Fatalf("ResponseSource() = %q, want %q", got, ResponseSourceUnknown)
+	}
+
+	replacement := ensured.WithContext(ensured.Context())
+	lifecycle.SetFinalRequest(replacement)
+	lifecycle.SetResponseSource(ResponseSourceCacheHit)
+	if got := lifecycle.FinalRequest(); got != replacement {
+		t.Fatalf("FinalRequest() = %p, want replacement %p", got, replacement)
+	}
+	if got := lifecycle.ResponseSource(); got != ResponseSourceCacheHit {
+		t.Fatalf("ResponseSource() = %q, want %q", got, ResponseSourceCacheHit)
+	}
+	lifecycle.SetResponseSource(ResponseSource("plugin-owned"))
+	if got := lifecycle.ResponseSource(); got != ResponseSourceUnknown {
+		t.Fatalf("invalid ResponseSource() = %q, want %q", got, ResponseSourceUnknown)
+	}
+	RecycleVars(ensured)
+}
+
+func TestRequestLifecycleFinalRequestAndSourceConcurrentAccess(t *testing.T) {
+	request := httptest.NewRequest("GET", "/", nil)
+	lifecycle := NewRequestLifecycle(time.Now())
+	request = WithRequestLifecycle(request, lifecycle)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 100 {
+				lifecycle.SetFinalRequest(request)
+				lifecycle.SetResponseSource(ResponseSourceEarlyStop)
+				_ = lifecycle.FinalRequest()
+				_ = lifecycle.ResponseSource()
+			}
+		})
+	}
+	wg.Wait()
+	if got := lifecycle.FinalRequest(); got != request {
+		t.Fatalf("FinalRequest() = %p, want %p", got, request)
+	}
+	if got := lifecycle.ResponseSource(); got != ResponseSourceEarlyStop {
+		t.Fatalf("ResponseSource() = %q, want %q", got, ResponseSourceEarlyStop)
+	}
+}

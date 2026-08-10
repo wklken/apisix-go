@@ -102,6 +102,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			p.writeAuthError(w, `{"message":"Invalid authorization in request"}`)
 			return
 		}
+		if *p.config.HideCredentials {
+			r.Header.Del("Authorization")
+		}
 		user = normalizeCredential(user)
 		pass = normalizeCredential(pass)
 
@@ -141,10 +144,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 			return
-		}
-
-		if *p.config.HideCredentials {
-			r.Header.Del("Authorization")
 		}
 
 		ctx.AttachConsumer(r, consumer)

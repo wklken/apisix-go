@@ -229,6 +229,95 @@ func TestHandlerPropagatesWolfDenial(t *testing.T) {
 	}
 }
 
+func TestHandlerClearsForgedIdentityHeaders(t *testing.T) {
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":     false,
+			"reason": "permission denied",
+		})
+	}))
+	t.Cleanup(wolf.Close)
+	addWolfConsumer(t, "wolf-forged-header-user", "app-forged-header", wolf.URL)
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", "V1#app-forged-header#wolf-token")
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		req.Header.Set(name, "attacker")
+	}
+	rr := httptest.NewRecorder()
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		rr.Header().Set(name, "attacker")
+	}
+	nextCalled := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if nextCalled {
+		t.Fatal("next handler was called after Wolf denied the request")
+	}
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		if got := req.Header.Get(name); got != "" {
+			t.Fatalf("request %s = %q, want forged header removed", name, got)
+		}
+		if got := rr.Header().Get(name); got != "" {
+			t.Fatalf("response %s = %q, want forged header removed", name, got)
+		}
+	}
+}
+
+func TestHandlerRejectsEmptyUserInfo(t *testing.T) {
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"userInfo": map[string]any{},
+			},
+		})
+	}))
+	t.Cleanup(wolf.Close)
+	addWolfConsumer(t, "wolf-empty-user-info", "app-empty-user-info", wolf.URL)
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", "V1#app-empty-user-info#wolf-token")
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		req.Header.Set(name, "attacker")
+	}
+	rr := httptest.NewRecorder()
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		rr.Header().Set(name, "attacker")
+	}
+	nextCalled := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	}
+	if nextCalled {
+		t.Fatal("next handler was called for an empty Wolf userInfo response")
+	}
+	for _, name := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+		if got := req.Header.Get(name); got != "" {
+			t.Fatalf("request %s = %q, want forged header removed", name, got)
+		}
+		if got := rr.Header().Get(name); got != "" {
+			t.Fatalf("response %s = %q, want forged header removed", name, got)
+		}
+	}
+}
+
 func TestFetchTokenFromQueryAndCookie(t *testing.T) {
 	if got := fetchRBACToken(
 		httptest.NewRequest(http.MethodGet, "/?rbac_token=V1%23app%23query", nil),
@@ -271,7 +360,12 @@ func TestHandlerRetriesTransientWolfServerFailure(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"userInfo": map[string]any{"id": "u-retry", "username": "retry-user"},
+			},
+		})
 	}))
 	t.Cleanup(wolf.Close)
 	addWolfConsumer(t, "wolf-retry-user", "app-retry", wolf.URL)
@@ -297,7 +391,12 @@ func TestHandlerUsesRealIPFromRequestContext(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"userInfo": map[string]any{"id": "u-real-ip", "username": "real-ip-user"},
+			},
+		})
 	}))
 	t.Cleanup(wolf.Close)
 	addWolfConsumer(t, "wolf-real-ip-user", "app-real-ip", wolf.URL)
@@ -499,6 +598,30 @@ func TestSetUserHeadersRejectsUnsupportedIdentityFieldTypes(t *testing.T) {
 		"id": []any{"1"}, "username": "alice",
 	}); err == nil {
 		t.Fatal("setUserHeaders() with slice id = nil error, want unsupported-type error")
+	}
+}
+
+func TestSetUserHeadersRejectsIncompleteIdentity(t *testing.T) {
+	plugin := &Plugin{}
+	cases := []struct {
+		name     string
+		userInfo map[string]any
+	}{
+		{name: "empty user info", userInfo: map[string]any{}},
+		{name: "missing id", userInfo: map[string]any{"username": "alice"}},
+		{name: "blank id", userInfo: map[string]any{"id": "  ", "username": "alice"}},
+		{name: "missing username", userInfo: map[string]any{"id": "u-1"}},
+		{name: "blank username", userInfo: map[string]any{"id": "u-1", "username": "  "}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			if err := plugin.setUserHeaders(w, r, "X-", tc.userInfo); err == nil {
+				t.Fatalf("setUserHeaders() error = nil, want incomplete identity error")
+			}
+		})
 	}
 }
 

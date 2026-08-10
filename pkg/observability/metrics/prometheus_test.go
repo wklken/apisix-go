@@ -487,6 +487,9 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	if LLMLatency == nil || LLMPromptTokens == nil || LLMCompletionTokens == nil {
 		t.Fatal("Init() did not install all LLM metric vectors")
 	}
+	if requestPanics == nil {
+		t.Fatal("Init() did not install request panic metric")
+	}
 }
 
 func TestPrometheusVariableBoundedFallbacks(t *testing.T) {

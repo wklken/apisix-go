@@ -2,8 +2,15 @@ package server
 
 import (
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 const routeSetRetired = uint64(1) << 63
@@ -46,7 +53,105 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer h.finishRequest(current)
-	current.handler.ServeHTTP(w, r)
+	serveRouteRequest(w, r, current.handler)
+}
+
+func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
+	wrapped, snapshot, closeHijacked := base.CaptureResponseOutcome(w)
+
+	defer func() {
+		recovered := recover()
+		outcome := snapshot()
+		aborted := false
+		isHandlerAbort := recovered == http.ErrAbortHandler
+
+		switch {
+		case recovered == nil:
+			outcome.Kind = apisixctx.RequestOutcomeCompleted
+		case isHandlerAbort:
+			outcome.Kind = apisixctx.RequestOutcomeHandlerAbort
+		default:
+			logger.Errorf("recovered request panic: %v\n%s", recovered, debug.Stack())
+			if outcome.Committed || outcome.Flushed || outcome.Hijacked {
+				metrics.RecordRequestPanic(requestPanicStage(outcome))
+				outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+				aborted = true
+			} else {
+				metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
+				if !writeStableInternalError(wrapped) {
+					outcome = snapshot()
+					aborted = true
+				} else {
+					outcome = snapshot()
+				}
+				outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
+				if aborted {
+					outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
+				}
+			}
+		}
+
+		lifecycle.SetOutcome(outcome)
+		for _, failure := range lifecycle.Finalize() {
+			logFinalizerFailure(failure)
+			if failure.PanicValue != nil {
+				metrics.RecordRequestPanic(metrics.RequestPanicFinalizer)
+			}
+		}
+		apisixctx.RecycleVars(request)
+
+		if outcome.Hijacked && (isHandlerAbort || aborted) {
+			if err := closeHijacked(); err != nil {
+				logger.Errorf("close hijacked request connection: %s", err)
+			}
+		}
+		if isHandlerAbort {
+			panic(recovered)
+		}
+		if aborted {
+			panic(http.ErrAbortHandler)
+		}
+	}()
+
+	handler.ServeHTTP(wrapped, request)
+}
+
+func requestPanicStage(outcome apisixctx.ResponseOutcome) metrics.RequestPanicStage {
+	if outcome.Hijacked {
+		return metrics.RequestPanicPostHijack
+	}
+	if outcome.Flushed {
+		return metrics.RequestPanicPostFlush
+	}
+	return metrics.RequestPanicPostCommit
+}
+
+func writeStableInternalError(w http.ResponseWriter) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+
+	for key := range w.Header() {
+		w.Header().Del(key)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	const body = `{"message":"Internal Server Error"}`
+	written, err := w.Write([]byte(body))
+	return err == nil && written == len(body)
+}
+
+func logFinalizerFailure(failure apisixctx.FinalizerFailure) {
+	if failure.PanicValue != nil {
+		logger.Errorf("request finalizer %q panicked: %v\n%s", failure.Owner, failure.PanicValue, failure.Stack)
+		return
+	}
+	if failure.Err != nil {
+		logger.Errorf("request finalizer %q failed: %s", failure.Owner, failure.Err)
+	}
 }
 
 func (h *routeHandler) Replace(handler http.Handler, stop func()) {

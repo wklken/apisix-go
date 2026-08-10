@@ -1,20 +1,403 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+type failingRouteResponseWriter struct {
+	header      http.Header
+	writeStatus int
+	writeN      int
+	writeErr    error
+	panicWrite  bool
+}
+
+func (w *failingRouteResponseWriter) Header() http.Header { return w.header }
+
+func (w *failingRouteResponseWriter) WriteHeader(status int) { w.writeStatus = status }
+
+func (w *failingRouteResponseWriter) Write([]byte) (int, error) {
+	if w.panicWrite {
+		panic("response write failed")
+	}
+	return w.writeN, w.writeErr
+}
+
+type flushingRouteResponseWriter struct {
+	header      http.Header
+	writeStatus int
+	flushes     int
+}
+
+func (w *flushingRouteResponseWriter) Header() http.Header { return w.header }
+
+func (w *flushingRouteResponseWriter) WriteHeader(status int) { w.writeStatus = status }
+
+func (w *flushingRouteResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (w *flushingRouteResponseWriter) Flush() { w.flushes++ }
+
+type hijackingRouteResponseWriter struct {
+	header      http.Header
+	writeStatus int
+	conn        net.Conn
+}
+
+func (w *hijackingRouteResponseWriter) Header() http.Header { return w.header }
+
+func (w *hijackingRouteResponseWriter) WriteHeader(status int) { w.writeStatus = status }
+
+func (w *hijackingRouteResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (w *hijackingRouteResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func mustAbortHandlerPanic(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if got := recover(); got != http.ErrAbortHandler {
+			t.Fatalf("panic = %#v, want %v", got, http.ErrAbortHandler)
+		}
+	}()
+	fn()
+}
+
+func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Leaked", "secret")
+		panic("application panic")
+	})
+
+	serveRouteRequest(recorder, request, handler)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if got := recorder.Body.String(); got != `{"message":"Internal Server Error"}` {
+		t.Fatalf("body = %q", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("content type = %q", got)
+	}
+	if recorder.Header().Get("X-Leaked") != "" {
+		t.Fatal("panic response leaked pre-commit headers")
+	}
+}
+
+func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing.T) {
+	tests := []struct {
+		name      string
+		writer    *failingRouteResponseWriter
+		wantBytes int64
+	}{
+		{
+			name:   "write-error",
+			writer: &failingRouteResponseWriter{header: make(http.Header), writeErr: errors.New("write failed")},
+		},
+		{
+			name:      "short-write",
+			writer:    &failingRouteResponseWriter{header: make(http.Header), writeN: 1},
+			wantBytes: 1,
+		},
+		{
+			name:   "write-panic",
+			writer: &failingRouteResponseWriter{header: make(http.Header), panicWrite: true},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+			var derived *http.Request
+			var finalOutcome apisixctx.ResponseOutcome
+			var calls []string
+			var markerDuringFinalize any
+			handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				derived = r
+				apisixctx.RegisterApisixVar(r, "$test_marker", "live")
+				lifecycle := apisixctx.GetRequestLifecycle(r)
+				if lifecycle == nil || !lifecycle.AddFinalizer("first", func() error {
+					calls = append(calls, "first")
+					return nil
+				}) || !lifecycle.AddFinalizer("observe", func() error {
+					calls = append(calls, "observe")
+					finalOutcome = lifecycle.Outcome()
+					markerDuringFinalize = apisixctx.GetApisixVar(r, "$test_marker")
+					return nil
+				}) {
+					t.Fatal("failed to register finalizers")
+				}
+				panic("application panic")
+			})
+
+			mustAbortHandlerPanic(t, func() { serveRouteRequest(test.writer, request, handler) })
+			if got, want := strings.Join(calls, ","), "observe,first"; got != want {
+				t.Fatalf("finalizer calls = %q, want %q", got, want)
+			}
+			if finalOutcome.Kind != apisixctx.RequestOutcomeAbortedPanic ||
+				finalOutcome.Status != http.StatusInternalServerError ||
+				!finalOutcome.Committed || finalOutcome.Bytes != test.wantBytes {
+				t.Fatalf("finalizer outcome = %#v", finalOutcome)
+			}
+			if markerDuringFinalize != "live" {
+				t.Fatalf("marker during finalization = %#v, want live", markerDuringFinalize)
+			}
+			if got := apisixctx.GetApisixVar(derived, "$test_marker"); got != "" {
+				t.Fatalf("marker after recycling = %#v, want empty", got)
+			}
+			if test.writer.writeStatus != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 attempt", test.writer.writeStatus)
+			}
+		})
+	}
+}
+
+func TestRouteHandlerPanicAfterWriteAbortsWithoutSecondResponse(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("first"))
+		panic("after write")
+	})
+
+	mustAbortHandlerPanic(t, func() {
+		serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	})
+	if got := recorder.Body.String(); got != "first" {
+		t.Fatalf("body = %q, want first response only", got)
+	}
+}
+
+func TestRouteHandlerPanicAfterFlushAbortsWithoutSecondResponse(t *testing.T) {
+	writer := &flushingRouteResponseWriter{header: make(http.Header)}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.(http.Flusher).Flush()
+		panic("after flush")
+	})
+
+	mustAbortHandlerPanic(t, func() {
+		serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	})
+	if writer.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1", writer.flushes)
+	}
+}
+
+func TestRouteHandlerPanicAfterHijackAbortsWithoutSecondResponse(t *testing.T) {
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	closed := &atomic.Int32{}
+	writer := &hijackingRouteResponseWriter{
+		header: make(http.Header),
+		conn:   &countingCloseConn{Conn: left, closed: closed},
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+		panic("after hijack")
+	})
+
+	mustAbortHandlerPanic(t, func() {
+		serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/panic", nil), handler)
+	})
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("hijacked close count = %d, want 1", got)
+	}
+}
+
+func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
+	left, right := net.Pipe()
+	counting := &countingCloseConn{Conn: left, closed: &atomic.Int32{}}
+	t.Cleanup(func() {
+		_ = right.Close()
+		_ = left.Close()
+	})
+	writer := &hijackingRouteResponseWriter{header: make(http.Header), conn: counting}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	})
+
+	serveRouteRequest(writer, httptest.NewRequest(http.MethodGet, "/hijack", nil), handler)
+	if got := counting.closed.Load(); got != 0 {
+		t.Fatalf("normal hijack close count = %d, want 0", got)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := right.Write([]byte("ok"))
+		writeDone <- err
+	}()
+	buffer := make([]byte, 2)
+	if _, err := io.ReadFull(counting, buffer); err != nil {
+		t.Fatalf("retained connection read error = %v", err)
+	}
+	if string(buffer) != "ok" {
+		t.Fatalf("retained connection bytes = %q, want ok", buffer)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("retained connection write error = %v", err)
+	}
+}
+
+type countingCloseConn struct {
+	net.Conn
+	closed *atomic.Int32
+}
+
+func (c *countingCloseConn) Close() error {
+	c.closed.Add(1)
+	return c.Conn.Close()
+}
+
+func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/abort", nil)
+	var outcome apisixctx.ResponseOutcome
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if lifecycle == nil || !lifecycle.AddFinalizer("test", func() error {
+			outcome = lifecycle.Outcome()
+			return nil
+		}) {
+			t.Fatal("failed to register finalizer")
+		}
+		panic(http.ErrAbortHandler)
+	})
+
+	mustAbortHandlerPanic(t, func() { serveRouteRequest(recorder, request, handler) })
+	if outcome.Kind != apisixctx.RequestOutcomeHandlerAbort {
+		t.Fatalf("finalizer outcome = %#v, want handler_abort", outcome)
+	}
+}
+
+func TestRouteHandlerFinalizerPanicDoesNotSkipOtherFinalizers(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	var calls []string
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		for _, registration := range []struct {
+			owner string
+			fn    apisixctx.RequestFinalizer
+		}{
+			{owner: "first", fn: func() error { calls = append(calls, "first"); return nil }},
+			{owner: "panic", fn: func() error { calls = append(calls, "panic"); panic("finalizer panic") }},
+			{owner: "last", fn: func() error { calls = append(calls, "last"); return nil }},
+		} {
+			if !lifecycle.AddFinalizer(registration.owner, registration.fn) {
+				t.Fatalf("failed to register %s finalizer", registration.owner)
+			}
+		}
+		panic("application panic")
+	})
+
+	serveRouteRequest(httptest.NewRecorder(), request, handler)
+	if got, want := strings.Join(calls, ","), "last,panic,first"; got != want {
+		t.Fatalf("finalizer calls = %q, want %q", got, want)
+	}
+}
+
+func TestRequestPanicStageUsesOnlyBoundedValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome apisixctx.ResponseOutcome
+		want    metrics.RequestPanicStage
+	}{
+		{name: "commit", outcome: apisixctx.ResponseOutcome{Committed: true}, want: metrics.RequestPanicPostCommit},
+		{
+			name:    "flush",
+			outcome: apisixctx.ResponseOutcome{Committed: true, Flushed: true},
+			want:    metrics.RequestPanicPostFlush,
+		},
+		{
+			name: "hijack",
+			outcome: apisixctx.ResponseOutcome{
+				Committed: true,
+				Flushed:   true,
+				Hijacked:  true,
+			},
+			want: metrics.RequestPanicPostHijack,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := requestPanicStage(test.outcome); got != test.want {
+				t.Fatalf("requestPanicStage(%#v) = %q, want %q", test.outcome, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRouteHandlerPanicStillReleasesRouteGeneration(t *testing.T) {
+	stopped := make(chan struct{})
+	routes := newRouteHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("generation panic")
+	}), func() { close(stopped) })
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		defer func() { _ = recover() }()
+		routes.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+	}()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("panic request did not return")
+	}
+	routes.Replace(http.NotFoundHandler(), nil)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("retired generation was not released after panic")
+	}
+}
+
+func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveRouteRequest(w, r, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("partial"))
+			panic("abort connection")
+		}))
+	}))
+	t.Cleanup(server.Close)
+
+	response, err := server.Client().Get(server.URL)
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("GET() error = %v, want EOF connection abort", err)
+		}
+		return
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr == nil {
+		t.Fatalf("read body error = nil, body = %q; expected aborted connection", body)
+	}
+	if !bytes.HasPrefix(body, []byte("partial")) {
+		t.Fatalf("body = %q, want partial prefix", body)
+	}
+}
 
 func TestRouteHandlerReplacementDoesNotBlockBehindOlderGeneration(t *testing.T) {
 	requestStarted := make(chan struct{})

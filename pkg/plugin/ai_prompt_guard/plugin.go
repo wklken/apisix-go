@@ -6,18 +6,19 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/samber/lo"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config   Config
+	failMode ai_common.SafetyFailMode
 }
 
 const (
@@ -54,7 +55,7 @@ const schema = `
     "fail_mode": {
       "type": "string",
       "enum": ["skip", "warn", "error"],
-      "default": "skip"
+      "default": "error"
     }
   }
 }
@@ -83,14 +84,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.FailMode == "" {
-		p.config.FailMode = "skip"
-	}
-	if p.config.FailMode != "skip" && p.config.FailMode != "warn" && p.config.FailMode != "error" {
+	failMode, err := ai_common.ParseSafetyFailMode(p.config.FailMode)
+	if err != nil {
 		return fmt.Errorf("invalid fail_mode: %s", p.config.FailMode)
 	}
+	p.failMode = failMode
+	p.config.FailMode = string(failMode)
 
-	var err error
 	p.config.allowPatterns, err = compilePatterns("allow_pattern", p.config.AllowPatterns)
 	if err != nil {
 		return err
@@ -116,23 +116,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			p.handleUnsupported(
+			p.handleSafetyFailure(
 				w,
 				r,
 				next,
-				"request body is not valid JSON: "+err.Error(),
-				err.Error(),
+				ai_common.SafetyInvalidPayload,
+				"Request body is not valid JSON",
 			)
 			return
 		}
 
 		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 		if err != nil || protocol == ai_protocols.Passthrough {
-			p.handleUnsupported(
+			p.handleSafetyFailure(
 				w,
 				r,
 				next,
-				"request body does not match any supported AI protocol",
+				ai_common.SafetyUnknownProtocol,
 				"Request format not recognized by ai-prompt-guard",
 			)
 			return
@@ -146,58 +146,80 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			messages = userMessages(messages)
 		}
 		if len(messages) == 0 {
-			next.ServeHTTP(w, r)
+			p.handleSafetyFailure(
+				w,
+				r,
+				next,
+				ai_common.SafetyEmptyContent,
+				"No inspectable AI prompt content",
+			)
 			return
 		}
 
 		content := joinContent(messages)
+		if strings.TrimSpace(content) == "" {
+			p.handleSafetyFailure(
+				w,
+				r,
+				next,
+				ai_common.SafetyEmptyContent,
+				"No inspectable AI prompt content",
+			)
+			return
+		}
 		if len(p.config.allowPatterns) > 0 && !matchesAny(p.config.allowPatterns, content) {
+			metrics.RecordAISafetyOutcome(
+				name,
+				string(ai_common.SafetyPhaseRequest),
+				string(ai_common.SafetyOutcomeDeny),
+				string(ai_common.SafetyReasonAllowPatternMiss),
+			)
 			base.WriteJSONMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
 			return
 		}
 		if matchesAny(p.config.denyPatterns, content) {
+			metrics.RecordAISafetyOutcome(
+				name,
+				string(ai_common.SafetyPhaseRequest),
+				string(ai_common.SafetyOutcomeDeny),
+				string(ai_common.SafetyReasonDenyPatternMatch),
+			)
 			base.WriteJSONMessage(w, http.StatusBadRequest, "Request contains prohibited content")
 			return
 		}
 
+		metrics.RecordAISafetyOutcome(
+			name,
+			string(ai_common.SafetyPhaseRequest),
+			string(ai_common.SafetyOutcomeAllow),
+			string(ai_common.SafetyReasonClean),
+		)
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) handleUnsupported(
+func (p *Plugin) handleSafetyFailure(
 	w http.ResponseWriter,
 	r *http.Request,
 	next http.Handler,
-	reason string,
-	errorMessage string,
+	class ai_common.SafetyFailureClass,
+	publicMessage string,
 ) {
-	if p.config.FailMode == "error" {
-		base.WriteJSONMessage(w, http.StatusBadRequest, errorMessage)
+	decision := ai_common.DecideSafetyFailure(p.failMode, class)
+	metrics.RecordAISafetyOutcome(
+		name,
+		string(ai_common.SafetyPhaseRequest),
+		string(decision.Outcome),
+		string(class),
+	)
+	if decision.Action == ai_common.SafetyReject {
+		base.WriteJSONMessage(w, decision.Status, publicMessage)
 		return
 	}
 
-	message := name + " skipped: " + sanitizeUnsupportedReason(reason)
-	if p.config.FailMode == "warn" {
-		logger.Warn(message)
-	} else {
-		logger.Info(message)
-	}
+	ai_common.LogSafetyDegradation(r, name, p.failMode, ai_common.SafetyPhaseRequest, class)
 	next.ServeHTTP(w, r)
-}
-
-func sanitizeUnsupportedReason(reason string) string {
-	const maxReasonLength = 256
-	safe := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, reason)
-	if len(safe) > maxReasonLength {
-		safe = safe[:maxReasonLength]
-	}
-	return safe
 }
 
 func extractMessages(protocol ai_protocols.Protocol, body map[string]any) []ai_protocols.Message {

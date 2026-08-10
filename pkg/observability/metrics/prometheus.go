@@ -39,6 +39,7 @@ var (
 	LLMPromptTokens       *prometheus.CounterVec
 	LLMCompletionTokens   *prometheus.CounterVec
 	LLMActiveConnections  *prometheus.GaugeVec
+	AISafetyOutcomes      *prometheus.CounterVec
 	ProxyInFlight         *prometheus.GaugeVec
 	ProxyRejected         *prometheus.CounterVec
 	ProxyRetry            *prometheus.CounterVec
@@ -271,6 +272,8 @@ func initMetrics() {
 		}),
 	)
 
+	AISafetyOutcomes = newAISafetyOutcomeVector(nil, metricConfig.MetricPrefix)
+
 	ProxyInFlight = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + proxyInFlightMetric,
@@ -321,6 +324,7 @@ func initMetrics() {
 		LLMPromptTokens,
 		LLMCompletionTokens,
 		LLMActiveConnections,
+		AISafetyOutcomes,
 		ProxyInFlight,
 		ProxyRejected,
 		ProxyRetry,

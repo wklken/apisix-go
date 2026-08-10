@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,16 +22,19 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
-	now    func() time.Time
-	nonce  func() string
+	config   Config
+	client   *http.Client
+	now      func() time.Time
+	nonce    func() string
+	failMode ai_common.SafetyFailMode
 
 	streamNow func() time.Time
 }
@@ -135,6 +139,11 @@ const schema = `
     "ssl_verify": {
       "type": "boolean",
       "default": true
+    },
+    "fail_mode": {
+      "type": "string",
+      "enum": ["error", "warn", "skip"],
+      "default": "error"
     }
   },
   "required": ["endpoint", "region_id", "access_key_id", "access_key_secret"]
@@ -163,6 +172,7 @@ type Config struct {
 	Keepalive                *bool   `json:"keepalive,omitempty"`
 	KeepaliveTimeout         int     `json:"keepalive_timeout,omitempty"`
 	SSLVerify                *bool   `json:"ssl_verify,omitempty"`
+	FailMode                 string  `json:"fail_mode,omitempty"`
 }
 
 type serviceParameters struct {
@@ -181,6 +191,48 @@ type aliyunResponse struct {
 	} `json:"Data"`
 }
 
+type moderationResult struct {
+	Denied    bool
+	Message   string
+	RiskLevel string
+}
+
+type moderationError struct {
+	Class ai_common.SafetyFailureClass
+	Err   error
+}
+
+func (e *moderationError) Error() string {
+	if e == nil || e.Err == nil {
+		return "Aliyun moderation check failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *moderationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *moderationError) Classify() string {
+	if e == nil {
+		return ""
+	}
+	return string(e.Class)
+}
+
+const (
+	requestInvalidPayloadMessage   = "Request body is not valid JSON"
+	requestUnknownProtocolMessage  = "Request format not recognized by ai-aliyun-content-moderation"
+	requestEmptyContentMessage     = "No inspectable AI request content"
+	requestReadFailureMessage      = "Unable to read request body"
+	requestContentTypeMessage      = "Unsupported request content type"
+	moderationUnavailableMessage   = "AI content moderation service unavailable"
+	upstreamInvalidResponseMessage = "Upstream response is not valid AI JSON"
+)
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -193,6 +245,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	mode, err := ai_common.ParseSafetyFailMode(p.config.FailMode)
+	if err != nil {
+		return err
+	}
+	p.failMode = mode
+	p.config.FailMode = string(mode)
 	if p.config.StreamCheckMode == "" {
 		p.config.StreamCheckMode = "final_packet"
 	}
@@ -241,6 +299,11 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
+	if p.failMode == ai_common.SafetyFailError && p.config.CheckResponse && p.config.StreamCheckMode == "realtime" {
+		return errors.New(
+			"ai-aliyun-content-moderation: fail_mode=error is incompatible with realtime response moderation",
+		)
+	}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -267,27 +330,33 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		r = r.WithContext(context.WithValue(r.Context(), moderationSessionKey{}, p.nonce()))
 
-		body, err := io.ReadAll(r.Body)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestReadFailureMessage) {
+				next.ServeHTTP(w, r)
+			}
 			return
 		}
-		if err := r.Body.Close(); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		base.ReplaceRequestBody(r, body)
 
 		if checkRequest {
 			if err := validateJSONContentType(r); err != nil {
-				base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+				if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestContentTypeMessage) {
+					next.ServeHTTP(w, r)
+				}
 				return
 			}
 		}
 
 		bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
 		if err != nil && checkRequest {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			class := requestFailureClass(err)
+			message := requestInvalidPayloadMessage
+			if class == ai_common.SafetyUnknownProtocol {
+				message = requestUnknownProtocolMessage
+			}
+			if p.handleRequestFailure(w, r, class, message) {
+				next.ServeHTTP(w, r)
+			}
 			return
 		}
 		if err != nil {
@@ -296,15 +365,41 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if checkRequest {
-			code, message, _ := p.moderateContent(
-				r,
-				content,
-				p.config.RequestCheckLengthLimit,
-				p.config.RequestCheckService,
-			)
-			if code != 0 {
-				writeProtocolDeny(w, code, protocol, bodyTab, message)
-				return
+			if strings.TrimSpace(content) == "" {
+				if !p.handleRequestFailure(w, r, ai_common.SafetyEmptyContent, requestEmptyContentMessage) {
+					return
+				}
+			} else {
+				result, err := p.moderateContent(
+					r,
+					content,
+					p.config.RequestCheckLengthLimit,
+					p.config.RequestCheckService,
+				)
+				if err != nil {
+					if !p.handleRequestFailure(
+						w,
+						r,
+						moderationFailureClass(err),
+						moderationUnavailableMessage,
+					) {
+						return
+					}
+				} else if result.Denied {
+					recordOutcome(
+						ai_common.SafetyPhaseRequest,
+						ai_common.SafetyOutcomeDeny,
+						string(ai_common.SafetyReasonRiskThreshold),
+					)
+					writeProtocolDeny(w, p.config.DenyCode, protocol, bodyTab, result.Message)
+					return
+				} else {
+					recordOutcome(
+						ai_common.SafetyPhaseRequest,
+						ai_common.SafetyOutcomeAllow,
+						string(ai_common.SafetyReasonClean),
+					)
+				}
 			}
 		}
 
@@ -324,6 +419,61 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.writeModeratedResponse(w, r, response, protocol, bodyTab)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type requestContentError struct {
+	class ai_common.SafetyFailureClass
+	err   error
+}
+
+func (e *requestContentError) Error() string {
+	if e == nil || e.err == nil {
+		return "invalid AI request content"
+	}
+	return e.err.Error()
+}
+
+func (e *requestContentError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func requestFailureClass(err error) ai_common.SafetyFailureClass {
+	var contentErr *requestContentError
+	if errors.As(err, &contentErr) && contentErr.class != "" {
+		return contentErr.class
+	}
+	return ai_common.SafetyInvalidPayload
+}
+
+func moderationFailureClass(err error) ai_common.SafetyFailureClass {
+	var moderationErr *moderationError
+	if errors.As(err, &moderationErr) && moderationErr.Class != "" {
+		return moderationErr.Class
+	}
+	return ai_common.SafetyBackendUnavailable
+}
+
+func (p *Plugin) handleRequestFailure(
+	w http.ResponseWriter,
+	r *http.Request,
+	class ai_common.SafetyFailureClass,
+	message string,
+) bool {
+	decision := ai_common.DecideSafetyFailure(p.failMode, class)
+	recordOutcome(ai_common.SafetyPhaseRequest, decision.Outcome, string(class))
+	if decision.Action == ai_common.SafetyContinue {
+		ai_common.LogSafetyDegradation(r, name, p.failMode, ai_common.SafetyPhaseRequest, class)
+		return true
+	}
+	base.WriteJSONMessage(w, decision.Status, message)
+	return false
+}
+
+func recordOutcome(phase ai_common.SafetyPhase, outcome ai_common.SafetyOutcome, reason string) {
+	metrics.RecordAISafetyOutcome(name, string(phase), string(outcome), reason)
 }
 
 func validateJSONContentType(r *http.Request) error {
@@ -462,18 +612,30 @@ func (w *realtimeResponseWriter) moderate() bool {
 	content := w.content.String()
 	w.content.Reset()
 	w.contentRunes = 0
-	code, message, _ := w.plugin.moderateContent(
+	result, err := w.plugin.moderateContent(
 		w.request,
 		content,
 		w.plugin.config.ResponseCheckLengthLimit,
 		w.plugin.config.ResponseCheckService,
 	)
-	if code == 0 {
+	if err != nil {
+		class := moderationFailureClass(err)
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeDegraded, string(class))
+		ai_common.LogSafetyDegradation(w.request, name, w.plugin.failMode, ai_common.SafetyPhaseResponse, class)
 		return false
 	}
+	if !result.Denied {
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
+		return false
+	}
+	recordOutcome(
+		ai_common.SafetyPhaseResponse,
+		ai_common.SafetyOutcomeDeny,
+		string(ai_common.SafetyReasonRiskThreshold),
+	)
 
 	model, _ := w.requestBody["model"].(string)
-	encoded, _, err := ai_protocols.BuildDenyWireResponse(w.protocol, model, message, true)
+	encoded, _, err := ai_protocols.BuildDenyWireResponse(w.protocol, model, result.Message, true)
 	if err != nil {
 		return false
 	}
@@ -507,24 +669,61 @@ func (p *Plugin) writeModeratedResponse(
 
 	var body map[string]any
 	if err := json.Unmarshal(response.body.Bytes(), &body); err != nil {
-		writeCapturedResponse(w, response, response.body.Bytes())
+		p.handleBufferedResponseFailure(
+			w,
+			r,
+			response,
+			ai_common.SafetyUpstreamInvalidResponse,
+			upstreamInvalidResponseMessage,
+		)
+		return
+	}
+	if !validResponseEnvelope(protocol, body) {
+		p.handleBufferedResponseFailure(
+			w,
+			r,
+			response,
+			ai_common.SafetyUpstreamInvalidResponse,
+			upstreamInvalidResponseMessage,
+		)
 		return
 	}
 	content := ai_protocols.ExtractResponseText(protocol, body)
-	code, message, _ := p.moderateContent(
+	if strings.TrimSpace(content) == "" {
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+	result, err := p.moderateContent(
 		r,
 		content,
 		p.config.ResponseCheckLengthLimit,
 		p.config.ResponseCheckService,
 	)
-	if code == 0 {
+	if err != nil {
+		p.handleBufferedResponseFailure(
+			w,
+			r,
+			response,
+			moderationFailureClass(err),
+			moderationUnavailableMessage,
+		)
+		return
+	}
+	if !result.Denied {
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 		writeCapturedResponse(w, response, response.body.Bytes())
 		return
 	}
+	recordOutcome(
+		ai_common.SafetyPhaseResponse,
+		ai_common.SafetyOutcomeDeny,
+		string(ai_common.SafetyReasonRiskThreshold),
+	)
 
 	copyResponseHeaders(w.Header(), response.header)
 	w.Header().Del("Content-Length")
-	writeProtocolDeny(w, code, protocol, requestBody, message)
+	writeProtocolDeny(w, p.config.DenyCode, protocol, requestBody, result.Message)
 }
 
 func (p *Plugin) writeModeratedStream(
@@ -535,17 +734,214 @@ func (p *Plugin) writeModeratedStream(
 	requestBody map[string]any,
 ) {
 	content := extractSSEText(protocol, response.body.Bytes())
-	_, _, riskLevel := p.moderateContent(
+	if !validStreamingEnvelope(protocol, response.body.Bytes()) {
+		p.handleBufferedResponseFailure(
+			w,
+			r,
+			response,
+			ai_common.SafetyUpstreamInvalidResponse,
+			upstreamInvalidResponseMessage,
+		)
+		return
+	}
+	if strings.TrimSpace(content) == "" {
+		recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+	result, err := p.moderateContent(
 		r,
 		content,
 		p.config.ResponseCheckLengthLimit,
 		p.config.ResponseCheckService,
 	)
+	if err != nil {
+		p.handleBufferedResponseFailure(
+			w,
+			r,
+			response,
+			moderationFailureClass(err),
+			moderationUnavailableMessage,
+		)
+		return
+	}
+	if result.Denied {
+		recordOutcome(
+			ai_common.SafetyPhaseResponse,
+			ai_common.SafetyOutcomeDeny,
+			string(ai_common.SafetyReasonRiskThreshold),
+		)
+		copyResponseHeaders(w.Header(), response.header)
+		w.Header().Del("Content-Length")
+		writeProtocolDeny(w, p.config.DenyCode, protocol, requestBody, result.Message)
+		return
+	}
+	recordOutcome(ai_common.SafetyPhaseResponse, ai_common.SafetyOutcomeAllow, string(ai_common.SafetyReasonClean))
 	body := response.body.Bytes()
-	if p.config.StreamCheckMode == "final_packet" && riskLevel != "" {
-		body = addRiskLevelToFinalSSEPacket(body, riskLevel)
+	if p.config.StreamCheckMode == "final_packet" && result.RiskLevel != "" {
+		body = addRiskLevelToFinalSSEPacket(body, result.RiskLevel)
 	}
 	writeCapturedResponse(w, response, body)
+}
+
+func (p *Plugin) handleBufferedResponseFailure(
+	w http.ResponseWriter,
+	r *http.Request,
+	response *capturedResponse,
+	class ai_common.SafetyFailureClass,
+	message string,
+) {
+	decision := ai_common.DecideSafetyFailure(p.failMode, class)
+	recordOutcome(ai_common.SafetyPhaseResponse, decision.Outcome, string(class))
+	if decision.Action == ai_common.SafetyContinue {
+		ai_common.LogSafetyDegradation(r, name, p.failMode, ai_common.SafetyPhaseResponse, class)
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+	base.WriteJSONMessage(w, decision.Status, message)
+}
+
+func validResponseEnvelope(protocol ai_protocols.Protocol, body map[string]any) bool {
+	if body == nil {
+		return false
+	}
+	switch protocol {
+	case ai_protocols.OpenAIChat:
+		choices, ok := body["choices"].([]any)
+		return ok && validChatChoices(choices)
+	case ai_protocols.OpenAIResponses:
+		output, ok := body["output"].([]any)
+		return ok && validObjectArray(output)
+	case ai_protocols.OpenAIEmbeddings:
+		data, ok := body["data"].([]any)
+		return ok && validObjectArray(data)
+	case ai_protocols.AnthropicMessages:
+		content, ok := body["content"].([]any)
+		return ok && validObjectArray(content)
+	case ai_protocols.BedrockConverse:
+		output, ok := body["output"].(map[string]any)
+		if !ok {
+			return false
+		}
+		message, ok := output["message"].(map[string]any)
+		if !ok {
+			return false
+		}
+		content, ok := message["content"].([]any)
+		return ok && validObjectArray(content)
+	case ai_protocols.Passthrough:
+		return true
+	default:
+		return false
+	}
+}
+
+func validChatChoices(choices []any) bool {
+	for _, rawChoice := range choices {
+		choice, ok := rawChoice.(map[string]any)
+		if !ok {
+			return false
+		}
+		message, ok := choice["message"].(map[string]any)
+		if !ok {
+			return false
+		}
+		content, hasContent := message["content"]
+		if hasContent && content != nil {
+			switch value := content.(type) {
+			case string:
+			case []any:
+				if !validObjectArray(value) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		if !hasContent || content == nil {
+			if toolCalls, hasToolCalls := message["tool_calls"].([]any); hasToolCalls {
+				if !validObjectArray(toolCalls) {
+					return false
+				}
+				continue
+			}
+			if _, hasFunctionCall := message["function_call"].(map[string]any); hasFunctionCall {
+				continue
+			}
+			if _, hasRefusal := message["refusal"].(string); !hasRefusal {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validObjectArray(values []any) bool {
+	for _, value := range values {
+		if _, ok := value.(map[string]any); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validStreamingEnvelope(protocol ai_protocols.Protocol, body []byte) bool {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return false
+	}
+	validData := false
+	for line := range strings.SplitSeq(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") ||
+			strings.HasPrefix(line, "id:") || strings.HasPrefix(line, "retry:") {
+			continue
+		}
+		data, ok := strings.CutPrefix(line, "data:")
+		if !ok {
+			return false
+		}
+		data = strings.TrimSpace(data)
+		if data == "" {
+			continue
+		}
+		validData = true
+		if data == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal([]byte(data), &event) != nil || event == nil {
+			return false
+		}
+		if !validStreamingEvent(protocol, event) {
+			return false
+		}
+	}
+	return validData
+}
+
+func validStreamingEvent(protocol ai_protocols.Protocol, event map[string]any) bool {
+	switch protocol {
+	case ai_protocols.OpenAIChat:
+		choices, ok := event["choices"].([]any)
+		if !ok {
+			return false
+		}
+		for _, rawChoice := range choices {
+			choice, ok := rawChoice.(map[string]any)
+			if !ok {
+				return false
+			}
+			if _, ok := choice["delta"].(map[string]any); !ok {
+				return false
+			}
+		}
+		return true
+	case ai_protocols.OpenAIResponses, ai_protocols.AnthropicMessages:
+		eventType, ok := event["type"].(string)
+		return ok && eventType != ""
+	default:
+		return false
+	}
 }
 
 func extractSSEText(protocol ai_protocols.Protocol, body []byte) string {
@@ -612,9 +1008,9 @@ func (p *Plugin) moderateContent(
 	content string,
 	lengthLimit int,
 	serviceName string,
-) (int, string, string) {
+) (moderationResult, error) {
 	if strings.TrimSpace(content) == "" {
-		return 0, "", ""
+		return moderationResult{}, nil
 	}
 	runes := []rune(content)
 	if lengthLimit <= 0 {
@@ -630,7 +1026,7 @@ func (p *Plugin) moderateContent(
 		end := min(start+lengthLimit, len(runes))
 		hit, message, riskLevel, err := p.checkSingleContent(r, sessionID, string(runes[start:end]), serviceName)
 		if err != nil {
-			return 0, "", ""
+			return moderationResult{}, err
 		}
 		lastRiskLevel = riskLevel
 		if riskLevel != "" && apisixctx.GetRequestVars(r) != nil {
@@ -643,11 +1039,11 @@ func (p *Plugin) moderateContent(
 			if message == "" {
 				message = "Your request violate our content policy."
 			}
-			return p.config.DenyCode, message, riskLevel
+			return moderationResult{Denied: true, Message: message, RiskLevel: riskLevel}, nil
 		}
 	}
 
-	return 0, "", lastRiskLevel
+	return moderationResult{RiskLevel: lastRiskLevel}, nil
 }
 
 func (p *Plugin) checkSingleContent(
@@ -658,7 +1054,7 @@ func (p *Plugin) checkSingleContent(
 ) (bool, string, string, error) {
 	paramsBody, err := p.buildFormBody(sessionID, content, serviceName)
 	if err != nil {
-		return false, "", "", err
+		return false, "", "", &moderationError{Class: ai_common.SafetyBackendUnavailable, Err: err}
 	}
 
 	req, err := http.NewRequestWithContext(
@@ -668,34 +1064,48 @@ func (p *Plugin) checkSingleContent(
 		strings.NewReader(paramsBody),
 	)
 	if err != nil {
-		return false, "", "", fmt.Errorf("failed to create Aliyun moderation request: %w", err)
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendUnavailable,
+			Err:   errors.New("failed to create Aliyun moderation request"),
+		}
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return false, "", "", fmt.Errorf("failed to request: %w", err)
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendUnavailable,
+			Err:   errors.New("aliyun moderation transport unavailable"),
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, "", "", fmt.Errorf("failed to read response body: %w", err)
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendUnavailable,
+			Err:   errors.New("failed to read Aliyun moderation response"),
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return false, "", "", fmt.Errorf(
-			"failed to request aliyun text moderation service, status: %d, body: %s",
-			resp.StatusCode,
-			rawBody,
-		)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendUnavailable,
+			Err:   fmt.Errorf("aliyun moderation service returned status %d", resp.StatusCode),
+		}
 	}
 
 	var response aliyunResponse
 	if err := json.Unmarshal(rawBody, &response); err != nil {
-		return false, "", "", fmt.Errorf("failed to decode response: %w", err)
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendInvalidResponse,
+			Err:   errors.New("malformed Aliyun moderation response"),
+		}
 	}
-	if response.Data == nil || response.Data.RiskLevel == "" {
-		return false, "", "", fmt.Errorf("failed to get risk level: %s", rawBody)
+	if response.Data == nil || response.Data.RiskLevel == "" || riskLevelToInt(response.Data.RiskLevel) < 0 {
+		return false, "", "", &moderationError{
+			Class: ai_common.SafetyBackendInvalidResponse,
+			Err:   errors.New("aliyun moderation response has no valid risk level"),
+		}
 	}
 	if riskLevelToInt(response.Data.RiskLevel) < riskLevelToInt(p.config.RiskLevelBar) {
 		return false, "", response.Data.RiskLevel, nil
@@ -771,16 +1181,31 @@ func extractRequestContent(
 	body []byte,
 ) (map[string]any, ai_protocols.Protocol, string, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, ai_protocols.Protocol{}, "", fmt.Errorf("missing request body")
+		return nil, ai_protocols.Protocol{}, "", &requestContentError{
+			class: ai_common.SafetyInvalidPayload,
+			err:   errors.New("missing request body"),
+		}
 	}
 
 	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, ai_protocols.Protocol{}, "", fmt.Errorf("could not parse JSON request body: %w", err)
+		return nil, ai_protocols.Protocol{}, "", &requestContentError{
+			class: ai_common.SafetyInvalidPayload,
+			err:   errors.New("could not parse JSON request body"),
+		}
 	}
 	protocol, err := ai_protocols.Detect(requestPath, data)
 	if err != nil {
-		return nil, ai_protocols.Protocol{}, "", err
+		return nil, ai_protocols.Protocol{}, "", &requestContentError{
+			class: ai_common.SafetyUnknownProtocol,
+			err:   errors.New("request protocol not recognized"),
+		}
+	}
+	if protocol == ai_protocols.Passthrough {
+		return nil, ai_protocols.Protocol{}, "", &requestContentError{
+			class: ai_common.SafetyUnknownProtocol,
+			err:   errors.New("request protocol passthrough is not inspectable"),
+		}
 	}
 	return data, protocol, strings.Join(ai_protocols.ExtractRequestContent(protocol, data), " "), nil
 }

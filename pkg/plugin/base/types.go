@@ -2,6 +2,7 @@ package base
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
@@ -53,6 +54,7 @@ type BaseLoggerPlugin struct {
 	BatchProcessor *logger_batch.Processor
 	RouteID        string
 	ServerAddr     string
+	stopOnce       sync.Once
 
 	IncludeRequestBody  bool
 	IncludeResponseBody bool
@@ -80,22 +82,43 @@ type BatchDefaults struct {
 	BufferDurationSec  int
 	InactiveTimeoutSec int
 	MaxPendingEntries  int
+	PluginID           string
+
+	// Resource overrides are internal until each logger schema exposes them.
+	MaxConcurrentDeliveries int
+	DeliveryTimeoutSec      int
+	ShutdownTimeoutSec      int
 }
 
 // ApplyBatchDefaults fills zero batch values with logger_batch defaults.
 // RetryDelaySec is only defaulted when RetryDelaySet is false.
 func ApplyBatchDefaults(d *BatchDefaults) {
-	if d.BatchMaxSize == 0 {
+	if d.BatchMaxSize <= 0 {
 		d.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
 	if d.RetryDelaySec == 0 && !d.RetryDelaySet {
 		d.RetryDelaySec = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
-	if d.BufferDurationSec == 0 {
+	if d.BufferDurationSec <= 0 {
 		d.BufferDurationSec = int(logger_batch.DefaultBufferDuration / time.Second)
 	}
-	if d.InactiveTimeoutSec == 0 {
+	if d.InactiveTimeoutSec <= 0 {
 		d.InactiveTimeoutSec = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
+	if d.MaxPendingEntries <= 0 {
+		d.MaxPendingEntries = logger_batch.DefaultMaxPendingEntries
+	}
+	if d.MaxConcurrentDeliveries <= 0 {
+		d.MaxConcurrentDeliveries = logger_batch.DefaultMaxConcurrentDeliveries
+	}
+	if d.MaxConcurrentDeliveries > 8 {
+		d.MaxConcurrentDeliveries = 8
+	}
+	if d.DeliveryTimeoutSec <= 0 {
+		d.DeliveryTimeoutSec = int(logger_batch.DefaultDeliveryTimeout / time.Second)
+	}
+	if d.ShutdownTimeoutSec <= 0 {
+		d.ShutdownTimeoutSec = int(logger_batch.DefaultShutdownTimeout / time.Second)
 	}
 }
 
@@ -105,27 +128,41 @@ func NewBatchProcessor(
 	name string,
 	d BatchDefaults,
 	routeID, serverAddr string,
-	deliver logger_batch.DeliveryFunc,
+	deliver logger_batch.ContextDeliveryFunc,
 ) *logger_batch.Processor {
 	ApplyBatchDefaults(&d)
-	return logger_batch.New(logger_batch.Config{
-		Name:              name,
-		BatchMaxSize:      d.BatchMaxSize,
-		MaxRetryCount:     d.MaxRetryCount,
-		RetryDelay:        time.Duration(d.RetryDelaySec) * time.Second,
-		RetryDelaySet:     d.RetryDelaySet,
-		BufferDuration:    time.Duration(d.BufferDurationSec) * time.Second,
-		InactiveTimeout:   time.Duration(d.InactiveTimeoutSec) * time.Second,
-		MaxPendingEntries: d.MaxPendingEntries,
-		RouteID:           routeID,
-		ServerAddr:        serverAddr,
+	return logger_batch.NewWithContext(logger_batch.Config{
+		Name:                    name,
+		BatchMaxSize:            d.BatchMaxSize,
+		MaxRetryCount:           d.MaxRetryCount,
+		RetryDelay:              time.Duration(d.RetryDelaySec) * time.Second,
+		RetryDelaySet:           d.RetryDelaySet,
+		BufferDuration:          time.Duration(d.BufferDurationSec) * time.Second,
+		InactiveTimeout:         time.Duration(d.InactiveTimeoutSec) * time.Second,
+		MaxPendingEntries:       d.MaxPendingEntries,
+		PluginID:                d.PluginID,
+		MaxConcurrentDeliveries: d.MaxConcurrentDeliveries,
+		DeliveryTimeout:         time.Duration(d.DeliveryTimeoutSec) * time.Second,
+		ShutdownTimeout:         time.Duration(d.ShutdownTimeoutSec) * time.Second,
+		RouteID:                 routeID,
+		ServerAddr:              serverAddr,
 	}, deliver)
 }
 
 func (p *BaseLoggerPlugin) Stop() {
-	if p.BatchProcessor != nil {
-		p.BatchProcessor.Stop()
-	}
+	p.StopWithCleanup(nil)
+}
+
+// StopWithCleanup retains sink resources until every batch delivery callback
+// has returned, while preserving the processor's bounded caller-facing stop.
+func (p *BaseLoggerPlugin) StopWithCleanup(cleanup func()) {
+	p.stopOnce.Do(func() {
+		if p.BatchProcessor != nil {
+			p.BatchProcessor.StopWithCleanup(cleanup)
+		} else if cleanup != nil {
+			cleanup()
+		}
+	})
 }
 
 func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {

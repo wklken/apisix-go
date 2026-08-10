@@ -1,6 +1,7 @@
 package http_logger
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"maps"
@@ -316,6 +317,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor("http logger", base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -329,11 +331,12 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.StopWithCleanup(func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	})
 }
 
 func normalizeBodyExpression(expression []any) []any {
@@ -511,17 +514,17 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 
-	if err := p.sendBody(body); err != nil {
+	if err := p.sendBody(context.Background(), body); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := p.encodeBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, err
 	}
-	return 0, p.sendBody(body)
+	return 0, p.sendBody(ctx, body)
 }
 
 func (p *Plugin) encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
@@ -552,10 +555,10 @@ func (p *Plugin) encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte
 	return body, nil
 }
 
-func (p *Plugin) sendBody(body []byte) error {
-	resp, err := p.client.R().SetBody(body).Post(p.config.URI)
+func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
+	resp, err := p.client.R().SetContext(ctx).SetBody(body).Post(p.config.URI)
 	if err != nil {
-		return fmt.Errorf("error while sending data to [%s] %s", p.config.URI, err)
+		return fmt.Errorf("error while sending data to [%s]: %w", p.config.URI, err)
 	}
 
 	if resp.StatusCode() >= 400 {

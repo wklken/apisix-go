@@ -1,10 +1,12 @@
 package udp_logger
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -232,6 +234,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
@@ -318,18 +321,18 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 
-	if err := p.sendBody(logMessage); err != nil {
+	if err := p.sendBody(context.Background(), logMessage); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
 // SendBatch delivers an encoded log batch over UDP.
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	body, err := encodeBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, err
 	}
-	return 0, p.sendBody(body)
+	return 0, p.sendBody(ctx, body)
 }
 
 func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
@@ -355,7 +358,13 @@ func (e *payloadTooLargeError) Error() string {
 	return fmt.Sprintf("udp log payload of %d bytes exceeds the %d-byte datagram limit", e.size, e.limit)
 }
 
-func (p *Plugin) sendBody(body []byte) error {
+func (p *Plugin) sendBody(ctx context.Context, body []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(body) > maxUDPDatagramSize {
 		return &payloadTooLargeError{size: len(body), limit: maxUDPDatagramSize}
 	}
@@ -363,7 +372,7 @@ func (p *Plugin) sendBody(body []byte) error {
 	conn := p.conn
 	if conn == nil {
 		var err error
-		conn, err = p.dial()
+		conn, err = p.dial(ctx)
 		if err != nil {
 			return fmt.Errorf(
 				"failed to connect to udp server: host[%s] port[%d]: %w",
@@ -375,14 +384,39 @@ func (p *Plugin) sendBody(body []byte) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Second))
+	deadline := time.Now().Add(time.Duration(p.config.Timeout) * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetWriteDeadline(deadline)
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	defer stopWatcher()
 	if _, err := conn.Write(body); err != nil {
-		return fmt.Errorf("failed to send log message: %s in udp-logger", err)
+		return fmt.Errorf("failed to send log message in udp-logger: %w", err)
 	}
 	return nil
 }
 
-func (p *Plugin) dial() (net.Conn, error) {
+func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Second}
-	return dialer.Dial("udp", p.config.addr)
+	return dialer.DialContext(ctx, "udp", p.config.addr)
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }

@@ -1,6 +1,7 @@
 package datadog
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -888,10 +889,10 @@ func TestSendReusesDogStatsDSocketAcrossBatches(t *testing.T) {
 		return net.Dial("udp", addr)
 	}
 
-	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 1, Status: 200}); err != nil {
 		t.Fatalf("send #1 error = %v", err)
 	}
-	if err := p.send(metricEntry{LatencyMS: 2, Status: 201}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 2, Status: 201}); err != nil {
 		t.Fatalf("send #2 error = %v", err)
 	}
 	if got := dials.Load(); got != 1 {
@@ -918,7 +919,7 @@ func TestSendSetsWriteDeadlinePerSend(t *testing.T) {
 		return wrapped, nil
 	}
 
-	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 1, Status: 200}); err != nil {
 		t.Fatalf("send() error = %v", err)
 	}
 	if wrapped == nil || wrapped.writeDeadline.IsZero() {
@@ -941,21 +942,21 @@ func TestSendRedialsAfterSocketFailure(t *testing.T) {
 		return net.Dial("udp", addr)
 	}
 
-	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 1, Status: 200}); err != nil {
 		t.Fatalf("send #1 error = %v", err)
 	}
 	p.connMu.Lock()
 	_ = p.conn.Close()
 	p.connMu.Unlock()
 
-	if err := p.send(metricEntry{LatencyMS: 2, Status: 201}); err == nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 2, Status: 201}); err == nil {
 		t.Fatal("send #2 error = nil on a closed socket")
 	}
 	if got := dials.Load(); got != 1 {
 		t.Fatalf("dial count after failed send = %d, want no redial until the next send", got)
 	}
 
-	if err := p.send(metricEntry{LatencyMS: 3, Status: 202}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 3, Status: 202}); err != nil {
 		t.Fatalf("send #3 error = %v, want redial delivery", err)
 	}
 	if got := dials.Load(); got != 2 {
@@ -975,7 +976,7 @@ func TestStopClosesDogStatsDSocket(t *testing.T) {
 	p.dialFunc = func() (net.Conn, error) {
 		return net.Dial("udp", addr)
 	}
-	if err := p.send(metricEntry{LatencyMS: 1, Status: 200}); err != nil {
+	if err := p.send(context.Background(), metricEntry{LatencyMS: 1, Status: 200}); err != nil {
 		t.Fatalf("send() error = %v", err)
 	}
 	waitDatadogMessages(t, received, 1)

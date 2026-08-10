@@ -178,18 +178,19 @@ type pluginMetadata struct {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if sender, ok := p.sender.(interface{ Shutdown() error }); ok {
-		done := make(chan struct{})
-		go func() {
-			_ = sender.Shutdown()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
+	p.StopWithCleanup(func() {
+		if sender, ok := p.sender.(interface{ Shutdown() error }); ok {
+			done := make(chan struct{})
+			go func() {
+				_ = sender.Shutdown()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
 		}
-	}
+	})
 }
 
 func (s *rocketmqClientSender) Shutdown() error {
@@ -260,6 +261,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 	return nil
 }
@@ -361,18 +363,21 @@ func validateBodyExpressions(field string, expressions [][]any) error {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	message, err := encodeRocketMQBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal rocketmq log message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
 	defer cancel()
 
 	err = p.sender.Send(ctx, rocketmqMessage{

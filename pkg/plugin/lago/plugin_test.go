@@ -3,6 +3,7 @@ package lago
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -291,7 +292,7 @@ func TestSendBatchPostsMultipleLagoEvents(t *testing.T) {
 		BatchMaxSize:        2,
 	})
 
-	if _, err := p.SendBatch([]map[string]any{
+	if _, err := p.SendBatch(context.Background(), []map[string]any{
 		{"request_id": "req-1", "consumer_name": "sub-1"},
 		{"request_id": "req-2", "consumer_name": "sub-2"},
 	}, 2); err != nil {

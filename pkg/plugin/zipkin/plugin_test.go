@@ -78,6 +78,56 @@ func TestRandomUnitReturnsErrorForFailingReader(t *testing.T) {
 	}
 }
 
+func TestDeliverSpansCancelsZipkinRequestWithContext(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	p := newTestPlugin(t, Config{Endpoint: server.URL, SampleRatio: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.deliverSpans(ctx, []map[string]any{{"name": "apisix.request"}}, 1)
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Zipkin request")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("deliverSpans() did not return after context cancellation")
+	}
+	if err == nil {
+		t.Fatal("deliverSpans() error = nil, want context cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("deliverSpans() error = %v, want context cancellation when backend did not observe it", err)
+		}
+	}
+}
+
 func TestHandlerFailsClosedWhenSampleRandomUnavailable(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Endpoint:    "http://127.0.0.1:9411/api/v2/spans",

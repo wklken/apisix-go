@@ -1,6 +1,7 @@
 package tcp_logger
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -24,6 +25,37 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSendBodyUnblocksOnParentCancellation(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = peer.Close()
+	})
+
+	p := &Plugin{config: Config{Timeout: 30}, conn: client}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.sendBody(ctx, []byte("blocked")) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("sendBody() error = nil, want cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sendBody() remained blocked after parent cancellation")
+	}
+
+	p.connMu.Lock()
+	conn := p.conn
+	p.connMu.Unlock()
+	if conn != nil {
+		t.Fatal("sendBody() retained a canceled connection")
+	}
+}
 
 func TestEncodeBatchPreservesTCPMarshalErrorContext(t *testing.T) {
 	badEntry := map[string]any{"bad": make(chan int)}
@@ -429,7 +461,7 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 func TestSendBodyConnectionErrorIncludesDestination(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 1, Timeout: 20})
 
-	err := p.sendBody([]byte("log"))
+	err := p.sendBody(context.Background(), []byte("log"))
 	if err == nil {
 		t.Fatal("sendBody() error = nil, want invalid destination error")
 	}
@@ -788,10 +820,10 @@ func TestSendBatchReusesConnectionAndRedialsOnce(t *testing.T) {
 
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 1000})
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch #1 error = %v", err)
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r2"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r2"}}, 1); err != nil {
 		t.Fatalf("SendBatch #2 error = %v", err)
 	}
 	waitForTCP(t, func() bool {
@@ -811,14 +843,14 @@ func TestSendBatchReusesConnectionAndRedialsOnce(t *testing.T) {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = conn.Read(make([]byte, 16))
 	}
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r3"}}, 1); err == nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r3"}}, 1); err == nil {
 		t.Fatal("SendBatch #3 error = nil on a broken connection")
 	}
 	if got := server.acceptCount(); got != 1 {
 		t.Fatalf("connections after failed batch = %d, want no redial until the next send", got)
 	}
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r4"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r4"}}, 1); err != nil {
 		t.Fatalf("SendBatch #4 error = %v, want redial delivery", err)
 	}
 	waitForTCP(t, func() bool {
@@ -891,7 +923,7 @@ func TestSendBatchRetriesShortWritesToCompletion(t *testing.T) {
 	p.conn = conn
 	p.connMu.Unlock()
 
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "short"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "short"}}, 1); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 
@@ -913,7 +945,7 @@ func TestStopClosesActiveConnection(t *testing.T) {
 	host, port := splitAddr(t, server.addr())
 
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 1000})
-	if _, err := p.SendBatch([]map[string]any{{"route_id": "r1"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"route_id": "r1"}}, 1); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 

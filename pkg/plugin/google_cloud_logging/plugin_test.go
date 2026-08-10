@@ -1,6 +1,7 @@
 package google_cloud_logging
 
 import (
+	"context"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +25,72 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSendBatchCancelsGoogleEntriesPostWithContext(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			EntriesURI:  server.URL,
+		},
+		SSLVerify: &sslVerify,
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+	p.tokenMu.Lock()
+	p.accessToken = "cached-token"
+	p.tokenType = "Bearer"
+	p.tokenExpires = time.Now().Add(time.Hour)
+	p.tokenMu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.SendBatch(ctx, []map[string]any{{"path": "/cancel"}}, 1)
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Google Cloud Logging request")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("SendBatch() did not return after context cancellation")
+	}
+	if err == nil {
+		t.Fatal("SendBatch() error = nil, want context cancellation")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SendBatch() error = %v, want context cancellation when backend did not observe it", err)
+		}
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -182,7 +250,7 @@ func TestServiceAccountAssertionUsesConfiguredClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authConfig() error = %v", err)
 	}
-	if _, _, err := p.accessTokenFor(auth); err != nil {
+	if _, _, err := p.accessTokenFor(context.Background(), auth); err != nil {
 		t.Fatalf("accessTokenFor() error = %v", err)
 	}
 
@@ -472,7 +540,7 @@ func TestSendBatchWritesGoogleEntries(t *testing.T) {
 		LogFormat: map[string]string{"path": "$uri"},
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
 		t.Fatalf("SendBatch() error = %v", err)
 	}
 
@@ -527,10 +595,10 @@ func TestSendBatchReusesCachedAccessToken(t *testing.T) {
 		LogFormat: map[string]string{"path": "$uri"},
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1); err != nil {
 		t.Fatalf("first SendBatch() error = %v", err)
 	}
-	if _, err := p.SendBatch([]map[string]any{{"path": "/b"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/b"}}, 1); err != nil {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
 
@@ -586,7 +654,7 @@ func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
 		LogFormat: map[string]string{"path": "$uri"},
 	})
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1); err != nil {
 		t.Fatalf("first SendBatch() error = %v", err)
 	}
 
@@ -594,7 +662,7 @@ func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
 	// source is forced to refresh over the network.
 	time.Sleep(1100 * time.Millisecond)
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/b"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/b"}}, 1); err != nil {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
 
@@ -732,7 +800,7 @@ func TestSendBatchUsesCachedAuthFileAfterRemoval(t *testing.T) {
 		t.Fatalf("remove auth file: %v", err)
 	}
 
-	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1); err != nil {
 		t.Fatalf("SendBatch() after auth file removal error = %v, want cached auth config", err)
 	}
 }
@@ -769,7 +837,7 @@ func TestSendBatchTimesOutTokenEndpoint(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	_, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -813,7 +881,7 @@ func TestSendBatchTimesOutWriteEndpoint(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1)
+	_, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)
 	elapsed := time.Since(start)
 
 	if err == nil {

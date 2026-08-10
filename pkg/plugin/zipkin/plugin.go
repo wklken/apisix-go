@@ -1,6 +1,7 @@
 package zipkin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -159,8 +160,9 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	p.processor = logger_batch.New(logger_batch.Config{
+	p.processor = logger_batch.NewWithContext(logger_batch.Config{
 		Name:              "zipkin span reporter",
+		PluginID:          name,
 		BatchMaxSize:      1,
 		MaxRetryCount:     0,
 		RetryDelay:        logger_batch.DefaultRetryDelay,
@@ -173,13 +175,17 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
+	cleanup := func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	}
 	if p.processor != nil {
-		p.processor.Stop()
+		p.processor.StopWithCleanup(cleanup)
+		return
 	}
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	cleanup()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -323,11 +329,12 @@ func (p *Plugin) buildSpan(
 // deliverSpans posts enqueued spans to the Zipkin collector. Delivery
 // failures are returned to the batch processor for accounting and never
 // alter the proxied response.
-func (p *Plugin) deliverSpans(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) deliverSpans(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	if len(entries) == 0 {
 		return 0, nil
 	}
 	resp, err := p.client.R().
+		SetContext(ctx).
 		SetHeader("Content-Type", "application/json").
 		SetBody(entries).
 		Post(p.config.Endpoint)

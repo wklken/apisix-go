@@ -1,6 +1,7 @@
 package syslog
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -63,6 +64,16 @@ func newSyslogTransport(config Config) (*syslogTransport, error) {
 // an ambiguous partial write discards the whole batch so an orphan suffix never
 // survives onto a new connection.
 func (t *syslogTransport) Log(message []byte) (int, error) {
+	return t.LogContext(context.Background(), message)
+}
+
+func (t *syslogTransport) LogContext(ctx context.Context, message []byte) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -78,7 +89,7 @@ func (t *syslogTransport) Log(message []byte) (int, error) {
 	case total <= t.config.DropLimit:
 		previousBuffered := len(t.buffer)
 		t.buffer = append(t.buffer, message...)
-		written, err := t.flushLocked()
+		written, err := t.flushLocked(ctx)
 		if err != nil {
 			if written == 0 {
 				// Nothing reached the peer: restore the prior buffer so the
@@ -92,7 +103,7 @@ func (t *syslogTransport) Log(message []byte) (int, error) {
 		return len(message), nil
 	default:
 		buffered := len(t.buffer)
-		_, err := t.flushLocked()
+		_, err := t.flushLocked(ctx)
 		t.dropped++
 		logger.Warn(fmt.Sprintf(
 			"syslog buffer is full, dropping %d-byte message: buffered [%d], drop_limit [%d]",
@@ -111,7 +122,7 @@ func (t *syslogTransport) Flush() error {
 	if t.closed {
 		return nil
 	}
-	_, err := t.flushLocked()
+	_, err := t.flushLocked(context.Background())
 	return err
 }
 
@@ -131,7 +142,7 @@ func (t *syslogTransport) Close() {
 	if t.closed {
 		return
 	}
-	if _, err := t.flushLocked(); err != nil {
+	if _, err := t.flushLocked(context.Background()); err != nil {
 		logger.Errorf("failed to flush syslog transport during shutdown: %s", err)
 	}
 	t.closed = true
@@ -145,11 +156,11 @@ func (t *syslogTransport) Close() {
 	}
 }
 
-func (t *syslogTransport) flushLocked() (int, error) {
+func (t *syslogTransport) flushLocked(ctx context.Context) (int, error) {
 	if len(t.buffer) == 0 {
 		return 0, nil
 	}
-	written, err := t.write(t.buffer)
+	written, err := t.write(ctx, t.buffer)
 	if err != nil && written > 0 {
 		// A partial write makes the byte boundary unknowable at the peer;
 		// discard the whole batch so an orphan suffix never survives onto a
@@ -167,8 +178,14 @@ func (t *syslogTransport) flushLocked() (int, error) {
 // write returns the payload prefix acknowledged by net.Conn.Write. A positive
 // byte count is authoritative even when the same call also returns an error; the
 // caller decides whether to retry the prefix or discard the ambiguous batch.
-func (t *syslogTransport) write(payload []byte) (int, error) {
-	connection, err := t.connection()
+func (t *syslogTransport) write(ctx context.Context, payload []byte) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	connection, err := t.connection(ctx)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"failed to connect to syslog server: host[%s] port[%d]: %w",
@@ -179,10 +196,22 @@ func (t *syslogTransport) write(payload []byte) (int, error) {
 	}
 
 	deadline := time.Now().Add(time.Duration(t.config.Timeout) * time.Millisecond)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
 	if err = connection.SetWriteDeadline(deadline); err != nil {
 		_ = connection.Close()
 		return 0, fmt.Errorf("failed to set syslog write deadline: %w", err)
 	}
+	stopped := false
+	stopWatcher := watchConnectionCancellation(ctx, connection)
+	stop := func() {
+		if !stopped {
+			stopped = true
+			stopWatcher()
+		}
+	}
+	defer stop()
 	totalWritten := 0
 	for len(payload) > 0 {
 		written, writeErr := connection.Write(payload)
@@ -205,11 +234,22 @@ func (t *syslogTransport) write(payload []byte) (int, error) {
 		_ = connection.Close()
 		return totalWritten, fmt.Errorf("failed to clear syslog write deadline: %w", err)
 	}
+	stop()
+	if err := ctx.Err(); err != nil {
+		_ = connection.Close()
+		return totalWritten, err
+	}
 	t.release(connection)
 	return totalWritten, nil
 }
 
-func (t *syslogTransport) connection() (net.Conn, error) {
+func (t *syslogTransport) connection(ctx context.Context) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if t.config.SockType == "tcp" {
 		select {
 		case connection := <-t.idle:
@@ -218,13 +258,55 @@ func (t *syslogTransport) connection() (net.Conn, error) {
 		}
 	}
 
-	dialer := &net.Dialer{Timeout: time.Duration(t.config.Timeout) * time.Millisecond}
-	if !t.config.TLS {
-		return dialer.Dial(t.config.SockType, t.config.addr)
+	timeout := time.Duration(t.config.Timeout) * time.Millisecond
+	if contextDeadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(contextDeadline); remaining < timeout {
+			timeout = remaining
+		}
 	}
-	return tls.DialWithDialer(dialer, "tcp", t.config.addr, &tls.Config{
+	if timeout <= 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, context.DeadlineExceeded
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	if !t.config.TLS {
+		return dialer.DialContext(ctx, t.config.SockType, t.config.addr)
+	}
+	handshakeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	raw, err := dialer.DialContext(handshakeCtx, "tcp", t.config.addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // APISIX syslog TLS does not verify the peer certificate
 	})
+	if err := conn.HandshakeContext(handshakeCtx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }
 
 func (t *syslogTransport) release(connection net.Conn) {

@@ -1,6 +1,7 @@
 package clickhouse_logger
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"math/rand"
@@ -272,6 +273,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.BatchProcessor = base.NewBatchProcessor("clickhouse logger", base.BatchDefaults{
+		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -284,11 +286,12 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Stop() {
-	p.BaseLoggerPlugin.Stop()
-	if p.clientRelease != nil {
-		p.clientRelease()
-		p.clientRelease = nil
-	}
+	p.StopWithCleanup(func() {
+		if p.clientRelease != nil {
+			p.clientRelease()
+			p.clientRelease = nil
+		}
+	})
 }
 
 func resolveClickHouseUser(user string) (string, error) {
@@ -349,12 +352,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	endpoint := p.endpointURL()
 	if endpoint == "" {
 		return 0, fmt.Errorf("clickhouse-logger endpoint is empty")
@@ -366,6 +369,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	}
 
 	resp, err := p.client.R().
+		SetContext(ctx).
 		SetHeaders(map[string]string{
 			"Content-Type":          "application/json",
 			"X-ClickHouse-User":     p.config.User,

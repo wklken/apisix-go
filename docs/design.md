@@ -528,3 +528,34 @@ general-purpose response body, not an unambiguous credential. The Go extension
 leaves it encrypted, `PostInit` calls strict `Resolver.Resolve`, and invalid or
 missing-key ciphertext fails before response handling. `body_secret` cannot be
 combined with ordinary `body` or `filters`.
+
+## Logger Batch Resource Ownership
+
+All network and broker loggers that use the shared batch processor inherit a
+central resource contract. An unset `max_pending_entries` is bounded at 10,000,
+and a new entry is rejected when the number of buffered, queued, active, and
+retrying entries is already at that limit. The request logging path never waits
+for a delivery worker; rejection is the overload policy.
+
+Flushes are consumed by one delivery worker per processor by default rather
+than starting one goroutine per batch. Each delivery attempt has a 10-second
+context deadline, retry delay is cancellable, and sinks attach that context to
+HTTP, broker, dial, and socket operations. The internal worker limit can be
+overridden only by trusted constructors and is capped at eight; it is not a new
+route-schema field.
+
+The existing plugin `Stop()` lifecycle remains compatible with route builders.
+It refuses later pushes, seals the current buffer, and allows at most 15 seconds
+for workers to drain before canceling delivery and recording a shutdown
+timeout. `Processor.Shutdown(ctx)` is the error-aware form for tests and owners
+that already have a context. Caller-facing timeout completion and sink resource
+ownership are separate: shared clients, senders, and retained connections are
+released only after the worker barrier confirms every delivery callback has
+returned, asynchronously when an uncooperative callback outlives `Stop()`.
+
+`batch_process_entries` retains its APISIX-compatible buffered-entry meaning.
+`logger_batch_pending_entries` reports all accepted nonterminal entries, while
+`logger_batch_events_total` records only validated capacity, stopped, delivery,
+and shutdown outcomes. Dynamic gauges are refcounted across overlapping route
+generations and are deleted only after the final processor owner closes; event
+counters use the stable plugin identifier and a bounded outcome label.

@@ -1,6 +1,7 @@
 package sls_logger
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -247,6 +249,7 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
+		PluginID:           name,
 	}, p.RouteID, p.ServerAddr, p.SendBatch)
 
 	return nil
@@ -336,23 +339,40 @@ func queryFields(r *http.Request) map[string]any {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
 		logger.Errorf("%s", err)
 	}
 }
 
-func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	_ = batchMaxSize
 
 	messages := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		messages = append(messages, p.buildMessage(entry))
 	}
-	return 0, p.sendMessage(strings.Join(messages, ""))
+	return 0, p.sendMessage(ctx, strings.Join(messages, ""))
 }
 
-func (p *Plugin) sendMessage(message string) error {
-	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
+func (p *Plugin) sendMessage(ctx context.Context, message string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	operationTimeout := time.Until(deadline)
+	if operationTimeout <= 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	}
+	dialer := &net.Dialer{Timeout: operationTimeout}
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		ServerName: p.config.Host,
@@ -361,18 +381,32 @@ func (p *Plugin) sendMessage(message string) error {
 		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicit APISIX-compatible operator opt-out
 	}
 	dialTLS := p.dialTLS
-	if dialTLS == nil {
-		dialTLS = func(dialer *net.Dialer, network, address string, config *tls.Config) (net.Conn, error) {
-			return tls.DialWithDialer(dialer, network, address, config)
+	var conn net.Conn
+	var err error
+	if dialTLS != nil {
+		conn, err = dialTLS(dialer, "tcp", p.addr, tlsConfig)
+	} else {
+		handshakeCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+		defer cancel()
+		raw, dialErr := dialer.DialContext(handshakeCtx, "tcp", p.addr)
+		if dialErr != nil {
+			return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, dialErr)
 		}
+		tlsConn := tls.Client(raw, tlsConfig)
+		if handshakeErr := tlsConn.HandshakeContext(handshakeCtx); handshakeErr != nil {
+			_ = raw.Close()
+			return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, handshakeErr)
+		}
+		conn = tlsConn
 	}
-	conn, err := dialTLS(dialer, "tcp", p.addr, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, err)
 	}
 	defer func() { _ = conn.Close() }()
+	stopWatcher := watchConnectionCancellation(ctx, conn)
+	defer stopWatcher()
 
-	if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.Timeout) * time.Millisecond)); err != nil {
+	if err := conn.SetWriteDeadline(deadline); err != nil {
 		return fmt.Errorf("failed to set SLS write deadline: %w", err)
 	}
 
@@ -380,6 +414,25 @@ func (p *Plugin) sendMessage(message string) error {
 		return fmt.Errorf("failed to send SLS log message: %w", err)
 	}
 	return nil
+}
+
+func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	})
+	return func() {
+		close(done)
+		wait.Wait()
+	}
 }
 
 func (p *Plugin) buildMessage(log map[string]any) string {

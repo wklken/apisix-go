@@ -3,6 +3,7 @@ package base
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -487,6 +488,30 @@ func TestApplyBatchDefaults(t *testing.T) {
 			int(logger_batch.DefaultInactiveTimeout/time.Second),
 		)
 	}
+	if d.MaxPendingEntries != logger_batch.DefaultMaxPendingEntries {
+		t.Fatalf("MaxPendingEntries = %d, want %d", d.MaxPendingEntries, logger_batch.DefaultMaxPendingEntries)
+	}
+	if d.MaxConcurrentDeliveries != logger_batch.DefaultMaxConcurrentDeliveries {
+		t.Fatalf(
+			"MaxConcurrentDeliveries = %d, want %d",
+			d.MaxConcurrentDeliveries,
+			logger_batch.DefaultMaxConcurrentDeliveries,
+		)
+	}
+	if d.DeliveryTimeoutSec != int(logger_batch.DefaultDeliveryTimeout/time.Second) {
+		t.Fatalf(
+			"DeliveryTimeoutSec = %d, want %d",
+			d.DeliveryTimeoutSec,
+			int(logger_batch.DefaultDeliveryTimeout/time.Second),
+		)
+	}
+	if d.ShutdownTimeoutSec != int(logger_batch.DefaultShutdownTimeout/time.Second) {
+		t.Fatalf(
+			"ShutdownTimeoutSec = %d, want %d",
+			d.ShutdownTimeoutSec,
+			int(logger_batch.DefaultShutdownTimeout/time.Second),
+		)
+	}
 
 	d = BatchDefaults{RetryDelaySec: 5, RetryDelaySet: false}
 	ApplyBatchDefaults(&d)
@@ -505,12 +530,26 @@ func TestApplyBatchDefaults(t *testing.T) {
 	if d.BatchMaxSize != 42 {
 		t.Fatalf("BatchMaxSize = %d, want 42 (explicit value preserved)", d.BatchMaxSize)
 	}
+
+	d = BatchDefaults{
+		BatchMaxSize:            42,
+		MaxPendingEntries:       43,
+		PluginID:                "http-logger",
+		MaxConcurrentDeliveries: 3,
+		DeliveryTimeoutSec:      7,
+		ShutdownTimeoutSec:      8,
+	}
+	ApplyBatchDefaults(&d)
+	if d.BatchMaxSize != 42 || d.MaxPendingEntries != 43 || d.PluginID != "http-logger" ||
+		d.MaxConcurrentDeliveries != 3 || d.DeliveryTimeoutSec != 7 || d.ShutdownTimeoutSec != 8 {
+		t.Fatalf("explicit resource overrides changed: %+v", d)
+	}
 }
 
 func TestNewBatchProcessorDeliversPushedEntry(t *testing.T) {
 	var delivered []map[string]any
 	processor := NewBatchProcessor("test logger", BatchDefaults{}, "route-1", "server-1",
-		func(entries []map[string]any, _ int) (int, error) {
+		func(_ context.Context, entries []map[string]any, _ int) (int, error) {
 			delivered = append(delivered, entries...)
 			return 0, nil
 		})

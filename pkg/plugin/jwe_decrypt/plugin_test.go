@@ -167,6 +167,30 @@ func TestHandlerRejectsMissingTokenWhenStrict(t *testing.T) {
 	}
 }
 
+func TestHandlerNonStrictMissingTokenPreservesNestedHandlerCompatibility(t *testing.T) {
+	strict := false
+	p := newTestPlugin(t, Config{Strict: &strict})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	rr := httptest.NewRecorder()
+	called := 0
+
+	nested := http.HandlerFunc(func(w http.ResponseWriter, got *http.Request) {
+		called++
+		if got != req {
+			t.Fatalf("nested handler request = %p, want original %p", got, req)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	p.Handler(nested).ServeHTTP(rr, req)
+
+	if called != 1 {
+		t.Fatalf("nested handler calls = %d, want 1", called)
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerRejectsInvalidToken(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

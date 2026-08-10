@@ -579,11 +579,24 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 }
 
 func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
-	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, pluginRouteContext{})
+	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, pluginRouteContext{})
 	if err != nil {
 		return nil, err
 	}
-	chain := assembleRoutePluginChain(nil, globalPlugins)
+	systemBindings, err := b.initPluginBindingsStrict(
+		[]materializedPluginSource{{
+			name:       "request-context",
+			config:     buildRequestContextConfig(resource.Route{}, resource.Service{}, nil),
+			scope:      plugin.ScopeSystem,
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
+		}},
+		pluginRouteContext{},
+		pluginInitOptions{allowRequestContext: true},
+	)
+	if err != nil {
+		return nil, err
+	}
+	chain := assembleRouteExecutor(nil, globalBindings, systemBindings)
 	return withAIExecutionTerminal(chain, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if lifecycle := ctx.GetRequestLifecycle(r); lifecycle != nil {
 			lifecycle.SetResponseSource(ctx.ResponseSourceEarlyStop)
@@ -616,7 +629,7 @@ func normalizePluginResourceContext(
 }
 
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
-	resourcePlugins := clonePluginConfigs(r.Plugins)
+	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
 		pluginConfigRule, err := store.GetPluginConfigRule(r.PluginConfigID)
@@ -632,13 +645,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		); err != nil {
 			return nil, err
 		}
-		for name, config := range pluginConfigRule.Plugins {
-			// priority: Consumer > Route > Plugin Config > Service
-			// so if not in r.Plugins, add, else skip
-			if _, ok := resourcePlugins[name]; !ok {
-				resourcePlugins[name] = config
-			}
-		}
+		pluginConfigPlugins = pluginConfigRule.Plugins
 	}
 
 	// if service_id is not empty, get the service config
@@ -658,62 +665,61 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	servicePluginConfigs := make(map[string]resource.PluginConfig)
-	if len(service.Plugins) > 0 {
-		for name, config := range service.Plugins {
-			if _, ok := resourcePlugins[name]; ok {
-				continue
-			}
-			if name == "kafka-logger" && service.ID != "" {
-				servicePluginConfigs[name] = config
-			} else {
-				resourcePlugins[name] = config
-			}
-		}
-	}
-
-	effectivePluginConfigs := clonePluginConfigs(resourcePlugins)
-	maps.Copy(effectivePluginConfigs, servicePluginConfigs)
+	localSources, serviceSources, effectivePluginConfigs := selectMaterializedPluginSources(
+		r.Plugins,
+		r.ID,
+		pluginConfigPlugins,
+		r.PluginConfigID,
+		service.Plugins,
+		r.ServiceID,
+	)
 
 	// add a context plugin, set the default vars
 	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
 
 	routeContext := b.pluginRouteContext(r)
 	routeContext.service = service
-	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
-	initialized, err := b.initPluginsStrict(resourcePlugins, routeContext)
+	localBindings, err := b.initPluginBindingsStrict(localSources, routeContext, pluginInitOptions{})
 	if err != nil {
 		return nil, err
 	}
-	for _, initializedPlugin := range initialized {
-		localPlugins = append(localPlugins, newRouteConsumerOverridePlugin(initializedPlugin))
+	for i := range localBindings {
+		localBindings[i].Plugin = newRouteConsumerOverridePlugin(localBindings[i].Plugin)
 	}
-	initialized, err = b.initServicePluginsStrict(servicePluginConfigs, routeContext)
+	serviceBindings, err := b.initServicePluginBindingsStrict(serviceSources, routeContext)
 	if err != nil {
 		return nil, err
 	}
-	for _, initializedPlugin := range initialized {
-		localPlugins = append(localPlugins, newRouteConsumerOverridePlugin(initializedPlugin))
+	for i := range serviceBindings {
+		serviceBindings[i].Plugin = newRouteConsumerOverridePlugin(serviceBindings[i].Plugin)
 	}
-	initialized, err = b.initPluginsStrictWithOptions(
+	systemSources := materializedPluginSources(
 		systemPlugins,
+		plugin.ResourceProvenance{Kind: plugin.ResourceSystem},
+	)
+	for i := range systemSources {
+		systemSources[i].scope = plugin.ScopeSystem
+		systemSources[i].provenance.ID = systemSources[i].name
+	}
+	systemBindings, err := b.initPluginBindingsStrict(
+		systemSources,
 		routeContext,
 		pluginInitOptions{allowRequestContext: true},
 	)
 	if err != nil {
 		return nil, err
 	}
-	localPlugins = append(localPlugins, initialized...)
 	globalRules, err := b.globalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
 		return nil, err
 	}
-	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, routeContext)
+	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
 	if err != nil {
 		return nil, err
 	}
-	chain := assembleRoutePluginChain(localPlugins, globalPlugins)
+	localBindings = append(localBindings, serviceBindings...)
+	chain := assembleRouteExecutor(localBindings, globalBindings, systemBindings)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -902,11 +908,105 @@ func (b *Builder) consumerPluginChainForIdentity(
 	return chain, nil
 }
 
-func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) plugin.Executor {
-	plugins := make([]plugin.Plugin, 0, len(localPlugins)+len(globalPlugins))
-	plugins = append(plugins, localPlugins...)
-	plugins = append(plugins, globalPlugins...)
-	return plugin.NewExecutor(plugins...)
+type materializedPluginSource struct {
+	name       string
+	config     resource.PluginConfig
+	scope      plugin.Scope
+	provenance plugin.ResourceProvenance
+}
+
+func selectMaterializedPluginSources(
+	routePlugins map[string]resource.PluginConfig,
+	routeID string,
+	pluginConfigPlugins map[string]resource.PluginConfig,
+	pluginConfigID string,
+	servicePlugins map[string]resource.PluginConfig,
+	serviceID string,
+) (localSources, serviceSources []materializedPluginSource, effective map[string]resource.PluginConfig) {
+	effective = clonePluginConfigs(routePlugins)
+	localSources = materializedPluginSources(
+		routePlugins,
+		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: routeID},
+	)
+	for _, name := range slices.Sorted(maps.Keys(pluginConfigPlugins)) {
+		if _, exists := effective[name]; exists {
+			continue
+		}
+		config := pluginConfigPlugins[name]
+		effective[name] = config
+		localSources = append(localSources, materializedPluginSource{
+			name:       name,
+			config:     config,
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourcePluginConfig, ID: pluginConfigID},
+			scope:      plugin.ScopeRoute,
+		})
+	}
+
+	servicePluginConfigs := make(map[string]resource.PluginConfig)
+	for _, name := range slices.Sorted(maps.Keys(servicePlugins)) {
+		if _, exists := effective[name]; exists {
+			continue
+		}
+		config := servicePlugins[name]
+		if name == "kafka-logger" && serviceID != "" {
+			servicePluginConfigs[name] = config
+			serviceSources = append(serviceSources, materializedPluginSource{
+				name:       name,
+				config:     config,
+				provenance: plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: serviceID},
+				scope:      plugin.ScopeRoute,
+			})
+			continue
+		}
+		effective[name] = config
+		localSources = append(localSources, materializedPluginSource{
+			name:       name,
+			config:     config,
+			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: serviceID},
+			scope:      plugin.ScopeRoute,
+		})
+	}
+	maps.Copy(effective, servicePluginConfigs)
+	return localSources, serviceSources, effective
+}
+
+func materializedPluginSources(
+	pluginConfigs map[string]resource.PluginConfig,
+	provenance plugin.ResourceProvenance,
+) []materializedPluginSource {
+	names := slices.Sorted(maps.Keys(pluginConfigs))
+	sources := make([]materializedPluginSource, 0, len(names))
+	for _, name := range names {
+		sources = append(sources, materializedPluginSource{
+			name:       name,
+			config:     pluginConfigs[name],
+			scope:      plugin.ScopeRoute,
+			provenance: provenance,
+		})
+	}
+	return sources
+}
+
+func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
+	plugins := make([]plugin.Plugin, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.Plugin != nil {
+			plugins = append(plugins, binding.Plugin)
+		}
+	}
+	return plugins
+}
+
+func assembleRouteExecutor(
+	routeBindings []plugin.Binding,
+	globalBindings []plugin.Binding,
+	systemBindings []plugin.Binding,
+) plugin.Executor {
+	bindings := make([]plugin.Binding, 0, len(routeBindings)+len(globalBindings)+len(systemBindings))
+	bindings = append(bindings, systemBindings...)
+	bindings = append(bindings, globalBindings...)
+	bindings = append(bindings, routeBindings...)
+	return plugin.NewScopedExecutor(bindings...)
 }
 
 func buildSystemPluginConfigs(
@@ -1429,52 +1529,73 @@ func (b *Builder) initServicePluginsStrict(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
-	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
-	for name, config := range pluginConfigs {
-		if name != "kafka-logger" || routeContext.service.ID == "" {
-			initialized, err := b.initPluginsStrict(
-				map[string]resource.PluginConfig{name: config},
+	sources := materializedPluginSources(pluginConfigs, plugin.ResourceProvenance{})
+	bindings, err := b.initServicePluginBindingsStrict(sources, routeContext)
+	return pluginsFromBindings(bindings), err
+}
+
+func (b *Builder) initServicePluginBindingsStrict(
+	sources []materializedPluginSource,
+	routeContext pluginRouteContext,
+) ([]plugin.Binding, error) {
+	bindings := make([]plugin.Binding, 0, len(sources))
+	for _, source := range sources {
+		if source.name != "kafka-logger" || routeContext.service.ID == "" {
+			initialized, err := b.initPluginBindingsStrict(
+				[]materializedPluginSource{source},
 				routeContext,
+				pluginInitOptions{},
 			)
 			if err != nil {
 				return nil, err
 			}
-			plugins = append(plugins, initialized...)
+			bindings = append(bindings, initialized...)
 			continue
 		}
 
-		encoded, err := json.Marshal(config)
+		encoded, err := json.Marshal(source.config)
 		if err != nil {
-			return nil, fmt.Errorf("marshal service plugin %s config: %w", name, err)
+			if source.provenance.Kind == "" {
+				return nil, fmt.Errorf("marshal service plugin %s config: %w", source.name, err)
+			}
+			return nil, fmt.Errorf(
+				"plugin %q from %s %q: marshal service plugin %s config: %w",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+				source.name,
+				err,
+			)
 		}
 		key := servicePluginKey{
 			serviceID: routeContext.service.ID,
-			name:      name,
+			name:      source.name,
 			config:    string(encoded),
 		}
 
 		b.servicePluginMu.Lock()
 		initialized := b.servicePlugins[key]
 		if initialized == nil {
-			servicePlugins, initErr := b.initPluginsStrict(
-				map[string]resource.PluginConfig{name: config},
+			servicePlugins, initErr := b.initPluginBindingsStrict(
+				[]materializedPluginSource{source},
 				routeContext,
+				pluginInitOptions{},
 			)
 			if initErr != nil {
 				b.servicePluginMu.Unlock()
 				return nil, initErr
 			}
 			if len(servicePlugins) == 1 {
-				initialized = servicePlugins[0]
+				initialized = servicePlugins[0].Plugin
 				b.servicePlugins[key] = initialized
 			}
 		}
 		b.servicePluginMu.Unlock()
 		if initialized != nil {
-			plugins = append(plugins, initialized)
+			bindings = append(bindings, plugin.BindPlugin(source.name, initialized, source.scope, source.provenance))
 		}
 	}
-	return plugins, nil
+	return bindings, nil
 }
 
 func (b *Builder) initPluginsStrict(
@@ -1489,52 +1610,76 @@ func (b *Builder) initPluginsStrictWithOptions(
 	routeContext pluginRouteContext,
 	options pluginInitOptions,
 ) ([]plugin.Plugin, error) {
-	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	sources := materializedPluginSources(pluginConfigs, plugin.ResourceProvenance{})
+	bindings, err := b.initPluginBindingsStrict(sources, routeContext, options)
+	return pluginsFromBindings(bindings), err
+}
+
+func (b *Builder) initPluginBindingsStrict(
+	sources []materializedPluginSource,
+	routeContext pluginRouteContext,
+	options pluginInitOptions,
+) ([]plugin.Binding, error) {
+	bindings := make([]plugin.Binding, 0, len(sources))
 	normalizedRouteContext := routeContext
-	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(pluginConfigs))
-	for name, config := range pluginConfigs {
+	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(sources))
+	for _, source := range sources {
+		name := source.name
+		config := source.config
+		sourceError := func(err error) error {
+			if source.provenance.Kind == "" {
+				return err
+			}
+			return fmt.Errorf(
+				"plugin %q from %s %q: %w",
+				name,
+				source.provenance.Kind,
+				source.provenance.ID,
+				err,
+			)
+		}
 		if !b.pluginAllowed(name, options) {
-			return nil, fmt.Errorf("plugin %q is disabled", name)
+			return nil, sourceError(fmt.Errorf("plugin %q is disabled", name))
 		}
 		p := plugin.New(name)
 		if p == nil {
-			return nil, fmt.Errorf("plugin %s is not supported", name)
+			return nil, sourceError(fmt.Errorf("plugin %s is not supported", name))
 		}
 		config, metadata, err := parsePluginMetadata(config)
 		if err != nil {
-			return nil, fmt.Errorf("parse plugin %s metadata: %w", name, err)
+			return nil, sourceError(fmt.Errorf("parse plugin %s metadata: %w", name, err))
 		}
 		if metadata.disabled {
 			continue
 		}
 
 		if err := p.Init(); err != nil {
-			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
+			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}
 		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
 			if metadata, ok := b.pluginMetadata(name); ok {
 				compiledMetadataSchema, compileErr := b.compiledSchema(metadataSchema)
 				if compileErr != nil {
-					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, compileErr)
+					return nil, sourceError(fmt.Errorf("validate plugin %s metadata: %w", name, compileErr))
 				}
 				if err := compiledMetadataSchema.Validate(metadata); err != nil {
-					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
+					return nil, sourceError(fmt.Errorf("validate plugin %s metadata: %w", name, err))
 				}
 			}
 		}
 
 		compiledSchema, compileErr := b.compiledSchema(p.GetSchema())
 		if compileErr != nil {
-			return nil, fmt.Errorf("validate plugin %s config: %w", name, compileErr)
+			return nil, sourceError(fmt.Errorf("validate plugin %s config: %w", name, compileErr))
 		}
 		err = compiledSchema.Validate(config)
 		if err != nil {
-			return nil, fmt.Errorf("validate plugin %s config: %w", name, err)
+			return nil, sourceError(fmt.Errorf("validate plugin %s config: %w", name, err))
 		}
 
 		err = util.Parse(config, p.Config())
 		if err != nil {
-			return nil, fmt.Errorf("parse plugin %s config: %w", name, err)
+			return nil, sourceError(fmt.Errorf("parse plugin %s config: %w", name, err))
 		}
 
 		if setter, ok := p.(pluginRouteContextSetter); ok {
@@ -1547,7 +1692,7 @@ func (b *Builder) initPluginsStrictWithOptions(
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
 			if !ok {
-				return nil, fmt.Errorf("plugin %s does not support _meta.priority", name)
+				return nil, sourceError(fmt.Errorf("plugin %s does not support _meta.priority", name))
 			}
 			setter.SetPriority(*metadata.priority)
 		}
@@ -1557,7 +1702,7 @@ func (b *Builder) initPluginsStrictWithOptions(
 		}
 
 		if err := p.PostInit(); err != nil {
-			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
+			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}
 		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
@@ -1565,12 +1710,12 @@ func (b *Builder) initPluginsStrictWithOptions(
 		}
 
 		initialized := newMetadataPlugin(p, metadata)
-		plugins = append(plugins, initialized)
+		bindings = append(bindings, plugin.BindPlugin(name, initialized, source.scope, source.provenance))
 	}
 	for _, setter := range resourceContextSetters {
 		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
 	}
-	return plugins, nil
+	return bindings, nil
 }
 
 func newMetadataPlugin(p plugin.Plugin, metadata pluginMetadata) plugin.Plugin {
@@ -1608,33 +1753,40 @@ func (b *Builder) addStopper(stopper pluginStopper) {
 	b.stopperMu.Unlock()
 }
 
-func (b *Builder) initGlobalPlugins(
-	globalRules []resource.GlobalRule,
-	routeContext pluginRouteContext,
-) []plugin.Plugin {
-	plugins, err := b.initGlobalPluginsStrict(globalRules, routeContext)
-	if err != nil {
-		logger.Errorf("initialize strict global plugin set fail: %s", err)
-	}
-	return plugins
-}
-
 func (b *Builder) initGlobalPluginsStrict(
 	globalRules []resource.GlobalRule,
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
-	plugins := make([]plugin.Plugin, 0, len(globalRules))
+	bindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
+	return pluginsFromBindings(bindings), err
+}
+
+func (b *Builder) initGlobalPluginBindingsStrict(
+	globalRules []resource.GlobalRule,
+	routeContext pluginRouteContext,
+) ([]plugin.Binding, error) {
+	bindings := make([]plugin.Binding, 0, len(globalRules))
 	for _, rule := range globalRules {
+		if rule.ID == "" {
+			return nil, fmt.Errorf("global rule ID is required for scoped plugin binding")
+		}
 		if err := b.validatePluginConfigSource(rule.Plugins, "global_rule", rule.ID); err != nil {
 			return nil, err
 		}
-		initialized, err := b.initPluginsStrict(rule.Plugins, routeContext)
+		sources := materializedPluginSources(
+			rule.Plugins,
+			plugin.ResourceProvenance{Kind: plugin.ResourceGlobalRule, ID: rule.ID},
+		)
+		for i := range sources {
+			sources[i].scope = plugin.ScopeGlobal
+		}
+		initialized, err := b.initPluginBindingsStrict(sources, routeContext, pluginInitOptions{})
 		if err != nil {
 			return nil, err
 		}
-		plugins = append(plugins, initialized...)
+		bindings = append(bindings, initialized...)
 	}
-	return plugins, nil
+	return bindings, nil
 }
 
 func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {

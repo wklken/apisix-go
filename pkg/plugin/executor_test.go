@@ -274,3 +274,232 @@ func TestExecutorTerminalSourcePrecedence(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedExecutorClonesBindings(t *testing.T) {
+	low := newExecutorLegacyPlugin("low", 10, nil)
+	high := newExecutorLegacyPlugin("high", 100, nil)
+	bindings := []Binding{
+		BindPlugin("legacy-low", low, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "low"}),
+		BindPlugin("legacy-high", high, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "high"}),
+	}
+	executor := NewScopedExecutor(bindings...)
+	bindings[0] = Binding{}
+	if len(executor.bindings) != 2 {
+		t.Fatalf("scoped executor bindings = %d, want 2", len(executor.bindings))
+	}
+	if executor.bindings[0].Plugin != low || executor.bindings[1].Plugin != high {
+		t.Fatalf("scoped executor did not retain cloned input bindings: %#v", executor.bindings)
+	}
+}
+
+func TestScopedExecutorPreservesResourceProvenance(t *testing.T) {
+	plugin := newExecutorLegacyPlugin("rewrite-impl", 10, nil)
+	want := ResourceProvenance{Kind: ResourcePluginConfig, ID: "pc-7"}
+	executor := NewScopedExecutor(BindPlugin("real-ip", plugin, ScopeRoute, want))
+	if got := executor.bindings[0].Provenance; got != want {
+		t.Fatalf("binding provenance = %#v, want %#v", got, want)
+	}
+}
+
+func TestScopedExecutorRunsGlobalRewriteBeforeHigherPriorityRouteRewrite(t *testing.T) {
+	global := newExecutorRequestPlugin(
+		"global-impl",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("global")
+			return base.ContinueRequest(r)
+		},
+	)
+	route := newExecutorRequestPlugin(
+		"route-impl",
+		10000,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("route")
+			return base.ContinueRequest(r)
+		},
+	)
+	request, _, trace := executorRequest(t)
+	NewScopedExecutor(
+		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"}),
+		BindPlugin("request-id", route, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "r"}),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		executorTraceFromRequest(r).add("terminal")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	if got, want := trace.values(), []string{"global", "route", "terminal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("scoped executor order = %v, want %v", got, want)
+	}
+}
+
+func TestScopedExecutorSortsRewritePriorityWithinScope(t *testing.T) {
+	low := newExecutorRequestPlugin(
+		"global-low",
+		10,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("low")
+			return base.ContinueRequest(r)
+		},
+	)
+	high := newExecutorRequestPlugin(
+		"global-high",
+		100,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("high")
+			return base.ContinueRequest(r)
+		},
+	)
+	request, _, trace := executorRequest(t)
+	NewScopedExecutor(
+		BindPlugin("request-id", low, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "low"}),
+		BindPlugin("request-id", high, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "high"}),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		executorTraceFromRequest(r).add("terminal")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if got, want := trace.values(), []string{"high", "low", "terminal"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("same-scope rewrite order = %v, want %v", got, want)
+	}
+}
+
+func TestScopedExecutorStopsRewriteBeforeLegacyRemainder(t *testing.T) {
+	stop := newExecutorRequestPlugin("stop", 100, func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+		executorTraceFromRequest(r).add("stop")
+		return base.StopRequest(r)
+	})
+	legacy := newExecutorLegacyPlugin("legacy", 1, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executorTraceFromRequest(r).add("legacy")
+			next.ServeHTTP(w, r)
+		})
+	})
+	request, lifecycle, trace := executorRequest(t)
+	NewScopedExecutor(
+		BindPlugin("request-id", stop, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "stop"}),
+		BindPlugin("legacy", legacy, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "legacy"}),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		executorTraceFromRequest(r).add("terminal")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	if got, want := trace.values(), []string{"stop"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("stopped scoped executor order = %v, want %v", got, want)
+	}
+	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceEarlyStop)
+	}
+}
+
+func TestScopedExecutorPropagatesRequestAcrossScopes(t *testing.T) {
+	request, _, trace := executorRequest(t)
+	replacement := request.WithContext(context.WithValue(request.Context(), executorTraceKey{}, trace))
+	global := newExecutorRequestPlugin(
+		"global",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			return base.ContinueRequest(replacement)
+		},
+	)
+	route := newExecutorRequestPlugin("route", 1, func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+		if r != replacement {
+			t.Errorf("route request = %p, want replacement %p", r, replacement)
+		}
+		executorTraceFromRequest(r).add("route")
+		return base.ContinueRequest(r)
+	})
+	var terminalRequest *http.Request
+	NewScopedExecutor(
+		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "g"}),
+		BindPlugin("request-id", route, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "r"}),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { terminalRequest = r })).ServeHTTP(
+		httptest.NewRecorder(),
+		request,
+	)
+	if terminalRequest != replacement {
+		t.Fatalf("terminal request = %p, want replacement %p", terminalRequest, replacement)
+	}
+	if got, want := trace.values(), []string{"route"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("trace = %v, want %v", got, want)
+	}
+}
+
+func TestScopedExecutorLeavesLegacyPriorityAndUnwindUnchanged(t *testing.T) {
+	high := newExecutorLegacyPlugin("high", 300, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executorTraceFromRequest(r).add("high-enter")
+			next.ServeHTTP(w, r)
+			executorTraceFromRequest(r).add("high-exit")
+		})
+	})
+	low := newExecutorLegacyPlugin("low", 100, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executorTraceFromRequest(r).add("low-enter")
+			next.ServeHTTP(w, r)
+			executorTraceFromRequest(r).add("low-exit")
+		})
+	})
+	request, _, trace := executorRequest(t)
+	NewScopedExecutor(
+		BindPlugin("legacy-high", high, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "high"}),
+		BindPlugin("legacy-low", low, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "low"}),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		executorTraceFromRequest(r).add("terminal")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	want := []string{"high-enter", "low-enter", "terminal", "low-exit", "high-exit"}
+	if got := trace.values(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy remainder order = %v, want %v", got, want)
+	}
+}
+
+type executorAuthStateKey struct{}
+
+func TestScopedExecutorKeepsRouteRewriteInLegacyAuthEnvelope(t *testing.T) {
+	global := newExecutorRequestPlugin(
+		"global-rewrite",
+		-100,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			executorTraceFromRequest(r).add("global-rewrite")
+			return base.ContinueRequest(r)
+		},
+	)
+	auth := newExecutorLegacyPlugin("jwt-auth", 100, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executorTraceFromRequest(r).add("auth-enter")
+			r = r.WithContext(context.WithValue(r.Context(), executorAuthStateKey{}, "authenticated"))
+			next.ServeHTTP(w, r)
+			executorTraceFromRequest(r).add("auth-exit")
+		})
+	})
+	routeRewrite := newExecutorRequestPlugin(
+		"request-id",
+		1,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			if got := r.Context().Value(executorAuthStateKey{}); got != "authenticated" {
+				executorTraceFromRequest(r).add("route-rewrite-before-auth")
+				return base.StopRequest(r)
+			}
+			executorTraceFromRequest(r).add("route-rewrite")
+			return base.ContinueRequest(r)
+		},
+	)
+
+	request, lifecycle, trace := executorRequest(t)
+	NewScopedExecutor(
+		BindPlugin("request-id", global, ScopeGlobal, ResourceProvenance{Kind: ResourceGlobalRule, ID: "global"}),
+		BindPlugin("jwt-auth", auth, ScopeRoute, ResourceProvenance{Kind: ResourceRoute, ID: "route-auth"}),
+		BindPlugin(
+			"request-id",
+			routeRewrite,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "route-rewrite"},
+		),
+	).Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		executorTraceFromRequest(r).add("terminal")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	want := []string{"global-rewrite", "auth-enter", "route-rewrite", "terminal", "auth-exit"}
+	if got := trace.values(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("scoped rewrite/auth order = %v, want %v", got, want)
+	}
+	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUpstream)
+	}
+}

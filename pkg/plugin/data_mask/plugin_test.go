@@ -252,6 +252,28 @@ func TestHandlerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 	})).ServeHTTP(rr, req)
 }
 
+func TestHandlerRejectsMalformedJSONWithoutCallingNext(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{{
+			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"token":`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for malformed JSON")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if rr.Body.Len() == 0 {
+		t.Fatal("response body is empty, want parse error")
+	}
+}
+
 func TestHandlerMasksJSONBodyWithRootArrayJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{

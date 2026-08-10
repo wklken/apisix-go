@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"net"
 	"net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	streambridge "github.com/wklken/apisix-go/pkg/stream/bridge"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -252,7 +251,7 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)
 		}
 		entry.serve = func(ctx context.Context, client net.Conn, peer string) (string, string, error) {
-			info, err := p.ServeStream(ctx, client, peer, entry.dial)
+			info, err := p.ServeStreamWithIdle(ctx, client, peer, entry.dial, entry.streamIdleTimeout())
 			return info.ClientID, "mqtt", err
 		}
 	}
@@ -265,7 +264,7 @@ func (e routeEntry) rawServe(ctx context.Context, client net.Conn, peer string) 
 		_ = client.Close()
 		return "", "tcp", err
 	}
-	return "", "tcp", bridge(ctx, client, upstream, e.streamIdleTimeout())
+	return "", "tcp", streambridge.Pump(ctx, client, upstream, nil, e.streamIdleTimeout())
 }
 
 // streamIdleTimeout is the per-direction idle bound for the stream bridge:
@@ -369,93 +368,4 @@ func routeSpecificity(route resource.StreamRoute) int {
 		}
 	}
 	return score
-}
-
-// bridge pumps bytes between the client and upstream connections until both
-// directions finish. Every copy operation carries an idle deadline that is
-// refreshed on progress, so a silent peer cannot hold the bridge open.
-func bridge(ctx context.Context, client net.Conn, upstream net.Conn, idle time.Duration) error {
-	if upstream == nil {
-		_ = client.Close()
-		return fmt.Errorf("stream upstream connection is nil")
-	}
-	closeDone := closeOnContextDone(ctx, client, upstream)
-	defer closeDone()
-	defer func() { _ = client.Close() }()
-	defer func() { _ = upstream.Close() }()
-
-	results := make(chan error, 2)
-	go copyDirection(upstream, client, results, idle)
-	go copyDirection(client, upstream, results, idle)
-	first := <-results
-	_ = client.Close()
-	_ = upstream.Close()
-	second := <-results
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	if err := normalizeCopyError(first); err != nil {
-		return err
-	}
-	return normalizeCopyError(second)
-}
-
-func copyDirection(dst net.Conn, src net.Conn, results chan<- error, idle time.Duration) {
-	results <- copyWithIdleDeadline(dst, src, idle)
-}
-
-// copyWithIdleDeadline copies from src to dst in bounded chunks, refreshing
-// the read and write deadlines before every operation so progress resets the
-// idle timer.
-func copyWithIdleDeadline(dst net.Conn, src net.Conn, idle time.Duration) error {
-	if idle <= 0 {
-		idle = defaultStreamIdleTimeout
-	}
-	buffer := make([]byte, 32*1024)
-	for {
-		if err := src.SetReadDeadline(time.Now().Add(idle)); err != nil {
-			return err
-		}
-		if err := dst.SetWriteDeadline(time.Now().Add(idle)); err != nil {
-			return err
-		}
-		read, readErr := src.Read(buffer)
-		if read > 0 {
-			if _, writeErr := dst.Write(buffer[:read]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-}
-
-func closeOnContextDone(ctx context.Context, conns ...net.Conn) func() {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-		case <-done:
-		}
-	}()
-	return func() { close(done) }
-}
-
-func normalizeCopyError(err error) error {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) {
-		return nil
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return nil
-	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "closed pipe") || strings.Contains(message, "use of closed network connection") {
-		return nil
-	}
-	return err
 }

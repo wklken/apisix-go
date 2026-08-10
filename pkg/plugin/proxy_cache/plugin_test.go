@@ -1390,6 +1390,87 @@ func TestHandlerCachesVaryVariantsByRequestHeaders(t *testing.T) {
 	}
 }
 
+func TestHandlerNoVaryReplacesVariantIndex(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Accept-Encoding") == "gzip" {
+			w.Header().Set("Vary", "Accept-Encoding")
+			_, _ = w.Write([]byte("encoded-origin"))
+			return
+		}
+		_, _ = w.Write([]byte("identity-origin"))
+	}))
+
+	encoded := performRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/vary-replacement",
+		map[string]string{"Accept-Encoding": "gzip"},
+	)
+	if encoded.Header().Get(cacheStatusHeader) != "MISS" || encoded.Body.String() != "encoded-origin" {
+		t.Fatalf(
+			"encoded response = %q/%q, want MISS/encoded-origin",
+			encoded.Header().Get(cacheStatusHeader),
+			encoded.Body.String(),
+		)
+	}
+	encodedHit := performRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/vary-replacement",
+		map[string]string{"Accept-Encoding": "gzip"},
+	)
+	if encodedHit.Header().Get(cacheStatusHeader) != "HIT" || encodedHit.Body.String() != "encoded-origin" {
+		t.Fatalf(
+			"encoded hit = %q/%q, want HIT/encoded-origin",
+			encodedHit.Header().Get(cacheStatusHeader),
+			encodedHit.Body.String(),
+		)
+	}
+
+	identity := performRequest(t, handler, http.MethodGet, "/vary-replacement", nil)
+	if identity.Header().Get(cacheStatusHeader) != "MISS" || identity.Body.String() != "identity-origin" {
+		t.Fatalf(
+			"identity response = %q/%q, want MISS/identity-origin",
+			identity.Header().Get(cacheStatusHeader),
+			identity.Body.String(),
+		)
+	}
+
+	key := p.cacheKey(httptest.NewRequest(http.MethodGet, "/vary-replacement", nil))
+	if _, ok := p.vary[key]; ok {
+		t.Fatal("Vary index remained after storing the no-Vary identity response")
+	}
+	entry, ok := p.entries[key]
+	if !ok || string(entry.body) != "identity-origin" {
+		t.Fatalf("identity base entry = %#v, present = %t, want identity-origin", entry, ok)
+	}
+
+	encodedAfterIdentity := performRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/vary-replacement",
+		map[string]string{"Accept-Encoding": "gzip"},
+	)
+	if encodedAfterIdentity.Header().Get(cacheStatusHeader) != "HIT" ||
+		encodedAfterIdentity.Body.String() != "identity-origin" {
+		t.Fatalf(
+			"encoded lookup after identity = %q/%q, want HIT/identity-origin",
+			encodedAfterIdentity.Header().Get(cacheStatusHeader),
+			encodedAfterIdentity.Body.String(),
+		)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
 func TestHandlerVaryStarSkipsStore(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

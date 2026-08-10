@@ -44,6 +44,21 @@ func TestHandlerReplacesResponseBody(t *testing.T) {
 	}
 }
 
+func TestHandlerBodyReplacementInvalidatesRepresentationHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Body: new("replacement")})
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		setRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	for _, field := range representationHeaders() {
+		if values := res.Header().Values(field); len(values) != 0 {
+			t.Errorf("%s = %v, want removed after body replacement", field, values)
+		}
+	}
+}
+
 func TestHandlerAddsBeforeAndAfterBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BeforeBody: "before-",
@@ -174,4 +189,17 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 
 	p.Handler(http.HandlerFunc(upstream)).ServeHTTP(rr, req)
 	return rr
+}
+
+func representationHeaders() []string {
+	return []string{
+		"Content-Length", "Content-Encoding", "Content-Range", "Content-MD5",
+		"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	}
+}
+
+func setRepresentationHeaders(header http.Header) {
+	for _, field := range representationHeaders() {
+		header.Set(field, "stale")
+	}
 }

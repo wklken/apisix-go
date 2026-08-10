@@ -1,9 +1,11 @@
 package brotli
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
 type Plugin struct {
@@ -205,21 +208,42 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !p.shouldConsiderRequest(r) {
+		if base.ProtocolVersion(r) < p.config.httpVersion {
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		eligible := func(meta compression.ResponseMeta) bool {
+			return p.responseEligible(meta)
+		}
+		r, state := compression.Register(r, compression.Offer{
+			Coding:   compression.Brotli,
+			Rank:     996,
+			Eligible: eligible,
+		})
 		bw := newBoundedResponseWriter(w, *p.config.MaxResponseSize)
+		bw.requestMethod = r.Method
+		bw.state = state
 		next.ServeHTTP(bw, r)
-		if bw.committed {
+		if bw.committed || bw.hijacked {
 			// The response already streamed to the client; nothing to
 			// rewrite and no second write may happen.
 			return
 		}
 
 		recorder := bw.materialize()
-		if p.shouldCompressResponse(recorder) {
+		decision := state.Decide(compression.ResponseMeta{
+			Method: r.Method,
+			Status: recorder.StatusCode(),
+			Header: recorder.Header().Clone(),
+		})
+		if decision.Vary {
+			base.AppendVaryToken(recorder.Header(), "Accept-Encoding")
+		}
+		if decision.NotAcceptable {
+			recorder.ReplaceBody(nil)
+			recorder.SetStatusCode(http.StatusNotAcceptable)
+		} else if decision.Coding == compression.Brotli && p.shouldCompressResponse(recorder) {
 			if err := p.compressResponse(recorder); err != nil {
 				logger.Errorf("brotli compress response fail: %s", err)
 			}
@@ -234,13 +258,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 // the buffered bytes plus the current write chunk are flushed to the
 // underlying writer, and later writes stream directly.
 type boundedResponseWriter struct {
-	base        http.ResponseWriter
-	header      http.Header
-	statusCode  int
-	buffer      bytes.Buffer
-	committed   bool
-	cap         int64
-	maxBuffered int64
+	base           http.ResponseWriter
+	header         http.Header
+	statusCode     int
+	buffer         bytes.Buffer
+	committed      bool
+	cap            int64
+	maxBuffered    int64
+	requestMethod  string
+	state          *compression.State
+	bodySuppressed bool
+	started        bool
+	hijacked       bool
 }
 
 func newBoundedResponseWriter(base http.ResponseWriter, cap int64) *boundedResponseWriter {
@@ -256,17 +285,63 @@ func (w *boundedResponseWriter) Header() http.Header {
 	return w.header
 }
 
+func (w *boundedResponseWriter) Unwrap() http.ResponseWriter {
+	return w.base
+}
+
+func (w *boundedResponseWriter) Flush() {
+	if !w.committed {
+		w.commit(nil)
+	}
+	if flusher, ok := w.base.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *boundedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.base.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	if !w.committed && w.started {
+		w.commit(nil)
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		w.hijacked = true
+	}
+	return conn, rw, err
+}
+
 func (w *boundedResponseWriter) WriteHeader(code int) {
 	if w.committed {
 		w.base.WriteHeader(code)
 		return
 	}
+	if code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols {
+		w.forwardInformational(code)
+		return
+	}
+	if w.started {
+		return
+	}
+	w.started = true
 	w.statusCode = code
 }
 
 func (w *boundedResponseWriter) Write(p []byte) (int, error) {
 	if w.committed {
+		if w.bodySuppressed {
+			return len(p), nil
+		}
 		return w.base.Write(p)
+	}
+	w.started = true
+	if !base.ResponseAllowsBody(w.requestMethod, w.statusCode) {
+		if strings.EqualFold(w.requestMethod, http.MethodHead) {
+			return len(p), nil
+		}
+		return 0, http.ErrBodyNotAllowed
 	}
 	if w.cap > 0 && int64(w.buffer.Len())+int64(len(p)) > w.cap {
 		w.commit(p)
@@ -279,25 +354,65 @@ func (w *boundedResponseWriter) Write(p []byte) (int, error) {
 
 func (w *boundedResponseWriter) commit(chunk []byte) {
 	w.committed = true
-	for field, values := range w.header {
-		for _, value := range values {
-			w.base.Header().Add(field, value)
+	w.started = true
+	decision := compression.Decision{Coding: compression.Identity}
+	if w.state != nil {
+		decision = w.state.Decide(compression.ResponseMeta{
+			Method: w.requestMethod,
+			Status: w.statusCode,
+			Header: w.header.Clone(),
+		})
+	}
+	if decision.Vary {
+		base.AppendVaryToken(w.header, "Accept-Encoding")
+	}
+	identityForbiddenBrotliFallback := decision.Coding == compression.Brotli &&
+		!decision.IdentityAllowed && headerValue(w.header, "Content-Encoding") == ""
+	if decision.NotAcceptable || identityForbiddenBrotliFallback {
+		w.bodySuppressed = true
+		base.InvalidateBodyDerivedHeaders(w.header)
+		w.replaceBaseHeaders()
+		w.base.WriteHeader(http.StatusNotAcceptable)
+		w.buffer.Reset()
+		return
+	}
+	w.replaceBaseHeaders()
+	w.base.WriteHeader(w.statusCode)
+	if base.ResponseAllowsBody(w.requestMethod, w.statusCode) {
+		if n := w.buffer.Len(); n > 0 {
+			_, _ = w.base.Write(w.buffer.Bytes())
+		}
+		if len(chunk) > 0 {
+			_, _ = w.base.Write(chunk)
 		}
 	}
-	w.base.WriteHeader(w.statusCode)
-	if n := w.buffer.Len(); n > 0 {
-		_, _ = w.base.Write(w.buffer.Bytes())
-	}
-	if len(chunk) > 0 {
-		_, _ = w.base.Write(chunk)
-	}
 	w.buffer.Reset()
+}
+
+func (w *boundedResponseWriter) forwardInformational(code int) {
+	finalHeader := w.base.Header().Clone()
+	replaceHeaders(w.base.Header(), w.header)
+	w.base.WriteHeader(code)
+	replaceHeaders(w.base.Header(), finalHeader)
+}
+
+func (w *boundedResponseWriter) replaceBaseHeaders() {
+	replaceHeaders(w.base.Header(), w.header)
+}
+
+func replaceHeaders(dst, src http.Header) {
+	for field := range dst {
+		delete(dst, field)
+	}
+	for field, values := range src {
+		dst[field] = append([]string(nil), values...)
+	}
 }
 
 // materialize converts the still-buffered response into a
 // BufferedResponseWriter so the compression pipeline can rewrite it.
 func (w *boundedResponseWriter) materialize() *base.BufferedResponseWriter {
-	recorder := base.NewBufferedResponseWriter()
+	recorder := base.GetOrCreateTransformResponseWriter(&http.Request{Method: w.requestMethod})
 	for field, values := range w.header {
 		for _, value := range values {
 			recorder.Header().Add(field, value)
@@ -308,60 +423,13 @@ func (w *boundedResponseWriter) materialize() *base.BufferedResponseWriter {
 	return recorder
 }
 
-func (p *Plugin) shouldConsiderRequest(r *http.Request) bool {
-	if !acceptsBrotli(r.Header.Get("Accept-Encoding")) {
-		return false
-	}
-	reqHTTPVersion := base.ProtocolVersion(r)
-	return reqHTTPVersion >= p.config.httpVersion
-}
-
-func acceptsBrotli(acceptEncoding string) bool {
-	for part := range strings.SplitSeq(acceptEncoding, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		token, params, _ := strings.Cut(part, ";")
-		token = strings.TrimSpace(token)
-		if token != "br" && token != "*" {
-			continue
-		}
-		if qualityIsZero(params) {
-			return false
-		}
-		return true
-	}
-	return false
-}
-
-func qualityIsZero(params string) bool {
-	for param := range strings.SplitSeq(params, ";") {
-		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
-		if !ok || key != "q" {
-			continue
-		}
-		quality, err := strconv.ParseFloat(value, 64)
-		return err == nil && quality == 0
-	}
-	return false
-}
-
 func (p *Plugin) shouldCompressResponse(resp *base.BufferedResponseWriter) bool {
-	if resp.Header().Get("Content-Encoding") != "" {
+	if resp.StatusCode() == http.StatusNotModified || resp.StatusCode() == http.StatusNoContent ||
+		resp.StatusCode() == http.StatusSwitchingProtocols || (resp.StatusCode() >= 100 && resp.StatusCode() <= 199) {
 		return false
 	}
-	contentType := resp.Header().Get("Content-Type")
-	if contentType == "" {
+	if headerValue(resp.Header(), "Content-Encoding") != "" || !p.contentTypeEligible(resp.Header()) {
 		return false
-	}
-	if semi := strings.Index(contentType, ";"); semi >= 0 {
-		contentType = contentType[:semi]
-	}
-	if !p.config.wildcardType {
-		if _, ok := p.config.contentTypes[contentType]; !ok {
-			return false
-		}
 	}
 	contentLength := resp.Header().Get("Content-Length")
 	if contentLength != "" {
@@ -371,6 +439,54 @@ func (p *Plugin) shouldCompressResponse(resp *base.BufferedResponseWriter) bool 
 		}
 	}
 	return true
+}
+
+func (p *Plugin) responseEligible(meta compression.ResponseMeta) bool {
+	if meta.Status == http.StatusNotModified {
+		return p.contentTypeEligible(meta.Header)
+	}
+	if meta.Status == http.StatusSwitchingProtocols || meta.Status == http.StatusNoContent ||
+		(meta.Status >= 100 && meta.Status <= 199) {
+		return false
+	}
+	if !base.ResponseAllowsBody(meta.Method, meta.Status) && !strings.EqualFold(meta.Method, http.MethodHead) {
+		return false
+	}
+	if headerValue(meta.Header, "Content-Encoding") != "" || !p.contentTypeEligible(meta.Header) {
+		return false
+	}
+	if contentLength := headerValue(meta.Header, "Content-Length"); contentLength != "" {
+		length, err := strconv.Atoi(strings.TrimSpace(contentLength))
+		if err == nil && length < *p.config.MinLength {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Plugin) contentTypeEligible(header http.Header) bool {
+	contentType := headerValue(header, "Content-Type")
+	if semi := strings.IndexByte(contentType, ';'); semi >= 0 {
+		contentType = contentType[:semi]
+	}
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if contentType == "" {
+		return false
+	}
+	if p.config.wildcardType {
+		return true
+	}
+	_, ok := p.config.contentTypes[contentType]
+	return ok
+}
+
+func headerValue(header http.Header, name string) string {
+	for actual, values := range header {
+		if strings.EqualFold(actual, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
 }
 
 // compressResponse replaces the buffered body with its brotli encoding. It
@@ -395,17 +511,9 @@ func (p *Plugin) compressResponse(resp *base.BufferedResponseWriter) error {
 		return errors.Join(writeErr, closeErr)
 	}
 
-	resp.SetBody(compressed.Bytes())
+	resp.ReplaceBody(compressed.Bytes())
 	resp.Header().Set("Content-Encoding", "br")
-	resp.Header().Del("Content-Length")
-	if p.config.Vary != nil && *p.config.Vary {
-		if vary := resp.Header().Get("Vary"); vary != "" {
-			resp.Header().Set("Vary", vary+", Accept-Encoding")
-		} else {
-			resp.Header().Set("Vary", "Accept-Encoding")
-		}
-	}
-	weakenETag(resp.Header())
+	deleteHeader(resp.Header(), "Content-Length")
 	return nil
 }
 
@@ -416,24 +524,8 @@ func (p *Plugin) writerOptions() brotlienc.WriterOptions {
 	}
 }
 
-func weakenETag(header http.Header) {
-	etag := header.Get("Etag")
-	if etag == "" || strings.HasPrefix(etag, "W/") {
-		return
-	}
-	if len(etag) >= 2 && strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) {
-		if strings.Contains(etag[1:len(etag)-1], `"`) {
-			header.Del("Etag")
-			return
-		}
-		header.Set("Etag", "W/"+etag)
-		return
-	}
-	header.Del("Etag")
-}
-
 func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
-	brotli := resp.Header().Get("Content-Encoding") == "br"
+	brotli := strings.EqualFold(headerValue(resp.Header(), "Content-Encoding"), "br")
 	for field, values := range resp.Header() {
 		if brotli && strings.EqualFold(field, "Content-Length") {
 			continue
@@ -447,4 +539,12 @@ func writeCompressedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 		_ = http.NewResponseController(w).Flush()
 	}
 	resp.WriteBodyTo(w)
+}
+
+func deleteHeader(header http.Header, name string) {
+	for actual := range header {
+		if strings.EqualFold(actual, name) {
+			delete(header, actual)
+		}
+	}
 }

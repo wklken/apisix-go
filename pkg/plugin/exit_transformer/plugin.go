@@ -50,9 +50,11 @@ type Config struct {
 }
 
 type exitResponse struct {
-	status int
-	body   []byte
-	header http.Header
+	status       int
+	body         []byte
+	header       http.Header
+	method       string
+	bodyReplaced bool
 }
 
 func (p *Plugin) Init() error {
@@ -93,6 +95,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status: recorder.StatusCode(),
 			body:   recorder.Body(),
 			header: recorder.Header().Clone(),
+			method: r.Method,
 		}
 		if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
 			writeResponse(w, resp)
@@ -120,8 +123,17 @@ func writeResponse(w http.ResponseWriter, resp exitResponse) {
 	}
 	w.WriteHeader(resp.status)
 	if brw, ok := w.(*base.BufferedResponseWriter); ok {
-		brw.SetBody(resp.body)
-	} else {
+		if !base.ResponseAllowsBody(resp.method, resp.status) {
+			return
+		}
+		if resp.bodyReplaced {
+			brw.ReplaceBody(resp.body)
+		} else {
+			brw.SetBody(resp.body)
+		}
+		return
+	}
+	if base.ResponseAllowsBody(resp.method, resp.status) {
 		_, _ = w.Write(resp.body)
 	}
 }
@@ -273,21 +285,26 @@ func (r *transformerRunner) transform(resp exitResponse, proto *lua.FunctionProt
 	}
 
 	transformed := exitResponse{
-		status: resp.status,
-		body:   resp.body,
-		header: resp.header,
+		status:       resp.status,
+		body:         resp.body,
+		header:       resp.header,
+		method:       resp.method,
+		bodyReplaced: resp.bodyReplaced,
 	}
 	if status, ok := luaValueToStatus(r.state.Get(1)); ok && status > 0 {
 		transformed.status = status
 	}
 	if body := r.state.Get(2); body != lua.LNil {
 		transformed.body = luaValueToBody(body)
-		transformed.header.Set("Content-Length", strconv.Itoa(len(transformed.body)))
+		transformed.bodyReplaced = true
 	}
 	if value := r.state.Get(3); value != lua.LNil {
 		if table, ok := value.(*lua.LTable); ok {
 			transformed.header = luautil.LuaTableToHeader(table)
 		}
+	}
+	if transformed.bodyReplaced {
+		base.InvalidateBodyDerivedHeaders(transformed.header)
 	}
 	r.state.SetTop(0)
 	return transformed, nil

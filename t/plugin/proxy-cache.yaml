@@ -940,16 +940,124 @@ cases:
       - {name: bob-consumer-first-miss, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: bob-cache-key}}, output: {status: 200, body: {equals: consumer-bob-origin}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
       - {name: bob-consumer-second-hit, input: {method: GET, path: /memory-consumer-cache, headers: {apikey: bob-cache-key}}, output: {status: 200, body: {equals: consumer-bob-origin}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
 
-  - name: memory-vary-accept-encoding-partitions-cache-test-41
+  - name: memory-representation-variants-test-41
     source: {file: t/plugin/proxy-cache/memory.t, tests: [41]}
+    serial: true
     runtime: {apisix: {proxy_cache: {zones: [{name: memory_cache, memory_size: 10m}]}}}
-    config: {routes: [{id: memory-vary-encoding, uri: /memory-vary-encoding, plugins: {proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}]}
-    fixtures: [{name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /memory-vary-encoding}}, {path: {equals: /memory-vary-encoding}}], respond: [{status: 200, headers: {Vary: Accept-Encoding}, body: encoding=gzip}, {status: 200, headers: {Vary: Accept-Encoding}, body: encoding=identity}]}]
+    config:
+      routes:
+        - id: representation-variants
+          uri: /representation-variants
+          plugins:
+            proxy-cache: {cache_strategy: memory, cache_zone: memory_cache, cache_key: ['$host', '$uri'], cache_method: [GET], cache_http_status: [200], cache_ttl: 60}
+            gzip: {types: [text/plain], min_length: 1}
+            brotli: {types: [text/plain], min_length: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 8
+        expect:
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+          - {path: {equals: /representation-variants}}
+        respond:
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
+          - {status: 200, headers: {Content-Type: text/plain}, body: representation-body-0123456789}
     steps:
-      - {name: gzip-variant-first-miss, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: encoding=gzip}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
-      - {name: gzip-variant-second-hit, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: gzip}}, output: {status: 200, body: {equals: encoding=gzip}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
-      - {name: identity-variant-first-miss, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: identity}}, output: {status: 200, body: {equals: encoding=identity}, headers: {Apisix-Cache-Status: {equals: MISS}}}}
-      - {name: identity-variant-second-hit, input: {method: GET, path: /memory-vary-encoding, headers: {Accept-Encoding: identity}}, output: {status: 200, body: {equals: encoding=identity}, headers: {Apisix-Cache-Status: {equals: HIT}}}}
+      - name: identity-miss
+        input: {method: GET, path: /representation-variants}
+        output:
+          status: 200
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: gzip-miss
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: gzip}}
+        output:
+          status: 200
+          gzip_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: gzip}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: identity-hit-after-gzip
+        input: {method: GET, path: /representation-variants}
+        output:
+          status: 200
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - name: gzip-hit
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: gzip}}
+        output:
+          status: 200
+          gzip_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: gzip}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - name: deflate-miss
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
+        output:
+          status: 200
+          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: identity-hit-after-deflate
+        input: {method: GET, path: /representation-variants}
+        output:
+          status: 200
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - name: deflate-hit
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
+        output:
+          status: 200
+          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - name: br-miss
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: br}}
+        output:
+          status: 200
+          brotli_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: br}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: identity-hit-after-br
+        input: {method: GET, path: /representation-variants}
+        output:
+          status: 200
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - name: br-hit
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: br}}
+        output:
+          status: 200
+          brotli_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: br}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+      - {name: purge-all-representations, input: {method: PURGE, path: /representation-variants}, output: {status: 200}}
+      - name: identity-miss-after-purge
+        input: {method: GET, path: /representation-variants}
+        output:
+          status: 200
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: gzip-miss-after-purge
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: gzip}}
+        output:
+          status: 200
+          gzip_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: gzip}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: deflate-miss-after-purge
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
+        output:
+          status: 200
+          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+      - name: br-miss-after-purge
+        input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: br}}
+        output:
+          status: 200
+          brotli_body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {equals: br}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
 
   - name: memory-vary-star-refuses-cache-storage-test-42
     source: {file: t/plugin/proxy-cache/memory.t, tests: [42]}

@@ -334,21 +334,23 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 	}
 
 	if p.config.Body != nil {
+		var body []byte
 		if p.config.BodyBase64 != nil && *p.config.BodyBase64 {
-			body, err := base64.StdEncoding.DecodeString(*p.config.Body)
+			decoded, err := base64.StdEncoding.DecodeString(*p.config.Body)
 			if err == nil {
-				resp.SetBody(body)
+				body = decoded
 			}
 		} else {
-			resp.SetBody([]byte(*p.config.Body))
+			body = []byte(*p.config.Body)
 		}
-		for _, field := range []string{"Content-Length", "Content-Encoding", "Last-Modified", "ETag"} {
-			resp.Header()[http.CanonicalHeaderKey(field)] = nil
+		if body != nil && !bytes.Equal(body, resp.Body()) {
+			resp.ReplaceBody(body)
 		}
 	}
 
 	if len(p.config.Filters) > 0 {
 		body := resp.Body()
+		bodyChanged := false
 		canFilter := true
 		if encoding := resp.Header().Get("Content-Encoding"); encoding != "" {
 			decoded, ok := decodeFilterBody(resp)
@@ -360,7 +362,7 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 				)
 			} else {
 				body = decoded
-				resp.Header().Del("Content-Encoding")
+				bodyChanged = true
 			}
 		}
 		if canFilter {
@@ -371,8 +373,9 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 				}
 				body = []byte(replaceFirstString(filter.pattern, string(body), filter.Replace))
 			}
-			resp.SetBody(body)
-			resp.Header().Del("Content-Length")
+			if bodyChanged || !bytes.Equal(body, resp.Body()) {
+				resp.ReplaceBody(body)
+			}
 		}
 	}
 

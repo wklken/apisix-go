@@ -890,6 +890,38 @@ func TestHandlerTransformsResponseBody(t *testing.T) {
 	}
 }
 
+func TestHandlerResponseReplacementInvalidatesRepresentationHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Response: &Transform{
+			InputFormat: "plain",
+			Template:    "rewritten",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for _, field := range responseRepresentationHeaders() {
+			w.Header().Set(field, "stale")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})).ServeHTTP(rr, req)
+
+	for _, field := range responseRepresentationHeaders() {
+		if values := rr.Header().Values(field); len(values) != 0 {
+			t.Errorf("%s = %v, want removed after response replacement", field, values)
+		}
+	}
+}
+
+func responseRepresentationHeaders() []string {
+	return []string{
+		"Content-Length", "Content-Encoding", "Content-Range", "Content-MD5",
+		"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	}
+}
+
 func TestResponseTransformErrorReplacesSharedPipelineBody(t *testing.T) {
 	p := newTestPlugin(t, Config{Response: &Transform{
 		InputFormat: "json",

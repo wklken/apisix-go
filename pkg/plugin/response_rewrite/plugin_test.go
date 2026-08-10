@@ -53,6 +53,22 @@ func TestHandlerRewritesStatusAndBody(t *testing.T) {
 	}
 }
 
+func TestHandlerBodyReplacementInvalidatesRepresentationHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Body: new("rewritten")})
+
+	res := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		setRewriteRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	for _, field := range rewriteRepresentationHeaders() {
+		if values := res.Header().Values(field); len(values) != 0 {
+			t.Errorf("%s = %v, want removed after body replacement", field, values)
+		}
+	}
+}
+
 func TestHandlerDecodesBase64Body(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Body:       new("aGVsbG8="),
@@ -397,6 +413,7 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			})
 
 			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+				setRewriteRepresentationHeaders(w.Header())
 				w.Header().Set("Content-Encoding", tt.encoding)
 				w.Header().Set("Content-Length", "12")
 				w.WriteHeader(http.StatusOK)
@@ -408,11 +425,17 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			}
 			// The representation metadata survives when the filters cannot
 			// decode the body, even though the body is left unfiltered.
-			if got := res.Header().Get("Content-Encoding"); got != tt.encoding {
-				t.Fatalf("Content-Encoding = %q, want preserved %q", got, tt.encoding)
-			}
-			if got := res.Header().Get("Content-Length"); got != "12" {
-				t.Fatalf("Content-Length = %q, want preserved 12", got)
+			for _, field := range rewriteRepresentationHeaders() {
+				want := "stale"
+				if field == "Content-Encoding" {
+					want = tt.encoding
+				}
+				if field == "Content-Length" {
+					want = "12"
+				}
+				if got := res.Header().Get(field); got != want {
+					t.Errorf("%s = %q, want preserved %q", field, got, want)
+				}
 			}
 		})
 	}
@@ -574,6 +597,19 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 
 	p.Handler(http.HandlerFunc(upstream)).ServeHTTP(rr, req)
 	return rr
+}
+
+func rewriteRepresentationHeaders() []string {
+	return []string{
+		"Content-Length", "Content-Encoding", "Content-Range", "Content-MD5",
+		"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	}
+}
+
+func setRewriteRepresentationHeaders(header http.Header) {
+	for _, field := range rewriteRepresentationHeaders() {
+		header.Set(field, "stale")
+	}
 }
 
 func encryptResponseBodyForTest(t *testing.T, key string, value string) string {

@@ -41,7 +41,7 @@ cases:
         Content-Encoding:
           equals: gzip
         Vary:
-          absent: true
+          equals: Accept-Encoding
       gzip_body:
         equals: *short_body
 

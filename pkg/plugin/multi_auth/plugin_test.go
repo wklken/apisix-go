@@ -119,6 +119,40 @@ func TestPostInitDispatchesConfiguredBodyConfigs(t *testing.T) {
 	}
 }
 
+func TestMultiAuthRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
+	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
+		{"unknown-auth": {}},
+		{"key-auth": {}},
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetPluginEnabledChecker(func(name string) bool { return name != "unknown-auth" })
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "unknown-auth") || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("PostInit() error = %v, want disabled unknown-auth rejection before construction", err)
+	}
+	if len(p.auths) != 0 {
+		t.Fatalf("configured auth plugins after rejection = %d, want no child constructed", len(p.auths))
+	}
+
+	enabled := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
+		{"basic-auth": {}},
+		{"key-auth": {}},
+	}}}
+	if err := enabled.Init(); err != nil {
+		t.Fatalf("enabled Init() error = %v", err)
+	}
+	enabled.SetPluginEnabledChecker(func(string) bool { return true })
+	if err := enabled.PostInit(); err != nil {
+		t.Fatalf("enabled PostInit() error = %v", err)
+	}
+	if len(enabled.auths) != 2 {
+		t.Fatalf("enabled auth plugins = %d, want 2", len(enabled.auths))
+	}
+}
+
 type bodyIsolatingAuthConfig struct {
 	ValidateRequestBody bool
 	MaxReqBodySize      int64

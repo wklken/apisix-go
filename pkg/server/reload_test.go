@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -289,7 +290,7 @@ func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
 		},
 		nil,
 		func() error { return wantErr },
-		func() { routes++ },
+		func() error { routes++; return nil },
 		func() { streams++ },
 	)
 	if !errors.Is(err, wantErr) {
@@ -339,7 +340,7 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 		routes:  newRouteHandler(oldHandler, nil),
 	}
 
-	server.reload(context.Background())
+	_ = server.reload(context.Background())
 	response := httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
 	if got, want := response.Code, http.StatusUnauthorized; got != want {
@@ -356,7 +357,7 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 		t.Fatalf("global rule storage sync: %v", err)
 	}
 
-	server.reload(context.Background())
+	_ = server.reload(context.Background())
 	response = httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
 	if got, want := response.Code, http.StatusUnauthorized; got != want {
@@ -364,6 +365,160 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	}
 	if got, want := response.Header().Get("X-Global-Security"), "enforced"; got != want {
 		t.Fatalf("global security marker after invalid reload = %q, want %q", got, want)
+	}
+}
+
+func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{}
+
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/reload-disabled-plugin.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/routes/disabled-route")
+	// Use an unregistered plugin as a deterministic route-build failure on the
+	// pre-allowlist baseline; the combined WU-02 tests cover a known disabled
+	// factory with the same reload transaction.
+	event.Value = []byte(`{"id":"disabled-route","uri":"/disabled","plugins":{"disabled-test-plugin":{}}}`)
+	events <- event
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("store sync: %v", err)
+	}
+
+	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Handler", "last-good")
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	var oldStops atomic.Int32
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		storage: storage,
+		routes:  newRouteHandler(oldHandler, func() { oldStops.Add(1) }),
+	}
+
+	err = server.reload(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disabled-test-plugin") {
+		t.Fatalf("reload() error = %v, want disabled-test-plugin error", err)
+	}
+	response := httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
+	if got, want := response.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("status after failed reload = %d, want retained handler status %d", got, want)
+	}
+	if got, want := response.Header().Get("X-Handler"), "last-good"; got != want {
+		t.Fatalf("handler marker after failed reload = %q, want %q", got, want)
+	}
+	if got := oldStops.Load(); got != 0 {
+		t.Fatalf("last-good handler stopper calls = %d, want 0", got)
+	}
+}
+
+func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{}
+
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_reload_config_apply_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_reload_config_apply_ready",
+	})
+	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/reload-scheduler.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	putRoute := func(value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/routes/reload-route")
+		event.Value = value
+		events <- event
+		if err := storage.Sync(); err != nil {
+			t.Fatalf("store sync: %v", err)
+		}
+	}
+	putRoute([]byte(`{"id":"reload-route","uri":"/reload","plugins":{"disabled-test-plugin":{}}}`))
+
+	server := &Server{
+		addr:            "127.0.0.1:9080",
+		storage:         storage,
+		routes:          newRouteHandler(http.NotFoundHandler(), nil),
+		reloadEventChan: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		server.listenReloadEvent(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	server.SendReloadEvent()
+	waitForConfigApplyMetric(t, metrics.ConfigApplyFailures, 1)
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after failed reload = %v, want 0", got)
+	}
+	if got := configApplyCounterValue(t, metrics.ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure count after failed reload = %v, want 1", got)
+	}
+	metrics.RecordConfigApplySuccess()
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after provider-only success = %v, want 0", got)
+	}
+
+	putRoute([]byte(`{"id":"reload-route","uri":"/reload"}`))
+	server.SendReloadEvent()
+	waitForConfigApplyMetric(t, metrics.ConfigApplyReady, 1)
+	if got := configApplyCounterValue(t, metrics.ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure count after successful reload = %v, want 1", got)
+	}
+}
+
+func TestReloadSchedulerCancellationDoesNotRecordConfigFailure(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_cancelled_reload_config_apply_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_cancelled_reload_config_apply_ready",
+	})
+	metrics.ConfigApplyReady.Set(1)
+	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server := &Server{reloadEventChan: make(chan struct{}, 1)}
+	server.SendReloadEvent()
+	server.listenReloadEvent(ctx)
+
+	if got := configApplyCounterValue(t, metrics.ConfigApplyFailures); got != 0 {
+		t.Fatalf("failure count after cancelled scheduler = %v, want 0", got)
+	}
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 1 {
+		t.Fatalf("ready after cancelled scheduler = %v, want unchanged 1", got)
 	}
 }
 
@@ -380,7 +535,7 @@ func TestReloadSkipsWhenContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	server.reload(ctx)
+	_ = server.reload(ctx)
 
 	response := httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
@@ -416,7 +571,7 @@ func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					server.reload(context.Background())
+					_ = server.reload(context.Background())
 				}
 			}
 		})
@@ -471,4 +626,43 @@ func assertNoReload(t *testing.T, reloaded <-chan struct{}, duration time.Durati
 		t.Fatal("unexpected extra reload")
 	case <-time.After(duration):
 	}
+}
+
+func waitForConfigApplyMetric(t *testing.T, metric prometheus.Collector, want float64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var got float64
+		switch typed := metric.(type) {
+		case prometheus.Gauge:
+			got = configApplyGaugeValue(t, typed)
+		case prometheus.Counter:
+			got = configApplyCounterValue(t, typed)
+		default:
+			t.Fatalf("unsupported config-apply metric type %T", metric)
+		}
+		if got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for config-apply metric %T = %v", metric, want)
+}
+
+func configApplyCounterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := counter.Write(metric); err != nil {
+		t.Fatalf("write config-apply counter: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
+func configApplyGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatalf("write config-apply gauge: %v", err)
+	}
+	return metric.GetGauge().GetValue()
 }

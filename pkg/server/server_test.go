@@ -17,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -854,13 +856,52 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 				test.result,
 				test.err,
 				func() error { calls = append(calls, "sync"); return nil },
-				func() { calls = append(calls, "routes") },
+				func() error { calls = append(calls, "routes"); return nil },
 				func() { calls = append(calls, "streams") },
 			)
 			if !slices.Equal(calls, test.want) {
 				t.Fatalf("calls = %v, want %v", calls, test.want)
 			}
 		})
+	}
+}
+
+func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_standalone_route_apply_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_standalone_route_apply_ready",
+	})
+	metrics.RecordConfigApplySuccess()
+	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+
+	wantErr := errors.New("disabled plugin route")
+	var streams int
+	err := applyStandaloneSnapshot(
+		config.StandaloneReloadResult{ChangedHTTPRouteBuckets: []string{"routes"}},
+		nil,
+		func() error { return nil },
+		func() error { return wantErr },
+		func() { streams++ },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
+	}
+	if !errors.Is(err, errStandaloneHTTPRoutePublication) {
+		t.Fatalf("applyStandaloneSnapshot() error = %v, want standalone route-publication classification", err)
+	}
+	if streams != 0 {
+		t.Fatalf("stream reload calls = %d, want 0 after route-build failure", streams)
+	}
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+	if got := configApplyCounterValue(t, metrics.ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure count after route-build failure = %v, want 1", got)
+	}
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after route-build failure = %v, want 0", got)
 	}
 }
 

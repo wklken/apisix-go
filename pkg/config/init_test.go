@@ -206,3 +206,114 @@ func TestLoadSupportsScalarNodeListen(t *testing.T) {
 		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
 	}
 }
+
+func TestLoadRejectsInvalidHTTPPluginAllowlist(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, test := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty", yaml: "plugins: [\"\"]\n", want: `plugins[0] ""`},
+		{name: "leading whitespace", yaml: "plugins: [\" request-id\"]\n", want: `plugins[0] " request-id"`},
+		{name: "trailing whitespace", yaml: "plugins: [\"request-id \"]\n", want: `plugins[0] "request-id "`},
+		{name: "duplicate", yaml: "plugins: [request-id, request-id]\n", want: `plugins[1] "request-id"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			GlobalConfig = previous
+			v := viper.New()
+			v.SetConfigType("yaml")
+			if err := v.ReadConfig(strings.NewReader(test.yaml)); err != nil {
+				t.Fatalf("ReadConfig() error = %v", err)
+			}
+
+			_, err := load(v)
+			if err == nil {
+				t.Fatal("load() error = nil, want invalid plugin allowlist rejection")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load() error = %q, want it to contain %q", err, test.want)
+			}
+			if GlobalConfig != previous {
+				t.Fatal("GlobalConfig was published before invalid plugin allowlist validation")
+			}
+		})
+	}
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader("plugins: [native-only]\n")); err != nil {
+		t.Fatalf("ReadConfig() error = %v", err)
+	}
+	cfg, err := load(v)
+	if err != nil {
+		t.Fatalf("load() error = %v, want unique unknown plugin name to remain valid", err)
+	}
+	if !reflect.DeepEqual(cfg.Plugins, []string{"native-only"}) {
+		t.Fatalf("cfg.Plugins = %#v, want unknown name unchanged", cfg.Plugins)
+	}
+}
+
+func TestLoadRejectsScalarHTTPPluginAllowlistWhitespace(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader("plugins: \" request-id \"\n")); err != nil {
+		t.Fatalf("ReadConfig() error = %v", err)
+	}
+
+	_, err := load(v)
+	if err == nil || !strings.Contains(err.Error(), `plugins[0] " request-id "`) {
+		t.Fatalf("load() error = %v, want original scalar whitespace in rejection", err)
+	}
+}
+
+func TestLoadRejectsCommaScalarHTTPPluginAllowlistWhitespace(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, test := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "padded first token", raw: "request-id ,gzip", want: `plugins[0] "request-id "`},
+		{name: "padded second token", raw: "request-id, gzip", want: `plugins[1] " gzip"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			v := viper.New()
+			v.SetConfigType("yaml")
+			if err := v.ReadConfig(strings.NewReader("plugins: \"" + test.raw + "\"\n")); err != nil {
+				t.Fatalf("ReadConfig() error = %v", err)
+			}
+
+			_, err := load(v)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load() error = %v, want padded token rejection containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsEnvHTTPPluginAllowlistWhitespace(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	v := viper.New()
+	v.SetEnvPrefix("APISIXGO")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	if err := v.BindEnv("plugins"); err != nil {
+		t.Fatalf("BindEnv() error = %v", err)
+	}
+	t.Setenv("APISIXGO_PLUGINS", " request-id ")
+
+	_, err := load(v)
+	if err == nil || !strings.Contains(err.Error(), `plugins[0] " request-id "`) {
+		t.Fatalf("load() error = %v, want original env whitespace in rejection", err)
+	}
+}

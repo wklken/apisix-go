@@ -23,8 +23,9 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	auths  []configuredAuth
+	config         Config
+	auths          []configuredAuth
+	enabledChecker func(string) bool
 }
 
 const (
@@ -103,6 +104,10 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) SetPluginEnabledChecker(checker func(string) bool) {
+	p.enabledChecker = checker
+}
+
 func (p *Plugin) PostInit() error {
 	if len(p.config.AuthPlugins) < 2 {
 		return fmt.Errorf("auth_plugins must contain at least two auth plugins")
@@ -114,6 +119,9 @@ func (p *Plugin) PostInit() error {
 			return fmt.Errorf("each auth_plugins entry must contain exactly one auth plugin")
 		}
 		for authName, authConfig := range authPlugin {
+			if p.enabledChecker != nil && !p.enabledChecker(authName) {
+				return fmt.Errorf("multi-auth child plugin %q is disabled", authName)
+			}
 			auth, err := newAuthPlugin(authName)
 			if err != nil {
 				return err

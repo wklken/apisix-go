@@ -209,14 +209,14 @@ func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType,
 func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
 	if response == nil || response.Header == nil {
 		err := errors.New("etcd snapshot is missing a response header")
-		metrics.RecordConfigApplyFailure()
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 		return err
 	}
 	nextKeys := make(map[string]struct{}, len(response.Kvs))
 	for _, kv := range response.Kvs {
 		if kv == nil {
 			err := errors.New("etcd snapshot contains a nil key-value")
-			metrics.RecordConfigApplyFailure()
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
 		nextKeys[string(kv.Key)] = struct{}{}
@@ -229,20 +229,20 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 	for _, key := range keys {
 		if _, ok := nextKeys[key]; !ok {
 			if err := c.sendEvent(ctx, store.EventTypeDelete, []byte(key), nil); err != nil {
-				metrics.RecordConfigApplyFailure()
+				metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 				return err
 			}
 		}
 	}
 	for _, kv := range response.Kvs {
 		if err := c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value); err != nil {
-			metrics.RecordConfigApplyFailure()
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = response.Header.Revision
-	metrics.RecordConfigApplySuccess()
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil
 }
 
@@ -255,12 +255,12 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 	for _, watched := range response.Events {
 		if watched == nil || watched.Kv == nil {
 			err := errors.New("etcd watch response contains a nil event")
-			metrics.RecordConfigApplyFailure()
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
 		eventType := store.EventType(watched.Type)
 		if err := c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value); err != nil {
-			metrics.RecordConfigApplyFailure()
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
 		key := string(watched.Kv.Key)
@@ -278,7 +278,7 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = nextRevision
-	metrics.RecordConfigApplySuccess()
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil
 }
 

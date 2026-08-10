@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -456,6 +457,83 @@ func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	plugins := config["plugins"].([]any)
 	if got, want := fmt.Sprint(plugins), "[node-status prometheus]"; got != want {
 		t.Fatalf("plugins = %s, want %s", got, want)
+	}
+}
+
+func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
+	runtime := map[string]any{
+		"plugins": []any{"error-log-logger", "key-auth"},
+	}
+	standalone := map[string]any{
+		"routes": []any{map[string]any{
+			"plugins": map[string]any{
+				"key-auth": map[string]any{},
+				"multi-auth": map[string]any{
+					"auth_plugins": []any{
+						map[string]any{"basic-auth": map[string]any{}},
+						map[string]any{"jwt-auth": map[string]any{}},
+					},
+				},
+				"workflow": map[string]any{
+					"rules": []any{map[string]any{
+						"actions": []any{
+							[]any{"return", map[string]any{"code": 200}},
+							[]any{"limit-count", map[string]any{"count": 1}},
+						},
+					}},
+				},
+			},
+		}},
+		"services": []any{map[string]any{
+			"plugins": map[string]any{"proxy-rewrite": map[string]any{}},
+		}},
+		"plugin_configs": []any{map[string]any{
+			"plugins": map[string]any{"response-rewrite": map[string]any{}},
+		}},
+		"global_rules": []any{map[string]any{
+			"plugins": map[string]any{"request-id": map[string]any{}},
+		}},
+		"consumers": []any{map[string]any{
+			"plugins": map[string]any{"jwt-auth": map[string]any{}},
+		}},
+		"consumer_groups": []any{map[string]any{
+			"plugins": map[string]any{"consumer-restriction": map[string]any{}},
+		}},
+	}
+	update := map[string]any{
+		"routes": []any{map[string]any{
+			"plugins": map[string]any{"limit-req": map[string]any{}},
+		}},
+	}
+	wantRuntime, err := cloneConfigMap(runtime)
+	if err != nil {
+		t.Fatalf("clone runtime config: %v", err)
+	}
+	wantStandalone, err := cloneConfigMap(standalone)
+	if err != nil {
+		t.Fatalf("clone standalone config: %v", err)
+	}
+
+	rendered, err := renderRuntimeConfigForStandalone(19080, runtime, standalone, update)
+	if err != nil {
+		t.Fatalf("renderRuntimeConfigForStandalone() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := yaml.Unmarshal(rendered, &config); err != nil {
+		t.Fatalf("unmarshal runtime config: %v", err)
+	}
+	plugins := config["plugins"].([]any)
+	wantPlugins := "[error-log-logger key-auth basic-auth consumer-restriction jwt-auth limit-count limit-req multi-auth " +
+		"proxy-rewrite request-id response-rewrite workflow prometheus]"
+	if got := fmt.Sprint(plugins); got != wantPlugins {
+		t.Fatalf("plugins = %s, want %s", got, wantPlugins)
+	}
+	if !reflect.DeepEqual(runtime, wantRuntime) {
+		t.Fatalf("runtime config mutated: got %#v, want %#v", runtime, wantRuntime)
+	}
+	if !reflect.DeepEqual(standalone, wantStandalone) {
+		t.Fatalf("standalone config mutated: got %#v, want %#v", standalone, wantStandalone)
 	}
 }
 
@@ -2860,6 +2938,112 @@ func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
 	return yaml.Marshal(config)
 }
 
+func renderRuntimeConfigForStandalone(
+	port int,
+	overrides map[string]any,
+	standaloneConfigs ...map[string]any,
+) ([]byte, error) {
+	overrides, err := cloneConfigMap(overrides)
+	if err != nil {
+		return nil, fmt.Errorf("clone runtime config: %w", err)
+	}
+
+	plugins := make([]any, 0)
+	configuredPlugins := make(map[string]struct{})
+	switch configured := overrides["plugins"].(type) {
+	case []any:
+		for _, pluginName := range configured {
+			name, ok := pluginName.(string)
+			if ok {
+				if _, exists := configuredPlugins[name]; exists {
+					continue
+				}
+				configuredPlugins[name] = struct{}{}
+			}
+			plugins = append(plugins, pluginName)
+		}
+	case []string:
+		for _, pluginName := range configured {
+			if _, exists := configuredPlugins[pluginName]; exists {
+				continue
+			}
+			configuredPlugins[pluginName] = struct{}{}
+			plugins = append(plugins, pluginName)
+		}
+	}
+
+	standalonePlugins := make(map[string]struct{})
+	for _, config := range standaloneConfigs {
+		collectStandalonePluginNames(config, standalonePlugins)
+	}
+	pluginNames := make([]string, 0, len(standalonePlugins))
+	for pluginName := range standalonePlugins {
+		if _, exists := configuredPlugins[pluginName]; !exists {
+			pluginNames = append(pluginNames, pluginName)
+		}
+	}
+	sort.Strings(pluginNames)
+	for _, pluginName := range pluginNames {
+		plugins = append(plugins, pluginName)
+	}
+	overrides["plugins"] = plugins
+
+	return renderRuntimeConfig(port, overrides)
+}
+
+func collectStandalonePluginNames(config map[string]any, pluginNames map[string]struct{}) {
+	resourceKinds := [...]string{
+		"routes",
+		"services",
+		"plugin_configs",
+		"global_rules",
+		"consumers",
+		"consumer_groups",
+	}
+	for _, resourceKind := range resourceKinds {
+		resources, _ := config[resourceKind].([]any)
+		for _, resourceValue := range resources {
+			resource, _ := resourceValue.(map[string]any)
+			plugins, _ := resource["plugins"].(map[string]any)
+			for pluginName, pluginConfig := range plugins {
+				pluginNames[pluginName] = struct{}{}
+				collectNestedPluginNames(pluginName, pluginConfig, pluginNames)
+			}
+		}
+	}
+}
+
+func collectNestedPluginNames(pluginName string, pluginConfig any, pluginNames map[string]struct{}) {
+	config, _ := pluginConfig.(map[string]any)
+	switch pluginName {
+	case "multi-auth":
+		authPlugins, _ := config["auth_plugins"].([]any)
+		for _, authPluginValue := range authPlugins {
+			authPlugin, _ := authPluginValue.(map[string]any)
+			for authName := range authPlugin {
+				pluginNames[authName] = struct{}{}
+			}
+		}
+	case "workflow":
+		rules, _ := config["rules"].([]any)
+		for _, ruleValue := range rules {
+			rule, _ := ruleValue.(map[string]any)
+			actions, _ := rule["actions"].([]any)
+			for _, actionValue := range actions {
+				action, _ := actionValue.([]any)
+				if len(action) == 0 {
+					continue
+				}
+				actionName, _ := action[0].(string)
+				switch actionName {
+				case "limit-req", "limit-conn", "limit-count":
+					pluginNames[actionName] = struct{}{}
+				}
+			}
+		}
+	}
+}
+
 func ensureMap(parent map[string]any, key string) map[string]any {
 	if value, ok := parent[key].(map[string]any); ok {
 		return value
@@ -2984,7 +3168,14 @@ func runCase(t *testing.T, spec Case) {
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatalf("create conf directory: %v", err)
 	}
-	runtimeConfig, err := renderRuntimeConfig(port, runtimeOverrides)
+	standaloneConfigs := make([]map[string]any, 0, len(spec.Steps)+1)
+	standaloneConfigs = append(standaloneConfigs, standaloneResources)
+	for _, step := range spec.Steps {
+		if len(step.Config) > 0 {
+			standaloneConfigs = append(standaloneConfigs, step.Config)
+		}
+	}
+	runtimeConfig, err := renderRuntimeConfigForStandalone(port, runtimeOverrides, standaloneConfigs...)
 	if err != nil {
 		t.Fatalf("render runtime config: %v", err)
 	}

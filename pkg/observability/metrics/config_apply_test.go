@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,6 +14,9 @@ func TestConfigApplyMetricsAreNilSafeBeforeInit(t *testing.T) {
 
 	RecordConfigApplyFailure()
 	RecordConfigApplySuccess()
+	RecordConfigApplyStageFailure(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
 }
 
 func TestConfigApplyMetricsUseFixedNoLabelCardinality(t *testing.T) {
@@ -54,5 +58,72 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	}
 	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after failure = %v, want 0", got)
+	}
+}
+
+func TestConfigApplyStagesKeepReadinessBlockedIndependently(t *testing.T) {
+	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_config_apply_stage_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_config_apply_stage_ready"})
+	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
+
+	RecordConfigApplyStageFailure(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplySuccess()
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after provider success = %v, want 0", got)
+	}
+	if got := counterValue(t, ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure count after HTTP stage failure = %v, want 1", got)
+	}
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready after both stages recover = %v, want 1", got)
+	}
+
+	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after provider failure and HTTP success = %v, want 0", got)
+	}
+	if got := counterValue(t, ConfigApplyFailures); got != 2 {
+		t.Fatalf("failure count after provider stage failure = %v, want 2", got)
+	}
+}
+
+func TestConfigApplyStagesAreConcurrencySafe(t *testing.T) {
+	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_config_apply_stage_concurrent_failures_total",
+	})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_config_apply_stage_concurrent_ready"})
+	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
+
+	const calls = 64
+	var group sync.WaitGroup
+	group.Add(calls)
+	for index := range calls {
+		go func(index int) {
+			defer group.Done()
+			stage := ConfigApplyStageProvider
+			if index%2 == 0 {
+				stage = ConfigApplyStageHTTPRoutes
+			}
+			RecordConfigApplyStageFailure(stage)
+		}(index)
+	}
+	group.Wait()
+
+	if got := counterValue(t, ConfigApplyFailures); got != calls {
+		t.Fatalf("concurrent failure count = %v, want %d", got, calls)
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after concurrent failures = %v, want 0", got)
+	}
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready after concurrent stage recovery = %v, want 1", got)
 	}
 }

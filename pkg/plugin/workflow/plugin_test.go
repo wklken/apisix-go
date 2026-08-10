@@ -55,6 +55,85 @@ func TestParseOfficialReturnActionArray(t *testing.T) {
 	}
 }
 
+func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
+	for _, actionName := range []string{"limit-req", "limit-conn", "limit-count"} {
+		t.Run(actionName, func(t *testing.T) {
+			p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+				Name:   actionName,
+				Config: map[string]any{},
+			}}}}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			p.SetPluginEnabledChecker(func(name string) bool { return name != actionName })
+
+			err := p.PostInit()
+			if err == nil || !strings.Contains(err.Error(), actionName) || !strings.Contains(err.Error(), "disabled") {
+				t.Fatalf("PostInit() error = %v, want disabled action rejection before construction", err)
+			}
+		})
+	}
+
+	var enabled Config
+	if err := util.Parse(map[string]any{
+		"rules": []any{
+			map[string]any{"actions": []any{
+				[]any{
+					"limit-req",
+					map[string]any{
+						"rate":          1,
+						"burst":         0,
+						"key":           "remote_addr",
+						"rejected_code": http.StatusTooManyRequests,
+						"nodelay":       true,
+					},
+				},
+				[]any{
+					"limit-conn",
+					map[string]any{
+						"conn":               1,
+						"burst":              0,
+						"default_conn_delay": 0.1,
+						"key":                "remote_addr",
+						"rejected_code":      http.StatusTooManyRequests,
+					},
+				},
+				[]any{
+					"limit-count",
+					map[string]any{
+						"count":         1,
+						"time_window":   60,
+						"key":           "remote_addr",
+						"rejected_code": http.StatusTooManyRequests,
+					},
+				},
+			}},
+		},
+	}, &enabled); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	withEnabled := &Plugin{config: enabled}
+	if err := withEnabled.Init(); err != nil {
+		t.Fatalf("enabled Init() error = %v", err)
+	}
+	withEnabled.SetPluginEnabledChecker(func(string) bool { return true })
+	if err := withEnabled.PostInit(); err != nil {
+		t.Fatalf("enabled PostInit() error = %v", err)
+	}
+
+	returns := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name:   "return",
+		Return: ReturnAction{Code: http.StatusForbidden},
+	}}}}}}
+	if err := returns.Init(); err != nil {
+		t.Fatalf("return Init() error = %v", err)
+	}
+	returns.SetPluginEnabledChecker(func(string) bool { return false })
+	if err := returns.PostInit(); err != nil {
+		t.Fatalf("return PostInit() error = %v, want return action independent of plugin membership", err)
+	}
+}
+
 func TestHandlerReturnsConfiguredStatusForMatchingCase(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rules: []Rule{

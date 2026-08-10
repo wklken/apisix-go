@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/route"
 )
 
@@ -27,7 +29,20 @@ func (s *Server) SendReloadEvent() {
 func (s *Server) listenReloadEvent(ctx context.Context) {
 	logger.Info("listen to the reload event")
 	runReloadScheduler(ctx, s.reloadEventChan, reloadQuietInterval, reloadMaximumWait, func() {
-		s.reload(ctx)
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		if err := s.reload(ctx); err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return
+			}
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+			logger.Errorf("reload routes fail: %s", err)
+			return
+		}
+		if ctx == nil || ctx.Err() == nil {
+			metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+		}
 	})
 }
 
@@ -127,10 +142,10 @@ func stopAndDrainReloadTimer(timer *time.Timer) {
 // reload rebuilds the route handler from the store. A cancelled context
 // skips the rebuild so a shutting-down server does not install a handler it
 // cannot serve.
-func (s *Server) reload(ctx context.Context) {
+func (s *Server) reload(ctx context.Context) (reloadErr error) {
 	if ctx != nil && ctx.Err() != nil {
 		logger.Info("skip reload: context cancelled")
-		return
+		return nil
 	}
 
 	logger.Info("reloading")
@@ -142,18 +157,26 @@ func (s *Server) reload(ctx context.Context) {
 		if !installed {
 			builder.Stop()
 		}
-		if err := recover(); err != nil {
-			logger.Errorf("panic while reload, will not reset the handler: %v", err)
+		if recovered := recover(); recovered != nil {
+			switch panicErr := recovered.(type) {
+			case error:
+				reloadErr = fmt.Errorf("reload routes panic: %w", panicErr)
+			default:
+				reloadErr = fmt.Errorf("reload routes panic: %v", panicErr)
+			}
+			logger.Errorf("panic while reload, will not reset the handler: %v", recovered)
 		}
 	}()
 
 	handler, err := builder.BuildStrict()
 	if err != nil {
-		logger.Errorf("reload routes fail, keeping the current handler: %s", err)
-		return
+		reloadErr = fmt.Errorf("reload routes: %w", err)
+		logger.Errorf("reload routes fail, keeping the current handler: %s", reloadErr)
+		return reloadErr
 	}
 	s.routes.Replace(handler, builder.Stop)
 	installed = true
 
 	logger.Info("reload done")
+	return nil
 }

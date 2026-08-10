@@ -283,6 +283,7 @@ type ConsumerGroup struct {
 }
 
 type GlobalRule struct {
+	ID      string                  `json:"id,omitempty"`
 	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
 }
 

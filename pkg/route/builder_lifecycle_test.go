@@ -47,10 +47,13 @@ var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
 
 func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 	var order []string
-	fallback := withBeforeProxyHooks(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		order = append(order, "fallback:"+r.URL.Path)
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	fallback := withAIExecutionTerminal(
+		pluginpkg.BuildPluginChain(),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			order = append(order, "fallback:"+r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = apisixctx.WithBeforeProxyHook(r, func(r *http.Request) {
 			order = append(order, "hook:"+r.URL.Path)

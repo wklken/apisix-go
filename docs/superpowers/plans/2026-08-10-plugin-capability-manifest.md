@@ -1,6 +1,6 @@
 # HTTP Plugin Capability Migration Manifest
 
-**Baseline:** `origin/master@6c94583a70d9260f54c13ba76da510a49f244f80`
+**Baseline:** `origin/master@e61cb4db62c025d7ea79335551439e2afc35a918` (merged Plan 13 scoped-rewrite baseline)
 
 **Purpose:** This is the exact planning source for Plans 12–17. It maps every registered HTTP plugin identity to one or more explicit capabilities and its primary migration PR. Production code ultimately owns the same static table; the final completeness test compares it against every factory key in `pkg/plugin/init.go`.
 

@@ -143,29 +143,45 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		consumer, token, errMsg := p.findConsumer(r)
-		if errMsg != "" {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
-			http.Error(w, util.BuildMessageResponse(errMsg), http.StatusUnauthorized)
-			return
-		}
-
-		if *p.config.StoreInCtx {
-			ctx.RegisterApisixVar(r, "$jwt_auth_payload", token.Payload)
-		}
-		ctx.AttachConsumer(r, consumer)
-		ctx.RunConsumerPlugins(w, r, next)
-	}
-	return http.HandlerFunc(fn)
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
 }
 
-func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	consumer, token, errMsg := p.findConsumer(r)
+	if errMsg != "" {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
+		http.Error(w, util.BuildMessageResponse(errMsg), http.StatusUnauthorized)
+		return base.StopRequest(r)
+	}
+
+	if *p.config.StoreInCtx {
+		ctx.RegisterApisixVar(r, "$jwt_auth_payload", token.Payload)
+	}
+	r = ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, bool) {
 	if p.config.AnonymousConsumer == "" {
-		return false
+		return base.RequestPhaseResult{}, false
 	}
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
@@ -173,12 +189,10 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
 		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
-		return true
+		return base.StopRequest(r), true
 	}
 
-	ctx.AttachConsumer(r, consumer)
-	ctx.RunConsumerPlugins(w, r, next)
-	return true
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
 }
 
 func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, string) {

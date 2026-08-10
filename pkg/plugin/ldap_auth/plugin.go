@@ -101,36 +101,51 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		user, err := extractBasicUser(r.Header.Get("Authorization"))
-		if err != nil {
-			if err == errMissingAuthorization {
-				p.writeAuthError(w, http.StatusUnauthorized, "Missing authorization in request")
-				return
-			}
-			p.recordAuthDiagnostic(r, err.Error())
-			p.writeAuthError(w, http.StatusUnauthorized, "Invalid authorization in request")
-			return
-		}
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
+}
 
-		if err := p.authenticate(user.username, user.password, p.config); err != nil {
-			p.recordAuthDiagnostic(r, "ldap-auth failed: "+err.Error())
-			p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
-			return
-		}
-
-		consumer, err := store.GetConsumerByPluginKey(name, p.userDN(user.username))
-		if err != nil {
-			p.recordAuthDiagnostic(r, "failed to find user: invalid user")
-			p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
-			return
-		}
-		logger.Info("find consumer " + consumer.Username)
-
-		ctx.AttachConsumer(r, consumer)
-		ctx.RunConsumerPlugins(w, r, next)
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
 	}
-	return http.HandlerFunc(fn)
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	user, err := extractBasicUser(r.Header.Get("Authorization"))
+	if err != nil {
+		if err == errMissingAuthorization {
+			p.writeAuthError(w, http.StatusUnauthorized, "Missing authorization in request")
+			return base.StopRequest(r)
+		}
+		p.recordAuthDiagnostic(r, err.Error())
+		p.writeAuthError(w, http.StatusUnauthorized, "Invalid authorization in request")
+		return base.StopRequest(r)
+	}
+
+	if err := p.authenticate(user.username, user.password, p.config); err != nil {
+		p.recordAuthDiagnostic(r, "ldap-auth failed: "+err.Error())
+		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
+		return base.StopRequest(r)
+	}
+
+	consumer, err := store.GetConsumerByPluginKey(name, p.userDN(user.username))
+	if err != nil {
+		p.recordAuthDiagnostic(r, "failed to find user: invalid user")
+		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
+		return base.StopRequest(r)
+	}
+	logger.Info("find consumer " + consumer.Username)
+
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 }
 
 type basicUser struct {

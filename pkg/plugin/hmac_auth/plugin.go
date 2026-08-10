@@ -163,41 +163,59 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		consumer, statusCode, err := p.authenticate(r)
-		if err != nil {
-			logMessage := err.Error()
-			if !strings.HasPrefix(logMessage, "client request can't be validated:") {
-				logMessage = "client request can't be validated: " + logMessage
-			}
-			if !ctx.RecordAuthProbeDiagnostic(r, logMessage) {
-				logger.Warn(logMessage)
-			}
-			if statusCode == http.StatusUnauthorized && p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			message := "client request can't be validated"
-			if strings.HasPrefix(err.Error(), "client request can't be validated:") ||
-				statusCode != http.StatusUnauthorized {
-				message = err.Error()
-			}
-			p.writeAuthError(w, statusCode, message)
-			return
-		}
-
-		if *p.config.HideCredentials {
-			r.Header.Del("Authorization")
-		}
-
-		ctx.AttachConsumer(r, consumer)
-		ctx.RunConsumerPlugins(w, r, next)
-	}
-	return http.HandlerFunc(fn)
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
 }
 
-func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	consumer, statusCode, err := p.authenticate(r)
+	if err != nil {
+		logMessage := err.Error()
+		if !strings.HasPrefix(logMessage, "client request can't be validated:") {
+			logMessage = "client request can't be validated: " + logMessage
+		}
+		if !ctx.RecordAuthProbeDiagnostic(r, logMessage) {
+			logger.Warn(logMessage)
+		}
+		if statusCode == http.StatusUnauthorized {
+			if result, ok := p.anonymousConsumerResult(w, r); ok {
+				return result
+			}
+		}
+		message := "client request can't be validated"
+		if strings.HasPrefix(err.Error(), "client request can't be validated:") ||
+			statusCode != http.StatusUnauthorized {
+			message = err.Error()
+		}
+		p.writeAuthError(w, statusCode, message)
+		return base.StopRequest(r)
+	}
+
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
+	}
+
+	r = ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, bool) {
 	if p.config.AnonymousConsumer == "" {
-		return false
+		return base.RequestPhaseResult{}, false
 	}
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
@@ -207,15 +225,13 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 			logger.Error(message)
 		}
 		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
-		return true
+		return base.StopRequest(r), true
 	}
 
 	if *p.config.HideCredentials {
 		r.Header.Del("Authorization")
 	}
-	ctx.AttachConsumer(r, consumer)
-	ctx.RunConsumerPlugins(w, r, next)
-	return true
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, statusCode int, message string) {

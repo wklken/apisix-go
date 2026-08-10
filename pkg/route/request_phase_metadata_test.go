@@ -223,16 +223,29 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		consumerCalls := 0
 		routePlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 200, phaseCalls: &routeCalls}
 		consumerPlugin := &requestPhaseMetadataPlugin{name: "synthetic-auth", priority: 100, phaseCalls: &consumerCalls}
-		routeExecutor := plugin.NewExecutor(newRouteConsumerOverridePlugin(routePlugin))
-		consumerExecutor := plugin.NewExecutor(consumerPlugin)
-		handler := routeExecutor.Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			consumerExecutor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			})).ServeHTTP(w, r)
-		}))
-		request := httptest.NewRequest(http.MethodGet, "/", nil)
-		request = apisixctx.WithConsumerPluginOverrides(request, map[string]struct{}{"synthetic-auth": {}})
-		handler.ServeHTTP(httptest.NewRecorder(), request)
+		pipeline := plugin.NewRequestPipeline(
+			[]plugin.Binding{plugin.BindPlugin(
+				"synthetic-auth",
+				routePlugin,
+				plugin.ScopeRoute,
+				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route"},
+			)},
+			func(r *http.Request) (plugin.ConsumerResolution, error) {
+				return plugin.ConsumerResolution{
+					Request:  r,
+					Resolved: true,
+					Bindings: []plugin.Binding{plugin.BindPlugin(
+						"synthetic-auth",
+						consumerPlugin,
+						plugin.ScopeConsumer,
+						plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "consumer"},
+					)},
+				}, nil
+			},
+		)
+		pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 		if routeCalls != 0 || consumerCalls != 1 {
 			t.Fatalf("route calls = %d, consumer calls = %d; want 0, 1", routeCalls, consumerCalls)
 		}

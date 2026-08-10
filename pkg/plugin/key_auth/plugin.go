@@ -94,65 +94,81 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		fromHeader := true
-		key := r.Header.Get(p.config.Header)
-		if key == "" {
-			key = r.URL.Query().Get(p.config.Query)
-			fromHeader = false
-		}
-
-		if key == "" {
-			if p.attachAnonymousConsumer(w, r, next) {
-				return
-			}
-			p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Missing API key in request"}`)
-			return
-		}
-
-		// note: here it's  unique key => consumer, it's different from basic-auth
-		consumer, err := store.GetConsumerByPluginKey(name, key)
-		if errors.Is(err, store.ErrNotFound) {
-			if p.config.AnonymousConsumer != "" {
-				p.hideAllCredentials(r)
-				if p.attachAnonymousConsumer(w, r, next) {
-					return
-				}
-			}
-			if !ctx.RecordAuthProbeDiagnostic(r, "Invalid API key in request") {
-				logger.Warn("failed to find consumer: invalid api key")
-			}
-			p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
-			return
-		}
-
-		if err != nil {
-			if !ctx.RecordAuthProbeDiagnostic(r, "failed to resolve API key consumer") {
-				logger.Error("failed to resolve key-auth consumer")
-			}
-			p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
-			return
-		}
-
-		if *p.config.HideCredentials {
-			if fromHeader {
-				r.Header.Del(p.config.Header)
-			} else {
-				query := r.URL.Query()
-				query.Del(p.config.Query)
-				r.URL.RawQuery = query.Encode()
-			}
-		}
-
-		ctx.AttachConsumer(r, consumer)
-		ctx.RunConsumerPlugins(w, r, next)
-	}
-	return http.HandlerFunc(fn)
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
 }
 
-func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	fromHeader := true
+	key := r.Header.Get(p.config.Header)
+	if key == "" {
+		key = r.URL.Query().Get(p.config.Query)
+		fromHeader = false
+	}
+
+	if key == "" {
+		if result, ok := p.anonymousConsumerResult(w, r); ok {
+			return result
+		}
+		p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Missing API key in request"}`)
+		return base.StopRequest(r)
+	}
+
+	// note: here it's  unique key => consumer, it's different from basic-auth
+	consumer, err := store.GetConsumerByPluginKey(name, key)
+	if errors.Is(err, store.ErrNotFound) {
+		if p.config.AnonymousConsumer != "" {
+			p.hideAllCredentials(r)
+			if result, ok := p.anonymousConsumerResult(w, r); ok {
+				return result
+			}
+		}
+		if !ctx.RecordAuthProbeDiagnostic(r, "Invalid API key in request") {
+			logger.Warn("failed to find consumer: invalid api key")
+		}
+		p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
+		return base.StopRequest(r)
+	}
+
+	if err != nil {
+		if !ctx.RecordAuthProbeDiagnostic(r, "failed to resolve API key consumer") {
+			logger.Error("failed to resolve key-auth consumer")
+		}
+		p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
+		return base.StopRequest(r)
+	}
+
+	if *p.config.HideCredentials {
+		if fromHeader {
+			r.Header.Del(p.config.Header)
+		} else {
+			query := r.URL.Query()
+			query.Del(p.config.Query)
+			r.URL.RawQuery = query.Encode()
+		}
+	}
+
+	r = ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, bool) {
 	if p.config.AnonymousConsumer == "" {
-		return false
+		return base.RequestPhaseResult{}, false
 	}
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
@@ -162,12 +178,10 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 			logger.Error(message)
 		}
 		p.writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid user authorization"}`)
-		return true
+		return base.StopRequest(r), true
 	}
 
-	ctx.AttachConsumer(r, consumer)
-	ctx.RunConsumerPlugins(w, r, next)
-	return true
+	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, body string) {

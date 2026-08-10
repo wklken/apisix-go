@@ -180,24 +180,21 @@ func TestHandlerRunsConsumerPluginsAfterAuthentication(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
-	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	req.Header.Set("Date", date)
+	req.Header.Set("Authorization", auth)
+	response := httptest.NewRecorder()
+	nextCalls := 0
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalls++
 		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "consumer-plugin-hmac-user" {
 			t.Fatalf("consumer_name = %v, want consumer-plugin-hmac-user", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})
-	req.Header.Set("Date", date)
-	req.Header.Set("Authorization", auth)
-	response := httptest.NewRecorder()
-	nextCalled := false
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(response, req)
 
-	if nextCalled {
-		t.Fatal("next handler was called instead of the consumer plugin runner")
+	if nextCalls != 1 {
+		t.Fatalf("next handler calls = %d, want 1", nextCalls)
 	}
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)

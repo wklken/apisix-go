@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"strings"
@@ -156,51 +157,84 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		failures := make([]authFailure, 0, len(p.auths))
-		for _, auth := range p.auths {
-			authenticatedRequest, failure := auth.succeeds(r)
-			if authenticatedRequest != nil {
-				ctx.RunConsumerPlugins(w, authenticatedRequest, next)
-				return
-			}
-			failures = append(failures, failure)
-		}
-		for _, failure := range failures {
-			failure.log()
-		}
+	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attachLegacyConsumer(r)
+		next.ServeHTTP(w, r)
+	}))
+}
 
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"message":"Authorization Failed"}`))
-	})
+func attachLegacyConsumer(r *http.Request) {
+	state, ok := ctx.AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	consumer := state.Consumer()
+	ctx.RegisterApisixVar(r, "$consumer", consumer)
+	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	failures := make([]authFailure, 0, len(p.auths))
+	for _, auth := range p.auths {
+		authenticatedRequest, failure := auth.succeeds(r)
+		if authenticatedRequest != nil {
+			return base.ContinueRequest(authenticatedRequest)
+		}
+		failures = append(failures, failure)
+	}
+	for _, failure := range failures {
+		failure.log()
+	}
+
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"message":"Authorization Failed"}`))
+	return base.StopRequest(r)
 }
 
 func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	var authenticatedRequest *http.Request
-	originalContext := r.Context()
-	probeNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authenticatedRequest = r.WithContext(originalContext)
-	})
+	originalBody := r.Body
+	apisixVars := cloneContextMap(ctx.GetApisixVars(r))
+	requestVars := cloneContextMap(ctx.GetRequestVars(r))
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
-	probeRequest := r.Clone(originalContext)
+	probeTemplate := r.Clone(r.Context())
+	probeTemplate.Body = nil
+	probeTemplate.GetBody = nil
+	probeRequest := ctx.NewAuthenticationProbeRequest(probeTemplate)
 	bodyState := a.isolateRequestBody(r, probeRequest)
 	var recordedDiagnostic bytes.Buffer
 	probeRequest = ctx.WithAuthProbeDiagnosticRecorder(probeRequest, func(message string) {
 		appendFailureDiagnostic(&recordedDiagnostic, message)
 	})
-	probeRequest = ctx.WithConsumerPluginRunner(
-		probeRequest,
-		func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-			next.ServeHTTP(w, r.WithContext(originalContext))
-		},
-	)
-	a.plugin.Handler(probeNext).ServeHTTP(writer, probeRequest)
+	if phase, ok := a.plugin.(base.RequestPhasePlugin); ok {
+		result := phase.RunRequestPhase(writer, probeRequest)
+		if result.Request != nil {
+			authenticatedRequest = result.Request
+		} else {
+			authenticatedRequest = probeRequest
+		}
+		if result.Decision == base.RequestContinue {
+			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
+		}
+		authenticatedRequest = nil
+	} else {
+		a.plugin.Handler(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			authenticatedRequest = request
+		})).ServeHTTP(writer, probeRequest)
+		if authenticatedRequest != nil {
+			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
+		}
+	}
 	if authenticatedRequest != nil {
-		return authenticatedRequest, authFailure{}
+		return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 	}
 	if bodyState != nil {
 		bodyState.restore(r)
 	}
+	restoreContextMap(ctx.GetApisixVars(r), apisixVars)
+	restoreContextMap(ctx.GetRequestVars(r), requestVars)
 	message := strings.TrimSpace(recordedDiagnostic.String())
 	if message == "" {
 		message = strings.TrimSpace(writer.body.String())
@@ -210,6 +244,44 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		status:  writer.status,
 		message: message,
 	}
+}
+
+func (a configuredAuth) successRequest(
+	request, original *http.Request,
+	originalBody io.ReadCloser,
+	bodyState *probeBodyState,
+) *http.Request {
+	if request == nil {
+		request = original
+	}
+	if bodyState != nil {
+		bodyState.attachWinnerBody(request)
+	} else if (request.Body == nil || request.Body == http.NoBody) && originalBody != nil {
+		request.Body = originalBody
+		request.GetBody = original.GetBody
+	}
+	return ctx.WithAuthProbeDiagnosticRecorder(request, nil)
+}
+
+func cloneContextMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	maps.Copy(cloned, source)
+	return cloned
+}
+
+func restoreContextMap(target, source map[string]any) {
+	if target == nil {
+		return
+	}
+	for key := range target {
+		if _, ok := source[key]; !ok {
+			delete(target, key)
+		}
+	}
+	maps.Copy(target, source)
 }
 
 // truncateAuthDiagnostic appends message to buffer without a separator,
@@ -260,6 +332,13 @@ func (f authFailure) log() {
 }
 
 func (s *probeBodyState) restore(request *http.Request) {
+	request.Body = &replayReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(s.captured.Bytes()), s.source),
+		closer: s.source,
+	}
+}
+
+func (s *probeBodyState) attachWinnerBody(request *http.Request) {
 	request.Body = &replayReadCloser{
 		Reader: io.MultiReader(bytes.NewReader(s.captured.Bytes()), s.source),
 		closer: s.source,

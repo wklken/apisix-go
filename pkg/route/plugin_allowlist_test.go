@@ -12,6 +12,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -294,7 +295,7 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 		request := authenticatedAllowlistRequest(consumer)
 		response := httptest.NewRecorder()
 		var nextCalls atomic.Int32
-		builder.runConsumerPlugins(response, request, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		serveConsumerResolution(builder, response, request, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			nextCalls.Add(1)
 		}), builder.pluginRouteContext(resource.Route{ID: "allowlist-consumer-route"}))
 
@@ -322,9 +323,15 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 		consumer := resource.Consumer{Username: "allowlist-group-consumer", GroupID: groupID}
 		request := authenticatedAllowlistRequest(consumer)
 		response := httptest.NewRecorder()
-		builder.runConsumerPlugins(response, request, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		}), builder.pluginRouteContext(resource.Route{ID: "allowlist-group-route"}))
+		serveConsumerResolution(
+			builder,
+			response,
+			request,
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}),
+			builder.pluginRouteContext(resource.Route{ID: "allowlist-group-route"}),
+		)
 
 		if response.Code != http.StatusInternalServerError {
 			t.Fatalf("group response code = %d, want 500", response.Code)
@@ -350,10 +357,16 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 		request := authenticatedAllowlistRequest(consumer)
 		response := httptest.NewRecorder()
 		var nextCalls atomic.Int32
-		builder.runConsumerPlugins(response, request, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			nextCalls.Add(1)
-			w.WriteHeader(http.StatusNoContent)
-		}), builder.pluginRouteContext(resource.Route{ID: "allowlist-enabled-consumer-route"}))
+		serveConsumerResolution(
+			builder,
+			response,
+			request,
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalls.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}),
+			builder.pluginRouteContext(resource.Route{ID: "allowlist-enabled-consumer-route"}),
+		)
 
 		if response.Code != http.StatusNoContent {
 			t.Fatalf("enabled consumer response code = %d, want 204", response.Code)
@@ -419,5 +432,16 @@ func authenticatedAllowlistRequest(consumer resource.Consumer) *http.Request {
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/allowlist", nil)
 	request = apisixctx.WithApisixVars(request, nil)
 	apisixctx.AttachConsumer(request, consumer)
-	return request
+	return apisixctx.WithAuthenticationState(request, apisixctx.NewAuthenticationState("allowlist-test", consumer))
+}
+
+func serveConsumerResolution(
+	builder *Builder,
+	response http.ResponseWriter,
+	request *http.Request,
+	next http.Handler,
+	routeContext pluginRouteContext,
+) {
+	pipeline := plugin.NewRequestPipeline(nil, builder.resolveConsumerBindings(routeContext))
+	pipeline.Then(next).ServeHTTP(response, request)
 }

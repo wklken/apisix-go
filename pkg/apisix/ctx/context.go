@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,17 +28,154 @@ type beforeProxyHooks struct {
 type ContextKey string
 
 const (
-	ProxyRewriteKey         ContextKey = "proxy-rewrite"
-	RequestIDKey            ContextKey = "request_id"
-	RemoteAddrKey           ContextKey = "remote_addr"
-	RemotePortKey           ContextKey = "remote_port"
-	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
-	consumerPluginsRunKey   ContextKey = "consumer_plugins_run"
-	authProbeDiagnosticKey  ContextKey = "auth_probe_diagnostic_recorder"
-	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
-	beforeProxyHooksKey     ContextKey = "before_proxy_hooks"
-	trustedProxyKey         ContextKey = "trusted_proxy"
+	ProxyRewriteKey        ContextKey = "proxy-rewrite"
+	RequestIDKey           ContextKey = "request_id"
+	RemoteAddrKey          ContextKey = "remote_addr"
+	RemotePortKey          ContextKey = "remote_port"
+	authProbeDiagnosticKey ContextKey = "auth_probe_diagnostic_recorder"
+	consumerOverridesKey   ContextKey = "consumer_plugin_overrides"
+	beforeProxyHooksKey    ContextKey = "before_proxy_hooks"
+	trustedProxyKey        ContextKey = "trusted_proxy"
 )
+
+type authenticationStateKey struct{}
+
+// AuthenticationState is the clone-safe result published by an explicit
+// consumer authenticator. Source is the exact factory key that authenticated
+// the request; it is intentionally not derived from Consumer().
+type AuthenticationState struct {
+	Source   string
+	consumer resource.Consumer
+}
+
+func NewAuthenticationState(source string, consumer resource.Consumer) AuthenticationState {
+	return AuthenticationState{Source: source, consumer: cloneConsumer(consumer)}
+}
+
+func (s AuthenticationState) Consumer() resource.Consumer {
+	return cloneConsumer(s.consumer)
+}
+
+func WithAuthenticationState(r *http.Request, state AuthenticationState) *http.Request {
+	state = NewAuthenticationState(state.Source, state.consumer)
+	return r.WithContext(context.WithValue(r.Context(), authenticationStateKey{}, state))
+}
+
+func AuthenticationStateFrom(r *http.Request) (AuthenticationState, bool) {
+	if r == nil {
+		return AuthenticationState{}, false
+	}
+	switch state := r.Context().Value(authenticationStateKey{}).(type) {
+	case AuthenticationState:
+		return NewAuthenticationState(state.Source, state.consumer), true
+	case *AuthenticationState:
+		if state == nil {
+			return AuthenticationState{}, false
+		}
+		return NewAuthenticationState(state.Source, state.consumer), true
+	default:
+		return AuthenticationState{}, false
+	}
+}
+
+// NewAuthenticationProbeRequest makes an isolated request for a losing auth
+// probe. Headers, URL state, body readers, diagnostics, and authentication
+// state are independent from the parent request.
+func NewAuthenticationProbeRequest(r *http.Request) *http.Request {
+	if r == nil {
+		return nil
+	}
+	probeContext := context.WithValue(r.Context(), authenticationStateKey{}, nil)
+	probeContext = context.WithValue(probeContext, authProbeDiagnosticKey, nil)
+	probe := r.Clone(probeContext)
+	// Body replay is deliberately not owned by this generic helper. In
+	// particular, multi-auth must apply each child's bounded BodyIsolation
+	// policy before installing an independent probe reader. Reading here would
+	// consume or buffer an unbounded request body before that limit applies.
+	probe.Body = http.NoBody
+	probe.GetBody = nil
+	return probe
+}
+
+func cloneConsumer(consumer resource.Consumer) resource.Consumer {
+	consumer.Plugins = cloneConsumerMap(consumer.Plugins)
+	if consumer.Labels != nil {
+		consumer.Labels = cloneConsumerAnyMap(consumer.Labels)
+	}
+	return consumer
+}
+
+func cloneConsumerMap(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]resource.PluginConfig, len(source))
+	for key, value := range source {
+		cloned[key] = cloneConsumerValue(value)
+	}
+	return cloned
+}
+
+func cloneConsumerAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneConsumerValue(value)
+	}
+	return cloned
+}
+
+func cloneConsumerValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	return cloneConsumerReflect(reflect.ValueOf(value)).Interface()
+}
+
+func cloneConsumerReflect(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := cloneConsumerReflect(value.Elem())
+		result := reflect.New(value.Type()).Elem()
+		result.Set(cloned)
+		return result
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			result.SetMapIndex(cloneConsumerReflect(iter.Key()), cloneConsumerReflect(iter.Value()))
+		}
+		return result
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(cloneConsumerReflect(value.Index(i)))
+		}
+		return result
+	case reflect.Array:
+		result := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			result.Index(i).Set(cloneConsumerReflect(value.Index(i)))
+		}
+		return result
+	default:
+		return value
+	}
+}
 
 func WithTrustedProxy(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), trustedProxyKey, true))
@@ -115,8 +253,6 @@ func applyProxyRewriteURI(r *http.Request, uri string) {
 	}
 }
 
-type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
-
 type AuthProbeDiagnosticRecorder func(string)
 
 func WithAuthProbeDiagnosticRecorder(r *http.Request, recorder AuthProbeDiagnosticRecorder) *http.Request {
@@ -130,24 +266,6 @@ func RecordAuthProbeDiagnostic(r *http.Request, message string) bool {
 	}
 	recorder(message)
 	return true
-}
-
-func WithConsumerPluginRunner(r *http.Request, runner ConsumerPluginRunner) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), consumerPluginRunnerKey, runner))
-}
-
-func RunConsumerPlugins(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	if alreadyRun, _ := r.Context().Value(consumerPluginsRunKey).(bool); alreadyRun {
-		next.ServeHTTP(w, r)
-		return
-	}
-	runner, _ := r.Context().Value(consumerPluginRunnerKey).(ConsumerPluginRunner)
-	if runner == nil {
-		next.ServeHTTP(w, r)
-		return
-	}
-	r = r.WithContext(context.WithValue(r.Context(), consumerPluginsRunKey, true))
-	runner(w, r, next)
 }
 
 func WithConsumerPluginOverrides(r *http.Request, names map[string]struct{}) *http.Request {

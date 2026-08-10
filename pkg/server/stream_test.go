@@ -233,7 +233,9 @@ func TestStartStreamProxyPublishesOnlyAfterCompleteRuntimeSuccess(t *testing.T) 
 		Key:   []byte("/apisix/stream_routes/raw"),
 		Value: []byte(`{"id":"raw","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1":1}}}`),
 	}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
 		ProxyMode: "stream",
 		StreamProxy: config.StreamProxy{

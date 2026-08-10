@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,63 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := "routes:\n  - id: route-1\n    uri: /orders\n#END\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 2)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	var attempts []StandaloneReloadResult
+	watcher.SetAcknowledgedReloadCallback(func(result StandaloneReloadResult, err error) error {
+		if err != nil {
+			return err
+		}
+		attempts = append(attempts, result)
+		if len(attempts) == 1 {
+			return errors.New("store apply failed")
+		}
+		return nil
+	})
+
+	watcher.reloadAndNotify()
+	watcher.reloadAndNotify()
+	if len(attempts) != 2 {
+		t.Fatalf("reload attempts = %d, want 2", len(attempts))
+	}
+	for index, attempt := range attempts {
+		if !attempt.AffectsHTTPRoutes() {
+			t.Fatalf("reload attempt %d did not replay the route change", index+1)
+		}
+	}
+}
+
+func TestStandaloneLegacyReloadCallbackCanReenterReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := "routes:\n  - id: route-1\n    uri: /orders\n#END\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event, 1))
+	done := make(chan error, 1)
+	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
+		_, err := watcher.ReloadSnapshot()
+		done <- err
+	})
+	go watcher.reloadAndNotify()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reentrant ReloadSnapshot() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("legacy reload callback deadlocked while reentering ReloadSnapshot")
+	}
+}
 
 func TestStandaloneFileWatcherLoadsYAMLAndJSON(t *testing.T) {
 	tests := []struct {
@@ -221,7 +279,9 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	raw, err := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
 	if err != nil {

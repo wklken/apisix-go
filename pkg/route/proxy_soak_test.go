@@ -99,7 +99,9 @@ func TestProxyRuntimeSoak(t *testing.T) {
 		event.Value = []byte(route)
 		soakEvents <- event
 	}
-	soakStore.Sync()
+	if err := soakStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	builder := NewBuilder(soakStore)
 	mux, err := builder.BuildStrict()

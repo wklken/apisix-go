@@ -1465,7 +1465,9 @@ func TestLoadBindingRefetchesOnProtoGenerationChange(t *testing.T) {
 		event.Key = []byte("/apisix/protos/echo-proto")
 		event.Value = []byte(`{"id":"echo-proto","content":"` + content + `"}`)
 		events <- event
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			t.Fatalf("Sync() error = %v", err)
+		}
 	}
 	putProto()
 

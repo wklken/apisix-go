@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -163,8 +165,12 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 				logger.Errorf("etcd watch canceled: %v", err)
 				break
 			}
-			if !c.applyWatchResponse(ctx, response) {
-				return
+			if err := c.applyWatchResponse(ctx, response); err != nil {
+				if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				logger.Errorf("apply etcd watch response: %v", err)
+				break
 			}
 		}
 		if ctx.Err() != nil {
@@ -186,63 +192,94 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 	}
 }
 
-func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) bool {
-	event := store.NewEvent()
+func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) error {
+	event := store.NewAcknowledgedEvent()
 	event.Type = eventType
 	event.Key = bytes.Clone(key)
 	event.Value = bytes.Clone(value)
 	select {
 	case c.events <- event:
-		return true
+		return event.Wait(ctx)
 	case <-ctx.Done():
 		store.PutBack(event)
-		return false
+		return ctx.Err()
 	}
 }
 
 func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
 	if response == nil || response.Header == nil {
-		return errors.New("etcd snapshot is missing a response header")
+		err := errors.New("etcd snapshot is missing a response header")
+		metrics.RecordConfigApplyFailure()
+		return err
 	}
 	nextKeys := make(map[string]struct{}, len(response.Kvs))
 	for _, kv := range response.Kvs {
+		if kv == nil {
+			err := errors.New("etcd snapshot contains a nil key-value")
+			metrics.RecordConfigApplyFailure()
+			return err
+		}
 		nextKeys[string(kv.Key)] = struct{}{}
 	}
+	keys := make([]string, 0, len(c.knownKeys))
 	for key := range c.knownKeys {
-		if _, ok := nextKeys[key]; !ok && !c.sendEvent(ctx, store.EventTypeDelete, []byte(key), nil) {
-			return ctx.Err()
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, ok := nextKeys[key]; !ok {
+			if err := c.sendEvent(ctx, store.EventTypeDelete, []byte(key), nil); err != nil {
+				metrics.RecordConfigApplyFailure()
+				return err
+			}
 		}
 	}
 	for _, kv := range response.Kvs {
-		if !c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value) {
-			return ctx.Err()
+		if err := c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value); err != nil {
+			metrics.RecordConfigApplyFailure()
+			return err
 		}
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = response.Header.Revision
+	metrics.RecordConfigApplySuccess()
 	return nil
 }
 
-func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3.WatchResponse) bool {
+func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3.WatchResponse) error {
+	nextKeys := make(map[string]struct{}, len(c.knownKeys))
+	for key := range c.knownKeys {
+		nextKeys[key] = struct{}{}
+	}
+	nextRevision := c.lastRevision
 	for _, watched := range response.Events {
+		if watched == nil || watched.Kv == nil {
+			err := errors.New("etcd watch response contains a nil event")
+			metrics.RecordConfigApplyFailure()
+			return err
+		}
 		eventType := store.EventType(watched.Type)
-		if !c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value) {
-			return false
+		if err := c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value); err != nil {
+			metrics.RecordConfigApplyFailure()
+			return err
 		}
 		key := string(watched.Kv.Key)
 		if eventType == store.EventTypeDelete {
-			delete(c.knownKeys, key)
+			delete(nextKeys, key)
 		} else {
-			c.knownKeys[key] = struct{}{}
+			nextKeys[key] = struct{}{}
 		}
-		if watched.Kv.ModRevision > c.lastRevision {
-			c.lastRevision = watched.Kv.ModRevision
+		if watched.Kv.ModRevision > nextRevision {
+			nextRevision = watched.Kv.ModRevision
 		}
 	}
-	if response.Header.Revision > c.lastRevision {
-		c.lastRevision = response.Header.Revision
+	if response.Header.Revision > nextRevision {
+		nextRevision = response.Header.Revision
 	}
-	return true
+	c.knownKeys = nextKeys
+	c.lastRevision = nextRevision
+	metrics.RecordConfigApplySuccess()
+	return nil
 }
 
 func (c *ConfigClient) Close() error {

@@ -1024,12 +1024,16 @@ func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
 	put("routes", "strict-global-route", []byte(`{"id":"strict-global-route","uri":"/strict-global"}`))
 	put("global_rules", "strict-valid-global", []byte(`{"id":"strict-valid-global","plugins":{}}`))
 	put("global_rules", "strict-invalid-global", []byte(`{"id":"strict-invalid-global","plugins":[]}`))
-	routeStore.Sync()
+	if err := routeStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	t.Cleanup(func() {
 		remove("routes", "strict-global-route")
 		remove("global_rules", "strict-valid-global")
 		remove("global_rules", "strict-invalid-global")
-		routeStore.Sync()
+		if err := routeStore.Sync(); err != nil {
+			t.Errorf("cleanup Sync() error = %v", err)
+		}
 	})
 
 	rules, err := store.ListGlobalRules()

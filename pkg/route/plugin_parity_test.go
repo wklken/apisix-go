@@ -1067,13 +1067,17 @@ func putRouteResource(t *testing.T, id string, value []byte) {
 	event.Key = []byte("/apisix/routes/" + id)
 	event.Value = value
 	routeStoreEvents <- event
-	routeStore.Sync()
+	if err := routeStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	t.Cleanup(func() {
 		remove := store.NewEvent()
 		remove.Type = store.EventTypeDelete
 		remove.Key = []byte("/apisix/routes/" + id)
 		routeStoreEvents <- remove
-		routeStore.Sync()
+		if err := routeStore.Sync(); err != nil {
+			t.Errorf("cleanup Sync() error = %v", err)
+		}
 	})
 }
 

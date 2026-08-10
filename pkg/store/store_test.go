@@ -228,7 +228,9 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 		Key:   []byte("/apisix/routes/route-1"),
 		Value: []byte(`{"id":"route-1"}`),
 	}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	got, err := storage.GetFromBucket("routes", []byte("route-1"))
 	if err != nil {
@@ -266,9 +268,13 @@ func TestEventHooksObserveCommittedRouteMutationsBeforeSyncReturns(t *testing.T)
 		Key:   []byte("/apisix/routes/route-1"),
 		Value: []byte(`{"id":"route-1"}`),
 	}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after PUT error = %v", err)
+	}
 	storage.events <- &Event{Type: EventTypeDelete, Key: []byte("/apisix/routes/route-1")}
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after DELETE error = %v", err)
+	}
 
 	if got := <-observations; got != `PUT:{"id":"route-1"}` {
 		t.Fatalf("PUT hook observation = %q, want committed route", got)
@@ -305,7 +311,9 @@ func TestFailedRouteMutationDoesNotTriggerReloadHook(t *testing.T) {
 		Key:   []byte("/apisix/routes/route-1"),
 		Value: []byte(`{"id":"route-1"}`),
 	}
-	storage.Sync()
+	if err := storage.Sync(); err == nil {
+		t.Fatal("Sync() after failed route mutation returned nil")
+	}
 
 	select {
 	case <-hooks:
@@ -341,7 +349,9 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
 
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 	for index := range eventCount {
 		id := fmt.Sprintf("route-%d", index)
 		got, err := storage.GetFromBucket("routes", []byte(id))

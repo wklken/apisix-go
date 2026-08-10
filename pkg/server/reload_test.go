@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -9,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -217,8 +222,9 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 			calls = append(calls, "fetch")
 			return nil
 		},
-		func() {
+		func() error {
 			calls = append(calls, "sync")
+			return nil
 		},
 	)
 	if err != nil {
@@ -235,8 +241,9 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 			calls = append(calls, "fetch")
 			return wantErr
 		},
-		func() {
+		func() error {
 			calls = append(calls, "sync")
+			return nil
 		},
 	)
 	if err != wantErr {
@@ -244,6 +251,52 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 	}
 	if got, want := calls, []string{"fetch"}; !equalStrings(got, want) {
 		t.Fatalf("failed fetch calls = %v, want %v", got, want)
+	}
+}
+
+func TestFetchAndSyncInitialEtcdConfigPropagatesSyncError(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_initial_sync_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_initial_sync_ready"})
+	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+
+	wantErr := context.Canceled
+	err := fetchAndSyncInitialEtcdConfig(
+		func() error { return nil },
+		func() error { return wantErr },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("fetchAndSyncInitialEtcdConfig() error = %v, want %v", err, wantErr)
+	}
+	metric := &dto.Metric{}
+	if err := metrics.ConfigApplyFailures.Write(metric); err != nil {
+		t.Fatalf("write sync failure metric: %v", err)
+	}
+	if got := metric.GetCounter().GetValue(); got != 1 {
+		t.Fatalf("sync failure count = %v, want 1", got)
+	}
+}
+
+func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
+	wantErr := context.Canceled
+	var routes, streams int
+	err := applyStandaloneSnapshot(
+		config.StandaloneReloadResult{
+			ChangedHTTPRouteBuckets: []string{"routes"},
+			ChangedStreamBuckets:    []string{"stream_routes"},
+		},
+		nil,
+		func() error { return wantErr },
+		func() { routes++ },
+		func() { streams++ },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
+	}
+	if routes != 0 || streams != 0 {
+		t.Fatalf("reloads = routes:%d streams:%d, want none", routes, streams)
 	}
 }
 
@@ -271,7 +324,9 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	}
 	put("routes", "valid-route", []byte(`{"id":"valid-route","uri":"/valid"}`))
 	put("routes", "invalid-route", []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial route storage sync: %v", err)
+	}
 
 	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Handler", "last-good")
@@ -297,7 +352,9 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	remove("routes", "invalid-route")
 	put("global_rules", "valid-global", []byte(`{"id":"valid-global","plugins":{}}`))
 	put("global_rules", "invalid-global", []byte(`{"id":"invalid-global","plugins":[]}`))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("global rule storage sync: %v", err)
+	}
 
 	server.reload(context.Background())
 	response = httptest.NewRecorder()

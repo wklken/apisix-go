@@ -361,7 +361,9 @@ func TestConsumerEventPersistsRawManagedSecretWithoutVaultFetch(t *testing.T) {
 	consumerStore.events <- &Event{
 		Type: EventTypePut, Key: []byte("/apisix/consumers/foo"), Value: raw,
 	}
-	consumerStore.Sync()
+	if err := consumerStore.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
 
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("Vault requests while persisting consumer = %d, want 0", got)
@@ -559,10 +561,14 @@ func TestConsumerEventRejectsInvalidUpdateBeforePersistingIt(t *testing.T) {
 
 	valid := []byte(`{"username":"foo","plugins":{"basic-auth":{"username":"foo","password":"bar"}}}`)
 	events <- &Event{Type: EventTypePut, Key: []byte("/apisix/consumers/foo"), Value: valid}
-	consumerStore.Sync()
+	if err := consumerStore.Sync(); err != nil {
+		t.Fatalf("Sync() after valid consumer error = %v", err)
+	}
 	invalid := []byte(`{"username":"foo","plugins":{"basic-auth":{"username":"foo"}}}`)
 	events <- &Event{Type: EventTypePut, Key: []byte("/apisix/consumers/foo"), Value: invalid}
-	consumerStore.Sync()
+	if err := consumerStore.Sync(); err == nil {
+		t.Fatal("Sync() after invalid consumer update returned nil")
+	}
 
 	got, err := consumerStore.GetFromBucket("consumers", []byte("foo"))
 	if err != nil {

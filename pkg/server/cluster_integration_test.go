@@ -71,7 +71,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 		"shared-upstream",
 		fmt.Appendf(nil, `{"id":"shared-upstream","type":"roundrobin","nodes":{"%s":1}}`, upstream.Listener.Addr()),
 	)
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial storage sync: %v", err)
+	}
 
 	server := &Server{
 		addr:     "127.0.0.1:9080",
@@ -99,7 +101,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 
 	// An unrelated reload must reuse the shared cluster and its connection.
 	put("routes", "unrelated-route", []byte(`{"id":"unrelated-route","uri":"/unrelated"}`))
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("unrelated route storage sync: %v", err)
+	}
 	secondBuilder := route.NewBuilderWithClusterRegistry(storage, server.addr, server.clusters)
 	secondHandler, err := secondBuilder.BuildStrict()
 	if err != nil {
@@ -122,7 +126,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 		upstream.Listener.Addr(),
 	)
 	events <- event
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("upstream storage sync: %v", err)
+	}
 
 	thirdBuilder := route.NewBuilderWithClusterRegistry(storage, server.addr, server.clusters)
 	thirdHandler, err := thirdBuilder.BuildStrict()

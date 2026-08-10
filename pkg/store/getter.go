@@ -622,6 +622,7 @@ func (s *Store) rebuildSSLCertificateIndex() {
 // parsed routes, parsed global rules, and decoded plugin metadata. It is
 // published once per store change; callers must not mutate it.
 type ConfigSnapshot struct {
+	generation     uint64
 	routes         []resource.Route
 	globalRules    []resource.GlobalRule
 	pluginMetadata map[string]map[string]any
@@ -654,31 +655,44 @@ func GetConfigSnapshot() (*ConfigSnapshot, error) {
 }
 
 func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
-	if !s.configSnapshotDirty.Load() {
-		if snapshot := s.configSnapshot.Load(); snapshot != nil {
-			return snapshot, nil
-		}
-	}
-	s.configSnapshotMu.Lock()
-	defer s.configSnapshotMu.Unlock()
-	if snapshot := s.configSnapshot.Load(); snapshot != nil && !s.configSnapshotDirty.Load() {
+	generation := s.configGeneration.Load()
+	if snapshot := s.configSnapshot.Load(); snapshot != nil && snapshot.generation == generation {
 		return snapshot, nil
 	}
-	snapshot, err := s.buildConfigSnapshot()
-	if err != nil {
-		return nil, err
+
+	s.configSnapshotMu.Lock()
+	defer s.configSnapshotMu.Unlock()
+	for {
+		generation := s.configGeneration.Load()
+		if snapshot := s.configSnapshot.Load(); snapshot != nil && snapshot.generation == generation {
+			return snapshot, nil
+		}
+
+		snapshot, err := s.buildConfigSnapshot(generation)
+		if err != nil {
+			return nil, err
+		}
+		if s.configGeneration.Load() != generation {
+			continue
+		}
+
+		s.configSnapshot.Store(snapshot)
+		return snapshot, nil
 	}
-	s.configSnapshot.Store(snapshot)
-	s.configSnapshotDirty.Store(false)
-	return snapshot, nil
 }
 
-func (s *Store) buildConfigSnapshot() (*ConfigSnapshot, error) {
-	snapshot := &ConfigSnapshot{pluginMetadata: map[string]map[string]any{}}
+func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) {
+	snapshot := &ConfigSnapshot{
+		generation:     generation,
+		pluginMetadata: map[string]map[string]any{},
+	}
 
 	data, err := s.GetBucketData("routes")
 	if err != nil {
 		return nil, err
+	}
+	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
+		hook("routes")
 	}
 	for _, d := range data {
 		r, err := ParseRoute(d)
@@ -692,6 +706,9 @@ func (s *Store) buildConfigSnapshot() (*ConfigSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
+		hook("global_rules")
+	}
 	for _, d := range data {
 		var rule resource.GlobalRule
 		if err := json.Unmarshal(d, &rule); err != nil {
@@ -703,6 +720,9 @@ func (s *Store) buildConfigSnapshot() (*ConfigSnapshot, error) {
 	data, err = s.GetBucketData("plugin_metadata")
 	if err != nil {
 		return nil, err
+	}
+	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
+		hook("plugin_metadata")
 	}
 	for _, d := range data {
 		id := metadataIDForDecodeError(d)

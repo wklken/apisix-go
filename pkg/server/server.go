@@ -307,6 +307,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	logger.Info("Starting storage")
 	s.storage.Start()
+	metrics.Init()
 	if err := s.startConfigProvider(ctx); err != nil {
 		return err
 	}
@@ -599,9 +600,13 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 		if err := watcher.Reload(); err != nil {
 			return fmt.Errorf("load standalone config: %w", err)
 		}
-		s.storage.Sync()
-		watcher.SetReloadCallback(func(result config.StandaloneReloadResult, err error) {
-			applyStandaloneSnapshot(
+		if err := s.storage.Sync(); err != nil {
+			metrics.RecordConfigApplyFailure()
+			return fmt.Errorf("sync initial standalone config: %w", err)
+		}
+		metrics.RecordConfigApplySuccess()
+		watcher.SetAcknowledgedReloadCallback(func(result config.StandaloneReloadResult, err error) error {
+			if applyErr := applyStandaloneSnapshot(
 				result,
 				err,
 				s.storage.Sync,
@@ -614,7 +619,13 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 						logger.Errorf("reload stream routes fail: %s", err)
 					}
 				},
-			)
+			); applyErr != nil {
+				metrics.RecordConfigApplyFailure()
+				logger.Errorf("apply standalone config: %s", applyErr)
+				return applyErr
+			}
+			metrics.RecordConfigApplySuccess()
+			return nil
 		})
 		s.standaloneWatcher = watcher
 		return nil
@@ -625,20 +636,23 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 func applyStandaloneSnapshot(
 	result config.StandaloneReloadResult,
 	err error,
-	syncStore func(),
+	syncStore func() error,
 	reloadRoutes func(),
 	reloadStreams func(),
-) {
+) error {
 	if err != nil {
-		return
+		return err
 	}
-	syncStore()
+	if err := syncStore(); err != nil {
+		return err
+	}
 	if result.AffectsHTTPRoutes() {
 		reloadRoutes()
 	}
 	if result.AffectsStreams() {
 		reloadStreams()
 	}
+	return nil
 }
 
 func standaloneConfigProvider(cfg *config.Config) string {
@@ -719,11 +733,14 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	return nil
 }
 
-func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func()) error {
+func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) error {
 	if err := fetch(); err != nil {
 		return err
 	}
-	syncStore()
+	if err := syncStore(); err != nil {
+		metrics.RecordConfigApplyFailure()
+		return err
+	}
 	return nil
 }
 

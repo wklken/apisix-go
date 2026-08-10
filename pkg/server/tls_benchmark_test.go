@@ -77,14 +77,18 @@ func BenchmarkTLSCertificate(b *testing.B) {
 		for i := range n {
 			put(fmt.Sprintf("bench-%d-%d", n, i), fmt.Sprintf("api-%d-%d.bench.test", n, i))
 		}
-		storage.Sync()
+		if err := storage.Sync(); err != nil {
+			b.Fatalf("Sync() error = %v", err)
+		}
 		b.Run(fmt.Sprintf("exact/n=%d", n), func(b *testing.B) {
 			benchmarkTLSCertificateLookup(b, fmt.Sprintf("api-%d-%d.bench.test", n, n/2))
 		})
 	}
 
 	put("bench-wildcard", "*.wild.bench.test")
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		b.Fatalf("Sync() error = %v", err)
+	}
 	b.Run("wildcard/n=1000", func(b *testing.B) {
 		benchmarkTLSCertificateLookup(b, "a.wild.bench.test")
 	})

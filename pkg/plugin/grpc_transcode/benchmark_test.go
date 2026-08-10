@@ -26,7 +26,9 @@ func BenchmarkVerifiedHotPath(b *testing.B) {
 	event.Key = []byte("/apisix/protos/bench-proto")
 	event.Value = []byte(`{"id":"bench-proto","content":"` + content + `"}`)
 	events <- event
-	storage.Sync()
+	if err := storage.Sync(); err != nil {
+		b.Fatalf("Sync() error = %v", err)
+	}
 
 	p := &Plugin{config: Config{
 		ProtoID: "bench-proto",

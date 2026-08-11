@@ -188,6 +188,57 @@ func (w *BufferedResponseWriter) ReplaceBody(body []byte) {
 	InvalidateBodyDerivedHeaders(w.header)
 }
 
+// CommitFinalResponse replaces only the final canonical representation before
+// using the existing commit path. In particular, private informational
+// responses captured before the final response are retained; Reset must not be
+// used here because it deliberately clears that history.
+func (w *BufferedResponseWriter) CommitFinalResponse(
+	dst http.ResponseWriter,
+	state ResponseState,
+) {
+	if w == nil {
+		return
+	}
+	if state.Status == 0 {
+		state.Status = http.StatusOK
+	}
+	w.header = make(http.Header)
+	for field, values := range state.Header {
+		w.header[field] = append([]string(nil), values...)
+	}
+	if w.bodyPtr != nil {
+		w.bodyPtr.Reset()
+		_, _ = w.bodyPtr.Write(state.Body)
+	} else {
+		w.body.Reset()
+		_, _ = w.body.Write(state.Body)
+	}
+	w.statusCode = state.Status
+	w.wroteHeader = true
+	replaceHeader(dst.Header(), nil)
+	w.Commit(dst)
+}
+
+// CommitCaptured replays captured informational responses and commits the
+// final response only when one was actually written. It lets an undecided
+// request become transparent without manufacturing a default 200 response.
+func (w *BufferedResponseWriter) CommitCaptured(dst http.ResponseWriter) bool {
+	if w == nil {
+		return false
+	}
+	if w.wroteHeader {
+		w.Commit(dst)
+		return true
+	}
+	finalHeader := w.header.Clone()
+	for _, informational := range w.informationals {
+		replaceHeader(dst.Header(), informational.header)
+		dst.WriteHeader(informational.status)
+	}
+	replaceHeader(dst.Header(), finalHeader)
+	return false
+}
+
 // Commit writes the buffered headers, status and body to dst.
 // When dst is another BufferedResponseWriter that shares the same pipeline
 // buffer, the body copy is skipped (the buffer is already shared).

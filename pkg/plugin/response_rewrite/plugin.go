@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	brotlidec "github.com/andybalholm/brotli"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -315,8 +316,57 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// RunBufferedBodyFilter applies status, header and body rewrites atomically to
+// the canonical response state owned by the bounded executor.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || !p.AppliesToResponseSource(responseSource(r)) {
+		return nil
+	}
+	recorder := responseRecorder(r, state)
+	if p.varsMatched(r, recorder) {
+		p.rewrite(r, recorder)
+	}
+	state.Status = recorder.StatusCode()
+	state.Header = recorder.Header().Clone()
+	state.Body = append([]byte(nil), recorder.Body()...)
+	return nil
+}
+
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	switch source {
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
+		return true
+	default:
+		return false
+	}
+}
+
+func responseRecorder(r *http.Request, state *base.ResponseState) *base.BufferedResponseWriter {
+	recorder := base.GetOrCreateTransformResponseWriter(r)
+	for field, values := range state.Header {
+		recorder.Header()[field] = append([]string(nil), values...)
+	}
+	recorder.SetStatusCode(state.Status)
+	recorder.SetBody(state.Body)
+	return recorder
+}
+
+func responseSource(r *http.Request) apisixctx.ResponseSource {
+	if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+		return lifecycle.ResponseSource()
+	}
+	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source != "" {
+		return apisixctx.ResponseSource(source)
+	}
+	return apisixctx.ResponseSourceUnknown
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 

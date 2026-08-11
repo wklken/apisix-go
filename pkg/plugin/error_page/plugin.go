@@ -57,8 +57,35 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || !p.metadata.Enable || state.Status < http.StatusNotFound ||
+		!p.AppliesToResponseSource(responseSource(r)) {
+		return nil
+	}
+	page, ok := p.errorPage(state.Status)
+	if !ok || page.Body == "" {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	state.Body = []byte(page.Body)
+	base.InvalidateBodyDerivedHeaders(state.Header)
+	state.Header.Set("Content-Type", page.ContentType)
+	state.Header.Set("Content-Length", strconv.Itoa(len(page.Body)))
+	return nil
+}
+
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	return source == apisixctx.ResponseSourceAPISIX || source == apisixctx.ResponseSourceEarlyStop
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 
@@ -81,6 +108,16 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) {
 	resp.SetBody([]byte(page.Body))
 	resp.Header().Set("Content-Type", page.ContentType)
 	resp.Header().Set("Content-Length", strconv.Itoa(len(page.Body)))
+}
+
+func responseSource(r *http.Request) apisixctx.ResponseSource {
+	if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+		return lifecycle.ResponseSource()
+	}
+	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source != "" {
+		return apisixctx.ResponseSource(source)
+	}
+	return apisixctx.ResponseSourceUnknown
 }
 
 func (p *Plugin) errorPage(statusCode int) (ErrorPage, bool) {

@@ -9,7 +9,37 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+func TestExitTransformerRunsOneAtomicBufferedBodyCallback(t *testing.T) {
+	plugin := newTestPlugin(t, Config{Functions: []string{
+		`return function(code, body, header) return 418, "transformed", { ["Content-Type"] = "text/plain" } end`,
+	}})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithRequestVars(req)
+	state := base.ResponseState{
+		Status: http.StatusBadGateway,
+		Header: http.Header{"Content-Length": {"8"}, "X-Unchanged": {"yes"}},
+		Body:   []byte("original"),
+	}
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusTeapot || string(state.Body) != "transformed" {
+		t.Fatalf("state = %+v, want 418/transformed", state)
+	}
+	if got := state.Header.Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+	if got := state.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+	if got := state.Header.Get("X-Unchanged"); got != "" {
+		t.Fatalf("X-Unchanged = %q, want replaced atomically", got)
+	}
+}
 
 func TestPostInitRejectsNonFunctionLua(t *testing.T) {
 	p := &Plugin{config: Config{Functions: []string{`return 42`}}}

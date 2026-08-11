@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -140,6 +141,69 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// DescribeBindingPhases selects the request and response owners from the
+// initialized configuration. A request transform remains a rewrite-stage
+// operation while a response transform is owned by the bounded body phase.
+func (p Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
+	if p.Request == nil && p.Response == nil {
+		return base.BindingPhaseDescriptor{}, errors.New("body-transformer requires request or response configuration")
+	}
+	descriptor := base.BindingPhaseDescriptor{RequestStage: "none"}
+	if p.Request != nil {
+		descriptor.RequestStage = "rewrite"
+	}
+	descriptor.BufferedBody = p.Response != nil
+	return descriptor, nil
+}
+
+// RunRequestPhase owns the request-side transform without invoking the
+// downstream handler. The legacy error statuses remain phase-specific.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if p.config.Request == nil {
+		return base.ContinueRequest(r)
+	}
+	request, err := p.transformRequest(r)
+	if err != nil {
+		var renderingError *templateRenderingError
+		if errors.As(err, &renderingError) {
+			logger.Errorf("transform(): request template rendering: %s", renderingError)
+			http.Error(w, renderingError.Error(), http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return base.StopRequest(request)
+	}
+	return base.ContinueRequest(request)
+}
+
+// RunBufferedBodyFilter applies the configured response template to the
+// canonical response state. The temporary buffered writer reuses the existing
+// template/context implementation while the executor owns the final commit.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if p.config.Response == nil || state == nil {
+		return nil
+	}
+	recorder := responseRecorder(r, state)
+	if err := p.transformResponse(r, recorder); err != nil {
+		return err
+	}
+	state.Status = recorder.StatusCode()
+	state.Header = recorder.Header().Clone()
+	state.Body = append([]byte(nil), recorder.Body()...)
+	return nil
+}
+
+// AppliesToResponseSource keeps response transforms away from cache hits while
+// retaining the Plan 15 APISIX/early-stop behavior.
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	switch source {
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -175,19 +239,19 @@ func compileTransform(transform *Transform) error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		var err error
 		if p.config.Request != nil {
-			r, err = p.transformRequest(r)
-			if err != nil {
-				var renderingError *templateRenderingError
-				if errors.As(err, &renderingError) {
-					logger.Errorf("transform(): request template rendering: %s", renderingError)
-					http.Error(w, renderingError.Error(), http.StatusServiceUnavailable)
-					return
-				}
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			result := p.RunRequestPhase(w, r)
+			if result.Decision != base.RequestContinue {
 				return
 			}
+			r = result.Request
+		}
+		// Strict route execution owns response callbacks through the bounded
+		// executor; retain the legacy buffering path only for direct callers
+		// that do not carry a request lifecycle.
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		if p.config.Response == nil {
@@ -205,6 +269,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func responseRecorder(r *http.Request, state *base.ResponseState) *base.BufferedResponseWriter {
+	recorder := base.GetOrCreateTransformResponseWriter(r)
+	for field, values := range state.Header {
+		recorder.Header()[field] = append([]string(nil), values...)
+	}
+	recorder.SetStatusCode(state.Status)
+	recorder.SetBody(state.Body)
+	return recorder
 }
 
 func resetBufferedResponse(w http.ResponseWriter) {

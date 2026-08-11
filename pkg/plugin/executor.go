@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"cmp"
+	"fmt"
 	"net/http"
 	"slices"
 
@@ -29,6 +30,7 @@ const (
 	RequestStageConsumerRewrite
 	RequestStageAccess
 	RequestStageBeforeProxy
+	RequestStageNone
 )
 
 // ResourceKind identifies the source resource that materialized a binding.
@@ -88,12 +90,38 @@ type ConsumerResolution struct {
 
 type ConsumerBindingResolver func(*http.Request) (ConsumerResolution, error)
 
+// EffectiveBindingSet keeps the two Plan 14 partitions separate so response
+// materialization can execute global/system winners before route/consumer
+// winners without reconstructing them after the terminal returns.
+type EffectiveBindingSet struct {
+	global []Binding
+	merged []Binding
+}
+
+func (s EffectiveBindingSet) all() []Binding {
+	bindings := make([]Binding, 0, len(s.global)+len(s.merged))
+	bindings = append(bindings, s.global...)
+	return append(bindings, s.merged...)
+}
+
+func (s EffectiveBindingSet) clone() EffectiveBindingSet {
+	return EffectiveBindingSet{
+		global: cloneBindings(s.global),
+		merged: cloneBindings(s.merged),
+	}
+}
+
+func cloneEffectiveBindingSet(set EffectiveBindingSet) EffectiveBindingSet {
+	return set.clone()
+}
+
 // RequestPipeline owns the explicit Plan 14 request order. Static bindings
 // are cloned at construction; resolution data is merged per request so no
 // mutable request, auth, or override state can leak between requests.
 type RequestPipeline struct {
-	bindings []Binding
-	resolve  ConsumerBindingResolver
+	bindings         []Binding
+	resolve          ConsumerBindingResolver
+	responseExecutor *BufferedResponseExecutor
 }
 
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
@@ -101,15 +129,69 @@ func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) Req
 }
 
 func (p RequestPipeline) Then(terminal http.Handler) http.Handler {
+	return p.ThenWithPostResolutionHook(terminal, nil)
+}
+
+// WithBufferedResponseExecutor returns a value copy that owns one immutable
+// response executor reference. Request-local capture state is created by Then,
+// never stored on the pipeline itself.
+func (p RequestPipeline) WithBufferedResponseExecutor(
+	executor *BufferedResponseExecutor,
+) RequestPipeline {
+	p.responseExecutor = executor
+	return p
+}
+
+// ThenWithPostResolutionHook inserts one hook after consumer/group winners are
+// merged and before any later request stage or terminal runs.
+func (p RequestPipeline) ThenWithPostResolutionHook(
+	terminal http.Handler,
+	hook PostResolutionHook,
+) http.Handler {
+	if p.responseExecutor != nil {
+		responseHook := p.responseExecutor.PostResolutionHook
+		if hook == nil {
+			hook = responseHook
+		} else {
+			previous := hook
+			hook = func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
+				replacement, err := previous(r, effective)
+				if err != nil {
+					return r, err
+				}
+				if replacement == nil {
+					replacement = r
+				}
+				return responseHook(replacement, effective)
+			}
+		}
+	}
 	if terminal == nil {
 		terminal = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	}
-	afterAuthentication := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.runResolved(w, r, terminal)
+	plainAfterAuthentication := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.runResolved(w, r, terminal, hook, nil)
 	})
-	handler := p.wrapAuthentication(afterAuthentication)
+	plainHandler := p.wrapAuthentication(plainAfterAuthentication)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r)
+		request := r
+		var execution *responseExecution
+		if p.responseExecutor != nil {
+			request, execution = p.responseExecutor.begin(w, r)
+		}
+		if execution == nil {
+			plainHandler.ServeHTTP(w, request)
+			return
+		}
+		// Authentication plugins may replace the request without inheriting
+		// its context. Carry the response execution explicitly to the resolver
+		// boundary so post-commit fallback decisions never depend on that
+		// replaceable context.
+		afterAuthentication := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p.runResolved(w, r, terminal, hook, execution)
+		})
+		p.wrapAuthentication(afterAuthentication).ServeHTTP(execution.writer, request)
+		execution.complete()
 	})
 }
 
@@ -140,7 +222,13 @@ func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 	return next
 }
 
-func (p RequestPipeline) runResolved(w http.ResponseWriter, r *http.Request, terminal http.Handler) {
+func (p RequestPipeline) runResolved(
+	w http.ResponseWriter,
+	r *http.Request,
+	terminal http.Handler,
+	hook PostResolutionHook,
+	execution *responseExecution,
+) {
 	resolution := ConsumerResolution{Request: r}
 	var err error
 	if p.resolve != nil {
@@ -148,23 +236,60 @@ func (p RequestPipeline) runResolved(w http.ResponseWriter, r *http.Request, ter
 	}
 	if err != nil {
 		logger.Errorf("consumer binding resolution failed: %v", err)
+		markResponseInternalFailure(r)
+		if execution != nil {
+			execution.internalFailure = true
+		}
+		if responseFailureRequiresAbort(r) || execution != nil && execution.transparentCommitted {
+			panic(http.ErrAbortHandler)
+		}
 		if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
 			lifecycle.SetFinalRequest(r)
-			lifecycle.SetResponseSource(apisixctx.ResponseSourceEarlyStop)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+		writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
 		return
 	}
 	request := resolution.Request
 	if request == nil {
 		request = r
 	}
-	effective := mergeEffectiveBindings(p.bindings, resolution.Bindings)
+	effective := mergeEffectiveBindingSet(p.bindings, resolution.Bindings)
+	if hook != nil {
+		replacement, hookErr := hook(request, effective)
+		if hookErr != nil {
+			markResponseInternalFailure(r)
+			markResponseInternalFailure(request)
+			if execution != nil {
+				execution.internalFailure = true
+			}
+			if responseFailureRequiresAbort(r) || responseFailureRequiresAbort(request) ||
+				execution != nil && execution.transparentCommitted {
+				panic(http.ErrAbortHandler)
+			}
+			if lifecycle := apisixctx.GetRequestLifecycle(request); lifecycle != nil {
+				lifecycle.SetFinalRequest(request)
+			}
+			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
+			writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		if replacement != nil {
+			request = replacement
+			if lifecycle := apisixctx.GetRequestLifecycle(request); lifecycle != nil {
+				lifecycle.SetFinalRequest(request)
+			}
+		}
+	}
 	inner := p.buildPostResolutionHandler(effective, terminal)
 	inner.ServeHTTP(w, request)
 }
 
-func (p RequestPipeline) buildPostResolutionHandler(bindings []Binding, terminal http.Handler) http.Handler {
+func (p RequestPipeline) buildPostResolutionHandler(
+	effective EffectiveBindingSet,
+	terminal http.Handler,
+) http.Handler {
+	bindings := effective.all()
 	boundary := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apisixctx.FinalizeProxyRewrite(r)
 		apisixctx.RunBeforeProxyHooks(r)
@@ -261,7 +386,7 @@ func legacyRemainderBindings(bindings []Binding) []Binding {
 	return legacy
 }
 
-func mergeEffectiveBindings(static, resolved []Binding) []Binding {
+func mergeEffectiveBindingSet(static, resolved []Binding) EffectiveBindingSet {
 	global := make([]Binding, 0, len(static)+len(resolved))
 	merged := make([]Binding, 0, len(static)+len(resolved))
 	indexes := make(map[string]int)
@@ -285,7 +410,7 @@ func mergeEffectiveBindings(static, resolved []Binding) []Binding {
 		binding.Scope = ScopeRoute
 		appendEffectiveBinding(&merged, indexes, binding)
 	}
-	return append(global, merged...)
+	return EffectiveBindingSet{global: global, merged: merged}
 }
 
 func appendEffectiveBinding(bindings *[]Binding, indexes map[string]int, binding Binding) {
@@ -328,6 +453,67 @@ func BindPlugin(
 		Provenance:  provenance,
 		factoryName: factoryName,
 	}
+}
+
+// BindPluginChecked is the strict production constructor. It records the
+// exact factory key and writes any config-derived request stage into the
+// immutable Binding before it can enter a pipeline.
+func BindPluginChecked(
+	factoryName string,
+	p Plugin,
+	scope Scope,
+	provenance ResourceProvenance,
+) (Binding, error) {
+	if factoryName == "" {
+		return Binding{}, fmt.Errorf(
+			"checked plugin binding rejected empty factory (resource=%s/%s)",
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	if p == nil {
+		return Binding{}, fmt.Errorf(
+			"checked plugin binding rejected nil plugin (factory=%q resource=%s/%s)",
+			factoryName,
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	if _, ok := pluginRegistry[factoryName]; !ok {
+		return Binding{}, fmt.Errorf(
+			"checked plugin binding rejected unknown factory %q (resource=%s/%s)",
+			factoryName,
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	spec, ok := RequestStageFor(factoryName)
+	if !ok {
+		return Binding{
+			Plugin: p, Scope: scope, Stage: RequestStageLegacy,
+			Provenance: provenance, factoryName: factoryName,
+		}, nil
+	}
+	if spec.ConfigAware {
+		resolved, _, err := ResolveRequestStage(factoryName, p.Config())
+		if err != nil {
+			return Binding{}, fmt.Errorf(
+				"checked plugin binding rejected factory=%q resource=%s/%s: %w",
+				factoryName,
+				provenance.Kind,
+				provenance.ID,
+				err,
+			)
+		}
+		spec = resolved
+	}
+	return Binding{
+		Plugin:      p,
+		Scope:       scope,
+		Stage:       spec.Stage,
+		Provenance:  provenance,
+		factoryName: factoryName,
+	}, nil
 }
 
 // Executor owns an immutable snapshot of either a legacy plugin list or
@@ -470,10 +656,30 @@ func terminalHandler(terminal http.Handler) http.Handler {
 				return
 			}
 			lifecycle.SetFinalRequest(r)
-			if lifecycle.ResponseSource() == apisixctx.ResponseSourceUnknown {
-				lifecycle.SetResponseSource(apisixctx.ResponseSourceUpstream)
-			}
 		}()
 		terminal.ServeHTTP(w, r)
 	})
+}
+
+func writeStableResponseError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"message":"%s"}`, message)
+}
+
+func markResponseInternalFailure(r *http.Request) {
+	if r == nil {
+		return
+	}
+	if execution, ok := r.Context().Value(responseExecutionKey{}).(*responseExecution); ok && execution != nil {
+		execution.internalFailure = true
+	}
+}
+
+func responseFailureRequiresAbort(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	execution, ok := r.Context().Value(responseExecutionKey{}).(*responseExecution)
+	return ok && execution != nil && execution.transparentCommitted
 }

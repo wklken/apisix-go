@@ -2,6 +2,7 @@ package ctx
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync"
@@ -153,6 +154,39 @@ func TestRequestLifecycleInitializesAndTracksFinalRequestAndSource(t *testing.T)
 		t.Fatalf("invalid ResponseSource() = %q, want %q", got, ResponseSourceUnknown)
 	}
 	RecycleVars(ensured)
+}
+
+func TestRequestLifecycleAcceptsAPISIXResponseSource(t *testing.T) {
+	lifecycle := NewRequestLifecycle(time.Now())
+	lifecycle.SetResponseSource(ResponseSourceAPISIX)
+	if got := lifecycle.ResponseSource(); got != ResponseSourceAPISIX {
+		t.Fatalf("ResponseSource() = %q, want %q", got, ResponseSourceAPISIX)
+	}
+}
+
+func TestSetRequestResponseSourceSynchronizesLifecycleAndMirrors(t *testing.T) {
+	request, lifecycle := EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		time.Now(),
+	)
+	SetRequestResponseSource(request, ResponseSourceAPISIX)
+	if got := lifecycle.ResponseSource(); got != ResponseSourceAPISIX {
+		t.Fatalf("ResponseSource() = %q, want %q", got, ResponseSourceAPISIX)
+	}
+	if got := GetRequestVar(request, "$response_source"); got != string(ResponseSourceAPISIX) {
+		t.Fatalf("request mirror = %#v", got)
+	}
+	if got := GetApisixVar(request, "$response_source"); got != string(ResponseSourceAPISIX) {
+		t.Fatalf("APISIX mirror = %#v", got)
+	}
+
+	SetRequestResponseSource(request, ResponseSource("invalid"))
+	if got := lifecycle.ResponseSource(); got != ResponseSourceUnknown {
+		t.Fatalf("invalid source = %q, want unknown", got)
+	}
+	if got := GetRequestVar(request, "$response_source"); got != string(ResponseSourceUnknown) {
+		t.Fatalf("invalid request mirror = %#v", got)
+	}
 }
 
 func TestRequestLifecycleFinalRequestAndSourceConcurrentAccess(t *testing.T) {

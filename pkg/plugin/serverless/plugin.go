@@ -110,19 +110,98 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// DescribeBindingPhases maps the one configured serverless phase to its
+// checked request owner or bounded response callback. The legacy log phase is
+// intentionally left for its later owner.
+func (p Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
+	phase := p.Phase
+	if phase == "" {
+		phase = "access"
+	}
+	switch phase {
+	case "rewrite", "access", "before_proxy":
+		return base.BindingPhaseDescriptor{RequestStage: phase}, nil
+	case "log":
+		return base.BindingPhaseDescriptor{RequestStage: "legacy"}, nil
+	case "header_filter":
+		return base.BindingPhaseDescriptor{RequestStage: "none", Header: true}, nil
+	case "body_filter":
+		return base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true}, nil
+	default:
+		return base.BindingPhaseDescriptor{}, fmt.Errorf("unsupported serverless phase %q", p.Phase)
+	}
+}
+
+// RunRequestPhase executes rewrite/access/before_proxy functions without
+// invoking downstream request stages itself.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if !isRequestPhase(p.config.Phase) {
+		return base.ContinueRequest(r)
+	}
+	result, err := p.runFunctions(r, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return base.StopRequest(r)
+	}
+	if result.respond {
+		writeResult(w, result)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) RunHeaderFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || p.config.Phase != "header_filter" || !p.AppliesToResponseSource(responseSource(r)) {
+		return nil
+	}
+	recorder := responseRecorder(r, state)
+	result, err := p.runFunctions(r, recorder)
+	if err != nil {
+		return err
+	}
+	applyResponseResult(recorder, result, false)
+	copyResponseState(state, recorder)
+	return nil
+}
+
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || p.config.Phase != "body_filter" || !p.AppliesToResponseSource(responseSource(r)) {
+		return nil
+	}
+	recorder := responseRecorder(r, state)
+	result, err := p.runFunctions(r, recorder)
+	if err != nil {
+		return err
+	}
+	applyResponseResult(recorder, result, true)
+	copyResponseState(state, recorder)
+	return nil
+}
+
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	if p.config.Phase != "header_filter" && p.config.Phase != "body_filter" {
+		return false
+	}
+	switch source {
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isRequestPhase(p.config.Phase) {
-			result, err := p.runFunctions(r, nil)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if result.respond {
-				writeResult(w, result)
+			result := p.RunRequestPhase(w, r)
+			if result.Decision != base.RequestContinue {
 				return
 			}
 
+			next.ServeHTTP(w, result.Request)
+			return
+		}
+		if p.config.Phase != "log" && apisixctx.GetRequestLifecycle(r) != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -138,6 +217,48 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		result.apply(recorder)
 		recorder.Commit(w)
 	})
+}
+
+func responseRecorder(r *http.Request, state *base.ResponseState) *base.BufferedResponseWriter {
+	recorder := base.GetOrCreateTransformResponseWriter(r)
+	for field, values := range state.Header {
+		recorder.Header()[field] = append([]string(nil), values...)
+	}
+	recorder.SetStatusCode(state.Status)
+	recorder.SetBody(state.Body)
+	return recorder
+}
+
+func copyResponseState(state *base.ResponseState, recorder *base.BufferedResponseWriter) {
+	state.Status = recorder.StatusCode()
+	state.Header = recorder.Header().Clone()
+	state.Body = append([]byte(nil), recorder.Body()...)
+}
+
+func applyResponseResult(recorder *base.BufferedResponseWriter, result luaResult, allowBody bool) {
+	if result.status != 0 {
+		recorder.SetStatusCode(result.status)
+	}
+	for field, values := range result.header {
+		recorder.Header().Del(field)
+		for _, value := range values {
+			recorder.Header().Add(field, value)
+		}
+	}
+	if allowBody && result.bodyModified {
+		recorder.SetBody(result.body)
+		base.InvalidateBodyDerivedHeaders(recorder.Header())
+	}
+}
+
+func responseSource(r *http.Request) apisixctx.ResponseSource {
+	if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+		return lifecycle.ResponseSource()
+	}
+	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source != "" {
+		return apisixctx.ResponseSource(source)
+	}
+	return apisixctx.ResponseSourceUnknown
 }
 
 func (p *Plugin) runFunctions(r *http.Request, resp *base.BufferedResponseWriter) (luaResult, error) {

@@ -1,15 +1,19 @@
 package api_breaker
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+type finalizerRegistrationsKey struct{}
 
 type Plugin struct {
 	base.BasePlugin
@@ -179,8 +183,63 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// RunRequestPhase performs the breaker decision and, on continuation,
+// registers one request-local outcome observer. The observer updates breaker
+// counters only for completed, committed, non-hijacked HTTP outcomes.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if p.shouldBreak() {
+		if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
+			for _, header := range p.config.BreakResponseHeaders {
+				w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
+			}
+		}
+		w.WriteHeader(p.config.BreakResponseCode)
+		if p.config.BreakResponseBody != nil {
+			_, _ = w.Write([]byte(*p.config.BreakResponseBody))
+		}
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil {
+		return base.ContinueRequest(r)
+	}
+	registrations, _ := r.Context().Value(finalizerRegistrationsKey{}).(map[*Plugin]struct{})
+	if _, registered := registrations[p]; registered {
+		return base.ContinueRequest(r)
+	}
+	if registrations == nil {
+		registrations = make(map[*Plugin]struct{})
+	}
+	registrations = cloneFinalizerRegistrations(registrations)
+	registrations[p] = struct{}{}
+	if lifecycle.AddFinalizer(name, func() error {
+		outcome := lifecycle.Outcome()
+		if outcome.Kind != apisixctx.RequestOutcomeCompleted || !outcome.Committed || outcome.Hijacked {
+			return nil
+		}
+		p.observeStatus(outcome.Status)
+		return nil
+	}) {
+		r = r.WithContext(context.WithValue(r.Context(), finalizerRegistrationsKey{}, registrations))
+	}
+	return base.ContinueRequest(r)
+}
+
+func cloneFinalizerRegistrations(registrations map[*Plugin]struct{}) map[*Plugin]struct{} {
+	cloned := make(map[*Plugin]struct{}, len(registrations)+1)
+	for plugin := range registrations {
+		cloned[plugin] = struct{}{}
+	}
+	return cloned
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
+		}
 		if p.shouldBreak() {
 			if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 				for _, header := range p.config.BreakResponseHeaders {

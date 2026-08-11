@@ -12,9 +12,42 @@ import (
 	"testing"
 
 	brotlienc "github.com/andybalholm/brotli"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestResponseRewriteRunsOneAtomicBufferedBodyCallback(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		StatusCode: http.StatusAccepted,
+		Body:       new("rewritten"),
+		Headers:    Headers{Set: map[string]string{"X-Rewritten": "yes"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	state := base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Length": {"8"}, "X-Original": {"yes"}},
+		Body:   []byte("upstream"),
+	}
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusAccepted || string(state.Body) != "rewritten" {
+		t.Fatalf("state = %+v, want 202/rewritten", state)
+	}
+	if got := state.Header.Get("X-Rewritten"); got != "yes" {
+		t.Fatalf("X-Rewritten = %q, want yes", got)
+	}
+	if got := state.Header.Get("X-Original"); got != "yes" {
+		t.Fatalf("X-Original = %q, want preserved", got)
+	}
+	if got := state.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

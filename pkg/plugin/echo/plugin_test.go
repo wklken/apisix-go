@@ -5,8 +5,105 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestEchoDescriptorSelectsHeaderAndBodyExactly(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     Config
+		wantErr    bool
+		wantHeader bool
+		wantBody   bool
+	}{
+		{
+			name:       "headers",
+			config:     Config{Headers: map[string]any{"X-Echo": "yes"}},
+			wantHeader: true,
+		},
+		{name: "body", config: Config{Body: new("body")}, wantBody: true},
+		{
+			name:     "all body fields",
+			config:   Config{BeforeBody: "before", Body: new("body"), AfterBody: "after"},
+			wantBody: true,
+		},
+		{
+			name:       "headers and body",
+			config:     Config{Headers: map[string]any{"X-Echo": "yes"}, Body: new("body")},
+			wantHeader: true,
+			wantBody:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := newTestPlugin(t, tt.config)
+			descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("DescribeBindingPhases() error = nil, want schema-rejected headers-only config")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DescribeBindingPhases() error = %v", err)
+			}
+			if descriptor.RequestStage != "none" || descriptor.Header != tt.wantHeader ||
+				descriptor.BufferedBody != tt.wantBody {
+				t.Fatalf("descriptor = %+v, want stage=none header=%t body=%t", descriptor, tt.wantHeader, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestEchoDescriptorTreatsSchemaValidEmptyBodyFieldAsBufferedBody(t *testing.T) {
+	plugin := &Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{"before_body": ""}
+	if err := util.Validate(config, plugin.GetSchema()); err != nil {
+		t.Fatalf("Validate() error = %v, want schema-valid empty body field", err)
+	}
+	if err := util.Parse(config, plugin.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+	if err != nil {
+		t.Fatalf("DescribeBindingPhases() error = %v", err)
+	}
+	if descriptor.RequestStage != "none" || descriptor.Header || !descriptor.BufferedBody {
+		t.Fatalf("descriptor = %+v, want none/body-only for present empty before_body", descriptor)
+	}
+}
+
+func TestMigratedHandlersHaveNoDuplicatePostNextResponseWork(t *testing.T) {
+	plugin := newTestPlugin(t, Config{Headers: map[string]any{"X-Echo": "yes"}, Body: new("replacement")})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	state := base.ResponseState{
+		Status: http.StatusAccepted,
+		Header: http.Header{"Content-Length": {"8"}},
+		Body:   []byte("upstream"),
+	}
+	if err := plugin.RunHeaderFilter(req, &state); err != nil {
+		t.Fatalf("RunHeaderFilter() error = %v", err)
+	}
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if got := state.Header.Get("X-Echo"); got != "yes" {
+		t.Fatalf("X-Echo = %q, want yes", got)
+	}
+	if got := string(state.Body); got != "replacement" {
+		t.Fatalf("body = %q, want replacement", got)
+	}
+	if got := state.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated once", got)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -149,9 +246,8 @@ func TestSchemaMatchesOfficialBodyAndHeaderRequirements(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "headers only is rejected",
-			config:  map[string]any{"headers": map[string]any{"X-Echo": "yes"}},
-			wantErr: true,
+			name:   "headers only is accepted",
+			config: map[string]any{"headers": map[string]any{"X-Echo": "yes"}},
 		},
 		{
 			name: "string and number headers are accepted with body config",

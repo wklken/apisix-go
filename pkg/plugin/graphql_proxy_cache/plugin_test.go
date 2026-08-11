@@ -10,8 +10,32 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type graphqlCacheHitCountingWriter struct {
+	http.ResponseWriter
+	headerCalls      int
+	writeHeaderCalls int
+	writeCalls       int
+}
+
+func (w *graphqlCacheHitCountingWriter) Header() http.Header {
+	w.headerCalls++
+	return w.ResponseWriter.Header()
+}
+
+func (w *graphqlCacheHitCountingWriter) WriteHeader(status int) {
+	w.writeHeaderCalls++
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *graphqlCacheHitCountingWriter) Write(body []byte) (int, error) {
+	w.writeCalls++
+	return w.ResponseWriter.Write(body)
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -26,6 +50,177 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestGraphQLCacheHitPublishesWithoutWriterAndReturnsCacheHitStop(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/graphql",
+		strings.NewReader(`{"query":"query { viewer { id } }"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	body := []byte(`{"query":"query { viewer { id } }"}`)
+	key := p.cacheKey(request, body)
+	p.lock.Lock()
+	p.entries[key] = cacheEntry{
+		header:    http.Header{"X-Cached": {"yes"}},
+		body:      []byte("cached"),
+		status:    http.StatusOK,
+		storedAt:  time.Now().Add(-time.Second),
+		ttl:       time.Minute,
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	p.lock.Unlock()
+	holder := base.NewCacheHitResponseHolder()
+	request = base.WithCacheHitResponseHolder(request, holder)
+	writer := &graphqlCacheHitCountingWriter{ResponseWriter: httptest.NewRecorder()}
+
+	result := p.RunRequestPhase(writer, request)
+	if result.Decision != base.RequestStop || result.Source != apisixctx.ResponseSourceCacheHit {
+		t.Fatalf("RunRequestPhase() = decision:%v source:%q, want cache-hit stop", result.Decision, result.Source)
+	}
+	if writer.headerCalls != 0 || writer.writeHeaderCalls != 0 || writer.writeCalls != 0 {
+		t.Fatalf(
+			"cache hit made writer calls header=%d writeHeader=%d write=%d",
+			writer.headerCalls,
+			writer.writeHeaderCalls,
+			writer.writeCalls,
+		)
+	}
+	state, published, err := holder.ConsumePublished()
+	if err != nil || !published || state.Status != http.StatusOK || string(state.Body) != "cached" {
+		t.Fatalf("published cache hit = %#v published=%v err=%v", state, published, err)
+	}
+	if state.Header.Get(cacheStatusHeader) != "HIT" || state.Header.Get(cacheKeyHeader) != key {
+		t.Fatalf("published cache hit headers = %#v, key=%q", state.Header, key)
+	}
+}
+
+func TestGraphQLCacheStoreIntentIsPerPluginInstanceAndConsumedOnce(t *testing.T) {
+	first := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	second := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	body := []byte(`{"query":"query { viewer { id } }"}`)
+	firstRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	firstRequest.Header.Set("Content-Type", "application/json")
+	secondRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	firstRequest = first.RunRequestPhase(httptest.NewRecorder(), firstRequest).Request
+	secondRequest = second.RunRequestPhase(httptest.NewRecorder(), secondRequest).Request
+	state := base.ResponseState{Status: http.StatusOK, Header: http.Header{"X-Origin": {"one"}}, Body: []byte("one")}
+	if err := first.RunFinalResponseStore(firstRequest, state); err != nil {
+		t.Fatalf("first RunFinalResponseStore() error = %v", err)
+	}
+	if err := second.RunFinalResponseStore(secondRequest, state); err != nil {
+		t.Fatalf("second RunFinalResponseStore() error = %v", err)
+	}
+	if err := first.RunFinalResponseStore(firstRequest, state); err == nil {
+		t.Fatal("duplicate first RunFinalResponseStore() error = nil")
+	}
+}
+
+func TestGraphQLCacheStoreIntentUsesMissTimeVaryHeaderSnapshot(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	body := []byte(`{"query":"query { viewer { id } }"}`)
+	request := httptest.NewRequest(http.MethodPost, "/graphql-vary-intent", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Variant", "miss")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	request.Header.Values("X-Variant")[0] = "final"
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Vary": {"X-Variant"}},
+		Body:   []byte("vary-intent"),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+
+	key := p.cacheKey(request, body)
+	missRequest := httptest.NewRequest(http.MethodPost, "/graphql-vary-intent", strings.NewReader(string(body)))
+	missRequest.Header.Set("Content-Type", "application/json")
+	missRequest.Header.Set("X-Variant", "miss")
+	finalRequest := httptest.NewRequest(http.MethodPost, "/graphql-vary-intent", strings.NewReader(string(body)))
+	finalRequest.Header.Set("Content-Type", "application/json")
+	finalRequest.Header.Set("X-Variant", "final")
+	p.lock.RLock()
+	_, missStored := p.entries[key+"::"+cacheutil.VarySignature([]string{"x-variant"}, missRequest)]
+	_, finalStored := p.entries[key+"::"+cacheutil.VarySignature([]string{"x-variant"}, finalRequest)]
+	p.lock.RUnlock()
+	if !missStored || finalStored {
+		t.Fatalf("Vary storage keys miss=%v final=%v, want only miss-time signature", missStored, finalStored)
+	}
+}
+
+func TestGraphQLCacheFinalStorePersistsCanonicalStateWithoutDerivedHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60, CacheSetCookie: true})
+	body := []byte(`{"query":"query { viewer { id } }"}`)
+	request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept-Encoding", "gzip")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	state := base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{
+			"aGe":                 {"3"},
+			"APISIX-Cache-STATUS": {"MISS"},
+			"apisix-cache-key":    {"derived"},
+			"Vary":                {"Accept-Encoding"},
+			"Cache-Control":       {"max-age=60"},
+			"Set-Cookie":          {"session=one"},
+		},
+		Body: []byte("canonical"),
+	}
+	if err := p.RunFinalResponseStore(request, state); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	key := p.cacheKey(request, body)
+	variant := request.Clone(request.Context())
+	variant.Header.Set("Accept-Encoding", "gzip")
+	storageKey := key + "::" + cacheutil.VarySignature([]string{"accept-encoding"}, variant)
+	p.lock.RLock()
+	entry, ok := p.entries[storageKey]
+	p.lock.RUnlock()
+	if !ok {
+		t.Fatalf("canonical cache entry missing for key %q", storageKey)
+	}
+	for field := range entry.header {
+		if strings.EqualFold(field, "Age") || strings.EqualFold(field, "Apisix-Cache-Status") ||
+			strings.EqualFold(field, "APISIX-Cache-Key") {
+			t.Fatalf("derived header %q persisted in canonical cache entry", field)
+		}
+	}
+	if entry.header.Get("Vary") != "Accept-Encoding" || entry.header.Get("Cache-Control") != "max-age=60" ||
+		entry.header.Get("Set-Cookie") != "session=one" {
+		t.Fatalf("canonical cache headers = %#v", entry.header)
+	}
+}
+
+func TestGraphQLCachePolicyVaryTTLSetCookiePurgeAndStorageOwnershipRemain(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60, CacheSetCookie: true})
+	body := []byte(`{"query":"query { viewer { id } }"}`)
+	request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Variant", "one")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Vary": {"X-Variant"}, "Set-Cookie": {"session=one"}},
+		Body:   []byte("policy"),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	key := p.cacheKey(request, body)
+	variant := request.Clone(request.Context())
+	variant.Header.Set("X-Variant", "one")
+	if _, status := p.lookup(variant, key); status != "HIT" {
+		t.Fatalf("lookup() status = %q, want HIT for persisted Vary variant", status)
+	}
+	if !p.purge(key) {
+		t.Fatal("purge() = false, want true for stored variant")
+	}
+	if _, status := p.lookup(variant, key); status != "MISS" {
+		t.Fatalf("lookup() after purge status = %q, want MISS", status)
+	}
 }
 
 func TestConfiguredMemoryZoneSharesGraphQLEntriesAcrossInstances(t *testing.T) {

@@ -16,9 +16,33 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type cacheHitCountingWriter struct {
+	http.ResponseWriter
+	headerCalls      int
+	writeHeaderCalls int
+	writeCalls       int
+}
+
+func (w *cacheHitCountingWriter) Header() http.Header {
+	w.headerCalls++
+	return w.ResponseWriter.Header()
+}
+
+func (w *cacheHitCountingWriter) WriteHeader(status int) {
+	w.writeHeaderCalls++
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *cacheHitCountingWriter) Write(body []byte) (int, error) {
+	w.writeCalls++
+	return w.ResponseWriter.Write(body)
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -33,6 +57,179 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestProxyCacheHitPublishesWithoutWriterAndReturnsCacheHitStop(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	request := httptest.NewRequest(http.MethodGet, "/cache-hit", nil)
+	key := p.cacheKey(request)
+	p.lock.Lock()
+	p.entries[key] = cacheEntry{
+		header:    http.Header{"X-Cached": {"yes"}},
+		body:      []byte("cached"),
+		status:    http.StatusOK,
+		storedAt:  time.Now().Add(-time.Second),
+		ttl:       time.Minute,
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	p.lock.Unlock()
+	holder := base.NewCacheHitResponseHolder()
+	request = base.WithCacheHitResponseHolder(request, holder)
+	writer := &cacheHitCountingWriter{ResponseWriter: httptest.NewRecorder()}
+
+	result := p.RunRequestPhase(writer, request)
+	if result.Decision != base.RequestStop || result.Source != apisixctx.ResponseSourceCacheHit {
+		t.Fatalf("RunRequestPhase() = decision:%v source:%q, want cache-hit stop", result.Decision, result.Source)
+	}
+	if writer.headerCalls != 0 || writer.writeHeaderCalls != 0 || writer.writeCalls != 0 {
+		t.Fatalf(
+			"cache hit made writer calls header=%d writeHeader=%d write=%d",
+			writer.headerCalls,
+			writer.writeHeaderCalls,
+			writer.writeCalls,
+		)
+	}
+	state, published, err := holder.ConsumePublished()
+	if err != nil || !published || state.Status != http.StatusOK || string(state.Body) != "cached" {
+		t.Fatalf("published cache hit = %#v published=%v err=%v", state, published, err)
+	}
+	if state.Header.Get(cacheStatusHeader) != "HIT" || state.Header.Get("X-Cached") != "yes" {
+		t.Fatalf("published cache hit headers = %#v", state.Header)
+	}
+}
+
+func TestProxyCacheStoreIntentIsPerPluginInstanceAndConsumedOnce(t *testing.T) {
+	first := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	second := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	reqFirst := httptest.NewRequest(http.MethodGet, "/intent-first", nil)
+	reqSecond := httptest.NewRequest(http.MethodGet, "/intent-second", nil)
+	firstRequest := first.RunRequestPhase(httptest.NewRecorder(), reqFirst).Request
+	secondRequest := second.RunRequestPhase(httptest.NewRecorder(), reqSecond).Request
+	state := base.ResponseState{Status: http.StatusOK, Header: http.Header{"X-Origin": {"one"}}, Body: []byte("one")}
+	if err := first.RunFinalResponseStore(firstRequest, state); err != nil {
+		t.Fatalf("first RunFinalResponseStore() error = %v", err)
+	}
+	if err := second.RunFinalResponseStore(secondRequest, state); err != nil {
+		t.Fatalf("second RunFinalResponseStore() error = %v", err)
+	}
+	if err := first.RunFinalResponseStore(firstRequest, state); err == nil {
+		t.Fatal("duplicate first RunFinalResponseStore() error = nil")
+	}
+}
+
+func TestProxyCacheStoreIntentUsesMissTimeVaryHeaderSnapshot(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	request := httptest.NewRequest(http.MethodGet, "/vary-intent", nil)
+	request.Header.Set("X-Variant", "miss")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	request.Header.Values("X-Variant")[0] = "final"
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Vary": {"X-Variant"}},
+		Body:   []byte("vary-intent"),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+
+	key := p.cacheKey(request)
+	missRequest := httptest.NewRequest(http.MethodGet, "/vary-intent", nil)
+	missRequest.Header.Set("X-Variant", "miss")
+	finalRequest := httptest.NewRequest(http.MethodGet, "/vary-intent", nil)
+	finalRequest.Header.Set("X-Variant", "final")
+	p.lock.RLock()
+	_, missStored := p.entries[key+"::"+cacheutil.VarySignature([]string{"x-variant"}, missRequest)]
+	_, finalStored := p.entries[key+"::"+cacheutil.VarySignature([]string{"x-variant"}, finalRequest)]
+	p.lock.RUnlock()
+	if !missStored || finalStored {
+		t.Fatalf("Vary storage keys miss=%v final=%v, want only miss-time signature", missStored, finalStored)
+	}
+}
+
+func TestProxyCacheFinalStoreReevaluatesNoCacheAgainstFinalRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		CacheStrategy: "memory",
+		CacheTTL:      60,
+		NoCache:       []string{"$http_x_no_cache"},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/late-no-cache", nil)
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	request.Header.Set("X-No-Cache", "1")
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: make(http.Header),
+		Body:   []byte("must-not-store"),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+
+	if _, status := p.lookup(request, p.cacheKey(request)); status != "MISS" {
+		t.Fatalf("lookup() status = %q, want MISS after final request enables no_cache", status)
+	}
+}
+
+func TestCacheFinalStorePersistsCanonicalStateWithoutDerivedHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60, CacheSetCookie: true})
+	request := httptest.NewRequest(http.MethodGet, "/canonical", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	state := base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{
+			"aGe":                 {"3"},
+			"APISIX-Cache-STATUS": {"MISS"},
+			"apisix-cache-key":    {"derived"},
+			"Vary":                {"Accept-Encoding"},
+			"Cache-Control":       {"max-age=60"},
+			"Set-Cookie":          {"session=one"},
+		},
+		Body: []byte("canonical"),
+	}
+	if err := p.RunFinalResponseStore(request, state); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	key := p.cacheKey(request)
+	p.lock.RLock()
+	entry, ok := p.entries[key+"::"+cacheutil.VarySignature([]string{"accept-encoding"}, request)]
+	p.lock.RUnlock()
+	if !ok {
+		t.Fatalf("canonical cache entry missing for key %q", key)
+	}
+	for field := range entry.header {
+		if strings.EqualFold(field, "Age") || strings.EqualFold(field, "Apisix-Cache-Status") ||
+			strings.EqualFold(field, "APISIX-Cache-Key") {
+			t.Fatalf("derived header %q persisted in canonical cache entry", field)
+		}
+	}
+	if entry.header.Get("Vary") != "Accept-Encoding" || entry.header.Get("Cache-Control") != "max-age=60" ||
+		entry.header.Get("Set-Cookie") != "session=one" {
+		t.Fatalf("canonical cache headers = %#v", entry.header)
+	}
+}
+
+func TestCachePolicyVaryTTLSetCookiePurgeAndStorageOwnershipRemain(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60, CacheSetCookie: true})
+	request := httptest.NewRequest(http.MethodGet, "/policy", nil)
+	request.Header.Set("X-Variant", "one")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Vary": {"X-Variant"}, "Set-Cookie": {"session=one"}},
+		Body:   []byte("policy"),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	key := p.cacheKey(request)
+	variant := httptest.NewRequest(http.MethodGet, "/policy", nil)
+	variant.Header.Set("X-Variant", "one")
+	if _, status := p.lookup(variant, key); status != "HIT" {
+		t.Fatalf("lookup() status = %q, want HIT for persisted Vary variant", status)
+	}
+	if !p.purgeAll(key) {
+		t.Fatal("purgeAll() = false, want true for stored variant")
+	}
+	if _, status := p.lookup(variant, key); status != "MISS" {
+		t.Fatalf("lookup() after purge status = %q, want MISS", status)
+	}
 }
 
 func TestPostInitSetsProxyCacheDefaults(t *testing.T) {

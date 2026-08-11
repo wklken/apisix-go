@@ -138,6 +138,12 @@ func TestRequestPhaseAdapterRecordsExplicitSource(t *testing.T) {
 	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceCacheHit {
 		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceCacheHit)
 	}
+	if got := apisixctx.GetRequestVar(request, "$response_source"); got != string(apisixctx.ResponseSourceCacheHit) {
+		t.Fatalf("$response_source request mirror = %#v", got)
+	}
+	if got := apisixctx.GetApisixVar(request, "$response_source"); got != string(apisixctx.ResponseSourceCacheHit) {
+		t.Fatalf("$response_source APISIX mirror = %#v", got)
+	}
 }
 
 func TestRequestPhaseAdapterNormalizesInvalidSource(t *testing.T) {

@@ -355,7 +355,7 @@ func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http
 	if recorder.StatusCode() == http.StatusOK &&
 		!responseCacheControlSkipsStore(recorder.Header()) &&
 		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
-		p.store(r, key, recorder)
+		_ = p.store(r, key, recorder)
 	}
 	recorder.Header().Set(cacheStatusHeader, status)
 	recorder.Header().Set(cacheKeyHeader, key)
@@ -418,42 +418,12 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	return entry, "HIT"
 }
 
-func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter) {
-	varyHeaders, cacheable := cacheutil.ParseVaryHeader(recorder.Header())
-	if !cacheable {
-		return
-	}
-	ttl := time.Duration(p.config.CacheTTL) * time.Second
-	if p.diskStore != nil {
-		ttl = diskResponseTTL(recorder.Header(), ttl, p.now())
-	}
-	entry := cacheEntry{
-		header:   cacheutil.CloneHeader(recorder.Header()),
-		body:     append([]byte(nil), recorder.Body()...),
-		status:   recorder.StatusCode(),
-		storedAt: p.now(),
-		ttl:      ttl,
-	}
-	entry.expiresAt = entry.storedAt.Add(entry.ttl)
-	entry.header.Del(cacheStatusHeader)
-	entry.header.Del(cacheKeyHeader)
-	storageKey, staleKeys := p.prepareStorageKey(r, key, varyHeaders)
-	for _, staleKey := range staleKeys {
-		p.deleteStorageKey(staleKey)
-	}
-	shared := sharedCacheEntry(entry)
-	if p.memoryStore != nil {
-		p.memoryStore.Store(storageKey, shared)
-		return
-	}
-	if p.diskStore != nil {
-		_ = p.diskStore.Store(storageKey, shared)
-		return
-	}
-
-	p.lock.Lock()
-	p.entries[storageKey] = entry
-	p.lock.Unlock()
+func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter) error {
+	return p.storeState(r, key, base.ResponseState{
+		Status: recorder.StatusCode(),
+		Header: recorder.Header(),
+		Body:   recorder.Body(),
+	}, time.Duration(p.config.CacheTTL)*time.Second)
 }
 
 func (p *Plugin) storageKey(r *http.Request, key string) string {
@@ -466,7 +436,7 @@ func (p *Plugin) storageKey(r *http.Request, key string) string {
 	return key + "::" + cacheutil.VarySignature(index.headers, r)
 }
 
-func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []string) (string, []string) {
+func (p *Plugin) prepareStorageKey(requestHeader http.Header, key string, varyHeaders []string) (string, []string) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -497,7 +467,7 @@ func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []st
 			storageKeys: make(map[string]struct{}),
 		}
 	}
-	storageKey := key + "::" + cacheutil.VarySignature(varyHeaders, r)
+	storageKey := key + "::" + varySignatureFromHeader(varyHeaders, requestHeader)
 	index.storageKeys[storageKey] = struct{}{}
 	p.vary[key] = index
 	delete(p.entries, key)

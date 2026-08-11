@@ -6,7 +6,41 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+func TestErrorPageRunsOneAtomicBufferedBodyCallback(t *testing.T) {
+	plugin := newTestPlugin(t, Metadata{
+		Enable: true,
+		Error404: ErrorPage{
+			Body:        "custom error",
+			ContentType: "text/plain",
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/missing", nil)
+	req = apisixctx.WithRequestVars(req)
+	state := base.ResponseState{
+		Status: http.StatusNotFound,
+		Header: http.Header{"Content-Length": {"8"}, "X-Unchanged": {"yes"}},
+		Body:   []byte("original"),
+	}
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if got := string(state.Body); got != "custom error" {
+		t.Fatalf("body = %q, want custom error", got)
+	}
+	if got := state.Header.Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+	if got := state.Header.Get("Content-Length"); got != "12" {
+		t.Fatalf("Content-Length = %q, want 12", got)
+	}
+	if got := state.Header.Get("X-Unchanged"); got != "yes" {
+		t.Fatalf("X-Unchanged = %q, want preserved", got)
+	}
+}
 
 func newTestPlugin(t *testing.T, metadata Metadata) *Plugin {
 	t.Helper()

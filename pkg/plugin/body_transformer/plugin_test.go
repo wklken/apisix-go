@@ -17,6 +17,77 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 )
 
+func TestBodyTransformerDescriptorSeparatesRequestAndResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     Config
+		wantStage  string
+		wantHeader bool
+		wantBody   bool
+	}{
+		{
+			name:      "request only",
+			config:    Config{Request: &Transform{Template: "request"}},
+			wantStage: "rewrite",
+		},
+		{
+			name:      "response only",
+			config:    Config{Response: &Transform{Template: "response"}},
+			wantStage: "none",
+			wantBody:  true,
+		},
+		{
+			name:      "request and response",
+			config:    Config{Request: &Transform{Template: "request"}, Response: &Transform{Template: "response"}},
+			wantStage: "rewrite",
+			wantBody:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := newTestPlugin(t, tt.config)
+			descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+			if err != nil {
+				t.Fatalf("DescribeBindingPhases() error = %v", err)
+			}
+			if descriptor.RequestStage != tt.wantStage || descriptor.Header != tt.wantHeader ||
+				descriptor.BufferedBody != tt.wantBody {
+				t.Fatalf(
+					"descriptor = %+v, want stage=%q header=%t body=%t",
+					descriptor,
+					tt.wantStage,
+					tt.wantHeader,
+					tt.wantBody,
+				)
+			}
+		})
+	}
+}
+
+func TestBodyTransformerRunsRequestAndResponsePhasesSeparately(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		Request:  &Transform{InputFormat: "plain", Template: "rewritten-request"},
+		Response: &Transform{InputFormat: "plain", Template: "rewritten-response"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/anything", strings.NewReader("request"))
+	req.Header.Set("Content-Type", "text/plain")
+	requestResult := plugin.RunRequestPhase(httptest.NewRecorder(), req)
+	if requestResult.Decision != base.RequestContinue || requestResult.Request == nil {
+		t.Fatalf("RunRequestPhase() = %+v, want continue with request", requestResult)
+	}
+	state := base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"text/plain"}},
+		Body:   []byte("response"),
+	}
+	if err := plugin.RunBufferedBodyFilter(requestResult.Request, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if got := string(state.Body); got != "rewritten-response" {
+		t.Fatalf("response body = %q, want rewritten-response", got)
+	}
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 

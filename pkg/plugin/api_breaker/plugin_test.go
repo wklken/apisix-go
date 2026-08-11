@@ -7,8 +7,61 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+func TestAPIBreakerFinalizerObservesOnlyCompletedCommittedNonHijacked(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BreakResponseCode: http.StatusServiceUnavailable,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("RunRequestPhase() decision = %v, want continue", result.Decision)
+	}
+	lifecycle.SetOutcome(apisixctx.ResponseOutcome{
+		Kind:      apisixctx.RequestOutcomeCompleted,
+		Status:    http.StatusInternalServerError,
+		Committed: true,
+	})
+	lifecycle.Finalize()
+	if p.unhealthyCount != 1 {
+		t.Fatalf("unhealthyCount = %d, want 1 for completed committed response", p.unhealthyCount)
+	}
+
+	for name, outcome := range map[string]apisixctx.ResponseOutcome{
+		"not committed": {Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusInternalServerError},
+		"panic":         {Kind: apisixctx.RequestOutcomeRecoveredPanic, Status: http.StatusInternalServerError, Committed: true},
+		"hijacked":      {Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusInternalServerError, Committed: true, Hijacked: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plugin := newTestPlugin(t, Config{
+				BreakResponseCode: http.StatusServiceUnavailable,
+				Unhealthy: UnHealthCheck{
+					HTTPStatuses: []int{http.StatusInternalServerError},
+					Failures:     new(1),
+				},
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+			req, lc := apisixctx.EnsureRequestLifecycle(req, time.Now())
+			if got := plugin.RunRequestPhase(httptest.NewRecorder(), req); got.Decision != base.RequestContinue {
+				t.Fatalf("RunRequestPhase() decision = %v, want continue", got.Decision)
+			}
+			lc.SetOutcome(outcome)
+			lc.Finalize()
+			if plugin.unhealthyCount != 0 {
+				t.Fatalf("unhealthyCount = %d, want 0 for %s", plugin.unhealthyCount, name)
+			}
+		})
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

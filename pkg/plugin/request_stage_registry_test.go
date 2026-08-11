@@ -13,23 +13,33 @@ import (
 
 func TestRequestStageRegistryExactMembership(t *testing.T) {
 	want := map[string]RequestStageSpec{
-		"request-context":     {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
-		"request-id":          {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
-		"real-ip":             {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-rewrite":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-control":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-mirror":        {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"traffic-label":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"traffic-split":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-prompt-decorator": {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-prompt-template":  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-rag":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-request-rewrite":  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"data-mask":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"degraphql":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"example-plugin":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"jwe-decrypt":         {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"limit-conn":          {Stage: RequestStageAccess, AdaptLegacyHandler: false},
+		"api-breaker":              {Stage: RequestStageAccess},
+		"body-transformer":         {Stage: RequestStageNone, ConfigAware: true},
+		"echo":                     {Stage: RequestStageNone, ConfigAware: true},
+		"error-page":               {Stage: RequestStageNone},
+		"exit-transformer":         {Stage: RequestStageNone},
+		"graphql-proxy-cache":      {Stage: RequestStageAccess},
+		"proxy-cache":              {Stage: RequestStageAccess},
+		"response-rewrite":         {Stage: RequestStageNone},
+		"serverless-pre-function":  {Stage: RequestStageNone, ConfigAware: true},
+		"serverless-post-function": {Stage: RequestStageNone, ConfigAware: true},
+		"request-context":          {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
+		"request-id":               {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
+		"real-ip":                  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-rewrite":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-control":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-mirror":             {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"traffic-label":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"traffic-split":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-prompt-decorator":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-prompt-template":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-rag":                   {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-request-rewrite":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"data-mask":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"degraphql":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"example-plugin":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"jwe-decrypt":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"limit-conn":               {Stage: RequestStageAccess, AdaptLegacyHandler: false},
 
 		"basic-auth": {
 			Stage:                 RequestStageAccess,
@@ -186,11 +196,91 @@ func TestRequestStageEnumOrderIsFrozen(t *testing.T) {
 		RequestStageConsumerRewrite,
 		RequestStageAccess,
 		RequestStageBeforeProxy,
+		RequestStageNone,
 	}
 	for i, stage := range got {
 		if uint8(stage) != uint8(i) {
 			t.Fatalf("RequestStage value at index %d = %d, want %d", i, stage, i)
 		}
+	}
+}
+
+func TestBindPluginCheckedWritesConfigAwareStage(t *testing.T) {
+	config := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+		Header: true,
+	}}
+	plugin := newResponseTestPlugin("echo", 1, config)
+	binding, err := BindPluginChecked(
+		"echo",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourcePluginConfig, ID: "pc1"},
+	)
+	if err != nil {
+		t.Fatalf("BindPluginChecked() error = %v", err)
+	}
+	if binding.Stage != RequestStageNone || binding.factoryName != "echo" ||
+		binding.Scope != ScopeRoute || binding.Provenance.ID != "pc1" {
+		t.Fatalf("binding = %#v", binding)
+	}
+	if calls := config.calls.Load(); calls != 1 {
+		t.Fatalf("DescribeBindingPhases calls = %d, want 1", calls)
+	}
+
+	legacy, err := BindPluginChecked(
+		"gzip",
+		newResponseTestPlugin("gzip", 1, nil),
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+	)
+	if err != nil || legacy.Stage != RequestStageLegacy {
+		t.Fatalf("registered legacy binding = %#v, err=%v", legacy, err)
+	}
+
+	requestAndResponse := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		&countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+			RequestStage: "rewrite",
+			BufferedBody: true,
+		}},
+	)
+	combined, err := BindPluginChecked(
+		"body-transformer",
+		requestAndResponse,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r2"},
+	)
+	if err != nil || combined.Stage != RequestStageRewrite {
+		t.Fatalf("combined binding = %#v, err=%v", combined, err)
+	}
+}
+
+func TestBindPluginCheckedRejectsDescriptorOutsideExactFactoryMask(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		factory    string
+		descriptor base.BindingPhaseDescriptor
+	}{
+		{name: "echo access", factory: "echo", descriptor: base.BindingPhaseDescriptor{RequestStage: "access"}},
+		{name: "body transformer header", factory: "body-transformer", descriptor: base.BindingPhaseDescriptor{RequestStage: "none", Header: true}},
+		{name: "serverless mixed request response", factory: "serverless-pre-function", descriptor: base.BindingPhaseDescriptor{RequestStage: "access", Header: true}},
+		{name: "serverless two response phases", factory: "serverless-post-function", descriptor: base.BindingPhaseDescriptor{RequestStage: "none", Header: true, BufferedBody: true}},
+		{name: "echo empty response tuple", factory: "echo", descriptor: base.BindingPhaseDescriptor{RequestStage: "none"}},
+		{name: "serverless empty response tuple", factory: "serverless-pre-function", descriptor: base.BindingPhaseDescriptor{RequestStage: "none"}},
+		{name: "unsupported stage", factory: "serverless-pre-function", descriptor: base.BindingPhaseDescriptor{RequestStage: "invalid"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := newResponseTestPlugin(test.factory, 1, &countingResponseTestConfig{descriptor: test.descriptor})
+			if _, err := BindPluginChecked(
+				test.factory,
+				plugin,
+				ScopeRoute,
+				ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+			); err == nil {
+				t.Fatal("BindPluginChecked() error = nil")
+			}
+		})
 	}
 }
 

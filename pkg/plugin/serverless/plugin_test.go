@@ -9,7 +9,74 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+func TestServerlessDescriptorSelectsOneConfiguredStageOrPhase(t *testing.T) {
+	tests := []struct {
+		phase      string
+		wantStage  string
+		wantHeader bool
+		wantBody   bool
+	}{
+		{phase: "", wantStage: "access"},
+		{phase: "access", wantStage: "access"},
+		{phase: "rewrite", wantStage: "rewrite"},
+		{phase: "before_proxy", wantStage: "before_proxy"},
+		{phase: "header_filter", wantStage: "none", wantHeader: true},
+		{phase: "body_filter", wantStage: "none", wantBody: true},
+		{phase: "log", wantStage: "legacy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.phase, func(t *testing.T) {
+			plugin := newTestPlugin(t, NewPreFunction(), Config{
+				Phase:     tt.phase,
+				Functions: []string{`return function() end`},
+			})
+			descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+			if err != nil {
+				t.Fatalf("DescribeBindingPhases() error = %v", err)
+			}
+			if descriptor.RequestStage != tt.wantStage || descriptor.Header != tt.wantHeader ||
+				descriptor.BufferedBody != tt.wantBody {
+				t.Fatalf(
+					"descriptor = %+v, want stage=%q header=%t body=%t",
+					descriptor,
+					tt.wantStage,
+					tt.wantHeader,
+					tt.wantBody,
+				)
+			}
+		})
+	}
+}
+
+func TestServerlessResponsePhaseCallbackMutatesOnlySelectedState(t *testing.T) {
+	plugin := newTestPlugin(t, NewPostFunction(), Config{
+		Phase: "body_filter",
+		Functions: []string{`return function(conf, ctx)
+			ngx.status = 418
+			ngx.arg[1] = "body-filter"
+		end`},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	state := base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Length": {"8"}},
+		Body:   []byte("upstream"),
+	}
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusTeapot || string(state.Body) != "body-filter" {
+		t.Fatalf("state = %+v, want 418/body-filter", state)
+	}
+	if got := state.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+}
 
 func newTestPlugin(t *testing.T, p *Plugin, cfg Config) *Plugin {
 	t.Helper()

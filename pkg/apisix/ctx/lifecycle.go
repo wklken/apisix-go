@@ -32,6 +32,7 @@ type ResponseSource string
 const (
 	ResponseSourceUnknown   ResponseSource = "unknown"
 	ResponseSourceUpstream  ResponseSource = "upstream"
+	ResponseSourceAPISIX    ResponseSource = "apisix"
 	ResponseSourceEarlyStop ResponseSource = "early_stop"
 	ResponseSourceCacheHit  ResponseSource = "cache_hit"
 )
@@ -112,13 +113,54 @@ func (l *RequestLifecycle) SetResponseSource(source ResponseSource) {
 		return
 	}
 	switch source {
-	case ResponseSourceUnknown, ResponseSourceUpstream, ResponseSourceEarlyStop, ResponseSourceCacheHit:
+	case ResponseSourceUnknown,
+		ResponseSourceUpstream,
+		ResponseSourceAPISIX,
+		ResponseSourceEarlyStop,
+		ResponseSourceCacheHit:
 	default:
 		source = ResponseSourceUnknown
 	}
 	l.mu.Lock()
 	l.responseSource = source
 	l.mu.Unlock()
+}
+
+// SetRequestResponseSource is the request-aware source setter. Lifecycle is
+// authoritative; the request variable is only a synchronized compatibility
+// mirror for existing observability/variable consumers.
+func SetRequestResponseSource(r *http.Request, source ResponseSource) *http.Request {
+	if r == nil {
+		return nil
+	}
+	if lifecycle := GetRequestLifecycle(r); lifecycle != nil {
+		lifecycle.SetResponseSource(source)
+		source = lifecycle.ResponseSource()
+	} else {
+		source = normalizeResponseSource(source)
+	}
+	RegisterRequestVar(r, "$response_source", string(source))
+	RegisterApisixVar(r, "$response_source", string(source))
+	return r
+}
+
+// SetResponseSource is kept as the concise request-aware spelling for new
+// phase owners; RequestLifecycle.SetResponseSource remains the value-only API.
+func SetResponseSource(r *http.Request, source ResponseSource) *http.Request {
+	return SetRequestResponseSource(r, source)
+}
+
+func normalizeResponseSource(source ResponseSource) ResponseSource {
+	switch source {
+	case ResponseSourceUnknown,
+		ResponseSourceUpstream,
+		ResponseSourceAPISIX,
+		ResponseSourceEarlyStop,
+		ResponseSourceCacheHit:
+		return source
+	default:
+		return ResponseSourceUnknown
+	}
 }
 
 func (l *RequestLifecycle) ResponseSource() ResponseSource {

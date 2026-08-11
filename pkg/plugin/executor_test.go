@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -131,8 +132,8 @@ func TestExecutorMixedRequestAndLegacyPreservesPriorityAndUnwind(t *testing.T) {
 	if got := trace.values(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("mixed executor order = %v, want %v", got, want)
 	}
-	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
-		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUpstream)
+	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUnknown {
+		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUnknown)
 	}
 }
 
@@ -606,8 +607,8 @@ func TestScopedExecutorKeepsRouteRewriteInLegacyAuthEnvelope(t *testing.T) {
 	if got := trace.values(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("scoped rewrite/auth order = %v, want %v", got, want)
 	}
-	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
-		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUpstream)
+	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUnknown {
+		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceUnknown)
 	}
 }
 
@@ -793,7 +794,7 @@ func TestRequestPipelineResolverErrorSkipsLegacyAndReturnsGeneric500(t *testing.
 			httptest.NewRequest(http.MethodGet, "/", nil),
 		)
 	if response.Code != http.StatusInternalServerError ||
-		response.Body.String() != "Internal Server Error\n" {
+		response.Body.String() != `{"message":"Internal Server Error"}` {
 		t.Fatalf(
 			"resolver error response = %d/%q, want generic 500",
 			response.Code,
@@ -1011,5 +1012,125 @@ func TestRequestPipelineRunsBeforeProxyOnce(t *testing.T) {
 	)
 	if hookCalls != 1 {
 		t.Fatalf("before-proxy hook calls = %d, want 1", hookCalls)
+	}
+}
+
+func TestRequestPipelineUsesCheckedBindingStageWithoutReresolving(t *testing.T) {
+	config := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{RequestStage: "access"}}
+	plugin := newResponseTestPlugin("serverless-pre-function", 1, config)
+	calls := 0
+	plugin.request = func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+		calls++
+		return base.ContinueRequest(r)
+	}
+	binding := checkedResponseBinding(t, "serverless-pre-function", plugin, ScopeRoute, "route")
+	config.fail.Store(true)
+	NewRequestPipeline([]Binding{binding}, nil).Then(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if calls != 1 {
+		t.Fatalf("request phase calls = %d, want 1", calls)
+	}
+}
+
+func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T) {
+	order := make([]string, 0, 7)
+	phase := func(marker string) func(http.ResponseWriter, *http.Request) base.RequestPhaseResult {
+		return func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			order = append(order, marker)
+			return base.ContinueRequest(r)
+		}
+	}
+	auth := newExecutorRequestPlugin("auth", 500, phase("auth"))
+	routeRewrite := newExecutorRequestPlugin("route-rewrite", 400, phase("route-loser"))
+	consumerRewrite := newExecutorRequestPlugin("consumer-rewrite", 400, phase("consumer-rewrite"))
+	access := newExecutorRequestPlugin("access", 300, phase("access"))
+	before := newResponseTestPlugin(
+		"serverless-pre-function",
+		200,
+		responseTestConfig{stage: "before_proxy"},
+	)
+	before.request = phase("before-proxy")
+	beforeBinding := checkedResponseBinding(t, "serverless-pre-function", before, ScopeRoute, "route")
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 500),
+		pipelineBinding("proxy-rewrite", routeRewrite, ScopeRoute, 400),
+		pipelineBinding("limit-conn", access, ScopeRoute, 300),
+		beforeBinding,
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		order = append(order, "resolver")
+		return ConsumerResolution{
+			Request:  r,
+			Resolved: true,
+			Bindings: []Binding{pipelineBinding("proxy-rewrite", consumerRewrite, ScopeConsumer, 400)},
+		}, nil
+	})
+	pipeline.ThenWithPostResolutionHook(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { order = append(order, "terminal") }),
+		func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
+			order = append(order, "hook")
+			if len(effective.merged) != 4 || effective.merged[1].factoryName != "proxy-rewrite" ||
+				effective.merged[1].Plugin != consumerRewrite {
+				t.Fatalf("effective winners = %#v", effective.merged)
+			}
+			return r, nil
+		},
+	).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	want := []string{"auth", "resolver", "hook", "consumer-rewrite", "access", "before-proxy", "terminal"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}
+
+func TestAuthAndResolverStopsDoNotInvokePostResolutionHook(t *testing.T) {
+	t.Run("authentication stop", func(t *testing.T) {
+		auth := newExecutorRequestPlugin(
+			"auth",
+			1,
+			func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+				return base.StopRequest(r)
+			},
+		)
+		hookCalls := 0
+		NewRequestPipeline([]Binding{pipelineBinding("jwt-auth", auth, ScopeRoute, 1)}, nil).
+			ThenWithPostResolutionHook(
+				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("terminal called") }),
+				func(r *http.Request, _ EffectiveBindingSet) (*http.Request, error) {
+					hookCalls++
+					return r, nil
+				},
+			).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		if hookCalls != 0 {
+			t.Fatalf("hook calls = %d", hookCalls)
+		}
+	})
+
+	t.Run("resolver stop", func(t *testing.T) {
+		hookCalls := 0
+		NewRequestPipeline(nil, func(*http.Request) (ConsumerResolution, error) {
+			return ConsumerResolution{}, errors.New("resolver failed")
+		}).ThenWithPostResolutionHook(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("terminal called") }),
+			func(r *http.Request, _ EffectiveBindingSet) (*http.Request, error) {
+				hookCalls++
+				return r, nil
+			},
+		).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		if hookCalls != 0 {
+			t.Fatalf("hook calls = %d", hookCalls)
+		}
+	})
+}
+
+func TestEffectiveBindingSetClonePreservesPrivateFactoryStageScopeProvenance(t *testing.T) {
+	global := pipelineBinding("proxy-cache", newExecutorRequestPlugin("global", 2, nil), ScopeGlobal, 2)
+	merged := pipelineBinding("body-transformer", newExecutorRequestPlugin("merged", 1, nil), ScopeRoute, 1)
+	set := EffectiveBindingSet{global: []Binding{global}, merged: []Binding{merged}}
+	clone := cloneEffectiveBindingSet(set)
+	set.global[0].factoryName = "mutated"
+	set.merged[0].Provenance.ID = "mutated"
+	if clone.global[0].factoryName != "proxy-cache" || clone.global[0].Stage != global.Stage ||
+		clone.global[0].Scope != ScopeGlobal || clone.merged[0].Provenance.ID == "mutated" {
+		t.Fatalf("clone = %#v", clone)
 	}
 }

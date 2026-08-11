@@ -1,6 +1,6 @@
 # HTTP Plugin Capability Migration Manifest
 
-**Baseline:** `origin/master@e61cb4db62c025d7ea79335551439e2afc35a918` (merged Plan 13 scoped-rewrite baseline)
+**Implementation baseline through Plan 14:** `origin/master@b7d17c54138ae530f7f81a4908153615fae21fae`
 
 **Purpose:** This is the exact planning source for Plans 12–17. It maps every registered HTTP plugin identity to one or more explicit capabilities and its primary migration PR. Production code ultimately owns the same static table; the final completeness test compares it against every factory key in `pkg/plugin/init.go`.
 
@@ -9,7 +9,7 @@
 - The registry contains 115 factory keys and 114 implementation identities.
 - `otel` is a factory alias of the `opentelemetry` identity and must resolve to identical capabilities.
 - `request-context` is the factory key; `request_context` is only that plugin's `GetName` identity and is not a second factory.
-- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `streaming_body_filter`, `protocol_owner`, `log`, `finalizer`, `generation_owner`, `separate_subsystem`.
+- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `final_response_store`, `streaming_body_filter`, `protocol_owner`, `log`, `finalizer`, `generation_owner`, `separate_subsystem`.
 - Multiple `conditional_terminal` plugins are legal and ordered by scope/stage/priority. `protocol_owner` is exclusive only when the route build matrix says two protocol owners cannot coexist.
 - `log` body observation is not `buffered_body_filter`; it uses the bounded log-capture observer from Plan 17.
 - A later plan may implement an already-declared secondary capability, but it may not add an unlisted identity or capability without updating this manifest and its completeness test first.
@@ -86,15 +86,15 @@
 | Identity | Capabilities | Primary plan |
 | --- | --- | --- |
 | api-breaker | request_access, conditional_terminal, finalizer | 15 |
-| body-transformer | buffered_body_filter | 15 |
+| body-transformer | request_rewrite, buffered_body_filter | 15 |
 | echo | header_filter, buffered_body_filter | 15 |
-| error-page | header_filter, buffered_body_filter | 15 |
-| exit-transformer | header_filter, buffered_body_filter | 15 |
-| graphql-proxy-cache | request_access, conditional_terminal, header_filter, buffered_body_filter | 15 |
-| proxy-cache | request_access, conditional_terminal, header_filter, buffered_body_filter | 15 |
-| response-rewrite | header_filter, buffered_body_filter | 15 |
-| serverless-pre-function | request_rewrite, request_access, conditional_terminal, header_filter, buffered_body_filter, log | 15/17 |
-| serverless-post-function | request_rewrite, request_access, conditional_terminal, header_filter, buffered_body_filter, log | 15/17 |
+| error-page | buffered_body_filter | 15 |
+| exit-transformer | buffered_body_filter | 15 |
+| graphql-proxy-cache | request_access, conditional_terminal, final_response_store | 15 |
+| proxy-cache | request_access, conditional_terminal, final_response_store | 15 |
+| response-rewrite | buffered_body_filter | 15 |
+| serverless-pre-function | request_rewrite, request_access, before_proxy, conditional_terminal, header_filter, buffered_body_filter, log | 15/17 |
+| serverless-post-function | request_rewrite, request_access, before_proxy, conditional_terminal, header_filter, buffered_body_filter, log | 15/17 |
 
 `api-breaker` observes final status through a per-request lifecycle finalizer; it is not a header/body mutator. Cache-store runs after the final transformed representation, not as an unordered peer body filter. Serverless `phase=log` remains deferred until Plan 17 even though its other configured phases migrate in Plan 15.
 
@@ -172,7 +172,7 @@ Every `conditional_terminal` identity has exactly one execution owner at runtime
 | --- | --- |
 | `request_rewrite` | ai-prompt-decorator, ai-prompt-template, ai-rag, ai-request-rewrite, data-mask, degraphql, jwe-decrypt, request-id, traffic-split, grpc-transcode, grpc-web |
 | `request_access` | limit-conn, acl, ai-aws-content-moderation, ai-prompt-guard, authz-casbin, authz-casdoor, authz-keycloak, basic-auth, cas-auth, chaitin-waf, client-control, consumer-restriction, csrf, dingtalk-auth, feishu-auth, forward-auth, graphql-limit-count, hmac-auth, ip-restriction, jwt-auth, key-auth, ldap-auth, limit-count, limit-req, multi-auth, oas-validator, opa, openid-connect, referer-restriction, request-validation, saml-auth, ua-restriction, uri-blocker, wolf-rbac, workflow, api-breaker, graphql-proxy-cache, proxy-cache, ai-aliyun-content-moderation, ai-rate-limiting, cors, fault-injection |
-| `request_rewrite` or `request_access` (validated config) | serverless-pre-function, serverless-post-function; only these two stages are accepted and the materialized config selects one |
+| `request_rewrite`, `request_access`, or `before_proxy` (validated config) | serverless-pre-function, serverless-post-function; header-filter, body-filter, and log configs select non-request capabilities and do not enter a request stage |
 | `before_proxy` terminal owner | ai-proxy, ai-proxy-multi, aws-lambda, azure-functions, dubbo-proxy, http-dubbo, kafka-proxy, mcp-bridge, mocking, openfunction, openwhisk, public-api, redirect |
 
 The completeness test derives the set of all `conditional_terminal` rows above and rejects a missing, duplicate, or extra stage declaration.

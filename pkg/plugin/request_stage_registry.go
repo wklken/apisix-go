@@ -19,27 +19,38 @@ type RequestStageSpec struct {
 	AuthenticatesConsumer bool
 	ConsumerConfigOnly    bool
 	AdaptLegacyHandler    bool
+	ConfigAware           bool
 }
 
 // requestStageRegistry is intentionally exact. A factory alias or an
 // implementation name is not implicitly normalized here.
 var requestStageRegistry = map[string]RequestStageSpec{
-	"request-context":     {Stage: RequestStageRewrite},
-	"request-id":          {Stage: RequestStageRewrite},
-	"real-ip":             {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"proxy-rewrite":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"proxy-control":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"proxy-mirror":        {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"traffic-label":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"traffic-split":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"ai-prompt-decorator": {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"ai-prompt-template":  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"ai-rag":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"ai-request-rewrite":  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"data-mask":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"degraphql":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"example-plugin":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-	"jwe-decrypt":         {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"api-breaker":              {Stage: RequestStageAccess},
+	"body-transformer":         {Stage: RequestStageNone, ConfigAware: true},
+	"echo":                     {Stage: RequestStageNone, ConfigAware: true},
+	"error-page":               {Stage: RequestStageNone},
+	"exit-transformer":         {Stage: RequestStageNone},
+	"graphql-proxy-cache":      {Stage: RequestStageAccess},
+	"proxy-cache":              {Stage: RequestStageAccess},
+	"response-rewrite":         {Stage: RequestStageNone},
+	"serverless-pre-function":  {Stage: RequestStageNone, ConfigAware: true},
+	"serverless-post-function": {Stage: RequestStageNone, ConfigAware: true},
+	"request-context":          {Stage: RequestStageRewrite},
+	"request-id":               {Stage: RequestStageRewrite},
+	"real-ip":                  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"proxy-rewrite":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"proxy-control":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"proxy-mirror":             {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"traffic-label":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"traffic-split":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"ai-prompt-decorator":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"ai-prompt-template":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"ai-rag":                   {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"ai-request-rewrite":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"data-mask":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"degraphql":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"example-plugin":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+	"jwe-decrypt":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 
 	"limit-conn": {Stage: RequestStageAccess},
 
@@ -86,6 +97,65 @@ var requestStageRegistry = map[string]RequestStageSpec{
 func RequestStageFor(name string) (RequestStageSpec, bool) {
 	spec, ok := requestStageRegistry[name]
 	return spec, ok
+}
+
+// ResolveRequestStage resolves the exact factory key and, for config-aware
+// factories, validates the initialized config descriptor before returning the
+// request-stage owner. Unknown factory keys are intentionally not inferred.
+func ResolveRequestStage(factoryKey string, config any) (RequestStageSpec, bool, error) {
+	spec, ok := requestStageRegistry[factoryKey]
+	if !ok {
+		return RequestStageSpec{}, false, nil
+	}
+	if !spec.ConfigAware {
+		return spec, true, nil
+	}
+	describer, ok := config.(base.BindingPhaseDescriber)
+	if !ok {
+		return RequestStageSpec{}, true, fmt.Errorf("factory %q requires a binding phase descriptor", factoryKey)
+	}
+	descriptor, err := describer.DescribeBindingPhases()
+	if err != nil {
+		return RequestStageSpec{}, true, fmt.Errorf("factory %q binding phase descriptor: %w", factoryKey, err)
+	}
+	if err := validateBindingPhaseDescriptor(factoryKey, descriptor); err != nil {
+		return RequestStageSpec{}, true, err
+	}
+	if descriptor.RequestStage != "" {
+		stage, err := parseRequestStage(descriptor.RequestStage)
+		if err != nil {
+			return RequestStageSpec{}, true, fmt.Errorf("factory %q: %w", factoryKey, err)
+		}
+		spec.Stage = stage
+	}
+	return spec, true, nil
+}
+
+func parseRequestStage(stage string) (RequestStage, error) {
+	switch stage {
+	case "", "legacy":
+		return RequestStageLegacy, nil
+	case "none":
+		return RequestStageNone, nil
+	case "rewrite":
+		return RequestStageRewrite, nil
+	case "access":
+		return RequestStageAccess, nil
+	case "before_proxy":
+		return RequestStageBeforeProxy, nil
+	default:
+		return RequestStageLegacy, fmt.Errorf("unsupported request stage %q", stage)
+	}
+}
+
+func validateBindingPhaseDescriptor(factoryKey string, descriptor base.BindingPhaseDescriptor) error {
+	if _, err := parseRequestStage(descriptor.RequestStage); err != nil {
+		return fmt.Errorf("factory %q: %w", factoryKey, err)
+	}
+	if !responseFactoryAllowsDescriptor(factoryKey, descriptor) {
+		return fmt.Errorf("factory %q descriptor declares an unsupported response phase", factoryKey)
+	}
+	return nil
 }
 
 // rewriteOnlyAdapter turns an audited legacy Handler into one request-phase

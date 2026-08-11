@@ -602,16 +602,31 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 		return nil, err
 	}
 	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if lifecycle := ctx.GetRequestLifecycle(r); lifecycle != nil {
-			lifecycle.SetResponseSource(ctx.ResponseSourceEarlyStop)
-		}
+		ctx.SetRequestResponseSource(r, ctx.ResponseSourceEarlyStop)
 		http.NotFoundHandler().ServeHTTP(w, r)
 	})
-	pipeline := plugin.NewRequestPipeline(
-		append(append([]plugin.Binding{}, systemBindings...), globalBindings...),
-		nil,
+	staticBindings := append(append([]plugin.Binding{}, systemBindings...), globalBindings...)
+	executor, err := plugin.NewBufferedResponseExecutor(
+		staticBindings,
+		plugin.TerminalDescriptor{
+			Owner: plugin.TerminalOwnerGlobalNotFound,
+			Provenance: plugin.ResourceProvenance{
+				Kind: plugin.ResourceSystem,
+				ID:   "global-not-found",
+			},
+		},
+		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
 	)
-	return ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(terminal))), nil
+	if err != nil {
+		return nil, err
+	}
+	pipeline := plugin.NewRequestPipeline(
+		staticBindings,
+		nil,
+	).WithBufferedResponseExecutor(executor)
+	return ensureRouteLifecycle(
+		ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(terminal))),
+	), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -722,8 +737,24 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	localBindings = append(localBindings, serviceBindings...)
+	terminalSources := append([]materializedPluginSource(nil), localSources...)
+	terminalSources = append(terminalSources, serviceSources...)
+	for _, rule := range globalRules {
+		globalSources := materializedPluginSources(
+			rule.Plugins,
+			plugin.ResourceProvenance{Kind: plugin.ResourceGlobalRule, ID: rule.ID},
+		)
+		for i := range globalSources {
+			globalSources[i].scope = plugin.ScopeGlobal
+		}
+		terminalSources = append(terminalSources, globalSources...)
+	}
 
-	handler, err := b.buildReverseHandler(r, service)
+	resolvedUpstream, upstreamProvenance, err := resolveRouteUpstream(r, service)
+	if err != nil {
+		return nil, err
+	}
+	handler, err := b.buildReverseHandler(r, service, resolvedUpstream)
 	if err != nil {
 		logger.Errorf("build reverse handler fail: %s", err)
 		return nil, err
@@ -733,8 +764,89 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	staticBindings = append(staticBindings, systemBindings...)
 	staticBindings = append(staticBindings, globalBindings...)
 	staticBindings = append(staticBindings, localBindings...)
-	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext))
-	return ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(handler))), nil
+	terminalOwner, err := terminalDescriptorForRoute(
+		terminalSources,
+		resolvedUpstream,
+		upstreamProvenance,
+	)
+	if err != nil {
+		return nil, err
+	}
+	executor, err := plugin.NewBufferedResponseExecutor(
+		staticBindings,
+		terminalOwner,
+		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
+	)
+	if err != nil {
+		return nil, err
+	}
+	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext)).
+		WithBufferedResponseExecutor(executor)
+	return ensureRouteLifecycle(
+		ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(handler))),
+	), nil
+}
+
+func ensureRouteLifecycle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request, _ := ctx.EnsureRequestLifecycle(r, time.Now())
+		next.ServeHTTP(w, request)
+	})
+}
+
+func terminalDescriptorForRoute(
+	sources []materializedPluginSource,
+	upstream resource.Upstream,
+	upstreamProvenance plugin.ResourceProvenance,
+) (plugin.TerminalDescriptor, error) {
+	descriptor := plugin.TerminalDescriptor{
+		Owner:      plugin.TerminalOwnerOrdinaryProxy,
+		Provenance: upstreamProvenance,
+	}
+	var ownerName string
+	var ownerProvenance plugin.ResourceProvenance
+	var owner plugin.TerminalOwner
+	for _, source := range sources {
+		_, metadata, err := parsePluginMetadata(source.config)
+		if err != nil {
+			return plugin.TerminalDescriptor{}, fmt.Errorf(
+				"plugin %q from %s %q: parse plugin metadata: %w",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+				err,
+			)
+		}
+		if metadata.disabled {
+			continue
+		}
+		var candidate plugin.TerminalOwner
+		switch source.name {
+		case "ai-proxy", "ai-proxy-multi":
+			candidate = plugin.TerminalOwnerAIRuntime
+		case "dubbo-proxy":
+			candidate = plugin.TerminalOwnerDubbo
+		case "http-dubbo":
+			candidate = plugin.TerminalOwnerHTTPDubbo
+		default:
+			continue
+		}
+		if ownerName != "" {
+			continue
+		}
+		ownerName = source.name
+		ownerProvenance = source.provenance
+		owner = candidate
+	}
+	if ownerName != "" {
+		descriptor.Owner = owner
+		descriptor.Provenance = ownerProvenance
+	}
+	if strings.EqualFold(upstream.Scheme, "kafka") {
+		descriptor.Owner = plugin.TerminalOwnerKafka
+		descriptor.Provenance = upstreamProvenance
+	}
+	return descriptor, nil
 }
 
 func (b *Builder) resolveConsumerBindings(
@@ -1235,6 +1347,230 @@ func (p metadataRequestPlugin) RunRequestPhase(
 	return p.phase.RunRequestPhase(metadataErrorResponseWriter(w, p.errorResponse), r)
 }
 
+type metadataResponseHeaderPlugin struct {
+	metadataPlugin
+	header base.HeaderFilterPlugin
+}
+
+func (p metadataResponseHeaderPlugin) RunHeaderFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.header.RunHeaderFilter(r, state)
+}
+
+func (p metadataResponseHeaderPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseBodyPlugin struct {
+	metadataPlugin
+	body base.BufferedBodyFilterPlugin
+}
+
+func (p metadataResponseBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataResponseBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseHeaderBodyPlugin struct {
+	metadataPlugin
+	header base.HeaderFilterPlugin
+	body   base.BufferedBodyFilterPlugin
+}
+
+func (p metadataResponseHeaderBodyPlugin) RunHeaderFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.header.RunHeaderFilter(r, state)
+}
+
+func (p metadataResponseHeaderBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataResponseHeaderBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataResponseStorePlugin struct {
+	metadataPlugin
+	store base.FinalResponseStorePlugin
+}
+
+func (p metadataResponseStorePlugin) RunFinalResponseStore(
+	r *http.Request,
+	state base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.store.RunFinalResponseStore(r, state)
+}
+
+func (p metadataResponseStorePlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataRequestBodyPlugin struct {
+	metadataRequestPlugin
+	body base.BufferedBodyFilterPlugin
+}
+
+func (p metadataRequestBodyPlugin) RunBufferedBodyFilter(
+	r *http.Request,
+	state *base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.body.RunBufferedBodyFilter(r, state)
+}
+
+func (p metadataRequestBodyPlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+type metadataRequestStorePlugin struct {
+	metadataRequestPlugin
+	store base.FinalResponseStorePlugin
+}
+
+func (p metadataRequestStorePlugin) RunFinalResponseStore(
+	r *http.Request,
+	state base.ResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	return p.store.RunFinalResponseStore(r, state)
+}
+
+func (p metadataRequestStorePlugin) AppliesToResponseSource(
+	source ctx.ResponseSource,
+) bool {
+	return metadataResponseEligible(p.Plugin, source)
+}
+
+func metadataFilterMatches(filter *pluginexpr.Expression, r *http.Request) bool {
+	return filter == nil || filter.Eval(func(name string) any {
+		return pluginexpr.RequestValue(r, name)
+	})
+}
+
+func metadataResponseEligible(p plugin.Plugin, source ctx.ResponseSource) bool {
+	if checker, ok := p.(base.ResponseEligibility); ok {
+		return checker.AppliesToResponseSource(source)
+	}
+	return source == ctx.ResponseSourceUpstream
+}
+
+const (
+	metadataResponseHeader = 1 << iota
+	metadataResponseBody
+	metadataResponseStore
+)
+
+func metadataResponseMask(factoryName string, p plugin.Plugin) (int, error) {
+	if p == nil {
+		return 0, fmt.Errorf("factory %q has nil plugin", factoryName)
+	}
+	switch factoryName {
+	case "body-transformer":
+		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
+		if err != nil {
+			return 0, err
+		}
+		if descriptor.BufferedBody {
+			return metadataResponseBody, nil
+		}
+	case "echo":
+		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
+		if err != nil {
+			return 0, err
+		}
+		mask := 0
+		if descriptor.Header {
+			mask |= metadataResponseHeader
+		}
+		if descriptor.BufferedBody {
+			mask |= metadataResponseBody
+		}
+		return mask, nil
+	case "error-page", "exit-transformer", "response-rewrite":
+		return metadataResponseBody, nil
+	case "proxy-cache", "graphql-proxy-cache":
+		return metadataResponseStore, nil
+	case "serverless-pre-function", "serverless-post-function":
+		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
+		if err != nil {
+			return 0, err
+		}
+		mask := 0
+		if descriptor.Header {
+			mask |= metadataResponseHeader
+		}
+		if descriptor.BufferedBody {
+			mask |= metadataResponseBody
+		}
+		return mask, nil
+	default:
+		return 0, nil
+	}
+	return 0, nil
+}
+
+func metadataBindingPhaseDescriptor(p plugin.Plugin, factoryName string) (base.BindingPhaseDescriptor, error) {
+	describer, ok := p.Config().(base.BindingPhaseDescriber)
+	if !ok {
+		return base.BindingPhaseDescriptor{}, fmt.Errorf(
+			"factory %q requires a binding phase descriptor",
+			factoryName,
+		)
+	}
+	descriptor, err := describer.DescribeBindingPhases()
+	if err != nil {
+		return base.BindingPhaseDescriptor{}, fmt.Errorf(
+			"factory %q binding phase descriptor: %w",
+			factoryName,
+			err,
+		)
+	}
+	return descriptor, nil
+}
+
 func metadataErrorResponseWriter(w http.ResponseWriter, value any) http.ResponseWriter {
 	replaced := false
 	responseHeaderWritten := false
@@ -1577,7 +1913,16 @@ func (b *Builder) initServicePluginBindingsStrict(
 		}
 		b.servicePluginMu.Unlock()
 		if initialized != nil {
-			bindings = append(bindings, plugin.BindPlugin(source.name, initialized, source.scope, source.provenance))
+			binding, bindErr := plugin.BindPluginChecked(
+				source.name,
+				initialized,
+				source.scope,
+				source.provenance,
+			)
+			if bindErr != nil {
+				return nil, bindErr
+			}
+			bindings = append(bindings, binding)
 		}
 	}
 	return bindings, nil
@@ -1704,8 +2049,15 @@ func (b *Builder) initPluginBindingsStrict(
 			pendingStoppers = append(pendingStoppers, stopper)
 		}
 
-		initialized := newMetadataPlugin(p, metadata)
-		bindings = append(bindings, plugin.BindPlugin(name, initialized, source.scope, source.provenance))
+		initialized, metadataErr := newMetadataPlugin(name, p, metadata)
+		if metadataErr != nil {
+			return nil, sourceError(metadataErr)
+		}
+		binding, bindErr := plugin.BindPluginChecked(name, initialized, source.scope, source.provenance)
+		if bindErr != nil {
+			return nil, sourceError(bindErr)
+		}
+		bindings = append(bindings, binding)
 	}
 	for _, setter := range resourceContextSetters {
 		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
@@ -1717,23 +2069,85 @@ func (b *Builder) initPluginBindingsStrict(
 	return bindings, nil
 }
 
-func newMetadataPlugin(p plugin.Plugin, metadata pluginMetadata) plugin.Plugin {
+func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetadata) (plugin.Plugin, error) {
 	if metadata.filter == nil && metadata.errorResponse == nil {
-		return p
+		return p, nil
 	}
-	if phase, ok := p.(base.RequestPhasePlugin); ok {
-		return metadataRequestPlugin{
-			Plugin:        p,
-			phase:         phase,
-			filter:        metadata.filter,
-			errorResponse: metadata.errorResponse,
-		}
-	}
-	return metadataPlugin{
+	basePlugin := metadataPlugin{
 		Plugin:        p,
 		filter:        metadata.filter,
 		errorResponse: metadata.errorResponse,
 	}
+	responseMask, err := metadataResponseMask(factoryName, p)
+	if err != nil {
+		return nil, err
+	}
+	requestStage := plugin.RequestStageLegacy
+	if spec, known, resolveErr := plugin.ResolveRequestStage(factoryName, p.Config()); resolveErr != nil {
+		return nil, resolveErr
+	} else if known {
+		requestStage = spec.Stage
+	}
+	header, hasHeader := p.(base.HeaderFilterPlugin)
+	body, hasBody := p.(base.BufferedBodyFilterPlugin)
+	store, hasStore := p.(base.FinalResponseStorePlugin)
+	if responseMask&metadataResponseHeader != 0 && !hasHeader {
+		return nil, fmt.Errorf("factory %q declares header filter without callback", factoryName)
+	}
+	if responseMask&metadataResponseBody != 0 && !hasBody {
+		return nil, fmt.Errorf("factory %q declares buffered body filter without callback", factoryName)
+	}
+	if responseMask&metadataResponseStore != 0 && !hasStore {
+		return nil, fmt.Errorf("factory %q declares final response store without callback", factoryName)
+	}
+	if phase, ok := p.(base.RequestPhasePlugin); ok &&
+		requestStage != plugin.RequestStageNone && requestStage != plugin.RequestStageLegacy {
+		requestPlugin := metadataRequestPlugin{
+			Plugin:        basePlugin.Plugin,
+			phase:         phase,
+			filter:        metadata.filter,
+			errorResponse: metadata.errorResponse,
+		}
+		if responseMask&metadataResponseBody != 0 {
+			return metadataRequestBodyPlugin{
+				metadataRequestPlugin: requestPlugin,
+				body:                  body,
+			}, nil
+		}
+		if responseMask&metadataResponseStore != 0 {
+			return metadataRequestStorePlugin{
+				metadataRequestPlugin: requestPlugin,
+				store:                 store,
+			}, nil
+		}
+		return requestPlugin, nil
+	}
+	if responseMask&metadataResponseHeader != 0 && responseMask&metadataResponseBody != 0 {
+		return metadataResponseHeaderBodyPlugin{
+			metadataPlugin: basePlugin,
+			header:         header,
+			body:           body,
+		}, nil
+	}
+	if responseMask&metadataResponseHeader != 0 {
+		return metadataResponseHeaderPlugin{
+			metadataPlugin: basePlugin,
+			header:         header,
+		}, nil
+	}
+	if responseMask&metadataResponseBody != 0 {
+		return metadataResponseBodyPlugin{
+			metadataPlugin: basePlugin,
+			body:           body,
+		}, nil
+	}
+	if responseMask&metadataResponseStore != 0 {
+		return metadataResponseStorePlugin{
+			metadataPlugin: basePlugin,
+			store:          store,
+		}, nil
+	}
+	return basePlugin, nil
 }
 
 func (b *Builder) pluginAllowed(name string, options pluginInitOptions) bool {
@@ -1788,22 +2202,51 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 	return bindings, nil
 }
 
-func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {
-	var err error
-	var upstream resource.Upstream
-	// TODO: check the real priority in apisix
-	// FIXME: if both upstream and upstream_id are not empty, which one should be used?
+func resolveRouteUpstream(
+	r resource.Route,
+	service resource.Service,
+) (resource.Upstream, plugin.ResourceProvenance, error) {
+	// Keep this priority identical to buildReverseHandler: inline route,
+	// route upstream_id, inline service, then service upstream_id.
 	if len(r.Upstream.Nodes) > 0 {
-		upstream = r.Upstream
-	} else if r.UpstreamID != "" {
-		upstream, err = store.GetUpstream(r.UpstreamID)
-	} else if service.Upstream.Nodes != nil {
-		upstream = service.Upstream
-	} else if service.UpstreamID != "" {
-		upstream, err = store.GetUpstream(service.UpstreamID)
+		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("get upstream fail: %s", err)
+	if r.UpstreamID != "" {
+		upstream, err := store.GetUpstream(r.UpstreamID)
+		if err != nil {
+			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID},
+				fmt.Errorf("get upstream fail: %s", err)
+		}
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+	}
+	if service.Upstream.Nodes != nil {
+		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
+	}
+	if service.UpstreamID != "" {
+		upstream, err := store.GetUpstream(service.UpstreamID)
+		if err != nil {
+			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID},
+				fmt.Errorf("get upstream fail: %s", err)
+		}
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
+	}
+	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+}
+
+func (b *Builder) buildReverseHandler(
+	r resource.Route,
+	service resource.Service,
+	resolved ...resource.Upstream,
+) (http.Handler, error) {
+	var upstream resource.Upstream
+	if len(resolved) > 0 {
+		upstream = resolved[0]
+	} else {
+		var err error
+		upstream, _, err = resolveRouteUpstream(r, service)
+		if err != nil {
+			return nil, err
+		}
 	}
 	switch upstream.PassHost {
 	case "", "pass", "node":
@@ -1965,6 +2408,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(w, r); err != nil {
+			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
 				_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
@@ -2484,10 +2928,10 @@ func newModifyResponse() pxy.ModifyResponse {
 		// resp.Request = resp.Request.WithContext(ctx)
 
 		status := resp.StatusCode
+		ctx.SetRequestResponseSource(resp.Request, ctx.ResponseSourceUpstream)
 		pxy.ReportHTTPOutcome(resp.Request, status)
 		if ctx.GetRequestVars(resp.Request) != nil {
 			ctx.RegisterRequestVar(resp.Request, "$status", status)
-			ctx.RegisterRequestVar(resp.Request, "$response_source", "upstream")
 		}
 		recordUpstreamLatency(resp.Request)
 
@@ -2598,9 +3042,7 @@ func newErrorHandler() pxy.ErrorHandler {
 				pxy.ReportTCPFailureOutcome(r, false)
 			}
 		}
-		if ctx.GetRequestVars(r) != nil {
-			ctx.RegisterRequestVar(r, "$response_source", "apisix")
-		}
+		ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
 
 		if !overloaded {
 			if e, ok := err.(net.Error); ok {

@@ -485,7 +485,7 @@ func (p *Plugin) fetchAndMaybeStore(
 	}
 	if shouldStore && p.cacheableStatus(recorder.StatusCode()) &&
 		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
-		p.store(r, key, recorder, cacheTTL)
+		_ = p.store(r, key, recorder, cacheTTL)
 	}
 	recorder.Header().Set(cacheStatusHeader, cacheStatus)
 	recorder.Commit(w)
@@ -560,50 +560,12 @@ func (p *Plugin) purgeAllLocked(key string) bool {
 	return baseOK || indexOK
 }
 
-func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter, ttl time.Duration) {
-	varyHeaders, cacheable := cacheutil.ParseVaryHeader(recorder.Header())
-	if !cacheable {
-		return
-	}
-
-	now := time.Now()
-	entry := cacheEntry{
-		header:    cacheutil.CloneHeader(recorder.Header()),
-		body:      append([]byte(nil), recorder.Body()...),
-		status:    recorder.StatusCode(),
-		storedAt:  now,
-		ttl:       ttl,
-		expiresAt: now.Add(ttl),
-	}
-	entry.header.Del(cacheStatusHeader)
-	if p.config.HideCacheHeaders {
-		entry.header.Del("Expires")
-		entry.header.Del("Cache-Control")
-	}
-
-	storageKey := key
-	p.lock.Lock()
-	if p.diskEnabled {
-		p.loadVaryIndexLocked(key)
-	}
-	if len(varyHeaders) > 0 {
-		signature := cacheutil.VarySignature(varyHeaders, r)
-		storageKey = key + "::" + signature
-		p.updateVaryIndexLocked(key, varyHeaders, signature, entry.expiresAt)
-		delete(p.entries, key)
-	} else if _, ok := p.vary[key]; ok {
-		p.purgeAllLocked(key)
-	}
-	p.entries[storageKey] = entry
-	index, hasIndex := p.vary[key]
-	if p.diskEnabled {
-		_ = p.persistEntryLocked(storageKey, entry)
-		if hasIndex {
-			_ = p.persistVaryIndex(key, index)
-		}
-		p.cleanupDiskLocked(now)
-	}
-	p.lock.Unlock()
+func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedResponseWriter, ttl time.Duration) error {
+	return p.storeState(r, key, base.ResponseState{
+		Status: recorder.StatusCode(),
+		Header: recorder.Header(),
+		Body:   recorder.Body(),
+	}, ttl, p.config.HideCacheHeaders)
 }
 
 func (p *Plugin) cacheKey(r *http.Request) string {

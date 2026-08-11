@@ -276,6 +276,20 @@ func TestBufferedResponseWriterSetStatusCodeSuppressesRemappedBody(t *testing.T)
 	}
 }
 
+func TestBufferedResponseWriterCommitFinalResponsePreservesInformationalHistory(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	w.WriteHeader(103)
+	final := ResponseState{Status: 201, Header: http.Header{"X-Final": {"yes"}}, Body: []byte("final")}
+	response := newCommitRecorder()
+	w.CommitFinalResponse(response, final)
+	if got, want := response.statuses, []int{103, 201}; !equalInts(got, want) {
+		t.Fatalf("statuses = %v, want %v", got, want)
+	}
+	if response.body.String() != "final" || response.headers[1].Get("X-Final") != "yes" {
+		t.Fatalf("final response = %q/%v", response.body.String(), response.headers[1])
+	}
+}
+
 func TestTransformResponseWriterSuppressesBodyForNestedHead(t *testing.T) {
 	req := newPipelineRequest("/test", 2)
 	req.Method = http.MethodHead

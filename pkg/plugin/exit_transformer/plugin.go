@@ -86,8 +86,45 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// RunBufferedBodyFilter applies each configured Lua transformer to one
+// canonical response state. A failed transformer keeps the prior state and is
+// logged, matching the legacy best-effort payload behavior.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || !p.AppliesToResponseSource(responseSource(r)) {
+		return nil
+	}
+	resp := exitResponse{
+		status: state.Status,
+		body:   append([]byte(nil), state.Body...),
+		header: state.Header.Clone(),
+		method: r.Method,
+	}
+	runner := newTransformerRunner(r)
+	defer runner.close()
+	for _, proto := range p.compiled {
+		transformed, err := runner.transform(resp, proto)
+		if err != nil {
+			logger.Errorf("exit-transformer: %v", err)
+			continue
+		}
+		resp = transformed
+	}
+	state.Status = resp.status
+	state.Body = append([]byte(nil), resp.body...)
+	state.Header = resp.header.Clone()
+	return nil
+}
+
+func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
+	return source == apisixctx.ResponseSourceAPISIX || source == apisixctx.ResponseSourceEarlyStop
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
 
@@ -113,6 +150,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		writeResponse(w, resp)
 	})
+}
+
+func responseSource(r *http.Request) apisixctx.ResponseSource {
+	if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+		return lifecycle.ResponseSource()
+	}
+	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source != "" {
+		return apisixctx.ResponseSource(source)
+	}
+	return apisixctx.ResponseSourceUnknown
 }
 
 func writeResponse(w http.ResponseWriter, resp exitResponse) {

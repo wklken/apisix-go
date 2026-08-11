@@ -62,13 +62,9 @@ func AdaptRequestPhase(plugin RequestPhasePlugin, next http.Handler) http.Handle
 		case RequestContinue:
 			next.ServeHTTP(w, request)
 		case RequestStop:
-			if lifecycle != nil {
-				lifecycle.SetResponseSource(normalizeStopSource(result.Source))
-			}
+			apisixctx.SetRequestResponseSource(request, normalizeStopSource(result.Source))
 		default:
-			if lifecycle != nil {
-				lifecycle.SetResponseSource(apisixctx.ResponseSourceEarlyStop)
-			}
+			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceEarlyStop)
 		}
 	})
 }

@@ -2,6 +2,7 @@ package file_logger
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -65,6 +68,49 @@ func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
 	}
 	if !strings.Contains(content, `"status":201`) {
 		t.Fatalf("log content = %q, want matched response status", content)
+	}
+}
+
+func TestSnapshotDefaultLogFieldsPreservesResolvedUpstream(t *testing.T) {
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			APISIXVars: map[string]any{
+				"$balancer_ip":   "127.0.0.1",
+				"$balancer_port": "1982",
+			},
+		},
+	}
+	fields := snapshotDefaultLogFields(snapshot)
+	if fields["upstream"] != "127.0.0.1:1982" {
+		t.Fatalf("upstream = %#v, want resolved address", fields["upstream"])
+	}
+}
+
+func TestLogCapturePolicyIncludesCustomFormatBodies(t *testing.T) {
+	p := &Plugin{
+		config:         Config{MaxReqBodyBytes: 17, MaxRespBodyBytes: 23},
+		logFormat:      map[string]any{"request": map[string]any{"body": "$request_body"}},
+		logFormatExtra: map[string]string{"response": "$response_body"},
+	}
+	policy := p.LogCapturePolicy()
+	if policy.RequestBodyBytes != 17 || policy.ResponseBodyBytes != 23 {
+		t.Fatalf("policy = %#v, want request=17 response=23", policy)
+	}
+}
+
+func TestFileSnapshotValueHonorsBodyExpressionAndDecodedLimit(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	_, _ = writer.Write([]byte("private-response-body"))
+	_ = writer.Close()
+	snapshot := base.LogSnapshot{Response: apisixlog.ResponseLogSnapshot{
+		Header: http.Header{"Content-Encoding": {"gzip"}}, Body: compressed.Bytes(),
+	}}
+	if got := fileSnapshotValue(snapshot, "$resp_body", false, false, 8); got != "" {
+		t.Fatalf("hidden response body = %#v, want empty", got)
+	}
+	if got := fileSnapshotValue(snapshot, "$resp_body", false, true, 8); got != "private-" {
+		t.Fatalf("decoded response body = %#v, want bounded decoded prefix", got)
 	}
 }
 

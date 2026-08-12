@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -72,6 +73,76 @@ func RequestValue(r *http.Request, name string) any {
 		return value
 	}
 	return ""
+}
+
+// SnapshotValue preserves RequestValue semantics after the live request has
+// been detached for log and finalizer callbacks.
+func SnapshotValue(snapshot base.LogSnapshot, name string) any {
+	name = strings.TrimPrefix(name, "$")
+	switch {
+	case name == "uri":
+		return snapshotPath(snapshot)
+	case name == "request_uri":
+		return snapshot.Request.URI
+	case name == "query_string" || name == "args":
+		return snapshotQuery(snapshot)
+	case name == "is_args":
+		if snapshotQuery(snapshot) != "" {
+			return "?"
+		}
+		return ""
+	case name == "method" || name == "request_method":
+		return snapshot.Request.Method
+	case name == "host":
+		return snapshot.Request.Host
+	case name == "scheme":
+		if scheme := snapshot.Request.Header.Get("X-Forwarded-Proto"); scheme != "" {
+			return scheme
+		}
+		return snapshot.Request.Scheme
+	case name == "remote_addr":
+		if value := fmt.Sprint(snapshot.Request.APISIXVars["$remote_addr"]); value != "" {
+			return value
+		}
+		return base.RemoteIP(snapshot.Request.RemoteAddr)
+	case name == "remote_port":
+		if value := fmt.Sprint(snapshot.Request.APISIXVars["$remote_port"]); value != "" {
+			return value
+		}
+		_, port, _ := net.SplitHostPort(snapshot.Request.RemoteAddr)
+		return port
+	case strings.HasPrefix(name, "arg_"):
+		return snapshot.Request.Query.Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "cookie_"):
+		request := &http.Request{Header: snapshot.Request.Header}
+		cookie, err := request.Cookie(strings.TrimPrefix(name, "cookie_"))
+		if err == nil {
+			return cookie.Value
+		}
+		return ""
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return HeaderValue(snapshot.Request.Header, header)
+	}
+	key := "$" + name
+	if value := base.LogSnapshotValue(snapshot, key); value != nil && fmt.Sprint(value) != "" {
+		return value
+	}
+	return ""
+}
+
+func snapshotPath(snapshot base.LogSnapshot) string {
+	if parsed, err := url.ParseRequestURI(snapshot.Request.URI); err == nil {
+		return parsed.Path
+	}
+	return snapshot.Request.URI
+}
+
+func snapshotQuery(snapshot base.LogSnapshot) string {
+	if parsed, err := url.ParseRequestURI(snapshot.Request.URI); err == nil {
+		return parsed.RawQuery
+	}
+	return snapshot.Request.Query.Encode()
 }
 
 func String(value any) string {

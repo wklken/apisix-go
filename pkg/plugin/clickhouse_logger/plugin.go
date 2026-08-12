@@ -271,6 +271,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor("clickhouse logger", base.BatchDefaults{
 		PluginID:           name,

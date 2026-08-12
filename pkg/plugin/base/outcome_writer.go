@@ -2,77 +2,99 @@ package base
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
-type responseOutcomeState struct {
-	mu           sync.Mutex
-	outcome      ctx.ResponseOutcome
-	hijackedConn interface{ Close() error }
-	closeOnce    sync.Once
-	closeErr     error
+// ResponseCaptureSnapshot is the detached bounded response view used by log
+// snapshots. Body capture is disabled until EnableBodyCapture is called.
+type ResponseCaptureSnapshot struct {
+	Header        http.Header
+	Trailer       http.Header
+	Body          []byte
+	BodyTruncated bool
 }
 
-func CaptureResponseOutcome(w http.ResponseWriter) (
-	wrapped http.ResponseWriter,
-	snapshot func() ctx.ResponseOutcome,
-	closeHijacked func() error,
-) {
-	state := &responseOutcomeState{
+// ResponseCapture is the sole outer response observer. It records outcome
+// metadata for every response while retaining a bounded body only when a log
+// binding explicitly enables it.
+type ResponseCapture struct {
+	mu            sync.Mutex
+	root          http.ResponseWriter
+	outcome       ctx.ResponseOutcome
+	body          []byte
+	bodyLimit     int
+	bodyTruncated bool
+	hijackedConn  io.Closer
+	closeOnce     sync.Once
+	closeErr      error
+}
+
+// CaptureResponseOutcomeController installs one response capture controller
+// around w. The compatibility wrapper below exposes the historical callback
+// tuple while independent callers migrate to the controller API.
+func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWriter, *ResponseCapture) {
+	capture := &ResponseCapture{
+		root: w,
 		outcome: ctx.ResponseOutcome{
 			Kind:   ctx.RequestOutcomeCompleted,
 			Status: http.StatusOK,
 		},
 	}
-
-	wrapped = httpsnoop.Wrap(w, httpsnoop.Hooks{
+	wrapped := httpsnoop.Wrap(w, httpsnoop.Hooks{
 		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
 			return func(status int) {
 				if status < http.StatusContinue || status >= http.StatusOK || status == http.StatusSwitchingProtocols {
-					state.commit(status)
+					capture.commit(status)
 				}
 				writeHeader(status)
 			}
 		},
 		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
 			return func(body []byte) (int, error) {
-				state.commit(http.StatusOK)
+				capture.commit(http.StatusOK)
 				n, err := write(body)
-				state.addBytes(int64(n))
+				capture.addBytes(int64(n))
+				capture.captureWrittenBody(body, int64(n))
 				return n, err
 			}
 		},
 		WriteString: func(writeString httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
 			return func(value string) (int, error) {
-				state.commit(http.StatusOK)
+				capture.commit(http.StatusOK)
 				n, err := writeString(value)
-				state.addBytes(int64(n))
+				capture.addBytes(int64(n))
+				capture.captureWrittenBody([]byte(value), int64(n))
 				return n, err
 			}
 		},
 		ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
 			return func(reader io.Reader) (int64, error) {
-				state.commit(http.StatusOK)
-				n, err := readFrom(reader)
-				state.addBytes(n)
+				capture.commit(http.StatusOK)
+				tracked := &captureReader{reader: reader, limit: capture.remainingBodyLimit()}
+				n, err := readFrom(tracked)
+				capture.addBytes(n)
+				capture.captureWrittenBody(tracked.body, n)
 				return n, err
 			}
 		},
 		Flush: func(flush httpsnoop.FlushFunc) httpsnoop.FlushFunc {
 			return func() {
-				state.markFlushed()
+				capture.markFlushed()
 				flush()
 			}
 		},
 		FlushError: func(flushError httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
 			return func() error {
-				state.markFlushed()
+				capture.markFlushed()
 				return flushError()
 			}
 		},
@@ -80,71 +102,214 @@ func CaptureResponseOutcome(w http.ResponseWriter) (
 			return func() (net.Conn, *bufio.ReadWriter, error) {
 				conn, rw, err := hijack()
 				if err == nil {
-					state.markHijacked(conn)
+					capture.markHijacked(conn)
 				}
 				return conn, rw, err
 			}
 		},
 	})
-
-	snapshot = state.snapshot
-	closeHijacked = state.closeHijacked
-	return wrapped, snapshot, closeHijacked
+	return wrapped, capture
 }
 
-func (s *responseOutcomeState) commit(status int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.outcome.Committed {
-		return
+// CaptureResponseOutcome is retained only as a direct-package compatibility
+// boundary. New production code should use CaptureResponseOutcomeController.
+func CaptureResponseOutcome(w http.ResponseWriter) (
+	wrapped http.ResponseWriter,
+	snapshot func() ctx.ResponseOutcome,
+	closeHijacked func() error,
+) {
+	wrapped, capture := CaptureResponseOutcomeController(w)
+	return wrapped, capture.Outcome, capture.CloseHijacked
+}
+
+type captureContextKey struct{}
+
+func WithResponseCapture(r *http.Request, capture *ResponseCapture) *http.Request {
+	if r == nil {
+		return nil
 	}
-	s.outcome.Status = status
-	s.outcome.Committed = true
+	return r.WithContext(contextWithResponseCapture(r, capture))
 }
 
-func (s *responseOutcomeState) addBytes(written int64) {
-	s.mu.Lock()
-	s.outcome.Bytes += written
-	s.mu.Unlock()
+func contextWithResponseCapture(r *http.Request, capture *ResponseCapture) context.Context {
+	return context.WithValue(r.Context(), captureContextKey{}, capture)
 }
 
-func (s *responseOutcomeState) markFlushed() {
-	s.mu.Lock()
-	if !s.outcome.Committed {
-		s.outcome.Status = http.StatusOK
-		s.outcome.Committed = true
+func ResponseCaptureFromRequest(r *http.Request) (*ResponseCapture, bool) {
+	if r == nil {
+		return nil, false
 	}
-	s.outcome.Flushed = true
-	s.mu.Unlock()
+	capture, ok := r.Context().Value(captureContextKey{}).(*ResponseCapture)
+	return capture, ok && capture != nil
 }
 
-func (s *responseOutcomeState) markHijacked(conn net.Conn) {
-	s.mu.Lock()
-	if !s.outcome.Committed {
-		s.outcome.Status = http.StatusOK
-		s.outcome.Committed = true
+func (c *ResponseCapture) EnableBodyCapture(limit int) error {
+	if c == nil {
+		return fmt.Errorf("response capture is nil")
 	}
-	s.outcome.Hijacked = true
-	if s.hijackedConn == nil {
-		s.hijackedConn = conn
+	if limit < 0 || limit > MAX_RESP_BODY {
+		return fmt.Errorf("response body capture must be between 0 and %d bytes: %d", MAX_RESP_BODY, limit)
 	}
-	s.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if limit == 0 {
+		c.bodyLimit = 0
+		c.body = nil
+		c.bodyTruncated = false
+		return nil
+	}
+	if limit > c.bodyLimit {
+		c.bodyLimit = limit
+		if len(c.body) > limit {
+			c.body = c.body[:limit]
+			c.bodyTruncated = true
+		}
+	}
+	return nil
 }
 
-func (s *responseOutcomeState) snapshot() ctx.ResponseOutcome {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.outcome
+func (c *ResponseCapture) Outcome() ctx.ResponseOutcome {
+	if c == nil {
+		return ctx.ResponseOutcome{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.outcome
 }
 
-func (s *responseOutcomeState) closeHijacked() error {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		conn := s.hijackedConn
-		s.mu.Unlock()
+func (c *ResponseCapture) Snapshot() ResponseCaptureSnapshot {
+	if c == nil {
+		return ResponseCaptureSnapshot{}
+	}
+	c.mu.Lock()
+	body := append([]byte(nil), c.body...)
+	truncated := c.bodyTruncated
+	root := c.root
+	c.mu.Unlock()
+	var header, trailer http.Header
+	if root != nil {
+		header = root.Header().Clone()
+		trailer = make(http.Header)
+		for _, declaration := range header.Values("Trailer") {
+			for name := range strings.SplitSeq(declaration, ",") {
+				name = http.CanonicalHeaderKey(strings.TrimSpace(name))
+				if name == "" {
+					continue
+				}
+				if values := header.Values(name); len(values) > 0 {
+					trailer[name] = append([]string(nil), values...)
+					header.Del(name)
+				}
+			}
+		}
+		for name, values := range header {
+			const prefix = http.TrailerPrefix
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			trailerName := strings.TrimPrefix(name, prefix)
+			trailer[trailerName] = append([]string(nil), values...)
+			header.Del(name)
+		}
+		if len(trailer) == 0 {
+			trailer = nil
+		}
+	}
+	return ResponseCaptureSnapshot{Header: header, Trailer: trailer, Body: body, BodyTruncated: truncated}
+}
+
+func (c *ResponseCapture) CloseHijacked() error {
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		conn := c.hijackedConn
+		c.mu.Unlock()
 		if conn != nil {
-			s.closeErr = conn.Close()
+			c.closeErr = conn.Close()
 		}
 	})
-	return s.closeErr
+	return c.closeErr
+}
+
+func (c *ResponseCapture) commit(status int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.outcome.Committed {
+		return
+	}
+	c.outcome.Status = status
+	c.outcome.Committed = true
+}
+
+func (c *ResponseCapture) addBytes(written int64) {
+	c.mu.Lock()
+	c.outcome.Bytes += written
+	c.mu.Unlock()
+}
+
+func (c *ResponseCapture) markFlushed() {
+	c.mu.Lock()
+	if !c.outcome.Committed {
+		c.outcome.Status = http.StatusOK
+		c.outcome.Committed = true
+	}
+	c.outcome.Flushed = true
+	c.mu.Unlock()
+}
+
+func (c *ResponseCapture) markHijacked(conn net.Conn) {
+	c.mu.Lock()
+	if !c.outcome.Committed {
+		c.outcome.Status = http.StatusOK
+		c.outcome.Committed = true
+	}
+	c.outcome.Hijacked = true
+	if c.hijackedConn == nil {
+		c.hijackedConn = conn
+	}
+	c.mu.Unlock()
+}
+
+func (c *ResponseCapture) captureWrittenBody(body []byte, written int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.bodyLimit <= 0 || written <= 0 {
+		return
+	}
+	remaining := c.bodyLimit - len(c.body)
+	if remaining <= 0 {
+		c.bodyTruncated = true
+		return
+	}
+	confirmed := min(int64(len(body)), written)
+	captured := min(int64(remaining), confirmed)
+	if captured > 0 {
+		c.body = append(c.body, body[:captured]...)
+	}
+	if captured < written {
+		c.bodyTruncated = true
+	}
+}
+
+func (c *ResponseCapture) remainingBodyLimit() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return max(c.bodyLimit-len(c.body), 0)
+}
+
+type captureReader struct {
+	reader io.Reader
+	limit  int
+	body   []byte
+}
+
+func (r *captureReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 && len(r.body) < r.limit {
+		keep := min(n, r.limit-len(r.body))
+		r.body = append(r.body, p[:keep]...)
+	}
+	return n, err
 }

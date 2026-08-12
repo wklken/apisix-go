@@ -2,12 +2,12 @@ package request_context
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -56,42 +56,83 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		r, lifecycle = ctx.EnsureRequestLifecycle(r, time.Now())
 		metricsEnabled := metrics.HTTPRequestMetricsEnabled()
 		returnedNormally := false
-		var snapshot func() ctx.ResponseOutcome
+		var capture *base.ResponseCapture
 		if direct && metricsEnabled {
-			w, snapshot, _ = base.CaptureResponseOutcome(w)
+			w, capture = base.CaptureResponseOutcomeController(w)
+			_ = lifecycle.AddFinalizer(name, func() error {
+				if !returnedNormally {
+					metrics.Requests.Inc()
+					return nil
+				}
+				request := lifecycle.FinalRequest()
+				if request == nil {
+					request = r
+				}
+				response := base.ResponseCaptureSnapshot{}
+				if capture != nil {
+					response = capture.Snapshot()
+				}
+				snapshotRequest := request.Clone(request.Context())
+				snapshotRequest.Body = http.NoBody
+				snapshot := base.BuildLogSnapshot(
+					snapshotRequest,
+					response,
+					lifecycle.Outcome(),
+					lifecycle.ResponseSource(),
+					lifecycle.StartedAt(),
+					lifecycle.FinishedAt(),
+				)
+				return p.RunSnapshotFinalizer(snapshot)
+			})
+		} else if !direct && metricsEnabled {
+			// Handler remains a named direct-package compatibility adapter. The
+			// production request-phase owner invokes RunSnapshotFinalizer through
+			// the log executor; this fallback serves callers that still wrap the
+			// handler around an externally managed lifecycle.
+			_ = lifecycle.AddFinalizer(name, func() error {
+				request := lifecycle.FinalRequest()
+				if request == nil {
+					request = r
+				}
+				snapshotRequest := request.Clone(request.Context())
+				snapshotRequest.Body = http.NoBody
+				return p.RunSnapshotFinalizer(base.BuildLogSnapshot(
+					snapshotRequest,
+					base.ResponseCaptureSnapshot{},
+					lifecycle.Outcome(),
+					lifecycle.ResponseSource(),
+					lifecycle.StartedAt(),
+					lifecycle.FinishedAt(),
+				))
+			})
 		}
 		if direct {
 			defer func() {
-				if snapshot != nil {
-					lifecycle.SetOutcome(snapshot())
+				if capture != nil {
+					lifecycle.SetOutcome(capture.Outcome())
 				}
 				lifecycle.Finalize()
 				ctx.RecycleVars(r)
 			}()
 		}
 
-		r = p.initializeRequest(r, lifecycle, direct, &returnedNormally)
+		r = p.initializeRequest(r, lifecycle)
 		next.ServeHTTP(w, r)
 		returnedNormally = true
 	}
 	return http.HandlerFunc(fn)
 }
 
-// RunRequestPhase initializes shared request state and registers the existing
-// request metrics finalizer. The outer request owner creates/finalizes the
-// lifecycle and recycles request state after all finalizers run.
+// RunRequestPhase initializes shared request state. The outer request owner
+// creates/finalizes the lifecycle and invokes RunSnapshotFinalizer after all
+// response phases have published the detached final snapshot.
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
 	lifecycle := ctx.GetRequestLifecycle(r)
-	r = p.initializeRequest(r, lifecycle, false, nil)
+	r = p.initializeRequest(r, lifecycle)
 	return base.ContinueRequest(r)
 }
 
-func (p *Plugin) initializeRequest(
-	r *http.Request,
-	lifecycle *ctx.RequestLifecycle,
-	direct bool,
-	returnedNormally *bool,
-) *http.Request {
+func (p *Plugin) initializeRequest(r *http.Request, lifecycle *ctx.RequestLifecycle) *http.Request {
 	r = ctx.WithApisixVars(r, map[string]string{
 		"$route_id":     p.config.RouteID,
 		"$route_name":   p.config.RouteName,
@@ -102,42 +143,73 @@ func (p *Plugin) initializeRequest(
 	})
 	r = ctx.WithRequestVars(r)
 
-	if !metrics.HTTPRequestMetricsEnabled() || lifecycle == nil {
-		return r
-	}
-
-	labels := p.metricLabels()
-	startedAt := lifecycle.StartedAt()
-	_ = lifecycle.AddFinalizer(name, func() error {
-		if direct && (returnedNormally == nil || !*returnedNormally) {
-			metrics.Requests.Inc()
-			return nil
-		}
-		request := lifecycle.FinalRequest()
-		if request == nil {
-			request = r
-		}
-		outcome := lifecycle.Outcome()
-		consumer := apisixStringVar(request, "$consumer_name")
-		node := apisixStringVar(request, "$balancer_ip")
-		upstreamLatency := requestInt64Var(request, "$upstream_latency")
-		metrics.Requests.Inc()
-		metrics.RecordHTTPRequest(request, metrics.HTTPRequestMetrics{
-			Status:          outcome.Status,
-			Route:           labels.route,
-			MatchedURI:      apisixStringVar(request, "$matched_uri"),
-			MatchedHost:     apisixStringVar(request, "$matched_host"),
-			Service:         labels.service,
-			Consumer:        consumer,
-			Node:            node,
-			RequestLatency:  time.Since(startedAt).Milliseconds(),
-			UpstreamLatency: upstreamLatency,
-			IngressBytes:    util.RequestSize(request),
-			EgressBytes:     outcome.Bytes,
-		})
-		return nil
-	})
 	return r
+}
+
+// RunSnapshotFinalizer records request metrics from a detached snapshot. It
+// deliberately does not consult a live request or register another lifecycle
+// callback; the log executor owns exactly-once callback ordering.
+func (p *Plugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
+	if !metrics.HTTPRequestMetricsEnabled() {
+		return nil
+	}
+	request := requestFromSnapshot(snapshot)
+	labels := p.metricLabels()
+	requestLatency := snapshot.Finished.Sub(snapshot.Started).Milliseconds()
+	if snapshot.Started.IsZero() || snapshot.Finished.IsZero() || requestLatency < 0 {
+		requestLatency = 0
+	}
+	consumer := snapshot.Request.Consumer.Username
+	node := snapshotStringVar(snapshot.Request.APISIXVars, "$balancer_ip")
+	upstreamLatency := snapshotInt64Var(snapshot.Request.RequestVars, "$upstream_latency")
+	ingressBytes := max(snapshot.Request.ContentLength, int64(0))
+	metrics.Requests.Inc()
+	metrics.RecordHTTPRequest(request, metrics.HTTPRequestMetrics{
+		Status:          snapshot.Outcome.Status,
+		Route:           labels.route,
+		MatchedURI:      snapshotStringVar(snapshot.Request.APISIXVars, "$matched_uri"),
+		MatchedHost:     snapshotStringVar(snapshot.Request.APISIXVars, "$matched_host"),
+		Service:         labels.service,
+		Consumer:        consumer,
+		Node:            node,
+		RequestLatency:  requestLatency,
+		UpstreamLatency: upstreamLatency,
+		IngressBytes:    ingressBytes,
+		EgressBytes:     snapshot.Outcome.Bytes,
+	})
+	return nil
+}
+
+func requestFromSnapshot(snapshot base.LogSnapshot) *http.Request {
+	requestURL, err := url.Parse(snapshot.Request.URL)
+	if err != nil || requestURL == nil {
+		requestURL, _ = url.Parse(snapshot.Request.URI)
+	}
+	if requestURL == nil {
+		requestURL = &url.URL{}
+	}
+	request := &http.Request{
+		Method:        snapshot.Request.Method,
+		URL:           requestURL,
+		Host:          snapshot.Request.Host,
+		RemoteAddr:    snapshot.Request.RemoteAddr,
+		Proto:         snapshot.Request.Proto,
+		Header:        snapshot.Request.Header.Clone(),
+		ContentLength: snapshot.Request.ContentLength,
+		Body:          http.NoBody,
+	}
+	request = ctx.WithApisixVars(request, nil)
+	request = ctx.WithRequestVars(request)
+	for key, value := range snapshot.Request.APISIXVars {
+		ctx.RegisterApisixVar(request, key, value)
+	}
+	for key, value := range snapshot.Request.RequestVars {
+		ctx.RegisterRequestVar(request, key, value)
+	}
+	if snapshot.Source != ctx.ResponseSourceUnknown {
+		ctx.RegisterRequestVar(request, "$response_source", string(snapshot.Source))
+	}
+	return request
 }
 
 type metricLabels struct {
@@ -162,13 +234,13 @@ func metricResourceLabel(id string, name string, preferName bool) string {
 	return name
 }
 
-func apisixStringVar(r *http.Request, key string) string {
-	value, _ := ctx.GetApisixVar(r, key).(string)
+func snapshotStringVar(values map[string]any, key string) string {
+	value, _ := values[key].(string)
 	return value
 }
 
-func requestInt64Var(r *http.Request, key string) int64 {
-	switch value := ctx.GetRequestVar(r, key).(type) {
+func snapshotInt64Var(values map[string]any, key string) int64 {
+	switch value := values[key].(type) {
 	case int64:
 		return value
 	case int:

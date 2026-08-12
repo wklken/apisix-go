@@ -22,9 +22,53 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhasePreservesDefaultAndCustomAccessFields(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{config: Config{}, BaseLoggerPlugin: base.BaseLoggerPlugin{RouteID: "route-1"}}
+	p.logFormat = map[string]any{"host": "$host", "remote": "$remote_addr", "started": "$time_iso8601"}
+	p.SetSnapshotLogFormat(p.logFormat, nil)
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	started := time.Unix(100, 0)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", Host: "gateway.test:9443",
+			RemoteAddr: "192.0.2.4:3210", Scheme: "https", Proto: "HTTP/2.0",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted, Bytes: 4},
+		Started: started, Finished: started.Add(time.Second),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case fields := <-delivered:
+		if fields["host"] != "gateway.test" || fields["remote"] != "192.0.2.4" ||
+			fields["started"] != started.Format(time.RFC3339) {
+			t.Fatalf("custom fields = %#v", fields)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached TCP entry was not delivered")
+	}
+	p.logFormat = nil
+	fields := base.BuildAccessLogFromSnapshot(snapshot, "route-1")
+	if fields["route_id"] != "route-1" || fields["response"].(map[string]any)["status"] != http.StatusAccepted {
+		t.Fatalf("default fields = %#v", fields)
+	}
+}
 
 func TestSendBodyUnblocksOnParentCancellation(t *testing.T) {
 	client, peer := net.Pipe()

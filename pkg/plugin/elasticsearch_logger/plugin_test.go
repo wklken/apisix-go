@@ -17,9 +17,48 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhasePreservesIndexAndDetachedHostFields(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{
+		config: Config{Field: FieldConfig{Index: "apisix-$route_id"}},
+		BaseLoggerPlugin: base.BaseLoggerPlugin{LogFormat: map[string]string{
+			"host": "$host", "remote": "$remote_addr",
+		}},
+	}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Host: "gateway.example", RemoteAddr: "192.0.2.10:8443",
+		APISIXVars: map[string]any{"$route_id": "r-17"},
+	}}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		if entry[elasticsearchIndexField] != "apisix-r-17" {
+			t.Fatalf("index = %#v, want resolved route index", entry[elasticsearchIndexField])
+		}
+		if entry["host"] != "gateway.example" || entry["remote"] != "192.0.2.10" {
+			t.Fatalf("detached host fields = %#v/%#v", entry["host"], entry["remote"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Elasticsearch entry was not delivered")
+	}
+}
 
 func TestSendBatchCancelsElasticsearchBulkWithContext(t *testing.T) {
 	started := make(chan struct{})

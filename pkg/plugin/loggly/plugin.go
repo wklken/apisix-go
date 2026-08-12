@@ -290,6 +290,11 @@ func (p *Plugin) PostInit() error {
 	} else {
 		p.LogFormat = metadata.LogFormat
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.httpClient = &http.Client{
 		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
@@ -364,6 +369,40 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = resolveLogglySnapshotFormat(snapshot, p.LogFormat)
+		if routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
+			fields["route_id"] = routeID
+		}
+	} else {
+		fields = base.BuildAccessLogFromSnapshot(snapshot, "")
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	fields[logglyHostField] = base.HostWithoutPort(snapshot.Request.Host)
+	fields[logglyStatusField] = snapshot.Outcome.Status
+	return p.EnqueueLog(fields)
+}
+
+func resolveLogglySnapshotFormat(snapshot base.LogSnapshot, format map[string]string) map[string]any {
+	return base.ResolveStringLogFormat(format, func(value string) any {
+		if value == "$time_iso8601" {
+			return snapshot.Started.Format(time.RFC3339)
+		}
+		return base.SnapshotValue(snapshot, value)
+	})
 }
 
 type accessRequest = base.AccessLogRequest

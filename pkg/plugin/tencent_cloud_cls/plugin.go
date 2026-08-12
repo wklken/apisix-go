@@ -30,6 +30,7 @@ type Plugin struct {
 
 	client *resty.Client
 	now    func() time.Time
+	sample func() float64
 
 	clientRelease func()
 }
@@ -241,6 +242,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor("tencent-cloud-cls", base.BatchDefaults{
 		PluginID:           name,
@@ -275,16 +281,30 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		if rand.Float64() >= p.config.SampleRatio {
+		if p.sampleValue() >= p.config.SampleRatio {
 			return
 		}
 		_ = p.Fire(apisixlog.GetFields(r, p.LogFormat))
 	})
 }
 
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
+		return nil
+	}
+	return p.BaseLoggerPlugin.RunLogPhase(snapshot)
+}
+
+func (p *Plugin) sampleValue() float64 {
+	if p.sample != nil {
+		return p.sample()
+	}
+	return rand.Float64()
+}
+
 func (p *Plugin) bodyAwareHandler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		sampled := p.config.SampleRatio >= 1 || rand.Float64() < p.config.SampleRatio
+		sampled := p.config.SampleRatio >= 1 || p.sampleValue() < p.config.SampleRatio
 
 		var requestBody string
 		if sampled && p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {

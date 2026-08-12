@@ -4,7 +4,9 @@
 >
 > Official comparison baseline: Apache APISIX `release/3.17` (104 default plugins). Evidence is maintained against `pkg/plugin/init.go`, the plugin packages, route/proxy integration, focused tests, and the repository verification gate.
 >
-> Status audit: 2026-08-06.
+> Status audit: 2026-08-12. HTTP plugin request/response/streaming/protocol/log
+> ownership is explicit for all 115 factory keys / 114 implementation identities;
+> direct `Handler` compatibility paths are not installed by production routes.
 
 ## Summary
 

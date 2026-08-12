@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -122,7 +124,7 @@ func (p Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
 	case "rewrite", "access", "before_proxy":
 		return base.BindingPhaseDescriptor{RequestStage: phase}, nil
 	case "log":
-		return base.BindingPhaseDescriptor{RequestStage: "legacy"}, nil
+		return base.BindingPhaseDescriptor{RequestStage: "none", Log: true}, nil
 	case "header_filter":
 		return base.BindingPhaseDescriptor{RequestStage: "none", Header: true}, nil
 	case "body_filter":
@@ -178,6 +180,50 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 	return nil
 }
 
+// LogCapturePolicy requests the bounded request/response snapshot that the
+// legacy log-phase callback could observe. Other phases do not participate in
+// detached log capture and therefore keep the zero policy.
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	if p.config.Phase != "log" {
+		return base.LogCapturePolicy{}
+	}
+	return base.LogCapturePolicy{
+		RequestBodyBytes:  base.MAX_REQ_BODY,
+		ResponseBodyBytes: base.MAX_RESP_BODY,
+	}
+}
+
+// RunLogPhase executes log-phase Lua exactly once against a detached request.
+// Any response-like result is reported as a bounded callback error instead of
+// being applied to the selected response.
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if p.config.Phase != "log" {
+		return nil
+	}
+	req, err := detachedRequest(snapshot)
+	if err != nil {
+		return err
+	}
+	response := base.NewBufferedResponseWriter()
+	for field, values := range snapshot.Response.Header {
+		response.Header()[field] = append([]string(nil), values...)
+	}
+	response.SetStatusCode(snapshot.Outcome.Status)
+	response.SetBody(snapshot.Response.Body)
+	baselineHeader := response.Header().Clone()
+	baselineStatus := response.StatusCode()
+	baselineBody := append([]byte(nil), response.Body()...)
+	result, err := p.runFunctions(req, response)
+	if err != nil {
+		return err
+	}
+	if result.respond || result.bodyModified || result.status != baselineStatus ||
+		!reflect.DeepEqual(result.header, baselineHeader) || !bytes.Equal(response.Body(), baselineBody) {
+		return fmt.Errorf("serverless log phase attempted response mutation")
+	}
+	return nil
+}
+
 func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
 	if p.config.Phase != "header_filter" && p.config.Phase != "body_filter" {
 		return false
@@ -201,6 +247,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, result.Request)
 			return
 		}
+		if p.config.Phase == "log" {
+			// The production route invokes RunLogPhase from the detached log
+			// executor. Keep direct Handler use response-transparent for legacy
+			// callers and compatibility tests.
+			next.ServeHTTP(w, r)
+			return
+		}
 		if p.config.Phase != "log" && apisixctx.GetRequestLifecycle(r) != nil {
 			next.ServeHTTP(w, r)
 			return
@@ -217,6 +270,27 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		result.apply(recorder)
 		recorder.Commit(w)
 	})
+}
+
+func detachedRequest(snapshot base.LogSnapshot) (*http.Request, error) {
+	target := snapshot.Request.URL
+	if target == "" {
+		target = snapshot.Request.URI
+	}
+	if target == "" {
+		target = "/"
+	}
+	if _, err := url.ParseRequestURI(target); err != nil {
+		target = "http://" + snapshot.Request.Host + target
+	}
+	req, err := http.NewRequest(snapshot.Request.Method, target, bytes.NewReader(snapshot.Request.Body))
+	if err != nil {
+		return nil, fmt.Errorf("build detached serverless request: %w", err)
+	}
+	req.Host = snapshot.Request.Host
+	req.RemoteAddr = snapshot.Request.RemoteAddr
+	req.Header = snapshot.Request.Header.Clone()
+	return req, nil
 }
 
 func responseRecorder(r *http.Request, state *base.ResponseState) *base.BufferedResponseWriter {

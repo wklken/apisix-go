@@ -321,6 +321,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor("loki logger", base.BatchDefaults{
 		PluginID:           name,
@@ -377,6 +382,139 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(wrapLokiEntry(logFields, requestStart, labels))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	policy := p.BaseLoggerPlugin.LogCapturePolicy()
+	formatted := base.LogCapturePolicyForFormats(
+		p.config.MaxReqBodyBytes,
+		p.config.MaxRespBodyBytes,
+		p.logFormatExtra,
+		p.config.LogLabels,
+	)
+	policy.RequestBodyBytes = max(policy.RequestBodyBytes, formatted.RequestBodyBytes)
+	policy.ResponseBodyBytes = max(policy.ResponseBodyBytes, formatted.ResponseBodyBytes)
+	return policy
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	requestStart := snapshot.Started
+	if requestStart.IsZero() {
+		requestStart = time.Now()
+	}
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	} else {
+		fields = lokiSnapshotDefaultFields(snapshot, requestStart)
+	}
+	for key, value := range p.logFormatExtra {
+		if _, exists := fields[key]; !exists {
+			if value == "$upstream_unresolved_host" {
+				fields[key] = base.SnapshotValue(snapshot, "$balancer_ip")
+			} else {
+				fields[key] = base.SnapshotValue(snapshot, value)
+			}
+		}
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return p.EnqueueLog(wrapLokiEntry(fields, requestStart, lokiSnapshotLabels(p, snapshot, fields)))
+}
+
+func lokiSnapshotDefaultFields(snapshot base.LogSnapshot, requestStart time.Time) map[string]any {
+	latency := float64(0)
+	if !snapshot.Finished.IsZero() {
+		latency = float64(snapshot.Finished.Sub(requestStart).Microseconds()) / 1000
+	}
+	upstreamLatency := 0.0
+	if value, err := strconv.ParseFloat(fmt.Sprint(base.SnapshotValue(snapshot, "$upstream_latency")), 64); err == nil {
+		upstreamLatency = value
+	}
+	apisixLatency := latency - upstreamLatency
+	if apisixLatency < 0 {
+		apisixLatency = 0
+	}
+	hostname := base.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	requestSize := max(snapshot.Request.ContentLength, 0)
+	fields := map[string]any{
+		"request": map[string]any{
+			"url":         snapshotRequestURL(snapshot),
+			"uri":         snapshotURI(snapshot),
+			"method":      snapshot.Request.Method,
+			"headers":     base.CollapseHeaderValues(snapshot.Request.Header),
+			"querystring": base.CollapseHeaderValues(http.Header(snapshot.Request.Query)),
+			"size":        requestSize,
+		},
+		"response": map[string]any{
+			"status":  snapshot.Outcome.Status,
+			"headers": base.CollapseHeaderValues(snapshot.Response.Header),
+			"size":    snapshot.Outcome.Bytes,
+		},
+		"server":           map[string]any{"hostname": hostname, "version": serverVersion},
+		"service_id":       base.SnapshotValue(snapshot, "$service_id"),
+		"route_id":         base.SnapshotValue(snapshot, "$route_id"),
+		"client_ip":        base.SnapshotValue(snapshot, "$remote_addr"),
+		"start_time":       float64(requestStart.UnixNano()) / float64(time.Millisecond),
+		"latency":          latency,
+		"upstream_latency": upstreamLatency,
+		"apisix_latency":   apisixLatency,
+	}
+	if fields["route_id"] == "" {
+		fields["route_id"] = "no-matched"
+	}
+	if username := snapshot.Request.Consumer.Username; username != "" {
+		fields["consumer"] = map[string]any{"username": username}
+	}
+	if host := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_ip")); host != "" {
+		if port := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_port")); port != "" {
+			host += ":" + port
+		}
+		fields["upstream"] = host
+	}
+	return fields
+}
+
+func lokiSnapshotLabels(p *Plugin, snapshot base.LogSnapshot, fields map[string]any) map[string]string {
+	labels := make(map[string]string, len(p.config.LogLabels))
+	for key, value := range p.config.LogLabels {
+		if after, ok := strings.CutPrefix(value, "$"); ok {
+			if resolved, ok := fields[after]; ok {
+				labels[key] = fmt.Sprint(resolved)
+			} else {
+				labels[key] = fmt.Sprint(base.SnapshotValue(snapshot, value))
+			}
+			continue
+		}
+		labels[key] = value
+	}
+	return labels
+}
+
+func snapshotRequestURL(snapshot base.LogSnapshot) string {
+	scheme := snapshot.Request.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + snapshot.Request.Host + snapshotURI(snapshot)
+}
+
+func snapshotURI(snapshot base.LogSnapshot) string {
+	if snapshot.Request.URI != "" {
+		return snapshot.Request.URI
+	}
+	return "/"
 }
 
 func (p *Plugin) logFields(

@@ -14,6 +14,9 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -226,6 +229,39 @@ func TestMetricLinesUseDogStatsDFormat(t *testing.T) {
 	}
 	if !slices.Equal(lines, want) {
 		t.Fatalf("lines = %v, want exact ordered lines %v", lines, want)
+	}
+}
+
+func TestRunLogPhaseClampsUnknownRequestSizeLikeLegacyHandler(t *testing.T) {
+	delivered := make(chan metricEntry, 1)
+	p := &Plugin{}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize:      1,
+		InactiveTimeout:   time.Hour,
+		BufferDuration:    time.Hour,
+		ShutdownTimeout:   time.Second,
+		DeliveryTimeout:   time.Second,
+		MaxPendingEntries: 1,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]["entry"].(metricEntry)
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{ContentLength: -1},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		if entry.IngressSize != 0 {
+			t.Fatalf("ingress size = %d, want legacy unknown-size value 0", entry.IngressSize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached metric was not delivered")
 	}
 }
 

@@ -14,9 +14,61 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhasePreservesSplunkDefaultEventFields(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?x=1", URL: "/orders?x=1", Scheme: "http",
+			Host: "gateway.example", RemoteAddr: "192.0.2.3:443",
+			APISIXVars: map[string]any{"$balancer_ip": "10.0.0.1", "$balancer_port": "8080"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted, Bytes: 12},
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case fields := <-delivered:
+		if fields["request_method"] != http.MethodGet || fields["response_status"] != http.StatusAccepted {
+			t.Fatalf("default event fields = %#v", fields)
+		}
+		if fields["upstream"] != "10.0.0.1:8080" {
+			t.Fatalf("upstream = %#v", fields["upstream"])
+		}
+		if fields["request_url"] != "http://gateway.example/orders?x=1" {
+			t.Fatalf("request_url = %#v", fields["request_url"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Splunk entry was not delivered")
+	}
+}
+
+func TestLogCapturePolicyIncludesExtraBodyFields(t *testing.T) {
+	p := &Plugin{
+		BaseLoggerPlugin: base.BaseLoggerPlugin{RequestBodyBytes: 17, ResponseBodyBytes: 23},
+		logFormatExtra:   map[string]string{"request": "$request_body", "response": "$response_body"},
+	}
+	policy := p.LogCapturePolicy()
+	if policy.RequestBodyBytes != 17 || policy.ResponseBodyBytes != 23 {
+		t.Fatalf("policy = %#v, want request=17 response=23", policy)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

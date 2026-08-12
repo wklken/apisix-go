@@ -614,7 +614,10 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 	if err != nil {
 		return nil, err
 	}
-	pipeline := plugin.NewRequestPipeline(staticBindings, nil)
+	pipeline, err := newRequestPipelineWithLog(staticBindings, nil)
+	if err != nil {
+		return nil, err
+	}
 	return ensureRouteLifecycle(plan.Install(pipeline, terminal)), nil
 }
 
@@ -770,8 +773,23 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext))
+	pipeline, err := newRequestPipelineWithLog(staticBindings, b.resolveConsumerBindings(routeContext))
+	if err != nil {
+		return nil, err
+	}
 	return ensureRouteLifecycle(plan.Install(pipeline, handler)), nil
+}
+
+func newRequestPipelineWithLog(
+	bindings []plugin.Binding,
+	resolve plugin.ConsumerBindingResolver,
+) (plugin.RequestPipeline, error) {
+	logExecutor, err := plugin.NewLogExecutorFromBindings(bindings)
+	if err != nil {
+		return plugin.RequestPipeline{}, err
+	}
+	pipeline := plugin.NewRequestPipeline(bindings, resolve)
+	return pipeline.WithLogExecutor(&logExecutor), nil
 }
 
 func ensureRouteLifecycle(next http.Handler) http.Handler {
@@ -1400,6 +1418,64 @@ type metadataRequestStorePlugin struct {
 	store base.FinalResponseStorePlugin
 }
 
+type metadataLogPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+func (p metadataLogPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataLogPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if !metadataSnapshotFilterMatches(p.filter, snapshot) {
+		return nil
+	}
+	phase, ok := p.target.(base.LogPhasePlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no log callback", p.target.GetName())
+	}
+	return phase.RunLogPhase(snapshot)
+}
+
+type metadataRequestSnapshotPlugin struct {
+	plugin.Plugin
+	request base.RequestPhasePlugin
+	target  plugin.Plugin
+	filter  *pluginexpr.Expression
+}
+
+func (p metadataRequestSnapshotPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	return p.request.RunRequestPhase(w, r)
+}
+
+func (p metadataRequestSnapshotPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataRequestSnapshotPlugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
+	if !metadataSnapshotFilterMatches(p.filter, snapshot) {
+		return nil
+	}
+	finalizer, ok := p.target.(base.SnapshotFinalizerPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no snapshot finalizer callback", p.target.GetName())
+	}
+	return finalizer.RunSnapshotFinalizer(snapshot)
+}
+
 type metadataStreamingPlugin struct {
 	plugin.Plugin
 	target plugin.Plugin
@@ -1506,6 +1582,12 @@ func (p metadataRequestStorePlugin) AppliesToResponseSource(
 func metadataFilterMatches(filter *pluginexpr.Expression, r *http.Request) bool {
 	return filter == nil || filter.Eval(func(name string) any {
 		return pluginexpr.RequestValue(r, name)
+	})
+}
+
+func metadataSnapshotFilterMatches(filter *pluginexpr.Expression, snapshot base.LogSnapshot) bool {
+	return filter == nil || filter.Eval(func(name string) any {
+		return pluginexpr.SnapshotValue(snapshot, name)
 	})
 }
 
@@ -2092,6 +2174,33 @@ func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetad
 	wrapped, err := newMetadataRequestAndBufferedPlugin(factoryName, p, metadata)
 	if err != nil || wrapped == p {
 		return wrapped, err
+	}
+	phaseSpec, classified := plugin.CapabilitySpecForFactory(factoryName)
+	if classified {
+		ownsLog := phaseSpec.Capabilities&plugin.CapabilityLog != 0
+		if ownsLog && (factoryName == "serverless-pre-function" || factoryName == "serverless-post-function") {
+			descriptor, descriptorErr := metadataBindingPhaseDescriptor(p, factoryName)
+			if descriptorErr != nil {
+				return nil, descriptorErr
+			}
+			ownsLog = descriptor.Log
+		}
+		ownsSnapshot := phaseSpec.Finalizer == plugin.FinalizerSnapshot
+		switch {
+		case ownsLog:
+			return metadataLogPlugin{Plugin: wrapped, target: p, filter: metadata.filter}, nil
+		case ownsSnapshot:
+			request, ok := wrapped.(base.RequestPhasePlugin)
+			if !ok {
+				return nil, fmt.Errorf("factory %q declares snapshot finalizer without request callback", factoryName)
+			}
+			return metadataRequestSnapshotPlugin{
+				Plugin:  wrapped,
+				request: request,
+				target:  p,
+				filter:  metadata.filter,
+			}, nil
+		}
 	}
 	capability, declared := plugin.ResponseCapabilityFor(factoryName)
 	if !declared {

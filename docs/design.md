@@ -309,6 +309,24 @@ readiness publication remain outside this bounded contract.
 No plugin should be marked complete while it only accepts schema, stores
 context metadata, or runs an HTTP no-op.
 
+### HTTP plugin phase closure
+
+The HTTP route runtime now uses explicit request, buffered response, streaming,
+protocol, log, and lifecycle owners. Every registered factory key is mapped to
+one audited capability identity; `otel` is the only factory alias. Production
+route materialization rejects an unknown or legacy request owner instead of
+installing a generic post-`next` handler.
+
+One outer route response capture records the final outcome and optional bounded
+body. The request pipeline prepares the union of effective static and resolved
+consumer log policies before the terminal, then seals one detached request and
+registers one composite lifecycle finalizer. Log callbacks receive private
+snapshot copies in global-then-merged priority order. Tracer completion and
+request metrics use lifecycle finalizers, while generation and separate-system
+owners remain outside per-request execution. The server publishes the final
+outcome and completion time before finalization and recycles pooled request
+variables only after every finalizer returns.
+
 ---
 
 ## APISIX 3.17 `proxy-cache`：磁盘 Zone 与 Stale 行为设计

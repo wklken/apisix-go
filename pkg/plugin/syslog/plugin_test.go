@@ -21,8 +21,57 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhaseEnqueuesRFC5424FrameWithDetachedFields(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", Host: "gateway.example:8443",
+			RemoteAddr: "192.0.2.8:9000",
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Test": {"ok"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+		Started:  time.Unix(10, 0), Finished: time.Unix(11, 0),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		frame, ok := entry[syslogFrameKey].([]byte)
+		if !ok || !bytes.HasPrefix(frame, []byte("<46>1 ")) {
+			t.Fatalf("frame = %q", frame)
+		}
+		_, payload, ok := bytes.Cut(frame, []byte(" - - "))
+		if !ok {
+			t.Fatalf("RFC5424 frame missing structured header: %q", frame)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			t.Fatalf("decode frame payload: %v", err)
+		}
+		response, _ := fields["response"].(map[string]any)
+		if response["status"] != float64(http.StatusCreated) {
+			t.Fatalf("response fields = %#v", fields["response"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached syslog frame was not delivered")
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

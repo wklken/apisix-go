@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -86,6 +88,14 @@ type b3Context struct {
 	SpanID       string
 	ParentSpanID string
 	Sampled      string
+}
+
+type spanStateContextKey struct{}
+
+type spanState struct {
+	context b3Context
+	started time.Time
+	once    sync.Once
 }
 
 type zipkinEndpoint struct {
@@ -190,6 +200,13 @@ func (p *Plugin) Stop() {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		// Production route assembly invokes RunRequestPhase. Preserve this
+		// direct Handler only for package compatibility and never duplicate a
+		// lifecycle-owned span.
+		if apisixctx.GetRequestLifecycle(r) != nil || r.Context().Value(spanStateContextKey{}) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx, err := extractB3(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -243,6 +260,102 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+// RunRequestPhase starts Zipkin propagation at the inherited rewrite stage.
+// Sampled requests register one dynamic lifecycle finalizer; sampled=0
+// requests continue without exporter ownership.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if r == nil {
+		return base.ContinueRequest(r)
+	}
+	if _, exists := r.Context().Value(spanStateContextKey{}).(*spanState); exists {
+		return base.ContinueRequest(r)
+	}
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil {
+		r, lifecycle = apisixctx.EnsureRequestLifecycle(r, time.Now())
+	}
+	traceContext, err := extractB3(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+	}
+	if traceContext.TraceID == "" {
+		traceContext.TraceID, err = randomHex(rand.Reader, 16)
+		if err != nil {
+			http.Error(w, "failed to generate trace id", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+	}
+	if traceContext.Sampled == "" {
+		sample, sampleErr := p.shouldSample()
+		if sampleErr != nil {
+			http.Error(w, "failed to generate sampling decision", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+		if sample {
+			traceContext.Sampled = "1"
+		} else {
+			traceContext.Sampled = "0"
+		}
+	}
+	if traceContext.SpanID != "" {
+		traceContext.ParentSpanID = traceContext.SpanID
+	}
+	traceContext.SpanID, err = randomHex(rand.Reader, 8)
+	if err != nil {
+		http.Error(w, "failed to generate span id", http.StatusInternalServerError)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+	}
+	injectB3(r, traceContext)
+	state := &spanState{context: traceContext, started: time.Now()}
+	r = r.WithContext(context.WithValue(r.Context(), spanStateContextKey{}, state))
+	if traceContext.Sampled != "1" {
+		return base.ContinueRequest(r)
+	}
+	if !lifecycle.AddFinalizer(name, func() error {
+		return p.finishSpan(state, lifecycle, r)
+	}) {
+		return base.ContinueRequest(r)
+	}
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecycle, fallback *http.Request) error {
+	if state == nil || lifecycle == nil {
+		return nil
+	}
+	state.once.Do(func() {
+		request := lifecycle.FinalRequest()
+		if request == nil {
+			request = fallback
+		}
+		if request == nil {
+			return
+		}
+		finished := lifecycle.FinishedAt()
+		if finished.IsZero() {
+			finished = time.Now()
+		}
+		duration := max(finished.Sub(state.started), time.Duration(0))
+		outcome := lifecycle.Outcome()
+		status := outcome.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if !p.processor.Push(p.buildSpanWithSource(
+			state.context,
+			request,
+			status,
+			state.started,
+			duration,
+			lifecycle.ResponseSource(),
+		)) {
+			logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
+		}
+	})
+	return nil
+}
+
 func (p *Plugin) shouldSample() (bool, error) {
 	if p.config.SampleRatio >= 1 {
 		return true, nil
@@ -260,6 +373,17 @@ func (p *Plugin) buildSpan(
 	status int,
 	start time.Time,
 	duration time.Duration,
+) map[string]any {
+	return p.buildSpanWithSource(ctx, r, status, start, duration, apisixctx.ResponseSourceUnknown)
+}
+
+func (p *Plugin) buildSpanWithSource(
+	ctx b3Context,
+	r *http.Request,
+	status int,
+	start time.Time,
+	duration time.Duration,
+	source apisixctx.ResponseSource,
 ) map[string]any {
 	serverAddr := p.config.ServerAddr
 	if serverAddr == "" {
@@ -287,6 +411,9 @@ func (p *Plugin) buildSpan(
 	}
 	if status >= http.StatusInternalServerError {
 		tags["error"] = "true"
+	}
+	if source != apisixctx.ResponseSourceUnknown {
+		tags["apisix.response_source"] = string(source)
 	}
 
 	localEndpoint := map[string]any{"serviceName": p.config.ServiceName}

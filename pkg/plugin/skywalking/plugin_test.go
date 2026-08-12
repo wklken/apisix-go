@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type failingReader struct{}
@@ -390,5 +393,114 @@ func TestFailedFlushRequeuesSegmentsForRetry(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the retried SkyWalking report")
+	}
+}
+
+func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
+	reported := make(chan []map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var segments []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&segments); err != nil {
+			t.Fatalf("decode segments: %v", err)
+		}
+		reported <- segments
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	p := newTestPlugin(t, Config{EndpointAddr: server.URL, SampleRatio: 1, ReportInterval: 60})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated},
+		time.Now(),
+	)
+	apisixctx.SetResponseSource(result.Request, apisixctx.ResponseSourceCacheHit)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("second lifecycle finalization failures = %#v", failures)
+	}
+	p.Flush()
+	select {
+	case segments := <-reported:
+		if len(segments) != 1 {
+			t.Fatalf("segments = %d, want one", len(segments))
+		}
+		spans, ok := segments[0]["spans"].([]any)
+		if !ok || len(spans) != 1 {
+			t.Fatalf("spans = %#v, want one", segments[0]["spans"])
+		}
+		span := spans[0].(map[string]any)
+		tags, ok := span["tags"].([]any)
+		if !ok || len(tags) != 4 {
+			t.Fatalf("tags = %#v, want detached outcome and source tags", span["tags"])
+		}
+		foundSource := false
+		for _, value := range tags {
+			tag := value.(map[string]any)
+			if tag["key"] == "apisix.response_source" && tag["value"] == "cache_hit" {
+				foundSource = true
+			}
+		}
+		if !foundSource {
+			t.Fatalf("tags = %#v, want cache_hit source tag", tags)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for lifecycle-owned segment")
+	}
+}
+
+func TestUnsampledTraceRegistersNoExportFinalizer(t *testing.T) {
+	p := newTestPlugin(t, Config{EndpointAddr: "http://127.0.0.1:12800", SampleRatio: 0.25, ReportInterval: 60})
+	p.sampleRandom = func() (float64, error) { return 0.9, nil }
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	p.reportMu.Lock()
+	queued := len(p.segments)
+	p.reportMu.Unlock()
+	if queued != 0 {
+		t.Fatalf("queued segments = %d, want none for unsampled start", queued)
+	}
+}
+
+func TestTracerDirectHandlerDoesNotDuplicateProductionOwner(t *testing.T) {
+	p := newTestPlugin(t, Config{EndpointAddr: "http://127.0.0.1:12800", SampleRatio: 1, ReportInterval: 60})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).
+		ServeHTTP(
+			httptest.NewRecorder(), request,
+		)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	p.reportMu.Lock()
+	queued := len(p.segments)
+	p.reportMu.Unlock()
+	if queued != 0 {
+		t.Fatalf("queued segments = %d, want no direct-handler duplicate", queued)
 	}
 }

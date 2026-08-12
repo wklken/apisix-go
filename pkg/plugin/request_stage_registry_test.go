@@ -15,6 +15,36 @@ import (
 
 func TestRequestStageRegistryExactMembership(t *testing.T) {
 	want := map[string]RequestStageSpec{
+		"ai":                           {Stage: RequestStageNone},
+		"batch-requests":               {Stage: RequestStageNone},
+		"brotli":                       {Stage: RequestStageNone},
+		"clickhouse-logger":            {Stage: RequestStageNone},
+		"datadog":                      {Stage: RequestStageNone},
+		"elasticsearch-logger":         {Stage: RequestStageNone},
+		"error-log-logger":             {Stage: RequestStageNone},
+		"file-logger":                  {Stage: RequestStageNone},
+		"gm":                           {Stage: RequestStageNone},
+		"google-cloud-logging":         {Stage: RequestStageNone},
+		"gzip":                         {Stage: RequestStageNone},
+		"http-logger":                  {Stage: RequestStageNone},
+		"kafka-logger":                 {Stage: RequestStageNone},
+		"lago":                         {Stage: RequestStageNone},
+		"log-rotate":                   {Stage: RequestStageAccess},
+		"loggly":                       {Stage: RequestStageNone},
+		"loki-logger":                  {Stage: RequestStageNone},
+		"mqtt-proxy":                   {Stage: RequestStageNone},
+		"node-status":                  {Stage: RequestStageNone},
+		"otel":                         {Stage: RequestStageRewrite},
+		"prometheus":                   {Stage: RequestStageNone},
+		"rocketmq-logger":              {Stage: RequestStageNone},
+		"server-info":                  {Stage: RequestStageNone},
+		"skywalking-logger":            {Stage: RequestStageNone},
+		"sls-logger":                   {Stage: RequestStageNone},
+		"splunk-hec-logging":           {Stage: RequestStageNone},
+		"syslog":                       {Stage: RequestStageNone},
+		"tcp-logger":                   {Stage: RequestStageNone},
+		"tencent-cloud-cls":            {Stage: RequestStageNone},
+		"udp-logger":                   {Stage: RequestStageNone},
 		"api-breaker":                  {Stage: RequestStageAccess},
 		"body-transformer":             {Stage: RequestStageNone, ConfigAware: true},
 		"echo":                         {Stage: RequestStageNone, ConfigAware: true},
@@ -27,6 +57,9 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 		"serverless-post-function":     {Stage: RequestStageNone, ConfigAware: true},
 		"request-context":              {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
 		"request-id":                   {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
+		"opentelemetry":                {Stage: RequestStageRewrite},
+		"skywalking":                   {Stage: RequestStageRewrite},
+		"zipkin":                       {Stage: RequestStageRewrite},
 		"real-ip":                      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"proxy-rewrite":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"proxy-control":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
@@ -297,14 +330,14 @@ func TestBindPluginCheckedWritesConfigAwareStage(t *testing.T) {
 		t.Fatalf("DescribeBindingPhases calls = %d, want 1", calls)
 	}
 
-	legacy, err := BindPluginChecked(
+	responseOnly, err := BindPluginChecked(
 		"gzip",
 		newResponseTestPlugin("gzip", 1, nil),
 		ScopeRoute,
 		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
 	)
-	if err != nil || legacy.Stage != RequestStageLegacy {
-		t.Fatalf("registered legacy binding = %#v, err=%v", legacy, err)
+	if err != nil || responseOnly.Stage != RequestStageNone {
+		t.Fatalf("registered response-only binding = %#v, err=%v", responseOnly, err)
 	}
 
 	requestAndResponse := newResponseTestPlugin(
@@ -530,5 +563,18 @@ func TestRequestStageRegistryConstructorNameDrift(t *testing.T) {
 	}
 	if _, ok := p.(base.RequestPhasePlugin); !ok {
 		t.Fatal("request-context does not implement RequestPhasePlugin")
+	}
+}
+
+func TestEveryRegisteredFactoryHasNoProductionLegacyRequestOwner(t *testing.T) {
+	for factory := range pluginRegistry {
+		spec, ok := RequestStageFor(factory)
+		if !ok {
+			t.Errorf("factory %q has no request-stage classification", factory)
+			continue
+		}
+		if spec.Stage == RequestStageLegacy {
+			t.Errorf("factory %q retains a production legacy request owner", factory)
+		}
 	}
 }

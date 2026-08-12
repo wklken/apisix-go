@@ -1,5 +1,13 @@
 # Plugin Log and Finalizer Phases Implementation Plan
 
+> Implementation status (2026-08-12): completed on the Plan 16 baseline. The
+> production contract preserves `RequestStageLegacy == 0` but assigns every
+> registered factory an explicit non-legacy request owner, uses the canonical
+> 115-key/114-identity capability registry, captures one immutable bounded log
+> snapshot, completes outcome before finalizers, and recycles request variables
+> only after finalization. The implementation and tests are authoritative where
+> older task sketches below mention provisional interfaces.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Execute request metrics, tracing completion, logger delivery, and infrastructure cleanup exactly once after every request outcome, then enforce complete explicit capability classification for every registered HTTP plugin.

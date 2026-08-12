@@ -304,6 +304,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
+	p.SetSnapshotLogFormat(p.logFormat, p.logFormatExtra)
 
 	if p.config.SockType == "" {
 		p.config.SockType = "tcp"
@@ -403,6 +409,84 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(map[string]any{syslogFrameKey: frame})
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if p.customLogFormat {
+		fields = base.ResolveLogFormat(p.logFormat, func(value string) any {
+			switch value {
+			case "$host":
+				return base.HostWithoutPort(snapshot.Request.Host)
+			case "$remote_addr":
+				return base.HostWithoutPort(snapshot.Request.RemoteAddr)
+			case "$time_iso8601":
+				return snapshot.Started.Format(time.RFC3339)
+			case "$upstream_addr":
+				return syslogSnapshotUpstream(snapshot)
+			default:
+				return base.SnapshotValue(snapshot, value)
+			}
+		})
+		routeID := p.RouteID
+		if routeID == "" {
+			routeID = fmt.Sprint(base.SnapshotValue(snapshot, "$route_id"))
+		}
+		fields["route_id"] = routeID
+		if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
+			fields["service_id"] = serviceID
+		} else {
+			delete(fields, "service_id")
+		}
+	} else {
+		fields = base.BuildAccessLogFromSnapshot(snapshot, p.RouteID, p.ServerAddr)
+		if fields["route_id"] == "" {
+			fields["route_id"] = "no-matched"
+		}
+		for key, value := range p.logFormatExtra {
+			if _, exists := fields[key]; !exists {
+				fields[key] = base.ResolveLogFormat(map[string]any{"value": value}, func(expression string) any {
+					return syslogSnapshotValue(snapshot, expression)
+				})["value"]
+			}
+		}
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("failed to marshal log message: %w in syslog", err)
+	}
+	frame := encodeRFC5424(time.Now(), base.HostWithoutPort(snapshot.Request.Host), os.Getpid(), payload)
+	return p.EnqueueLog(map[string]any{syslogFrameKey: frame})
+}
+
+func syslogSnapshotValue(snapshot base.LogSnapshot, expression string) any {
+	switch expression {
+	case "$time_iso8601":
+		return snapshot.Started.Format(time.RFC3339)
+	case "$upstream_addr":
+		return syslogSnapshotUpstream(snapshot)
+	default:
+		return base.SnapshotValue(snapshot, expression)
+	}
+}
+
+func syslogSnapshotUpstream(snapshot base.LogSnapshot) string {
+	host := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_ip"))
+	port := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_port"))
+	if host == "" || port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func selectLogFormats(config Config, metadata pluginMetadata) (map[string]any, map[string]any) {

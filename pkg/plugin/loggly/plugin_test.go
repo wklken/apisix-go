@@ -18,8 +18,20 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestResolveLogglySnapshotFormatUsesRequestStartTime(t *testing.T) {
+	started := time.Date(2026, time.August, 12, 8, 30, 0, 0, time.UTC)
+	fields := resolveLogglySnapshotFormat(base.LogSnapshot{
+		Started:  started,
+		Finished: started.Add(5 * time.Second),
+	}, map[string]string{"timestamp": "$time_iso8601"})
+	if fields["timestamp"] != started.Format(time.RFC3339) {
+		t.Fatalf("timestamp = %#v, want request start", fields["timestamp"])
+	}
+}
 
 func TestSendBatchCancelsLogglyHTTPBulkWithContext(t *testing.T) {
 	started := make(chan struct{})

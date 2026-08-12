@@ -2,6 +2,7 @@ package loki_logger
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,8 +13,61 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhasePreservesLokiEnvelopeLabelsAndTimestamp(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{config: Config{LogLabels: map[string]string{"job": "apisix", "route": "$route_id"}}}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	started := time.Unix(100, 0)
+	snapshot := base.LogSnapshot{
+		Request:  apisixlog.RequestLogSnapshot{URI: "/orders", APISIXVars: map[string]any{"$route_id": "route-1"}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+		Started:  started,
+		Finished: started.Add(time.Second),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		envelope, ok := entry[lokiEntryEnvelopeField].(lokiEntryEnvelope)
+		if !ok || envelope.Timestamp != strconv.FormatInt(started.UnixNano(), 10) {
+			t.Fatalf("envelope = %#v", entry[lokiEntryEnvelopeField])
+		}
+		if envelope.Labels["route"] != "route-1" {
+			t.Fatalf("labels = %#v", envelope.Labels)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Loki entry was not delivered")
+	}
+}
+
+func TestLogCapturePolicyIncludesExtraFieldsAndLabels(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			MaxReqBodyBytes:  17,
+			MaxRespBodyBytes: 23,
+			LogLabels:        map[string]string{"body": "$request_body"},
+		},
+		logFormatExtra: map[string]string{"response": "$response_body"},
+	}
+	policy := p.LogCapturePolicy()
+	if policy.RequestBodyBytes != 17 || policy.ResponseBodyBytes != 23 {
+		t.Fatalf("policy = %#v, want request=17 response=23", policy)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()

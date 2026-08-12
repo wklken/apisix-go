@@ -1,6 +1,6 @@
 # HTTP Plugin Capability Migration Manifest
 
-**Implementation baseline through Plan 14:** `origin/master@b7d17c54138ae530f7f81a4908153615fae21fae`
+**Implementation baseline through Plan 16:** `origin/master@43e652c8057d5e12ec641b1e88ecead5d202b414`
 
 **Purpose:** This is the exact planning source for Plans 12–17. It maps every registered HTTP plugin identity to one or more explicit capabilities and its primary migration PR. Production code ultimately owns the same static table; the final completeness test compares it against every factory key in `pkg/plugin/init.go`.
 
@@ -9,7 +9,7 @@
 - The registry contains 115 factory keys and 114 implementation identities.
 - `otel` is a factory alias of the `opentelemetry` identity and must resolve to identical capabilities.
 - `request-context` is the factory key; `request_context` is only that plugin's `GetName` identity and is not a second factory.
-- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `final_response_store`, `streaming_body_filter`, `protocol_owner`, `log`, `finalizer`, `generation_owner`, `separate_subsystem`.
+- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `final_response_store`, `streaming_body_filter`, `compression_offer`, `streaming_response_owner`, `exclusive_protocol_owner`, `protocol_owner`, `log`, `finalizer`, `generation_owner`, `separate_subsystem`.
 - Multiple `conditional_terminal` plugins are legal and ordered by scope/stage/priority. `protocol_owner` is exclusive only when the route build matrix says two protocol owners cannot coexist.
 - `log` body observation is not `buffered_body_filter`; it uses the bounded log-capture observer from Plan 17.
 - A later plan may implement an already-declared secondary capability, but it may not add an unlisted identity or capability without updating this manifest and its completeness test first.

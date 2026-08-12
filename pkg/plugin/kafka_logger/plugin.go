@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -312,6 +313,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	if p.sender == nil {
 		writer, err := p.newWriter()
@@ -420,6 +426,88 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if p.config.MetaFormat == "origin" {
+		body := ""
+		if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+			body = base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes)
+		}
+		return p.EnqueueLog(map[string]any{originLogKey: kafkaSnapshotOrigin(snapshot, body)})
+	}
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	} else {
+		fields = kafkaSnapshotDefaultFields(p, snapshot)
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return p.EnqueueLog(fields)
+}
+
+func kafkaSnapshotDefaultFields(p *Plugin, snapshot base.LogSnapshot) map[string]any {
+	host := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_ip"))
+	port := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_port"))
+	upstream := host
+	if host != "" && port != "" {
+		upstream = net.JoinHostPort(host, port)
+	}
+	routeID := p.RouteID
+	if routeID == "" {
+		routeID = fmt.Sprint(base.SnapshotValue(snapshot, "$route_id"))
+	}
+	return map[string]any{
+		"route_id":   routeID,
+		"service_id": base.SnapshotValue(snapshot, "$service_id"),
+		"client_ip":  base.RemoteIP(snapshot.Request.RemoteAddr),
+		"upstream":   upstream,
+		"request":    map[string]any{"method": snapshot.Request.Method, "uri": snapshotURI(snapshot)},
+		"response":   map[string]any{"status": snapshot.Outcome.Status, "size": snapshot.Outcome.Bytes},
+	}
+}
+
+func kafkaSnapshotOrigin(snapshot base.LogSnapshot, body string) string {
+	var b strings.Builder
+	proto := snapshot.Request.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	fmt.Fprintf(&b, "%s %s %s\r\n", snapshot.Request.Method, snapshotURI(snapshot), proto)
+	names := make([]string, 0, len(snapshot.Request.Header))
+	for name := range snapshot.Request.Header {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, value := range snapshot.Request.Header.Values(name) {
+			fmt.Fprintf(&b, "%s: %s\r\n", name, value)
+		}
+	}
+	b.WriteString("\r\n")
+	b.WriteString(body)
+	return b.String()
+}
+
+func snapshotURI(snapshot base.LogSnapshot) string {
+	if snapshot.Request.URI != "" {
+		return snapshot.Request.URI
+	}
+	if snapshot.Request.URL != "" {
+		if parsed, err := url.Parse(snapshot.Request.URL); err == nil && parsed.RequestURI() != "" {
+			return parsed.RequestURI()
+		}
+	}
+	return "/"
 }
 
 func (p *Plugin) defaultLogFields(r *http.Request, metrics httpsnoop.Metrics) map[string]any {

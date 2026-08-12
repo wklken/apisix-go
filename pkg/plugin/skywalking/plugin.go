@@ -11,6 +11,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -71,6 +72,14 @@ type Config struct {
 }
 
 type tracingContextKey struct{}
+
+type segmentStateContextKey struct{}
+
+type segmentState struct {
+	context sw8Context
+	started time.Time
+	once    sync.Once
+}
 
 type sw8Context struct {
 	TraceID              string
@@ -162,6 +171,13 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		// Production route assembly invokes RunRequestPhase. This direct
+		// compatibility adapter must not duplicate a span when an outer
+		// lifecycle has already installed the request-stage owner.
+		if apisixctx.GetRequestLifecycle(r) != nil || r.Context().Value(segmentStateContextKey{}) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if r.Context().Value(tracingContextKey{}) != nil {
 			next.ServeHTTP(w, r)
 			return
@@ -202,6 +218,93 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.reportSegment(p.buildSegment(ctx, r, captured.Code, start, captured.Duration))
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase starts SkyWalking propagation at the inherited rewrite
+// stage. Sampled requests register one lifecycle-owned segment finalizer;
+// unsampled requests register none.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if r == nil {
+		return base.ContinueRequest(r)
+	}
+	if _, exists := r.Context().Value(segmentStateContextKey{}).(*segmentState); exists {
+		return base.ContinueRequest(r)
+	}
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil {
+		r, lifecycle = apisixctx.EnsureRequestLifecycle(r, time.Now())
+	}
+	traceContext, _ := parseSW8(r.Header.Get("sw8"))
+	sample, err := p.shouldSample()
+	if err != nil {
+		http.Error(w, "failed to generate sampling decision", http.StatusInternalServerError)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+	}
+	if !sample {
+		r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, &segmentState{}))
+		return base.ContinueRequest(r)
+	}
+	if traceContext.TraceID == "" {
+		traceContext.TraceID, err = randomID(rand.Reader, 16)
+		if err != nil {
+			http.Error(w, "failed to generate trace id", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+	}
+	if traceContext.TraceSegmentID == "" {
+		traceContext.TraceSegmentID, err = randomID(rand.Reader, 16)
+		if err != nil {
+			http.Error(w, "failed to generate trace segment id", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+	}
+	traceContext.SpanID = 0
+	r.Header.Set("sw8", traceContext.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
+	state := &segmentState{context: traceContext, started: time.Now()}
+	r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, state))
+	if !lifecycle.AddFinalizer(name, func() error {
+		return p.finishSegment(state, lifecycle, r)
+	}) {
+		return base.ContinueRequest(r)
+	}
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) finishSegment(
+	state *segmentState,
+	lifecycle *apisixctx.RequestLifecycle,
+	fallback *http.Request,
+) error {
+	if state == nil || lifecycle == nil {
+		return nil
+	}
+	state.once.Do(func() {
+		request := lifecycle.FinalRequest()
+		if request == nil {
+			request = fallback
+		}
+		if request == nil {
+			return
+		}
+		finished := lifecycle.FinishedAt()
+		if finished.IsZero() {
+			finished = time.Now()
+		}
+		duration := max(finished.Sub(state.started), time.Duration(0))
+		status := lifecycle.Outcome().Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		p.reportSegment(p.buildSegmentWithSource(
+			state.context,
+			request,
+			status,
+			state.started,
+			duration,
+			lifecycle.ResponseSource(),
+		))
+	})
+	return nil
 }
 
 func (p *Plugin) loadPluginAttr() {
@@ -262,7 +365,26 @@ func (p *Plugin) buildSegment(
 	start time.Time,
 	duration time.Duration,
 ) skywalkingSegment {
+	return p.buildSegmentWithSource(ctx, r, status, start, duration, apisixctx.ResponseSourceUnknown)
+}
+
+func (p *Plugin) buildSegmentWithSource(
+	ctx sw8Context,
+	r *http.Request,
+	status int,
+	start time.Time,
+	duration time.Duration,
+	source apisixctx.ResponseSource,
+) skywalkingSegment {
 	end := start.Add(duration)
+	tags := []skywalkingTag{
+		{Key: "http.method", Value: r.Method},
+		{Key: "http.url", Value: r.URL.RequestURI()},
+		{Key: "http.status_code", Value: fmt.Sprint(status)},
+	}
+	if source != apisixctx.ResponseSourceUnknown {
+		tags = append(tags, skywalkingTag{Key: "apisix.response_source", Value: string(source)})
+	}
 	span := skywalkingSpan{
 		SpanID:        0,
 		ParentSpanID:  -1,
@@ -273,11 +395,7 @@ func (p *Plugin) buildSegment(
 		SpanLayer:     "Http",
 		ComponentID:   componentIDAPISIX,
 		IsError:       status >= 500,
-		Tags: []skywalkingTag{
-			{Key: "http.method", Value: r.Method},
-			{Key: "http.url", Value: r.URL.RequestURI()},
-			{Key: "http.status_code", Value: fmt.Sprint(status)},
-		},
+		Tags:          tags,
 	}
 	segment := skywalkingSegment{
 		TraceID:         ctx.TraceID,

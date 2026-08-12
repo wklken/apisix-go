@@ -15,8 +15,20 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestResolveUDPSnapshotFormatUsesRequestStartTime(t *testing.T) {
+	started := time.Date(2026, time.August, 12, 8, 30, 0, 0, time.UTC)
+	fields := resolveUDPSnapshotFormat(base.LogSnapshot{
+		Started:  started,
+		Finished: started.Add(5 * time.Second),
+	}, map[string]string{"timestamp": "$time_iso8601"})
+	if fields["timestamp"] != started.Format(time.RFC3339) {
+		t.Fatalf("timestamp = %#v, want request start", fields["timestamp"])
+	}
+}
 
 type recordingConn struct {
 	deadline time.Time

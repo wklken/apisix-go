@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -61,21 +62,37 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uri := p.config.URI
-		if uri == "" {
-			uri = r.URL.Path
-		}
-		handler := Lookup(r.Method, uri)
-		if handler == nil {
-			w.WriteHeader(http.StatusNotFound)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-
-		req := r.Clone(r.Context())
-		req.URL.Path = uri
-		req.URL.RawPath = ""
-		handler.ServeHTTP(w, req)
+		p.serve(w, r)
 	})
+}
+
+// RunRequestPhase owns the local public-api gateway response. The gateway is
+// an APISIX response even when a registered handler produces the body.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+	p.serve(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+}
+
+func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
+	uri := p.config.URI
+	if uri == "" {
+		uri = r.URL.Path
+	}
+	handler := Lookup(r.Method, uri)
+	if handler == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	req := r.Clone(r.Context())
+	req.URL.Path = uri
+	req.URL.RawPath = ""
+	handler.ServeHTTP(w, req)
 }
 
 func Register(method string, uri string, handler http.Handler) {

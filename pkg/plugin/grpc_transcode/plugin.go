@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/bufbuild/protocompile"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -40,6 +41,8 @@ type Plugin struct {
 	bindingErr     error
 	bindingLoaded  bool
 }
+
+type requestBindingKey struct{}
 
 const (
 	priority = 506
@@ -298,6 +301,48 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		writeTranscodedResponse(w, recorder)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase performs the unary request translation and publishes the
+// resolved descriptor for the bounded response phase. Streaming descriptors
+// are rejected by loadBinding and never enter the response pipeline.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	binding, err := p.loadBinding()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+	}
+	if err := p.transformRequest(r, binding); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	request := r.WithContext(context.WithValue(r.Context(), requestBindingKey{}, binding))
+	return base.ContinueRequest(request)
+}
+
+// RunBufferedBodyFilter translates the canonical unary gRPC response without
+// creating a second private response recorder.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil {
+		return nil
+	}
+	binding, _ := r.Context().Value(requestBindingKey{}).(*methodBinding)
+	if binding == nil {
+		return fmt.Errorf("grpc-transcode request binding is missing")
+	}
+	recorder := base.NewBufferedResponseWriter()
+	for field, values := range state.Header {
+		recorder.Header()[field] = append([]string(nil), values...)
+	}
+	recorder.SetBody(state.Body)
+	recorder.SetStatusCode(state.Status)
+	if err := p.transformResponse(recorder, binding); err != nil {
+		return err
+	}
+	state.Status = recorder.StatusCode()
+	state.Header = recorder.Header().Clone()
+	state.Body = append(state.Body[:0], recorder.Body()...)
+	return nil
 }
 
 func (p *Plugin) loadBinding() (*methodBinding, error) {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 type failingReader struct{}
@@ -24,6 +26,25 @@ func TestNewSessionIDReturnsErrorForFailingReader(t *testing.T) {
 	}
 	if id != "" {
 		t.Fatalf("newSessionID() = %q, want empty on failure", id)
+	}
+}
+
+func TestRunRequestPhasePublishesAPISIXSourceForUnknownEndpoint(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: "sh", Args: []string{"-c", "exit 0"}})
+	request := httptest.NewRequest(http.MethodGet, "/mcp/unknown", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("result = %+v, want apisix stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("source = %q, want apisix", lifecycle.ResponseSource())
+	}
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
 	}
 }
 

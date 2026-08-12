@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -79,15 +80,29 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.SASL != nil {
-			ctx := context.WithValue(r.Context(), ctxSASLEnabled, true)
-			ctx = context.WithValue(ctx, ctxSASLUsername, p.config.SASL.Username)
-			ctx = context.WithValue(ctx, ctxSASLPassword, p.config.SASL.Password)
-			r = r.WithContext(ctx)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, p.prepareRequest(r))
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase prepares Kafka consumer credentials for the route-owned
+// protocol terminal. It intentionally does not upgrade, hijack, or write.
+func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	return base.ContinueRequest(p.prepareRequest(r))
+}
+
+func (p *Plugin) prepareRequest(r *http.Request) *http.Request {
+	if p.config.SASL != nil {
+		ctx := context.WithValue(r.Context(), ctxSASLEnabled, true)
+		ctx = context.WithValue(ctx, ctxSASLUsername, p.config.SASL.Username)
+		ctx = context.WithValue(ctx, ctxSASLPassword, p.config.SASL.Password)
+		r = r.WithContext(ctx)
+	}
+	return r
 }
 
 func SASLEnabled(r *http.Request) bool {

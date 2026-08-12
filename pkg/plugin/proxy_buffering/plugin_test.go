@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -62,5 +64,25 @@ func TestHandlerFlushesResponseWhenBufferingDisabled(t *testing.T) {
 	}
 	if rr.Body.String() != "chunk" {
 		t.Fatalf("response body = %q, want chunk", rr.Body.String())
+	}
+}
+
+func TestConfigDescribesResponseMode(t *testing.T) {
+	streaming := &Config{DisableProxyBuffering: true}
+	descriptor, err := streaming.DescribeResponseMode()
+	if err != nil {
+		t.Fatalf("DescribeResponseMode() error = %v", err)
+	}
+	if descriptor.Modes != base.ResponseModeStreaming {
+		t.Fatalf("streaming modes = %d, want %d", descriptor.Modes, base.ResponseModeStreaming)
+	}
+
+	bounded := &Config{}
+	descriptor, err = bounded.DescribeResponseMode()
+	if err != nil {
+		t.Fatalf("DescribeResponseMode() error = %v", err)
+	}
+	if descriptor.Modes != base.ResponseModeBounded {
+		t.Fatalf("bounded modes = %d, want %d", descriptor.Modes, base.ResponseModeBounded)
 	}
 }

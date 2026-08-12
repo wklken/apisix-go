@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -123,41 +124,57 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// Delay response if needed
-		if p.config.Delay > 0 {
-			time.Sleep(time.Second * time.Duration(p.config.Delay))
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
 		}
-
-		// Set content type
-		w.Header().Set("Content-Type", p.config.ContentType)
-
-		// Set response headers
-		for key, value := range p.config.ResponseHeaders {
-			w.Header().Add(key, resolveValue(r, fmt.Sprint(value)))
-		}
-
-		// mock header
-		if *p.config.WithMockHeader {
-			// FIXME: change 0.0.1 to real version
-			w.Header().Add("x-mock-by", "APISIX-GO/0.0.1")
-		}
-
-		w.WriteHeader(p.config.ResponseStatus)
-
-		responseContent := ""
-		if p.config.ResponseExample != nil {
-			responseContent = *p.config.ResponseExample
-		} else if p.config.ResponseSchema != nil {
-			body, err := responseBodyFromSchema(p.config.ContentType, *p.config.ResponseSchema)
-			if err != nil {
-				http.Error(w, "failed to generate mocking response", http.StatusInternalServerError)
-				return
-			}
-			responseContent = string(body)
-		}
-		_, _ = w.Write([]byte(resolveValue(r, responseContent)))
+		p.serve(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase owns the configured mock response and never invokes the
+// downstream terminal. Mock responses are local early-stop responses.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceEarlyStop)
+	p.serve(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+}
+
+func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
+	// Delay response if needed
+	if p.config.Delay > 0 {
+		time.Sleep(time.Second * time.Duration(p.config.Delay))
+	}
+
+	// Set content type
+	w.Header().Set("Content-Type", p.config.ContentType)
+
+	// Set response headers
+	for key, value := range p.config.ResponseHeaders {
+		w.Header().Add(key, resolveValue(r, fmt.Sprint(value)))
+	}
+
+	// mock header
+	if *p.config.WithMockHeader {
+		// FIXME: change 0.0.1 to real version
+		w.Header().Add("x-mock-by", "APISIX-GO/0.0.1")
+	}
+
+	w.WriteHeader(p.config.ResponseStatus)
+
+	responseContent := ""
+	if p.config.ResponseExample != nil {
+		responseContent = *p.config.ResponseExample
+	} else if p.config.ResponseSchema != nil {
+		body, err := responseBodyFromSchema(p.config.ContentType, *p.config.ResponseSchema)
+		if err != nil {
+			http.Error(w, "failed to generate mocking response", http.StatusInternalServerError)
+			return
+		}
+		responseContent = string(body)
+	}
+	_, _ = w.Write([]byte(resolveValue(r, responseContent)))
 }
 
 func responseBodyFromSchema(contentType string, responseSchema map[string]any) ([]byte, error) {

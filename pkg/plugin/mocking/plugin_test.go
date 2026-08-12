@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -79,6 +81,23 @@ func TestHandlerGeneratesJSONFromResponseSchema(t *testing.T) {
 	}
 	if got := nested["name"]; got != "inner" {
 		t.Fatalf("nested.name = %#v, want inner", got)
+	}
+}
+
+func TestRunRequestPhasePublishesEarlyStopSource(t *testing.T) {
+	example := `{"ok":true}`
+	p := newTestPlugin(t, Config{ResponseExample: &example})
+	request := httptest.NewRequest(http.MethodGet, "/mock", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("result = %+v, want early-stop stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("source = %q, want early_stop", lifecycle.ResponseSource())
 	}
 }
 

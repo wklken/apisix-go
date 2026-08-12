@@ -370,36 +370,81 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, document, protocol, err := p.readJSONDocument(r)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, errRequestBodyTooLarge) {
-				status = http.StatusRequestEntityTooLarge
-				logger.Errorf("failed to read request body: %v", err)
-			}
-			base.WriteJSONMessage(w, status, err.Error())
-			return
+// RunRequestPhase validates and prepares the request-local AI execution. It
+// never contacts the provider or invokes a downstream handler; the explicit
+// protocol owner consumes the published operation after before-proxy hooks.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	body, document, protocol, err := p.readJSONDocument(r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+			logger.Errorf("failed to read request body: %v", err)
 		}
-		if err := p.validateProviderRequest(document, protocol); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		r = ai_runtime.WithExecution(r, "ai-proxy-"+p.config.Provider, func(
-			w http.ResponseWriter,
-			r *http.Request,
-		) {
-			p.executeProviderRequest(w, r, body, document, protocol)
-		})
-		ai_runtime.FromRequest(r).SetStreaming(document.IsStreaming(protocol))
-		if ai_runtime.TerminalEnabled(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		ai_runtime.FromRequest(r).Execute(w, r)
+		base.WriteJSONMessage(w, status, err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	return http.HandlerFunc(fn)
+	if err := p.validateProviderRequest(document, protocol); err != nil {
+		base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	request := ai_runtime.WithExecution(r, "ai-proxy-"+p.config.Provider, func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		p.executeProviderRequest(w, r, body, document, protocol)
+	})
+	ai_runtime.FromRequest(request).SetStreaming(document.IsStreaming(protocol))
+	return base.ContinueRequest(request)
+}
+
+// RunExclusiveProtocol consumes the prepared provider operation exactly once.
+// AI responses are upstream-owned, so the response source is selected before
+// the provider operation can write, flush, or return a streaming body.
+func (p *Plugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	state := ai_runtime.FromRequest(r)
+	if state == nil {
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+		return base.ProtocolResponded, r, apisixctx.ResponseSourceUnknown, nil
+	}
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+	state.Consume(w, r)
+	return base.ProtocolResponded, r, apisixctx.ResponseSourceUpstream, nil
+}
+
+// Handler remains a narrow compatibility seam for callers that have not yet
+// installed the request/terminal phases. The route pipeline uses the explicit
+// interfaces above and never enters this legacy next-aware path.
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := p.RunRequestPhase(w, r)
+		request := result.Request
+		if request == nil {
+			request = r
+		}
+		if result.Decision == base.RequestStop {
+			return
+		}
+		if ai_runtime.TerminalEnabled(request) {
+			if next != nil {
+				next.ServeHTTP(w, request)
+			}
+			return
+		}
+		_, _, _, _ = p.RunExclusiveProtocol(w, request, next)
+	})
+}
+
+// DescribeResponseMode conservatively advertises both bounded and streaming
+// responses because the request document selects SSE at runtime.
+func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
 }
 
 func (p *Plugin) validateProviderRequest(document ai_protocols.Document, protocol ai_protocols.Protocol) error {

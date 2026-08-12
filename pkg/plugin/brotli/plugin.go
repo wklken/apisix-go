@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	brotlienc "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -204,6 +205,129 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() any {
 	return &p.config
+}
+
+// RegisterCompressionOffers exposes brotli through the shared request-local
+// negotiation state. Eligibility is evaluated against the final response
+// metadata supplied to compression.State.Decide.
+func (p *Plugin) RegisterCompressionOffers(r *http.Request, _ *compression.State) []compression.Offer {
+	return []compression.Offer{{
+		Coding:   compression.Brotli,
+		Rank:     996,
+		Eligible: p.requestEligible(r),
+	}}
+}
+
+func (p *Plugin) WrapCompression(
+	w http.ResponseWriter,
+	_ *http.Request,
+	_ *compression.State,
+	decision compression.Decision,
+) (http.ResponseWriter, error) {
+	if decision.Coding != compression.Brotli {
+		return w, nil
+	}
+	return newStreamingCompressionWriter(w, p.writerOptions()), nil
+}
+
+func (p *Plugin) RunStreamingHeaderFilter(_ *http.Request, _ *base.StreamingResponseState) error {
+	return nil
+}
+
+func (p *Plugin) requestEligible(r *http.Request) func(compression.ResponseMeta) bool {
+	return func(meta compression.ResponseMeta) bool {
+		if r == nil || base.ProtocolVersion(r) < p.config.httpVersion {
+			return false
+		}
+		return p.responseEligible(meta)
+	}
+}
+
+type streamingCompressionWriter struct {
+	http.ResponseWriter
+	compressor  *brotlienc.Writer
+	wroteHeader bool
+	status      int
+	hijacked    bool
+	closeOnce   sync.Once
+	closeErr    error
+}
+
+func newStreamingCompressionWriter(
+	w http.ResponseWriter,
+	options brotlienc.WriterOptions,
+) *streamingCompressionWriter {
+	return &streamingCompressionWriter{
+		ResponseWriter: w,
+		compressor:     brotlienc.NewWriterOptions(w, options),
+	}
+}
+
+func (w *streamingCompressionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *streamingCompressionWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.status = status
+	if status >= 100 && status <= 199 || status == http.StatusNoContent ||
+		status == http.StatusNotModified || status == http.StatusSwitchingProtocols {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	base.InvalidateBodyDerivedHeaders(w.Header())
+	w.Header().Set("Content-Encoding", "br")
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *streamingCompressionWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.status == http.StatusNoContent || w.status == http.StatusNotModified ||
+		w.status == http.StatusSwitchingProtocols || (w.status >= 100 && w.status <= 199) {
+		return len(body), nil
+	}
+	if w.compressor == nil {
+		return w.ResponseWriter.Write(body)
+	}
+	return w.compressor.Write(body)
+}
+
+func (w *streamingCompressionWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.compressor != nil {
+		_ = w.compressor.Flush()
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *streamingCompressionWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
+func (w *streamingCompressionWriter) Close() error {
+	w.closeOnce.Do(func() {
+		if w.compressor != nil && !w.hijacked {
+			w.closeErr = w.compressor.Close()
+		}
+	})
+	return w.closeErr
+}
+
+func (w *streamingCompressionWriter) FinishStreamingResponse(_ error) error {
+	if !w.hijacked && !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.Close()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

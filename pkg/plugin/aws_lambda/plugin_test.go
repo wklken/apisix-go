@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -77,6 +78,26 @@ func TestHandlerInvokesAWSLambdaWithAPIKey(t *testing.T) {
 	}
 	if gotAuthorization != "" {
 		t.Fatalf("Authorization = %q, want empty in API key mode", gotAuthorization)
+	}
+}
+
+func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
+	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer lambda.Close()
+	p := newTestPlugin(t, Config{FunctionURI: lambda.URL})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/lambda", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("result = %+v, want upstream stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("source = %q, want upstream", lifecycle.ResponseSource())
 	}
 }
 

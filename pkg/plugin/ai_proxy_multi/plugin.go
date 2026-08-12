@@ -653,56 +653,99 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, document, protocol, err := p.readJSONDocument(r)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, errRequestBodyTooLarge) {
-				status = http.StatusRequestEntityTooLarge
-			}
-			base.WriteJSONMessage(w, status, err.Error())
-			return
+// RunRequestPhase parses the client document, selects the initial provider
+// instance, and publishes one request-local execution state. Provider I/O is
+// deferred to RunExclusiveProtocol until all before-proxy hooks have run.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	body, document, protocol, err := p.readJSONDocument(r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
 		}
-		p.refreshHealth(r.Context())
-		firstIndex, ok := p.pickInstance(r, nil)
+		base.WriteJSONMessage(w, status, err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	p.refreshHealth(r.Context())
+	firstIndex, ok := p.pickInstance(r, nil)
+	if !ok {
+		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	tried := map[int]bool{firstIndex: true}
+	var state *ai_runtime.State
+	request := ai_runtime.WithExecution(r, p.config.Instances[firstIndex].Name, func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		index, ok := p.instanceIndex(state.InstanceName())
 		if !ok {
 			base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+			p.registerLogging(r, protocol, body)
 			return
 		}
-		tried := map[int]bool{firstIndex: true}
-		var state *ai_runtime.State
-		r = ai_runtime.WithExecution(r, p.config.Instances[firstIndex].Name, func(
-			w http.ResponseWriter,
-			r *http.Request,
-		) {
-			index, ok := p.instanceIndex(state.InstanceName())
-			if !ok {
-				base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
-				p.registerLogging(r, protocol, body)
-				return
-			}
-			p.executeInstanceRequest(w, r, body, document, protocol, index, tried)
-		})
-		state = ai_runtime.FromRequest(r)
-		state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[firstIndex]))
-		state.ConfigureRateLimitFallback(rateLimitFallbackEnabled(p.config.FallbackStrategy), func() bool {
-			index, ok := p.pickInstance(r, tried)
-			if !ok {
-				return false
-			}
-			tried[index] = true
-			state.SetInstanceName(p.config.Instances[index].Name)
-			state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[index]))
-			return true
-		})
-		if ai_runtime.TerminalEnabled(r) {
+		p.executeInstanceRequest(w, r, body, document, protocol, index, tried)
+	})
+	state = ai_runtime.FromRequest(request)
+	state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[firstIndex]))
+	state.ConfigureRateLimitFallback(rateLimitFallbackEnabled(p.config.FallbackStrategy), func() bool {
+		index, ok := p.pickInstance(request, tried)
+		if !ok {
+			return false
+		}
+		tried[index] = true
+		state.SetInstanceName(p.config.Instances[index].Name)
+		state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[index]))
+		return true
+	})
+	return base.ContinueRequest(request)
+}
+
+// RunExclusiveProtocol executes the selected AI instance once and marks its
+// response as upstream-owned before any provider bytes can be committed.
+func (p *Plugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	state := ai_runtime.FromRequest(r)
+	if state == nil {
+		if next != nil {
 			next.ServeHTTP(w, r)
+		}
+		return base.ProtocolResponded, r, apisixctx.ResponseSourceUnknown, nil
+	}
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+	state.Consume(w, r)
+	return base.ProtocolResponded, r, apisixctx.ResponseSourceUpstream, nil
+}
+
+// Handler is retained only for direct callers that have not installed the
+// explicit request/response phases. Route assembly uses the interfaces above.
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := p.RunRequestPhase(w, r)
+		request := result.Request
+		if request == nil {
+			request = r
+		}
+		if result.Decision == base.RequestStop {
 			return
 		}
-		ai_runtime.FromRequest(r).Execute(w, r)
-	}
-	return http.HandlerFunc(fn)
+		if ai_runtime.TerminalEnabled(request) {
+			if next != nil {
+				next.ServeHTTP(w, request)
+			}
+			return
+		}
+		_, _, _, _ = p.RunExclusiveProtocol(w, request, next)
+	})
+}
+
+// DescribeResponseMode conservatively includes bounded and streaming modes;
+// each selected provider instance may choose SSE at request time.
+func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
 }
 
 func (p *Plugin) instanceIsStreaming(

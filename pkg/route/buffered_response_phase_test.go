@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -18,6 +20,57 @@ type metadataResponseContractPlugin struct {
 	bodyCalls   int
 	storeCalls  int
 	priority    int
+}
+
+type metadataStreamingContractPlugin struct {
+	metadataResponseContractPlugin
+	streamingHeaderCalls int
+	streamingBodyCalls   int
+	protocolCalls        int
+}
+
+func (p *metadataStreamingContractPlugin) RunStreamingHeaderFilter(
+	*http.Request,
+	*base.StreamingResponseState,
+) error {
+	p.streamingHeaderCalls++
+	return nil
+}
+
+func (p *metadataStreamingContractPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	p.streamingBodyCalls++
+	return w, nil
+}
+
+func (*metadataStreamingContractPlugin) RegisterCompressionOffers(
+	*http.Request,
+	*compression.State,
+) []compression.Offer {
+	return []compression.Offer{{Coding: compression.Gzip}}
+}
+
+func (*metadataStreamingContractPlugin) WrapCompression(
+	w http.ResponseWriter,
+	_ *http.Request,
+	_ *compression.State,
+	_ compression.Decision,
+) (http.ResponseWriter, error) {
+	return w, nil
+}
+
+func (p *metadataStreamingContractPlugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	p.protocolCalls++
+	if next != nil {
+		next.ServeHTTP(w, r)
+	}
+	return base.ProtocolResponded, r, apisixctx.ResponseSourceUnknown, nil
 }
 
 func (p *metadataResponseContractPlugin) Init() error               { return nil }
@@ -118,6 +171,63 @@ func TestMetadataWrappersForwardOnlyRegistryDeclaredRequestAndResponseInterfaces
 	}
 	if _, ok := cacheWrapped.(base.FinalResponseStorePlugin); !ok {
 		t.Fatalf("wrapped proxy-cache does not expose declared store callback: %T", cacheWrapped)
+	}
+}
+
+func TestMetadataWrappersPreservePlan16StreamingAndProtocolCallbacks(t *testing.T) {
+	filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
+	if err != nil {
+		t.Fatalf("compile filter: %v", err)
+	}
+	streaming := &metadataStreamingContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
+		name: "gzip",
+	}}
+	wrapped, err := newMetadataPlugin("gzip", streaming, pluginMetadata{filter: filter})
+	if err != nil {
+		t.Fatalf("newMetadataPlugin(gzip) error = %v", err)
+	}
+	header, headerOK := wrapped.(base.StreamingHeaderFilterPlugin)
+	body, bodyOK := wrapped.(base.StreamingBodyFilterPlugin)
+	_, compressionOK := wrapped.(plugin.CompressionOfferPlugin)
+	if !headerOK || !bodyOK || !compressionOK {
+		t.Fatalf(
+			"wrapped gzip methods = header:%v body:%v compression:%v (%T)",
+			headerOK,
+			bodyOK,
+			compressionOK,
+			wrapped,
+		)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/?enabled=no", nil)
+	if err := header.RunStreamingHeaderFilter(request, &base.StreamingResponseState{}); err != nil {
+		t.Fatalf("filtered streaming header error = %v", err)
+	}
+	if _, err := body.WrapStreamingResponse(httptest.NewRecorder(), request); err != nil {
+		t.Fatalf("filtered streaming body error = %v", err)
+	}
+	if streaming.streamingHeaderCalls != 0 || streaming.streamingBodyCalls != 0 {
+		t.Fatalf("filtered streaming calls = %d/%d", streaming.streamingHeaderCalls, streaming.streamingBodyCalls)
+	}
+
+	protocol := &metadataStreamingContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
+		name: "ai-proxy",
+	}}
+	wrapped, err = newMetadataPlugin("ai-proxy", protocol, pluginMetadata{filter: filter})
+	if err != nil {
+		t.Fatalf("newMetadataPlugin(ai-proxy) error = %v", err)
+	}
+	terminal, ok := wrapped.(base.ExclusiveProtocolTerminal)
+	if !ok {
+		t.Fatalf("wrapped ai-proxy does not expose protocol callback: %T", wrapped)
+	}
+	nextCalls := 0
+	_, _, _, err = terminal.RunExclusiveProtocol(
+		httptest.NewRecorder(),
+		request,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalls++ }),
+	)
+	if err != nil || protocol.protocolCalls != 0 || nextCalls != 1 {
+		t.Fatalf("filtered protocol = err:%v plugin:%d next:%d", err, protocol.protocolCalls, nextCalls)
 	}
 }
 

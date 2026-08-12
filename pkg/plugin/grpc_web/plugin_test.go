@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -401,6 +403,58 @@ func TestHandlerRejectsRoutedRequestWithoutWildcard(t *testing.T) {
 
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.Code)
+	}
+}
+
+func TestExclusiveProtocolTerminalCallsContinuationOnceAndPreservesTrailers(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/service/Call", nil)
+	req.Header.Set("Content-Type", "application/grpc-web")
+	rr := httptest.NewRecorder()
+	calls := 0
+	disposition, replacement, source, err := p.RunExclusiveProtocol(
+		rr,
+		req,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set("Trailer", "Grpc-Status")
+			w.Header().Set("Grpc-Status", "0")
+			_, _ = w.Write([]byte("payload"))
+			_ = r
+		}),
+	)
+	if err != nil {
+		t.Fatalf("RunExclusiveProtocol() error = %v", err)
+	}
+	if disposition != base.ProtocolResponded || replacement == nil ||
+		source == apisixctx.ResponseSourceUnknown {
+		t.Fatalf(
+			"terminal result = disposition:%d replacement:%p source:%q",
+			disposition,
+			replacement,
+			source,
+		)
+	}
+	if calls != 1 {
+		t.Fatalf("continuation calls = %d, want 1", calls)
+	}
+	if rr.Body.Len() == 0 {
+		t.Fatal("grpc-web terminal produced empty body")
+	}
+}
+
+func TestGrpcWebImplementsDeclaredStreamingBodyOwner(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	owner, ok := any(p).(base.StreamingBodyFilterPlugin)
+	if !ok {
+		t.Fatal("grpc-web does not implement declared StreamingBodyFilterPlugin")
+	}
+	wrapped, err := owner.WrapStreamingResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+	if err != nil {
+		t.Fatalf("WrapStreamingResponse() error = %v", err)
+	}
+	if wrapped == nil {
+		t.Fatal("WrapStreamingResponse() returned nil writer")
 	}
 }
 

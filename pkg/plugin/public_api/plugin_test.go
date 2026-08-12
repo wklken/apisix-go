@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestLookupRequiresExactMethodAndURI(t *testing.T) {
@@ -76,5 +79,24 @@ func TestPublicAPIHandlerDispatch(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestRunRequestPhasePublishesAPISIXSourceForGatewayMiss(t *testing.T) {
+	plugin := &Plugin{}
+	request := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := plugin.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("result = %+v, want apisix stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("source = %q, want apisix", lifecycle.ResponseSource())
+	}
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
 	}
 }

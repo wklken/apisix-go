@@ -4,7 +4,7 @@
 
 **Goal:** Give streaming, compression, protocol translation, hijack, and terminal-response plugins explicit ownership so they coexist with request and buffered response phases without double writes, hidden buffering, or post-commit recovery corruption.
 
-**Architecture:** Materialized plugin bindings declare bounded response capabilities. The builder computes one immutable response plan: buffered, streaming wrapper stack, ordered conditional terminal bindings, and at most one exclusive protocol owner. Streaming wrappers are installed in APISIX header/body order while preserving optional writer interfaces and flush/trailer semantics. Conditional terminal plugins keep their binding scope/request-stage/priority and the first runtime `Responded` or `Hijacked` disposition wins. Incompatible protocol owners fail strict route build with plugin names and frozen resource provenance.
+**Architecture:** Materialized plugin bindings declare bounded response capabilities. The builder computes one immutable response plan: buffered phases, a streaming wrapper stack, and at most one exclusive protocol owner. Streaming wrappers are installed in APISIX header/body order while preserving optional writer interfaces and flush/trailer semantics. Conditional response plugins remain in the request pipeline at their declared scope/stage/priority; only a route or plugin protocol owner returns `Responded` or `Hijacked`. Incompatible protocol owners fail strict route build with plugin names and frozen resource provenance.
 
 **Tech Stack:** Go 1.26 `net/http`, response controller/optional interfaces, compression negotiation from PR #84, buffered response phases, outer panic/outcome boundary.
 
@@ -19,7 +19,7 @@
 - Compression is negotiated once across gzip/deflate/br/identity. Stacked compression plugins must not independently choose or double-encode.
 - Builder errors name both incompatible plugin capabilities and the materialized route/global/consumer provenance.
 - Do not migrate loggers/tracers in this PR. The request lifecycle still guarantees their legacy cleanup until the final phase plan.
-- The exact 23 primary identities and capabilities are the Plan 16 section of `2026-08-10-plugin-capability-manifest.md`; `mqtt-proxy` is classified as a separate TCP subsystem and is never installed in the HTTP executor.
+- The exact 22 HTTP identities and capabilities are the Plan 16 section of `2026-08-10-plugin-capability-manifest.md`; `mqtt-proxy` is the separately classified 23rd identity and is never installed in the HTTP executor.
 
 ---
 
@@ -35,42 +35,41 @@
 **Interfaces:**
 
 ```go
-type ResponseMode uint8
-
+type ResponseModeMask uint8
 const (
-    ResponseModeNone ResponseMode = iota
-    ResponseModeBuffered
+    ResponseModeBounded ResponseModeMask = 1 << iota
     ResponseModeStreaming
     ResponseModeHijack
 )
-
-type TerminalKind uint8
-
+type ResponseModeDescriptor struct { Modes ResponseModeMask }
+type ResponseModeDescriber interface {
+    DescribeResponseMode() (ResponseModeDescriptor, error)
+}
+type StreamingResponseState struct {
+    Status int
+    Header, Trailer http.Header
+}
+type StreamingHeaderFilterPlugin interface {
+    RunStreamingHeaderFilter(*http.Request, *StreamingResponseState) error
+}
+type StreamingBodyFilterPlugin interface {
+    WrapStreamingResponse(http.ResponseWriter, *http.Request) (http.ResponseWriter, error)
+}
+type ProtocolDisposition uint8
 const (
-    TerminalNone TerminalKind = iota
-    TerminalConditional
-    TerminalExclusiveProtocol
+    ProtocolResponded ProtocolDisposition = iota + 1
+    ProtocolHijacked
 )
-
-type ResponseCapability struct {
-    Mode            ResponseMode
-    Terminal        TerminalKind
-    TransformsBytes bool
-    NeedsTrailers   bool
-    NeedsFlush      bool
-    Protocol        string
+type ExclusiveProtocolTerminal interface {
+    RunExclusiveProtocol(http.ResponseWriter, *http.Request, http.Handler) (ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error)
 }
-
-type ResponseCapabilityPlugin interface {
-    ResponseCapability() ResponseCapability
-}
-
-type ResponsePlan struct { /* validated ordered bindings */ }
-
-func BuildResponsePlan(bindings []Binding) (ResponsePlan, error)
 ```
 
-`Protocol` is a bounded registry value such as `http`, `grpc-web`, `websocket`, or `sse`; arbitrary config values are not accepted.
+`ResponseCapability` is the root capability record with explicit header,
+buffered-body, streaming-body, streaming-owner, compression-offer,
+exclusive-protocol, and separate-subsystem fields. `ProtocolKind` is a bounded
+registry (`ai`, `grpc-web`, `kafka`, `dubbo`, `http-dubbo`,
+`mqtt`); arbitrary config values are not accepted.
 
 - [ ] **Step 1: Add compatibility matrix tests**
 
@@ -102,25 +101,11 @@ bash -lc 'source .envrc && go test ./pkg/plugin -run "(BuildResponsePlan|Respons
 
 **Interfaces:**
 
-```go
-type StreamingBodyFilterPlugin interface {
-    WrapStreamingResponse(http.ResponseWriter, *http.Request) (http.ResponseWriter, error)
-}
+The executor uses `StreamingBodyFilterPlugin` and `ExclusiveProtocolTerminal`
+above. The normal-upstream continuation is passed to protocol owners so
+grpc-web/transcode can frame it while terminal-only owners can ignore it.
 
-type TerminalDecision uint8
-
-const (
-    TerminalContinue TerminalDecision = iota
-    TerminalResponded
-    TerminalHijacked
-)
-
-type TerminalPlugin interface {
-    RunTerminal(http.ResponseWriter, *http.Request) (TerminalDecision, *http.Request, error)
-}
-```
-
-The executor receives full `Binding` values, so each conditional terminal retains `Scope`, `RequestStage`, effective priority, and provenance. It updates the lifecycle final request and response source after every returned request/disposition.
+The executor receives full `Binding` values so every response wrapper retains `Scope`, effective priority, and provenance. Route-owned and plugin-owned protocol candidates also retain frozen provenance. The executor updates the lifecycle final request and response source after every protocol result.
 
 - [ ] **Step 1: Add writer and phase-order regressions**
 
@@ -134,7 +119,7 @@ bash -lc 'source .envrc && go test ./pkg/plugin/base ./pkg/plugin -run "(Streami
 
 - [ ] **Step 3: Implement wrappers with exact capability preservation**
 
-Use the existing `httpsnoop`/ResponseController-compatible patterns. Build wrapper order from explicit scope and phase priority, not legacy middleware unwind. Conditional terminal bindings are spliced into their declared request stage rather than grouped at the end. The first successful terminal decision skips lower bindings and upstream; all `TerminalContinue` results reach upstream once. Unknown decisions fail closed before commit.
+Use the existing `httpsnoop`/ResponseController-compatible patterns. Build wrapper order from explicit scope and phase priority, not legacy middleware unwind. Conditional response plugins stay in their declared request stage and are never duplicated in the response executor. An exclusive protocol owner either responds or hijacks; the ordinary continuation reaches upstream once when no exclusive owner is selected. Unknown dispositions fail closed before commit.
 
 - [ ] **Step 4: Run focused race and real-connection tests**
 
@@ -307,9 +292,11 @@ Open one ready PR, wait for CI, and merge before log/finalizer phases.
 
 ## Fast-plan-impl Dispatch Ownership
 
-1. **WU-01 capability/executor/route integration** owns `pkg/plugin/response_capability*`, `pkg/plugin/request_stage_registry*`, `pkg/plugin/base/streaming_phase*`, `pkg/plugin/streaming_executor*`, registry tests, and named `pkg/route/**` files; freeze the matrix and exact conditional-terminal stages first.
-2. **WU-02 compression and protocol owners** owns gzip, brotli, grpc-web, grpc-transcode, and CORS directories.
-3. **WU-03 streaming and terminal owners** owns proxy-buffering, AI proxy/multi/rate-limiting/moderation, kafka-proxy, MCP bridge, public-api, mocking, redirect, fault-injection, and four FaaS directories. Route-owned kafka/dubbo/http-dubbo integration stays in WU-01 route files. WU-02/WU-03 start after WU-01 and do not touch route/core files.
+1. **WU-01 core capability/executors** owns `pkg/plugin/response_capability*`, `pkg/plugin/request_stage_registry*`, `pkg/plugin/base/streaming_phase*`, `pkg/plugin/streaming_executor*`, registry tests, and these two plan documents; it freezes the matrix and interfaces first.
+2. **WU-02A compression and protocol wrappers** owns compression, gzip, brotli, grpc-web, grpc-transcode, CORS, and proxy-buffering directories.
+3. **WU-02B AI owners** owns AI runtime/stream, proxy/multi, rate limiting, and Aliyun moderation directories.
+4. **WU-02C conditional/local owners** owns FaaS, MCP, public API, mocking, redirect, fault injection, and Dubbo/Kafka request-preparation directories. WU-02A/B/C start only after WU-01 acceptance and have disjoint write paths.
+5. **WU-03 route integration** owns the named `pkg/route/**` files and starts only after all WU-02 units are accepted. It installs one response plan and supplies the route-owned Kafka/Dubbo/http-Dubbo protocol candidates.
 
 ## Explicit Deferrals
 

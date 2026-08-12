@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -99,6 +100,38 @@ func TestHandlerTranscodesGETRequestAndResponse(t *testing.T) {
 	}
 	if got := res.Body.String(); got != `{"msg":"Hello"}` {
 		t.Fatalf("response body = %q, want JSON echo", got)
+	}
+}
+
+func TestRequestAndBufferedResponsePhasesTranscodeUnaryCall(t *testing.T) {
+	restore := stubProtoContent(t, "phase-echo-proto", testDescriptorContent(t))
+	defer restore()
+
+	p := newTestPlugin(t, Config{
+		ProtoID: "phase-echo-proto", Service: "echo.EchoService", Method: "Echo",
+		PBOption: []string{"no_default_values"},
+	})
+	result := p.RunRequestPhase(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil),
+	)
+	if result.Decision != base.RequestContinue || result.Request == nil {
+		t.Fatalf("request phase = decision:%d request:%v", result.Decision, result.Request)
+	}
+	if result.Request.URL.Path != "/echo.EchoService/Echo" {
+		t.Fatalf("upstream path = %q", result.Request.URL.Path)
+	}
+	state := &base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}},
+		Body:   frameGRPCMessageForTest(t, encodeEchoMessage(t, "Hello")),
+	}
+	if err := p.RunBufferedBodyFilter(result.Request, state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusOK || state.Header.Get("Content-Type") != "application/json" ||
+		string(state.Body) != `{"msg":"Hello"}` {
+		t.Fatalf("transcoded state = status:%d header:%v body:%q", state.Status, state.Header, state.Body)
 	}
 }
 

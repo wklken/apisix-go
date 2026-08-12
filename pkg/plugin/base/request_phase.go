@@ -72,6 +72,7 @@ func AdaptRequestPhase(plugin RequestPhasePlugin, next http.Handler) http.Handle
 func normalizeStopSource(source apisixctx.ResponseSource) apisixctx.ResponseSource {
 	switch source {
 	case apisixctx.ResponseSourceUpstream,
+		apisixctx.ResponseSourceAPISIX,
 		apisixctx.ResponseSourceEarlyStop,
 		apisixctx.ResponseSourceCacheHit:
 		return source

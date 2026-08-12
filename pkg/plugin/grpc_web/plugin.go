@@ -2,6 +2,7 @@ package grpc_web
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -56,6 +58,13 @@ type Config struct {
 	CorsAllowHeaders string `json:"cors_allow_headers,omitempty"`
 }
 
+type preparedRequestKey struct{}
+
+type preparedRequest struct {
+	mime     string
+	encoding string
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -75,46 +84,97 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			p.setCommonCorsHeaders(w.Header())
-			w.Header().Set("Access-Control-Allow-Methods", defaultCorsAllowMethods)
-			w.Header().Set("Access-Control-Allow-Headers", p.config.CorsAllowHeaders)
-			w.WriteHeader(http.StatusNoContent)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := p.RunRequestPhase(w, r)
+		request := result.Request
+		if request == nil {
+			request = r
+		}
+		if result.Decision == base.RequestStop {
 			return
 		}
-		if r.Method != http.MethodPost {
-			p.setCommonCorsHeaders(w.Header())
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
+		_, _, _, _ = p.RunExclusiveProtocol(w, request, next)
+	})
+}
 
-		mime := r.Header.Get("Content-Type")
-		encoding, ok := grpcWebContentEncodings[mime]
-		if !ok {
-			p.setCommonCorsHeaders(w.Header())
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		if err := rewriteGRPCPath(r); err != nil {
-			p.setCommonCorsHeaders(w.Header())
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if err := transformRequest(r, encoding); err != nil {
-			p.setCommonCorsHeaders(w.Header())
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		stream := newStreamingResponseWriter(w, mime, encoding, p.setCommonCorsHeaders)
-		next.ServeHTTP(stream, r)
-		p.setCommonCorsHeaders(stream.Header())
-		_ = stream.finish()
+// RunRequestPhase validates and rewrites a grpc-web request once. The
+// protocol owner consumes the prepared request after all access hooks run.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if r.Method == http.MethodOptions {
+		p.setCommonCorsHeaders(w.Header())
+		w.Header().Set("Access-Control-Allow-Methods", defaultCorsAllowMethods)
+		w.Header().Set("Access-Control-Allow-Headers", p.config.CorsAllowHeaders)
+		w.WriteHeader(http.StatusNoContent)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	return http.HandlerFunc(fn)
+	if r.Method != http.MethodPost {
+		p.setCommonCorsHeaders(w.Header())
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	mime := r.Header.Get("Content-Type")
+	encoding, ok := grpcWebContentEncodings[mime]
+	if !ok {
+		p.setCommonCorsHeaders(w.Header())
+		w.WriteHeader(http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if err := rewriteGRPCPath(r); err != nil {
+		p.setCommonCorsHeaders(w.Header())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if err := transformRequest(r, encoding); err != nil {
+		p.setCommonCorsHeaders(w.Header())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	request := r.WithContext(context.WithValue(r.Context(), preparedRequestKey{}, preparedRequest{
+		mime: mime, encoding: encoding,
+	}))
+	return base.ContinueRequest(request)
+}
+
+func (p *Plugin) RunStreamingHeaderFilter(_ *http.Request, _ *base.StreamingResponseState) error {
+	return nil
+}
+
+// WrapStreamingResponse satisfies the declared streaming-body capability. The
+// protocol terminal remains the sole grpc-web framing owner; this callback is
+// deliberately transparent so generic response wrapping cannot frame twice.
+func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, _ *http.Request) (http.ResponseWriter, error) {
+	return w, nil
+}
+
+// RunExclusiveProtocol frames the normal upstream continuation exactly once.
+// grpc-web trailers are emitted by the request-local writer after the
+// continuation returns, and the source is published before its first write.
+func (p *Plugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	request := r
+	info, prepared := request.Context().Value(preparedRequestKey{}).(preparedRequest)
+	if !prepared {
+		result := p.RunRequestPhase(w, request)
+		if result.Request != nil {
+			request = result.Request
+		}
+		if result.Decision == base.RequestStop {
+			return base.ProtocolResponded, request, result.Source, nil
+		}
+		info, _ = request.Context().Value(preparedRequestKey{}).(preparedRequest)
+	}
+	apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceUpstream)
+	stream := newStreamingResponseWriter(w, info.mime, info.encoding, p.setCommonCorsHeaders)
+	if next != nil {
+		next.ServeHTTP(stream, request)
+	}
+	if err := stream.finish(); err != nil {
+		return base.ProtocolResponded, request, apisixctx.ResponseSourceUpstream, err
+	}
+	return base.ProtocolResponded, request, apisixctx.ResponseSourceUpstream, nil
 }
 
 func rewriteGRPCPath(r *http.Request) error {

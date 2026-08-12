@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -516,6 +518,85 @@ func TestGzipNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.T)
 	}
 	if res.Body.Len() != 0 {
 		t.Fatalf("body length = %d, want empty", res.Body.Len())
+	}
+}
+
+func TestGzipStructuralCompressionOfferWrapsOnlySelectedCoding(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	registered, state := compression.Register(req)
+	offers := p.RegisterCompressionOffers(registered, state)
+	offer := offers[0]
+	if offer.Coding != compression.Gzip || offer.Eligible == nil {
+		t.Fatalf("offer = %#v, want gzip with eligibility", offer)
+	}
+	_, state = compression.Register(registered, offer)
+	decision := state.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+	})
+	if decision.Coding != compression.Gzip {
+		t.Fatalf("decision coding = %q, want gzip", decision.Coding)
+	}
+	underlying := httptest.NewRecorder()
+	wrapped, err := p.WrapCompression(underlying, registered, state, decision)
+	if err != nil {
+		t.Fatalf("WrapCompression() error = %v", err)
+	}
+	if wrapped == nil {
+		t.Fatal("WrapCompression() returned nil writer")
+	}
+	if _, ok := wrapped.(base.StreamingResponseFinalizer); !ok {
+		t.Fatal("compression wrapper does not own FinishStreamingResponse")
+	}
+	wrapped.Header().Set("Content-Type", "text/plain")
+	wrapped.WriteHeader(http.StatusOK)
+	_, _ = wrapped.Write([]byte("streamed"))
+	if err := wrapped.(base.StreamingResponseFinalizer).FinishStreamingResponse(nil); err != nil {
+		t.Fatalf("FinishStreamingResponse() error = %v", err)
+	}
+	if got := underlying.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+}
+
+func TestGzipStructuralOfferIncludesDeflateAndHTTPVersionGate(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.ProtoMajor, req.ProtoMinor = 1, 1
+	req.Header.Set("Accept-Encoding", "gzip;q=0, deflate;q=1")
+	registered, state := compression.Register(req)
+	offers := p.RegisterCompressionOffers(registered, state)
+	offer := offers[0]
+	if offer.Coding != compression.Gzip {
+		t.Fatalf("primary offer coding = %q, want gzip", offer.Coding)
+	}
+	_, state = compression.Register(registered, offers...)
+	decision := state.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+	})
+	if decision.Coding != compression.Deflate {
+		t.Fatalf("decision coding = %q, want deflate", decision.Coding)
+	}
+
+	legacy := httptest.NewRequest(http.MethodGet, "/", nil)
+	legacy.ProtoMajor, legacy.ProtoMinor = 1, 0
+	legacy.Header.Set("Accept-Encoding", "gzip, deflate")
+	legacy, legacyState := compression.Register(legacy)
+	legacyOffers := p.RegisterCompressionOffers(legacy, legacyState)
+	legacyOffer := legacyOffers[0]
+	_, legacyState = compression.Register(legacy, legacyOffers...)
+	legacyDecision := legacyState.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+	})
+	if legacyOffer.Eligible == nil || legacyDecision.Coding != compression.Identity {
+		t.Fatalf("HTTP/1.0 decision = %#v, want identity", legacyDecision)
 	}
 }
 

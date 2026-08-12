@@ -3,6 +3,7 @@ package plugin
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -19,6 +21,63 @@ type responseTestConfig struct {
 	stage  string
 	header bool
 	body   bool
+}
+
+type responseModeTestConfig struct{ modes base.ResponseModeMask }
+
+func (c responseModeTestConfig) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: c.modes}, nil
+}
+
+type responseOwnerTestPlugin struct {
+	base.BasePlugin
+	config responseModeTestConfig
+}
+
+type dualModeResponseTestPlugin struct {
+	base.BasePlugin
+	mode          base.RequestResponseMode
+	bufferedCalls atomic.Int32
+	streamCalls   atomic.Int32
+}
+
+func newDualModeResponseTestPlugin(mode base.RequestResponseMode) *dualModeResponseTestPlugin {
+	p := &dualModeResponseTestPlugin{mode: mode}
+	p.Name = "dual-mode-response"
+	p.SetPriority(1)
+	return p
+}
+
+func (*dualModeResponseTestPlugin) Init() error     { return nil }
+func (*dualModeResponseTestPlugin) PostInit() error { return nil }
+func (*dualModeResponseTestPlugin) Config() any {
+	return responseModeTestConfig{modes: base.ResponseModeBounded | base.ResponseModeStreaming}
+}
+func (*dualModeResponseTestPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *dualModeResponseTestPlugin) SelectResponseMode(*http.Request) base.RequestResponseMode {
+	return p.mode
+}
+
+func (p *dualModeResponseTestPlugin) RunBufferedBodyFilter(*http.Request, *base.ResponseState) error {
+	p.bufferedCalls.Add(1)
+	return nil
+}
+
+func (p *dualModeResponseTestPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	_ *http.Request,
+) (http.ResponseWriter, error) {
+	p.streamCalls.Add(1)
+	return w, nil
+}
+
+func (p *responseOwnerTestPlugin) Init() error                            { return nil }
+func (p *responseOwnerTestPlugin) PostInit() error                        { return nil }
+func (p *responseOwnerTestPlugin) Config() any                            { return &p.config }
+func (p *responseOwnerTestPlugin) Handler(next http.Handler) http.Handler { return next }
+
+func (p *responseOwnerTestPlugin) ResponseCapability() ResponseCapability {
+	return ResponseCapability{StreamingResponseOwner: true, ExclusiveProtocol: ProtocolAI}
 }
 
 type countingResponseTestConfig struct {
@@ -133,6 +192,71 @@ func TestMaterializeResponseBindingsUsesExactManifestAndPartitionOrder(t *testin
 	}
 }
 
+func TestResponseModeDescriptorCannotInventUndeclaredCallbacksOrRemoveProtocolOwner(t *testing.T) {
+	owner := &responseOwnerTestPlugin{config: responseModeTestConfig{
+		modes: base.ResponseModeBounded | base.ResponseModeStreaming,
+	}}
+	owner.Name = "response-owner"
+	binding := Binding{
+		Plugin: owner, Scope: ScopeRoute, Stage: RequestStageAccess,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "route"}, factoryName: "ai-proxy",
+	}
+	capability, err := responseCapabilityForBinding(binding)
+	if err != nil {
+		t.Fatalf("responseCapabilityForBinding() error = %v", err)
+	}
+	if capability.StreamingBodyFilter {
+		t.Fatal("response mode descriptor invented an undeclared streaming body callback")
+	}
+	if !capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolAI {
+		t.Fatalf("protocol owner capability = %#v, want AI streaming owner", capability)
+	}
+}
+
+func TestBuildResponsePlanSelectsExactlyOneDualModeResponsePath(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		mode          base.RequestResponseMode
+		wantBuffered  int32
+		wantStreaming int32
+	}{
+		{name: "bounded", mode: base.RequestResponseModeBounded, wantBuffered: 1},
+		{name: "streaming", mode: base.RequestResponseModeStreaming, wantStreaming: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			phase := newDualModeResponseTestPlugin(tc.mode)
+			binding := checkedResponseBinding(t, "ai-rate-limiting", phase, ScopeRoute, tc.name)
+			plan, err := BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{binding}})
+			if err != nil {
+				t.Fatalf("BuildResponsePlan() error = %v", err)
+			}
+			handler := plan.Install(NewRequestPipeline([]Binding{binding}, nil), http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+					_, _ = w.Write([]byte("response"))
+					if tc.mode == base.RequestResponseModeStreaming {
+						w.(http.Flusher).Flush()
+					}
+				},
+			))
+			request, _ := apisixctx.EnsureRequestLifecycle(
+				httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil), time.Unix(0, 0),
+			)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK || response.Body.String() != "response" {
+				t.Fatalf("response = %d/%q, want 200/response", response.Code, response.Body.String())
+			}
+			if got := phase.bufferedCalls.Load(); got != tc.wantBuffered {
+				t.Fatalf("buffered calls = %d, want %d", got, tc.wantBuffered)
+			}
+			if got := phase.streamCalls.Load(); got != tc.wantStreaming {
+				t.Fatalf("streaming calls = %d, want %d", got, tc.wantStreaming)
+			}
+		})
+	}
+}
+
 func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	config := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
 		RequestStage: "none",
@@ -153,12 +277,15 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	}
 }
 
-func TestPlan15ManifestAndRegistryHaveExactTenIdentities(t *testing.T) {
-	want := []string{
+func TestResponseManifestAndRegistryHaveExactDeclaredIdentities(t *testing.T) {
+	manifestWant := []string{
 		"api-breaker", "body-transformer", "echo", "error-page", "exit-transformer",
 		"graphql-proxy-cache", "proxy-cache", "response-rewrite",
 		"serverless-post-function", "serverless-pre-function",
 	}
+	registryWant := append([]string{"ai-aliyun-content-moderation", "ai-rate-limiting"}, manifestWant...)
+	registryWant = append(registryWant, "grpc-transcode")
+	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
 	for identity := range responseFactoryRegistry {
 		got = append(got, identity)
@@ -167,8 +294,8 @@ func TestPlan15ManifestAndRegistryHaveExactTenIdentities(t *testing.T) {
 		}
 	}
 	slices.Sort(got)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("response registry = %v, want %v", got, want)
+	if !reflect.DeepEqual(got, registryWant) {
+		t.Fatalf("response registry = %v, want %v", got, registryWant)
 	}
 
 	manifest, err := os.ReadFile(filepath.Join(
@@ -186,7 +313,7 @@ func TestPlan15ManifestAndRegistryHaveExactTenIdentities(t *testing.T) {
 	if end := strings.Index(section[len("## Plan 15 bounded response identities"):], "\n## "); end >= 0 {
 		section = section[:len("## Plan 15 bounded response identities")+end]
 	}
-	manifestIdentities := make([]string, 0, len(want))
+	manifestIdentities := make([]string, 0, len(manifestWant))
 	for line := range strings.SplitSeq(section, "\n") {
 		fields := strings.Split(line, "|")
 		if len(fields) != 5 || strings.TrimSpace(fields[1]) == "Identity" ||
@@ -199,8 +326,8 @@ func TestPlan15ManifestAndRegistryHaveExactTenIdentities(t *testing.T) {
 		}
 	}
 	slices.Sort(manifestIdentities)
-	if !reflect.DeepEqual(manifestIdentities, want) {
-		t.Fatalf("manifest identities = %v, want %v", manifestIdentities, want)
+	if !reflect.DeepEqual(manifestIdentities, manifestWant) {
+		t.Fatalf("manifest identities = %v, want %v", manifestIdentities, manifestWant)
 	}
 }
 

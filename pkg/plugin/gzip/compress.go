@@ -245,6 +245,13 @@ func (w *maybeCompressResponseWriter) Close() error {
 	return releaseCompressionWriter(w.encoding, w.level, compressor)
 }
 
+func (w *maybeCompressResponseWriter) FinishStreamingResponse(_ error) error {
+	if !w.hijacked && !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.Close()
+}
+
 func (w *maybeCompressResponseWriter) statusCode() int {
 	if w.status == 0 {
 		return http.StatusOK

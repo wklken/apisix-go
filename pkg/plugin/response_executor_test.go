@@ -1012,23 +1012,23 @@ func TestBufferedResponseBoundedConflictRegistryIsFailClosed(t *testing.T) {
 	})
 
 	t.Run("effective identity", func(t *testing.T) {
-		gzip := newExecutorLegacyPlugin("gzip", 1, nil)
-		gzipBinding, err := BindPluginChecked(
-			"gzip",
-			gzip,
+		streaming := newExecutorLegacyPlugin("proxy-buffering", 1, nil)
+		streamingBinding, err := BindPluginChecked(
+			"proxy-buffering",
+			streaming,
 			ScopeRoute,
-			ResourceProvenance{Kind: ResourceService, ID: "svc-gzip"},
+			ResourceProvenance{Kind: ResourceService, ID: "svc-streaming"},
 		)
 		if err != nil {
-			t.Fatalf("BindPluginChecked(gzip) error = %v", err)
+			t.Fatalf("BindPluginChecked(proxy-buffering) error = %v", err)
 		}
 		_, err = NewBufferedResponseExecutor(
-			[]Binding{boundedBinding, gzipBinding},
+			[]Binding{boundedBinding, streamingBinding},
 			TerminalDescriptor{Owner: TerminalOwnerOrdinaryProxy},
 			base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
 		)
-		if err == nil || !strings.Contains(err.Error(), "gzip") ||
-			!strings.Contains(err.Error(), "svc-gzip") {
+		if err == nil || !strings.Contains(err.Error(), "proxy-buffering") ||
+			!strings.Contains(err.Error(), "svc-streaming") {
 			t.Fatalf("NewBufferedResponseExecutor() error = %v", err)
 		}
 	})

@@ -1116,7 +1116,7 @@ func buildRoutePluginChainWithFallback(
 		t.Fatalf("initialized plugins = %d, want 1", len(plugins))
 	}
 
-	return withAIExecutionTerminal(pluginpkg.BuildPluginChain(plugins...), fallback)
+	return withRequestPipeline(pluginpkg.BuildPluginChain(plugins...), fallback)
 }
 
 const routeOASSpec = `{"openapi":"3.0.0","info":{"title":"route-test","version":"1.0.0"},"paths":{"/pets":{"get":{"parameters":[{"name":"id","in":"query","required":true,"schema":{"type":"integer"}}],"responses":{"204":{"description":"ok"}}}}}}`

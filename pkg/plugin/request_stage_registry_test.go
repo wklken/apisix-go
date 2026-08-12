@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,33 +15,53 @@ import (
 
 func TestRequestStageRegistryExactMembership(t *testing.T) {
 	want := map[string]RequestStageSpec{
-		"api-breaker":              {Stage: RequestStageAccess},
-		"body-transformer":         {Stage: RequestStageNone, ConfigAware: true},
-		"echo":                     {Stage: RequestStageNone, ConfigAware: true},
-		"error-page":               {Stage: RequestStageNone},
-		"exit-transformer":         {Stage: RequestStageNone},
-		"graphql-proxy-cache":      {Stage: RequestStageAccess},
-		"proxy-cache":              {Stage: RequestStageAccess},
-		"response-rewrite":         {Stage: RequestStageNone},
-		"serverless-pre-function":  {Stage: RequestStageNone, ConfigAware: true},
-		"serverless-post-function": {Stage: RequestStageNone, ConfigAware: true},
-		"request-context":          {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
-		"request-id":               {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
-		"real-ip":                  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-rewrite":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-control":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"proxy-mirror":             {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"traffic-label":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"traffic-split":            {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-prompt-decorator":      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-prompt-template":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-rag":                   {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"ai-request-rewrite":       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"data-mask":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"degraphql":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"example-plugin":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"jwe-decrypt":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"limit-conn":               {Stage: RequestStageAccess, AdaptLegacyHandler: false},
+		"api-breaker":                  {Stage: RequestStageAccess},
+		"body-transformer":             {Stage: RequestStageNone, ConfigAware: true},
+		"echo":                         {Stage: RequestStageNone, ConfigAware: true},
+		"error-page":                   {Stage: RequestStageNone},
+		"exit-transformer":             {Stage: RequestStageNone},
+		"graphql-proxy-cache":          {Stage: RequestStageAccess},
+		"proxy-cache":                  {Stage: RequestStageAccess},
+		"response-rewrite":             {Stage: RequestStageNone},
+		"serverless-pre-function":      {Stage: RequestStageNone, ConfigAware: true},
+		"serverless-post-function":     {Stage: RequestStageNone, ConfigAware: true},
+		"request-context":              {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
+		"request-id":                   {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
+		"real-ip":                      {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-rewrite":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-control":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-mirror":                 {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"traffic-label":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"traffic-split":                {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-prompt-decorator":          {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-prompt-template":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-rag":                       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"ai-request-rewrite":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"data-mask":                    {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"degraphql":                    {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"example-plugin":               {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"jwe-decrypt":                  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"cors":                         {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"fault-injection":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"proxy-buffering":              {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"redirect":                     {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"limit-conn":                   {Stage: RequestStageAccess, AdaptLegacyHandler: false},
+		"ai-aliyun-content-moderation": {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ai-proxy":                     {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ai-proxy-multi":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"ai-rate-limiting":             {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"aws-lambda":                   {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"azure-functions":              {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"dubbo-proxy":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"grpc-transcode":               {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"grpc-web":                     {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"kafka-proxy":                  {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"mcp-bridge":                   {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"mocking":                      {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"openfunction":                 {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"openwhisk":                    {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"public-api":                   {Stage: RequestStageAccess, AdaptLegacyHandler: true},
+		"http-dubbo":                   {Stage: RequestStageBeforeProxy, AdaptLegacyHandler: true},
 
 		"basic-auth": {
 			Stage:                 RequestStageAccess,
@@ -131,12 +153,14 @@ func TestPlan14RegistrySubsetsAreExact(t *testing.T) {
 		"basic-auth", "hmac-auth", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac",
 	}
 	legacyAccess := []string{
-		"acl", "ai-aws-content-moderation", "ai-prompt-guard", "authz-casbin",
+		"acl", "ai-aliyun-content-moderation", "ai-aws-content-moderation", "ai-prompt-guard",
+		"ai-proxy", "ai-proxy-multi", "ai-rate-limiting", "authz-casbin",
 		"authz-casdoor", "authz-keycloak", "cas-auth", "chaitin-waf", "client-control",
-		"consumer-restriction", "csrf", "dingtalk-auth", "feishu-auth", "forward-auth",
-		"graphql-limit-count", "ip-restriction", "limit-count", "limit-req", "oas-validator",
-		"opa", "openid-connect", "referer-restriction", "request-validation", "saml-auth",
-		"ua-restriction", "uri-blocker", "workflow",
+		"consumer-restriction", "csrf", "dingtalk-auth", "feishu-auth", "forward-auth", "graphql-limit-count",
+		"grpc-transcode", "grpc-web", "ip-restriction", "limit-count", "limit-req", "oas-validator", "opa",
+		"openid-connect", "referer-restriction", "request-validation", "saml-auth", "ua-restriction",
+		"uri-blocker", "workflow", "aws-lambda", "azure-functions", "dubbo-proxy", "kafka-proxy",
+		"mcp-bridge", "mocking", "openfunction", "openwhisk", "public-api",
 	}
 	consumerRewrite := []string{"attach-consumer-label"}
 	credentialOnly := []string{
@@ -185,6 +209,52 @@ func TestPlan14RegistrySubsetsAreExact(t *testing.T) {
 		spec, ok := requestStageRegistry[key]
 		if !ok || !spec.AuthenticatesConsumer || !spec.ConsumerConfigOnly {
 			t.Fatalf("credential-only auth %q = %#v/%v", key, spec, ok)
+		}
+	}
+}
+
+func TestPlan16RequestStageAssignmentsAreExact(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join(
+		"..", "..", "docs", "superpowers", "plans", "2026-08-10-plugin-capability-manifest.md",
+	))
+	if err != nil {
+		t.Fatalf("read capability manifest: %v", err)
+	}
+	section := string(manifest)
+	start := strings.Index(section, "## Plan 16 streaming, protocol, and terminal identities")
+	if start < 0 {
+		t.Fatal("capability manifest missing Plan 16 section")
+	}
+	section = section[start:]
+	if end := strings.Index(
+		section[len("## Plan 16 streaming, protocol, and terminal identities"):],
+		"\n## ",
+	); end >= 0 {
+		section = section[:len("## Plan 16 streaming, protocol, and terminal identities")+end]
+	}
+	want := make(map[string]RequestStage)
+	for line := range strings.SplitSeq(section, "\n") {
+		fields := strings.Split(line, "|")
+		if len(fields) != 5 || strings.TrimSpace(fields[1]) == "Identity" {
+			continue
+		}
+		factory, capabilities := strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
+		switch {
+		case strings.Contains(capabilities, "request_rewrite"):
+			want[factory] = RequestStageRewrite
+		case strings.Contains(capabilities, "request_access"):
+			want[factory] = RequestStageAccess
+		case strings.Contains(capabilities, "before_proxy"):
+			want[factory] = RequestStageBeforeProxy
+		}
+	}
+	if len(want) != 20 {
+		t.Fatalf("Plan 16 request-stage manifest size = %d, want 20 (%v)", len(want), want)
+	}
+	for factory, stage := range want {
+		spec, ok := RequestStageFor(factory)
+		if !ok || spec.Stage != stage {
+			t.Fatalf("RequestStageFor(%q) = %#v/%v, want stage %d", factory, spec, ok, stage)
 		}
 	}
 }

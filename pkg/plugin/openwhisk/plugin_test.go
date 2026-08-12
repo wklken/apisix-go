@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -81,6 +82,27 @@ func TestHandlerInvokesOpenWhiskActionAndUsesJSONResult(t *testing.T) {
 	}
 	if gotBody != "payload" {
 		t.Fatalf("action body = %q, want payload", gotBody)
+	}
+}
+
+func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"statusCode":204}`))
+	}))
+	defer api.Close()
+	p := newTestPlugin(t, Config{APIHost: api.URL, ServiceToken: "token", Namespace: "guest", Action: "hello"})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/openwhisk", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("result = %+v, want upstream stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("source = %q, want upstream", lifecycle.ResponseSource())
 	}
 }
 

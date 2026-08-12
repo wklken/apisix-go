@@ -1,6 +1,7 @@
 package route
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -29,8 +30,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
@@ -606,27 +607,15 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 		http.NotFoundHandler().ServeHTTP(w, r)
 	})
 	staticBindings := append(append([]plugin.Binding{}, systemBindings...), globalBindings...)
-	executor, err := plugin.NewBufferedResponseExecutor(
-		staticBindings,
-		plugin.TerminalDescriptor{
-			Owner: plugin.TerminalOwnerGlobalNotFound,
-			Provenance: plugin.ResourceProvenance{
-				Kind: plugin.ResourceSystem,
-				ID:   "global-not-found",
-			},
-		},
-		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-	)
+	plan, err := plugin.BuildResponsePlan(plugin.ResponsePlanInput{
+		StaticBindings: staticBindings,
+		BufferedConfig: base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
+	})
 	if err != nil {
 		return nil, err
 	}
-	pipeline := plugin.NewRequestPipeline(
-		staticBindings,
-		nil,
-	).WithBufferedResponseExecutor(executor)
-	return ensureRouteLifecycle(
-		ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(terminal))),
-	), nil
+	pipeline := plugin.NewRequestPipeline(staticBindings, nil)
+	return ensureRouteLifecycle(plan.Install(pipeline, terminal)), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -754,7 +743,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	handler, err := b.buildReverseHandler(r, service, resolvedUpstream)
+	handler, routeTerminals, err := b.buildReverseHandlerWithTerminals(r, service, resolvedUpstream)
 	if err != nil {
 		logger.Errorf("build reverse handler fail: %s", err)
 		return nil, err
@@ -764,27 +753,25 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	staticBindings = append(staticBindings, systemBindings...)
 	staticBindings = append(staticBindings, globalBindings...)
 	staticBindings = append(staticBindings, localBindings...)
-	terminalOwner, err := terminalDescriptorForRoute(
+	responseTerminals, err := routeTerminalCandidates(
 		terminalSources,
 		resolvedUpstream,
 		upstreamProvenance,
+		routeTerminals,
 	)
 	if err != nil {
 		return nil, err
 	}
-	executor, err := plugin.NewBufferedResponseExecutor(
-		staticBindings,
-		terminalOwner,
-		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-	)
+	plan, err := plugin.BuildResponsePlan(plugin.ResponsePlanInput{
+		StaticBindings: staticBindings,
+		RouteTerminals: responseTerminals,
+		BufferedConfig: base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
+	})
 	if err != nil {
 		return nil, err
 	}
-	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext)).
-		WithBufferedResponseExecutor(executor)
-	return ensureRouteLifecycle(
-		ai_runtime.EnableTerminal(pipeline.Then(ai_runtime.TerminalHandler(handler))),
-	), nil
+	pipeline := plugin.NewRequestPipeline(staticBindings, b.resolveConsumerBindings(routeContext))
+	return ensureRouteLifecycle(plan.Install(pipeline, handler)), nil
 }
 
 func ensureRouteLifecycle(next http.Handler) http.Handler {
@@ -792,61 +779,6 @@ func ensureRouteLifecycle(next http.Handler) http.Handler {
 		request, _ := ctx.EnsureRequestLifecycle(r, time.Now())
 		next.ServeHTTP(w, request)
 	})
-}
-
-func terminalDescriptorForRoute(
-	sources []materializedPluginSource,
-	upstream resource.Upstream,
-	upstreamProvenance plugin.ResourceProvenance,
-) (plugin.TerminalDescriptor, error) {
-	descriptor := plugin.TerminalDescriptor{
-		Owner:      plugin.TerminalOwnerOrdinaryProxy,
-		Provenance: upstreamProvenance,
-	}
-	var ownerName string
-	var ownerProvenance plugin.ResourceProvenance
-	var owner plugin.TerminalOwner
-	for _, source := range sources {
-		_, metadata, err := parsePluginMetadata(source.config)
-		if err != nil {
-			return plugin.TerminalDescriptor{}, fmt.Errorf(
-				"plugin %q from %s %q: parse plugin metadata: %w",
-				source.name,
-				source.provenance.Kind,
-				source.provenance.ID,
-				err,
-			)
-		}
-		if metadata.disabled {
-			continue
-		}
-		var candidate plugin.TerminalOwner
-		switch source.name {
-		case "ai-proxy", "ai-proxy-multi":
-			candidate = plugin.TerminalOwnerAIRuntime
-		case "dubbo-proxy":
-			candidate = plugin.TerminalOwnerDubbo
-		case "http-dubbo":
-			candidate = plugin.TerminalOwnerHTTPDubbo
-		default:
-			continue
-		}
-		if ownerName != "" {
-			continue
-		}
-		ownerName = source.name
-		ownerProvenance = source.provenance
-		owner = candidate
-	}
-	if ownerName != "" {
-		descriptor.Owner = owner
-		descriptor.Provenance = ownerProvenance
-	}
-	if strings.EqualFold(upstream.Scheme, "kafka") {
-		descriptor.Owner = plugin.TerminalOwnerKafka
-		descriptor.Provenance = upstreamProvenance
-	}
-	return descriptor, nil
 }
 
 func (b *Builder) resolveConsumerBindings(
@@ -1468,6 +1400,93 @@ type metadataRequestStorePlugin struct {
 	store base.FinalResponseStorePlugin
 }
 
+type metadataStreamingPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+func (p metadataStreamingPlugin) RunStreamingHeaderFilter(
+	r *http.Request,
+	state *base.StreamingResponseState,
+) error {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	header, ok := p.target.(base.StreamingHeaderFilterPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no streaming header callback", p.target.GetName())
+	}
+	return header.RunStreamingHeaderFilter(r, state)
+}
+
+func (p metadataStreamingPlugin) WrapStreamingResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+) (http.ResponseWriter, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		return w, nil
+	}
+	body, ok := p.target.(base.StreamingBodyFilterPlugin)
+	if !ok {
+		return nil, fmt.Errorf("plugin %q has no streaming body callback", p.target.GetName())
+	}
+	return body.WrapStreamingResponse(w, r)
+}
+
+func (p metadataStreamingPlugin) RegisterCompressionOffers(
+	r *http.Request,
+	state *compression.State,
+) []compression.Offer {
+	if !metadataFilterMatches(p.filter, r) {
+		return nil
+	}
+	offer, ok := p.target.(plugin.CompressionOfferPlugin)
+	if !ok {
+		return nil
+	}
+	return offer.RegisterCompressionOffers(r, state)
+}
+
+func (p metadataStreamingPlugin) WrapCompression(
+	w http.ResponseWriter,
+	r *http.Request,
+	state *compression.State,
+	decision compression.Decision,
+) (http.ResponseWriter, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		return w, nil
+	}
+	offer, ok := p.target.(plugin.CompressionOfferPlugin)
+	if !ok {
+		return nil, fmt.Errorf("plugin %q has no compression callback", p.target.GetName())
+	}
+	return offer.WrapCompression(w, r, state, decision)
+}
+
+type metadataProtocolPlugin struct{ metadataStreamingPlugin }
+
+func (p metadataProtocolPlugin) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	if !metadataFilterMatches(p.filter, r) {
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+		return base.ProtocolResponded, r, ctx.ResponseSourceUnknown, nil
+	}
+	terminal, ok := p.target.(base.ExclusiveProtocolTerminal)
+	if !ok {
+		return 0, r, ctx.ResponseSourceUnknown, fmt.Errorf(
+			"plugin %q has no exclusive protocol callback",
+			p.target.GetName(),
+		)
+	}
+	return terminal.RunExclusiveProtocol(w, r, next)
+}
+
 func (p metadataRequestStorePlugin) RunFinalResponseStore(
 	r *http.Request,
 	state base.ResponseState,
@@ -2070,6 +2089,30 @@ func (b *Builder) initPluginBindingsStrict(
 }
 
 func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetadata) (plugin.Plugin, error) {
+	wrapped, err := newMetadataRequestAndBufferedPlugin(factoryName, p, metadata)
+	if err != nil || wrapped == p {
+		return wrapped, err
+	}
+	capability, declared := plugin.ResponseCapabilityFor(factoryName)
+	if !declared {
+		return wrapped, nil
+	}
+	streaming := metadataStreamingPlugin{Plugin: wrapped, target: p, filter: metadata.filter}
+	switch factoryName {
+	case "ai-proxy", "ai-proxy-multi", "grpc-web":
+		return metadataProtocolPlugin{metadataStreamingPlugin: streaming}, nil
+	}
+	if capability.HeaderFilter || capability.StreamingBodyFilter || capability.CompressionOffer {
+		return streaming, nil
+	}
+	return wrapped, nil
+}
+
+func newMetadataRequestAndBufferedPlugin(
+	factoryName string,
+	p plugin.Plugin,
+	metadata pluginMetadata,
+) (plugin.Plugin, error) {
 	if metadata.filter == nil && metadata.errorResponse == nil {
 		return p, nil
 	}
@@ -2233,11 +2276,180 @@ func resolveRouteUpstream(
 	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 }
 
+type routeProtocolTerminals struct {
+	kafka     base.ExclusiveProtocolTerminal
+	dubbo     base.ExclusiveProtocolTerminal
+	httpDubbo base.ExclusiveProtocolTerminal
+}
+
+type routeKafkaTerminal struct{ handler http.Handler }
+
+func (t routeKafkaTerminal) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	_ http.Handler,
+) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
+	hijacked := false
+	tracked := httpsnoop.Wrap(w, httpsnoop.Hooks{
+		Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
+			return func() (net.Conn, *bufio.ReadWriter, error) {
+				connection, readWriter, err := hijack()
+				if err == nil {
+					hijacked = true
+				}
+				return connection, readWriter, err
+			}
+		},
+	})
+	if t.handler != nil {
+		t.handler.ServeHTTP(tracked, r)
+	}
+	if hijacked {
+		return base.ProtocolHijacked, r, ctx.ResponseSourceUpstream, nil
+	}
+	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
+}
+
+type routeDubboTerminal struct {
+	lb      pxy.LoadBalancer
+	targets map[string]compiledUpstreamTarget
+	retries int
+}
+
+func (t routeDubboTerminal) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
+	if t.lb == nil || !serveDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+	}
+	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
+}
+
+type routeHTTPDubboTerminal struct {
+	lb      pxy.LoadBalancer
+	targets map[string]compiledUpstreamTarget
+	retries int
+}
+
+func (t routeHTTPDubboTerminal) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
+	if t.lb == nil || !serveHTTPDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
+		if next != nil {
+			next.ServeHTTP(w, r)
+		}
+	}
+	return base.ProtocolResponded, r, ctx.ResponseSourceUpstream, nil
+}
+
+func routeTerminalCandidates(
+	sources []materializedPluginSource,
+	upstream resource.Upstream,
+	upstreamProvenance plugin.ResourceProvenance,
+	terminals routeProtocolTerminals,
+) ([]plugin.RouteTerminalCandidate, error) {
+	candidates := make([]plugin.RouteTerminalCandidate, 0, 1)
+	seen := make(map[plugin.ProtocolKind]bool)
+	for _, source := range sources {
+		_, metadata, err := parsePluginMetadata(source.config)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"plugin %q from %s %q: parse plugin metadata: %w",
+				source.name,
+				source.provenance.Kind,
+				source.provenance.ID,
+				err,
+			)
+		}
+		if metadata.disabled {
+			continue
+		}
+		identity := source.name
+		var protocol plugin.ProtocolKind
+		var terminal base.ExclusiveProtocolTerminal
+		switch identity {
+		case "dubbo-proxy":
+			protocol, terminal = plugin.ProtocolDubbo, terminals.dubbo
+		case "http-dubbo":
+			protocol, terminal = plugin.ProtocolHTTPDubbo, terminals.httpDubbo
+		case "kafka-proxy":
+			protocol, terminal = plugin.ProtocolKafka, terminals.kafka
+		default:
+			continue
+		}
+		if terminal == nil || seen[protocol] {
+			continue
+		}
+		seen[protocol] = true
+		candidates = append(candidates, plugin.RouteTerminalCandidate{
+			Identity: identity, Scope: source.scope,
+			Provenance: source.provenance, Protocol: protocol, Terminal: terminal,
+		})
+	}
+	if strings.EqualFold(upstream.Scheme, "kafka") && terminals.kafka != nil && !seen[plugin.ProtocolKafka] {
+		candidates = append(candidates, plugin.RouteTerminalCandidate{
+			Identity: "kafka-proxy", Scope: plugin.ScopeRoute, Priority: 0,
+			Provenance: upstreamProvenance, Protocol: plugin.ProtocolKafka, Terminal: terminals.kafka,
+		})
+	}
+	return candidates, nil
+}
+
+// buildReverseHandler retains the direct helper contract used by isolated
+// callers. Route generations use buildReverseHandlerWithTerminals so protocol
+// ownership is installed exactly once through ResponsePlan.
 func (b *Builder) buildReverseHandler(
 	r resource.Route,
 	service resource.Service,
 	resolved ...resource.Upstream,
 ) (http.Handler, error) {
+	handler, terminals, err := b.buildReverseHandlerWithTerminals(r, service, resolved...)
+	if err != nil {
+		return nil, err
+	}
+	if terminals.kafka == nil && terminals.dubbo == nil && terminals.httpDubbo == nil {
+		return handler, nil
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var terminal base.ExclusiveProtocolTerminal
+		switch {
+		case terminals.kafka != nil:
+			terminal = terminals.kafka
+		case terminals.dubbo != nil:
+			if _, ok := dubbo_proxy.GetConfig(r); !ok {
+				handler.ServeHTTP(w, r)
+				return
+			}
+			terminal = terminals.dubbo
+		case terminals.httpDubbo != nil:
+			if _, ok := http_dubbo.GetConfig(r); !ok {
+				handler.ServeHTTP(w, r)
+				return
+			}
+			terminal = terminals.httpDubbo
+		}
+		if terminal != nil {
+			_, _, _, _ = terminal.RunExclusiveProtocol(w, r, nil)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}), nil
+}
+
+func (b *Builder) buildReverseHandlerWithTerminals(
+	r resource.Route,
+	service resource.Service,
+	resolved ...resource.Upstream,
+) (http.Handler, routeProtocolTerminals, error) {
 	var upstream resource.Upstream
 	if len(resolved) > 0 {
 		upstream = resolved[0]
@@ -2245,17 +2457,19 @@ func (b *Builder) buildReverseHandler(
 		var err error
 		upstream, _, err = resolveRouteUpstream(r, service)
 		if err != nil {
-			return nil, err
+			return nil, routeProtocolTerminals{}, err
 		}
 	}
 	switch upstream.PassHost {
 	case "", "pass", "node":
 	case "rewrite":
 		if upstream.UpstreamHost == "" {
-			return nil, fmt.Errorf("`upstream_host` can't be empty when `pass_host` is `rewrite`")
+			return nil, routeProtocolTerminals{}, fmt.Errorf(
+				"`upstream_host` can't be empty when `pass_host` is `rewrite`",
+			)
 		}
 	default:
-		return nil, fmt.Errorf("pass_host must be one of pass, node, or rewrite")
+		return nil, routeProtocolTerminals{}, fmt.Errorf("pass_host must be one of pass, node, or rewrite")
 	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
@@ -2283,18 +2497,24 @@ func (b *Builder) buildReverseHandler(
 			}
 		}
 		if host == "" || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("invalid upstream node %q:%d", host, port)
+			return nil, routeProtocolTerminals{}, fmt.Errorf("invalid upstream node %q:%d", host, port)
 		}
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
 	}
 	compiledTargets, err := compileUpstreamTargets(servers)
 	if err != nil {
-		return nil, err
+		return nil, routeProtocolTerminals{}, err
 	}
 
 	if strings.EqualFold(scheme, "kafka") {
-		return buildKafkaPubSubProxyHandlerStrict(upstream, nil)
+		handler, err := buildKafkaPubSubProxyHandlerStrict(upstream, nil)
+		if err != nil {
+			return nil, routeProtocolTerminals{}, err
+		}
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), routeProtocolTerminals{
+			kafka: routeKafkaTerminal{handler: handler},
+		}, nil
 	}
 
 	// Never construct an empty round-robin picker: without nodes, target
@@ -2310,11 +2530,11 @@ func (b *Builder) buildReverseHandler(
 		}
 		clusterConfig, err := buildClusterConfig(r, upstream, servers)
 		if err != nil {
-			return nil, err
+			return nil, routeProtocolTerminals{}, err
 		}
 		lease, err := b.clusterRegistry.Acquire(clusterConfig)
 		if err != nil {
-			return nil, fmt.Errorf("acquire upstream cluster: %w", err)
+			return nil, routeProtocolTerminals{}, fmt.Errorf("acquire upstream cluster: %w", err)
 		}
 		b.addStopper(lease)
 		cluster := lease.Cluster()
@@ -2400,26 +2620,23 @@ func (b *Builder) buildReverseHandler(
 		-1*time.Second,
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = pxy.WithHealthReporter(r, healthReporter(lb))
-		if lb != nil && serveDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
-			return
-		}
-		if lb != nil && serveHTTPDubboIfConfiguredCompiled(w, r, lb, compiledTargets, upstream.Retries) {
-			return
-		}
-		if err := bufferRequestBodyIfNeeded(w, r); err != nil {
-			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
-			} else {
-				_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+			r = pxy.WithHealthReporter(r, healthReporter(lb))
+			if err := bufferRequestBodyIfNeeded(w, r); err != nil {
+				ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					_ = util.WriteJSON(w, http.StatusRequestEntityTooLarge, err.Error())
+				} else {
+					_ = util.WriteJSON(w, http.StatusBadRequest, err.Error())
+				}
+				return
 			}
-			return
-		}
-		r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
-		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
-	}), nil
+			r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
+			selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
+		}), routeProtocolTerminals{
+			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
+			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
+		}, nil
 }
 
 func upstreamNodeHost(scheme, host, port string) string {

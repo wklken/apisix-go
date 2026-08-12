@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 var errHijackCalled = errors.New("hijack called")
@@ -668,5 +670,46 @@ func TestHandlerDoesNotExposeHeadersByDefault(t *testing.T) {
 
 	if got := rr.Header().Get("Access-Control-Expose-Headers"); got != "" {
 		t.Fatalf("Access-Control-Expose-Headers = %q, want empty by default", got)
+	}
+}
+
+func TestRunRequestPhaseStopsCORSPreflight(t *testing.T) {
+	p := newTestPlugin(
+		t,
+		Config{AllowOrigins: "https://allowed.example", AllowMethods: http.MethodGet},
+	)
+	req := httptest.NewRequest(http.MethodOptions, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://allowed.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rr := httptest.NewRecorder()
+	result := p.RunRequestPhase(rr, req)
+	if result.Decision != base.RequestStop {
+		t.Fatalf("decision = %v, want stop", result.Decision)
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != req.Header.Get("Origin") {
+		t.Fatalf("allow origin = %q, want %q", got, req.Header.Get("Origin"))
+	}
+}
+
+func TestStreamingHeaderFilterAppliesActualCORSHeaders(t *testing.T) {
+	p := newTestPlugin(
+		t,
+		Config{AllowOrigins: "https://allowed.example", AllowMethods: http.MethodGet},
+	)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://allowed.example")
+	state := base.StreamingResponseState{
+		Status:  http.StatusNoContent,
+		Header:  make(http.Header),
+		Trailer: make(http.Header),
+	}
+	if err := p.RunStreamingHeaderFilter(req, &state); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := state.Header.Get("Access-Control-Allow-Origin"); got != req.Header.Get("Origin") {
+		t.Fatalf("allow origin = %q, want %q", got, req.Header.Get("Origin"))
 	}
 }

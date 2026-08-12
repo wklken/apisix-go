@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 )
@@ -150,37 +151,55 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.Delay != nil {
-			if p.config.Delay.Duration > 0 && SampleHit(p.config.Delay.Percentage) &&
-				varsMatch(r, p.config.Delay.exprs) {
-				// sleep
-				sleep(time.Duration(p.config.Delay.Duration * float64(time.Second)))
-			}
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
 		}
-
-		if p.config.Abort != nil {
-			if SampleHit(p.config.Abort.Percentage) && varsMatch(r, p.config.Abort.exprs) {
-				if p.config.Abort.Headers != nil {
-					for k, v := range p.config.Abort.Headers {
-						value := fmt.Sprint(v)
-						if stringValue, ok := v.(string); ok {
-							value = resolveValue(r, stringValue)
-						}
-						w.Header().Set(k, value)
-					}
-				}
-
-				w.WriteHeader(p.config.Abort.HTTPStatus)
-				if p.config.Abort.Body != nil {
-					_, _ = w.Write([]byte(resolveValue(r, *p.config.Abort.Body)))
-				}
-				return
-			}
+		if p.runRequestPhase(w, r).Decision == base.RequestStop {
+			return
 		}
-
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase owns delay/abort decisions. Only an actual abort is a
+// conditional early stop; delay and percentage misses continue downstream.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	return p.runRequestPhase(w, r)
+}
+
+func (p *Plugin) runRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if p.config.Delay != nil {
+		if p.config.Delay.Duration > 0 && SampleHit(p.config.Delay.Percentage) &&
+			varsMatch(r, p.config.Delay.exprs) {
+			// sleep
+			sleep(time.Duration(p.config.Delay.Duration * float64(time.Second)))
+		}
+	}
+
+	if p.config.Abort != nil {
+		if SampleHit(p.config.Abort.Percentage) && varsMatch(r, p.config.Abort.exprs) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceEarlyStop)
+			if p.config.Abort.Headers != nil {
+				for k, v := range p.config.Abort.Headers {
+					value := fmt.Sprint(v)
+					if stringValue, ok := v.(string); ok {
+						value = resolveValue(r, stringValue)
+					}
+					w.Header().Set(k, value)
+				}
+			}
+
+			w.WriteHeader(p.config.Abort.HTTPStatus)
+			if p.config.Abort.Body != nil {
+				_, _ = w.Write([]byte(resolveValue(r, *p.config.Abort.Body)))
+			}
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+		}
+	}
+
+	return base.ContinueRequest(r)
 }
 
 func SampleHit(percentage *int) bool {

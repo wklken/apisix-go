@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -73,5 +75,20 @@ func TestHandlerDefaultsMethodFromURI(t *testing.T) {
 
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("response code = %d, want 202", rr.Code)
+	}
+}
+
+func TestRunRequestPhasePreparesRouteOwnedProtocolState(t *testing.T) {
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "1.0.0"})
+	request := httptest.NewRequest(http.MethodGet, "/sayHello", nil)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("decision = %v, want continue", result.Decision)
+	}
+	if !Enabled(result.Request) || Method(result.Request) != "sayHello" {
+		t.Fatalf(
+			"prepared request missing Dubbo metadata: enabled=%t method=%q",
+			Enabled(result.Request), Method(result.Request),
+		)
 	}
 }

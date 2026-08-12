@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -78,6 +81,26 @@ func TestHandlerInvokesAzureFunctionAndRelaysResponse(t *testing.T) {
 	}
 	if !strings.Contains(gotHost, "127.0.0.1") {
 		t.Fatalf("function Host = %q, want function host", gotHost)
+	}
+}
+
+func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
+	function := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer function.Close()
+	p := newTestPlugin(t, Config{FunctionURI: function.URL})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/azure", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("result = %+v, want upstream stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("source = %q, want upstream", lifecycle.ResponseSource())
 	}
 }
 

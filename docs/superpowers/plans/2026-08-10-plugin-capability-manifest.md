@@ -100,31 +100,35 @@
 
 ## Plan 16 streaming, protocol, and terminal identities
 
+Plan 16 migrates exactly 22 HTTP identities. `mqtt-proxy` is listed for
+capability completeness as a separate TCP subsystem, but is HTTP-excluded and
+must never enter the request/response/protocol executor.
+
 | Identity | Capabilities | Primary plan |
 | --- | --- | --- |
 | ai-aliyun-content-moderation | request_access, conditional_terminal, buffered_body_filter, streaming_body_filter | 16 |
-| ai-proxy | conditional_terminal, protocol_owner, streaming_body_filter | 16 |
-| ai-proxy-multi | conditional_terminal, protocol_owner, streaming_body_filter | 16 |
+| ai-proxy | request_access, conditional_terminal, before_proxy, exclusive_protocol_owner, streaming_response_owner | 16 |
+| ai-proxy-multi | request_access, conditional_terminal, before_proxy, exclusive_protocol_owner, streaming_response_owner | 16 |
 | ai-rate-limiting | request_access, conditional_terminal, buffered_body_filter, streaming_body_filter, finalizer | 16 |
-| aws-lambda | conditional_terminal, protocol_owner | 16 |
-| azure-functions | conditional_terminal, protocol_owner | 16 |
-| brotli | header_filter, streaming_body_filter | 16 |
-| cors | request_access, conditional_terminal, header_filter, streaming_body_filter | 16 |
-| dubbo-proxy | request_rewrite, conditional_terminal, protocol_owner, separate_subsystem | 16 |
-| fault-injection | request_access, conditional_terminal | 16 |
-| grpc-transcode | request_rewrite, conditional_terminal, header_filter, streaming_body_filter, protocol_owner | 16 |
-| grpc-web | request_rewrite, conditional_terminal, header_filter, streaming_body_filter, protocol_owner | 16 |
-| gzip | header_filter, streaming_body_filter | 16 |
-| http-dubbo | request_rewrite, conditional_terminal, protocol_owner, separate_subsystem | 16 |
-| kafka-proxy | request_rewrite, conditional_terminal, protocol_owner, separate_subsystem | 16 |
-| mcp-bridge | conditional_terminal, streaming_body_filter, protocol_owner | 16 |
-| mocking | conditional_terminal | 16 |
-| mqtt-proxy | protocol_owner, separate_subsystem | 16 |
-| openfunction | conditional_terminal, protocol_owner | 16 |
-| openwhisk | conditional_terminal, protocol_owner | 16 |
+| aws-lambda | request_access, conditional_terminal | 16 |
+| azure-functions | request_access, conditional_terminal | 16 |
+| brotli | header_filter, compression_offer, streaming_body_filter | 16 |
+| cors | request_rewrite, conditional_terminal, header_filter | 16 |
+| dubbo-proxy | request_access, before_proxy, exclusive_protocol_owner, separate_subsystem | 16 |
+| fault-injection | request_rewrite, conditional_terminal | 16 |
+| grpc-transcode | request_access, conditional_terminal, buffered_body_filter | 16 |
+| grpc-web | request_access, conditional_terminal, header_filter, streaming_body_filter, exclusive_protocol_owner | 16 |
+| gzip | header_filter, compression_offer, streaming_body_filter | 16 |
+| http-dubbo | before_proxy, exclusive_protocol_owner, separate_subsystem | 16 |
+| kafka-proxy | request_access, before_proxy, exclusive_protocol_owner, streaming_response_owner, separate_subsystem | 16 |
+| mcp-bridge | request_access, conditional_terminal, streaming_response_owner | 16 |
+| mocking | request_access, conditional_terminal | 16 |
+| mqtt-proxy | protocol_owner, separate_subsystem (HTTP-excluded) | 16 |
+| openfunction | request_access, conditional_terminal | 16 |
+| openwhisk | request_access, conditional_terminal | 16 |
 | proxy-buffering | request_rewrite, streaming_body_filter | 16 |
-| public-api | conditional_terminal, protocol_owner, separate_subsystem | 16 |
-| redirect | conditional_terminal | 16 |
+| public-api | request_access, conditional_terminal, separate_subsystem | 16 |
+| redirect | request_rewrite, conditional_terminal | 16 |
 
 Route-owned Kafka websocket and Dubbo/http-Dubbo terminal behavior is part of the response-plan provenance even where the plugin Handler itself only prepares context. MQTT remains a separately owned TCP stream subsystem and must not enter HTTP middleware execution.
 
@@ -170,10 +174,15 @@ Every `conditional_terminal` identity has exactly one execution owner at runtime
 
 | Request stage | Identities |
 | --- | --- |
-| `request_rewrite` | ai-prompt-decorator, ai-prompt-template, ai-rag, ai-request-rewrite, data-mask, degraphql, jwe-decrypt, request-id, traffic-split, grpc-transcode, grpc-web |
-| `request_access` | limit-conn, acl, ai-aws-content-moderation, ai-prompt-guard, authz-casbin, authz-casdoor, authz-keycloak, basic-auth, cas-auth, chaitin-waf, client-control, consumer-restriction, csrf, dingtalk-auth, feishu-auth, forward-auth, graphql-limit-count, hmac-auth, ip-restriction, jwt-auth, key-auth, ldap-auth, limit-count, limit-req, multi-auth, oas-validator, opa, openid-connect, referer-restriction, request-validation, saml-auth, ua-restriction, uri-blocker, wolf-rbac, workflow, api-breaker, graphql-proxy-cache, proxy-cache, ai-aliyun-content-moderation, ai-rate-limiting, cors, fault-injection |
+| `request_rewrite` | ai-prompt-decorator, ai-prompt-template, ai-rag, ai-request-rewrite, data-mask, degraphql, jwe-decrypt, request-id, traffic-split, cors, fault-injection, redirect |
+| `request_access` | limit-conn, acl, ai-aws-content-moderation, ai-prompt-guard, authz-casbin, authz-casdoor, authz-keycloak, basic-auth, cas-auth, chaitin-waf, client-control, consumer-restriction, csrf, dingtalk-auth, feishu-auth, forward-auth, graphql-limit-count, hmac-auth, ip-restriction, jwt-auth, key-auth, ldap-auth, limit-count, limit-req, multi-auth, oas-validator, opa, openid-connect, referer-restriction, request-validation, saml-auth, ua-restriction, uri-blocker, wolf-rbac, workflow, api-breaker, graphql-proxy-cache, proxy-cache, ai-aliyun-content-moderation, ai-proxy, ai-proxy-multi, ai-rate-limiting, aws-lambda, azure-functions, dubbo-proxy, grpc-transcode, grpc-web, kafka-proxy, mcp-bridge, mocking, openfunction, openwhisk, public-api |
 | `request_rewrite`, `request_access`, or `before_proxy` (validated config) | serverless-pre-function, serverless-post-function; header-filter, body-filter, and log configs select non-request capabilities and do not enter a request stage |
-| `before_proxy` terminal owner | ai-proxy, ai-proxy-multi, aws-lambda, azure-functions, dubbo-proxy, http-dubbo, kafka-proxy, mcp-bridge, mocking, openfunction, openwhisk, public-api, redirect |
+| `before_proxy` stage | http-dubbo; AI proxy/multi, Dubbo, and Kafka are prepared at access and consumed once by the response-plan protocol boundary after all request stages |
+
+System/global request-rewrite runs before authentication by design. CORS preflight,
+fault injection, and redirect therefore retain their explicit Plan 16 rewrite timing;
+they are not silently reclassified from the corrected Plan 16 contract by the later
+capability-closure work.
 
 The completeness test derives the set of all `conditional_terminal` rows above and rejects a missing, duplicate, or extra stage declaration.
 

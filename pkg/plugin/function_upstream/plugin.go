@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -74,24 +75,41 @@ func (p *Plugin) transport() *http.Transport {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamReq, err := p.buildRequest(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-		if p.Processor != nil {
-			p.Processor(upstreamReq, p.Config)
-		}
-
-		res, err := p.Client.Do(upstreamReq)
-		if err != nil {
-			http.Error(w, "failed to process "+p.Name, http.StatusServiceUnavailable)
-			return
-		}
-		defer func() { _ = res.Body.Close() }()
-
-		writeResponse(w, res, r.ProtoMajor >= 2)
+		p.serve(w, r)
 	})
+}
+
+// RunRequestPhase owns the external function response. The source is
+// published before the first response byte so the strict request pipeline can
+// classify both successful and failed function calls as upstream responses.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+	p.serve(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceUpstream)
+}
+
+func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
+	upstreamReq, err := p.buildRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if p.Processor != nil {
+		p.Processor(upstreamReq, p.Config)
+	}
+
+	res, err := p.Client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, "failed to process "+p.Name, http.StatusServiceUnavailable)
+		return
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	writeResponse(w, res, r.ProtoMajor >= 2)
 }
 
 func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {

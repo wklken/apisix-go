@@ -47,7 +47,7 @@ var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
 
 func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 	var order []string
-	fallback := withAIExecutionTerminal(
+	fallback := withRequestPipeline(
 		pluginpkg.BuildPluginChain(),
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			order = append(order, "fallback:"+r.URL.Path)

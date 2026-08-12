@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -163,22 +164,38 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		actionReq, err := p.buildActionRequest(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-
-		res, err := p.client.Do(actionReq)
-		if err != nil {
-			logger.Errorf("failed to process openwhisk action, err: %s", err)
-			http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
-			return
-		}
-		defer func() { _ = res.Body.Close() }()
-
-		p.writeActionResponse(w, res, r.ProtoMajor >= 2)
+		p.serve(w, r)
 	})
+}
+
+// RunRequestPhase owns the OpenWhisk action response as an upstream result.
+// The response source is set before parsing or writing any action response.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+	p.serve(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceUpstream)
+}
+
+func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
+	actionReq, err := p.buildActionRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	res, err := p.client.Do(actionReq)
+	if err != nil {
+		logger.Errorf("failed to process openwhisk action, err: %s", err)
+		http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	p.writeActionResponse(w, res, r.ProtoMajor >= 2)
 }
 
 func (p *Plugin) buildActionRequest(r *http.Request) (*http.Request, error) {

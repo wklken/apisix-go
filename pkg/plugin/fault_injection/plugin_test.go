@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func TestAbortPercentageZeroFallsThrough(t *testing.T) {
@@ -50,6 +51,25 @@ func TestAbortWithoutPercentageAlwaysAborts(t *testing.T) {
 	}
 	if got := rr.Body.String(); got != "aborted" {
 		t.Fatalf("body = %q, want aborted", got)
+	}
+}
+
+func TestRunRequestPhasePublishesEarlyStopSourceOnAbort(t *testing.T) {
+	p := newTestPlugin(t, Config{Abort: &Abort{HTTPStatus: http.StatusTeapot}})
+	request := httptest.NewRequest(http.MethodGet, "/fault", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != base.RequestStop || result.Source != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("result = %+v, want early-stop stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("source = %q, want early_stop", lifecycle.ResponseSource())
+	}
+	if response.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418", response.Code)
 	}
 }
 

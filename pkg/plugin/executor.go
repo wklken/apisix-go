@@ -119,9 +119,10 @@ func cloneEffectiveBindingSet(set EffectiveBindingSet) EffectiveBindingSet {
 // are cloned at construction; resolution data is merged per request so no
 // mutable request, auth, or override state can leak between requests.
 type RequestPipeline struct {
-	bindings         []Binding
-	resolve          ConsumerBindingResolver
-	responseExecutor *BufferedResponseExecutor
+	bindings          []Binding
+	resolve           ConsumerBindingResolver
+	responseExecutor  *BufferedResponseExecutor
+	streamingExecutor *StreamingResponseExecutor
 }
 
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
@@ -142,29 +143,24 @@ func (p RequestPipeline) WithBufferedResponseExecutor(
 	return p
 }
 
+func (p RequestPipeline) WithStreamingResponseExecutor(
+	executor *StreamingResponseExecutor,
+) RequestPipeline {
+	p.streamingExecutor = executor
+	return p
+}
+
 // ThenWithPostResolutionHook inserts one hook after consumer/group winners are
 // merged and before any later request stage or terminal runs.
 func (p RequestPipeline) ThenWithPostResolutionHook(
 	terminal http.Handler,
 	hook PostResolutionHook,
 ) http.Handler {
+	if p.streamingExecutor != nil {
+		hook = chainPostResolutionHooks(hook, p.streamingExecutor.PostResolutionHook)
+	}
 	if p.responseExecutor != nil {
-		responseHook := p.responseExecutor.PostResolutionHook
-		if hook == nil {
-			hook = responseHook
-		} else {
-			previous := hook
-			hook = func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
-				replacement, err := previous(r, effective)
-				if err != nil {
-					return r, err
-				}
-				if replacement == nil {
-					replacement = r
-				}
-				return responseHook(replacement, effective)
-			}
-		}
+		hook = chainPostResolutionHooks(hook, p.responseExecutor.PostResolutionHook)
 	}
 	if terminal == nil {
 		terminal = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
@@ -193,6 +189,25 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 		p.wrapAuthentication(afterAuthentication).ServeHTTP(execution.writer, request)
 		execution.complete()
 	})
+}
+
+func chainPostResolutionHooks(first, second PostResolutionHook) PostResolutionHook {
+	if first == nil {
+		return second
+	}
+	if second == nil {
+		return first
+	}
+	return func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
+		replacement, err := first(r, effective)
+		if err != nil {
+			return r, err
+		}
+		if replacement == nil {
+			replacement = r
+		}
+		return second(replacement, effective)
+	}
 }
 
 func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
@@ -281,18 +296,44 @@ func (p RequestPipeline) runResolved(
 			}
 		}
 	}
-	inner := p.buildPostResolutionHandler(effective, terminal)
+	inner := p.buildPostResolutionHandler(effective, terminal, execution)
 	inner.ServeHTTP(w, request)
 }
 
 func (p RequestPipeline) buildPostResolutionHandler(
 	effective EffectiveBindingSet,
 	terminal http.Handler,
+	execution *responseExecution,
 ) http.Handler {
 	bindings := effective.all()
 	boundary := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apisixctx.FinalizeProxyRewrite(r)
 		apisixctx.RunBeforeProxyHooks(r)
+		if execution != nil {
+			if err := execution.selectRequestResponseMode(r); err != nil {
+				execution.internalFailure = true
+				markResponseInternalFailure(r)
+				return
+			}
+		}
+		if p.streamingExecutor != nil {
+			if p.responseExecutor == nil {
+				p.streamingExecutor.Then(terminalHandler(terminal)).ServeHTTP(w, r)
+				return
+			}
+			if execution != nil && execution.mode == responseModeTransparent {
+				p.streamingExecutor.Then(terminalHandler(terminal)).ServeHTTP(w, r)
+				return
+			}
+			_, _, err := p.streamingExecutor.RunExclusiveProtocol(w, r, terminalHandler(terminal))
+			if err != nil {
+				markResponseInternalFailure(r)
+				if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+					lifecycle.SetResponseSource(apisixctx.ResponseSourceAPISIX)
+				}
+			}
+			return
+		}
 		terminalHandler(terminal).ServeHTTP(w, r)
 	})
 	handler := http.Handler(boundary)

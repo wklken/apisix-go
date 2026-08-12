@@ -2,23 +2,17 @@ package route
 
 import (
 	"net/http"
-	"net/http/httptest"
-	"reflect"
-	"testing"
 
-	"github.com/justinas/alice"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin"
-	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 )
 
 type pluginExecutor interface {
 	Then(http.Handler) http.Handler
 }
 
-func withAIExecutionTerminal(chain pluginExecutor, fallback http.Handler) http.Handler {
+func withRequestPipeline(chain pluginExecutor, fallback http.Handler) http.Handler {
 	pipeline := plugin.NewRequestPipeline(nil, nil)
-	return ai_runtime.EnableTerminal(chain.Then(pipeline.Then(ai_runtime.TerminalHandler(fallback))))
+	return chain.Then(pipeline.Then(fallback))
 }
 
 func assembleRouteExecutor(
@@ -31,120 +25,4 @@ func assembleRouteExecutor(
 	bindings = append(bindings, globalBindings...)
 	bindings = append(bindings, routeBindings...)
 	return plugin.NewScopedExecutor(bindings...)
-}
-
-func TestAIExecutionTerminalRunsHookBeforeProviderWithoutFallback(t *testing.T) {
-	events := make([]string, 0, 2)
-	selectAI := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r = apisixctx.WithBeforeProxyHook(r, func(*http.Request) {
-				events = append(events, "hook")
-			})
-			r = ai_runtime.WithExecution(r, "model-a", func(w http.ResponseWriter, _ *http.Request) {
-				events = append(events, "provider")
-				w.WriteHeader(http.StatusCreated)
-			})
-			next.ServeHTTP(w, r)
-		})
-	}
-	fallbackCalls := 0
-	handler := withAIExecutionTerminal(alice.New(selectAI), http.HandlerFunc(func(
-		http.ResponseWriter,
-		*http.Request,
-	) {
-		fallbackCalls++
-	}))
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
-
-	if want := []string{"hook", "provider"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %#v, want %#v", events, want)
-	}
-	if fallbackCalls != 0 || response.Code != http.StatusCreated {
-		t.Fatalf("fallback calls = %d, response code = %d, want 0 and 201", fallbackCalls, response.Code)
-	}
-}
-
-func TestAIExecutionTerminalRunsOneHookBeforeOrdinaryFallback(t *testing.T) {
-	events := make([]string, 0, 2)
-	registerHook := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r = apisixctx.WithBeforeProxyHook(r, func(*http.Request) {
-				events = append(events, "hook")
-			})
-			next.ServeHTTP(w, r)
-		})
-	}
-	handler := withAIExecutionTerminal(alice.New(registerHook), http.HandlerFunc(func(
-		w http.ResponseWriter,
-		_ *http.Request,
-	) {
-		events = append(events, "fallback")
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	response := httptest.NewRecorder()
-
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-
-	if want := []string{"hook", "fallback"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %#v, want %#v", events, want)
-	}
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("response code = %d, want 202", response.Code)
-	}
-}
-
-func TestAIExecutionRunsAfterLowerPriorityMiddleware(t *testing.T) {
-	events := make([]string, 0, 4)
-	selectAI := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			events = append(events, "select")
-			r = ai_runtime.WithExecution(r, "model-a", func(w http.ResponseWriter, _ *http.Request) {
-				events = append(events, "provider")
-				w.WriteHeader(http.StatusCreated)
-			})
-			next.ServeHTTP(w, r)
-		})
-	}
-	rateLimit := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			events = append(events, "preflight")
-			next.ServeHTTP(w, r)
-			events = append(events, "charge")
-		})
-	}
-	fallbackCalls := 0
-	handler := withAIExecutionTerminal(alice.New(selectAI, rateLimit), http.HandlerFunc(func(
-		http.ResponseWriter,
-		*http.Request,
-	) {
-		fallbackCalls++
-	}))
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/", nil))
-
-	wantEvents := []string{"select", "preflight", "provider", "charge"}
-	if !reflect.DeepEqual(events, wantEvents) {
-		t.Fatalf("events = %#v, want %#v", events, wantEvents)
-	}
-	if fallbackCalls != 0 || rr.Code != http.StatusCreated {
-		t.Fatalf("fallback calls = %d, response code = %d, want 0 and 201", fallbackCalls, rr.Code)
-	}
-}
-
-func TestAIExecutionTerminalPreservesOrdinaryRoute(t *testing.T) {
-	fallbackCalls := 0
-	handler := withAIExecutionTerminal(alice.New(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fallbackCalls++
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-
-	if fallbackCalls != 1 || rr.Code != http.StatusAccepted {
-		t.Fatalf("fallback calls = %d, response code = %d, want 1 and 202", fallbackCalls, rr.Code)
-	}
 }

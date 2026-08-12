@@ -268,8 +268,17 @@ type quotaResponseWriter struct {
 	http.ResponseWriter
 	plugin      *Plugin
 	request     *http.Request
+	state       *requestQuotaState
 	wroteHeader bool
 }
+
+type requestQuotaState struct {
+	mu      sync.Mutex
+	quotas  []quota
+	charged bool
+}
+
+type requestQuotaStateKey struct{}
 
 func WithPickedAIInstanceName(r *http.Request, name string) *http.Request {
 	return ai_runtime.WithSelectedInstanceName(r, name)
@@ -472,6 +481,136 @@ func (p *Plugin) Stop() {
 	}
 }
 
+// RunRequestPhase performs the admission check once after authentication and
+// publishes immutable request-local quota bindings for response accounting.
+// It does not wrap or invoke the downstream handler.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	var quotas []quota
+	for {
+		var ok bool
+		var err error
+		quotas, ok, err = p.quotasForRequest(r)
+		if err != nil {
+			http.Error(w, "failed to get rate limit rules", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+		if !ok {
+			return base.ContinueRequest(r)
+		}
+		rejectedIndex := p.firstRejectedQuota(r.Context(), quotas)
+		if rejectedIndex < 0 {
+			break
+		}
+		state := ai_runtime.FromRequest(r)
+		if len(p.config.Rules) == 0 && state != nil && state.RateLimitFallbackEnabled() &&
+			state.AdvanceRateLimitTarget() {
+			continue
+		}
+		for _, headerQuota := range quotas[:rejectedIndex+1] {
+			p.writeQuotaHeaders(r.Context(), w.Header(), headerQuota)
+		}
+		p.reject(w)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	requestState := &requestQuotaState{quotas: append([]quota(nil), quotas...)}
+	request := r.WithContext(context.WithValue(r.Context(), requestQuotaStateKey{}, requestState))
+	return base.ContinueRequest(request)
+}
+
+func requestQuotaStateFromRequest(r *http.Request) *requestQuotaState {
+	if r == nil {
+		return nil
+	}
+	state, _ := r.Context().Value(requestQuotaStateKey{}).(*requestQuotaState)
+	return state
+}
+
+// SelectResponseMode chooses the one response accounting path after AI request
+// preparation has published whether the selected operation is streaming.
+func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
+		return base.RequestResponseModeStreaming
+	}
+	return base.RequestResponseModeBounded
+}
+
+// WrapStreamingResponse installs request-local quota headers and completion
+// accounting. The returned writer owns exactly-once finalization; no quota
+// counters are kept on the plugin instance for a live request.
+func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, error) {
+	state := requestQuotaStateFromRequest(r)
+	if state == nil {
+		quotas, ok, err := p.quotasForRequest(r)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return w, nil
+		}
+		state = &requestQuotaState{quotas: append([]quota(nil), quotas...)}
+	}
+	return &quotaResponseWriter{ResponseWriter: w, plugin: p, request: r, state: state}, nil
+}
+
+// RunBufferedBodyFilter accounts bounded responses after Plan 15 has produced
+// the canonical body and before the final response is committed.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, response *base.ResponseState) error {
+	if response == nil {
+		return nil
+	}
+	state := requestQuotaStateFromRequest(r)
+	if state == nil {
+		quotas, ok, err := p.quotasForRequest(r)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		state = &requestQuotaState{quotas: append([]quota(nil), quotas...)}
+	}
+	if response.Header == nil {
+		response.Header = make(http.Header)
+	}
+	for _, q := range state.quotasForResponse(p, r) {
+		p.writeQuotaHeaders(r.Context(), response.Header, q)
+	}
+	state.chargeOnce(p, r, response.Body)
+	return nil
+}
+
+func (s *requestQuotaState) quotasForResponse(p *Plugin, r *http.Request) []quota {
+	if s == nil {
+		return nil
+	}
+	if len(p.config.Rules) == 0 {
+		if quotas, ok, err := p.quotasForRequest(r); err == nil && ok {
+			return quotas
+		}
+	}
+	return append([]quota(nil), s.quotas...)
+}
+
+func (s *requestQuotaState) chargeOnce(p *Plugin, r *http.Request, body []byte) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.charged {
+		s.mu.Unlock()
+		return
+	}
+	s.charged = true
+	s.mu.Unlock()
+	usedTokens := p.responseTokenCostForRequest(r, body)
+	if usedTokens <= 0 {
+		return
+	}
+	for _, q := range s.quotasForResponse(p, r) {
+		p.charge(r.Context(), q, usedTokens)
+	}
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var quotas []quota
@@ -566,18 +705,45 @@ func (w *quotaResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+func (w *quotaResponseWriter) FinishStreamingResponse(error) error {
+	if w == nil || w.plugin == nil {
+		return nil
+	}
+	w.writeQuotaHeaders()
+	if w.state != nil {
+		w.state.chargeOnce(w.plugin, w.request, nil)
+	}
+	return nil
+}
+
 func (w *quotaResponseWriter) writeQuotaHeaders() {
 	if w.wroteHeader {
 		return
 	}
 	w.wroteHeader = true
-	quotas, ok, err := w.plugin.quotasForRequest(w.request)
-	if err != nil || !ok {
+	var quotas []quota
+	if w.state != nil {
+		quotas = w.state.quotasForResponse(w.plugin, w.request)
+	} else {
+		var ok bool
+		var err error
+		quotas, ok, err = w.plugin.quotasForRequest(w.request)
+		if err != nil || !ok {
+			return
+		}
+	}
+	if len(quotas) == 0 {
 		return
 	}
 	for _, q := range quotas {
 		w.plugin.writeQuotaHeaders(w.request.Context(), w.Header(), q)
 	}
+}
+
+// DescribeResponseMode advertises both bounded and streaming accounting; the
+// actual response owner selects the mode per request.
+func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
 }
 
 func (p *Plugin) firstRejectedQuota(ctx context.Context, quotas []quota) int {

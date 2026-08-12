@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -118,9 +119,23 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, WithConfig(r, p.config))
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, p.prepareRequest(r))
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase prepares the request-local HTTP-Dubbo configuration. The
+// route-owned terminal performs framing and response ownership later.
+func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	return base.ContinueRequest(p.prepareRequest(r))
+}
+
+func (p *Plugin) prepareRequest(r *http.Request) *http.Request {
+	return WithConfig(r, p.config)
 }
 
 func (p *Plugin) ServeDubbo(w http.ResponseWriter, r *http.Request, target string) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -86,20 +87,35 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		method := p.config.Method
-		if method == "" {
-			method = strings.TrimPrefix(r.URL.Path, "/")
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
 		}
-		cfg := p.config
-		cfg.Method = method
-
-		ctx := context.WithValue(r.Context(), ctxEnabled, true)
-		ctx = context.WithValue(ctx, ctxServiceName, p.config.ServiceName)
-		ctx = context.WithValue(ctx, ctxServiceVersion, p.config.ServiceVersion)
-		ctx = context.WithValue(ctx, ctxMethod, method)
-		next.ServeHTTP(w, WithConfig(r.WithContext(ctx), cfg))
+		next.ServeHTTP(w, p.prepareRequest(r))
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase prepares the request-local Dubbo invocation metadata. The
+// route-owned protocol terminal consumes this state later; this leaf plugin
+// never selects a target or writes a response.
+func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	return base.ContinueRequest(p.prepareRequest(r))
+}
+
+func (p *Plugin) prepareRequest(r *http.Request) *http.Request {
+	method := p.config.Method
+	if method == "" {
+		method = strings.TrimPrefix(r.URL.Path, "/")
+	}
+	cfg := p.config
+	cfg.Method = method
+
+	ctx := context.WithValue(r.Context(), ctxEnabled, true)
+	ctx = context.WithValue(ctx, ctxServiceName, p.config.ServiceName)
+	ctx = context.WithValue(ctx, ctxServiceVersion, p.config.ServiceVersion)
+	ctx = context.WithValue(ctx, ctxMethod, method)
+	return WithConfig(r.WithContext(ctx), cfg)
 }
 
 func Enabled(r *http.Request) bool {

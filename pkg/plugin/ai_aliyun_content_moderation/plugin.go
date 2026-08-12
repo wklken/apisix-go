@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -182,6 +183,13 @@ type serviceParameters struct {
 
 type moderationSessionKey struct{}
 
+type moderationRequestState struct {
+	bodyTab  map[string]any
+	protocol ai_protocols.Protocol
+}
+
+type moderationRequestStateKey struct{}
+
 type aliyunResponse struct {
 	Data *struct {
 		RiskLevel string `json:"RiskLevel"`
@@ -319,6 +327,144 @@ func (p *Plugin) PostInit() error {
 		Transport: p.transport(),
 	}
 	return nil
+}
+
+// RunRequestPhase performs request-side moderation and publishes the parsed
+// protocol/body for the explicit bounded and streaming response owners. It
+// never invokes the downstream handler.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	checkRequest := p.config.CheckRequest == nil || *p.config.CheckRequest
+	if !checkRequest && !p.config.CheckResponse {
+		return base.ContinueRequest(r)
+	}
+	r = r.WithContext(context.WithValue(r.Context(), moderationSessionKey{}, p.nonce()))
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
+		if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestReadFailureMessage) {
+			return base.ContinueRequest(r)
+		}
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if checkRequest {
+		if err := validateJSONContentType(r); err != nil {
+			if p.handleRequestFailure(w, r, ai_common.SafetyInvalidPayload, requestContentTypeMessage) {
+				return base.ContinueRequest(r)
+			}
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+		}
+	}
+	bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
+	if err != nil && checkRequest {
+		class := requestFailureClass(err)
+		message := requestInvalidPayloadMessage
+		if class == ai_common.SafetyUnknownProtocol {
+			message = requestUnknownProtocolMessage
+		}
+		if p.handleRequestFailure(w, r, class, message) {
+			return base.ContinueRequest(r)
+		}
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if err != nil {
+		return base.ContinueRequest(r)
+	}
+	if checkRequest {
+		if strings.TrimSpace(content) == "" {
+			if !p.handleRequestFailure(w, r, ai_common.SafetyEmptyContent, requestEmptyContentMessage) {
+				return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+			}
+		} else {
+			result, moderationErr := p.moderateContent(
+				r, content, p.config.RequestCheckLengthLimit, p.config.RequestCheckService,
+			)
+			if moderationErr != nil {
+				if !p.handleRequestFailure(w, r, moderationFailureClass(moderationErr), moderationUnavailableMessage) {
+					return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+				}
+			} else if result.Denied {
+				recordOutcome(
+					ai_common.SafetyPhaseRequest,
+					ai_common.SafetyOutcomeDeny,
+					string(ai_common.SafetyReasonRiskThreshold),
+				)
+				writeProtocolDeny(w, p.config.DenyCode, protocol, bodyTab, result.Message)
+				return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+			} else {
+				recordOutcome(
+					ai_common.SafetyPhaseRequest,
+					ai_common.SafetyOutcomeAllow,
+					string(ai_common.SafetyReasonClean),
+				)
+			}
+		}
+	}
+	state := &moderationRequestState{bodyTab: bodyTab, protocol: protocol}
+	r = r.WithContext(context.WithValue(r.Context(), moderationRequestStateKey{}, state))
+	return base.ContinueRequest(r)
+}
+
+func moderationStateFromRequest(r *http.Request) *moderationRequestState {
+	if r == nil {
+		return nil
+	}
+	state, _ := r.Context().Value(moderationRequestStateKey{}).(*moderationRequestState)
+	return state
+}
+
+// SelectResponseMode chooses realtime streaming moderation only when request
+// preparation identified a streaming protocol and the configured policy owns
+// incremental checks. All other responses use the bounded canonical state.
+func (p *Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
+	state := moderationStateFromRequest(r)
+	if p.config.CheckResponse && p.config.StreamCheckMode == "realtime" && state != nil &&
+		ai_protocols.IsStreaming(state.protocol, state.bodyTab) {
+		return base.RequestResponseModeStreaming
+	}
+	return base.RequestResponseModeBounded
+}
+
+// RunBufferedBodyFilter reuses the existing protocol-aware moderation logic
+// against the canonical Plan 15 response state, keeping all writes local until
+// the response executor commits the final representation.
+func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || !p.config.CheckResponse {
+		return nil
+	}
+	requestState := moderationStateFromRequest(r)
+	if requestState == nil || ai_protocols.IsStreaming(requestState.protocol, requestState.bodyTab) {
+		return nil
+	}
+	source := newCapturedResponse()
+	source.status = state.Status
+	source.header = state.Header.Clone()
+	source.body.Write(state.Body)
+	source.wroteHeader = true
+	destination := newCapturedResponse()
+	p.writeModeratedResponse(destination, r, source, requestState.protocol, requestState.bodyTab)
+	state.Status = destination.status
+	state.Header = destination.header
+	state.Body = append(state.Body[:0], destination.body.Bytes()...)
+	return nil
+}
+
+// WrapStreamingResponse owns realtime moderation state for one request. The
+// writer's finalizer closes the UTF-8/SSE tail exactly once; final-packet mode
+// remains a bounded response concern and therefore passes through here.
+func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, error) {
+	if !p.config.CheckResponse || p.config.StreamCheckMode != "realtime" {
+		return w, nil
+	}
+	state := moderationStateFromRequest(r)
+	if state == nil || !ai_protocols.IsStreaming(state.protocol, state.bodyTab) {
+		return w, nil
+	}
+	return newRealtimeResponseWriter(w, r, p, state.protocol, state.bodyTab), nil
+}
+
+// DescribeResponseMode includes bounded and realtime streaming moderation;
+// request/config state selects the concrete path per request.
+func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -527,6 +673,7 @@ type realtimeResponseWriter struct {
 	pending      string
 	lastModerate time.Time
 	blocked      bool
+	closeOnce    sync.Once
 }
 
 func newRealtimeResponseWriter(
@@ -585,16 +732,25 @@ func (w *realtimeResponseWriter) Flush() {
 }
 
 func (w *realtimeResponseWriter) Close() {
-	if w.pending != "" {
-		flushed := extractSSEText(w.protocol, []byte(w.pending+"\n"))
-		w.content.WriteString(flushed)
-		w.contentRunes += utf8.RuneCountInString(flushed)
-		w.pending = ""
+	w.closeOnce.Do(func() {
+		if w.pending != "" {
+			flushed := extractSSEText(w.protocol, []byte(w.pending+"\n"))
+			w.content.WriteString(flushed)
+			w.contentRunes += utf8.RuneCountInString(flushed)
+			w.pending = ""
+		}
+		if !w.blocked && w.status < http.StatusBadRequest && w.content.Len() > 0 {
+			w.moderate()
+		}
+		w.Flush()
+	})
+}
+
+func (w *realtimeResponseWriter) FinishStreamingResponse(error) error {
+	if w != nil {
+		w.Close()
 	}
-	if !w.blocked && w.status < http.StatusBadRequest && w.content.Len() > 0 {
-		w.moderate()
-	}
-	w.Flush()
+	return nil
 }
 
 func (w *realtimeResponseWriter) extractContent(body []byte) string {

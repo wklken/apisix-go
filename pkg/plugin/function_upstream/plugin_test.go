@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
@@ -34,6 +35,31 @@ func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	}
 	if got := rr.Body.String(); got != "function ok" {
 		t.Fatalf("response body = %q, want function ok", got)
+	}
+}
+
+func TestRunRequestPhasePublishesUpstreamSourceBeforeFunctionResponse(t *testing.T) {
+	function := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("function ok"))
+	}))
+	defer function.Close()
+
+	p := newTestPlugin(t, Config{FunctionURI: function.URL})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/serverless", nil)
+	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
+	request = apisixctx.WithRequestLifecycle(request, lifecycle)
+	response := httptest.NewRecorder()
+
+	result := p.RunRequestPhase(response, request)
+	if result.Decision != 1 || result.Source != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("result = %+v, want upstream stop", result)
+	}
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("source = %q, want upstream", lifecycle.ResponseSource())
+	}
+	if response.Code != http.StatusCreated || response.Body.String() != "function ok" {
+		t.Fatalf("response = %d/%q, want 201/function ok", response.Code, response.Body.String())
 	}
 }
 

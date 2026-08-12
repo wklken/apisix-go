@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cast"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -145,68 +146,87 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// http_to_https、uri 和 regex_uri 只能配置其中一个属性。
-		// http_to_https、和 append_query_string 只能配置其中一个属性。
-		// 当开启 http_to_https 时，重定向 URL 中的端口将按如下顺序选取一个值（按优先级从高到低排列）
-		// 从配置文件（conf/config.yaml）中读取 plugin_attr.redirect.https_port。
-		// 如果 apisix.ssl 处于开启状态，读取 apisix.ssl.listen 并从中随机选一个 port。
-		// 使用 443 作为默认 https port。
-		if p.config.HttpToHttps != nil && *p.config.HttpToHttps && requestScheme(r) != "https" {
-			retPort := p.config.httpsPort
-			host := requestHostname(r)
-			path := r.URL.RequestURI()
-
-			var url string
-			if retPort == nil || *retPort == 443 || *retPort <= 0 || *retPort > 65535 {
-				url = "https://" + urlHostname(host) + path
-			} else {
-				url = "https://" + net.JoinHostPort(requestHostname(r), strconv.Itoa(*retPort)) + path
-			}
-
-			var retCode int
-			if r.Method == "GET" || r.Method == "HEAD" {
-				retCode = 301
-			} else {
-				// https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-				retCode = 308
-			}
-
-			http.Redirect(w, r, url, retCode)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-		if p.config.regexURI != nil {
-			redirectURI, matched := p.redirectRegexURI(r)
-			if !matched {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if p.config.AppendQueryString != nil && *p.config.AppendQueryString && r.URL.RawQuery != "" {
-				if strings.Contains(redirectURI, "?") {
-					redirectURI += "&" + r.URL.RawQuery
-				} else {
-					redirectURI += "?" + r.URL.RawQuery
-				}
-			}
-			p.redirect(w, redirectURI)
-			return
+		result := p.runRequestPhase(w, r)
+		if result.Decision == base.RequestContinue {
+			next.ServeHTTP(w, result.Request)
 		}
-
-		if p.config.Uri != "" {
-			url := expandRedirectURI(r, p.config.Uri)
-			if p.config.AppendQueryString != nil && *p.config.AppendQueryString {
-				if strings.Contains(url, "?") {
-					url = url + "&" + r.URL.RawQuery
-				} else {
-					url = url + "?" + r.URL.RawQuery
-				}
-			}
-			p.redirect(w, url)
-			return
-		}
-
-		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase owns redirect decisions. A non-matching regex or an
+// already-HTTPS request continues to the normal upstream path.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	return p.runRequestPhase(w, r)
+}
+
+func (p *Plugin) runRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	// http_to_https、uri 和 regex_uri 只能配置其中一个属性。
+	// http_to_https、和 append_query_string 只能配置其中一个属性。
+	// 当开启 http_to_https 时，重定向 URL 中的端口将按如下顺序选取一个值（按优先级从高到低排列）
+	// 从配置文件（conf/config.yaml）中读取 plugin_attr.redirect.https_port。
+	// 如果 apisix.ssl 处于开启状态，读取 apisix.ssl.listen 并从中随机选一个 port。
+	// 使用 443 作为默认 https port。
+	if p.config.HttpToHttps != nil && *p.config.HttpToHttps && requestScheme(r) != "https" {
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceEarlyStop)
+		retPort := p.config.httpsPort
+		host := requestHostname(r)
+		path := r.URL.RequestURI()
+
+		var url string
+		if retPort == nil || *retPort == 443 || *retPort <= 0 || *retPort > 65535 {
+			url = "https://" + urlHostname(host) + path
+		} else {
+			url = "https://" + net.JoinHostPort(requestHostname(r), strconv.Itoa(*retPort)) + path
+		}
+
+		var retCode int
+		if r.Method == "GET" || r.Method == "HEAD" {
+			retCode = 301
+		} else {
+			// https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
+			retCode = 308
+		}
+
+		http.Redirect(w, r, url, retCode)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if p.config.regexURI != nil {
+		redirectURI, matched := p.redirectRegexURI(r)
+		if !matched {
+			return base.ContinueRequest(r)
+		}
+		if p.config.AppendQueryString != nil && *p.config.AppendQueryString && r.URL.RawQuery != "" {
+			if strings.Contains(redirectURI, "?") {
+				redirectURI += "&" + r.URL.RawQuery
+			} else {
+				redirectURI += "?" + r.URL.RawQuery
+			}
+		}
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceEarlyStop)
+		p.redirect(w, redirectURI)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	if p.config.Uri != "" {
+		url := expandRedirectURI(r, p.config.Uri)
+		if p.config.AppendQueryString != nil && *p.config.AppendQueryString {
+			if strings.Contains(url, "?") {
+				url = url + "&" + r.URL.RawQuery
+			} else {
+				url = url + "?" + r.URL.RawQuery
+			}
+		}
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceEarlyStop)
+		p.redirect(w, url)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	return base.ContinueRequest(r)
 }
 
 func expandRedirectURI(r *http.Request, template string) string {

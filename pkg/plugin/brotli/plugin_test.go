@@ -17,6 +17,7 @@ import (
 	brotlidec "github.com/andybalholm/brotli"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -867,5 +868,63 @@ func TestBrotliNotModifiedWithoutContentTypePreservesEncodingAndVary(t *testing.
 	}
 	if res.Body.Len() != 0 {
 		t.Fatalf("body length = %d, want empty", res.Body.Len())
+	}
+}
+
+func TestBrotliStructuralCompressionOfferOwnsStreamingFinish(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	registered, state := compression.Register(req)
+	offers := p.RegisterCompressionOffers(registered, state)
+	offer := offers[0]
+	if offer.Coding != compression.Brotli || offer.Eligible == nil {
+		t.Fatalf("offer = %#v, want br with eligibility", offer)
+	}
+	_, state = compression.Register(registered, offer)
+	decision := state.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+	})
+	underlying := httptest.NewRecorder()
+	wrapped, err := p.WrapCompression(underlying, registered, state, decision)
+	if err != nil {
+		t.Fatalf("WrapCompression() error = %v", err)
+	}
+	wrapped.Header().Set("Content-Type", "text/plain")
+	wrapped.WriteHeader(http.StatusOK)
+	_, _ = wrapped.Write([]byte("streamed"))
+	if finalizer, ok := wrapped.(base.StreamingResponseFinalizer); ok {
+		if err := finalizer.FinishStreamingResponse(nil); err != nil {
+			t.Fatalf("FinishStreamingResponse() error = %v", err)
+		}
+	} else {
+		t.Fatal("compression wrapper does not own FinishStreamingResponse")
+	}
+	if got := underlying.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", got)
+	}
+}
+
+func TestBrotliStructuralOfferHonorsHTTPVersionGate(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.ProtoMajor, req.ProtoMinor = 1, 0
+	req.Header.Set("Accept-Encoding", "br")
+	registered, state := compression.Register(req)
+	offers := p.RegisterCompressionOffers(registered, state)
+	offer := offers[0]
+	if offer.Eligible == nil {
+		t.Fatal("brotli offer has no eligibility callback")
+	}
+	_, state = compression.Register(registered, offer)
+	decision := state.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}},
+	})
+	if decision.Coding != compression.Identity {
+		t.Fatalf("HTTP/1.0 decision = %q, want identity", decision.Coding)
 	}
 }

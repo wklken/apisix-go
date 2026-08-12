@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rs/cors"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -240,6 +241,41 @@ func wildcardCredentialOption(config Config) bool {
 
 func (p *Plugin) Config() any {
 	return &p.config
+}
+
+// RunRequestPhase owns CORS OPTIONS handling. Preflight and bare OPTIONS are
+// local responses and therefore stop the request pipeline exactly once.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if r.Method != http.MethodOptions {
+		return base.ContinueRequest(r)
+	}
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+}
+
+func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.StreamingResponseState) error {
+	if state == nil {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	origin := ""
+	requestedHeaders := ""
+	if r != nil {
+		origin = r.Header.Get("Origin")
+		requestedHeaders = r.Header.Get("Access-Control-Request-Headers")
+	}
+	p.setAPISIXResponseHeaders(state.Header, origin, requestedHeaders)
+	base.AppendVaryToken(state.Header, "Origin")
+	if timingOrigin, ok := p.timingAllowOrigin(origin); ok {
+		state.Header.Set("Timing-Allow-Origin", timingOrigin)
+	}
+	if p.config.AllowPrivateNetwork && r != nil && r.Method == http.MethodOptions &&
+		strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
+		state.Header.Set("Access-Control-Allow-Private-Network", "true")
+	}
+	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

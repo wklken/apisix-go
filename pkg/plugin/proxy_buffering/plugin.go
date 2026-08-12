@@ -67,6 +67,24 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (c *Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
+	if c != nil && c.DisableProxyBuffering {
+		return base.ResponseModeDescriptor{Modes: base.ResponseModeStreaming}, nil
+	}
+	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded}, nil
+}
+
+func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, _ *http.Request) (http.ResponseWriter, error) {
+	if !p.config.DisableProxyBuffering {
+		return w, nil
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return w, nil
+	}
+	return &flushingResponseWriter{ResponseWriter: w, flusher: flusher}, nil
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		r = WithDisableProxyBuffering(r, p.config.DisableProxyBuffering)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofrs/uuid"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -114,21 +115,37 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		action, ok := p.action(r.URL.Path)
-		if !ok {
-			http.NotFound(w, r)
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
 			return
 		}
-
-		switch {
-		case action == "sse" && r.Method == http.MethodGet:
-			p.handleSSE(w, r)
-		case action == "message" && r.Method == http.MethodPost:
-			p.handleMessage(w, r)
-		default:
-			http.NotFound(w, r)
-		}
+		p.serve(w, r)
 	})
+}
+
+// RunRequestPhase owns MCP's local SSE/message gateway. MCP writes its SSE
+// bytes directly; it does not install a second response-body wrapper.
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+	p.serve(w, r)
+	return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+}
+
+func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
+	action, ok := p.action(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch {
+	case action == "sse" && r.Method == http.MethodGet:
+		p.handleSSE(w, r)
+	case action == "message" && r.Method == http.MethodPost:
+		p.handleMessage(w, r)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {

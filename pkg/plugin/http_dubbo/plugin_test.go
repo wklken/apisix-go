@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
@@ -65,6 +66,19 @@ func TestHandlerStoresHTTPDubboConfig(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestRunRequestPhasePreparesRouteOwnedHTTPDubboState(t *testing.T) {
+	p := newTestPlugin(t, Config{ServiceName: "svc", Method: "call"})
+	request := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("decision = %v, want continue", result.Decision)
+	}
+	cfg, ok := GetConfig(result.Request)
+	if !ok || cfg.ServiceName != "svc" || cfg.Method != "call" {
+		t.Fatalf("prepared config = %+v (ok=%t), want svc/call", cfg, ok)
 	}
 }
 

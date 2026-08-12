@@ -59,6 +59,7 @@ type BufferedResponseExecutor struct {
 	terminal       TerminalDescriptor
 	config         base.BufferedResponseConfig
 	committer      FinalResponseCommitter
+	streaming      *StreamingResponseExecutor
 }
 
 func NewBufferedResponseExecutor(
@@ -104,6 +105,19 @@ func (e *BufferedResponseExecutor) WithFinalResponseCommitter(
 	return &clone
 }
 
+func (e *BufferedResponseExecutor) WithStreamingResponseExecutor(
+	streaming *StreamingResponseExecutor,
+) *BufferedResponseExecutor {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.streaming = streaming
+	clone.staticBindings = cloneBindings(e.staticBindings)
+	clone.staticPlan = append([]ResponseBinding(nil), e.staticPlan...)
+	return &clone
+}
+
 func (e *BufferedResponseExecutor) PostResolutionHook(
 	r *http.Request,
 	effective EffectiveBindingSet,
@@ -142,6 +156,46 @@ func (e *BufferedResponseExecutor) PostResolutionHook(
 		execution.replayCapture()
 	}
 	return r, nil
+}
+
+func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
+	if s == nil || len(s.plan) == 0 {
+		return nil
+	}
+	selected := base.RequestResponseMode(0)
+	dualCount := 0
+	for _, binding := range s.plan {
+		capability, err := responseCapabilityForBinding(Binding{
+			Plugin: binding.Plugin, Scope: binding.Scope, Provenance: binding.Provenance,
+			factoryName: binding.factoryKey,
+		})
+		if err != nil {
+			return err
+		}
+		if !isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
+			continue
+		}
+		selector := binding.Plugin.(base.RequestResponseModeSelector)
+		mode := selector.SelectResponseMode(r)
+		if mode != base.RequestResponseModeBounded && mode != base.RequestResponseModeStreaming {
+			return fmt.Errorf("factory %q selected unsupported request response mode %d", binding.factoryKey, mode)
+		}
+		if selected != 0 && selected != mode {
+			return fmt.Errorf("dual-mode response bindings selected incompatible request modes")
+		}
+		selected = mode
+		dualCount++
+	}
+	if dualCount == 0 || selected == base.RequestResponseModeBounded {
+		return nil
+	}
+	if dualCount != len(s.plan) {
+		return errors.New("streaming request selected with a non-streaming buffered response binding")
+	}
+	s.request = r
+	s.plan = nil
+	s.replayCapture()
+	return nil
 }
 
 func bindingsToEffectiveSet(bindings []Binding) EffectiveBindingSet {
@@ -587,7 +641,24 @@ func (s *responseExecution) commitState(state base.ResponseState) {
 	if committer == nil {
 		committer = directFinalResponseCommitter{}
 	}
-	committer.CommitFinalResponse(s.destination, s.request, &state, baseCommit)
+	commit := baseCommit
+	var streamingErr error
+	if s.executor.streaming != nil {
+		commit = func(dst http.ResponseWriter, final *base.ResponseState) {
+			if streamingErr != nil {
+				return
+			}
+			streamingErr = s.executor.streaming.CommitResponse(dst, s.request, final, baseCommit)
+		}
+	}
+	committer.CommitFinalResponse(s.destination, s.request, &state, commit)
+	if streamingErr != nil {
+		if called.Load() {
+			panic(http.ErrAbortHandler)
+		}
+		s.fail(http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
 	if !called.Load() {
 		panic("buffered response committer did not call baseCommit")
 	}
@@ -643,14 +714,6 @@ func hasTrailer(header http.Header) bool {
 	return false
 }
 
-var boundedConflictIdentities = map[string]struct{}{
-	"ai-aliyun-content-moderation": {}, "ai-rate-limiting": {}, "brotli": {}, "gzip": {}, "cors": {},
-	"grpc-transcode": {}, "grpc-web": {}, "proxy-buffering": {}, "ai-proxy": {}, "ai-proxy-multi": {},
-	"mcp-bridge": {}, "dubbo-proxy": {}, "http-dubbo": {}, "kafka-proxy": {}, "aws-lambda": {},
-	"azure-functions": {}, "fault-injection": {}, "mocking": {}, "openfunction": {}, "openwhisk": {},
-	"public-api": {}, "redirect": {},
-}
-
 func validateBoundedConflicts(
 	plan []ResponseBinding,
 	effective EffectiveBindingSet,
@@ -670,8 +733,21 @@ func validateBoundedConflicts(
 			terminal.Provenance.ID,
 		)
 	}
+	allBufferedDualMode := responseBindingsAreDualMode(plan)
 	for _, binding := range append(append([]Binding(nil), effective.global...), effective.merged...) {
-		if _, conflict := boundedConflictIdentities[binding.factoryName]; conflict {
+		capability, err := responseCapabilityForBinding(binding)
+		if err != nil {
+			return err
+		}
+		if allBufferedDualMode && isDualModeResponseBinding(binding, capability) {
+			continue
+		}
+		if allBufferedDualMode && capability.ExclusiveProtocol == ProtocolAI {
+			continue
+		}
+		conflict := capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone ||
+			capability.StreamingBodyFilter && !compatibleBoundedAdapter(binding, capability)
+		if conflict {
 			return fmt.Errorf(
 				"bounded response identity=%q resource=%s/%s conflicts with %q resource=%s/%s",
 				plan[0].factoryKey,

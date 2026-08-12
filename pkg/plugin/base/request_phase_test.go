@@ -146,6 +146,20 @@ func TestRequestPhaseAdapterRecordsExplicitSource(t *testing.T) {
 	}
 }
 
+func TestStopRequestPreservesAPISIXSource(t *testing.T) {
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		time.Now(),
+	)
+	plugin := &requestPhaseTestPlugin{result: StopRequestWithSource(request, apisixctx.ResponseSourceAPISIX)}
+	AdaptRequestPhase(plugin, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for stopped request")
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("ResponseSource() = %q, want %q", got, apisixctx.ResponseSourceAPISIX)
+	}
+}
+
 func TestRequestPhaseAdapterNormalizesInvalidSource(t *testing.T) {
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "/", nil),

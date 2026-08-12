@@ -18,9 +18,19 @@ import (
 )
 
 type routeOptionalWriter struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header  http.Header
+	status  int
+	body    bytes.Buffer
+	flushed bool
+}
+
+type routeSuccessfulHijackWriter struct {
+	routeOptionalWriter
+	connection net.Conn
+}
+
+func (w *routeSuccessfulHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.connection, bufio.NewReadWriter(bufio.NewReader(w.connection), bufio.NewWriter(w.connection)), nil
 }
 
 func (w *routeOptionalWriter) Header() http.Header { return w.header }
@@ -43,7 +53,7 @@ func (w *routeOptionalWriter) ReadFrom(reader io.Reader) (int64, error) {
 	}
 	return io.Copy(&w.body, reader)
 }
-func (*routeOptionalWriter) Flush() {}
+func (w *routeOptionalWriter) Flush() { w.flushed = true }
 func (*routeOptionalWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, errRouteOptionalUnsupported
 }
@@ -142,7 +152,141 @@ func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing
 	}
 }
 
-func TestNoBoundedPlanPreservesFirstTerminalOwnerWhenMultipleAreEnabled(t *testing.T) {
+func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testing.T) {
+	ensureRouteStore(t)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[]}\n\n"))
+			w.(http.Flusher).Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"total_tokens":1}}`))
+	}))
+	t.Cleanup(provider.Close)
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.buildHandlerStrict(resource.Route{
+		ID: "dual-mode-ai-rate-route",
+		Plugins: map[string]resource.PluginConfig{
+			"ai-proxy": map[string]any{
+				"provider": "openai-compatible",
+				"auth":     map[string]any{},
+				"override": map[string]any{"endpoint": provider.URL},
+			},
+			"ai-rate-limiting": map[string]any{"limit": 100, "time_window": 60},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		body      string
+		wantBody  string
+		wantFlush bool
+	}{
+		{name: "bounded", body: `{"model":"test","messages":[]}`, wantBody: `{"choices":[],"usage":{"total_tokens":1}}`},
+		{name: "streaming", body: `{"model":"test","messages":[],"stream":true}`, wantBody: "data: {\"choices\":[]}\n\n", wantFlush: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"http://gateway.test/v1/chat/completions",
+				strings.NewReader(tc.body),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			writer := &routeOptionalWriter{header: make(http.Header)}
+			handler.ServeHTTP(writer, request)
+			if writer.status != http.StatusOK || writer.body.String() != tc.wantBody || writer.flushed != tc.wantFlush {
+				t.Fatalf(
+					"response = %d/%q flushed=%v, want 200/%q flushed=%v",
+					writer.status,
+					writer.body.String(),
+					writer.flushed,
+					tc.wantBody,
+					tc.wantFlush,
+				)
+			}
+		})
+	}
+}
+
+func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *testing.T) {
+	ensureRouteStore(t)
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	t.Cleanup(moderation.Close)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"safe\"}}]}\n\n"))
+			w.(http.Flusher).Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"safe"}}]}`))
+	}))
+	t.Cleanup(provider.Close)
+	for _, tc := range []struct {
+		name            string
+		streamCheckMode string
+		requestBody     string
+		wantFlush       bool
+	}{
+		{name: "bounded", streamCheckMode: "final_packet", requestBody: `{"model":"test","messages":[]}`},
+		{name: "streaming", streamCheckMode: "realtime", requestBody: `{"model":"test","messages":[],"stream":true}`, wantFlush: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			handler, err := builder.buildHandlerStrict(resource.Route{
+				ID: "dual-mode-ai-moderation-" + tc.name,
+				Plugins: map[string]resource.PluginConfig{
+					"ai-proxy": map[string]any{
+						"provider": "openai-compatible",
+						"auth":     map[string]any{},
+						"override": map[string]any{"endpoint": provider.URL},
+					},
+					"ai-aliyun-content-moderation": map[string]any{
+						"endpoint": moderation.URL, "region_id": "cn-shanghai",
+						"access_key_id": "key", "access_key_secret": "secret",
+						"check_request": false, "check_response": true,
+						"stream_check_mode": tc.streamCheckMode, "fail_mode": "warn",
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("buildHandlerStrict() error = %v", err)
+			}
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"http://gateway.test/v1/chat/completions",
+				strings.NewReader(tc.requestBody),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			writer := &routeOptionalWriter{header: make(http.Header)}
+			handler.ServeHTTP(writer, request)
+			if writer.status != http.StatusOK || writer.flushed != tc.wantFlush ||
+				!strings.Contains(writer.body.String(), "safe") {
+				t.Fatalf(
+					"response = %d/%q flushed=%v, want 200 safe flushed=%v",
+					writer.status,
+					writer.body.String(),
+					writer.flushed,
+					tc.wantFlush,
+				)
+			}
+		})
+	}
+}
+
+func TestResponsePlanRejectsMultipleEffectiveProtocolOwners(t *testing.T) {
 	ensureRouteStore(t)
 	route := resource.Route{
 		ID: "multiple-terminal-no-bounded-route",
@@ -160,84 +304,14 @@ func TestNoBoundedPlanPreservesFirstTerminalOwnerWhenMultipleAreEnabled(t *testi
 	}
 	builder := NewBuilder(nil)
 	t.Cleanup(builder.Stop)
-	if _, err := builder.buildHandlerStrict(route); err != nil {
-		t.Fatalf("no-bounded multiple-terminal route build error = %v", err)
-	}
-
-	descriptor, err := terminalDescriptorForRoute(
-		materializedPluginSources(
-			route.Plugins,
-			plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
-		),
-		resource.Upstream{},
-		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
-	)
-	if err != nil {
-		t.Fatalf("terminalDescriptorForRoute() error = %v", err)
-	}
-	if descriptor != (plugin.TerminalDescriptor{
-		Owner: plugin.TerminalOwnerAIRuntime,
-		Provenance: plugin.ResourceProvenance{
-			Kind: plugin.ResourceRoute,
-			ID:   route.ID,
-		},
-	}) {
-		t.Fatalf("terminal descriptor = %#v, want deterministic first AI route owner", descriptor)
-	}
-
-	boundedPlugin := &routeBufferedPlugin{
-		name:       "echo",
-		descriptor: base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true},
-	}
-	boundedBinding := checkedRouteBinding(t, "echo", boundedPlugin, plugin.ScopeRoute)
-	if _, err := plugin.NewBufferedResponseExecutor(
-		[]plugin.Binding{boundedBinding},
-		descriptor,
-		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-	); err == nil || !strings.Contains(err.Error(), "conflicts with terminal owner") {
-		t.Fatalf("static bounded multiple-terminal error = %v, want terminal conflict", err)
-	}
-
-	dynamicBinding := checkedRouteBinding(t, "echo", boundedPlugin, plugin.ScopeConsumer)
-	executor, err := plugin.NewBufferedResponseExecutor(
-		nil,
-		descriptor,
-		base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-	)
-	if err != nil {
-		t.Fatalf("transparent NewBufferedResponseExecutor() error = %v", err)
-	}
-	terminalCalls := 0
-	handler := plugin.NewRequestPipeline(nil, func(r *http.Request) (plugin.ConsumerResolution, error) {
-		return plugin.ConsumerResolution{
-			Request:  r,
-			Resolved: true,
-			Bindings: []plugin.Binding{dynamicBinding},
-		}, nil
-	}).WithBufferedResponseExecutor(executor).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		terminalCalls++
-	}))
-	request, _ := apisixctx.EnsureRequestLifecycle(
-		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
-		time.Unix(0, 0),
-	)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if terminalCalls != 0 || response.Code != http.StatusInternalServerError {
-		t.Fatalf(
-			"dynamic terminal/status = %d/%d, want conflict before terminal and stable 500",
-			terminalCalls,
-			response.Code,
-		)
+	_, err := builder.buildHandlerStrict(route)
+	if err == nil || !strings.Contains(err.Error(), "ai-proxy") ||
+		!strings.Contains(err.Error(), "dubbo-proxy") || !strings.Contains(err.Error(), route.ID) {
+		t.Fatalf("multiple protocol owner error = %v, want both identities and route provenance", err)
 	}
 }
 
 func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
-	bounded := &routeBufferedPlugin{
-		name:       "echo",
-		descriptor: base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true},
-	}
-	boundedBinding := checkedRouteBinding(t, "echo", bounded, plugin.ScopeRoute)
 	for _, name := range []string{"ai-proxy", "ai-proxy-multi", "dubbo-proxy", "http-dubbo"} {
 		t.Run(name, func(t *testing.T) {
 			ensureRouteStore(t)
@@ -255,28 +329,6 @@ func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 			if _, err := builder.buildHandlerStrict(route); err != nil {
 				t.Fatalf("disabled %s bounded route build error = %v", name, err)
 			}
-			sources := materializedPluginSources(
-				route.Plugins,
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
-			)
-			descriptor, err := terminalDescriptorForRoute(
-				sources,
-				resource.Upstream{},
-				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
-			)
-			if err != nil {
-				t.Fatalf("terminalDescriptorForRoute() error = %v", err)
-			}
-			if descriptor.Owner != plugin.TerminalOwnerOrdinaryProxy {
-				t.Fatalf("terminal owner = %d, want ordinary proxy", descriptor.Owner)
-			}
-			if _, err := plugin.NewBufferedResponseExecutor(
-				[]plugin.Binding{boundedBinding},
-				descriptor,
-				base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
-			); err != nil {
-				t.Fatalf("disabled %s rejected bounded route: %v", name, err)
-			}
 		})
 	}
 }
@@ -284,12 +336,12 @@ func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 	route := resource.Route{ID: "winner-route", PluginConfigID: "winner-config"}
 	pluginConfig := map[string]resource.PluginConfig{
-		"ai-proxy": map[string]any{},
+		"dubbo-proxy": map[string]any{},
 	}
 	service := resource.Service{
 		ID: "shadowed-service",
 		Plugins: map[string]resource.PluginConfig{
-			"ai-proxy": map[string]any{},
+			"dubbo-proxy": map[string]any{},
 		},
 	}
 	localSources, serviceSources, _ := selectMaterializedPluginSources(
@@ -301,22 +353,59 @@ func TestTerminalOwnerUsesPluginConfigWinnerProvenance(t *testing.T) {
 		service.ID,
 	)
 	sources := append(localSources, serviceSources...)
-	descriptor, err := terminalDescriptorForRoute(
+	candidates, err := routeTerminalCandidates(
 		sources,
 		resource.Upstream{},
 		plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID},
+		routeProtocolTerminals{dubbo: routeDubboTerminal{}},
 	)
 	if err != nil {
-		t.Fatalf("terminalDescriptorForRoute() error = %v", err)
+		t.Fatalf("routeTerminalCandidates() error = %v", err)
 	}
-	if descriptor.Owner != plugin.TerminalOwnerAIRuntime {
-		t.Fatalf("terminal owner = %d, want AI runtime", descriptor.Owner)
+	if len(candidates) != 1 || candidates[0].Identity != "dubbo-proxy" ||
+		candidates[0].Provenance != (plugin.ResourceProvenance{
+			Kind: plugin.ResourcePluginConfig,
+			ID:   route.PluginConfigID,
+		}) {
+		t.Fatalf("route-owned candidates = %#v, want plugin-config winner", candidates)
 	}
-	if descriptor.Provenance != (plugin.ResourceProvenance{
-		Kind: plugin.ResourcePluginConfig,
-		ID:   route.PluginConfigID,
-	}) {
-		t.Fatalf("terminal provenance = %#v, want plugin-config winner", descriptor.Provenance)
+}
+
+func TestRouteTerminalCandidatesUseResolvedKafkaUpstreamProvenance(t *testing.T) {
+	provenance := plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: "kafka-upstream"}
+	candidates, err := routeTerminalCandidates(
+		nil,
+		resource.Upstream{Scheme: "kafka"},
+		provenance,
+		routeProtocolTerminals{kafka: routeKafkaTerminal{handler: http.NotFoundHandler()}},
+	)
+	if err != nil {
+		t.Fatalf("routeTerminalCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Identity != "kafka-proxy" ||
+		candidates[0].Protocol != plugin.ProtocolKafka || candidates[0].Provenance != provenance {
+		t.Fatalf("Kafka candidates = %#v, want resolved upstream provenance", candidates)
+	}
+}
+
+func TestRouteKafkaTerminalReportsSuccessfulHijack(t *testing.T) {
+	server, peer := net.Pipe()
+	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	writer := &routeSuccessfulHijackWriter{
+		routeOptionalWriter: routeOptionalWriter{header: make(http.Header)},
+		connection:          server,
+	}
+	terminal := routeKafkaTerminal{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil || connection != server {
+			t.Fatalf("Hijack() = %v/%v", connection, err)
+		}
+	})}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	disposition, _, source, err := terminal.RunExclusiveProtocol(writer, request, nil)
+	if err != nil || disposition != base.ProtocolHijacked || source != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("Kafka terminal = disposition:%d source:%q err:%v", disposition, source, err)
 	}
 }
 

@@ -196,6 +196,46 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// RegisterCompressionOffers exposes gzip and deflate through the shared,
+// request-local negotiation state. The response metadata decides eligibility
+// once, before the selected wrapper is constructed.
+func (p *Plugin) RegisterCompressionOffers(r *http.Request, _ *compression.State) []compression.Offer {
+	eligible := p.requestEligible(r)
+	return []compression.Offer{
+		{Coding: compression.Gzip, Rank: 995, Eligible: eligible},
+		{Coding: compression.Deflate, Rank: 994, Eligible: eligible},
+	}
+}
+
+func (p *Plugin) WrapCompression(
+	w http.ResponseWriter,
+	r *http.Request,
+	state *compression.State,
+	decision compression.Decision,
+) (http.ResponseWriter, error) {
+	if decision.Coding != compression.Gzip && decision.Coding != compression.Deflate {
+		return w, nil
+	}
+	return &maybeCompressResponseWriter{
+		ResponseWriter: w, w: w, contentTypes: p.config.ConfigTypes,
+		wildcardType: p.config.WildcardType, level: *p.config.CompLevel,
+		minLength: *p.config.MinLength, requestMethod: r.Method, state: state,
+	}, nil
+}
+
+func (p *Plugin) RunStreamingHeaderFilter(_ *http.Request, _ *base.StreamingResponseState) error {
+	return nil
+}
+
+func (p *Plugin) requestEligible(r *http.Request) func(compression.ResponseMeta) bool {
+	return func(meta compression.ResponseMeta) bool {
+		if r == nil || base.ProtocolVersion(r) < p.config.HTTPVersionStr {
+			return false
+		}
+		return p.responseEligible(meta)
+	}
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if base.ProtocolVersion(r) < p.config.HTTPVersionStr {

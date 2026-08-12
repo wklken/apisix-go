@@ -282,6 +282,66 @@ func (p *Plugin) SetRouteContext(routeID string, serverAddr string) {
 	p.ServerAddr = serverAddr
 }
 
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	return base.LogCapturePolicy{}
+}
+
+// RunLogPhase emits the detached metric snapshot without consulting a live
+// request or response writer. The metric payload intentionally mirrors the
+// legacy Handler fields.
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	latency := int64(0)
+	if !snapshot.Started.IsZero() && !snapshot.Finished.IsZero() {
+		latency = snapshot.Finished.Sub(snapshot.Started).Milliseconds()
+	}
+	upstreamLatency, hasUpstreamLatency := snapshotInt64(snapshot, "$upstream_latency")
+	entry := metricEntry{
+		LatencyMS:          latency,
+		UpstreamLatency:    upstreamLatency,
+		HasUpstreamLatency: hasUpstreamLatency,
+		ApisixLatency:      apisixLatency(latency, upstreamLatency),
+		IngressSize:        max(snapshot.Request.ContentLength, 0),
+		EgressSize:         snapshot.Outcome.Bytes,
+		Status:             snapshot.Outcome.Status,
+		RouteID:            snapshotString(snapshot, "$route_id"),
+		RouteName:          snapshotString(snapshot, "$route_name"),
+		ServiceID:          snapshotString(snapshot, "$service_id"),
+		ServiceName:        snapshotString(snapshot, "$service_name"),
+		ConsumerName:       snapshot.Request.Consumer.Username,
+		BalancerIP:         snapshotString(snapshot, "$balancer_ip"),
+		Path:               snapshotPath(snapshot),
+		Method:             snapshot.Request.Method,
+		Scheme:             snapshot.Request.Scheme,
+	}
+	return base.EnqueueLog(p.BatchProcessor, map[string]any{"entry": entry})
+}
+
+func snapshotString(snapshot base.LogSnapshot, key string) string {
+	return fmt.Sprint(base.SnapshotValue(snapshot, key))
+}
+
+func snapshotInt64(snapshot base.LogSnapshot, key string) (int64, bool) {
+	value := base.SnapshotValue(snapshot, key)
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		return int64(typed), true
+	default:
+		parsed, err := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+		return parsed, err == nil
+	}
+}
+
+func snapshotPath(snapshot base.LogSnapshot) string {
+	if path := snapshotString(snapshot, "$matched_uri"); path != "" {
+		return path
+	}
+	return snapshot.Request.URI
+}
+
 func (p *Plugin) Stop() {
 	cleanup := func() {
 		p.connMu.Lock()

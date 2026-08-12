@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -155,10 +156,22 @@ func (p *Plugin) Stop() {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) != nil {
+			base.AdaptRequestPhase(p, next).ServeHTTP(w, r)
+			return
+		}
 		p.requestRotation()
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+// RunRequestPhase is the explicit inherited request-access owner. Rotation
+// remains a generation worker; the request phase only coalesces a bounded
+// trigger and never performs filesystem work inline.
+func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	p.requestRotation()
+	return base.ContinueRequest(r)
 }
 
 // requestRotation schedules rotation without blocking the request; a bounded

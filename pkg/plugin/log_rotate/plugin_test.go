@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -71,6 +73,34 @@ func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 		t.Fatal("request blocked on log rotation")
 	}
 	close(releaseRotation)
+}
+
+func TestLogRotateUsesInheritedRequestAccess(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	triggered := make(chan struct{}, 1)
+	p.rotate = func(time.Time) error {
+		triggered <- struct{}{}
+		return nil
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://example.test/", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue || result.Request != request {
+		t.Fatalf("request phase result = %+v, want unchanged continuing request", result)
+	}
+	select {
+	case <-triggered:
+	case <-time.After(time.Second):
+		t.Fatal("request-access trigger did not reach the generation worker")
+	}
 }
 
 func TestRotateByMaxSizeRenamesLogsAndRecreatesCurrentFiles(t *testing.T) {

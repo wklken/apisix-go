@@ -265,6 +265,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		nil, nil,
+	)
 	if p.config.SSLVerify == nil {
 		value := true
 		p.config.SSLVerify = &value
@@ -359,6 +364,52 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	return p.EnqueueLog(p.lagoSnapshotFields(snapshot))
+}
+
+func (p *Plugin) lagoSnapshotFields(snapshot base.LogSnapshot) map[string]any {
+	fields := map[string]any{
+		"status":              snapshot.Outcome.Status,
+		requestStartTimeField: snapshot.Started,
+	}
+	if p.config.IncludeReqBody {
+		fields["request_body"] = base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes)
+	}
+	if p.config.IncludeRespBody {
+		fields["response_body"] = base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes)
+	}
+	for _, template := range p.templates() {
+		for _, name := range templateVariables(template) {
+			if _, ok := fields[name]; ok {
+				continue
+			}
+			fields[name] = lagoSnapshotVariable(snapshot, name)
+		}
+	}
+	return fields
+}
+
+func lagoSnapshotVariable(snapshot base.LogSnapshot, name string) any {
+	if name == "status" {
+		return snapshot.Outcome.Status
+	}
+	if after, ok := strings.CutPrefix(name, "cookie_"); ok {
+		req := &http.Request{Header: snapshot.Request.Header}
+		if cookie, err := req.Cookie(after); err == nil {
+			return cookie.Value
+		}
+		return ""
+	}
+	if after, ok := strings.CutPrefix(name, "sent_http_"); ok {
+		return snapshot.Response.Header.Get(strings.ReplaceAll(after, "_", "-"))
+	}
+	if after, ok := strings.CutPrefix(name, "upstream_http_"); ok {
+		return snapshot.Response.Header.Get(strings.ReplaceAll(after, "_", "-"))
+	}
+	return base.SnapshotValue(snapshot, "$"+name)
 }
 
 func (p *Plugin) Send(fields map[string]any) {

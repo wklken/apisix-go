@@ -29,9 +29,37 @@ type minimalResponseWriter struct {
 	header http.Header
 }
 
+type shortResponseWriter struct {
+	header http.Header
+	body   strings.Builder
+	limit  int
+}
+
 func (w *minimalResponseWriter) Header() http.Header            { return w.header }
 func (w *minimalResponseWriter) WriteHeader(int)                {}
 func (w *minimalResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (w *shortResponseWriter) Header() http.Header { return w.header }
+func (w *shortResponseWriter) WriteHeader(int)     {}
+func (w *shortResponseWriter) Write(body []byte) (int, error) {
+	n := min(w.limit, len(body))
+	_, _ = w.body.Write(body[:n])
+	return n, io.ErrShortWrite
+}
+
+func (w *shortResponseWriter) WriteString(value string) (int, error) {
+	return w.Write([]byte(value))
+}
+
+func (w *shortResponseWriter) ReadFrom(reader io.Reader) (int64, error) {
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return 0, err
+	}
+	n := min(w.limit, len(body))
+	_, _ = w.body.Write(body[:n])
+	return int64(n), io.ErrShortWrite
+}
 
 func newOptionalResponseWriter() *optionalResponseWriter {
 	return &optionalResponseWriter{header: make(http.Header), closeNotify: make(chan bool)}
@@ -289,5 +317,109 @@ func TestCaptureResponseOutcomeTracksFlushErrorCommit(t *testing.T) {
 	}
 	if got := snapshot(); !got.Committed || !got.Flushed {
 		t.Fatalf("snapshot() = %#v", got)
+	}
+}
+
+func TestResponseCaptureBodyIsDisabledUntilEnabled(t *testing.T) {
+	underlying := httptest.NewRecorder()
+	wrapped, capture := CaptureResponseOutcomeController(underlying)
+	_, _ = wrapped.Write([]byte("hidden"))
+	if got := capture.Snapshot(); len(got.Body) != 0 || got.BodyTruncated {
+		t.Fatalf("disabled capture snapshot = %#v", got)
+	}
+	if err := capture.EnableBodyCapture(3); err != nil {
+		t.Fatalf("EnableBodyCapture() error = %v", err)
+	}
+	_, _ = wrapped.Write([]byte("visible"))
+	got := capture.Snapshot()
+	if string(got.Body) != "vis" || !got.BodyTruncated {
+		t.Fatalf("enabled capture snapshot = %#v, want vis/truncated", got)
+	}
+}
+
+func TestResponseCaptureIncludesOnlyBytesConfirmedWritten(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(http.ResponseWriter) (int64, error)
+	}{
+		{
+			name: "write",
+			call: func(w http.ResponseWriter) (int64, error) {
+				n, err := w.Write([]byte("sensitive"))
+				return int64(n), err
+			},
+		},
+		{
+			name: "write string",
+			call: func(w http.ResponseWriter) (int64, error) {
+				n, err := w.(io.StringWriter).WriteString("sensitive")
+				return int64(n), err
+			},
+		},
+		{
+			name: "read from",
+			call: func(w http.ResponseWriter) (int64, error) {
+				return w.(io.ReaderFrom).ReadFrom(strings.NewReader("sensitive"))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			underlying := &shortResponseWriter{header: make(http.Header), limit: 3}
+			wrapped, capture := CaptureResponseOutcomeController(underlying)
+			if err := capture.EnableBodyCapture(16); err != nil {
+				t.Fatalf("EnableBodyCapture() error = %v", err)
+			}
+			n, err := test.call(wrapped)
+			if n != 3 || !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("write result = %d/%v, want 3/%v", n, err, io.ErrShortWrite)
+			}
+			if got := capture.Outcome().Bytes; got != 3 {
+				t.Fatalf("outcome bytes = %d, want 3", got)
+			}
+			if got := string(capture.Snapshot().Body); got != "sen" {
+				t.Fatalf("captured body = %q, want %q", got, "sen")
+			}
+		})
+	}
+}
+
+func TestResponseCaptureOmitsUnconfirmedBodyWhenUnderlyingWriterPanics(t *testing.T) {
+	underlying := &panicResponseWriter{optionalResponseWriter: newOptionalResponseWriter(), panicWrite: true}
+	wrapped, capture := CaptureResponseOutcomeController(underlying)
+	if err := capture.EnableBodyCapture(8); err != nil {
+		t.Fatalf("EnableBodyCapture() error = %v", err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("underlying write did not panic")
+			}
+		}()
+		_, _ = wrapped.Write([]byte("panic-body"))
+	}()
+	got := capture.Snapshot()
+	if len(got.Body) != 0 || got.BodyTruncated {
+		t.Fatalf("panic capture snapshot = %#v, want no unconfirmed body", got)
+	}
+}
+
+func TestResponseCaptureSnapshotSeparatesDeclaredTrailers(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	w, capture := CaptureResponseOutcomeController(recorder)
+	w.Header().Add("Trailer", "X-Checksum")
+	w.Header().Set("X-Visible", "header")
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("X-Checksum", "done")
+
+	snapshot := capture.Snapshot()
+	if got := snapshot.Trailer.Get("X-Checksum"); got != "done" {
+		t.Fatalf("trailer X-Checksum = %q, want done", got)
+	}
+	if got := snapshot.Header.Get("X-Checksum"); got != "" {
+		t.Fatalf("final header leaked trailer value %q", got)
+	}
+	if got := snapshot.Header.Get("X-Visible"); got != "header" {
+		t.Fatalf("final header X-Visible = %q", got)
 	}
 }

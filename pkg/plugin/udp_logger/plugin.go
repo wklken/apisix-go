@@ -224,6 +224,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.config.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
@@ -294,6 +299,37 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = resolveUDPSnapshotFormat(snapshot, p.LogFormat)
+		fields["route_id"] = p.RouteID
+		fields["service_id"] = base.SnapshotValue(snapshot, "$service_id")
+	} else {
+		fields = base.BuildAccessLogFromSnapshot(snapshot, p.RouteID, p.ServerAddr)
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return p.EnqueueLog(fields)
+}
+
+func resolveUDPSnapshotFormat(snapshot base.LogSnapshot, format map[string]string) map[string]any {
+	return base.ResolveStringLogFormat(format, func(value string) any {
+		if value == "$time_iso8601" {
+			return snapshot.Started.Format(time.RFC3339)
+		}
+		return base.SnapshotValue(snapshot, value)
+	})
 }
 
 type accessRequest = base.AccessLogRequest

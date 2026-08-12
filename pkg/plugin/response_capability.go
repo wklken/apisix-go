@@ -233,7 +233,7 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 			// the HTTP request/response executor.
 			continue
 		}
-		if capability.StreamingBodyFilter || capability.StreamingResponseOwner {
+		if capability.HeaderFilter || capability.StreamingBodyFilter || capability.StreamingResponseOwner {
 			plan.streamingBindings = append(plan.streamingBindings, binding)
 		}
 		if capability.ExclusiveProtocol != ProtocolNone {
@@ -529,7 +529,8 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 			return stage == RequestStageNone && descriptor.Header != descriptor.BufferedBody
 		}
 		return stage == RequestStageRewrite || stage == RequestStageAccess ||
-			stage == RequestStageBeforeProxy || stage == RequestStageLegacy
+			stage == RequestStageBeforeProxy || stage == RequestStageLegacy ||
+			stage == RequestStageNone && descriptor.Log
 	}
 	return true
 }

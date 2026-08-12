@@ -17,11 +17,89 @@ import (
 	"time"
 
 	brotli "github.com/andybalholm/brotli"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhasePreservesDefaultFieldsAndRouteLabels(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{routeLabels: map[string]any{"team": "edge"}}
+	p.logFormat = map[string]any{"labels": "$a6_route_labels", "remote": "$remote_addr"}
+	p.SetSnapshotLogFormat(p.logFormat, nil)
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", RemoteAddr: "192.0.2.3:1234",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusUnauthorized},
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case fields := <-delivered:
+		if fields["remote"] != "192.0.2.3" {
+			t.Fatalf("remote = %#v", fields["remote"])
+		}
+		if labels, ok := fields["labels"].(map[string]any); !ok || labels["team"] != "edge" {
+			t.Fatalf("labels = %#v", fields["labels"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached HTTP entry was not delivered")
+	}
+
+	p.logFormat = nil
+	fields := p.defaultSnapshotLogFields(snapshot)
+	if fields["route_id"] != "no-matched" || fields["response"].(map[string]any)["status"] != http.StatusUnauthorized {
+		t.Fatalf("default fields = %#v", fields)
+	}
+}
+
+func TestRunLogPhaseDoesNotExposeBodyWhenExpressionDoesNotMatch(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{config: Config{
+		IncludeReqBody: true, IncludeReqBodyExpr: []any{[]any{"status", "==", 500}},
+		IncludeRespBody: true, IncludeRespBodyExpr: []any{[]any{"status", "==", 500}},
+		MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
+	}}
+	p.logFormat = map[string]any{"request": "$request_body", "response": "$response_body"}
+	p.SetSnapshotLogFormat(p.logFormat, nil)
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request:  apisixlog.RequestLogSnapshot{Body: []byte("private-request")},
+		Response: apisixlog.ResponseLogSnapshot{Body: []byte("private-response")},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case fields := <-delivered:
+		if fields["request"] != "" || fields["response"] != "" {
+			t.Fatalf("body fields = %#v, want hidden bodies", fields)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached HTTP entry was not delivered")
+	}
+}
 
 func TestStopDefersHTTPClientReleaseUntilDeliveryCallbackReturns(t *testing.T) {
 	started := make(chan struct{})

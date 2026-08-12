@@ -531,7 +531,7 @@ func TestRequestContextLegacyPreWritePanicKeepsRequestTotalWithoutSuccessMetrics
 	}
 }
 
-func TestRequestPhaseRequestContextInitializesStateAndFinalizer(t *testing.T) {
+func TestRequestPhaseRequestContextInitializesStateAndSnapshotFinalizer(t *testing.T) {
 	installTestMetrics(t)
 
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
@@ -555,8 +555,23 @@ func TestRequestPhaseRequestContextInitializesStateAndFinalizer(t *testing.T) {
 	if failures := lifecycle.Finalize(); len(failures) != 0 {
 		t.Fatalf("lifecycle finalizer failures = %#v", failures)
 	}
+	if got := counterValue(t, metrics.Requests); got != 0 {
+		t.Fatalf("request total = %v, want 0 before snapshot finalizer", got)
+	}
+	snapshotRequest := result.Request.Clone(result.Request.Context())
+	snapshotRequest.Body = http.NoBody
+	if err := p.RunSnapshotFinalizer(base.BuildLogSnapshot(
+		snapshotRequest,
+		base.ResponseCaptureSnapshot{},
+		lifecycle.Outcome(),
+		lifecycle.ResponseSource(),
+		lifecycle.StartedAt(),
+		lifecycle.FinishedAt(),
+	)); err != nil {
+		t.Fatalf("RunSnapshotFinalizer() error = %v", err)
+	}
 	if got := counterValue(t, metrics.Requests); got != 1 {
-		t.Fatalf("request total = %v, want 1 after finalization", got)
+		t.Fatalf("request total = %v, want 1 after snapshot finalization", got)
 	}
 	apisixctx.RecycleVars(result.Request)
 }

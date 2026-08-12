@@ -315,6 +315,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
+	p.SetSnapshotLogFormat(p.logFormat, nil)
 
 	p.BatchProcessor = base.NewBatchProcessor("http logger", base.BatchDefaults{
 		PluginID:           name,
@@ -458,6 +464,75 @@ func (p *Plugin) defaultLogFields(r *http.Request, status int) map[string]any {
 		fields["service_id"] = serviceID
 	}
 	if consumerName := base.RequestVar(r, "$consumer_name", status); consumerName != "" {
+		fields["consumer"] = map[string]any{"username": consumerName}
+	}
+	return fields
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	policy := p.LogCapturePolicy()
+	requestBody := ""
+	if base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		requestBody = base.SnapshotRequestBody(snapshot, policy.RequestBodyBytes)
+	}
+	responseBody := ""
+	if base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		responseBody = base.SnapshotResponseBody(snapshot, policy.ResponseBodyBytes)
+	}
+	var fields map[string]any
+	if len(p.logFormat) > 0 {
+		fields = base.ResolveLogFormat(p.logFormat, func(value string) any {
+			switch value {
+			case "$request_body":
+				return requestBody
+			case "$resp_body", "$response_body":
+				return responseBody
+			case "$status":
+				return snapshot.Outcome.Status
+			case "$a6_route_labels":
+				return p.routeLabels
+			case "$host":
+				return snapshot.Request.Host
+			case "$remote_addr":
+				return base.RemoteIP(snapshot.Request.RemoteAddr)
+			default:
+				return base.SnapshotValue(snapshot, value)
+			}
+		})
+	} else {
+		fields = p.defaultSnapshotLogFields(snapshot)
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) &&
+		requestBody != "" {
+		base.NestedLogMap(fields, "request")["body"] = requestBody
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) &&
+		responseBody != "" {
+		base.NestedLogMap(fields, "response")["body"] = responseBody
+	}
+	return p.EnqueueLog(fields)
+}
+
+func (p *Plugin) defaultSnapshotLogFields(snapshot base.LogSnapshot) map[string]any {
+	routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id"))
+	if routeID == "" {
+		routeID = p.RouteID
+	}
+	if routeID == "" {
+		routeID = "no-matched"
+	}
+	fields := map[string]any{
+		"route_id": routeID,
+		"request": map[string]any{
+			"method": snapshot.Request.Method,
+			"uri":    snapshot.Request.URI,
+		},
+		"response": map[string]any{"status": snapshot.Outcome.Status},
+	}
+	if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	if consumerName := snapshot.Request.Consumer.Username; consumerName != "" {
 		fields["consumer"] = map[string]any{"username": consumerName}
 	}
 	return fields

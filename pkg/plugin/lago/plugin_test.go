@@ -17,8 +17,51 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
+
+func TestRunLogPhasePreservesLagoTemplateFieldsAndBodies(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{config: Config{
+		IncludeReqBody: true, IncludeRespBody: true, MaxReqBodyBytes: 64, MaxRespBodyBytes: 64,
+		EventTransactionID: "${request_method}-${status}", EventProperties: map[string]string{"route": "${route_id}"},
+	}}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/orders", Body: []byte("request-body"),
+			APISIXVars: map[string]any{"$route_id": "route-1"},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Body: []byte("response-body")},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusAccepted},
+		Started:  time.Unix(10, 0), Finished: time.Unix(11, 0),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case fields := <-delivered:
+		if fields["request_body"] != "request-body" || fields["response_body"] != "response-body" {
+			t.Fatalf("body fields = %#v/%#v", fields["request_body"], fields["response_body"])
+		}
+		if fields[requestStartTimeField] == nil {
+			t.Fatal("request start time was not preserved")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Lago entry was not delivered")
+	}
+}
 
 type capabilityResponseWriter struct {
 	http.ResponseWriter

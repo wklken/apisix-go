@@ -7,6 +7,7 @@ type BindingPhaseDescriptor struct {
 	RequestStage string
 	Header       bool
 	BufferedBody bool
+	Log          bool
 }
 
 // BindingPhaseDescriber lets config-aware plugins describe the one request

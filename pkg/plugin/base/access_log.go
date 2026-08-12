@@ -1,9 +1,11 @@
 package base
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,6 +116,74 @@ func BuildAccessLogSnapshot(
 		log["consumer"] = map[string]any{"username": consumer}
 	}
 	return log
+}
+
+// BuildAccessLogFromSnapshot preserves the default access-log payload after
+// the live request and response writer have been detached.
+func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr ...string) map[string]any {
+	duration := snapshot.Finished.Sub(snapshot.Started)
+	duration = max(duration, 0)
+	latency := float64(duration) / float64(time.Millisecond)
+	upstreamLatency, _ := strconv.ParseFloat(fmt.Sprint(SnapshotValue(snapshot, "$upstream_latency")), 64)
+	apisixLatency := max(latency-upstreamLatency, 0)
+	if routeID == "" {
+		routeID = fmt.Sprint(SnapshotValue(snapshot, "$route_id"))
+	}
+	headers := CollapseHeaderValues(snapshot.Request.Header)
+	headers["host"] = snapshot.Request.Host
+	fields := map[string]any{
+		"request": map[string]any{
+			"url": snapshotAccessURL(snapshot, serverAddr...), "uri": snapshot.Request.URI,
+			"method": snapshot.Request.Method, "headers": headers,
+			"querystring": CollapseQueryValues(snapshot.Request.Query),
+			"size":        max(snapshot.Request.ContentLength, 0),
+		},
+		"response": map[string]any{
+			"status": snapshot.Outcome.Status, "headers": CollapseHeaderValues(snapshot.Response.Header),
+			"size": snapshot.Outcome.Bytes,
+		},
+		"server":     map[string]any{"hostname": Hostname(), "version": accessLogVersion},
+		"service_id": SnapshotValue(snapshot, "$service_id"), "route_id": routeID,
+		"client_ip":  HostWithoutPort(snapshot.Request.RemoteAddr),
+		"start_time": float64(snapshot.Started.UnixNano()) / float64(time.Millisecond),
+		"latency":    latency, "upstream_latency": upstreamLatency, "apisix_latency": apisixLatency,
+		"upstream": snapshotUpstreamAddress(snapshot),
+	}
+	if consumer := snapshot.Request.Consumer.Username; consumer != "" {
+		fields["consumer"] = map[string]any{"username": consumer}
+	}
+	return fields
+}
+
+func snapshotAccessURL(snapshot LogSnapshot, serverAddr ...string) string {
+	scheme := snapshot.Request.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	host := HostWithoutPort(snapshot.Request.Host)
+	_, port, _ := net.SplitHostPort(snapshot.Request.Host)
+	if len(serverAddr) > 0 && serverAddr[0] != "" {
+		if _, configuredPort, err := net.SplitHostPort(serverAddr[0]); err == nil {
+			port = configuredPort
+		}
+	}
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + authority + snapshot.Request.URI
+}
+
+func snapshotUpstreamAddress(snapshot LogSnapshot) string {
+	if address := fmt.Sprint(SnapshotValue(snapshot, "$upstream_addr")); address != "" {
+		return address
+	}
+	host := fmt.Sprint(SnapshotValue(snapshot, "$balancer_ip"))
+	port := fmt.Sprint(SnapshotValue(snapshot, "$balancer_port"))
+	if host != "" && port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	return host
 }
 
 // RequestURL reconstructs the request URL including the server address.

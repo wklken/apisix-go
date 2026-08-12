@@ -58,11 +58,13 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
-	wrapped, snapshot, closeHijacked := base.CaptureResponseOutcome(w)
+	wrapped, capture := base.CaptureResponseOutcomeController(w)
+	request = base.WithResponseCapture(request, capture)
+	lifecycle.SetFinalRequest(request)
 
 	defer func() {
 		recovered := recover()
-		outcome := snapshot()
+		outcome := capture.Outcome()
 		aborted := false
 		isHandlerAbort := recovered == http.ErrAbortHandler
 
@@ -73,6 +75,7 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 			outcome.Kind = apisixctx.RequestOutcomeHandlerAbort
 		default:
 			logger.Errorf("recovered request panic: %v\n%s", recovered, debug.Stack())
+			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
 			if outcome.Committed || outcome.Flushed || outcome.Hijacked {
 				metrics.RecordRequestPanic(requestPanicStage(outcome))
 				outcome.Kind = apisixctx.RequestOutcomeAbortedPanic
@@ -80,10 +83,10 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 			} else {
 				metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
 				if !writeStableInternalError(wrapped) {
-					outcome = snapshot()
+					outcome = capture.Outcome()
 					aborted = true
 				} else {
-					outcome = snapshot()
+					outcome = capture.Outcome()
 				}
 				outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
 				if aborted {
@@ -92,7 +95,7 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 			}
 		}
 
-		lifecycle.SetOutcome(outcome)
+		lifecycle.Complete(outcome, time.Now())
 		for _, failure := range lifecycle.Finalize() {
 			logFinalizerFailure(failure)
 			if failure.PanicValue != nil {
@@ -102,7 +105,7 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 		apisixctx.RecycleVars(request)
 
 		if outcome.Hijacked && (isHandlerAbort || aborted) {
-			if err := closeHijacked(); err != nil {
+			if err := capture.CloseHijacked(); err != nil {
 				logger.Errorf("close hijacked request connection: %s", err)
 			}
 		}

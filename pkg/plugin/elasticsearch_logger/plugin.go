@@ -295,6 +295,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor(name, base.BatchDefaults{
 		PluginID:           name,
@@ -354,6 +359,74 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	fields := elasticsearchSnapshotLogFields(snapshot, p.LogFormat)
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	fields[elasticsearchIndexField] = resolveIndexVarsSnapshot(p.config.Field.Index, snapshot)
+	return p.EnqueueLog(fields)
+}
+
+func elasticsearchSnapshotLogFields(snapshot base.LogSnapshot, logFormat map[string]string) map[string]any {
+	fields := base.GetFieldsFromSnapshot(snapshot, logFormat)
+	for key, value := range logFormat {
+		switch value {
+		case "$host":
+			fields[key] = snapshot.Request.Host
+		case "$remote_addr":
+			host, _, err := net.SplitHostPort(snapshot.Request.RemoteAddr)
+			if err == nil {
+				fields[key] = host
+			}
+		}
+	}
+	return fields
+}
+
+func resolveIndexVarsSnapshot(index string, snapshot base.LogSnapshot) string {
+	index = replaceIndexTimeVars(index)
+	var out strings.Builder
+	for i := 0; i < len(index); {
+		if index[i] == '\\' && i+1 < len(index) && index[i+1] == '$' {
+			out.WriteString(index[i : i+2])
+			i += 2
+			continue
+		}
+		if index[i] != '$' {
+			out.WriteByte(index[i])
+			i++
+			continue
+		}
+		name, end, ok := indexVariableReference(index, i)
+		if !ok {
+			out.WriteByte(index[i])
+			i++
+			continue
+		}
+		variableName, fallback, hasFallback := strings.Cut(name, "??")
+		variableName = strings.TrimSpace(variableName)
+		expression := variableName
+		if !strings.HasPrefix(expression, "$") {
+			expression = "$" + expression
+		}
+		value := stringifyIndexValue(base.SnapshotValue(snapshot, expression))
+		if value == "" && hasFallback {
+			value = strings.TrimSpace(fallback)
+		}
+		out.WriteString(value)
+		i = end
+	}
+	return out.String()
 }
 
 func elasticsearchLogFields(r *http.Request, logFormat map[string]string) map[string]any {

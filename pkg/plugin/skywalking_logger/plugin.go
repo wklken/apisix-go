@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -248,6 +249,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor("skywalking logger", base.BatchDefaults{
 		PluginID:           name,
@@ -313,6 +319,43 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	fields := base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	if routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
+		fields["route_id"] = routeID
+	}
+	if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	fields[internalSkyWalkingEndpoint] = snapshotPath(snapshot)
+	if sw8 := snapshot.Request.Header.Get("sw8"); sw8 != "" {
+		trace, err := parseTraceContext(sw8)
+		if err != nil {
+			logger.Warnf("failed to parse trace_context header: %s: %v", sw8, err)
+		} else {
+			fields[internalSkyWalkingTraceContext] = trace
+		}
+	}
+	return p.EnqueueLog(fields)
+}
+
+func snapshotPath(snapshot base.LogSnapshot) string {
+	if parsed, err := url.ParseRequestURI(snapshot.Request.URI); err == nil {
+		return parsed.Path
+	}
+	return snapshot.Request.URI
 }
 
 func (p *Plugin) logFields(r *http.Request, status int) map[string]any {

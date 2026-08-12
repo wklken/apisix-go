@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -25,7 +26,7 @@ func TestServerlessDescriptorSelectsOneConfiguredStageOrPhase(t *testing.T) {
 		{phase: "before_proxy", wantStage: "before_proxy"},
 		{phase: "header_filter", wantStage: "none", wantHeader: true},
 		{phase: "body_filter", wantStage: "none", wantBody: true},
-		{phase: "log", wantStage: "legacy"},
+		{phase: "log", wantStage: "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.phase, func(t *testing.T) {
@@ -48,6 +49,79 @@ func TestServerlessDescriptorSelectsOneConfiguredStageOrPhase(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestServerlessLogPhaseRunsDetachedAndRejectsResponseMutation(t *testing.T) {
+	plugin := newTestPlugin(t, NewPreFunction(), Config{
+		Phase: "log",
+		Functions: []string{`return function(conf, ctx)
+			ngx.req.set_header("X-Detached", "yes")
+		end`},
+	})
+	snapshot := base.BuildLogSnapshot(
+		httptest.NewRequest(http.MethodGet, "http://example.com/log", nil),
+		base.ResponseCaptureSnapshot{Header: http.Header{"Content-Type": {"text/plain"}}, Body: []byte("body")},
+		apisixctx.ResponseOutcome{Status: http.StatusOK},
+		apisixctx.ResponseSourceUpstream,
+		time.Time{}, time.Time{},
+	)
+	if err := plugin.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+
+	mutating := newTestPlugin(t, NewPostFunction(), Config{
+		Phase:     "log",
+		Functions: []string{`return function() ngx.status = 418 end`},
+	})
+	if err := mutating.RunLogPhase(snapshot); err == nil || !strings.Contains(err.Error(), "response mutation") {
+		t.Fatalf("RunLogPhase() error = %v, want bounded response mutation error", err)
+	}
+}
+
+func TestServerlessLogPhaseReadsDetachedResponseSnapshot(t *testing.T) {
+	plugin := newTestPlugin(t, NewPreFunction(), Config{
+		Phase: "log",
+		Functions: []string{`return function()
+			if ngx.status ~= 418 or ngx.header["X-Final"] ~= "yes" or ngx.arg[1] ~= "final-body" then
+				error("detached response snapshot missing")
+			end
+		end`},
+	})
+	snapshot := base.BuildLogSnapshot(
+		httptest.NewRequest(http.MethodGet, "http://example.com/log", nil),
+		base.ResponseCaptureSnapshot{Header: http.Header{"X-Final": {"yes"}}, Body: []byte("final-body")},
+		apisixctx.ResponseOutcome{Status: http.StatusTeapot},
+		apisixctx.ResponseSourceUpstream,
+		time.Time{}, time.Time{},
+	)
+	if err := plugin.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+}
+
+func TestServerlessLogPhasePolicyPreservesBodiesThroughDetachedClone(t *testing.T) {
+	plugin := newTestPlugin(t, NewPreFunction(), Config{
+		Phase:     "log",
+		Functions: []string{`return function() end`},
+	})
+	policy := plugin.LogCapturePolicy()
+	if policy.RequestBodyBytes != base.MAX_REQ_BODY || policy.ResponseBodyBytes != base.MAX_RESP_BODY {
+		t.Fatalf("log capture policy = %+v, want bounded request/response limits", policy)
+	}
+	snapshot := base.BuildLogSnapshot(
+		httptest.NewRequest(http.MethodPost, "http://example.com/log", strings.NewReader("request-body")),
+		base.ResponseCaptureSnapshot{Body: []byte("final-body")},
+		apisixctx.ResponseOutcome{Status: http.StatusOK},
+		apisixctx.ResponseSourceUpstream,
+		time.Time{}, time.Time{},
+	)
+	cloned := base.CloneLogSnapshotForPolicy(snapshot, policy)
+	if string(cloned.Request.Body) != "request-body" || string(cloned.Response.Body) != "final-body" {
+		t.Fatalf("cloned bodies = %q/%q, want request-body/final-body", cloned.Request.Body, cloned.Response.Body)
+	}
+	if err := plugin.RunLogPhase(cloned); err != nil {
+		t.Fatalf("RunLogPhase() with executor-style clone error = %v", err)
 	}
 }
 

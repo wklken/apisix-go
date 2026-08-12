@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 func TestCollapseHeaderValuesLowercasesAndCopiesValues(t *testing.T) {
@@ -19,6 +20,39 @@ func TestCollapseHeaderValuesLowercasesAndCopiesValues(t *testing.T) {
 	values[0] = "changed"
 	if header["X-Trace"][0] != "first" {
 		t.Fatalf("CollapseHeaderValues() aliased source values: %#v", header)
+	}
+}
+
+func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
+	started := time.Unix(100, 0)
+	snapshot := LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?q=one", URL: "/orders?q=one",
+			Host: "gateway.test:9443", RemoteAddr: "192.0.2.3:3210", Scheme: "https",
+			Header: http.Header{"X-Request-ID": {"r-1"}}, Query: map[string][]string{"q": {"one"}},
+			APISIXVars: map[string]any{
+				"$service_id": "service-1", "$route_id": "route-1",
+				"$upstream_latency": int64(200), "$upstream_addr": "10.0.0.1:8080",
+			},
+			Consumer: apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Result": {"ok"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 9},
+		Started:  started, Finished: started.Add(time.Second),
+	}
+	fields := BuildAccessLogFromSnapshot(snapshot, "")
+	request := fields["request"].(map[string]any)
+	response := fields["response"].(map[string]any)
+	if request["url"] != "https://gateway.test:9443/orders?q=one" ||
+		request["uri"] != "/orders?q=one" || response["status"] != http.StatusCreated {
+		t.Fatalf("request/response fields = %#v / %#v", request, response)
+	}
+	if fields["upstream_latency"] != float64(200) || fields["apisix_latency"] != float64(800) ||
+		fields["upstream"] != "10.0.0.1:8080" {
+		t.Fatalf("latency/upstream fields = %#v", fields)
+	}
+	if fields["consumer"].(map[string]any)["username"] != "alice" {
+		t.Fatalf("consumer = %#v", fields["consumer"])
 	}
 }
 

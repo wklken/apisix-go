@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -322,6 +324,64 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(p.defaultLogFields(r, recorder, time.Since(start)))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	} else {
+		fields = googleSnapshotDefaultLogFields(snapshot)
+	}
+	return p.EnqueueLog(fields)
+}
+
+func googleSnapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
+	requestSize := snapshot.Request.ContentLength
+	requestSize = max(requestSize, 0)
+	latency := time.Duration(0)
+	if !snapshot.Started.IsZero() && !snapshot.Finished.IsZero() {
+		latency = snapshot.Finished.Sub(snapshot.Started)
+	}
+	remoteIP := snapshot.Request.RemoteAddr
+	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
+		remoteIP = host
+	}
+	fields := map[string]any{
+		defaultEntryMarker:        true,
+		defaultRequestMethodField: snapshot.Request.Method,
+		defaultRequestURLField:    googleSnapshotRequestURL(snapshot),
+		defaultRequestSizeField:   requestSize,
+		defaultStatusField:        snapshot.Outcome.Status,
+		defaultResponseSizeField:  snapshot.Outcome.Bytes,
+		defaultUserAgentField:     snapshot.Request.Header.Get("User-Agent"),
+		defaultRemoteIPField:      remoteIP,
+		defaultServerIPField:      snapshot.Request.Host,
+		defaultLatencyField:       latencyString(latency),
+		defaultInsertIDField:      snapshot.Request.Header.Get("X-Request-ID"),
+	}
+	if routeID := stringFromAny(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
+		fields["route_id"] = routeID
+	}
+	if serviceID := stringFromAny(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	return fields
+}
+
+func googleSnapshotRequestURL(snapshot base.LogSnapshot) string {
+	if parsed, err := url.Parse(snapshot.Request.URL); err == nil && parsed.IsAbs() {
+		return parsed.String()
+	}
+	scheme := snapshot.Request.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + snapshot.Request.Host + snapshot.Request.URI
+}
+
+func latencyString(latency time.Duration) string {
+	return strconv.FormatFloat(latency.Seconds(), 'f', 3, 64) + "s"
 }
 
 func (p *Plugin) PostInit() error {

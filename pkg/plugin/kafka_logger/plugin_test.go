@@ -16,9 +16,45 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{config: Config{MetaFormat: "origin", IncludeReqBody: true, MaxReqBodyBytes: 64}}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/orders?x=1", Proto: "HTTP/1.1",
+			Header: http.Header{"X-Test": {"one"}}, Body: []byte("payload"),
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		origin, ok := entry[originLogKey].(string)
+		if !ok || !strings.Contains(origin, "POST /orders?x=1 HTTP/1.1\r\nX-Test: one\r\n\r\npayload") {
+			t.Fatalf("origin payload = %q", origin)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Kafka origin entry was not delivered")
+	}
+}
 
 type captureSender struct {
 	mu       sync.Mutex

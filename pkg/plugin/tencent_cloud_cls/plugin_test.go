@@ -16,6 +16,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -70,6 +71,17 @@ func TestPostInitAppliesCLSDefaults(t *testing.T) {
 	}
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
+}
+
+func TestRunLogPhasePreservesSampleRatio(t *testing.T) {
+	p := &Plugin{config: Config{SampleRatio: 0.5}, sample: func() float64 { return 0.75 }}
+	if err := p.RunLogPhase(base.LogSnapshot{}); err != nil {
+		t.Fatalf("sampled-out RunLogPhase() error = %v", err)
+	}
+	p.sample = func() float64 { return 0.25 }
+	if err := p.RunLogPhase(base.LogSnapshot{}); err == nil {
+		t.Fatal("sampled-in RunLogPhase() error = nil, want unavailable processor")
 	}
 }
 

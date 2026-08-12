@@ -11,11 +11,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -494,5 +499,270 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	t.Cleanup(p.Stop)
 	if p.tracerProvider == nil {
 		t.Fatal("fallback tracer provider = nil")
+	}
+}
+
+func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{config: Config{Sampler: SamplerConfig{Name: "always_on"}}, tracerProvider: provider}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated, Bytes: 3, Committed: true,
+	}, time.Now())
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("second lifecycle finalization failures = %#v", failures)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one dynamic export", len(spans))
+	}
+}
+
+func TestTraceRequestPhaseExtractsRemoteParentAndSkipsHealthCheck(t *testing.T) {
+	previous := otelapi.GetTextMapPropagator()
+	otelapi.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otelapi.SetTextMapPropagator(previous) })
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{tracerProvider: provider}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	request.Header.Set(
+		"traceparent",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one", len(spans))
+	}
+	if got := spans[0].Parent().SpanID().String(); got != "00f067aa0ba902b7" {
+		t.Fatalf("parent span ID = %q, want remote parent", got)
+	}
+	if !spans[0].Parent().IsRemote() {
+		t.Fatal("parent span is not marked remote")
+	}
+	if result.Request == nil {
+		t.Fatal("RunRequestPhase() returned nil request")
+	}
+
+	healthRequest, healthLifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/healthz", nil), time.Now(),
+	)
+	healthResult := p.RunRequestPhase(httptest.NewRecorder(), healthRequest)
+	healthLifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Now(),
+	)
+	if failures := healthLifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("health lifecycle failures = %#v", failures)
+	}
+	if got := len(recorder.Ended()); got != 1 {
+		t.Fatalf("ended spans after health check = %d, want unchanged", got)
+	}
+	if healthResult.Request == nil {
+		t.Fatal("health request phase returned nil request")
+	}
+}
+
+func TestTraceUsesRoutePatternNameAndServerErrorStatus(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{
+		tracerProvider: provider,
+		route:          resource.Route{Uri: "/orders/:id"},
+	}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders/123", nil), time.Now(),
+	)
+	p.RunRequestPhase(httptest.NewRecorder(), request)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{
+			Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusInternalServerError, Committed: true,
+		},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one", len(spans))
+	}
+	if got := spans[0].Name(); got != "GET /orders/:id" {
+		t.Fatalf("span name = %q, want route pattern", got)
+	}
+	if got := spans[0].Status().Code; got != codes.Error {
+		t.Fatalf("span status = %v, want Error", got)
+	}
+}
+
+func TestTraceUsesActuallyMatchedRoutePatternForMultipleURIs(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{
+		tracerProvider: provider,
+		route:          resource.Route{Uris: []string{"/orders/:id", "/purchases/:id"}},
+	}
+	router := chi.NewRouter()
+	router.Get("/purchases/{id}", func(_ http.ResponseWriter, request *http.Request) {
+		request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
+		p.RunRequestPhase(httptest.NewRecorder(), request)
+		lifecycle.Complete(
+			apisixctx.ResponseOutcome{
+				Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent, Committed: true,
+			},
+			time.Now(),
+		)
+		if failures := lifecycle.Finalize(); len(failures) != 0 {
+			t.Fatalf("lifecycle failures = %#v", failures)
+		}
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/purchases/42", nil))
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one", len(spans))
+	}
+	if got := spans[0].Name(); got != "GET /purchases/{id}" {
+		t.Fatalf("span name = %q, want actually matched pattern", got)
+	}
+	attributes := map[string]string{}
+	for _, item := range spans[0].Attributes() {
+		attributes[string(item.Key)] = item.Value.AsString()
+	}
+	if attributes["http.route"] != "/purchases/{id}" {
+		t.Fatalf("http.route = %q, want actually matched pattern", attributes["http.route"])
+	}
+}
+
+func TestUnsampledTraceRegistersNoExportFinalizer(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.NeverSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{tracerProvider: provider}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if got := len(recorder.Ended()); got != 0 {
+		t.Fatalf("ended spans = %d, want no exporter finalizer for unsampled start", got)
+	}
+}
+
+func TestTraceUsesFinalReplacementRequestSourceAndOutcome(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{tracerProvider: provider}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/initial", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	replacement := result.Request.Clone(result.Request.Context())
+	replacement.URL.Path = "/replacement"
+	lifecycle.SetFinalRequest(replacement)
+	apisixctx.SetResponseSource(replacement, apisixctx.ResponseSourceCacheHit)
+	finished := time.Now()
+	lifecycle.Complete(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNotModified, Bytes: 9, Committed: true,
+	}, finished)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want one", len(spans))
+	}
+	attrs := map[string]string{}
+	for _, attr := range spans[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.String()
+	}
+	if attrs["http.status_code"] != "304" {
+		t.Fatalf("http.status_code = %q, want 304", attrs["http.status_code"])
+	}
+	if attrs["apisix.response_source"] != string(apisixctx.ResponseSourceCacheHit) {
+		t.Fatalf("response source = %q, want cache_hit", attrs["apisix.response_source"])
+	}
+}
+
+func TestTracerDirectHandlerDoesNotDuplicateProductionOwner(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	p := &Plugin{tracerProvider: provider}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).
+		ServeHTTP(
+			httptest.NewRecorder(), request,
+		)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if got := len(recorder.Ended()); got != 0 {
+		t.Fatalf("ended spans = %d, want no direct-handler duplicate", got)
 	}
 }

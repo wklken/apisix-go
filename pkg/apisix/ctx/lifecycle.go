@@ -55,6 +55,7 @@ type RequestLifecycle struct {
 	mu             sync.RWMutex
 	once           sync.Once
 	startedAt      time.Time
+	finishedAt     time.Time
 	finalizing     bool
 	finalizers     []registeredFinalizer
 	outcome        ResponseOutcome
@@ -197,6 +198,20 @@ func (l *RequestLifecycle) SetOutcome(outcome ResponseOutcome) {
 	l.mu.Unlock()
 }
 
+// Complete atomically publishes the final response outcome and completion
+// timestamp.  Keeping the pair under one lock prevents finalizers from
+// observing an outcome from one request boundary with a timestamp from
+// another.
+func (l *RequestLifecycle) Complete(outcome ResponseOutcome, finishedAt time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.outcome = outcome
+	l.finishedAt = finishedAt
+	l.mu.Unlock()
+}
+
 func (l *RequestLifecycle) Outcome() ResponseOutcome {
 	if l == nil {
 		return ResponseOutcome{}
@@ -213,6 +228,17 @@ func (l *RequestLifecycle) StartedAt() time.Time {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.startedAt
+}
+
+// FinishedAt returns the timestamp supplied to Complete.  A zero value means
+// that completion has not yet been published.
+func (l *RequestLifecycle) FinishedAt() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.finishedAt
 }
 
 func (l *RequestLifecycle) Finalize() []FinalizerFailure {

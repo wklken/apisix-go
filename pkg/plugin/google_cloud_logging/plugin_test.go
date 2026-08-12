@@ -22,9 +22,50 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestRunLogPhaseBuildsDefaultGoogleEntryFields(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	p := &Plugin{}
+	p.BatchProcessor = logger_batch.NewWithContext(logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,
+		BufferDuration: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URL: "https://gateway.example/orders?x=1",
+			URI: "/orders?x=1", Host: "gateway.example", RemoteAddr: "192.0.2.8:443",
+			Header: http.Header{"User-Agent": {"test-agent"}}, ContentLength: 17,
+			APISIXVars: map[string]any{"$route_id": "route-1"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 23},
+		Started: time.Unix(10, 0), Finished: time.Unix(11, 500000000),
+	}
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	select {
+	case entry := <-delivered:
+		if entry[defaultEntryMarker] != true || entry[defaultRequestMethodField] != http.MethodPost {
+			t.Fatalf("default marker/method = %#v/%#v", entry[defaultEntryMarker], entry[defaultRequestMethodField])
+		}
+		if entry[defaultRequestURLField] != "https://gateway.example/orders?x=1" ||
+			entry[defaultStatusField] != http.StatusCreated {
+			t.Fatalf("default URL/status = %#v/%#v", entry[defaultRequestURLField], entry[defaultStatusField])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached Google entry was not delivered")
+	}
+}
 
 func TestSendBatchCancelsGoogleEntriesPostWithContext(t *testing.T) {
 	pemKey, _ := testPrivateKey(t)

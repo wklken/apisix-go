@@ -9,15 +9,20 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	"github.com/go-chi/chi/v5"
 	"github.com/riandyrn/otelchi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -212,10 +217,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 	handler := otelchi.Middleware(p.serverName(), opts...)(wrappedNext)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Production route assembly uses RunRequestPhase. Keep Handler as a
+		// direct-package adapter and never start a second span when an outer
+		// lifecycle or another compatibility wrapper already owns the request.
+		if apisixctx.GetRequestLifecycle(r) != nil || r.Context().Value(spanStateContextKey{}) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if p.metadata.TraceIDSource == "x-request-id" {
 			requestID := r.Header.Get("X-Request-ID")
 			r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID))
 		}
+		r = r.WithContext(context.WithValue(r.Context(), spanStateContextKey{}, struct{}{}))
 		handler.ServeHTTP(w, r)
 	})
 }
@@ -354,6 +367,21 @@ func (p *Plugin) resourceSpanAttributes() []attribute.KeyValue {
 	return attrs
 }
 
+func (p *Plugin) requestSpanAttributes(r *http.Request) []attribute.KeyValue {
+	attrs := p.resourceSpanAttributes()
+	matched := matchedRequestRouteURI(r, p.route)
+	if matched == "" {
+		return attrs
+	}
+	for i := range attrs {
+		if attrs[i].Key == "http.route" {
+			attrs[i] = attribute.String("http.route", matched)
+			return attrs
+		}
+	}
+	return append(attrs, attribute.String("http.route", matched))
+}
+
 func matchedRouteURI(route resource.Route) string {
 	if route.Uri != "" {
 		return route.Uri
@@ -362,6 +390,20 @@ func matchedRouteURI(route resource.Route) string {
 		return route.Uris[0]
 	}
 	return ""
+}
+
+func matchedRequestRouteURI(r *http.Request, route resource.Route) string {
+	if r != nil {
+		if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+			if pattern := routeContext.RoutePattern(); pattern != "" {
+				return pattern
+			}
+		}
+		if value, ok := coerceAttributeValue(apisixctx.GetApisixVar(r, "$matched_uri")); ok {
+			return value
+		}
+	}
+	return matchedRouteURI(route)
 }
 
 func nonEmptyValue(value string) (string, bool) {
@@ -391,6 +433,120 @@ func normalizedHeaders(headers http.Header) map[string]string {
 }
 
 type requestIDContextKey struct{}
+
+type spanStateContextKey struct{}
+
+type spanState struct {
+	span    trace.Span
+	started time.Time
+	once    sync.Once
+}
+
+// RunRequestPhase owns the request-rewrite start. Production route assembly
+// invokes this method once; the dynamic end callback is registered on the
+// inherited lifecycle so it observes final request/source/outcome values.
+func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if r == nil {
+		return base.ContinueRequest(r)
+	}
+	if r.URL.Path == "/healthz" {
+		return base.ContinueRequest(r)
+	}
+	if _, exists := r.Context().Value(spanStateContextKey{}).(*spanState); exists {
+		return base.ContinueRequest(r)
+	}
+	lifecycle := apisixctx.GetRequestLifecycle(r)
+	if lifecycle == nil {
+		r, lifecycle = apisixctx.EnsureRequestLifecycle(r, time.Now())
+	}
+	if apisixctx.GetApisixVars(r) == nil {
+		r = apisixctx.WithApisixVars(r, nil)
+	}
+	if apisixctx.GetRequestVars(r) == nil {
+		r = apisixctx.WithRequestVars(r)
+	}
+	spanContext := otelapi.GetTextMapPropagator().Extract(
+		r.Context(),
+		propagation.HeaderCarrier(r.Header),
+	)
+	if p.metadata.TraceIDSource == "x-request-id" {
+		spanContext = context.WithValue(spanContext, requestIDContextKey{}, r.Header.Get("X-Request-ID"))
+	}
+	started := time.Now()
+	spanName := r.Method + " " + r.URL.Path
+	if routeURI := matchedRequestRouteURI(r, p.route); routeURI != "" {
+		spanName = r.Method + " " + routeURI
+	}
+	spanContext, span := p.tracer().Start(
+		spanContext,
+		spanName,
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithTimestamp(started),
+	)
+	state := &spanState{span: span, started: started}
+	r = r.WithContext(context.WithValue(spanContext, spanStateContextKey{}, state))
+	attrs := append(p.requestSpanAttributes(r), captureHTTPSpanAttributes(r)...)
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	if !span.SpanContext().IsSampled() {
+		span.End()
+		return base.ContinueRequest(r)
+	}
+	if !lifecycle.AddFinalizer(name, func() error {
+		return p.finishSpan(state, lifecycle, r)
+	}) {
+		state.once.Do(func() { span.End() })
+	}
+	return base.ContinueRequest(r)
+}
+
+func (p *Plugin) tracer() trace.Tracer {
+	if p.tracerProvider == nil {
+		p.tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	}
+	return p.tracerProvider.Tracer(name)
+}
+
+func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecycle, fallback *http.Request) error {
+	if state == nil || lifecycle == nil {
+		return nil
+	}
+	state.once.Do(func() {
+		request := lifecycle.FinalRequest()
+		if request == nil {
+			request = fallback
+		}
+		finished := lifecycle.FinishedAt()
+		if finished.IsZero() {
+			finished = time.Now()
+		}
+		outcome := lifecycle.Outcome()
+		if outcome.Status >= http.StatusInternalServerError {
+			state.span.SetStatus(codes.Error, http.StatusText(outcome.Status))
+		}
+		if request != nil {
+			requestTime := finished.Sub(state.started).Seconds()
+			if requestTime < 0 {
+				requestTime = 0
+			}
+			apisixctx.RegisterRequestVar(request, "$request_time", requestTime)
+			apisixctx.RegisterRequestVar(request, "$bytes_sent", outcome.Bytes)
+			attrs := append(p.requestSpanAttributes(request), captureHTTPSpanAttributes(request)...)
+			attrs = append(attrs, p.additionalSpanAttributes(request)...)
+			attrs = append(attrs,
+				attribute.Int("http.status_code", outcome.Status),
+				attribute.Int64("http.response_content_length", outcome.Bytes),
+			)
+			if source := lifecycle.ResponseSource(); source != apisixctx.ResponseSourceUnknown {
+				attrs = append(attrs, attribute.String("apisix.response_source", string(source)))
+			}
+			state.span.SetAttributes(attrs...)
+		}
+		state.span.End(trace.WithTimestamp(finished))
+	})
+	return nil
+}
 
 type requestIDGenerator struct{}
 

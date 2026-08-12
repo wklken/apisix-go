@@ -164,6 +164,24 @@ func TestRequestLifecycleAcceptsAPISIXResponseSource(t *testing.T) {
 	}
 }
 
+func TestRequestLifecycleCompletePublishesOutcomeAndFinishedAt(t *testing.T) {
+	lifecycle := NewRequestLifecycle(time.Unix(10, 0))
+	finished := time.Unix(20, 123)
+	want := ResponseOutcome{
+		Kind:      RequestOutcomeRecoveredPanic,
+		Status:    http.StatusInternalServerError,
+		Bytes:     17,
+		Committed: true,
+	}
+	lifecycle.Complete(want, finished)
+	if got := lifecycle.Outcome(); got != want {
+		t.Fatalf("Outcome() = %#v, want %#v", got, want)
+	}
+	if got := lifecycle.FinishedAt(); !got.Equal(finished) {
+		t.Fatalf("FinishedAt() = %v, want %v", got, finished)
+	}
+}
+
 func TestSetRequestResponseSourceSynchronizesLifecycleAndMirrors(t *testing.T) {
 	request, lifecycle := EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "/", nil),

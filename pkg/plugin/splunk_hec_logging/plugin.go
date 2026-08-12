@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -298,6 +299,78 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		_ = p.Fire(logFields)
 	})
+}
+
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	policy := p.BaseLoggerPlugin.LogCapturePolicy()
+	formatted := base.LogCapturePolicyForFormats(
+		p.RequestBodyBytes,
+		p.ResponseBodyBytes,
+		p.logFormatExtra,
+	)
+	policy.RequestBodyBytes = max(policy.RequestBodyBytes, formatted.RequestBodyBytes)
+	policy.ResponseBodyBytes = max(policy.ResponseBodyBytes, formatted.ResponseBodyBytes)
+	return policy
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if p.LogFormat != nil {
+		fields = base.ResolveStringLogFormat(p.LogFormat, func(value string) any {
+			switch value {
+			case "$host":
+				return base.RemoteIP(snapshot.Request.Host)
+			case "$remote_addr":
+				return base.RemoteIP(snapshot.Request.RemoteAddr)
+			case "$upstream_unresolved_host":
+				return base.SnapshotValue(snapshot, "$balancer_ip")
+			default:
+				return base.SnapshotValue(snapshot, value)
+			}
+		})
+	} else {
+		fields = splunkSnapshotDefaultEvent(snapshot)
+		for key, value := range p.logFormatExtra {
+			if _, exists := fields[key]; !exists {
+				fields[key] = base.SnapshotValue(snapshot, value)
+			}
+		}
+	}
+	return p.EnqueueLog(fields)
+}
+
+func splunkSnapshotDefaultEvent(snapshot base.LogSnapshot) map[string]any {
+	requestSize := max(snapshot.Request.ContentLength, 0)
+	latency := int64(0)
+	if !snapshot.Started.IsZero() && !snapshot.Finished.IsZero() {
+		latency = snapshot.Finished.Sub(snapshot.Started).Milliseconds()
+	}
+	upstreamHost := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_ip"))
+	upstreamPort := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_port"))
+	upstream := upstreamHost
+	if upstreamHost != "" && upstreamPort != "" {
+		upstream = net.JoinHostPort(upstreamHost, upstreamPort)
+	}
+	requestURL := snapshot.Request.URL
+	if parsed, err := url.Parse(requestURL); err != nil || !parsed.IsAbs() {
+		scheme := snapshot.Request.Scheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		requestURL = scheme + "://" + snapshot.Request.Host + snapshot.Request.URI
+	}
+	return map[string]any{
+		"request_url":      requestURL,
+		"request_method":   snapshot.Request.Method,
+		"request_headers":  snapshot.Request.Header,
+		"request_query":    snapshot.Request.Query,
+		"request_size":     requestSize,
+		"response_headers": snapshot.Response.Header,
+		"response_status":  snapshot.Outcome.Status,
+		"response_size":    snapshot.Outcome.Bytes,
+		"latency":          latency,
+		"upstream":         upstream,
+	}
 }
 
 type requestSnapshot struct {

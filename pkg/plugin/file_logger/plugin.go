@@ -1,6 +1,7 @@
 package file_logger
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -115,9 +117,10 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	logger *zap.Logger
-	writer *appendFileWriteSyncer
-	lease  *fileWriterLease
+	logger         *zap.Logger
+	writer         *appendFileWriteSyncer
+	lease          *fileWriterLease
+	BatchProcessor *logger_batch.Processor
 
 	logFormat      map[string]any
 	logFormatExtra map[string]string
@@ -213,6 +216,11 @@ func (p *Plugin) PostInit() error {
 	p.lease = lease
 	p.writer = lease.writer
 	p.logger = zap.New(zapcore.NewCore(encoder, p.writer, cfg.Level))
+	p.BatchProcessor = base.NewBatchProcessor(
+		name,
+		base.BatchDefaults{PluginID: name, BatchMaxSize: 1},
+		"", "", p.sendBatch,
+	)
 	return nil
 }
 
@@ -232,11 +240,18 @@ func normalizeMatch(match []any) []any {
 
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
-		if p.logger != nil {
-			_ = p.logger.Sync()
+		cleanup := func() {
+			if p.logger != nil {
+				_ = p.logger.Sync()
+			}
+			if p.lease != nil {
+				p.lease.release()
+			}
 		}
-		if p.lease != nil {
-			p.lease.release()
+		if p.BatchProcessor != nil {
+			p.BatchProcessor.StopWithCleanup(cleanup)
+		} else {
+			cleanup()
 		}
 	})
 }
@@ -283,12 +298,198 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.NestedLogMap(logFields, "response")["body"] = capturedResponseBody
 		}
 
-		fields := make([]zap.Field, 0, len(logFields))
-		for key, value := range logFields {
+		p.enqueueHandler(logFields)
+	})
+}
+
+// enqueueHandler keeps the legacy direct Handler compatibility path
+// observable to callers that read the file immediately after ServeHTTP. The
+// detached log phase remains fully non-blocking and uses EnqueueLog directly.
+func (p *Plugin) enqueueHandler(fields map[string]any) {
+	if err := base.EnqueueLog(p.BatchProcessor, fields); err != nil {
+		return
+	}
+	p.BatchProcessor.Flush()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		stats := p.BatchProcessor.Stats()
+		if stats.Pending == 0 && stats.Processing == 0 && stats.Buffered == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	policy := base.LogCapturePolicyForFormats(
+		p.config.MaxReqBodyBytes,
+		p.config.MaxRespBodyBytes,
+		p.logFormat,
+		p.logFormatExtra,
+	)
+	if p.config.IncludeReqBody {
+		policy.RequestBodyBytes = p.config.MaxReqBodyBytes
+	}
+	if p.config.IncludeRespBody {
+		policy.ResponseBodyBytes = p.config.MaxRespBodyBytes
+	}
+	return policy
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	if !base.SnapshotExpressionMatches(snapshot, p.config.Match) {
+		return nil
+	}
+	var fields map[string]any
+	requestBodyVisible := p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr)
+	responseBodyVisible := p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr)
+	if p.logFormat != nil {
+		fields = base.ResolveLogFormat(p.logFormat, func(value string) any {
+			return fileSnapshotValue(
+				snapshot,
+				value,
+				requestBodyVisible,
+				responseBodyVisible,
+				p.config.MaxRespBodyBytes,
+			)
+		})
+		if routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
+			fields["route_id"] = routeID
+		}
+		if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
+			fields["service_id"] = serviceID
+		}
+	} else {
+		fields = snapshotDefaultLogFields(snapshot)
+		for key, value := range p.logFormatExtra {
+			if _, exists := fields[key]; !exists {
+				fields[key] = fileSnapshotValue(
+					snapshot,
+					value,
+					requestBodyVisible,
+					responseBodyVisible,
+					p.config.MaxRespBodyBytes,
+				)
+			}
+		}
+	}
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return base.EnqueueLog(p.BatchProcessor, fields)
+}
+
+func fileSnapshotValue(
+	snapshot base.LogSnapshot,
+	value string,
+	requestBodyVisible bool,
+	responseBodyVisible bool,
+	responseLimit int,
+) any {
+	switch value {
+	case "$request":
+		return snapshot.Request.Method + " " + snapshot.Request.URI + " " + snapshot.Request.Proto
+	case "$request_body":
+		if requestBodyVisible {
+			return base.SnapshotRequestBody(snapshot, len(snapshot.Request.Body))
+		}
+		return ""
+	case "$resp_body", "$response_body":
+		if responseBodyVisible {
+			return base.SnapshotResponseBody(snapshot, responseLimit)
+		}
+		return ""
+	case "$upstream_unresolved_host":
+		return base.SnapshotValue(snapshot, "$balancer_ip")
+	default:
+		return base.SnapshotValue(snapshot, value)
+	}
+}
+
+func (p *Plugin) sendBatch(_ context.Context, entries []map[string]any, _ int) (int, error) {
+	if p.logger == nil {
+		return 0, fmt.Errorf("file logger is not initialized")
+	}
+	for _, entry := range entries {
+		fields := make([]zap.Field, 0, len(entry))
+		for key, value := range entry {
 			fields = append(fields, zap.Any(key, value))
 		}
 		p.logger.Info("", fields...)
-	})
+	}
+	return 0, nil
+}
+
+func snapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
+	hostname := base.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	latency := float64(0)
+	if !snapshot.Started.IsZero() && !snapshot.Finished.IsZero() {
+		latency = float64(snapshot.Finished.Sub(snapshot.Started).Microseconds()) / 1000
+	}
+	fields := map[string]any{
+		"request": map[string]any{
+			"url": snapshot.Request.Scheme + "://" + base.RemoteIP(snapshot.Request.Host) + snapshot.Request.URI,
+			"uri": snapshot.Request.URI, "method": snapshot.Request.Method,
+			"headers":     base.CollapseHeaderValues(snapshot.Request.Header),
+			"querystring": base.CollapseHeaderValues(http.Header(snapshot.Request.Query)),
+			"size":        max(snapshot.Request.ContentLength, 0),
+		},
+		"response": map[string]any{
+			"status": snapshot.Outcome.Status, "headers": base.CollapseHeaderValues(snapshot.Response.Header),
+			"size": snapshot.Outcome.Bytes,
+		},
+		"server":     map[string]any{"hostname": hostname, "version": fileLoggerVersion},
+		"service_id": base.SnapshotValue(snapshot, "$service_id"),
+		"route_id":   base.SnapshotValue(snapshot, "$route_id"),
+		"client_ip":  base.RemoteIP(snapshot.Request.RemoteAddr),
+		"start_time": float64(snapshot.Started.UnixNano()) / float64(time.Millisecond),
+		"latency":    latency, "apisix_latency": latency,
+	}
+	if fields["route_id"] == "" {
+		fields["route_id"] = "no-matched"
+	}
+	if snapshot.Request.Consumer.Username != "" {
+		fields["consumer"] = map[string]any{"username": snapshot.Request.Consumer.Username}
+	}
+	if upstream := resolvedSnapshotUpstream(snapshot); upstream != "" {
+		fields["upstream"] = upstream
+	}
+	return fields
+}
+
+func resolvedSnapshotUpstream(snapshot base.LogSnapshot) string {
+	host := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_ip"))
+	if host == "" {
+		return ""
+	}
+	if net.ParseIP(host) == nil {
+		addresses, err := net.LookupIP(host)
+		if err == nil {
+			for _, address := range addresses {
+				if ipv4 := address.To4(); ipv4 != nil {
+					host = ipv4.String()
+					break
+				}
+			}
+		}
+	}
+	port := fmt.Sprint(base.SnapshotValue(snapshot, "$balancer_port"))
+	if port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func captureRequest(r *http.Request) requestSnapshot {

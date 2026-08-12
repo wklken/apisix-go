@@ -18,9 +18,50 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+type panicSnapshotLogPlugin struct {
+	base.BasePlugin
+	snapshots []base.LogSnapshot
+	panicLog  bool
+}
+
+func (p *panicSnapshotLogPlugin) Init() error                            { return nil }
+func (p *panicSnapshotLogPlugin) PostInit() error                        { return nil }
+func (p *panicSnapshotLogPlugin) Config() any                            { return nil }
+func (p *panicSnapshotLogPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *panicSnapshotLogPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	p.snapshots = append(p.snapshots, snapshot)
+	if p.panicLog {
+		panic("detached logger panic")
+	}
+	return nil
+}
+
+type recordingSnapshotFinalizerPlugin struct {
+	base.BasePlugin
+	snapshots []base.LogSnapshot
+}
+
+func (p *recordingSnapshotFinalizerPlugin) Init() error                            { return nil }
+func (p *recordingSnapshotFinalizerPlugin) PostInit() error                        { return nil }
+func (p *recordingSnapshotFinalizerPlugin) Config() any                            { return nil }
+func (p *recordingSnapshotFinalizerPlugin) Handler(next http.Handler) http.Handler { return next }
+func (*recordingSnapshotFinalizerPlugin) RunRequestPhase(
+	_ http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	return base.ContinueRequest(r)
+}
+
+func (p *recordingSnapshotFinalizerPlugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
+	p.snapshots = append(p.snapshots, snapshot)
+	return nil
+}
 
 type failingRouteResponseWriter struct {
 	header      http.Header
@@ -102,6 +143,166 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 	}
 	if recorder.Header().Get("X-Leaked") != "" {
 		t.Fatal("panic response leaked pre-commit headers")
+	}
+}
+
+func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
+	loggerPlugin := &panicSnapshotLogPlugin{}
+	loggerPlugin.Name = "test-logger"
+	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
+	finalizerPlugin.Name = "request_context"
+	loggerBinding := pluginpkg.BindPlugin(
+		"http-logger",
+		loggerPlugin,
+		pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "panic-log"},
+	)
+	finalizerBinding := pluginpkg.BindPlugin(
+		"request-context",
+		finalizerPlugin,
+		pluginpkg.ScopeSystem,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
+	)
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
+		loggerBinding,
+		finalizerBinding,
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	var derived *http.Request
+	pipeline := pluginpkg.NewRequestPipeline(
+		[]pluginpkg.Binding{loggerBinding, finalizerBinding},
+		nil,
+	).WithLogExecutor(&executor)
+	handler := pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		derived = r
+		apisixctx.RegisterApisixVar(r, "$panic_marker", "visible-to-finalizer")
+		panic("before terminal response")
+	}))
+	recorder := httptest.NewRecorder()
+
+	serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/panic-log", nil), handler)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if len(loggerPlugin.snapshots) != 1 {
+		t.Fatalf("log snapshots = %d, want 1", len(loggerPlugin.snapshots))
+	}
+	snapshot := loggerPlugin.snapshots[0]
+	if snapshot.Outcome.Kind != apisixctx.RequestOutcomeRecoveredPanic ||
+		snapshot.Outcome.Status != http.StatusInternalServerError ||
+		snapshot.Source != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("panic snapshot outcome/source = %#v/%q", snapshot.Outcome, snapshot.Source)
+	}
+	if got := snapshot.Request.APISIXVars["$panic_marker"]; got != "visible-to-finalizer" {
+		t.Fatalf("panic snapshot marker = %#v", got)
+	}
+	if len(finalizerPlugin.snapshots) != 1 {
+		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
+	}
+	if got := apisixctx.GetApisixVar(derived, "$panic_marker"); got != "" {
+		t.Fatalf("panic marker after recycle = %#v, want empty", got)
+	}
+}
+
+func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
+	loggerPlugin := &panicSnapshotLogPlugin{panicLog: true}
+	loggerPlugin.Name = "test-logger"
+	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
+	finalizerPlugin.Name = "request_context"
+	loggerBinding := pluginpkg.BindPlugin(
+		"http-logger",
+		loggerPlugin,
+		pluginpkg.ScopeRoute,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "logger-panic"},
+	)
+	finalizerBinding := pluginpkg.BindPlugin(
+		"request-context",
+		finalizerPlugin,
+		pluginpkg.ScopeSystem,
+		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
+	)
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
+		loggerBinding,
+		finalizerBinding,
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	var derived *http.Request
+	handler := pluginpkg.NewRequestPipeline([]pluginpkg.Binding{loggerBinding, finalizerBinding}, nil).
+		WithLogExecutor(&executor).
+		Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			derived = r
+			apisixctx.RegisterApisixVar(r, "$logger_panic_marker", "live")
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	recorder := httptest.NewRecorder()
+
+	serveRouteRequest(recorder, httptest.NewRequest(http.MethodGet, "/logger-panic", nil), handler)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", recorder.Code)
+	}
+	if len(loggerPlugin.snapshots) != 1 {
+		t.Fatalf("logger calls = %d, want 1", len(loggerPlugin.snapshots))
+	}
+	if len(finalizerPlugin.snapshots) != 1 {
+		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
+	}
+	if got := finalizerPlugin.snapshots[0].Request.APISIXVars["$logger_panic_marker"]; got != "live" {
+		t.Fatalf("finalizer marker = %#v, want live", got)
+	}
+	if got := apisixctx.GetApisixVar(derived, "$logger_panic_marker"); got != "" {
+		t.Fatalf("marker after recycle = %#v, want empty", got)
+	}
+}
+
+func TestRouteHandlerCompletesLifecycleAndAttachesCaptureBeforeFinalizers(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/complete", nil)
+	var finishedAt time.Time
+	var outcome apisixctx.ResponseOutcome
+	var capturedBody string
+	var markerDuringFinalize any
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capture, ok := base.ResponseCaptureFromRequest(r)
+		if !ok {
+			t.Fatal("response capture is not attached to route request")
+		}
+		if err := capture.EnableBodyCapture(32); err != nil {
+			t.Fatalf("EnableBodyCapture() error = %v", err)
+		}
+		apisixctx.RegisterApisixVar(r, "$test_marker", "live")
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if lifecycle == nil || !lifecycle.AddFinalizer("observe", func() error {
+			finishedAt = lifecycle.FinishedAt()
+			outcome = lifecycle.Outcome()
+			capturedBody = string(capture.Snapshot().Body)
+			markerDuringFinalize = apisixctx.GetApisixVar(r, "$test_marker")
+			return nil
+		}) {
+			t.Fatal("failed to register observer finalizer")
+		}
+		_, _ = w.Write([]byte("complete"))
+	})
+
+	serveRouteRequest(recorder, request, handler)
+	if finishedAt.IsZero() {
+		t.Fatal("FinishedAt() is zero during finalization")
+	}
+	if outcome.Kind != apisixctx.RequestOutcomeCompleted || outcome.Status != http.StatusOK ||
+		outcome.Bytes != int64(len("complete")) {
+		t.Fatalf("finalizer outcome = %#v", outcome)
+	}
+	if capturedBody != "complete" {
+		t.Fatalf("captured body = %q, want complete", capturedBody)
+	}
+	if markerDuringFinalize != "live" {
+		t.Fatalf("marker during finalization = %#v, want live", markerDuringFinalize)
 	}
 }
 

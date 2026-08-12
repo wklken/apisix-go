@@ -10,6 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type failingReader struct{}
@@ -481,5 +484,95 @@ func TestReporterStopDrainsOrTimesOutDeterministically(t *testing.T) {
 	stats := p.processor.Stats()
 	if stats.FailedDrops != 1 {
 		t.Fatalf("stats = %+v, want the timed-out delivery counted as a failed drop", stats)
+	}
+}
+
+func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
+	reported := make(chan []map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var spans []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&spans); err != nil {
+			t.Fatalf("decode spans: %v", err)
+		}
+		reported <- spans
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	p := newTestPlugin(t, Config{Endpoint: server.URL, SampleRatio: 1})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated},
+		time.Now(),
+	)
+	apisixctx.SetResponseSource(result.Request, apisixctx.ResponseSourceCacheHit)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("second lifecycle finalization failures = %#v", failures)
+	}
+	select {
+	case spans := <-reported:
+		if len(spans) != 1 || spans[0]["name"] != "apisix.request" {
+			t.Fatalf("spans = %#v, want one request span", spans)
+		}
+		tags, ok := spans[0]["tags"].(map[string]any)
+		if !ok || tags["http.status_code"] != "201" {
+			t.Fatalf("tags = %#v, want final status 201", spans[0]["tags"])
+		}
+		if tags["apisix.response_source"] != string(apisixctx.ResponseSourceCacheHit) {
+			t.Fatalf("response source = %q, want cache_hit", tags["apisix.response_source"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for lifecycle-owned span")
+	}
+}
+
+func TestUnsampledTraceRegistersNoExportFinalizer(t *testing.T) {
+	p := newTestPlugin(t, Config{Endpoint: "http://127.0.0.1:9411/api/v2/spans", SampleRatio: 1})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	request.Header.Set("b3", "463ac35c9f6413ad-a2fb4a1d1a96d312-0")
+	result := p.RunRequestPhase(httptest.NewRecorder(), request)
+	if result.Decision != base.RequestContinue {
+		t.Fatalf("request phase decision = %d, want continue", result.Decision)
+	}
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if stats := p.processor.Stats(); stats.Pending != 0 || stats.Buffered != 0 || stats.Processing != 0 {
+		t.Fatalf("processor stats = %+v, want no accepted export for sampled=0", stats)
+	}
+}
+
+func TestTracerDirectHandlerDoesNotDuplicateProductionOwner(t *testing.T) {
+	p := newTestPlugin(t, Config{Endpoint: "http://127.0.0.1:9411/api/v2/spans", SampleRatio: 1})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).
+		ServeHTTP(
+			httptest.NewRecorder(), request,
+		)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+	if stats := p.processor.Stats(); stats.Pending != 0 || stats.Buffered != 0 || stats.Processing != 0 {
+		t.Fatalf("processor stats = %+v, want no direct-handler duplicate", stats)
 	}
 }

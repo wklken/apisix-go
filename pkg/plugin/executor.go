@@ -123,6 +123,7 @@ type RequestPipeline struct {
 	resolve           ConsumerBindingResolver
 	responseExecutor  *BufferedResponseExecutor
 	streamingExecutor *StreamingResponseExecutor
+	logExecutor       *LogExecutor
 }
 
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
@@ -150,6 +151,11 @@ func (p RequestPipeline) WithStreamingResponseExecutor(
 	return p
 }
 
+func (p RequestPipeline) WithLogExecutor(executor *LogExecutor) RequestPipeline {
+	p.logExecutor = executor
+	return p
+}
+
 // ThenWithPostResolutionHook inserts one hook after consumer/group winners are
 // merged and before any later request stage or terminal runs.
 func (p RequestPipeline) ThenWithPostResolutionHook(
@@ -171,12 +177,33 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 	plainHandler := p.wrapAuthentication(plainAfterAuthentication)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := r
+		if p.logExecutor != nil {
+			var err error
+			request, err = p.logExecutor.Prepare(request)
+			if err != nil {
+				registered := p.logExecutor.RegisterComposite(request)
+				recordLogPreparationFailure(err, registered)
+				p.writeLogPreparationFailure(w, request, err, nil)
+				return
+			}
+			defer func() {
+				recovered := recover()
+				if recovered != nil {
+					latest := finalLifecycleRequest(request)
+					sealErr := p.logExecutor.SealFinalRequest(latest)
+					registered := p.logExecutor.RegisterComposite(latest)
+					recordLogPreparationFailure(sealErr, registered)
+					panic(recovered)
+				}
+			}()
+		}
 		var execution *responseExecution
 		if p.responseExecutor != nil {
-			request, execution = p.responseExecutor.begin(w, r)
+			request, execution = p.responseExecutor.begin(w, request)
 		}
 		if execution == nil {
 			plainHandler.ServeHTTP(w, request)
+			p.sealAndRegisterAfterRequest(w, request, nil)
 			return
 		}
 		// Authentication plugins may replace the request without inheriting
@@ -188,6 +215,7 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 		})
 		p.wrapAuthentication(afterAuthentication).ServeHTTP(execution.writer, request)
 		execution.complete()
+		p.sealAndRegisterAfterRequest(w, request, execution)
 	})
 }
 
@@ -270,6 +298,18 @@ func (p RequestPipeline) runResolved(
 		request = r
 	}
 	effective := mergeEffectiveBindingSet(p.bindings, resolution.Bindings)
+	if p.logExecutor != nil {
+		materializedLogExecutor, logErr := NewLogExecutorFromBindings(effective.all())
+		if logErr != nil {
+			p.writeLogPreparationFailure(w, request, logErr, execution)
+			return
+		}
+		request, logErr = materializedLogExecutor.Prepare(request)
+		if logErr != nil {
+			p.writeLogPreparationFailure(w, request, logErr, execution)
+			return
+		}
+	}
 	if hook != nil {
 		replacement, hookErr := hook(request, effective)
 		if hookErr != nil {
@@ -307,6 +347,12 @@ func (p RequestPipeline) buildPostResolutionHandler(
 ) http.Handler {
 	bindings := effective.all()
 	boundary := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.logExecutor != nil {
+			if err := p.logExecutor.SealAndRegister(r); err != nil {
+				p.writeLogPreparationFailure(w, r, err, execution)
+				return
+			}
+		}
 		apisixctx.FinalizeProxyRewrite(r)
 		apisixctx.RunBeforeProxyHooks(r)
 		if execution != nil {
@@ -361,6 +407,46 @@ func (p RequestPipeline) buildPostResolutionHandler(
 		handler = base.WithTransformPipeline(transformCount)(legacyHandler)
 	}
 	return handler
+}
+
+func finalLifecycleRequest(fallback *http.Request) *http.Request {
+	if lifecycle := apisixctx.GetRequestLifecycle(fallback); lifecycle != nil {
+		if request := lifecycle.FinalRequest(); request != nil {
+			return request
+		}
+	}
+	return fallback
+}
+
+func (p RequestPipeline) sealAndRegisterAfterRequest(
+	w http.ResponseWriter,
+	request *http.Request,
+	execution *responseExecution,
+) {
+	if p.logExecutor == nil {
+		return
+	}
+	latest := finalLifecycleRequest(request)
+	if err := p.logExecutor.SealAndRegister(latest); err != nil {
+		p.writeLogPreparationFailure(w, latest, err, execution)
+	}
+}
+
+func (p RequestPipeline) writeLogPreparationFailure(
+	w http.ResponseWriter,
+	request *http.Request,
+	err error,
+	execution *responseExecution,
+) {
+	markResponseInternalFailure(request)
+	if execution != nil {
+		execution.internalFailure = true
+	}
+	if responseFailureRequiresAbort(request) || execution != nil && execution.transparentCommitted {
+		panic(http.ErrAbortHandler)
+	}
+	apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
+	writeStableLogPreparationError(w, err)
 }
 
 func wrapRequestStageBindings(next http.Handler, bindings []Binding) http.Handler {
@@ -530,10 +616,12 @@ func BindPluginChecked(
 	}
 	spec, ok := RequestStageFor(factoryName)
 	if !ok {
-		return Binding{
-			Plugin: p, Scope: scope, Stage: RequestStageLegacy,
-			Provenance: provenance, factoryName: factoryName,
-		}, nil
+		return Binding{}, fmt.Errorf(
+			"checked plugin binding has no request owner (factory=%q resource=%s/%s)",
+			factoryName,
+			provenance.Kind,
+			provenance.ID,
+		)
 	}
 	if spec.ConfigAware {
 		resolved, _, err := ResolveRequestStage(factoryName, p.Config())

@@ -241,6 +241,11 @@ func (p *Plugin) PostInit() error {
 	} else {
 		p.LogFormat = base.LoadPluginMetadata[pluginMetadata](name).LogFormat
 	}
+	p.SetLogCapturePolicy(
+		p.config.IncludeReqBody, p.config.IncludeRespBody,
+		p.config.MaxReqBodyBytes, p.config.MaxRespBodyBytes,
+		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
+	)
 
 	p.BatchProcessor = base.NewBatchProcessor("sls logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
@@ -292,6 +297,60 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	} else {
+		fields = slsSnapshotDefaultFields(snapshot)
+	}
+	routeID := p.RouteID
+	if routeID == "" {
+		routeID = fmt.Sprint(base.SnapshotValue(snapshot, "$route_id"))
+	}
+	fields["route_id"] = routeID
+	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return p.EnqueueLog(fields)
+}
+
+func slsSnapshotDefaultFields(snapshot base.LogSnapshot) map[string]any {
+	requestHeaders := base.CollapseHeaderValues(snapshot.Request.Header)
+	requestHeaders["host"] = snapshot.Request.Host
+	responseHeaders := base.CollapseHeaderValues(snapshot.Response.Header)
+	query := make(map[string]any, len(snapshot.Request.Query))
+	for name, values := range snapshot.Request.Query {
+		if len(values) == 1 {
+			query[name] = values[0]
+		} else {
+			query[name] = append([]string(nil), values...)
+		}
+	}
+	return map[string]any{
+		"client_ip": base.RemoteIP(snapshot.Request.RemoteAddr),
+		"request": map[string]any{
+			"method": snapshot.Request.Method, "uri": snapshotURI(snapshot),
+			"headers": requestHeaders, "querystring": query,
+		},
+		"response": map[string]any{"status": snapshot.Outcome.Status, "headers": responseHeaders},
+	}
+}
+
+func snapshotURI(snapshot base.LogSnapshot) string {
+	if snapshot.Request.URI != "" {
+		return snapshot.Request.URI
+	}
+	return "/"
 }
 
 func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.Header) map[string]any {

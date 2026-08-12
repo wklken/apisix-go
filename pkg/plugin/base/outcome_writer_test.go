@@ -423,3 +423,90 @@ func TestResponseCaptureSnapshotSeparatesDeclaredTrailers(t *testing.T) {
 		t.Fatalf("final header X-Visible = %q", got)
 	}
 }
+
+func TestResponseCaptureRequestContextAndNilBoundaries(t *testing.T) {
+	if WithResponseCapture(nil, nil) != nil {
+		t.Fatal("WithResponseCapture(nil) returned a request")
+	}
+	if capture, ok := ResponseCaptureFromRequest(nil); capture != nil || ok {
+		t.Fatalf("ResponseCaptureFromRequest(nil) = %#v/%v", capture, ok)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	if capture, ok := ResponseCaptureFromRequest(request); capture != nil || ok {
+		t.Fatalf("unexpected capture on plain request = %#v/%v", capture, ok)
+	}
+	_, capture := CaptureResponseOutcomeController(httptest.NewRecorder())
+	request = WithResponseCapture(request, capture)
+	if got, ok := ResponseCaptureFromRequest(request); !ok || got != capture {
+		t.Fatalf("request capture = %#v/%v, want %#v/true", got, ok, capture)
+	}
+	request = WithResponseCapture(request, nil)
+	if got, ok := ResponseCaptureFromRequest(request); got != nil || ok {
+		t.Fatalf("nil request capture = %#v/%v", got, ok)
+	}
+
+	var nilCapture *ResponseCapture
+	if got := nilCapture.Outcome(); got.Status != 0 || got.Committed {
+		t.Fatalf("nil Outcome() = %#v", got)
+	}
+	if got := nilCapture.Snapshot(); got.Header != nil || got.Body != nil {
+		t.Fatalf("nil Snapshot() = %#v", got)
+	}
+	if err := nilCapture.CloseHijacked(); err != nil {
+		t.Fatalf("nil CloseHijacked() error = %v", err)
+	}
+	if err := nilCapture.EnableBodyCapture(1); err == nil {
+		t.Fatal("nil EnableBodyCapture() unexpectedly succeeded")
+	}
+}
+
+func TestResponseCaptureBodyLimitCanExpandAndDisable(t *testing.T) {
+	underlying := httptest.NewRecorder()
+	w, capture := CaptureResponseOutcomeController(underlying)
+	for _, invalid := range []int{-1, MAX_RESP_BODY + 1} {
+		if err := capture.EnableBodyCapture(invalid); err == nil {
+			t.Fatalf("EnableBodyCapture(%d) unexpectedly succeeded", invalid)
+		}
+	}
+	if err := capture.EnableBodyCapture(2); err != nil {
+		t.Fatalf("EnableBodyCapture(2) error = %v", err)
+	}
+	_, _ = w.Write([]byte("abcd"))
+	if got := capture.Snapshot(); string(got.Body) != "ab" || !got.BodyTruncated {
+		t.Fatalf("bounded capture = %#v", got)
+	}
+	_, _ = w.Write([]byte("z"))
+	if err := capture.EnableBodyCapture(4); err != nil {
+		t.Fatalf("EnableBodyCapture(4) error = %v", err)
+	}
+	_, _ = w.Write([]byte("ef"))
+	if got := capture.Snapshot(); string(got.Body) != "abef" || !got.BodyTruncated {
+		t.Fatalf("expanded capture = %#v", got)
+	}
+	if err := capture.EnableBodyCapture(0); err != nil {
+		t.Fatalf("EnableBodyCapture(0) error = %v", err)
+	}
+	if got := capture.Snapshot(); len(got.Body) != 0 || got.BodyTruncated {
+		t.Fatalf("disabled capture = %#v", got)
+	}
+	if err := capture.CloseHijacked(); err != nil {
+		t.Fatalf("CloseHijacked() without connection error = %v", err)
+	}
+}
+
+func TestResponseCaptureSnapshotSeparatesTrailerPrefix(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	_, capture := CaptureResponseOutcomeController(recorder)
+	recorder.Header().Set("X-Visible", "header")
+	recorder.Header().Add("Trailer", " , ")
+	recorder.Header()[http.TrailerPrefix+"X-Late"] = []string{"done"}
+
+	snapshot := capture.Snapshot()
+	if snapshot.Header.Get("X-Visible") != "header" || snapshot.Header.Get(http.TrailerPrefix+"X-Late") != "" {
+		t.Fatalf("snapshot header = %#v", snapshot.Header)
+	}
+	if snapshot.Trailer.Get("X-Late") != "done" {
+		t.Fatalf("snapshot trailer = %#v", snapshot.Trailer)
+	}
+}

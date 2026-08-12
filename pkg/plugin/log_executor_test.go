@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -32,6 +33,27 @@ type countingLogBody struct {
 type failingLogBody struct {
 	read bool
 }
+
+type logExecutorNoCallbackPlugin struct {
+	base.BasePlugin
+	config any
+}
+
+func (*logExecutorNoCallbackPlugin) Init() error                            { return nil }
+func (*logExecutorNoCallbackPlugin) PostInit() error                        { return nil }
+func (p *logExecutorNoCallbackPlugin) Config() any                          { return p.config }
+func (*logExecutorNoCallbackPlugin) Handler(next http.Handler) http.Handler { return next }
+
+type failingBindingPhaseConfig struct{}
+
+func (failingBindingPhaseConfig) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
+	return base.BindingPhaseDescriptor{}, errors.New("phase failed")
+}
+
+type nonComparableReadCloser []byte
+
+func (nonComparableReadCloser) Read([]byte) (int, error) { return 0, io.EOF }
+func (nonComparableReadCloser) Close() error             { return nil }
 
 func (b *failingLogBody) Read(p []byte) (int, error) {
 	if b.read {
@@ -647,5 +669,128 @@ func TestRequestPipelinePreparationErrorRegistersLogComposite(t *testing.T) {
 	}
 	if got := loggerPlugin.seen[0].Request.Body; len(got) != 0 {
 		t.Fatalf("snapshot request body = %q, want omitted after capture failure", got)
+	}
+}
+
+func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T) {
+	valid := newLogExecutorTestPlugin("logger", 1, nil)
+	for _, test := range []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "nil direct binding",
+			run: func() error {
+				_, err := NewLogExecutor([]LogBinding{{}})
+				return err
+			},
+		},
+		{
+			name: "invalid capture policy",
+			run: func() error {
+				_, err := NewLogExecutor([]LogBinding{{
+					Plugin: valid,
+					Policy: base.LogCapturePolicy{RequestBodyBytes: -1},
+				}})
+				return err
+			},
+		},
+		{
+			name: "nil materialized plugin",
+			run: func() error {
+				_, err := NewLogExecutorFromBindings([]Binding{{factoryName: "http-logger"}})
+				return err
+			},
+		},
+		{
+			name: "unknown factory",
+			run: func() error {
+				_, err := NewLogExecutorFromBindings([]Binding{{
+					factoryName: "unknown", Plugin: valid,
+				}})
+				return err
+			},
+		},
+		{
+			name: "missing log callback",
+			run: func() error {
+				_, err := NewLogExecutorFromBindings([]Binding{{
+					factoryName: "http-logger", Plugin: &logExecutorNoCallbackPlugin{},
+				}})
+				return err
+			},
+		},
+		{
+			name: "missing snapshot finalizer",
+			run: func() error {
+				_, err := NewLogExecutorFromBindings([]Binding{{
+					factoryName: "request-context", Plugin: &logExecutorNoCallbackPlugin{},
+				}})
+				return err
+			},
+		},
+		{
+			name: "serverless phase descriptor",
+			run: func() error {
+				_, err := NewLogExecutorFromBindings([]Binding{{
+					factoryName: "serverless-pre-function",
+					Plugin:      &logExecutorNoCallbackPlugin{config: failingBindingPhaseConfig{}},
+				}})
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); err == nil {
+				t.Fatal("invalid log executor materialization unexpectedly succeeded")
+			}
+		})
+	}
+
+	executor, err := NewLogExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewLogExecutor(nil) error = %v", err)
+	}
+	if _, err := executor.Prepare(nil); err == nil {
+		t.Fatal("Prepare(nil) unexpectedly succeeded")
+	}
+	if err := executor.SealFinalRequest(nil); err == nil {
+		t.Fatal("SealFinalRequest(nil) unexpectedly succeeded")
+	}
+	if executor.RegisterComposite(nil) {
+		t.Fatal("RegisterComposite(nil) unexpectedly succeeded")
+	}
+	plain := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	if executor.RegisterComposite(plain) {
+		t.Fatal("RegisterComposite() accepted request without log state")
+	}
+	withState := plain.WithContext(context.WithValue(plain.Context(), logRequestStateKey{}, &LogRequestState{}))
+	if executor.RegisterComposite(withState) {
+		t.Fatal("RegisterComposite() accepted request without lifecycle")
+	}
+	if logStateFromRequest(nil) != nil {
+		t.Fatal("logStateFromRequest(nil) returned state")
+	}
+	writeStableLogPreparationError(nil, errors.New("ignored"))
+}
+
+func TestLogExecutorReadCloserAndCallbackSafetyBoundaries(t *testing.T) {
+	if !sameReadCloser(nil, nil) || sameReadCloser(nil, http.NoBody) {
+		t.Fatal("sameReadCloser() nil semantics changed")
+	}
+	left := nonComparableReadCloser("left")
+	right := nonComparableReadCloser("right")
+	if sameReadCloser(left, right) {
+		t.Fatal("sameReadCloser() accepted non-comparable readers")
+	}
+	if sameReadCloser(http.NoBody, left) {
+		t.Fatal("sameReadCloser() accepted different reader types")
+	}
+	wantErr := errors.New("callback failed")
+	if err := runLogCallback(func() error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("runLogCallback() error = %v", err)
+	}
+	if err := runLogCallback(func() error { panic("callback panic") }); err == nil {
+		t.Fatal("runLogCallback() did not convert panic")
 	}
 }

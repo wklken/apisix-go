@@ -2,8 +2,12 @@ package log
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -156,4 +160,206 @@ func TestGetFieldsFromSnapshotPreservesSupportedNginxVariableSemantics(t *testin
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields = %#v, want %#v", fields, want)
 	}
+}
+
+func TestCloneSafeValueHonorsKindsDepthAndBudget(t *testing.T) {
+	remaining := 128
+	value, ok := CloneSafeValue(map[string]any{
+		"bool":  true,
+		"int":   int32(7),
+		"uint":  uint16(8),
+		"float": float32(1.5),
+		"array": [2]string{"a", "b"},
+		"nil":   nil,
+	}, &remaining)
+	if !ok {
+		t.Fatal("CloneSafeValue() rejected supported JSON-like values")
+	}
+	cloned := value.(map[string]any)
+	if cloned["bool"] != true || cloned["int"] != int32(7) || cloned["uint"] != uint16(8) ||
+		cloned["float"] != float32(1.5) || !reflect.DeepEqual(cloned["array"], []any{"a", "b"}) {
+		t.Fatalf("cloned values = %#v", cloned)
+	}
+	if cloned["nil"] != nil {
+		t.Fatalf("cloned nil = %#v", cloned["nil"])
+	}
+
+	for _, test := range []struct {
+		name  string
+		value any
+	}{
+		{name: "nil map", value: map[string]any(nil)},
+		{name: "non-string map", value: map[int]string{1: "one"}},
+		{name: "bytes", value: []byte("binary")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			budget := 32
+			if _, ok := CloneSafeValue(test.value, &budget); ok {
+				t.Fatalf("CloneSafeValue(%T) unexpectedly succeeded", test.value)
+			}
+		})
+	}
+
+	zero := 0
+	for _, value := range []any{true, "x", int64(1), uint64(1), float64(1), []any{"x"}, map[string]any{"x": 1}} {
+		if _, ok := CloneSafeValue(value, &zero); ok {
+			t.Fatalf("CloneSafeValue(%T) ignored exhausted budget", value)
+		}
+	}
+	if consumeSnapshotBudget(nil, 1) != true || consumeSnapshotBudget(&zero, -1) != false {
+		t.Fatal("consumeSnapshotBudget() boundary semantics changed")
+	}
+	if _, ok := cloneSafeValue(reflect.ValueOf("deep"), nil, 65); ok {
+		t.Fatal("cloneSafeValue() accepted a value beyond the depth limit")
+	}
+}
+
+func TestCloneSnapshotIsolatesEveryMutableField(t *testing.T) {
+	original := LogSnapshot{
+		Request: RequestLogSnapshot{
+			Header:      http.Header{"X-Request": {"one"}},
+			Query:       url.Values{"q": {"one"}},
+			Body:        []byte("request"),
+			APISIXVars:  map[string]any{"$nested": map[string]any{"key": "one"}},
+			RequestVars: map[string]any{"$list": []any{"one"}},
+		},
+		Response: ResponseLogSnapshot{
+			Header:  http.Header{"X-Response": {"one"}},
+			Trailer: http.Header{"X-Trailer": {"one"}},
+			Body:    []byte("response"),
+		},
+	}
+	clone := CloneSnapshot(original)
+	clone.Request.Header.Set("X-Request", "two")
+	clone.Request.Query.Set("q", "two")
+	clone.Request.Body[0] = 'R'
+	clone.Request.APISIXVars["$nested"].(map[string]any)["key"] = "two"
+	clone.Request.RequestVars["$list"].([]any)[0] = "two"
+	clone.Response.Header.Set("X-Response", "two")
+	clone.Response.Trailer.Set("X-Trailer", "two")
+	clone.Response.Body[0] = 'R'
+
+	if original.Request.Header.Get("X-Request") != "one" || original.Request.Query.Get("q") != "one" ||
+		string(original.Request.Body) != "request" ||
+		original.Request.APISIXVars["$nested"].(map[string]any)["key"] != "one" ||
+		original.Request.RequestVars["$list"].([]any)[0] != "one" ||
+		original.Response.Header.Get("X-Response") != "one" ||
+		original.Response.Trailer.Get("X-Trailer") != "one" || string(original.Response.Body) != "response" {
+		t.Fatalf("source snapshot mutated through clone: %#v", original)
+	}
+}
+
+func TestValueFromSnapshotCoversFallbackVariableSemantics(t *testing.T) {
+	started := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	snapshot := LogSnapshot{
+		Request: RequestLogSnapshot{
+			Method:      http.MethodPatch,
+			URI:         ":malformed?query",
+			URL:         "/fallback?from=url",
+			Host:        "plain-host",
+			RemoteAddr:  "plain-remote",
+			Scheme:      "http",
+			Proto:       "HTTP/1.1",
+			Header:      http.Header{"X-Multi": {"first", "second"}},
+			Query:       url.Values{"fallback": {"query"}},
+			Body:        []byte("request-body"),
+			APISIXVars:  map[string]any{"$shared": "apisix", "$remote_addr": "effective"},
+			RequestVars: map[string]any{"$shared": "request", "$request_only": "value"},
+			Consumer:    SafeConsumerLogIdentity{Username: "alice", GroupID: "group-1"},
+		},
+		Response: ResponseLogSnapshot{Body: []byte("response-body")},
+		Outcome:  ctx.ResponseOutcome{Status: http.StatusTeapot, Bytes: 13},
+		Source:   ctx.ResponseSourceAPISIX,
+		Started:  started,
+	}
+	want := map[string]any{
+		"method": "PATCH", "request_uri": ":malformed?query", "uri": ":malformed?query",
+		"host": "plain-host", "remote_addr": "effective", "remote_port": "",
+		"args": "fallback=query", "scheme": "http", "proto": "HTTP/1.1",
+		"status_code": http.StatusTeapot, "bytes_sent": int64(13),
+		"request_body": "request-body", "response_body": "response-body",
+		"consumer_name": "alice", "consumer_group_id": "group-1", "response_source": "apisix",
+		"shared": "apisix", "request_only": "value", "arg_fallback": "query",
+		"http_x_multi": "first", "unknown": "",
+		"time_iso8601": started.Format(time.RFC3339),
+	}
+	for name, expected := range want {
+		if got := ValueFromSnapshot(snapshot, name); !reflect.DeepEqual(got, expected) {
+			t.Errorf("ValueFromSnapshot(%q) = %#v, want %#v", name, got, expected)
+		}
+	}
+	if got := ValueFromSnapshot(
+		LogSnapshot{Request: RequestLogSnapshot{URL: "/url-only"}},
+		"request_uri",
+	); got != "/url-only" {
+		t.Fatalf("URL fallback request_uri = %#v", got)
+	}
+}
+
+type snapshotErrorBody struct{}
+
+func (snapshotErrorBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (snapshotErrorBody) Close() error             { return nil }
+
+func TestBuildSnapshotHandlesBodyAndSchemeBoundaries(t *testing.T) {
+	if got := BuildSnapshot(nil, ResponseSnapshot{Body: []byte("response")}, ctx.ResponseOutcome{},
+		ctx.ResponseSourceUnknown, time.Time{}, time.Time{}); string(got.Response.Body) != "response" {
+		t.Fatalf("nil-request snapshot = %#v", got)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/upload", nil)
+	request = ctx.WithRequestVars(request)
+	ctx.RegisterRequestVar(request, ctx.RequestBodyKey, bytesOf('x', snapshotBodyLimit+1))
+	request = ctx.WithApisixVars(request, map[string]string{
+		"$consumer_name": "alice", "$consumer_group_id": "group-1",
+	})
+	ctx.RegisterApisixVar(request, "$consumer", map[string]any{"secret": "hidden"})
+	snapshot := BuildSnapshot(request, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
+		time.Now(), time.Now())
+	if len(snapshot.Request.Body) != snapshotBodyLimit || !snapshot.Request.BodyTruncated {
+		t.Fatalf("context body capture = %d/truncated=%v", len(snapshot.Request.Body), snapshot.Request.BodyTruncated)
+	}
+	if snapshot.Request.Consumer.Username != "alice" || snapshot.Request.Consumer.GroupID != "group-1" {
+		t.Fatalf("safe consumer = %#v", snapshot.Request.Consumer)
+	}
+	if _, ok := snapshot.Request.APISIXVars["$consumer"]; ok {
+		t.Fatal("unsafe consumer resource crossed snapshot boundary")
+	}
+
+	streamed := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", strings.NewReader("stream-body"))
+	streamSnapshot := BuildSnapshot(streamed, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
+		time.Now(), time.Now())
+	replayed, err := io.ReadAll(streamed.Body)
+	if err != nil || string(replayed) != "stream-body" || string(streamSnapshot.Request.Body) != "stream-body" {
+		t.Fatalf("stream body snapshot/replay = %q/%q/%v", streamSnapshot.Request.Body, replayed, err)
+	}
+
+	errorRequest := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", nil)
+	errorRequest.Body = snapshotErrorBody{}
+	if body, truncated := captureRequestBody(errorRequest); body != nil || truncated {
+		t.Fatalf("error body capture = %q/%v", body, truncated)
+	}
+	if _, err := io.ReadAll(errorRequest.Body); err == nil {
+		t.Fatal("erroring body was not restored")
+	}
+
+	forwarded := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	forwarded.Header.Set("X-Forwarded-Proto", "wss")
+	if got := requestScheme(forwarded); got != "wss" {
+		t.Fatalf("forwarded scheme = %q", got)
+	}
+	forwarded.Header.Del("X-Forwarded-Proto")
+	forwarded.URL.Scheme = "custom"
+	if got := requestScheme(forwarded); got != "custom" {
+		t.Fatalf("URL scheme = %q", got)
+	}
+	forwarded.URL.Scheme = ""
+	forwarded.TLS = &tls.ConnectionState{}
+	if got := requestScheme(forwarded); got != "https" {
+		t.Fatalf("TLS scheme = %q", got)
+	}
+}
+
+func bytesOf(value byte, count int) []byte {
+	return []byte(strings.Repeat(string(value), count))
 }

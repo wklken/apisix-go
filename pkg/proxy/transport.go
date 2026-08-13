@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"net"
 	"net/http"
@@ -34,6 +35,7 @@ type TransportOption struct {
 	maxIdleConnectionsPerHost int
 	maxConnectionsPerHost     int
 	insecureSkipVerify        bool
+	tlsClientCertificate      tls.Certificate
 	dialTimeout               time.Duration
 	responseHeaderTimeout     time.Duration
 	idleConnTimeout           time.Duration
@@ -65,12 +67,20 @@ func (ob *TransportOptionBuilder) Build() TransportOption {
 		ob.opt.idleConnTimeout = DefaultIdleConnTimeout
 	}
 
-	return ob.opt
+	return cloneTransportOption(ob.opt)
 }
 
 // WithInsecureSkipVerify sets tls config insecure skip verify
 func (ob *TransportOptionBuilder) WithInsecureSkipVerify(value bool) *TransportOptionBuilder {
 	ob.opt.insecureSkipVerify = value
+	return ob
+}
+
+// WithTLSClientCertificate configures the certificate presented to HTTPS
+// upstreams. The certificate bytes are cloned so later caller mutations do
+// not change the immutable transport option.
+func (ob *TransportOptionBuilder) WithTLSClientCertificate(certificate tls.Certificate) *TransportOptionBuilder {
+	ob.opt.tlsClientCertificate = cloneTLSCertificate(certificate)
 	return ob
 }
 
@@ -122,25 +132,62 @@ func (ob *TransportOptionBuilder) WithMaxConnectionsPerHost(value int) *Transpor
 // effective value that changes transport behavior. It feeds upstream cluster
 // identity so a cluster is only reused for byte-identical effective config.
 type transportKeyIdentity struct {
-	MaxIdleConns          int
-	MaxIdleConnsPerHost   int
-	MaxConnsPerHost       int
-	InsecureSkipVerify    bool
-	DialTimeout           time.Duration
-	ResponseHeaderTimeout time.Duration
-	IdleConnTimeout       time.Duration
+	MaxIdleConns                    int
+	MaxIdleConnsPerHost             int
+	MaxConnsPerHost                 int
+	InsecureSkipVerify              bool
+	TLSClientCertificateFingerprint [sha256.Size]byte
+	DialTimeout                     time.Duration
+	ResponseHeaderTimeout           time.Duration
+	IdleConnTimeout                 time.Duration
 }
 
 func (t TransportOption) keyIdentity() transportKeyIdentity {
 	return transportKeyIdentity{
-		MaxIdleConns:          t.maxIdleConnections,
-		MaxIdleConnsPerHost:   t.maxIdleConnectionsPerHost,
-		MaxConnsPerHost:       t.maxConnectionsPerHost,
-		InsecureSkipVerify:    t.insecureSkipVerify,
-		DialTimeout:           t.dialTimeout,
-		ResponseHeaderTimeout: t.responseHeaderTimeout,
-		IdleConnTimeout:       t.idleConnTimeout,
+		MaxIdleConns:                    t.maxIdleConnections,
+		MaxIdleConnsPerHost:             t.maxIdleConnectionsPerHost,
+		MaxConnsPerHost:                 t.maxConnectionsPerHost,
+		InsecureSkipVerify:              t.insecureSkipVerify,
+		TLSClientCertificateFingerprint: tlsClientCertificateFingerprint(t.tlsClientCertificate),
+		DialTimeout:                     t.dialTimeout,
+		ResponseHeaderTimeout:           t.responseHeaderTimeout,
+		IdleConnTimeout:                 t.idleConnTimeout,
 	}
+}
+
+func tlsClientCertificateFingerprint(certificate tls.Certificate) [sha256.Size]byte {
+	if len(certificate.Certificate) > 0 && len(certificate.Certificate[0]) > 0 {
+		return sha256.Sum256(certificate.Certificate[0])
+	}
+	if certificate.Leaf != nil && len(certificate.Leaf.Raw) > 0 {
+		return sha256.Sum256(certificate.Leaf.Raw)
+	}
+	return [sha256.Size]byte{}
+}
+
+func cloneTransportOption(option TransportOption) TransportOption {
+	option.tlsClientCertificate = cloneTLSCertificate(option.tlsClientCertificate)
+	return option
+}
+
+func cloneTLSCertificate(certificate tls.Certificate) tls.Certificate {
+	clone := certificate
+	clone.Certificate = cloneByteSlices(certificate.Certificate)
+	clone.SupportedSignatureAlgorithms = append([]tls.SignatureScheme(nil), certificate.SupportedSignatureAlgorithms...)
+	clone.OCSPStaple = append([]byte(nil), certificate.OCSPStaple...)
+	clone.SignedCertificateTimestamps = cloneByteSlices(certificate.SignedCertificateTimestamps)
+	return clone
+}
+
+func cloneByteSlices(value [][]byte) [][]byte {
+	if value == nil {
+		return nil
+	}
+	clone := make([][]byte, len(value))
+	for index, bytes := range value {
+		clone[index] = append([]byte(nil), bytes...)
+	}
+	return clone
 }
 
 // reference: https://github.com/hellofresh/janus/blob/master/pkg/proxy/transport/transport.go
@@ -156,6 +203,11 @@ func NewTransport(t TransportOption) *http.Transport {
 	// it won't grow to more than max_idle_conns_per_host * upstreamHostsNumber anyways
 
 	// reference: https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/
+	tlsConfig := &tls.Config{InsecureSkipVerify: t.insecureSkipVerify}
+	if len(t.tlsClientCertificate.Certificate) > 0 || t.tlsClientCertificate.PrivateKey != nil {
+		tlsConfig.Certificates = []tls.Certificate{cloneTLSCertificate(t.tlsClientCertificate)}
+	}
+
 	tr := &http.Transport{
 		Proxy:              http.ProxyFromEnvironment,
 		DisableCompression: true,
@@ -171,7 +223,7 @@ func NewTransport(t TransportOption) *http.Transport {
 		MaxIdleConns:          t.maxIdleConnections,
 		MaxIdleConnsPerHost:   t.maxIdleConnectionsPerHost,
 		MaxConnsPerHost:       t.maxConnectionsPerHost,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: t.insecureSkipVerify},
+		TLSClientConfig:       tlsConfig,
 	}
 
 	if err := http2.ConfigureTransport(tr); err != nil {

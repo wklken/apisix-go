@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -63,6 +64,54 @@ func TestClusterConfigKeyChangesWhenTransportChanges(t *testing.T) {
 	}
 	if baseKey == changedKey {
 		t.Fatal("changing response header timeout did not change the cluster key")
+	}
+}
+
+func TestClusterConfigKeyIncludesTLSClientCertificateFingerprint(t *testing.T) {
+	base := testClusterConfig()
+	base.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-a")}}).
+		Build()
+	same := testClusterConfig()
+	same.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-a")}}).
+		Build()
+	rotated := testClusterConfig()
+	rotated.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-b")}}).
+		Build()
+	privateMaterialChanged := testClusterConfig()
+	privateMaterialChanged.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{
+			Certificate: [][]byte{[]byte("leaf-a")},
+			PrivateKey:  "rotated-private-material",
+		}).
+		Build()
+
+	baseKey, err := base.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameKey, err := same.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedKey, err := rotated.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateMaterialChangedKey, err := privateMaterialChanged.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseKey != sameKey {
+		t.Fatal("identical client certificates produced different cluster keys")
+	}
+	if baseKey == rotatedKey {
+		t.Fatal("rotated client certificate produced the same cluster key")
+	}
+	if baseKey != privateMaterialChangedKey {
+		t.Fatal("private material changed the cluster key")
 	}
 }
 

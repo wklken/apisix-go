@@ -96,7 +96,7 @@ func BenchmarkTLSCertificate(b *testing.B) {
 
 func benchmarkTLSCertificateLookup(b *testing.B, serverName string) {
 	b.ReportAllocs()
-	getCertificate := frontendTLSConfig().GetCertificate
+	getCertificate := mustFrontendTLSConfig(b).GetCertificate
 	hello := &tls.ClientHelloInfo{ServerName: serverName}
 	for b.Loop() {
 		certificate, err := getCertificate(hello)

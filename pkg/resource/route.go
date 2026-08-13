@@ -172,9 +172,9 @@ type Timeout struct {
 	Read    int `json:"read,omitempty"`
 }
 
-// UpstreamTLS contains the APISIX upstream TLS fields that are applicable to
-// Kafka. client_cert_id is resolved from the local SSL resource store at the
-// owner boundary.
+// UpstreamTLS contains APISIX upstream TLS fields used by HTTPS/grpcs and
+// Kafka owners. client_cert_id is resolved from the local SSL resource store
+// at the protocol owner boundary.
 type UpstreamTLS struct {
 	ClientCertID any    `json:"client_cert_id,omitempty" yaml:"client_cert_id,omitempty"`
 	ClientCert   string `json:"client_cert,omitempty" yaml:"client_cert,omitempty"`

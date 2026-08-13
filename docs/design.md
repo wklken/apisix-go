@@ -40,6 +40,20 @@ References: [kafka-proxy](https://apisix.apache.org/docs/apisix/plugins/kafka-pr
 [http-dubbo](https://apisix.apache.org/docs/apisix/3.11/plugins/http-dubbo/),
 [mqtt-proxy](https://apisix.apache.org/docs/apisix/plugins/mqtt-proxy/).
 
+### Frontend TLS and HTTP timeout boundary
+
+The HTTPS listener builds one strict `tls.Config` before binding any listener.
+Only `TLSv1.2` and `TLSv1.3` may be configured; TLS 1.2 cipher names are
+limited to the six Go-enforceable ECDHE suites in `conf/config-default.yaml`.
+Session tickets, dynamic exact/wildcard/fallback SNI certificate selection,
+and the optional global `ssl_trusted_certificate` client-CA policy are applied
+to real handshakes. Per-SNI client-auth policy, custom upstream CA bundles,
+TLS 1.3 cipher selection, and stream TLS/mTLS remain outside this contract.
+
+`nginx_config.http.send_timeout` is rejected when non-zero. Go's
+`http.Server.WriteTimeout` is an absolute response deadline and cannot express
+NGINX's write-idle semantics, so it is never populated from that directive.
+
 ### Shared transport contract
 
 Protocol-owned boundaries are introduced in the plugin packages; do not make

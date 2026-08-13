@@ -158,7 +158,7 @@ func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 // IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
 func IsHTTPRouteReloadBucket(bucket string) bool {
 	switch bucket {
-	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata":
+	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata", "ssls":
 		return true
 	default:
 		return false

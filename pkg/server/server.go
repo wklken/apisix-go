@@ -351,7 +351,6 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	if httpConfig.ClientHeaderTimeout > 0 {
 		server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
 	}
-	server.WriteTimeout = httpConfig.SendTimeout
 	if httpConfig.ClientBodyTimeout > 0 {
 		server.ReadTimeout = httpConfig.ClientBodyTimeout + httpConfig.ClientHeaderTimeout
 	}
@@ -1157,6 +1156,14 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 		addrs = []string{s.addr}
 	}
 	tlsAddrs := configuredTLSListenAddresses()
+	var tlsConfig *tls.Config
+	if len(tlsAddrs) > 0 {
+		var err error
+		tlsConfig, err = buildFrontendTLSConfig()
+		if err != nil {
+			return fmt.Errorf("build frontend TLS config: %w", err)
+		}
+	}
 	serveErrors := make(chan error, len(addrs)+len(tlsAddrs))
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
@@ -1176,7 +1183,7 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 			s.closeOwnedListeners()
 			return fmt.Errorf("open TLS listener %s: %w", addr, err)
 		}
-		tlsListener := tls.NewListener(listener, frontendTLSConfig())
+		tlsListener := tls.NewListener(listener, tlsConfig)
 		s.retainListener(tlsListener)
 		listeners = append(listeners, tlsListener)
 	}
@@ -1194,24 +1201,6 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 		return nil
 	case err := <-serveErrors:
 		return err
-	}
-}
-
-func frontendTLSConfig() *tls.Config {
-	protocols := []string{"http/1.1"}
-	if frontendHTTP2Enabled() {
-		protocols = append([]string{"h2"}, protocols...)
-	}
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		NextProtos: protocols,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			serverName := strings.TrimSpace(hello.ServerName)
-			if serverName == "" && config.GlobalConfig != nil {
-				serverName = strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
-			}
-			return store.GetSSLCertificateForSNI(serverName)
-		},
 	}
 }
 

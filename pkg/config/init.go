@@ -38,6 +38,12 @@ func load(v *viper.Viper) (*Config, error) {
 	if err := validateHTTPPluginAllowlist(cfg.Plugins); err != nil {
 		return nil, err
 	}
+	if sendTimeout := cfg.NginxConfig.HTTP.SendTimeout; sendTimeout != 0 {
+		return nil, fmt.Errorf(
+			"nginx_config.http.send_timeout must be zero because Go cannot implement NGINX write-idle semantics, got %s",
+			sendTimeout,
+		)
+	}
 
 	GlobalConfig = &cfg
 	data_encryption.Configure(cfg.Apisix.DataEncryption.EnableEncryptFields, cfg.Apisix.DataEncryption.Keyring)

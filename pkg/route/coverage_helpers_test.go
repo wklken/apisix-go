@@ -68,12 +68,12 @@ func TestParsePluginPriority(t *testing.T) {
 	}
 }
 
-func TestNormalizeKafkaSSLNumber(t *testing.T) {
-	if got, err := normalizeKafkaSSLNumber("16"); err != nil || got != "16" {
-		t.Fatalf("normalizeKafkaSSLNumber(16) = %q/%v, want 16", got, err)
+func TestNormalizeSSLNumber(t *testing.T) {
+	if got, err := normalizeSSLNumber("16"); err != nil || got != "16" {
+		t.Fatalf("normalizeSSLNumber(16) = %q/%v, want 16", got, err)
 	}
-	if _, err := normalizeKafkaSSLNumber("not-a-number"); err == nil {
-		t.Fatal("normalizeKafkaSSLNumber(invalid) error = nil")
+	if _, err := normalizeSSLNumber("not-a-number"); err == nil {
+		t.Fatal("normalizeSSLNumber(invalid) error = nil")
 	}
 }
 

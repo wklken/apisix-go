@@ -2360,7 +2360,7 @@ func resolveRouteUpstream(
 ) (resource.Upstream, plugin.ResourceProvenance, error) {
 	// Keep this priority identical to buildReverseHandler: inline route,
 	// route upstream_id, inline service, then service upstream_id.
-	if len(r.Upstream.Nodes) > 0 {
+	if inlineUpstreamConfigured(r.Upstream) {
 		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 	}
 	if r.UpstreamID != "" {
@@ -2371,7 +2371,7 @@ func resolveRouteUpstream(
 		}
 		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 	}
-	if service.Upstream.Nodes != nil {
+	if inlineUpstreamConfigured(service.Upstream) {
 		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
 	}
 	if service.UpstreamID != "" {
@@ -2383,6 +2383,14 @@ func resolveRouteUpstream(
 		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
 	}
 	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+}
+
+func inlineUpstreamConfigured(upstream resource.Upstream) bool {
+	return upstream.Nodes != nil || upstream.Scheme != "" || upstream.TLS != nil ||
+		upstream.Type != "" || upstream.Checks != nil || upstream.HashOn != "" ||
+		upstream.Key != "" || upstream.PassHost != "" || upstream.UpstreamHost != "" ||
+		upstream.Name != "" || upstream.Desc != "" || upstream.RetriesConfigured() ||
+		upstream.Timeout != (resource.Timeout{})
 }
 
 type routeProtocolTerminals struct {
@@ -2630,6 +2638,10 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	// selection reports a classified director error unless traffic-split
 	// supplies an override for the request.
 	timeouts := resolveUpstreamTimeouts(r.Timeout, upstream.Timeout)
+	transportOption, err := buildTransportOption(r, upstream)
+	if err != nil {
+		return nil, routeProtocolTerminals{}, err
+	}
 	var lb pxy.LoadBalancer
 	var transport http.RoundTripper
 	if len(servers) > 0 {
@@ -2637,7 +2649,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			b.ownsClusterRegistry = true
 		}
-		clusterConfig, err := buildClusterConfig(r, upstream, servers)
+		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -2650,7 +2662,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		lb = cluster.LoadBalancer()
 		transport = cluster.RoundTripper()
 	} else {
-		transport = pxy.NewRetryTransport(pxy.NewTransport((&pxy.TransportOptionBuilder{}).Build()))
+		transport = pxy.NewRetryTransport(pxy.NewTransport(transportOption))
 	}
 
 	director := func(req *http.Request) {
@@ -2785,12 +2797,10 @@ func buildKafkaPubSubProxyHandlerStrict(
 	return buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, factory, store.GetSSL)
 }
 
-type kafkaSSLResolver func(id string) (resource.SSL, error)
-
 func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 	upstream resource.Upstream,
 	factory kafka_proxy.KafkaConsumerFactory,
-	resolveSSL kafkaSSLResolver,
+	resolveSSL sslResolver,
 ) (http.Handler, error) {
 	options := kafka_proxy.TransportOptions{}
 	if upstream.Timeout.Connect > 0 {
@@ -2811,7 +2821,7 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 					"kafka upstream client_cert_id cannot be combined with client_cert or client_key",
 				)
 			}
-			id, err := normalizeKafkaSSLID(upstream.TLS.ClientCertID)
+			id, err := normalizeSSLID(upstream.TLS.ClientCertID)
 			if err != nil {
 				return nil, fmt.Errorf("invalid Kafka upstream client_cert_id: %w", err)
 			}
@@ -2861,60 +2871,6 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 			http.Error(w, "Kafka upstream proxy failed", http.StatusBadGateway)
 		}
 	}), nil
-}
-
-func normalizeKafkaSSLID(value any) (string, error) {
-	switch value := value.(type) {
-	case string:
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return "", fmt.Errorf("must not be empty")
-		}
-		return value, nil
-	case json.Number:
-		return normalizeKafkaSSLNumber(string(value))
-	case float64:
-		return normalizeKafkaSSLFloat(value)
-	case float32:
-		return normalizeKafkaSSLFloat(float64(value))
-	case int:
-		return strconv.Itoa(value), nil
-	case int8:
-		return strconv.FormatInt(int64(value), 10), nil
-	case int16:
-		return strconv.FormatInt(int64(value), 10), nil
-	case int32:
-		return strconv.FormatInt(int64(value), 10), nil
-	case int64:
-		return strconv.FormatInt(value, 10), nil
-	case uint:
-		return strconv.FormatUint(uint64(value), 10), nil
-	case uint8:
-		return strconv.FormatUint(uint64(value), 10), nil
-	case uint16:
-		return strconv.FormatUint(uint64(value), 10), nil
-	case uint32:
-		return strconv.FormatUint(uint64(value), 10), nil
-	case uint64:
-		return strconv.FormatUint(value, 10), nil
-	default:
-		return "", fmt.Errorf("must be a string or integer")
-	}
-}
-
-func normalizeKafkaSSLNumber(value string) (string, error) {
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return "", fmt.Errorf("must be a string or integer")
-	}
-	return normalizeKafkaSSLFloat(parsed)
-}
-
-func normalizeKafkaSSLFloat(value float64) (string, error) {
-	if math.IsNaN(value) || math.IsInf(value, 0) || value != math.Trunc(value) {
-		return "", fmt.Errorf("must be an integer")
-	}
-	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
 // buildKafkaRawProxyHandler is retained for compatibility clients that speak

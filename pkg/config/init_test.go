@@ -53,7 +53,7 @@ nginx_config:
     client_header_timeout: 60s
     client_body_timeout: 60s
     keepalive_timeout: 60s
-    send_timeout: 10s
+    send_timeout: 0s
     client_max_body_size: 1024
     upstream:
       keepalive: 320
@@ -151,6 +151,31 @@ deployment:
 	}
 	if got, want := exportAddr["port"], 9091; got != want {
 		t.Fatalf("plugin_attr.prometheus.export_addr.port = %#v, want %v", got, want)
+	}
+}
+
+func TestLoadRejectsNonZeroNginxSendTimeout(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, raw := range []string{"1s", "-1s"} {
+		t.Run(raw, func(t *testing.T) {
+			v := viper.New()
+			v.SetConfigType("yaml")
+			if err := v.ReadConfig(
+				strings.NewReader("nginx_config:\n  http:\n    send_timeout: " + raw + "\n"),
+			); err != nil {
+				t.Fatalf("ReadConfig() error = %v", err)
+			}
+
+			_, err := load(v)
+			if err == nil || !strings.Contains(err.Error(), "nginx_config.http.send_timeout") {
+				t.Fatalf("load() error = %v, want send_timeout rejection", err)
+			}
+			if GlobalConfig != previous {
+				t.Fatal("GlobalConfig was published before send_timeout validation")
+			}
+		})
 	}
 }
 

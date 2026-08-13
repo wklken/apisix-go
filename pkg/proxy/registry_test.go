@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -37,6 +38,60 @@ func TestClusterRegistrySeparatesChangedResponseHeaderTimeout(t *testing.T) {
 	second.Stop()
 	if !second.Cluster().Closed() {
 		t.Fatal("final release did not close the changed cluster")
+	}
+}
+
+func TestClusterRegistrySeparatesRotatedTLSClientCertificate(t *testing.T) {
+	registry := NewClusterRegistry(NopClusterObserver{})
+	t.Cleanup(registry.Close)
+	firstConfig := testClusterConfig()
+	firstConfig.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-a")}}).
+		Build()
+	sameConfig := testClusterConfig()
+	sameConfig.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-a")}}).
+		Build()
+	rotatedConfig := testClusterConfig()
+	rotatedConfig.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-b")}}).
+		Build()
+
+	first, err := registry.Acquire(firstConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := registry.Acquire(sameConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := registry.Acquire(rotatedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Cluster() == rotated.Cluster() {
+		t.Fatal("rotated client certificate reused the old cluster")
+	}
+	if first.Cluster() != same.Cluster() {
+		t.Fatal("identical client certificate created different clusters")
+	}
+	if got := registry.Len(); got != 2 {
+		t.Fatalf("registry.Len() = %d, want 2", got)
+	}
+	first.Stop()
+	if first.Cluster().Closed() {
+		t.Fatal("old cluster closed while an identical certificate remained leased")
+	}
+	same.Stop()
+	if !first.Cluster().Closed() {
+		t.Fatal("old cluster remained open after its final lease stopped")
+	}
+	if rotated.Cluster().Closed() {
+		t.Fatal("rotated cluster closed while still leased")
+	}
+	rotated.Stop()
+	if !rotated.Cluster().Closed() {
+		t.Fatal("rotated cluster remained open after its final lease stopped")
 	}
 }
 

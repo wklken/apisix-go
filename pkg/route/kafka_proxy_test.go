@@ -229,7 +229,7 @@ func TestBuildKafkaPubSubHandlerResolvesTLSClientCertID(t *testing.T) {
 	}
 }
 
-func TestNormalizeKafkaSSLID(t *testing.T) {
+func TestNormalizeSSLIDLegacyForms(t *testing.T) {
 	tests := []struct {
 		name    string
 		value   any
@@ -258,12 +258,12 @@ func TestNormalizeKafkaSSLID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeKafkaSSLID(tt.value)
+			got, err := normalizeSSLID(tt.value)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("normalizeKafkaSSLID(%#v) error = %v, wantErr %v", tt.value, err, tt.wantErr)
+				t.Fatalf("normalizeSSLID(%#v) error = %v, wantErr %v", tt.value, err, tt.wantErr)
 			}
 			if err == nil && got != tt.want {
-				t.Fatalf("normalizeKafkaSSLID(%#v) = %q, want %q", tt.value, got, tt.want)
+				t.Fatalf("normalizeSSLID(%#v) = %q, want %q", tt.value, got, tt.want)
 			}
 		})
 	}

@@ -648,7 +648,6 @@ func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 			KeepaliveTimeout:    60 * time.Second,
 			ClientHeaderTimeout: 5 * time.Second,
 			ClientBodyTimeout:   10 * time.Second,
-			SendTimeout:         3 * time.Second,
 		}},
 	}
 
@@ -669,8 +668,8 @@ func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	if server.ReadTimeout != 15*time.Second {
 		t.Fatalf("ReadTimeout = %s, want 15s", server.ReadTimeout)
 	}
-	if server.WriteTimeout != 3*time.Second {
-		t.Fatalf("WriteTimeout = %s, want 3s", server.WriteTimeout)
+	if server.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %s, want zero because send_timeout has no Go equivalent", server.WriteTimeout)
 	}
 }
 
@@ -702,8 +701,10 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })
 	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
-		Enable: true,
-		Listen: []config.Listen{{Port: 9443, EnableHttp2: true}},
+		Enable:       true,
+		Listen:       []config.Listen{{Port: 9443, EnableHttp2: true}},
+		SslProtocols: "TLSv1.2 TLSv1.3",
+		SslCiphers:   "ECDHE-RSA-AES128-GCM-SHA256",
 	}}}
 
 	server := newConfiguredHTTPServer(http.NotFoundHandler())
@@ -714,13 +715,13 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 		t.Fatal("TLS-only HTTP/2 configuration enabled plaintext h2c")
 	}
 
-	tlsConfig := frontendTLSConfig()
+	tlsConfig := mustFrontendTLSConfig(t)
 	if !slices.Contains(tlsConfig.NextProtos, "h2") {
 		t.Fatalf("frontend TLS protocols = %v, want h2", tlsConfig.NextProtos)
 	}
 
 	config.GlobalConfig.Apisix.Ssl.Listen[0].EnableHttp2 = false
-	if protocols := frontendTLSConfig().NextProtos; slices.Contains(protocols, "h2") {
+	if protocols := mustFrontendTLSConfig(t).NextProtos; slices.Contains(protocols, "h2") {
 		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
 	}
 }
@@ -984,7 +985,7 @@ func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 		t.Fatalf("SSL storage sync: %v", err)
 	}
 
-	getCertificate := frontendTLSConfig().GetCertificate
+	getCertificate := mustFrontendTLSConfig(t).GetCertificate
 	selected, err := getCertificate(&tls.ClientHelloInfo{ServerName: "api.example.test"})
 	if err != nil {
 		t.Fatalf("GetCertificate(exact) error = %v", err)
@@ -1244,12 +1245,15 @@ func TestFrontendTLSConfigDefaultsWithoutHTTP2(t *testing.T) {
 	t.Cleanup(func() { config.GlobalConfig = previous })
 	config.GlobalConfig = nil
 
-	tlsConfig := frontendTLSConfig()
+	tlsConfig := mustFrontendTLSConfig(t)
 	if !reflect.DeepEqual(tlsConfig.NextProtos, []string{"http/1.1"}) {
 		t.Fatalf("NextProtos = %v, want only http/1.1", tlsConfig.NextProtos)
 	}
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
+	}
+	if tlsConfig.MaxVersion != 0 {
+		t.Fatalf("MaxVersion = %v, want unset default for TLS 1.3 support", tlsConfig.MaxVersion)
 	}
 }
 

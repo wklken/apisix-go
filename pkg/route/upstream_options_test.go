@@ -56,13 +56,15 @@ func TestBuildClusterConfigKeyIsStableAndIgnoresUpstreamName(t *testing.T) {
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
 		{Host: "127.0.0.1", Port: 18091, Weight: 1},
 	}}
-	first, err := buildClusterConfig(resource.Route{}, base, servers)
+	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil)
 	if err != nil {
 		t.Fatalf("first buildClusterConfig() error = %v", err)
 	}
 	renamed := base
 	renamed.Name = "orders-v2"
-	second, err := buildClusterConfig(resource.Route{UpstreamID: "upstream-orders"}, renamed, servers)
+	second, err := buildClusterConfigWithSSLResolver(
+		resource.Route{UpstreamID: "upstream-orders"}, renamed, servers, nil,
+	)
 	if err != nil {
 		t.Fatalf("second buildClusterConfig() error = %v", err)
 	}
@@ -88,13 +90,13 @@ func TestBuildClusterConfigKeyChangesWithTimeout(t *testing.T) {
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
 		{Host: "127.0.0.1", Port: 18091, Weight: 1},
 	}}
-	first, err := buildClusterConfig(resource.Route{}, base, servers)
+	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil)
 	if err != nil {
 		t.Fatalf("first buildClusterConfig() error = %v", err)
 	}
 	changed := base
 	changed.Timeout = resource.Timeout{Read: 2}
-	second, err := buildClusterConfig(resource.Route{}, changed, servers)
+	second, err := buildClusterConfigWithSSLResolver(resource.Route{}, changed, servers, nil)
 	if err != nil {
 		t.Fatalf("second buildClusterConfig() error = %v", err)
 	}
@@ -114,9 +116,14 @@ func TestBuildClusterConfigKeyChangesWithTimeout(t *testing.T) {
 
 func TestBuildClusterConfigUsesKeyPrefixLabelWhenUnnamed(t *testing.T) {
 	servers := map[string]int{"http://127.0.0.1:18091": 1}
-	config, err := buildClusterConfig(resource.Route{}, resource.Upstream{Scheme: "http", Nodes: []resource.Node{
-		{Host: "127.0.0.1", Port: 18091, Weight: 1},
-	}}, servers)
+	config, err := buildClusterConfigWithSSLResolver(
+		resource.Route{},
+		resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+			{Host: "127.0.0.1", Port: 18091, Weight: 1},
+		}},
+		servers,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("buildClusterConfig() error = %v", err)
 	}
@@ -130,12 +137,17 @@ func TestBuildClusterConfigOmitsActiveChecksWhenDisabled(t *testing.T) {
 	t.Cleanup(func() { appconfig.GlobalConfig = previous })
 	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{DisableUpstreamHealthcheck: true}}
 
-	config, err := buildClusterConfig(resource.Route{}, resource.Upstream{Scheme: "http", Nodes: []resource.Node{
-		{Host: "127.0.0.1", Port: 18091, Weight: 1},
-	}, Checks: map[string]any{
-		"active":  map[string]any{"http_path": "/health"},
-		"passive": map[string]any{},
-	}}, map[string]int{"http://127.0.0.1:18091": 1})
+	config, err := buildClusterConfigWithSSLResolver(
+		resource.Route{},
+		resource.Upstream{Scheme: "http", Nodes: []resource.Node{
+			{Host: "127.0.0.1", Port: 18091, Weight: 1},
+		}, Checks: map[string]any{
+			"active":  map[string]any{"http_path": "/health"},
+			"passive": map[string]any{},
+		}},
+		map[string]int{"http://127.0.0.1:18091": 1},
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("buildClusterConfig() error = %v", err)
 	}

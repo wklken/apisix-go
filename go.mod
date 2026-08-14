@@ -2,7 +2,7 @@ module github.com/wklken/apisix-go
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
 
@@ -16,7 +16,7 @@ require (
 	github.com/apache/rocketmq-client-go/v2 v2.1.2
 	github.com/aws/aws-sdk-go-v2 v1.43.4
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16
-	github.com/beevik/etree v1.5.0
+	github.com/beevik/etree v1.6.0
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/casbin/govaluate v1.3.0
@@ -43,7 +43,7 @@ require (
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/riandyrn/otelchi v0.12.3
 	github.com/rs/cors v1.11.1
-	github.com/russellhaering/goxmldsig v1.4.0
+	github.com/russellhaering/goxmldsig v1.6.0
 	github.com/samber/lo v1.53.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/segmentio/kafka-go v0.4.51
@@ -70,7 +70,7 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.21.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	k8s.io/apimachinery v0.36.2
 )
@@ -103,7 +103,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/incubator4/go-resty-expr v0.1.1 // indirect
-	github.com/jonboulle/clockwork v0.2.2 // indirect
+	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
@@ -140,7 +140,7 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect

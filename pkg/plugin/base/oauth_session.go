@@ -1,16 +1,122 @@
 package base
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 )
+
+const (
+	oauthSessionVersion       = 1
+	maxOAuthSessionCookieSize = 3800
+)
+
+type oauthSessionEnvelope struct {
+	Version     int    `json:"v"`
+	IssuedAt    int64  `json:"iat"`
+	ExpiresAt   int64  `json:"exp"`
+	Fingerprint string `json:"fp"`
+	Payload     []byte `json:"data"`
+}
+
+// SealOAuthSession encrypts a bounded OAuth session using the primary secret.
+func SealOAuthSession(
+	payload []byte,
+	secret string,
+	fingerprint string,
+	issuedAt time.Time,
+	expiresAt time.Time,
+) (string, error) {
+	if secret == "" || fingerprint == "" || !expiresAt.After(issuedAt) {
+		return "", errors.New("invalid OAuth session envelope")
+	}
+	plaintext, err := json.Marshal(oauthSessionEnvelope{
+		Version:     oauthSessionVersion,
+		IssuedAt:    issuedAt.Unix(),
+		ExpiresAt:   expiresAt.Unix(),
+		Fingerprint: fingerprint,
+		Payload:     payload,
+	})
+	if err != nil {
+		return "", err
+	}
+	gcm, err := oauthSessionGCM(secret)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, plaintext, nil))
+	if len(encoded) > maxOAuthSessionCookieSize {
+		return "", errors.New("OAuth session cookie exceeds size limit")
+	}
+	return encoded, nil
+}
+
+// OpenOAuthSession decrypts a bounded OAuth session with the primary secret or
+// one of its rotation fallbacks and validates its version, expiry, and config.
+func OpenOAuthSession(
+	encoded string,
+	secret string,
+	fallbacks []string,
+	fingerprint string,
+	now time.Time,
+) ([]byte, error) {
+	if encoded == "" || len(encoded) > maxOAuthSessionCookieSize || secret == "" || fingerprint == "" {
+		return nil, errors.New("invalid OAuth session cookie")
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, errors.New("invalid OAuth session cookie")
+	}
+	for _, candidate := range append([]string{secret}, fallbacks...) {
+		if candidate == "" {
+			continue
+		}
+		gcm, err := oauthSessionGCM(candidate)
+		if err != nil || len(sealed) < gcm.NonceSize() {
+			continue
+		}
+		plaintext, err := gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], nil)
+		if err != nil {
+			continue
+		}
+		var envelope oauthSessionEnvelope
+		if err := json.Unmarshal(plaintext, &envelope); err != nil {
+			return nil, errors.New("invalid OAuth session envelope")
+		}
+		if envelope.Version != oauthSessionVersion ||
+			envelope.Fingerprint != fingerprint ||
+			envelope.ExpiresAt <= now.Unix() ||
+			envelope.ExpiresAt <= envelope.IssuedAt {
+			return nil, errors.New("invalid OAuth session envelope")
+		}
+		return envelope.Payload, nil
+	}
+	return nil, errors.New("invalid OAuth session cookie")
+}
+
+func oauthSessionGCM(secret string) (cipher.AEAD, error) {
+	key := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
 
 // SignSessionValue signs a payload for a session cookie as
 // base64url(payload) + "." + base64url(HMAC-SHA256(base64url(payload), secret)).

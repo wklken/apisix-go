@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/oauth2"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -1021,6 +1023,226 @@ func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitAppliesFiniteSessionDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		Session:      SessionConfig{Secret: "0123456789abcdef"},
+	})
+
+	if p.config.Session.IdlingTimeout != 3600 ||
+		p.config.Session.RollingTimeout != 86400 ||
+		p.config.Session.AbsoluteTimeout != 604800 {
+		t.Fatalf("finite session defaults not applied: %#v", p.config.Session)
+	}
+}
+
+func TestPostInitPreservesPositiveSessionTimeoutOverrides(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		Session: SessionConfig{
+			Secret:          "0123456789abcdef",
+			IdlingTimeout:   11,
+			RollingTimeout:  22,
+			AbsoluteTimeout: 33,
+		},
+	})
+
+	if p.config.Session.IdlingTimeout != 11 ||
+		p.config.Session.RollingTimeout != 22 ||
+		p.config.Session.AbsoluteTimeout != 33 {
+		t.Fatalf("session timeout overrides changed: %#v", p.config.Session)
+	}
+}
+
+func TestSchemaRejectsNonPositiveSessionTimeouts(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	for _, field := range []string{"idling_timeout", "rolling_timeout", "absolute_timeout"} {
+		for _, value := range []int{-1, 0} {
+			t.Run(fmt.Sprintf("%s=%d", field, value), func(t *testing.T) {
+				config := map[string]any{
+					"client_id":     "apisix",
+					"client_secret": "secret-a",
+					"discovery":     "https://idp.example.com/.well-known/openid-configuration",
+					"session": map[string]any{
+						"secret": "0123456789abcdef",
+						field:    value,
+					},
+				}
+				if err := util.Validate(config, p.GetSchema()); err == nil {
+					t.Fatal("Validate() error = nil")
+				}
+			})
+		}
+	}
+}
+
+func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
+	for _, algorithm := range []string{
+		"RS256", "RS384", "RS512",
+		"ES256", "ES384", "ES512",
+		"PS256", "PS384", "PS512",
+		"EdDSA",
+	} {
+		t.Run("accepts "+algorithm, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				ClientID:                      "apisix",
+				ClientSecret:                  "secret-a",
+				Discovery:                     "https://idp.example.com/.well-known/openid-configuration",
+				BearerOnly:                    true,
+				TokenSigningAlgValuesExpected: algorithm,
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+		})
+	}
+
+	for _, algorithm := range []string{"none", "HS256", "ES256K", "unknown"} {
+		t.Run("rejects "+algorithm, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				ClientID:                      "apisix",
+				ClientSecret:                  "secret-a",
+				Discovery:                     "https://idp.example.com/.well-known/openid-configuration",
+				BearerOnly:                    true,
+				TokenSigningAlgValuesExpected: algorithm,
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil")
+			}
+		})
+	}
+}
+
+func TestSessionExpiryUsesPluginClock(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		Session: SessionConfig{
+			Secret:          "0123456789abcdef",
+			IdlingTimeout:   20,
+			RollingTimeout:  30,
+			AbsoluteTimeout: 60,
+		},
+	})
+	p.now = func() time.Time { return startedAt }
+	session := sessionData{
+		CreatedAt:   startedAt.Unix(),
+		UpdatedAt:   startedAt.Unix(),
+		AccessToken: "access-token",
+		ExpiresAt:   startedAt.Add(time.Hour).Unix(),
+	}
+
+	w := httptest.NewRecorder()
+	if err := p.writeSession(w, session); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+	cookie := w.Result().Cookies()[0]
+	if want := startedAt.Add(30 * time.Second); !cookie.Expires.Equal(want) {
+		t.Fatalf("cookie expiry = %s, want %s", cookie.Expires, want)
+	}
+	if got := p.sessionStorageTTL(session); got != 20*time.Second {
+		t.Fatalf("Redis session TTL = %s, want 20s", got)
+	}
+
+	p.now = func() time.Time { return startedAt.Add(20 * time.Second) }
+	if p.sessionValid(session, p.now()) {
+		t.Fatal("session remains valid at idling timeout boundary")
+	}
+}
+
+func TestSessionValidityEnforcesRollingTimeout(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		Session: SessionConfig{
+			Secret:          "0123456789abcdef",
+			IdlingTimeout:   60,
+			RollingTimeout:  20,
+			AbsoluteTimeout: 120,
+		},
+	})
+	atBoundary := startedAt.Add(20 * time.Second)
+	validSession := sessionData{
+		CreatedAt:   startedAt.Unix(),
+		UpdatedAt:   startedAt.Unix(),
+		AccessToken: "access-token",
+		ExpiresAt:   startedAt.Add(time.Hour).Unix(),
+	}
+	if p.sessionValid(validSession, atBoundary) {
+		t.Fatal("session remains valid at rolling timeout boundary")
+	}
+
+	refreshableSession := sessionData{
+		CreatedAt:    startedAt.Unix(),
+		UpdatedAt:    startedAt.Unix(),
+		RefreshToken: "refresh-token",
+		ExpiresAt:    startedAt.Add(-time.Second).Unix(),
+	}
+	if p.sessionRefreshable(refreshableSession, atBoundary) {
+		t.Fatal("session remains refreshable at rolling timeout boundary")
+	}
+}
+
+func TestAuthorizationSessionUsesPluginClock(t *testing.T) {
+	idp := newCodeFlowIDP(t, nil)
+	t.Cleanup(idp.Close)
+	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	p.now = func() time.Time { return startedAt }
+
+	w := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil))
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("session cookies = %d, want 1", len(cookies))
+	}
+	r := httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders", nil)
+	r.AddCookie(cookies[0])
+	session, err := p.readSession(r)
+	if err != nil {
+		t.Fatalf("readSession() error = %v", err)
+	}
+	if session.CreatedAt != startedAt.Unix() || session.UpdatedAt != startedAt.Unix() {
+		t.Fatalf(
+			"authorization session times = created:%d updated:%d, want %d",
+			session.CreatedAt,
+			session.UpdatedAt,
+			startedAt.Unix(),
+		)
+	}
+}
+
+func TestOAuthTokenExpiryUsesPluginClock(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	p := &Plugin{now: func() time.Time { return startedAt }}
+	response := p.tokenResponseFromOAuth2(&oauth2.Token{
+		AccessToken: "access-token",
+		Expiry:      startedAt.Add(90 * time.Second),
+	})
+	if response.ExpiresIn != 90 {
+		t.Fatalf("ExpiresIn = %d, want 90", response.ExpiresIn)
+	}
+}
+
 func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -1056,6 +1278,37 @@ func TestSchemaRejectsUnknownSessionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("Validate() error = nil, want unknown session field rejection")
+	}
+}
+
+func TestSchemaRejectsUnsupportedTopLevelFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, field := range []string{
+		"iat_slack",
+		"accept_none_alg",
+		"accept_unsupported_alg",
+		"use_nonce",
+		"jwk_expires_in",
+		"jwt_verification_cache_ignore",
+		"cache_segment",
+		"introspection_interval",
+		"introspection_expiry_claim",
+	} {
+		t.Run(field, func(t *testing.T) {
+			config := map[string]any{
+				"client_id":     "apisix",
+				"client_secret": "secret-a",
+				"discovery":     "http://idp.example.test/.well-known/openid-configuration",
+				field:           true,
+			}
+			if err := util.Validate(config, p.GetSchema()); err == nil {
+				t.Fatal("Validate() error = nil, want unsupported field rejection")
+			}
+		})
 	}
 }
 

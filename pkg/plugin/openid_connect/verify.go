@@ -150,6 +150,9 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 	if algorithm == "" {
 		return nil, fmt.Errorf("JWT token missing alg")
 	}
+	if !validTokenSigningAlgorithm(algorithm) {
+		return nil, fmt.Errorf("JWT token alg unsupported")
+	}
 	if p.config.TokenSigningAlgValuesExpected != "" && algorithm != p.config.TokenSigningAlgValuesExpected {
 		return nil, fmt.Errorf("JWT token alg mismatch")
 	}

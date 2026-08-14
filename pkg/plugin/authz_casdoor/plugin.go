@@ -9,13 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -24,26 +23,14 @@ type Plugin struct {
 	config Config
 
 	client   *http.Client
-	sessions *cacheutil.BoundedTTLMap[sessionData]
 	newState func() (string, error)
 	now      func() time.Time
-
-	cleanupStop chan struct{}
-	cleanupDone chan struct{}
-	stopOnce    sync.Once
 }
 
-// sessionCleanupInterval drives the periodic purge of expired sessions; tests
-// shorten it to exercise cleanup with a fake clock.
-var sessionCleanupInterval = time.Minute
-
-// defaultMaxSessions bounds the number of concurrently live sessions; the
-// earliest expiring sessions are evicted once the bound is hit.
-const defaultMaxSessions = 10000
-
 const (
-	priority = 2559
-	name     = "authz-casdoor"
+	priority               = 2559
+	name                   = "authz-casdoor"
+	minSessionSecretLength = 32
 )
 
 const schema = `
@@ -58,8 +45,13 @@ const schema = `
       "type": "string"
     },
     "client_secret": {
-      "type": "string"
+	  "type": "string",
+	  "minLength": 32
     },
+	"client_secret_fallbacks": {
+	  "type": "array",
+	  "items": {"type": "string", "minLength": 32}
+	},
     "callback_url": {
       "type": "string",
       "pattern": "^[^%?]+[^/]$"
@@ -95,20 +87,20 @@ const schema = `
 `
 
 type Config struct {
-	EndpointAddr   string `json:"endpoint_addr"`
-	ClientID       string `json:"client_id"`
-	ClientSecret   string `json:"client_secret"`
-	CallbackURL    string `json:"callback_url"`
-	CookieSecure   *bool  `json:"cookie_secure,omitempty"`
-	CookieSameSite string `json:"cookie_same_site,omitempty"`
+	EndpointAddr          string   `json:"endpoint_addr"`
+	ClientID              string   `json:"client_id"`
+	ClientSecret          string   `json:"client_secret"`
+	ClientSecretFallbacks []string `json:"client_secret_fallbacks,omitempty"`
+	CallbackURL           string   `json:"callback_url"`
+	CookieSecure          *bool    `json:"cookie_secure,omitempty"`
+	CookieSameSite        string   `json:"cookie_same_site,omitempty"`
 }
 
 type sessionData struct {
-	OriginalURI string
-	State       string
-	AccessToken string
-	ClientID    string
-	ExpiresAt   time.Time
+	OriginalURI string `json:"original_uri,omitempty"`
+	State       string `json:"state,omitempty"`
+	AccessToken string `json:"access_token,omitempty"`
+	ClientID    string `json:"client_id,omitempty"`
 }
 
 type tokenResponse struct {
@@ -125,6 +117,17 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if utf8.RuneCountInString(p.config.ClientSecret) < minSessionSecretLength {
+		return fmt.Errorf("client_secret must contain at least %d characters", minSessionSecretLength)
+	}
+	for _, fallback := range p.config.ClientSecretFallbacks {
+		if utf8.RuneCountInString(fallback) < minSessionSecretLength {
+			return fmt.Errorf(
+				"client_secret_fallbacks entries must contain at least %d characters",
+				minSessionSecretLength,
+			)
+		}
+	}
 	if p.config.CookieSecure == nil {
 		cookieSecure := true
 		p.config.CookieSecure = &cookieSecure
@@ -135,53 +138,13 @@ func (p *Plugin) PostInit() error {
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
-	if p.sessions == nil {
-		p.sessions = cacheutil.NewBoundedTTLMap[sessionData](
-			defaultMaxSessions,
-			func() time.Time { return p.now() },
-		)
-	}
 	if p.newState == nil {
 		p.newState = func() (string, error) { return randomState(rand.Reader) }
 	}
 	if p.now == nil {
 		p.now = time.Now
 	}
-	p.startSessionCleanup()
-
 	return nil
-}
-
-func (p *Plugin) startSessionCleanup() {
-	if p.cleanupStop != nil {
-		return
-	}
-	p.cleanupStop = make(chan struct{})
-	p.cleanupDone = make(chan struct{})
-	interval := sessionCleanupInterval
-	go func() {
-		defer close(p.cleanupDone)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				p.sessions.PurgeExpired()
-			case <-p.cleanupStop:
-				return
-			}
-		}
-	}()
-}
-
-func (p *Plugin) Stop() {
-	p.stopOnce.Do(func() {
-		if p.cleanupStop != nil {
-			close(p.cleanupStop)
-			<-p.cleanupDone
-			p.cleanupStop = nil
-		}
-	})
 }
 
 func (p *Plugin) Config() any {
@@ -205,9 +168,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
-	sessionID := cookieValue(r, p.cookieName())
-	session, ok := p.getSession(sessionID)
-	if !ok {
+	session, err := p.openSession(r)
+	if err != nil {
 		logger.Error("no session found")
 		http.Error(w, util.BuildMessageResponse("no session found"), http.StatusServiceUnavailable)
 		return
@@ -242,23 +204,15 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	session.AccessToken = accessToken
 	session.ClientID = p.config.ClientID
-	session.ExpiresAt = p.now().Add(time.Duration(lifetime) * time.Second)
-	p.saveSession(sessionID, session)
-	p.setSessionCookie(w, sessionID, time.Duration(lifetime)*time.Second)
+	if err := p.setSessionCookie(w, session, time.Duration(lifetime)*time.Second); err != nil {
+		logger.Error(err.Error())
+		http.Error(w, util.BuildMessageResponse("failed to store session"), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, session.OriginalURI, http.StatusFound)
 }
 
 func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
-	sessionID, err := p.newState()
-	if err != nil {
-		logger.Error(err.Error())
-		http.Error(
-			w,
-			util.BuildMessageResponse("failed to generate authorization state"),
-			http.StatusInternalServerError,
-		)
-		return
-	}
 	state, err := p.newState()
 	if err != nil {
 		logger.Error(err.Error())
@@ -269,12 +223,14 @@ func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
-	p.saveSession(sessionID, sessionData{
+	if err := p.setSessionCookie(w, sessionData{
 		OriginalURI: r.URL.RequestURI(),
 		State:       state,
-		ExpiresAt:   p.now().Add(10 * time.Minute),
-	})
-	p.setSessionCookie(w, sessionID, 10*time.Minute)
+	}, 10*time.Minute); err != nil {
+		logger.Error(err.Error())
+		http.Error(w, util.BuildMessageResponse("failed to store session"), http.StatusInternalServerError)
+		return
+	}
 
 	values := url.Values{}
 	values.Set("response_type", "code")
@@ -291,12 +247,10 @@ func (p *Plugin) redirectToAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) authenticated(r *http.Request) bool {
-	sessionID := cookieValue(r, p.cookieName())
-	session, ok := p.getSession(sessionID)
-	return ok &&
+	session, err := p.openSession(r)
+	return err == nil &&
 		session.AccessToken != "" &&
-		session.ClientID == p.config.ClientID &&
-		p.now().Before(session.ExpiresAt)
+		session.ClientID == p.config.ClientID
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, error) {
@@ -336,31 +290,59 @@ func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, er
 	return token.AccessToken, token.ExpiresIn, nil
 }
 
-func (p *Plugin) getSession(sessionID string) (sessionData, bool) {
-	if sessionID == "" {
-		return sessionData{}, false
+func (p *Plugin) openSession(r *http.Request) (sessionData, error) {
+	value := cookieValue(r, p.cookieName())
+	payload, err := base.OpenOAuthSession(
+		value,
+		p.config.ClientSecret,
+		p.config.ClientSecretFallbacks,
+		p.sessionFingerprint(),
+		p.now(),
+	)
+	if err != nil {
+		return sessionData{}, err
 	}
-	session, ok := p.sessions.Get(sessionID)
-	if !ok {
-		return sessionData{}, false
+	var session sessionData
+	if err := json.Unmarshal(payload, &session); err != nil {
+		return sessionData{}, err
 	}
-	return session, true
+	return session, nil
 }
 
-func (p *Plugin) saveSession(sessionID string, session sessionData) {
-	p.sessions.Set(sessionID, session, session.ExpiresAt.Sub(p.now()))
-}
-
-func (p *Plugin) setSessionCookie(w http.ResponseWriter, sessionID string, lifetime time.Duration) {
+func (p *Plugin) setSessionCookie(w http.ResponseWriter, session sessionData, lifetime time.Duration) error {
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	now := p.now()
+	value, err := base.SealOAuthSession(
+		payload,
+		p.config.ClientSecret,
+		p.sessionFingerprint(),
+		now,
+		now.Add(lifetime),
+	)
+	if err != nil {
+		return err
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     p.cookieName(),
-		Value:    sessionID,
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   *p.config.CookieSecure,
 		SameSite: base.CookieSameSite(p.config.CookieSameSite),
 		MaxAge:   int(lifetime.Seconds()),
 	})
+	return nil
+}
+
+func (p *Plugin) sessionFingerprint() string {
+	return base.Sha256Hex(strings.Join([]string{
+		p.config.EndpointAddr,
+		p.config.ClientID,
+		p.config.CallbackURL,
+	}, "\x00"))
 }
 
 func (p *Plugin) cookieName() string {

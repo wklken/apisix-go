@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -87,7 +86,7 @@ func (p *Plugin) providerClient(r *http.Request) (*providerClient, error) {
 
 // tokenResponseFromOAuth2 converts an oauth2 token into the APISIX session
 // shape, keeping the raw id_token from the token response.
-func tokenResponseFromOAuth2(token *oauth2.Token) tokenResponse {
+func (p *Plugin) tokenResponseFromOAuth2(token *oauth2.Token) tokenResponse {
 	response := tokenResponse{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
@@ -96,7 +95,7 @@ func tokenResponseFromOAuth2(token *oauth2.Token) tokenResponse {
 		response.IDToken = idToken
 	}
 	if !token.Expiry.IsZero() {
-		response.ExpiresIn = int64(time.Until(token.Expiry).Seconds())
+		response.ExpiresIn = int64(token.Expiry.Sub(p.currentTime()).Seconds())
 	}
 	return response
 }

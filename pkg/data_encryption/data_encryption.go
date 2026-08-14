@@ -52,7 +52,7 @@ var pluginFields = map[string][]string{
 	},
 	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
 	"authz-keycloak":       {"client_secret"},
-	"authz-casdoor":        {"client_secret"},
+	"authz-casdoor":        {"client_secret", "client_secret_fallbacks"},
 	"aws-lambda":           {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
 	"azure-functions":      {"authorization.apikey"},
 	"basic-auth":           {"password"},

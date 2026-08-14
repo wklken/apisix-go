@@ -37,6 +37,7 @@ type Plugin struct {
 	httpsProxy          *url.URL
 	noProxy             []string
 	claimSchema         *util.CompiledSchema
+	now                 func() time.Time
 
 	clientRelease func()
 
@@ -51,11 +52,16 @@ type Plugin struct {
 const (
 	priority = 2599
 	name     = "openid-connect"
+
+	defaultSessionIdlingTimeout   = 3600
+	defaultSessionRollingTimeout  = 86400
+	defaultSessionAbsoluteTimeout = 604800
 )
 
 const schema = `
 {
   "type": "object",
+	"additionalProperties": false,
   "properties": {
     "client_id": {
       "type": "string",
@@ -117,9 +123,9 @@ const schema = `
         "cookie_secure": {"type": "boolean"},
         "cookie_http_only": {"type": "boolean"},
         "cookie_same_site": {"type": "string", "enum": ["Strict", "Lax", "None", "Default"]},
-        "idling_timeout": {"type": "integer"},
-        "rolling_timeout": {"type": "integer"},
-        "absolute_timeout": {"type": "integer"},
+        "idling_timeout": {"type": "integer", "minimum": 1},
+        "rolling_timeout": {"type": "integer", "minimum": 1},
+        "absolute_timeout": {"type": "integer", "minimum": 1},
         "cookie": {
           "type": "object",
           "additionalProperties": false,
@@ -202,7 +208,8 @@ const schema = `
       "default": false
     },
     "token_signing_alg_values_expected": {
-      "type": "string"
+      "type": "string",
+      "enum": ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512", "EdDSA"]
     },
     "use_pkce": {
       "type": "boolean",
@@ -393,6 +400,16 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.config.TokenSigningAlgValuesExpected != "" &&
+		!validTokenSigningAlgorithm(p.config.TokenSigningAlgValuesExpected) {
+		return fmt.Errorf(
+			"unsupported token_signing_alg_values_expected %q",
+			p.config.TokenSigningAlgValuesExpected,
+		)
+	}
 	resolvedPublicKey, err := store.ResolveSecretReference(p.config.PublicKey)
 	if err != nil {
 		return errors.New("resolve openid-connect public_key reference: credential unavailable")
@@ -508,6 +525,15 @@ func (p *Plugin) PostInit() error {
 			p.config.Session.AbsoluteTimeout == 0 {
 			p.config.Session.AbsoluteTimeout = p.config.Session.Cookie.Lifetime
 		}
+		if p.config.Session.IdlingTimeout == 0 {
+			p.config.Session.IdlingTimeout = defaultSessionIdlingTimeout
+		}
+		if p.config.Session.RollingTimeout == 0 {
+			p.config.Session.RollingTimeout = defaultSessionRollingTimeout
+		}
+		if p.config.Session.AbsoluteTimeout == 0 {
+			p.config.Session.AbsoluteTimeout = defaultSessionAbsoluteTimeout
+		}
 		if !validSameSite(p.config.Session.CookieSameSite) {
 			return fmt.Errorf("openid-connect session cookie_same_site %q is invalid", p.config.Session.CookieSameSite)
 		}
@@ -542,6 +568,25 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) currentTime() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+func validTokenSigningAlgorithm(algorithm string) bool {
+	switch algorithm {
+	case "RS256", "RS384", "RS512",
+		"ES256", "ES384", "ES512",
+		"PS256", "PS384", "PS512",
+		"EdDSA":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Plugin) configureRedisSessionStore() error {

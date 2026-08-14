@@ -36,7 +36,7 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 	}
 
 	session, err := p.readSession(r)
-	now := time.Now()
+	now := p.currentTime()
 	if err == nil && session != nil && p.sessionValid(*session, now) {
 		if p.refreshSessionDue(*session, now) {
 			p.beginAuthorization(w, r, redirectURI, session, "none")
@@ -96,7 +96,7 @@ func (p *Plugin) beginAuthorization(
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	now := time.Now()
+	now := p.currentTime()
 	session := sessionData{
 		CreatedAt:     now.Unix(),
 		UpdatedAt:     now.Unix(),
@@ -141,7 +141,7 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 	session, err := p.readSession(r)
 	state := r.URL.Query().Get("state")
 	if err != nil || session == nil || state == "" || session.FlowState == "" ||
-		session.FlowExpiresAt <= time.Now().Unix() ||
+		session.FlowExpiresAt <= p.currentTime().Unix() ||
 		subtle.ConstantTimeCompare([]byte(state), []byte(session.FlowState)) != 1 {
 		http.Error(w, "invalid authorization state", http.StatusBadRequest)
 		return
@@ -157,7 +157,7 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	now := time.Now()
+	now := p.currentTime()
 	newSession := sessionData{
 		RedisID:           session.RedisID,
 		CreatedAt:         session.CreatedAt,
@@ -208,7 +208,7 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 		if err != nil {
 			return tokenResponse{}, err
 		}
-		return tokenResponseFromOAuth2(token), nil
+		return p.tokenResponseFromOAuth2(token), nil
 	}
 
 	form := url.Values{}
@@ -237,7 +237,7 @@ func (p *Plugin) refreshAccessToken(r *http.Request, refreshToken string) (token
 		if err != nil {
 			return tokenResponse{}, err
 		}
-		return tokenResponseFromOAuth2(token), nil
+		return p.tokenResponseFromOAuth2(token), nil
 	}
 
 	form := url.Values{}

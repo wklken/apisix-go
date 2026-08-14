@@ -297,6 +297,24 @@ func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsSupportsCasdoorClientSecretFallbacks(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"authz-casdoor": map[string]any{
+			"client_secret_fallbacks": []any{
+				encryptForTest(t, key, "old-secret-1"),
+				encryptForTest(t, key, "old-secret-2"),
+			},
+		},
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	fallbacks := configs["authz-casdoor"].(map[string]any)["client_secret_fallbacks"].([]any)
+	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
+		t.Fatalf("authz-casdoor client_secret_fallbacks = %#v, want plaintext values", fallbacks)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsAIMapsAndInstanceArrays(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

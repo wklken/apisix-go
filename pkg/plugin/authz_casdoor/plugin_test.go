@@ -3,16 +3,20 @@ package authz_casdoor
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/util"
+)
+
+const (
+	testClientSecret    = "secret-a-secret-a-secret-a-secret-a"
+	testOldClientSecret = "old-secret-old-secret-old-secret-old-secret"
+	testNewClientSecret = "new-secret-new-secret-new-secret-new-secret"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -27,7 +31,6 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -36,7 +39,7 @@ func TestUnauthenticatedRequestRedirectsToCasdoorAuthorize(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "https://gateway.example.com/callback",
 	})
 
@@ -95,7 +98,7 @@ func TestHandlerRejectsRandomStateFailure(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "https://gateway.example.com/callback",
 	})
 	p.newState = func() (string, error) { return "", errors.New("entropy unavailable") }
@@ -111,9 +114,6 @@ func TestHandlerRejectsRandomStateFailure(t *testing.T) {
 	}
 	if cookie := findSessionCookie(rr.Result().Cookies()); cookie != nil {
 		t.Fatalf("session cookie = %#v, want none", cookie)
-	}
-	if got := p.sessions.Len(); got != 0 {
-		t.Fatalf("session count = %d, want 0", got)
 	}
 }
 
@@ -143,7 +143,7 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: casdoor.URL,
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "http://gateway.example.com/callback",
 	})
 
@@ -181,8 +181,8 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	if tokenForm.Get("client_id") != "client-a" {
 		t.Fatalf("client_id = %q, want client-a", tokenForm.Get("client_id"))
 	}
-	if tokenForm.Get("client_secret") != "secret-a" {
-		t.Fatalf("client_secret = %q, want secret-a", tokenForm.Get("client_secret"))
+	if tokenForm.Get("client_secret") != testClientSecret {
+		t.Fatalf("client_secret = %q, want configured secret", tokenForm.Get("client_secret"))
 	}
 
 	updated := findSessionCookie(callbackRR.Result().Cookies())
@@ -207,11 +207,267 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	}
 }
 
+func TestCasdoorSessionSurvivesPluginReplacement(t *testing.T) {
+	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := r.PostForm.Get("client_secret"); got != testClientSecret {
+			t.Fatalf("client_secret = %q, want configured secret", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "token-a",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(casdoor.Close)
+
+	config := Config{
+		EndpointAddr: casdoor.URL,
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "http://gateway.example.com/callback",
+	}
+	first := newTestPlugin(t, config)
+	initRR := httptest.NewRecorder()
+	first.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		initRR,
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil),
+	)
+	loginCookie := findSessionCookie(initRR.Result().Cookies())
+	if loginCookie == nil {
+		t.Fatal("login session cookie was not set")
+	}
+	if strings.Contains(loginCookie.Value, "state-1") || strings.Contains(loginCookie.Value, "/orders/1") {
+		t.Fatalf("login session cookie exposes plaintext state: %q", loginCookie.Value)
+	}
+
+	second := newTestPlugin(t, config)
+	callbackReq := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.com/callback?code=code-a&state=state-1",
+		nil,
+	)
+	callbackReq.AddCookie(loginCookie)
+	callbackRR := httptest.NewRecorder()
+	second.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called for callback")
+	})).ServeHTTP(callbackRR, callbackReq)
+	if callbackRR.Code != http.StatusFound {
+		t.Fatalf("callback status after plugin replacement = %d, want 302", callbackRR.Code)
+	}
+
+	authenticatedCookie := findSessionCookie(callbackRR.Result().Cookies())
+	if authenticatedCookie == nil {
+		t.Fatal("authenticated session cookie was not set")
+	}
+	third := newTestPlugin(t, config)
+	protectedReq := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/2", nil)
+	protectedReq.AddCookie(authenticatedCookie)
+	protectedRR := httptest.NewRecorder()
+	called := false
+	third.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(protectedRR, protectedReq)
+	if !called || protectedRR.Code != http.StatusNoContent {
+		t.Fatalf("authenticated request after replacement = called:%t status:%d", called, protectedRR.Code)
+	}
+}
+
+func TestCasdoorSessionSurvivesClientSecretRotation(t *testing.T) {
+	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := r.PostForm.Get("client_secret"); got != testNewClientSecret {
+			t.Fatalf("client_secret = %q, want new configured secret", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "token-a",
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(casdoor.Close)
+
+	oldConfig := Config{
+		EndpointAddr: casdoor.URL,
+		ClientID:     "client-a",
+		ClientSecret: testOldClientSecret,
+		CallbackURL:  "http://gateway.example.com/callback",
+	}
+	oldPlugin := newTestPlugin(t, oldConfig)
+	initRR := httptest.NewRecorder()
+	oldPlugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		initRR,
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil),
+	)
+	loginCookie := findSessionCookie(initRR.Result().Cookies())
+	if loginCookie == nil {
+		t.Fatal("login session cookie was not set")
+	}
+
+	rotatedConfig := oldConfig
+	rotatedConfig.ClientSecret = testNewClientSecret
+	rotatedConfig.ClientSecretFallbacks = []string{testOldClientSecret}
+	rotatedPlugin := newTestPlugin(t, rotatedConfig)
+	callbackReq := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.com/callback?code=code-a&state=state-1",
+		nil,
+	)
+	callbackReq.AddCookie(loginCookie)
+	callbackRR := httptest.NewRecorder()
+	rotatedPlugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		callbackRR,
+		callbackReq,
+	)
+	if callbackRR.Code != http.StatusFound {
+		t.Fatalf("callback status after secret rotation = %d, want 302", callbackRR.Code)
+	}
+
+	rotatedCookie := findSessionCookie(callbackRR.Result().Cookies())
+	if rotatedCookie == nil {
+		t.Fatal("rotated session cookie was not set")
+	}
+	withoutFallback := newTestPlugin(t, Config{
+		EndpointAddr: casdoor.URL,
+		ClientID:     "client-a",
+		ClientSecret: testOldClientSecret,
+		CallbackURL:  "http://gateway.example.com/callback",
+	})
+	protectedReq := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/2", nil)
+	protectedReq.AddCookie(rotatedCookie)
+	protectedRR := httptest.NewRecorder()
+	withoutFallback.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("cookie written with new primary must not open with old key")
+	})).ServeHTTP(protectedRR, protectedReq)
+	if protectedRR.Code != http.StatusFound {
+		t.Fatalf("old-only plugin status = %d, want authorization redirect", protectedRR.Code)
+	}
+}
+
+func TestCasdoorSessionRejectsInvalidCookieEnvelope(t *testing.T) {
+	startedAt := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	config := Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "https://gateway.example.com/callback",
+	}
+	first := newTestPlugin(t, config)
+	first.now = func() time.Time { return startedAt }
+	initRR := httptest.NewRecorder()
+	first.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		initRR,
+		httptest.NewRequest(http.MethodGet, "https://gateway.example.com/orders/1", nil),
+	)
+	loginCookie := findSessionCookie(initRR.Result().Cookies())
+	if loginCookie == nil {
+		t.Fatal("login session cookie was not set")
+	}
+
+	tests := []struct {
+		name   string
+		config Config
+		at     time.Time
+		cookie func(*http.Cookie) *http.Cookie
+	}{
+		{
+			name: "config fingerprint mismatch",
+			config: Config{
+				EndpointAddr: "https://door.example.com",
+				ClientID:     "client-a",
+				ClientSecret: testClientSecret,
+				CallbackURL:  "https://other-gateway.example.com/callback",
+			},
+			at: startedAt,
+		},
+		{name: "expiry boundary", config: config, at: startedAt.Add(10 * time.Minute)},
+		{
+			name:   "tamper",
+			config: config,
+			at:     startedAt,
+			cookie: func(cookie *http.Cookie) *http.Cookie {
+				copy := *cookie
+				last := copy.Value[len(copy.Value)-1]
+				if last == 'A' {
+					last = 'B'
+				} else {
+					last = 'A'
+				}
+				copy.Value = copy.Value[:len(copy.Value)-1] + string(last)
+				return &copy
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := newTestPlugin(t, test.config)
+			plugin.now = func() time.Time { return test.at }
+			cookie := loginCookie
+			if test.cookie != nil {
+				cookie = test.cookie(loginCookie)
+			}
+			callbackReq := httptest.NewRequest(
+				http.MethodGet,
+				"https://gateway.example.com/callback?code=code-a&state=state-1",
+				nil,
+			)
+			callbackReq.AddCookie(cookie)
+			callbackRR := httptest.NewRecorder()
+			plugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+				callbackRR,
+				callbackReq,
+			)
+			if callbackRR.Code != http.StatusServiceUnavailable {
+				t.Fatalf("callback status = %d, want 503", callbackRR.Code)
+			}
+		})
+	}
+}
+
+func TestCasdoorSessionRejectsOversizeTokenCookie(t *testing.T) {
+	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": strings.Repeat("x", 4000),
+			"expires_in":   3600,
+		})
+	}))
+	t.Cleanup(casdoor.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr: casdoor.URL,
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "http://gateway.example.com/callback",
+	})
+	initRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
+		initRR,
+		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil),
+	)
+	callbackReq := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.com/callback?code=code-a&state=state-1",
+		nil,
+	)
+	callbackReq.AddCookie(findSessionCookie(initRR.Result().Cookies()))
+	callbackRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(callbackRR, callbackReq)
+	if callbackRR.Code != http.StatusInternalServerError {
+		t.Fatalf("oversized token callback status = %d, want 500", callbackRR.Code)
+	}
+	if cookie := findSessionCookie(callbackRR.Result().Cookies()); cookie != nil {
+		t.Fatalf("oversized authenticated session cookie = %#v, want none", cookie)
+	}
+}
+
 func TestCallbackRejectsInvalidState(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "https://gateway.example.com/callback",
 	})
 
@@ -249,7 +505,7 @@ func TestInvalidTokenResponseReturnsServiceUnavailable(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: casdoor.URL,
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "http://gateway.example.com/callback",
 	})
 
@@ -276,7 +532,7 @@ func TestSessionCookieSecureByDefault(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
-		ClientSecret: "secret-a",
+		ClientSecret: testClientSecret,
 		CallbackURL:  "https://gateway.example.com/callback",
 	})
 
@@ -304,7 +560,7 @@ func TestSessionCookieHonorsCookieControls(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddr:   "https://door.example.com",
 		ClientID:       "client-a",
-		ClientSecret:   "secret-a",
+		ClientSecret:   testClientSecret,
 		CallbackURL:    "https://gateway.example.com/callback",
 		CookieSecure:   &cookieSecure,
 		CookieSameSite: "Strict",
@@ -332,7 +588,7 @@ func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	config := map[string]any{
 		"endpoint_addr":    "https://door.example.com",
 		"client_id":        "client-a",
-		"client_secret":    "secret-a",
+		"client_secret":    testClientSecret,
 		"callback_url":     "https://gateway.example.com/callback",
 		"cookie_same_site": "None",
 	}
@@ -345,6 +601,85 @@ func TestSchemaRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	}
 }
 
+func TestSessionSecretsRequireCryptographicLength(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	baseConfig := map[string]any{
+		"endpoint_addr": "https://door.example.com",
+		"client_id":     "client-a",
+		"client_secret": "0123456789abcdef0123456789abcdef",
+		"callback_url":  "https://gateway.example.com/callback",
+	}
+	for _, test := range []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "weak primary",
+			config: map[string]any{
+				"endpoint_addr": "https://door.example.com",
+				"client_id":     "client-a",
+				"client_secret": "guessable",
+				"callback_url":  "https://gateway.example.com/callback",
+			},
+		},
+		{
+			name: "weak fallback",
+			config: map[string]any{
+				"endpoint_addr":           baseConfig["endpoint_addr"],
+				"client_id":               baseConfig["client_id"],
+				"client_secret":           baseConfig["client_secret"],
+				"client_secret_fallbacks": []any{"guessable"},
+				"callback_url":            baseConfig["callback_url"],
+			},
+		},
+	} {
+		t.Run(test.name+" schema", func(t *testing.T) {
+			if err := util.Validate(test.config, p.GetSchema()); err == nil {
+				t.Fatal("Validate() error = nil, want weak session secret rejection")
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		config Config
+	}{
+		{
+			name: "weak primary",
+			config: Config{
+				EndpointAddr: "https://door.example.com",
+				ClientID:     "client-a",
+				ClientSecret: "guessable",
+				CallbackURL:  "https://gateway.example.com/callback",
+			},
+		},
+		{
+			name: "weak fallback",
+			config: Config{
+				EndpointAddr:          "https://door.example.com",
+				ClientID:              "client-a",
+				ClientSecret:          "0123456789abcdef0123456789abcdef",
+				ClientSecretFallbacks: []string{"guessable"},
+				CallbackURL:           "https://gateway.example.com/callback",
+			},
+		},
+	} {
+		t.Run(test.name+" PostInit", func(t *testing.T) {
+			instance := &Plugin{config: test.config}
+			if err := instance.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := instance.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil, want weak session secret rejection")
+			}
+		})
+	}
+}
+
 func findSessionCookie(cookies []*http.Cookie) *http.Cookie {
 	for _, cookie := range cookies {
 		if strings.HasPrefix(cookie.Name, "authz_casdoor_session_") {
@@ -352,92 +687,4 @@ func findSessionCookie(cookies []*http.Cookie) *http.Cookie {
 		}
 	}
 	return nil
-}
-
-func TestCasdoorSessionsExpireWithoutReads(t *testing.T) {
-	original := sessionCleanupInterval
-	sessionCleanupInterval = 10 * time.Millisecond
-	t.Cleanup(func() { sessionCleanupInterval = original })
-
-	p := newTestPlugin(t, Config{
-		EndpointAddr: "https://door.example.com",
-		ClientID:     "client-a",
-		ClientSecret: "secret-a",
-		CallbackURL:  "https://gateway.example.com/callback",
-	})
-
-	base := time.Date(2026, 7, 6, 1, 2, 3, 0, time.UTC)
-	p.now = func() time.Time { return base }
-
-	p.saveSession("sid-expired", sessionData{ExpiresAt: base.Add(30 * time.Second)})
-	p.saveSession("sid-live", sessionData{ExpiresAt: base.Add(2 * time.Hour)})
-
-	// Advance the clock past the first session's expiry without reading it.
-	p.now = func() time.Time { return base.Add(time.Minute) }
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if p.sessions.Len() == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := p.sessions.Len(); got != 1 {
-		t.Fatalf("live sessions after periodic cleanup = %d, want 1", got)
-	}
-	if _, ok := p.sessions.Get("sid-expired"); ok {
-		t.Fatal("expired session still readable after cleanup")
-	}
-	if _, ok := p.getSession("sid-expired"); ok {
-		t.Fatal("expired session still returned by getSession")
-	}
-	if _, ok := p.getSession("sid-live"); !ok {
-		t.Fatal("live session was removed by cleanup")
-	}
-}
-
-func TestCasdoorStopJoinsCleanupAndIsIdempotent(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		EndpointAddr: "https://door.example.com",
-		ClientID:     "client-a",
-		ClientSecret: "secret-a",
-		CallbackURL:  "https://gateway.example.com/callback",
-	})
-	done := p.cleanupDone
-
-	p.Stop()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("cleanup goroutine did not join after Stop")
-	}
-
-	p.Stop()
-	p.Stop()
-}
-
-func TestCasdoorSessionConcurrentLookupAndSave(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		EndpointAddr: "https://door.example.com",
-		ClientID:     "client-a",
-		ClientSecret: "secret-a",
-		CallbackURL:  "https://gateway.example.com/callback",
-	})
-
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			for j := range 200 {
-				id := fmt.Sprintf("sid-%d", j)
-				p.saveSession(id, sessionData{
-					ExpiresAt: time.Now().Add(time.Hour),
-					State:     "state-" + id,
-				})
-				if _, ok := p.getSession(id); !ok {
-					t.Errorf("concurrent lookup lost session %s", id)
-				}
-			}
-		})
-	}
-	wg.Wait()
 }

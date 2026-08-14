@@ -146,7 +146,7 @@ func (p *Plugin) writeSession(w http.ResponseWriter, session sessionData) error 
 	if p.config.Session.AbsoluteTimeout > 0 {
 		expiresAt := time.Unix(session.CreatedAt, 0).Add(time.Duration(p.config.Session.AbsoluteTimeout) * time.Second)
 		if p.config.Session.RollingTimeout > 0 {
-			rollingExpiry := time.Now().Add(time.Duration(p.config.Session.RollingTimeout) * time.Second)
+			rollingExpiry := p.currentTime().Add(time.Duration(p.config.Session.RollingTimeout) * time.Second)
 			if rollingExpiry.Before(expiresAt) {
 				expiresAt = rollingExpiry
 			}
@@ -179,7 +179,7 @@ func (p *Plugin) redisSessionKey(redisID string) string {
 }
 
 func (p *Plugin) sessionStorageTTL(session sessionData) time.Duration {
-	now := time.Now()
+	now := p.currentTime()
 	var expiresAt time.Time
 	if p.config.Session.AbsoluteTimeout > 0 {
 		expiresAt = time.Unix(session.CreatedAt, 0).Add(time.Duration(p.config.Session.AbsoluteTimeout) * time.Second)
@@ -199,7 +199,7 @@ func (p *Plugin) sessionStorageTTL(session sessionData) time.Duration {
 	if expiresAt.IsZero() {
 		return 0
 	}
-	if ttl := time.Until(expiresAt); ttl > 0 {
+	if ttl := expiresAt.Sub(now); ttl > 0 {
 		return ttl
 	}
 	return time.Second
@@ -220,6 +220,10 @@ func (p *Plugin) sessionValid(session sessionData, now time.Time) bool {
 		session.UpdatedAt+int64(p.config.Session.IdlingTimeout) <= now.Unix() {
 		return false
 	}
+	if p.config.Session.RollingTimeout > 0 &&
+		session.UpdatedAt+int64(p.config.Session.RollingTimeout) <= now.Unix() {
+		return false
+	}
 	return true
 }
 
@@ -236,6 +240,10 @@ func (p *Plugin) sessionRefreshable(session sessionData, now time.Time) bool {
 	}
 	if p.config.Session.IdlingTimeout > 0 &&
 		session.UpdatedAt+int64(p.config.Session.IdlingTimeout) <= now.Unix() {
+		return false
+	}
+	if p.config.Session.RollingTimeout > 0 &&
+		session.UpdatedAt+int64(p.config.Session.RollingTimeout) <= now.Unix() {
 		return false
 	}
 	return true

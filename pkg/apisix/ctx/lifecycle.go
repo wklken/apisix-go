@@ -11,6 +11,8 @@ import (
 
 type RequestOutcomeKind string
 
+type ResponseFailureReason string
+
 const (
 	RequestOutcomeCompleted      RequestOutcomeKind = "completed"
 	RequestOutcomeRecoveredPanic RequestOutcomeKind = "recovered_panic"
@@ -18,13 +20,37 @@ const (
 	RequestOutcomeHandlerAbort   RequestOutcomeKind = "handler_abort"
 )
 
+const (
+	ResponseFailureUpstreamIdleTimeout   ResponseFailureReason = "upstream_idle_timeout"
+	ResponseFailureUpstreamHeaderTimeout ResponseFailureReason = "upstream_header_timeout"
+	ResponseFailureUpstreamCopyError     ResponseFailureReason = "upstream_copy_error"
+	ResponseFailureUpstreamRequestError  ResponseFailureReason = "upstream_request_error"
+	ResponseFailureClientCanceled        ResponseFailureReason = "client_canceled"
+	ResponseFailureClientWriteError      ResponseFailureReason = "client_write_error"
+)
+
+func ValidResponseFailureReason(reason ResponseFailureReason) bool {
+	switch reason {
+	case ResponseFailureUpstreamIdleTimeout,
+		ResponseFailureUpstreamHeaderTimeout,
+		ResponseFailureUpstreamCopyError,
+		ResponseFailureUpstreamRequestError,
+		ResponseFailureClientCanceled,
+		ResponseFailureClientWriteError:
+		return true
+	default:
+		return false
+	}
+}
+
 type ResponseOutcome struct {
-	Kind      RequestOutcomeKind
-	Status    int
-	Bytes     int64
-	Committed bool
-	Flushed   bool
-	Hijacked  bool
+	Kind          RequestOutcomeKind
+	FailureReason ResponseFailureReason
+	Status        int
+	Bytes         int64
+	Committed     bool
+	Flushed       bool
+	Hijacked      bool
 }
 
 type ResponseSource string

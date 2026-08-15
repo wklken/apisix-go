@@ -17,6 +17,18 @@ type blockingBody struct {
 	once   sync.Once
 }
 
+type closeIdleRoundTripper struct {
+	closed int
+}
+
+func (transport *closeIdleRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+
+func (transport *closeIdleRoundTripper) CloseIdleConnections() {
+	transport.closed++
+}
+
 func newBlockingBody() *blockingBody { return &blockingBody{closed: make(chan struct{})} }
 
 func (b *blockingBody) Read([]byte) (int, error) {
@@ -53,6 +65,20 @@ func TestProgressTimeoutBodyCloseDoesNotCancelContext(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Close() canceled the request context")
 	default:
+	}
+}
+
+func TestProgressTimeoutTransportForwardsCloseIdleConnections(t *testing.T) {
+	base := &closeIdleRoundTripper{}
+	transport := NewProgressTimeoutTransport(base, time.Second, time.Second)
+	closer, ok := transport.(interface{ CloseIdleConnections() })
+	if !ok {
+		t.Fatal("progress timeout transport does not expose CloseIdleConnections")
+	}
+
+	closer.CloseIdleConnections()
+	if base.closed != 1 {
+		t.Fatalf("base CloseIdleConnections calls = %d, want 1", base.closed)
 	}
 }
 

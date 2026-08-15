@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 type optionalResponseWriter struct {
@@ -508,5 +509,18 @@ func TestResponseCaptureSnapshotSeparatesTrailerPrefix(t *testing.T) {
 	}
 	if snapshot.Trailer.Get("X-Late") != "done" {
 		t.Fatalf("snapshot trailer = %#v", snapshot.Trailer)
+	}
+}
+
+func TestResponseCaptureRecordsOnlyBoundedFailureReasons(t *testing.T) {
+	_, capture := CaptureResponseOutcomeController(httptest.NewRecorder())
+	if !capture.RecordFailure(apisixctx.ResponseFailureUpstreamIdleTimeout) {
+		t.Fatal("RecordFailure(upstream_idle_timeout) = false")
+	}
+	if capture.RecordFailure(apisixctx.ResponseFailureReason("raw-error")) {
+		t.Fatal("RecordFailure(raw-error) = true, want bounded rejection")
+	}
+	if got := capture.Outcome().FailureReason; got != apisixctx.ResponseFailureUpstreamIdleTimeout {
+		t.Fatalf("failure reason = %q, want upstream_idle_timeout", got)
 	}
 }

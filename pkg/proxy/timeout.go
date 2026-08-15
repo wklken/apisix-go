@@ -75,6 +75,68 @@ type progressTimeoutTransport struct {
 	read time.Duration
 }
 
+type responseHeaderTimeoutTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+func newResponseHeaderTimeoutTransport(base http.RoundTripper, timeout time.Duration) http.RoundTripper {
+	if timeout <= 0 {
+		return base
+	}
+	return &responseHeaderTimeoutTransport{base: base, timeout: timeout}
+}
+
+func (transport *responseHeaderTimeoutTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(request.Context())
+	timer := time.AfterFunc(transport.timeout, cancel)
+	response, err := transport.base.RoundTrip(request.WithContext(ctx))
+	timer.Stop()
+	if err != nil {
+		cancel()
+		if ctx.Err() != nil && request.Context().Err() == nil {
+			return response, context.DeadlineExceeded
+		}
+		return response, err
+	}
+	if ctx.Err() != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		cancel()
+		if request.Context().Err() != nil {
+			return nil, request.Context().Err()
+		}
+		return nil, context.DeadlineExceeded
+	}
+	if response == nil || response.Body == nil || response.Body == http.NoBody {
+		cancel()
+		return response, nil
+	}
+	response.Body = &cancelOnCloseBody{ReadCloser: response.Body, cancel: cancel}
+	return response, nil
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	once   sync.Once
+	cancel context.CancelFunc
+}
+
+func (body *cancelOnCloseBody) Read(buffer []byte) (int, error) {
+	n, err := body.ReadCloser.Read(buffer)
+	if err != nil {
+		body.once.Do(body.cancel)
+	}
+	return n, err
+}
+
+func (body *cancelOnCloseBody) Close() error {
+	err := body.ReadCloser.Close()
+	body.once.Do(body.cancel)
+	return err
+}
+
 // NewProgressTimeoutTransport wraps a transport so request-body sends and
 // response-body reads that make no progress for the configured durations
 // cancel the request. Zero or negative durations leave the corresponding side

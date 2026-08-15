@@ -793,25 +793,59 @@ func TestGRPCTranscodeRouteChainTranscodesUnaryRequest(t *testing.T) {
 }
 
 func TestGRPCTranscodeRouteChainRejectsMissingProto(t *testing.T) {
-	handler := buildRoutePluginChainWithFallback(
-		t,
-		"grpc-transcode",
-		map[string]any{
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	_, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
 			"proto_id": "missing-route-grpc",
 			"service":  "route.test.Echo",
 			"method":   "Say",
-		},
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			t.Fatal("fallback handler was reached with a missing proto resource")
-		}),
+		}},
+		builder.pluginRouteContext(resource.Route{ID: "grpc-transcode-missing-route-test", Uri: "/"}),
 	)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("initPluginsStrict() error = %v, want missing proto rejection", err)
+	}
+}
 
-	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/echo?name=alice", nil)
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
+func TestGRPCTranscodeRouteCompileRejectsStreamingDescriptor(t *testing.T) {
+	ensureRouteStore(t)
+	const streamingProto = `syntax = "proto3";
+package route.test;
+service StreamService {
+  rpc Watch (StreamRequest) returns (stream StreamReply);
+}
+message StreamRequest { string name = 1; }
+message StreamReply { string value = 1; }`
+	body, err := apisixjson.Marshal(resource.Proto{ID: "route-grpc-streaming", Content: streamingProto})
+	if err != nil {
+		t.Fatalf("marshal streaming proto: %v", err)
+	}
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/protos/route-grpc-streaming")
+	event.Value = body
+	routeStoreEvents <- event
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, getErr := store.GetProto("route-grpc-streaming"); getErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	_, err = builder.initPluginsStrict(
+		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
+			"proto_id": "route-grpc-streaming",
+			"service":  "route.test.StreamService",
+			"method":   "Watch",
+		}},
+		builder.pluginRouteContext(resource.Route{ID: "grpc-transcode-streaming-route-test", Uri: "/"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "streaming methods are unsupported") {
+		t.Fatalf("initPluginsStrict() error = %v, want streaming rejection", err)
 	}
 }
 

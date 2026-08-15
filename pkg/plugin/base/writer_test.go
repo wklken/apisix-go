@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -287,6 +288,28 @@ func TestBufferedResponseWriterCommitFinalResponsePreservesInformationalHistory(
 	}
 	if response.body.String() != "final" || response.headers[1].Get("X-Final") != "yes" {
 		t.Fatalf("final response = %q/%v", response.body.String(), response.headers[1])
+	}
+}
+
+func TestBufferedResponseWriterCommitFinalResponseDeclaresAndWritesTrailers(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	response := newCommitRecorder()
+	w.CommitFinalResponse(response, ResponseState{
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}, "Grpc-Message": {"complete"}},
+		Body:    []byte(`{"ok":true}`),
+	})
+
+	if got := response.headers[0].Values("Trailer"); !strings.Contains(strings.Join(got, ","), "Grpc-Message") ||
+		!strings.Contains(strings.Join(got, ","), "Grpc-Status") {
+		t.Fatalf("declared Trailer = %v", got)
+	}
+	if response.headers[0].Get("Grpc-Status") != "" {
+		t.Fatalf("grpc status committed as an ordinary header: %v", response.headers[0])
+	}
+	if response.Header().Get("Grpc-Status") != "0" || response.Header().Get("Grpc-Message") != "complete" {
+		t.Fatalf("final trailers = %v", response.Header())
 	}
 }
 

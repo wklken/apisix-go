@@ -117,6 +117,27 @@ func TestProxyCacheStoreIntentIsPerPluginInstanceAndConsumedOnce(t *testing.T) {
 	}
 }
 
+func TestProxyCacheFinalStoreSkipsTrailerBearingResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	request := p.RunRequestPhase(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/grpc-cache", nil),
+	).Request
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}},
+		Body:    []byte(`{"ok":true}`),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	if len(p.entries) != 0 {
+		t.Fatalf("cached trailer-bearing entries = %d, want 0", len(p.entries))
+	}
+}
+
 func TestProxyCacheStoreIntentUsesMissTimeVaryHeaderSnapshot(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
 	request := httptest.NewRequest(http.MethodGet, "/vary-intent", nil)

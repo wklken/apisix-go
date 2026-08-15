@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -273,10 +274,10 @@ func (p *Plugin) PostInit() error {
 			"disable_hooks",
 		}
 	}
-	// Preload the descriptor binding at initialization; request handling only
-	// revalidates the proto generation. Load errors surface on request.
-	_, _ = p.loadBinding()
-	return nil
+	// Preload the descriptor binding at initialization so unsupported streaming
+	// methods and invalid descriptors fail the route generation before serving.
+	_, err := p.loadBinding()
+	return err
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -294,11 +295,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		recorder := base.GetOrCreateTransformResponseWriter(r)
 		next.ServeHTTP(recorder, r)
-		if err := p.transformResponse(recorder, binding); err != nil {
+		state := responseStateFromBuffered(recorder)
+		if err := p.transformResponse(&state, binding); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeTranscodedResponse(w, recorder)
+		writeTranscodedResponse(w, r.Method, state)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -330,19 +332,7 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 	if binding == nil {
 		return fmt.Errorf("grpc-transcode request binding is missing")
 	}
-	recorder := base.NewBufferedResponseWriter()
-	for field, values := range state.Header {
-		recorder.Header()[field] = append([]string(nil), values...)
-	}
-	recorder.SetBody(state.Body)
-	recorder.SetStatusCode(state.Status)
-	if err := p.transformResponse(recorder, binding); err != nil {
-		return err
-	}
-	state.Status = recorder.StatusCode()
-	state.Header = recorder.Header().Clone()
-	state.Body = append(state.Body[:0], recorder.Body()...)
-	return nil
+	return p.transformResponse(state, binding)
 }
 
 func (p *Plugin) loadBinding() (*methodBinding, error) {
@@ -955,63 +945,111 @@ func normalizeHashInt64FieldValue(value any, field protoreflect.FieldDescriptor)
 	return strconv.FormatInt(int64(parsed), 10)
 }
 
-func (p *Plugin) transformResponse(resp *base.BufferedResponseWriter, binding *methodBinding) error {
-	grpcStatus := resp.Header().Get("Grpc-Status")
-	if grpcStatus != "" && grpcStatus != "0" {
-		if status, ok := grpcStatusToHTTPStatus[grpcStatus]; ok {
-			resp.SetStatusCode(status)
-		} else {
-			resp.SetStatusCode(599)
-		}
-		resp.Header().Del("Content-Length")
-		if p.config.ShowStatusInBody {
-			if encodedStatus := resp.Header().Get("Grpc-Status-Details-Bin"); encodedStatus != "" {
-				body, err := p.decodeStatusDetails(encodedStatus, binding)
-				if err != nil {
-					return err
-				}
-				resp.SetBody(body)
-				resp.Header().Set("Content-Type", jsonContentType)
-				return nil
-			}
-		} else {
-			resp.SetBody(nil)
+func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBinding) error {
+	normalizeGRPCResponseTrailers(resp)
+	grpcStatus := resp.Trailer.Get("Grpc-Status")
+	if grpcStatus == "" && resp.Status >= 300 {
+		return nil
+	}
+	if grpcStatus == "" {
+		grpcStatus = "0"
+		resp.Trailer.Set("Grpc-Status", grpcStatus)
+	}
+	if _, declared := resp.Trailer["Grpc-Message"]; !declared {
+		resp.Trailer["Grpc-Message"] = []string{""}
+	}
+	if grpcStatus != "0" {
+		statusCode, err := strconv.Atoi(grpcStatus)
+		if err != nil || statusCode < 0 {
+			setTranscodeGatewayError(resp)
 			return nil
 		}
-	}
-
-	if resp.StatusCode() >= 300 && !p.config.ShowStatusInBody {
-		resp.SetBody(nil)
+		if status, ok := grpcStatusToHTTPStatus[grpcStatus]; ok {
+			resp.Status = status
+		} else {
+			resp.Status = 599
+		}
+		resp.Header.Del("Content-Length")
+		if encodedStatus := resp.Trailer.Get(
+			"Grpc-Status-Details-Bin",
+		); p.config.ShowStatusInBody &&
+			encodedStatus != "" {
+			body, decodeErr := p.decodeStatusDetails(encodedStatus, binding)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			resp.Body = body
+		} else {
+			message, decodeErr := url.PathUnescape(resp.Trailer.Get("Grpc-Message"))
+			if decodeErr != nil {
+				message = resp.Trailer.Get("Grpc-Message")
+			}
+			resp.Body, err = json.Marshal(map[string]any{
+				"error": map[string]any{"code": statusCode, "message": message},
+			})
+			if err != nil {
+				return fmt.Errorf("encode grpc error status: %w", err)
+			}
+		}
+		resp.Header.Set("Content-Type", jsonContentType)
 		return nil
 	}
-	if len(resp.Body()) == 0 {
-		resp.Header().Set("Content-Type", jsonContentType)
-		resp.Header().Del("Content-Length")
+
+	if len(resp.Body) == 0 {
+		resp.Header.Set("Content-Type", jsonContentType)
+		resp.Header.Del("Content-Length")
 		return nil
 	}
 
-	payload, err := unframeGRPCMessage(resp.Body())
+	payload, err := unframeGRPCMessage(resp.Body)
 	if err != nil {
-		return err
+		setTranscodeGatewayError(resp)
+		return nil
 	}
 	msg := dynamicpb.NewMessage(binding.method.Output())
 	if err := proto.Unmarshal(payload, msg); err != nil {
-		return fmt.Errorf("decode protobuf response: %w", err)
+		setTranscodeGatewayError(resp)
+		return nil
 	}
 	out, err := p.marshalProtoJSON(msg, nil)
 	if err != nil {
 		return fmt.Errorf("encode protobuf JSON response: %w", err)
 	}
-	resp.SetBody(out)
-	resp.Header().Set("Content-Type", jsonContentType)
-	resp.Header().Del("Content-Length")
+	resp.Body = out
+	resp.Header.Set("Content-Type", jsonContentType)
+	resp.Header.Del("Content-Length")
 	return nil
+}
+
+func setTranscodeGatewayError(resp *base.ResponseState) {
+	resp.Status = http.StatusBadGateway
+	resp.Header.Del("Content-Length")
+	resp.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	resp.Trailer = nil
+	resp.Body = []byte(`{"message":"Bad Gateway"}`)
+}
+
+func normalizeGRPCResponseTrailers(resp *base.ResponseState) {
+	if resp.Trailer == nil {
+		resp.Trailer = make(http.Header)
+	}
+	for _, field := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
+		if values := resp.Header.Values(field); len(values) > 0 {
+			if len(resp.Trailer.Values(field)) == 0 {
+				resp.Trailer[field] = append([]string(nil), values...)
+			}
+			resp.Header.Del(field)
+		}
+	}
 }
 
 func (p *Plugin) decodeStatusDetails(encoded string, binding *methodBinding) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
-		return nil, fmt.Errorf("decode grpc-status-details-bin: %w", err)
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err != nil {
+			return nil, fmt.Errorf("decode grpc-status-details-bin: %w", err)
+		}
 	}
 
 	var status statuspb.Status
@@ -1323,8 +1361,18 @@ func unframeGRPCMessage(frame []byte) ([]byte, error) {
 	return frame[5:], nil
 }
 
-func writeTranscodedResponse(w http.ResponseWriter, resp *base.BufferedResponseWriter) {
-	for field, values := range resp.Header() {
+func responseStateFromBuffered(resp *base.BufferedResponseWriter) base.ResponseState {
+	header := resp.Header().Clone()
+	return base.ResponseState{
+		Status:  resp.StatusCode(),
+		Header:  header,
+		Trailer: base.ExtractResponseTrailers(header),
+		Body:    append([]byte(nil), resp.Body()...),
+	}
+}
+
+func writeTranscodedResponse(w http.ResponseWriter, method string, resp base.ResponseState) {
+	for field, values := range resp.Header {
 		if strings.EqualFold(field, "Content-Length") {
 			continue
 		}
@@ -1332,6 +1380,14 @@ func writeTranscodedResponse(w http.ResponseWriter, resp *base.BufferedResponseW
 			w.Header().Add(field, value)
 		}
 	}
-	w.WriteHeader(resp.StatusCode())
-	resp.WriteBodyTo(w)
+	for field := range resp.Trailer {
+		w.Header().Add("Trailer", http.CanonicalHeaderKey(field))
+	}
+	w.WriteHeader(resp.Status)
+	if base.ResponseAllowsBody(method, resp.Status) {
+		_, _ = w.Write(resp.Body)
+	}
+	for field, values := range resp.Trailer {
+		w.Header()[http.CanonicalHeaderKey(field)] = append([]string(nil), values...)
+	}
 }

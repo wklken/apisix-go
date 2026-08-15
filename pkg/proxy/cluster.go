@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"golang.org/x/net/http2"
 )
 
 // DefaultMaxInFlight bounds the number of concurrently active response bodies
@@ -37,6 +41,7 @@ type ClusterConfig struct {
 	Retries           int
 	RetriesConfigured bool
 	MaxInFlight       int
+	HTTP2Cleartext    bool
 }
 
 // clusterKeyIdentity is the deterministic serialization used to derive
@@ -52,6 +57,7 @@ type clusterKeyIdentity struct {
 	Retries           int
 	RetriesConfigured bool
 	MaxInFlight       int
+	HTTP2Cleartext    bool
 }
 
 type clusterKeyTarget struct {
@@ -72,6 +78,7 @@ func (c ClusterConfig) Key() (ClusterKey, error) {
 		Retries:           c.Retries,
 		RetriesConfigured: c.RetriesConfigured,
 		MaxInFlight:       c.MaxInFlight,
+		HTTP2Cleartext:    c.HTTP2Cleartext,
 	}
 	raw, err := json.Marshal(identity)
 	if err != nil {
@@ -110,8 +117,26 @@ type Cluster struct {
 }
 
 func newCluster(config ClusterConfig, observer ClusterObserver) (*Cluster, error) {
+	if config.HTTP2Cleartext {
+		transport := newCleartextHTTP2Transport(config.Transport)
+		base := newResponseHeaderTimeoutTransport(transport, config.Transport.responseHeaderTimeout)
+		return newClusterWithTransport(config, observer, base, transport.CloseIdleConnections)
+	}
 	transport := NewTransport(config.Transport)
 	return newClusterWithTransport(config, observer, transport, transport.CloseIdleConnections)
+}
+
+func newCleartextHTTP2Transport(option TransportOption) *http2.Transport {
+	return &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+			return (&net.Dialer{Timeout: option.dialTimeout, KeepAlive: 30 * time.Second}).DialContext(
+				ctx,
+				network,
+				address,
+			)
+		},
+	}
 }
 
 // newClusterWithTransport builds a cluster around an injected base transport

@@ -206,6 +206,9 @@ func (w *BufferedResponseWriter) CommitFinalResponse(
 	for field, values := range state.Header {
 		w.header[field] = append([]string(nil), values...)
 	}
+	for field := range state.Trailer {
+		w.header.Add("Trailer", http.CanonicalHeaderKey(field))
+	}
 	if w.bodyPtr != nil {
 		w.bodyPtr.Reset()
 		_, _ = w.bodyPtr.Write(state.Body)
@@ -217,6 +220,14 @@ func (w *BufferedResponseWriter) CommitFinalResponse(
 	w.wroteHeader = true
 	replaceHeader(dst.Header(), nil)
 	w.Commit(dst)
+	_, buffered := dst.(*BufferedResponseWriter)
+	for field, values := range state.Trailer {
+		name := http.CanonicalHeaderKey(field)
+		if buffered {
+			name = http.TrailerPrefix + name
+		}
+		dst.Header()[name] = append([]string(nil), values...)
+	}
 }
 
 // CommitCaptured replays captured informational responses and commits the

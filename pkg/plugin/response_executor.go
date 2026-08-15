@@ -16,6 +16,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"golang.org/x/net/http/httpguts"
 )
 
 type TerminalOwner uint8
@@ -547,11 +548,13 @@ func (s *responseExecution) complete() {
 		s.fail(http.StatusInternalServerError, "Internal Server Error")
 		return
 	}
+	header := s.capture.Header().Clone()
 	state := base.ResponseState{
 		Status: s.capture.StatusCode(),
-		Header: s.capture.Header().Clone(),
+		Header: header,
 		Body:   slices.Clone(s.capture.Body()),
 	}
+	state.Trailer = base.ExtractResponseTrailers(state.Header)
 	if invalidFinalState(state, s.executor.config.MaxBytes) {
 		s.fail(http.StatusBadGateway, "Bad Gateway")
 		return
@@ -681,7 +684,22 @@ func (s *responseExecution) fail(status int, text string) {
 func invalidFinalState(state base.ResponseState, maxBytes int64) bool {
 	return state.Status < 200 || state.Status > 999 ||
 		hasTrailer(state.Header) ||
+		invalidTrailer(state.Trailer) ||
 		int64(len(state.Body)) > maxBytes
+}
+
+func invalidTrailer(trailer http.Header) bool {
+	for field, values := range trailer {
+		if !httpguts.ValidHeaderFieldName(field) || !httpguts.ValidTrailerHeader(field) {
+			return true
+		}
+		for _, value := range values {
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func replaceResponseHeader(dst, src http.Header) {

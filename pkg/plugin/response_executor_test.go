@@ -454,7 +454,7 @@ func TestBufferedResponseBodylessWriteDoesNotConsumeBodyCap(t *testing.T) {
 	}
 }
 
-func TestBufferedResponseRejectsUpgradeAndTrailerBeforeCallbacks(t *testing.T) {
+func TestBufferedResponseRejectsUpgradeAndInvalidTrailerBeforeCallbacks(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		terminal http.Handler
@@ -467,11 +467,12 @@ func TestBufferedResponseRejectsUpgradeAndTrailerBeforeCallbacks(t *testing.T) {
 			}),
 		},
 		{
-			name: "trailer",
+			name: "forbidden trailer",
 			terminal: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
-				w.Header().Set("Trailer", "X-Checksum")
+				w.Header().Set("Trailer", "Content-Length")
 				_, _ = w.Write([]byte("body"))
+				w.Header().Set("Content-Length", "4")
 			}),
 		},
 	} {
@@ -506,6 +507,48 @@ func TestBufferedResponseRejectsUpgradeAndTrailerBeforeCallbacks(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestBufferedResponseSeparatesAndCommitsDeclaredTrailers(t *testing.T) {
+	responsePlugin := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	callbackCalls := 0
+	responsePlugin.body = func(_ *http.Request, state *base.ResponseState) error {
+		callbackCalls++
+		if state.Header.Get("Trailer") != "" || state.Header.Get("Grpc-Status") != "" {
+			t.Fatalf("ordinary response headers contain trailers: %v", state.Header)
+		}
+		if state.Trailer.Get("Grpc-Status") != "0" || state.Trailer.Get("Grpc-Message") != "complete" {
+			t.Fatalf("callback trailers = %v", state.Trailer)
+		}
+		state.Trailer.Set("Grpc-Message", "transcoded")
+		return nil
+	}
+	binding := checkedResponseBinding(t, "body-transformer", responsePlugin, ScopeRoute, "route")
+	response := httptest.NewRecorder()
+	serveBufferedTestPipeline(
+		t,
+		[]Binding{binding},
+		nil,
+		newBufferedTestExecutor(t, []Binding{binding}),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+			w.Header().Add("Trailer", "Grpc-Status, Grpc-Message")
+			_, _ = w.Write([]byte("body"))
+			w.Header().Set("Grpc-Status", "0")
+			w.Header().Set("Grpc-Message", "complete")
+		}),
+		response,
+	)
+
+	result := response.Result()
+	if callbackCalls != 1 || result.Trailer.Get("Grpc-Status") != "0" ||
+		result.Trailer.Get("Grpc-Message") != "transcoded" {
+		t.Fatalf("response = callbacks:%d trailers:%v", callbackCalls, result.Trailer)
 	}
 }
 

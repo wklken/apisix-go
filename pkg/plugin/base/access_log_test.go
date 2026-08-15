@@ -27,18 +27,26 @@ func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
 	started := time.Unix(100, 0)
 	snapshot := LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
-			Method: http.MethodGet, URI: "/orders?q=one", URL: "/orders?q=one",
+			ID: "request-1", Method: http.MethodGet, URI: "/orders?q=one", URL: "/orders?q=one",
 			Host: "gateway.test:9443", RemoteAddr: "192.0.2.3:3210", Scheme: "https",
 			Header: http.Header{"X-Request-ID": {"r-1"}}, Query: map[string][]string{"q": {"one"}},
 			APISIXVars: map[string]any{
 				"$service_id": "service-1", "$route_id": "route-1",
 				"$upstream_latency": int64(200), "$upstream_addr": "10.0.0.1:8080",
 			},
-			Consumer: apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+			RequestVars: map[string]any{"$upstream_status": 201, "$retry_count": 2},
+			Consumer:    apisixlog.SafeConsumerLogIdentity{Username: "alice"},
 		},
 		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Result": {"ok"}}},
-		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 9},
-		Started:  started, Finished: started.Add(time.Second),
+		Outcome: apisixctx.ResponseOutcome{
+			Kind:   apisixctx.RequestOutcomeCompleted,
+			Status: http.StatusCreated,
+			Bytes:  9,
+		},
+		Source:   apisixctx.ResponseSourceUpstream,
+		NodeID:   "node-1",
+		Started:  started,
+		Finished: started.Add(time.Second),
 	}
 	fields := BuildAccessLogFromSnapshot(snapshot, "")
 	request := fields["request"].(map[string]any)
@@ -53,6 +61,11 @@ func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
 	}
 	if fields["consumer"].(map[string]any)["username"] != "alice" {
 		t.Fatalf("consumer = %#v", fields["consumer"])
+	}
+	if fields["request_id"] != "request-1" || fields["node_id"] != "node-1" ||
+		fields["response_source"] != "upstream" || fields["outcome"] != "completed" ||
+		fields["upstream_status"] != 201 || fields["retry_count"] != 2 {
+		t.Fatalf("correlation fields = %#v", fields)
 	}
 }
 

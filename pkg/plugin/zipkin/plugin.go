@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -349,6 +350,7 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			state.started,
 			duration,
 			lifecycle.ResponseSource(),
+			outcome.Kind,
 		)) {
 			logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
 		}
@@ -384,6 +386,7 @@ func (p *Plugin) buildSpanWithSource(
 	start time.Time,
 	duration time.Duration,
 	source apisixctx.ResponseSource,
+	outcomes ...apisixctx.RequestOutcomeKind,
 ) map[string]any {
 	serverAddr := p.config.ServerAddr
 	if serverAddr == "" {
@@ -414,6 +417,20 @@ func (p *Plugin) buildSpanWithSource(
 	}
 	if source != apisixctx.ResponseSourceUnknown {
 		tags["apisix.response_source"] = string(source)
+	}
+	correlation := apisixlog.CaptureRequestCorrelation(r)
+	for key, value := range map[string]string{
+		"apisix.request_id":         correlation.RequestID,
+		"apisix.node_id":            correlation.NodeID,
+		"apisix.retry_count":        correlation.RetryCount,
+		"http.upstream_status_code": correlation.UpstreamStatus,
+	} {
+		if value != "" {
+			tags[key] = value
+		}
+	}
+	if len(outcomes) > 0 && outcomes[0] != "" {
+		tags["apisix.outcome"] = string(outcomes[0])
 	}
 
 	localEndpoint := map[string]any{"serviceName": p.config.ServiceName}

@@ -82,6 +82,22 @@ func (o *proxyRuntimeObserver) SetHealth(cluster, target string, healthy bool) {
 	}
 }
 
+func (o *proxyRuntimeObserver) DeleteCluster(cluster string) {
+	labels := prometheus.Labels{"upstream": cluster}
+	if vec := o.vector(ProxyInFlight, o.inFlight); vec != nil {
+		vec.DeletePartialMatch(labels)
+	}
+	if vec := o.counter(ProxyRejected, o.rejected); vec != nil {
+		vec.DeletePartialMatch(labels)
+	}
+	if vec := o.counter(ProxyRetry, o.retry); vec != nil {
+		vec.DeletePartialMatch(labels)
+	}
+	if vec := o.vector(ProxyHealth, o.health); vec != nil {
+		vec.DeletePartialMatch(labels)
+	}
+}
+
 func (o *proxyRuntimeObserver) vector(
 	packageVec *prometheus.GaugeVec,
 	injected *prometheus.GaugeVec,

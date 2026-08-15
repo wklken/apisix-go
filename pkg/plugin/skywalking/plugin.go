@@ -12,6 +12,7 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -291,7 +292,8 @@ func (p *Plugin) finishSegment(
 			finished = time.Now()
 		}
 		duration := max(finished.Sub(state.started), time.Duration(0))
-		status := lifecycle.Outcome().Status
+		outcome := lifecycle.Outcome()
+		status := outcome.Status
 		if status == 0 {
 			status = http.StatusOK
 		}
@@ -302,6 +304,7 @@ func (p *Plugin) finishSegment(
 			state.started,
 			duration,
 			lifecycle.ResponseSource(),
+			outcome.Kind,
 		))
 	})
 	return nil
@@ -375,6 +378,7 @@ func (p *Plugin) buildSegmentWithSource(
 	start time.Time,
 	duration time.Duration,
 	source apisixctx.ResponseSource,
+	outcomes ...apisixctx.RequestOutcomeKind,
 ) skywalkingSegment {
 	end := start.Add(duration)
 	tags := []skywalkingTag{
@@ -384,6 +388,20 @@ func (p *Plugin) buildSegmentWithSource(
 	}
 	if source != apisixctx.ResponseSourceUnknown {
 		tags = append(tags, skywalkingTag{Key: "apisix.response_source", Value: string(source)})
+	}
+	correlation := apisixlog.CaptureRequestCorrelation(r)
+	for _, tag := range []skywalkingTag{
+		{Key: "apisix.request_id", Value: correlation.RequestID},
+		{Key: "apisix.node_id", Value: correlation.NodeID},
+		{Key: "apisix.retry_count", Value: correlation.RetryCount},
+		{Key: "http.upstream_status_code", Value: correlation.UpstreamStatus},
+	} {
+		if tag.Value != "" {
+			tags = append(tags, tag)
+		}
+	}
+	if len(outcomes) > 0 && outcomes[0] != "" {
+		tags = append(tags, skywalkingTag{Key: "apisix.outcome", Value: string(outcomes[0])})
 	}
 	span := skywalkingSpan{
 		SpanID:        0,

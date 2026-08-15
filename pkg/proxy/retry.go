@@ -4,13 +4,16 @@ import (
 	"context"
 	"net"
 	"net/http"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 type RetryTarget func(*http.Request) bool
 
 type retryState struct {
-	count int
-	next  RetryTarget
+	count    int
+	next     RetryTarget
+	attempts int
 }
 
 type retryTransport struct {
@@ -88,6 +91,8 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 			stopped = true
 			break
 		}
+		state.attempts++
+		apisixctx.RegisterRequestVar(request, "$retry_count", state.attempts)
 		response, err = transport.base.RoundTrip(request)
 	}
 	transport.observeResult(err, stopped)

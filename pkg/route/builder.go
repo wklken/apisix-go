@@ -3214,12 +3214,12 @@ func newModifyResponse() pxy.ModifyResponse {
 		pxy.ReportHTTPOutcome(resp.Request, status)
 		if ctx.GetRequestVars(resp.Request) != nil {
 			ctx.RegisterRequestVar(resp.Request, "$status", status)
+			ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
 		}
 		recordUpstreamLatency(resp.Request)
 
 		// FIXME: the status here is upstream status, not the http status finally
 
-		// FIXME: metric.UpstreamStatus
 		// FIXME: metric.HttpLatency type=upstream
 
 		// status := resp.StatusCode

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -13,6 +14,7 @@ import (
 type Plugin struct {
 	base.BasePlugin
 	config Config
+	nodeID string
 }
 
 const (
@@ -42,6 +44,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.nodeID = apisixid.Get()
 	return nil
 }
 
@@ -134,6 +137,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 
 func (p *Plugin) initializeRequest(r *http.Request, lifecycle *ctx.RequestLifecycle) *http.Request {
 	r = ctx.WithApisixVars(r, map[string]string{
+		"$node_id":      p.nodeID,
 		"$route_id":     p.config.RouteID,
 		"$route_name":   p.config.RouteName,
 		"$matched_uri":  p.config.MatchedURI,

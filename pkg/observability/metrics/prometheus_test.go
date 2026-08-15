@@ -176,8 +176,7 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		requests             prometheus.Counter
 		etcdReachable        prometheus.Gauge
 		hostInfo             *prometheus.GaugeVec
-		etcdModifyIndexed    *prometheus.GaugeVec
-		upstreamStatus       *prometheus.GaugeVec
+		etcdRevision         prometheus.Gauge
 		httpStatus           *prometheus.CounterVec
 		httpLatency          *prometheus.HistogramVec
 		bandwidth            *prometheus.CounterVec
@@ -190,12 +189,12 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		llmActiveConnections *prometheus.GaugeVec
 		extraLabels          map[string][]prometheusExtraLabel
 	}{
-		Connections, Requests, EtcdReachable, HostInfo, EtcdModifyIndexed, UpstreamStatus,
+		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision,
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries, LoggerBatchPendingEntries, LoggerBatchEvents,
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections, prometheusExtraLabels,
 	}
 	restore := func() {
-		Connections, Requests, EtcdReachable, HostInfo, EtcdModifyIndexed, UpstreamStatus = old.connections, old.requests, old.etcdReachable, old.hostInfo, old.etcdModifyIndexed, old.upstreamStatus
+		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision = old.connections, old.requests, old.etcdReachable, old.hostInfo, old.etcdRevision
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries = old.httpStatus, old.httpLatency, old.bandwidth, old.batchProcessEntries
 		LoggerBatchPendingEntries, LoggerBatchEvents = old.loggerBatchPending, old.loggerBatchEvents
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections = old.llmLatency, old.llmPromptTokens, old.llmCompletionTokens, old.llmActiveConnections

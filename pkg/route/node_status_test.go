@@ -42,9 +42,14 @@ func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
 	if !ok {
 		t.Fatalf("status = %#v, want object", body["status"])
 	}
-	for _, key := range []string{"active", "accepted", "handled", "total", "reading", "writing", "waiting"} {
+	for _, key := range []string{"active", "accepted", "handled", "total"} {
 		if _, ok := status[key]; !ok {
 			t.Fatalf("status[%q] missing in %#v", key, status)
+		}
+	}
+	for _, key := range []string{"reading", "writing", "waiting"} {
+		if _, ok := status[key]; ok {
+			t.Fatalf("status includes unowned %q counter: %#v", key, status)
 		}
 	}
 }

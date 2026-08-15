@@ -80,9 +80,6 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 			"accepted": stringUint(acceptedRequests.Load()),
 			"handled":  stringUint(handledRequests.Load()),
 			"total":    stringUint(totalRequests.Load()),
-			"reading":  "0",
-			"writing":  "0",
-			"waiting":  "0",
 		},
 	}
 

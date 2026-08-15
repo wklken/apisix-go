@@ -163,6 +163,8 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 
 	r.Header.Set(p.config.HeaderName, requestID)
+	apisixctx.RegisterApisixVar(r, "$request_id", requestID)
+	apisixctx.RegisterRequestVar(r, "$request_id", requestID)
 
 	if *p.config.IncludeInResponse {
 		w.Header().Set(p.config.HeaderName, requestID)

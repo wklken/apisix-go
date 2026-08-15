@@ -9,6 +9,7 @@ type ClusterObserver interface {
 	ObserveRetry(cluster, result string)
 	SetHealth(cluster, target string, healthy bool)
 	ObserveRejected(cluster string)
+	DeleteCluster(cluster string)
 }
 
 // NopClusterObserver discards every cluster runtime signal. It is the default
@@ -19,3 +20,4 @@ func (NopClusterObserver) SetInFlight(string, int)        {}
 func (NopClusterObserver) ObserveRetry(string, string)    {}
 func (NopClusterObserver) SetHealth(string, string, bool) {}
 func (NopClusterObserver) ObserveRejected(string)         {}
+func (NopClusterObserver) DeleteCluster(string)           {}

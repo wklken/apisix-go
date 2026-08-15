@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 func TestNewProxyHandlerWithFlushInterval(t *testing.T) {
@@ -59,6 +62,7 @@ func TestRetryTransportRetriesTransportErrorsWithNextTargets(t *testing.T) {
 		}, nil
 	}))
 	request := httptest.NewRequest(http.MethodGet, "http://upstream.example/hello", nil)
+	request = apisixctx.WithRequestVars(request)
 	request = WithRetries(request, 2, func(*http.Request) bool {
 		nextTargets++
 		return true
@@ -77,6 +81,14 @@ func TestRetryTransportRetriesTransportErrorsWithNextTargets(t *testing.T) {
 	}
 	if nextTargets != 2 {
 		t.Fatalf("next-target selections = %d, want 2", nextTargets)
+	}
+	if got := apisixctx.GetRequestVar(request, "$retry_count"); got != 2 {
+		t.Fatalf("retry count = %#v, want 2", got)
+	}
+	snapshot := apisixlog.BuildSnapshot(request, apisixlog.ResponseSnapshot{}, apisixctx.ResponseOutcome{},
+		apisixctx.ResponseSourceUpstream, time.Now(), time.Now())
+	if got := snapshot.Request.RequestVars["$retry_count"]; got != 2 {
+		t.Fatalf("detached retry count = %#v, want 2", got)
 	}
 }
 

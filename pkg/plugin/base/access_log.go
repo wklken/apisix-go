@@ -144,10 +144,16 @@ func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr
 		},
 		"server":     map[string]any{"hostname": Hostname(), "version": accessLogVersion},
 		"service_id": SnapshotValue(snapshot, "$service_id"), "route_id": routeID,
-		"client_ip":  HostWithoutPort(snapshot.Request.RemoteAddr),
+		"client_ip":  fmt.Sprint(SnapshotValue(snapshot, "$remote_addr")),
 		"start_time": float64(snapshot.Started.UnixNano()) / float64(time.Millisecond),
 		"latency":    latency, "upstream_latency": upstreamLatency, "apisix_latency": apisixLatency,
-		"upstream": snapshotUpstreamAddress(snapshot),
+		"upstream":        snapshotUpstreamAddress(snapshot),
+		"request_id":      snapshot.Request.ID,
+		"node_id":         snapshot.NodeID,
+		"response_source": string(snapshot.Source),
+		"outcome":         string(snapshot.Outcome.Kind),
+		"upstream_status": SnapshotValue(snapshot, "$upstream_status"),
+		"retry_count":     SnapshotValue(snapshot, "$retry_count"),
 	}
 	if consumer := snapshot.Request.Consumer.Username; consumer != "" {
 		fields["consumer"] = map[string]any{"username": consumer}

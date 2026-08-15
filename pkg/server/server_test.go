@@ -634,6 +634,9 @@ func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	if server.ReadTimeout != 0 || server.WriteTimeout != 0 {
 		t.Fatalf("stream-sensitive total timeouts = %s/%s, want zero", server.ReadTimeout, server.WriteTimeout)
 	}
+	if server.ConnState == nil {
+		t.Fatal("configured HTTP server has no connection lifecycle observer")
+	}
 }
 
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {

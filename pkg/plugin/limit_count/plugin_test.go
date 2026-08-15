@@ -1384,6 +1384,60 @@ func TestRequestResolvedLimitsUseSharedQuotaWithoutCachingCombinations(t *testin
 	}
 }
 
+func TestRequestResolvedRedisLimitsAcquireBackendOnce(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:      "$http_x_count",
+		TimeWindow: 60,
+		Policy:     "redis",
+		RedisHost:  "127.0.0.1",
+	})
+	t.Cleanup(p.Stop)
+
+	var first redis.UniversalClient
+	for i := range 32 {
+		client, err := p.redisBackendClient()
+		if err != nil {
+			t.Fatalf("redisBackendClient(%d) error = %v", i, err)
+		}
+		if first == nil {
+			first = client
+		} else if client != first {
+			t.Fatalf("redisBackendClient(%d) = %p, want first client %p", i, client, first)
+		}
+	}
+	if p.clientRelease == nil {
+		t.Fatal("plugin did not retain the single backend release owner")
+	}
+}
+
+func TestStopReleasesRedisBackendOnce(t *testing.T) {
+	p := &Plugin{}
+	var releases atomic.Int64
+	p.clientRelease = func() { releases.Add(1) }
+
+	p.Stop()
+	p.Stop()
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("backend releases = %d, want exactly 1", got)
+	}
+}
+
+func TestMemorySlidingWindowStoreBoundsLiveCounters(t *testing.T) {
+	const capacity = 100000
+	store := newMemorySlidingWindowStore()
+	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
+
+	for i := 0; i <= capacity; i++ {
+		key := "key-" + strconv.Itoa(i)
+		if _, err := store.increment(context.Background(), key, 1, time.Minute, now); err != nil {
+			t.Fatalf("increment %s: %v", key, err)
+		}
+	}
+	if got := len(store.counters); got > capacity {
+		t.Fatalf("live sliding-window counters = %d, want at most %d", got, capacity)
+	}
+}
+
 type recordingDelayedSyncBackend struct {
 	mu       sync.Mutex
 	limit    int64

@@ -10,7 +10,7 @@ import (
 
 // defaultLocalStoreCapacity bounds the number of in-memory local-policy
 // counters; the earliest expiring counters are evicted once the bound is hit.
-var defaultLocalStoreCapacity = 10000
+var defaultLocalStoreCapacity = 100000
 
 type localFixedCounter struct {
 	value   int64

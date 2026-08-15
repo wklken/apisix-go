@@ -2,6 +2,8 @@ package limit_conn
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -20,6 +22,8 @@ type redisConnLimiter struct {
 	unitDelay           float64
 	keyTTL              time.Duration
 	onlyUseDefaultDelay bool
+	now                 func() time.Time
+	newMemberID         func() (string, error)
 }
 
 type redisPoolStatsProvider interface {
@@ -107,7 +111,17 @@ func (p *Plugin) newRedisConnLimiter(client redis.UniversalClient) connLimiter {
 		unitDelay:           p.config.DefaultConnDelay,
 		keyTTL:              time.Duration(p.config.RedisKeyTTL) * time.Second,
 		onlyUseDefaultDelay: p.config.OnlyUseDefaultDelay,
+		now:                 time.Now,
+		newMemberID:         randomConnMemberID,
 	}
+}
+
+func randomConnMemberID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate limit-conn reservation member: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
@@ -122,10 +136,22 @@ func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
 	}
 }
 
-func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
+func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, string, bool, error) {
 	l.mu.Lock()
 	unitDelay := l.unitDelay
 	l.mu.Unlock()
+	now := l.now
+	if now == nil {
+		now = time.Now
+	}
+	newMemberID := l.newMemberID
+	if newMemberID == nil {
+		newMemberID = randomConnMemberID
+	}
+	member, err := newMemberID()
+	if err != nil {
+		return 0, "", false, err
+	}
 	logRedisConnectionReuse(l.client)
 	result, err := l.client.Eval(
 		context.Background(),
@@ -135,33 +161,39 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 		burst,
 		unitDelay,
 		l.keyTTL.Milliseconds(),
+		now().UnixMilli(),
+		member,
 	).Result()
 	if err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
 
 	values, ok := result.([]any)
 	if !ok || len(values) != 2 {
-		return 0, false, fmt.Errorf("unexpected redis limit-conn result: %v", result)
+		return 0, "", false, fmt.Errorf("unexpected redis limit-conn result: %v", result)
 	}
 	allowed, ok := limitbase.RedisInt(values[0])
 	if !ok {
-		return 0, false, fmt.Errorf("unexpected redis limit-conn allowed value: %v", values[0])
+		return 0, "", false, fmt.Errorf("unexpected redis limit-conn allowed value: %v", values[0])
 	}
 	delayMs, ok := limitbase.RedisInt(values[1])
 	if !ok {
-		return 0, false, fmt.Errorf("unexpected redis limit-conn delay value: %v", values[1])
+		return 0, "", false, fmt.Errorf("unexpected redis limit-conn delay value: %v", values[1])
 	}
 
-	return time.Duration(delayMs) * time.Millisecond, allowed == 1, nil
+	if allowed != 1 {
+		member = ""
+	}
+	return time.Duration(delayMs) * time.Millisecond, member, allowed == 1, nil
 }
 
-func (l *redisConnLimiter) leaving(key string, latency *time.Duration) error {
+func (l *redisConnLimiter) leaving(key string, member string, latency *time.Duration) error {
 	logRedisConnectionReuse(l.client)
 	err := l.client.Eval(
 		context.Background(),
 		redisLimitConnLeavingScript,
 		[]string{"plugin-limit-conn:" + key},
+		member,
 	).Err()
 	if err != nil || latency == nil || l.onlyUseDefaultDelay {
 		return err

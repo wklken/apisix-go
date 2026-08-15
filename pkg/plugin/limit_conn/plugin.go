@@ -272,7 +272,6 @@ type Rule struct {
 }
 
 type admission struct {
-	key     string
 	release func(*time.Duration)
 }
 
@@ -282,28 +281,33 @@ type admissionRelease struct {
 }
 
 type connLimiter interface {
-	incoming(key string, conn int, burst int) (time.Duration, bool, error)
-	leaving(key string, latency *time.Duration) error
+	incoming(key string, conn int, burst int) (time.Duration, string, bool, error)
+	leaving(key string, member string, latency *time.Duration) error
 }
 
 const maxSafeInteger = int64(1<<53 - 1)
 
 const redisLimitConnIncomingScript = `
-local current = redis.call("INCR", KEYS[1])
-redis.call("PEXPIRE", KEYS[1], ARGV[4])
-
 local conn = tonumber(ARGV[1])
 local burst = tonumber(ARGV[2])
 local default_delay = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local now = tonumber(ARGV[5])
+local member = ARGV[6]
 local limit = conn + burst
 
-if current > limit then
-  local after_decr = redis.call("DECR", KEYS[1])
-  if after_decr <= 0 then
-    redis.call("DEL", KEYS[1])
-  end
+redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now)
+local current = redis.call("ZCARD", KEYS[1])
+if current >= limit then
   return {0, 0}
 end
+
+local added = redis.call("ZADD", KEYS[1], "NX", now + ttl, member)
+if added ~= 1 then
+  return {0, 0}
+end
+current = current + 1
+redis.call("PEXPIRE", KEYS[1], ttl)
 
 local delay = 0
 if current > conn then
@@ -315,11 +319,11 @@ return {1, math.floor(delay * 1000)}
 `
 
 const redisLimitConnLeavingScript = `
-local current = redis.call("DECR", KEYS[1])
-if current <= 0 then
+local removed = redis.call("ZREM", KEYS[1], ARGV[1])
+if redis.call("ZCARD", KEYS[1]) == 0 then
   redis.call("DEL", KEYS[1])
 end
-return current
+return removed
 `
 
 func (p *Plugin) Init() error {
@@ -577,7 +581,7 @@ func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhas
 		http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
 		return base.StopRequest(r), nil
 	}
-	delay, allowed, err := p.increase(key, conn, burst)
+	delay, allowed, releaseAdmission, err := p.increase(key, conn, burst)
 	if err != nil {
 		if *p.config.AllowDegradation {
 			return base.ContinueRequest(r), nil
@@ -590,7 +594,6 @@ func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhas
 		p.reject(w)
 		return base.StopRequest(r), nil
 	}
-	releaseAdmission := p.releaseForKey(key)
 	if delay > 0 {
 		time.Sleep(delay)
 	}
@@ -778,7 +781,7 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			continue
 		}
 
-		nextDelay, allowed, err := p.increase(key, conn, burst)
+		nextDelay, allowed, release, err := p.increase(key, conn, burst)
 		if err != nil {
 			p.decreaseAdmissions(admissions, nil)
 			return nil, 0, false, err
@@ -788,8 +791,7 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			return nil, 0, false, nil
 		}
 		admissions = append(admissions, admission{
-			key:     key,
-			release: p.releaseForKey(key),
+			release: release,
 		})
 		delay += nextDelay
 	}
@@ -801,16 +803,25 @@ func (p *Plugin) decreaseAdmissions(admissions []admission, latency *time.Durati
 	for _, admission := range admissions {
 		if admission.release != nil {
 			admission.release(latency)
-			continue
 		}
-		p.decrease(admission.key, latency)
 	}
 }
 
-func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool, error) {
+func (p *Plugin) increase(
+	key string,
+	conn int,
+	burst int,
+) (time.Duration, bool, func(*time.Duration), error) {
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		key = p.scopedRedisKey(key)
-		return p.redisLimiter.incoming(key, conn, burst)
+		limiter := p.redisLimiter
+		delay, member, allowed, err := limiter.incoming(key, conn, burst)
+		if err != nil || !allowed {
+			return delay, allowed, nil, err
+		}
+		return delay, true, func(latency *time.Duration) {
+			_ = limiter.leaving(key, member, latency)
+		}, nil
 	}
 	key = p.scopedKey(key)
 
@@ -820,44 +831,21 @@ func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool,
 	current := p.conns[key] + 1
 	limit := conn + burst
 	if current > limit {
-		return 0, false, nil
+		return 0, false, nil, nil
 	}
 
 	p.conns[key] = current
+	release := func(latency *time.Duration) { p.decreaseLocal(key, latency) }
 	if current > conn {
-		return connectionDelay(current, conn, p.unitDelay), true, nil
+		return connectionDelay(current, conn, p.unitDelay), true, release, nil
 	}
 
-	return 0, true, nil
+	return 0, true, release, nil
 }
 
 func connectionDelay(current int, conn int, unitDelay float64) time.Duration {
 	multiplier := (current - 1) / conn
 	return time.Duration(float64(multiplier) * unitDelay * float64(time.Second))
-}
-
-func (p *Plugin) decrease(key string, latency *time.Duration) {
-	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		key = p.scopedRedisKey(key)
-		_ = p.redisLimiter.leaving(key, latency)
-		return
-	}
-	key = p.scopedKey(key)
-	p.decreaseLocal(key, latency)
-}
-
-func (p *Plugin) releaseForKey(key string) func(*time.Duration) {
-	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		key = p.scopedRedisKey(key)
-		limiter := p.redisLimiter
-		return func(latency *time.Duration) {
-			_ = limiter.leaving(key, latency)
-		}
-	}
-	key = p.scopedKey(key)
-	return func(latency *time.Duration) {
-		p.decreaseLocal(key, latency)
-	}
 }
 
 func (p *Plugin) decreaseLocal(key string, latency *time.Duration) {

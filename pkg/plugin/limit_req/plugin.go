@@ -40,7 +40,7 @@ type Plugin struct {
 
 // defaultLocalBucketsCapacity bounds the number of in-memory local-policy
 // buckets; the earliest expiring buckets are evicted once the bound is hit.
-var defaultLocalBucketsCapacity = 10000
+var defaultLocalBucketsCapacity = 100000
 
 const (
 	priority = 1001
@@ -243,8 +243,7 @@ excess = math.max(0, excess - elapsed * rate) + 1
 local max_excess = burst + 1
 local allowed = 1
 if excess > max_excess then
-  excess = max_excess
-  allowed = 0
+  return {0, 0}
 end
 
 redis.call("HMSET", KEYS[1], "excess", excess, "last", now)
@@ -364,14 +363,14 @@ func (p *Plugin) PostInit() error {
 		p.config.rejectBody = util.BytesToString(body)
 	}
 
+	if p.now == nil {
+		p.now = time.Now
+	}
 	if p.buckets == nil {
 		p.buckets = cacheutil.NewBoundedTTLMap[*bucket](
 			defaultLocalBucketsCapacity,
 			func() time.Time { return p.now() },
 		)
-	}
-	if p.now == nil {
-		p.now = time.Now
 	}
 	p.bucketTTL = max(time.Duration(math.Ceil((p.config.Burst+1)/p.config.Rate))*time.Second, time.Second)
 
@@ -464,20 +463,21 @@ func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Dur
 	b, ok := buckets.Get(key)
 	if !ok {
 		b = &bucket{last: now}
-		buckets.Set(key, b, p.bucketTTL)
 	}
 
 	elapsed := now.Sub(b.last).Seconds()
-	b.excess = math.Max(0, b.excess-elapsed*p.config.Rate) + 1
-	b.last = now
-
-	maxExcess := p.config.Burst + 1
-	if b.excess > maxExcess {
-		b.excess = maxExcess
-		return 0, false, nil
+	next := &bucket{
+		excess: math.Max(0, b.excess-elapsed*p.config.Rate) + 1,
+		last:   now,
 	}
 
-	delaySeconds := (b.excess - 1) / p.config.Rate
+	maxExcess := p.config.Burst + 1
+	if next.excess > maxExcess {
+		return 0, false, nil
+	}
+	buckets.Set(key, next, p.bucketTTL)
+
+	delaySeconds := (next.excess - 1) / p.config.Rate
 	if delaySeconds <= 0 {
 		return 0, true, nil
 	}

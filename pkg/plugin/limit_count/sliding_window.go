@@ -133,6 +133,7 @@ type memorySlidingWindowStore struct {
 	mu          sync.Mutex
 	counters    map[string]slidingWindowCounter
 	expirations slidingWindowExpiryHeap
+	capacity    int
 }
 
 type slidingWindowCounter struct {
@@ -172,7 +173,17 @@ func (h *slidingWindowExpiryHeap) Pop() any {
 }
 
 func newMemorySlidingWindowStore() *memorySlidingWindowStore {
-	return &memorySlidingWindowStore{counters: make(map[string]slidingWindowCounter)}
+	return newMemorySlidingWindowStoreWithCapacity(defaultLocalStoreCapacity)
+}
+
+func newMemorySlidingWindowStoreWithCapacity(capacity int) *memorySlidingWindowStore {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	return &memorySlidingWindowStore{
+		counters: make(map[string]slidingWindowCounter),
+		capacity: capacity,
+	}
 }
 
 func (s *memorySlidingWindowStore) checkAndIncrement(
@@ -236,10 +247,28 @@ func (s *memorySlidingWindowStore) setLocked(
 		s.counters[key] = counter
 		return
 	}
+	if len(s.counters) >= s.capacity {
+		s.evictOneLocked()
+	}
 
 	expiresAt := now.Add(expiry)
 	s.counters[key] = slidingWindowCounter{value: value, expiresAt: expiresAt}
 	heap.Push(&s.expirations, slidingWindowExpiry{key: key, expiresAt: expiresAt})
+}
+
+func (s *memorySlidingWindowStore) evictOneLocked() {
+	for s.expirations.Len() > 0 {
+		expiry := heap.Pop(&s.expirations).(slidingWindowExpiry)
+		counter, ok := s.counters[expiry.key]
+		if ok && counter.expiresAt.Equal(expiry.expiresAt) {
+			delete(s.counters, expiry.key)
+			return
+		}
+	}
+	for key := range s.counters {
+		delete(s.counters, key)
+		return
+	}
 }
 
 func (s *memorySlidingWindowStore) cleanupExpiredLocked(now time.Time) {

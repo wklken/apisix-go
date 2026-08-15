@@ -394,7 +394,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	) {
 		p.executeProviderRequest(w, r, body, document, protocol)
 	})
-	ai_runtime.FromRequest(request).SetStreaming(document.IsStreaming(protocol))
+	ai_runtime.FromRequest(request).SetStreamingIntent(document.IsStreaming(protocol))
 	return base.ContinueRequest(request)
 }
 
@@ -886,7 +886,9 @@ func (p *Plugin) writeProviderResponse(
 		streamWriter.WriteHeader(resp.StatusCode)
 		var usage ai_stream.Usage
 		var err error
+		transport := ai_stream.StreamTransportSSE
 		if prepared.providerProtocol == ai_protocols.BedrockConverse {
+			transport = ai_stream.StreamTransportAWSEventStream
 			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, resp.Body, p.config.MaxResponseBytes)
 		} else if prepared.anthropicConversion {
 			usage, err = ai_stream.ForwardOpenAIAsAnthropicSSE(
@@ -903,28 +905,38 @@ func (p *Plugin) writeProviderResponse(
 				p.config.MaxResponseBytes,
 			)
 		}
-		streamWriter.Close()
+		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
 		if err != nil {
-			if r.Context().Err() != nil {
+			wrote := streamWriter.Wrote()
+			if outcome == ai_stream.StreamOutcomeCanceled {
+				streamWriter.Close()
+				if errors.Is(err, context.DeadlineExceeded) ||
+					strings.Contains(err.Error(), "context deadline exceeded") {
+					logger.Errorf("aborting AI stream: max_stream_duration_ms exceeded")
+					return
+				}
 				logger.Warnf("client disconnected during AI streaming")
 				return
 			}
-			if errors.Is(err, ai_stream.ErrNoStreamOutput) && !streamWriter.Wrote() {
+			if !wrote {
+				streamWriter.Close()
 				logger.Errorf("%v", err)
-				base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
+				clear(w.Header())
+				message := "failed to forward streaming response"
+				if errors.Is(err, ai_stream.ErrNoStreamOutput) {
+					message = err.Error()
+				}
+				base.WriteJSONMessage(w, http.StatusBadGateway, message)
 				return
 			}
-			if errors.Is(err, ai_stream.ErrClientDisconnected) {
-				logger.Warnf("%v", err)
-				return
+			if terminalErr := ai_stream.WriteTerminalError(streamWriter, transport); terminalErr != nil {
+				logger.Warnf("failed to write AI stream terminal event: %v", terminalErr)
 			}
-			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
-				logger.Errorf("aborting AI stream: max_stream_duration_ms exceeded")
-				return
-			}
+			streamWriter.Close()
 			logger.Errorf("failed to forward streaming response: %v", err)
 			return
 		}
+		streamWriter.Close()
 		if !streamWriter.Wrote() {
 			w.WriteHeader(resp.StatusCode)
 		}

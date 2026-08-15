@@ -69,12 +69,12 @@ func TestEnableTerminalMarksRequest(t *testing.T) {
 	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }
 
-func TestStreamingStateCanBePublishedBeforeExecution(t *testing.T) {
+func TestStreamingIntentCanBePublishedBeforeExecution(t *testing.T) {
 	req := WithExecution(httptest.NewRequest(http.MethodPost, "/", nil), "model-a", nil)
 	state := FromRequest(req)
-	state.SetStreaming(true)
+	state.SetStreamingIntent(true)
 
-	if !state.Streaming() {
+	if !state.StreamingIntent() {
 		t.Fatal("streaming state = false, want true")
 	}
 }

@@ -2,7 +2,6 @@ package ai_proxy_multi
 
 import (
 	"fmt"
-	"hash/fnv"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +18,9 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 	if len(priorities) == 0 {
 		return 0, false
 	}
+	if p.config.Balancer.Algorithm == "chash" {
+		return p.pickChashInstance(r, tried)
+	}
 
 	// Advance each priority's rotation slot exactly once per pick, then reuse
 	// the starts across the healthy and fallback passes.
@@ -29,7 +31,7 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 			starts[i] = -1
 			continue
 		}
-		starts[i] = p.nextWeightedSlot(r, priority, sel.total)
+		starts[i] = p.nextWeightedSlot(priority, sel.total)
 	}
 	for _, requireHealthy := range []bool{true, false} {
 		for i, priority := range priorities {
@@ -52,6 +54,22 @@ func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
 	return 0, false
 }
 
+func (p *Plugin) pickChashInstance(r *http.Request, tried map[int]bool) (int, bool) {
+	key := p.hashKey(r)
+	for _, requireHealthy := range []bool{true, false} {
+		for _, priority := range p.priority {
+			ring := p.chash[priority]
+			for _, name := range ring.Candidates(key) {
+				index, ok := p.instances[name]
+				if ok && !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
+					return index, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 // weightInstanceAtSlot maps a slot in [0, sel.total) to the index of its
 // distinct instance. When every instance has weight 1 the cumulative array is
 // the identity and the slot itself is the instance (O(1)); otherwise a binary
@@ -65,14 +83,7 @@ func weightInstanceAtSlot(sel *weightSelection, slot int) int {
 	})
 }
 
-func (p *Plugin) nextWeightedSlot(r *http.Request, priority int, size int) int {
-	if p.config.Balancer.Algorithm == "chash" {
-		key := p.hashKey(r)
-		hasher := fnv.New32a()
-		_, _ = hasher.Write([]byte(key))
-		return int(hasher.Sum32() % uint32(size))
-	}
-
+func (p *Plugin) nextWeightedSlot(priority int, size int) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	slot := p.nextSlot[priority] % size

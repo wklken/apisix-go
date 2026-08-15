@@ -26,7 +26,7 @@ type Plugin struct {
 }
 
 const (
-	priority = 1031
+	priority = 1050
 	name     = "ai-aws-content-moderation"
 )
 

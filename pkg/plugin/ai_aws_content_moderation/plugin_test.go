@@ -331,8 +331,8 @@ func TestPluginPriorityRunsAfterAIProxySelection(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if p.GetPriority() != 1031 {
-		t.Fatalf("priority = %d, want 1031", p.GetPriority())
+	if p.GetPriority() != 1050 {
+		t.Fatalf("priority = %d, want 1050", p.GetPriority())
 	}
 }
 

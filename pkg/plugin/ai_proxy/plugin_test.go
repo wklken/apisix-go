@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -1157,6 +1158,9 @@ func TestHandlerForwardsBedrockConverseEventStream(t *testing.T) {
 	if raw["totalTokens"] != float64(6) {
 		t.Fatalf("$llm_raw_usage = %#v", raw)
 	}
+	if got := apisixctx.GetRequestVar(req, "$ai_stream_outcome"); got != string(ai_stream.StreamOutcomeSuccess) {
+		t.Fatalf("$ai_stream_outcome = %#v, want success", got)
+	}
 }
 
 func TestHandlerAppliesGCPAccessToken(t *testing.T) {
@@ -1519,10 +1523,10 @@ func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
 		MaxStreamDurationMS:      50,
 		StreamingFlushIntervalMS: &flushInterval,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 	  "model":"test-model","stream":true,
 	  "messages":[{"role":"user","content":"Hi"}]
-	}`))
+	}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -1537,6 +1541,9 @@ func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream duration abort was not logged")
+	}
+	if got := apisixctx.GetRequestVar(req, "$ai_stream_outcome"); got != string(ai_stream.StreamOutcomeCanceled) {
+		t.Fatalf("$ai_stream_outcome = %#v, want canceled", got)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
@@ -26,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/chash"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
@@ -36,6 +38,7 @@ type Plugin struct {
 	mu        sync.Mutex
 	nextSlot  map[int]int
 	selection map[int]*weightSelection
+	chash     map[int]*chash.Ring
 	priority  []int
 	instances map[string]int
 	now       func() time.Time
@@ -579,6 +582,8 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.selection = make(map[int]*weightSelection)
+	p.chash = make(map[int]*chash.Ring)
+	hashNodes := make(map[int][]chash.Node)
 	p.priority = p.priority[:0]
 	p.nextSlot = make(map[int]int)
 	p.instances = make(map[string]int)
@@ -630,11 +635,23 @@ func (p *Plugin) PostInit() error {
 		sel.total += instance.Weight
 		sel.cumulative = append(sel.cumulative, sel.total)
 		sel.ids = append(sel.ids, i)
+		hashNodes[instance.Priority] = append(hashNodes[instance.Priority], chash.Node{
+			ID: instance.Name, Weight: instance.Weight,
+		})
 	}
 	if len(p.priority) == 0 {
 		return fmt.Errorf("at least one instance must have weight greater than 0")
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(p.priority)))
+	if p.config.Balancer.Algorithm == "chash" {
+		for priority, nodes := range hashNodes {
+			ring, err := chash.New(nodes)
+			if err != nil {
+				return fmt.Errorf("build chash ring for priority %d: %w", priority, err)
+			}
+			p.chash[priority] = ring
+		}
+	}
 
 	p.client = &http.Client{Transport: p.transport()}
 	if p.now == nil {
@@ -687,7 +704,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		p.executeInstanceRequest(w, r, body, document, protocol, index, tried)
 	})
 	state = ai_runtime.FromRequest(request)
-	state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[firstIndex]))
+	state.SetStreamingIntent(document.IsStreaming(protocol))
 	state.ConfigureRateLimitFallback(rateLimitFallbackEnabled(p.config.FallbackStrategy), func() bool {
 		index, ok := p.pickInstance(request, tried)
 		if !ok {
@@ -695,7 +712,6 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		}
 		tried[index] = true
 		state.SetInstanceName(p.config.Instances[index].Name)
-		state.SetStreaming(p.instanceIsStreaming(body, document, protocol, p.config.Instances[index]))
 		return true
 	})
 	return base.ContinueRequest(request)
@@ -746,16 +762,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 // each selected provider instance may choose SSE at request time.
 func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
-}
-
-func (p *Plugin) instanceIsStreaming(
-	body []byte,
-	document ai_protocols.Document,
-	protocol ai_protocols.Protocol,
-	instance Instance,
-) bool {
-	_, providerDocument, err := p.providerBody(body, document, protocol, instance)
-	return err == nil && providerDocument.IsStreaming(protocol)
 }
 
 func (p *Plugin) executeInstanceRequest(
@@ -1280,7 +1286,7 @@ func (p *Plugin) endpoint(
 	case "deepseek":
 		return "https://api.deepseek.com/chat/completions", nil
 	case "aimlapi":
-		return "https://api.aimlapi.com/v1/chat/completions", nil
+		return "https://api.aimlapi.com/chat/completions", nil
 	case "openrouter":
 		return "https://openrouter.ai/api/v1/chat/completions", nil
 	case "gemini":
@@ -1351,14 +1357,16 @@ func (p *Plugin) writeProviderResponse(
 				w.Header().Add(field, value)
 			}
 		}
-		w.WriteHeader(resp.StatusCode)
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
 		streamWriter := ai_stream.NewFlushWriter(w, flushInterval, func() {
 			ai_runtime.MarkFirstToken(r, started)
 		})
+		streamWriter.WriteHeader(resp.StatusCode)
 		var usage ai_stream.Usage
 		var err error
+		transport := ai_stream.StreamTransportSSE
 		if prepared.providerProtocol == ai_protocols.BedrockConverse {
+			transport = ai_stream.StreamTransportAWSEventStream
 			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, resp.Body, p.config.MaxResponseBytes)
 		} else if prepared.anthropicConversion {
 			usage, err = ai_stream.ForwardOpenAIAsAnthropicSSE(
@@ -1375,10 +1383,35 @@ func (p *Plugin) writeProviderResponse(
 				p.config.MaxResponseBytes,
 			)
 		}
-		streamWriter.Close()
-		if err == nil {
-			registerStreamingLLMRequestVars(r, prepared.clientDocument, usage)
+		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
+		if err != nil {
+			wrote := streamWriter.Wrote()
+			if outcome == ai_stream.StreamOutcomeCanceled {
+				streamWriter.Close()
+				if errors.Is(err, context.DeadlineExceeded) ||
+					strings.Contains(err.Error(), "context deadline exceeded") {
+					logger.Errorf("aborting AI multi stream: max_stream_duration_ms exceeded")
+					return
+				}
+				logger.Warnf("client disconnected during AI multi streaming")
+				return
+			}
+			if !wrote {
+				streamWriter.Close()
+				logger.Errorf("failed to forward AI multi streaming response: %v", err)
+				clear(w.Header())
+				base.WriteJSONMessage(w, http.StatusBadGateway, "failed to forward streaming response")
+				return
+			}
+			if terminalErr := ai_stream.WriteTerminalError(streamWriter, transport); terminalErr != nil {
+				logger.Warnf("failed to write AI multi stream terminal event: %v", terminalErr)
+			}
+			streamWriter.Close()
+			logger.Errorf("failed to forward AI multi streaming response: %v", err)
+			return
 		}
+		streamWriter.Close()
+		registerStreamingLLMRequestVars(r, prepared.clientDocument, usage)
 		return
 	}
 	bodyReader := io.Reader(resp.Body)

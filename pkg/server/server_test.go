@@ -639,6 +639,98 @@ func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointsKeepLivenessIndependentAndReserveExactPaths(t *testing.T) {
+	restoreMetrics := installHealthMetrics(t)
+	defer restoreMetrics()
+
+	dynamicCalls := 0
+	handler := newHealthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dynamicCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}), false)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/livez status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz before config apply status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	wantBody := `{"config_apply_ready":false,"etcd_reachable":false}`
+	if got, want := strings.TrimSpace(response.Body.String()), wantBody; got != want {
+		t.Fatalf("/readyz failure body = %q, want %q", got, want)
+	}
+
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/readyz after standalone config apply status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	for _, path := range []string{"/livez/anything", "/readyz/anything"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want dynamic %d", path, response.Code, http.StatusNoContent)
+		}
+	}
+	if dynamicCalls != 2 {
+		t.Fatalf("dynamic fallback calls = %d, want 2", dynamicCalls)
+	}
+}
+
+func TestReadyzRequiresEtcdReachabilityInEtcdMode(t *testing.T) {
+	restoreMetrics := installHealthMetrics(t)
+	defer restoreMetrics()
+
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	handler := newHealthHandler(http.NotFoundHandler(), true)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz before etcd reachability status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	wantBody := `{"config_apply_ready":true,"etcd_reachable":false}`
+	if got, want := strings.TrimSpace(response.Body.String()), wantBody; got != want {
+		t.Fatalf("/readyz etcd failure body = %q, want %q", got, want)
+	}
+
+	metrics.RecordEtcdReachable(true)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("/readyz after etcd reachability status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	metrics.RecordEtcdReachable(false)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz after etcd loss status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func installHealthMetrics(t *testing.T) func() {
+	t.Helper()
+	oldFailures, oldReady, oldReachable := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.EtcdReachable
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_server_health_config_apply_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_server_health_config_apply_ready"})
+	metrics.EtcdReachable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_server_health_etcd_reachable"})
+	return func() {
+		metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.EtcdReachable = oldFailures, oldReady, oldReachable
+	}
+}
+
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })

@@ -21,14 +21,19 @@ etcd endpoint count, and whether proxy limits are configured. It excludes
 addresses, credentials, keys, certificates, tokens, and secret references.
 
 The runtime image is pinned to Alpine 3.24.1, contains the CA bundle and the
-`curl` healthcheck dependency, and runs as UID/GID 10001. The image explicitly
-passes `/usr/local/apisix/conf/config.yaml` as an override, so its effective
-configuration uses the same merge rules as local execution. The executable
-`scripts/container_smoke.sh` serializes real-process runs, starts an isolated
-upstream and standalone route, checks health and a proxied response, verifies
-the runtime UID, sends `TERM`, and requires exit code zero. Run its static
-contract locally with `bash scripts/container_smoke_test.sh`; run the real
-smoke only on a host with Docker.
+`curl` healthcheck dependency, and runs as UID/GID 10001. Its default command
+uses `/usr/local/apisix/conf/config-production.yaml`, which intentionally fails
+closed until an operator supplies a real etcd endpoint. The executable
+`scripts/container_smoke.sh` mounts a generated standalone
+`/usr/local/apisix/conf/config.yaml` and explicitly passes
+`-c /usr/local/apisix/conf/config.yaml` after the image name, overriding the image
+default for the smoke. This keeps the smoke on the same merge rules as local
+execution while testing its generated configuration. The smoke serializes
+real-process runs, starts an isolated upstream and standalone route, checks
+health and a proxied response, verifies the runtime UID, sends `TERM`, and
+requires exit code zero. Run its static contract locally with `bash
+scripts/container_smoke_test.sh`; run the real smoke only on a host with
+Docker.
 
 `.github/workflows/security-release-gates.yml` runs the focused race suite and
 the pinned `govulncheck` scanner, then builds the image once and reuses it for

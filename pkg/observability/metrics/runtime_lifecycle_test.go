@@ -54,3 +54,26 @@ func TestEtcdRuntimeMetricsSeparateReachabilityFromAppliedRevision(t *testing.T)
 		t.Fatalf("etcd revision = %v, want last positive applied revision 42", got)
 	}
 }
+
+func TestGetReadinessTracksEtcdReachabilityAndCollectorReplacement(t *testing.T) {
+	oldReachable := EtcdReachable
+	EtcdReachable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_etcd_reachable"})
+	t.Cleanup(func() { EtcdReachable = oldReachable })
+
+	if got := GetReadiness().EtcdReachable; got {
+		t.Fatal("etcd readiness = true before reachability was observed")
+	}
+	RecordEtcdReachable(true)
+	if got := GetReadiness().EtcdReachable; !got {
+		t.Fatal("etcd readiness = false after reachable observation")
+	}
+	RecordEtcdReachable(false)
+	if got := GetReadiness().EtcdReachable; got {
+		t.Fatal("etcd readiness = true after unreachable observation")
+	}
+
+	EtcdReachable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_etcd_reachable_replaced"})
+	if got := GetReadiness().EtcdReachable; got {
+		t.Fatal("etcd readiness = true after collector replacement")
+	}
+}

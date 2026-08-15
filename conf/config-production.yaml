@@ -1,0 +1,34 @@
+# Production image override. Supply APISIXGO_DEPLOYMENT_ETCD_HOST explicitly.
+
+debug: false
+
+apisix:
+  proxy_mode: http
+  stream_proxy:
+    tcp: []
+    udp: []
+  trusted_addresses:
+    - 127.0.0.1/32
+    - "::1/128"
+
+plugins:
+  - request-id
+  - cors
+  - key-auth
+  - jwt-auth
+  - basic-auth
+  - prometheus
+
+stream_plugins: []
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: etcd
+  admin:
+    admin_key: []
+  etcd:
+    host: []
+    prefix: /apisix
+    tls:
+      verify: true

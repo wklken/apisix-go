@@ -231,12 +231,13 @@ type Route struct {
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
-	PluginConfigID string   `json:"plugin_config_id,omitempty"`
-	ServiceID      string   `json:"service_id,omitempty"`
-	UpstreamID     string   `json:"upstream_id,omitempty"`
-	Upstream       Upstream `json:"upstream"`
-	Timeout        Timeout  `json:"timeout"`
-	FilterFunc     string   `json:"filter_func,omitempty"`
+	PluginConfigID string          `json:"plugin_config_id,omitempty"`
+	ServiceID      string          `json:"service_id,omitempty"`
+	UpstreamID     string          `json:"upstream_id,omitempty"`
+	Upstream       Upstream        `json:"upstream"`
+	Timeout        Timeout         `json:"timeout"`
+	Script         json.RawMessage `json:"script,omitempty"`
+	FilterFunc     string          `json:"filter_func,omitempty"`
 
 	CreateTime int64 `json:"create_time,omitempty"`
 	UpdateTime int64 `json:"update_time,omitempty"`

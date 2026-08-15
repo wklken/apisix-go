@@ -644,6 +644,10 @@ func normalizePluginResourceContext(
 }
 
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
+	if err := validateRouteSemantics(r); err != nil {
+		return nil, err
+	}
+
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
@@ -777,6 +781,16 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	return ensureRouteLifecycle(plan.Install(pipeline, handler)), nil
+}
+
+func validateRouteSemantics(routeResource resource.Route) error {
+	if script := bytes.TrimSpace(routeResource.Script); len(script) > 0 && !bytes.Equal(script, []byte("null")) {
+		return fmt.Errorf("route %q script is unsupported by the Go data plane", routeResource.ID)
+	}
+	if strings.TrimSpace(routeResource.FilterFunc) != "" {
+		return fmt.Errorf("route %q filter_func is unsupported by the Go data plane", routeResource.ID)
+	}
+	return nil
 }
 
 func newRequestPipelineWithLog(
@@ -2631,6 +2645,9 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			return nil, routeProtocolTerminals{}, err
 		}
 	}
+	if err := validateHTTPUpstreamType(upstream); err != nil {
+		return nil, routeProtocolTerminals{}, err
+	}
 	switch upstream.PassHost {
 	case "", "pass", "node":
 	case "rewrite":
@@ -2670,8 +2687,36 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		if host == "" || port < 1 || port > 65535 {
 			return nil, routeProtocolTerminals{}, fmt.Errorf("invalid upstream node %q:%d", host, port)
 		}
+		if !node.WeightConfigured() {
+			return nil, routeProtocolTerminals{}, fmt.Errorf(
+				"invalid upstream node %q:%d: weight is required",
+				host,
+				port,
+			)
+		}
+		if weight < 0 {
+			return nil, routeProtocolTerminals{}, fmt.Errorf(
+				"invalid upstream node %q:%d: weight must be non-negative",
+				host,
+				port,
+			)
+		}
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
+	}
+	if len(servers) > 0 {
+		hasPositiveWeight := false
+		for _, weight := range servers {
+			if weight > 0 {
+				hasPositiveWeight = true
+				break
+			}
+		}
+		if !hasPositiveWeight {
+			return nil, routeProtocolTerminals{}, fmt.Errorf(
+				"invalid upstream node weights: at least one upstream node must have a positive weight",
+			)
+		}
 	}
 	compiledTargets, err := compileUpstreamTargets(servers)
 	if err != nil {
@@ -2801,6 +2846,20 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
 			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
 		}, nil
+}
+
+func validateHTTPUpstreamType(upstream resource.Upstream) error {
+	switch strings.ToLower(upstream.Scheme) {
+	case "", "http", "https", "grpc", "grpcs":
+		if upstream.Type != "" && upstream.Type != "roundrobin" {
+			return fmt.Errorf(
+				"unsupported upstream type %q for %q scheme: only roundrobin is supported",
+				upstream.Type,
+				upstream.Scheme,
+			)
+		}
+	}
+	return nil
 }
 
 func upstreamNodeHost(scheme, host, port string) string {

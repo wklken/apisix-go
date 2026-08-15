@@ -1,12 +1,14 @@
 package csrf
 
 import (
+	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
+	"io"
 	"net/http"
 	"time"
 
@@ -19,7 +21,8 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config       Config
+	randomReader io.Reader
 }
 
 const (
@@ -68,6 +71,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.randomReader == nil {
+		p.randomReader = crand.Reader
+	}
+
 	keyring, enabled := data_encryption.Keyring()
 	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Key)
 	if err != nil {
@@ -130,7 +137,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		// add csrf token into cookie
-		csrfToken := genCSRFToken(p.config.Key)
+		csrfToken, err := genCSRFToken(p.config.Key, p.randomReader)
+		if err != nil {
+			writeCSRFErrorStatus(w, http.StatusInternalServerError, "failed to generate csrf token")
+			return
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     p.config.Name,
 			Value:    csrfToken,
@@ -152,7 +163,11 @@ func (p *Plugin) expires() int64 {
 }
 
 func writeCSRFError(w http.ResponseWriter, message string) {
-	_ = util.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error_msg": message})
+	writeCSRFErrorStatus(w, http.StatusUnauthorized, message)
+}
+
+func writeCSRFErrorStatus(w http.ResponseWriter, status int, message string) {
+	_ = util.WriteJSON(w, status, map[string]string{"error_msg": message})
 }
 
 type csrfToken struct {
@@ -203,9 +218,11 @@ func constantTimeEqual(left, right string) bool {
 }
 
 // genCSRFToken 生成一个 CSRF Token，并以 Base64 编码的 JSON 形式返回
-func genCSRFToken(key string) string {
-	// rand.Seed(time.Now().UnixNano())
-	random := rand.Float64()
+func genCSRFToken(key string, reader io.Reader) (string, error) {
+	random, err := secureRandomFloat64(reader)
+	if err != nil {
+		return "", fmt.Errorf("generate csrf token random value: %w", err)
+	}
 	timestamp := time.Now().Unix()
 
 	sign := genSign(random, timestamp, key)
@@ -219,13 +236,27 @@ func genCSRFToken(key string) string {
 	// 将 Token 结构体编码为 JSON
 	tokenJSON, err := json.Marshal(token)
 	if err != nil {
-		fmt.Println("Error encoding token to JSON:", err)
-		return ""
+		return "", fmt.Errorf("encode csrf token: %w", err)
 	}
 
 	// 将 JSON 编码为 Base64 字符串
 	cookie := base64.StdEncoding.EncodeToString(tokenJSON)
-	return cookie
+	return cookie, nil
+}
+
+func secureRandomFloat64(reader io.Reader) (float64, error) {
+	if reader == nil {
+		return 0, fmt.Errorf("csrf token entropy reader is nil")
+	}
+
+	var raw [8]byte
+	if _, err := io.ReadFull(reader, raw[:]); err != nil {
+		return 0, fmt.Errorf("read csrf token entropy: %w", err)
+	}
+
+	const randomBits = uint(53)
+	random := binary.BigEndian.Uint64(raw[:]) >> (64 - randomBits)
+	return float64(random) / float64(uint64(1)<<randomBits), nil
 }
 
 func genSign(random float64, expires int64, key string) string {

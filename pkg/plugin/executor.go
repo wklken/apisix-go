@@ -3,9 +3,11 @@ package plugin
 import (
 	"cmp"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -240,10 +242,17 @@ func chainPostResolutionHooks(first, second PostResolutionHook) PostResolutionHo
 
 func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 	bindings := make([]Binding, 0)
+	corsBindings := make([]Binding, 0)
 	globalRewrite := make([]Binding, 0)
 	systemRewrite := make([]Binding, 0)
 	for _, binding := range p.bindings {
 		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Scope == ScopeRoute {
+			if binding.factoryName == "cors" {
+				if binding.Plugin != nil {
+					corsBindings = append(corsBindings, binding)
+				}
+				continue
+			}
 			spec, ok := RequestStageFor(binding.factoryName)
 			if ok && spec.AuthenticatesConsumer {
 				bindings = append(bindings, binding)
@@ -259,10 +268,102 @@ func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 			}
 		}
 	}
-	next = wrapRequestStageBindings(next, bindings)
+	next = wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
 	next = wrapRequestStageBindings(next, globalRewrite)
 	next = wrapRequestStageBindings(next, systemRewrite)
 	return next
+}
+
+// wrapAuthenticationWithStaticCORS keeps static CORS in front of
+// authentication so it can answer preflight requests and decorate early
+// authentication responses. After authentication succeeds, the provisional
+// headers are discarded and the post-resolution CORS winner owns the response.
+func wrapAuthenticationWithStaticCORS(
+	next http.Handler,
+	authBindings []Binding,
+	corsBindings []Binding,
+) http.Handler {
+	if len(corsBindings) == 0 {
+		return wrapRequestStageBindings(next, authBindings)
+	}
+	ordered := append([]Binding(nil), corsBindings...)
+	slices.SortStableFunc(ordered, compareBindings)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var beforeAuthentication http.Header
+		afterAuthentication := http.HandlerFunc(func(provisional http.ResponseWriter, r *http.Request) {
+			// Authentication succeeded. Preserve only the header changes made
+			// by authentication; provisional static CORS headers are discarded
+			// so the post-resolution winner owns the response.
+			applyHeaderDelta(w.Header(), beforeAuthentication, provisional.Header())
+			next.ServeHTTP(w, r)
+		})
+		authentication := wrapRequestStageBindings(afterAuthentication, authBindings)
+		handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			beforeAuthentication = w.Header().Clone()
+			authentication.ServeHTTP(w, r)
+		}))
+		for _, binding := range ordered {
+			if binding.Plugin != nil {
+				handler = binding.Plugin.Handler(handler)
+			}
+		}
+		handler.ServeHTTP(provisionalResponseWriter(w), r)
+	})
+}
+
+func applyHeaderDelta(dst, before, after http.Header) {
+	for field, values := range after {
+		if slices.Equal(values, before.Values(field)) {
+			continue
+		}
+		dst[field] = append([]string(nil), values...)
+	}
+	for field := range before {
+		if _, ok := after[field]; !ok {
+			dst.Del(field)
+		}
+	}
+}
+
+func provisionalResponseWriter(dst http.ResponseWriter) http.ResponseWriter {
+	header := dst.Header().Clone()
+	committed := false
+	commit := func() {
+		if committed {
+			return
+		}
+		committed = true
+		replaceResponseHeader(dst.Header(), header)
+	}
+	return httpsnoop.Wrap(dst, httpsnoop.Hooks{
+		Header: func(httpsnoop.HeaderFunc) httpsnoop.HeaderFunc {
+			return func() http.Header { return header }
+		},
+		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(status int) {
+				commit()
+				writeHeader(status)
+			}
+		},
+		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(body []byte) (int, error) {
+				commit()
+				return write(body)
+			}
+		},
+		WriteString: func(writeString httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
+			return func(value string) (int, error) {
+				commit()
+				return writeString(value)
+			}
+		},
+		ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+			return func(reader io.Reader) (int64, error) {
+				commit()
+				return readFrom(reader)
+			}
+		},
+	})
 }
 
 func (p RequestPipeline) runResolved(
@@ -347,6 +448,13 @@ func (p RequestPipeline) buildPostResolutionHandler(
 ) http.Handler {
 	bindings := effective.all()
 	boundary := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.streamingExecutor != nil {
+			// A post-resolution request stage may replace the request without
+			// preserving context values installed by PostResolutionHook.
+			if dynamic := dynamicHeaderBindingsForEffective(effective); len(dynamic) > 0 {
+				r = withDynamicStreamingBindings(r, dynamic)
+			}
+		}
 		if p.logExecutor != nil {
 			if err := p.logExecutor.SealAndRegister(r); err != nil {
 				p.writeLogPreparationFailure(w, r, err, execution)

@@ -284,6 +284,105 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 	}
 }
 
+func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "")
+
+	defaultPath, productionPath := repositoryConfigPaths(t)
+	_, err := loadConfigFiles(defaultPath, productionPath)
+	if err == nil || !strings.Contains(err.Error(), "deployment.etcd.host") {
+		t.Fatalf("loadConfigFiles() error = %v, want missing production etcd endpoint rejection", err)
+	}
+}
+
+func TestProductionConfigLoadsWithExplicitEtcdEndpoint(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "https://etcd.example:2379")
+
+	defaultPath, productionPath := repositoryConfigPaths(t)
+	cfg, err := loadConfigFiles(defaultPath, productionPath)
+	if err != nil {
+		t.Fatalf("loadConfigFiles() error = %v", err)
+	}
+
+	if cfg.Debug {
+		t.Fatal("production config debug = true, want false")
+	}
+	if got, want := cfg.Apisix.ProxyMode, "http"; got != want {
+		t.Fatalf("production proxy mode = %q, want %q", got, want)
+	}
+	if len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 {
+		t.Fatalf(
+			"production stream listeners = tcp:%#v udp:%#v, want none",
+			cfg.Apisix.StreamProxy.Tcp,
+			cfg.Apisix.StreamProxy.Udp,
+		)
+	}
+	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
+	if got, want := cfg.Plugins, wantPlugins; !reflect.DeepEqual(got, want) {
+		t.Fatalf("production HTTP plugins = %#v, want %#v", got, want)
+	}
+	if len(cfg.StreamPlugins) != 0 {
+		t.Fatalf("production stream plugins = %#v, want none", cfg.StreamPlugins)
+	}
+	if got, want := cfg.Deployment.Role, "data_plane"; got != want {
+		t.Fatalf("production deployment role = %q, want %q", got, want)
+	}
+	if got, want := cfg.Deployment.RoleDataPlane.ConfigProvider, "etcd"; got != want {
+		t.Fatalf("production data-plane provider = %q, want %q", got, want)
+	}
+	if got, want := cfg.Deployment.Etcd.Host, []string{"https://etcd.example:2379"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("production etcd hosts = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Deployment.Etcd.Prefix, "/apisix"; got != want {
+		t.Fatalf("production etcd prefix = %q, want %q", got, want)
+	}
+	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
+		t.Fatal("production etcd TLS verification is not explicitly enabled")
+	}
+	if got, want := cfg.Apisix.TrustedAddresses, []string{"127.0.0.1/32", "::1/128"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("production trusted addresses = %#v, want %#v", got, want)
+	}
+	if len(cfg.Deployment.Admin.AdminKey) != 0 {
+		t.Fatalf("production admin keys = %#v, want none", cfg.Deployment.Admin.AdminKey)
+	}
+	if cfg.Apisix.DataEncryption.EnableEncryptFields || len(cfg.Apisix.DataEncryption.Keyring) != 0 {
+		t.Fatalf("production data encryption = %#v, want disabled with empty keyring", cfg.Apisix.DataEncryption)
+	}
+}
+
+func TestProductionDockerfileContract(t *testing.T) {
+	contents, err := os.ReadFile(repositoryPath(t, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	dockerfile := string(contents)
+	for _, want := range []string{
+		"COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml " +
+			"conf/config-production.yaml /usr/local/apisix/conf/",
+		"USER 10001:10001",
+		"/readyz",
+		"CMD [\"-c\", \"/usr/local/apisix/conf/config-production.yaml\"]",
+	} {
+		if !strings.Contains(dockerfile, want) {
+			t.Errorf("Dockerfile missing %q", want)
+		}
+	}
+}
+
+func repositoryConfigPaths(t *testing.T) (string, string) {
+	t.Helper()
+	return repositoryPath(t, "conf", "config-default.yaml"), repositoryPath(t, "conf", "config-production.yaml")
+}
+
+func repositoryPath(t *testing.T, parts ...string) string {
+	t.Helper()
+	root := filepath.Join("..", "..")
+	return filepath.Join(append([]string{root}, parts...)...)
+}
+
 func writeConfigFile(t *testing.T, name, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)

@@ -33,6 +33,10 @@ func newSyslogTransport(config Config) (*syslogTransport, error) {
 	if config.Timeout == 0 {
 		config.Timeout = 3000
 	}
+	if config.SSLVerify == nil {
+		sslVerify := true
+		config.SSLVerify = &sslVerify
+	}
 	if config.FlushLimit == 0 {
 		config.FlushLimit = 4096
 	}
@@ -280,8 +284,11 @@ func (t *syslogTransport) connection(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	sslVerify := t.config.SSLVerify == nil || *t.config.SSLVerify
 	conn := tls.Client(raw, &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // APISIX syslog TLS does not verify the peer certificate
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         t.config.Host,
+		InsecureSkipVerify: !sslVerify, //nolint:gosec // explicit ssl_verify=false is the user opt-out
 	})
 	if err := conn.HandshakeContext(handshakeCtx); err != nil {
 		_ = raw.Close()

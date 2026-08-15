@@ -23,6 +23,21 @@ func TestCollapseHeaderValuesLowercasesAndCopiesValues(t *testing.T) {
 	}
 }
 
+func TestCollapseAccessLogHeaderValuesRedactsSensitiveHeaders(t *testing.T) {
+	got := CollapseAccessLogHeaderValues(testAccessLogHeaders())
+	for _, name := range testSensitiveAccessLogHeaders {
+		if _, ok := got[name]; ok {
+			t.Fatalf("sensitive header %q = %#v, want omitted", name, got[name])
+		}
+	}
+	if got["x-visible"] == nil {
+		t.Fatalf("safe headers = %#v, want benign header", got)
+	}
+	if got["host"] != "gateway.test" {
+		t.Fatalf("host = %#v, want preserved host header", got["host"])
+	}
+}
+
 func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
 	started := time.Unix(100, 0)
 	snapshot := LogSnapshot{
@@ -168,5 +183,112 @@ func TestBuildAccessLogSnapshot(t *testing.T) {
 	}
 	if got := snapshot["apisix_latency"]; got != 2.5 {
 		t.Fatalf("apisix_latency = %v, want 2.5", got)
+	}
+}
+
+func TestBuildAccessLogDefaultsRedactSensitiveHeaders(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+	r.Host = "gateway.test:9443"
+	r.Header = testAccessLogHeaders()
+	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
+
+	live := BuildAccessLogSnapshot(
+		request,
+		http.StatusOK,
+		testAccessLogHeaders(),
+		0,
+		"route-1",
+		r,
+		time.Second,
+	)
+	assertSafeDefaultAccessLogHeaders(t, live)
+
+	manual := BuildAccessLogSnapshot(
+		AccessLogRequest{
+			Headers: map[string]any{
+				"Authorization": "secret",
+				"X-Visible":     "visible",
+				"Host":          "gateway.test",
+			},
+		},
+		http.StatusOK,
+		nil,
+		0,
+		"route-1",
+		r,
+		0,
+	)
+	manualRequest := manual["request"].(map[string]any)
+	manualHeaders := manualRequest["headers"].(map[string]any)
+	if _, ok := manualHeaders["authorization"]; ok {
+		t.Fatalf("manual request headers = %#v, want authorization omitted", manualHeaders)
+	}
+	if manualHeaders["x-visible"] != "visible" || manualHeaders["host"] != "gateway.test" {
+		t.Fatalf("manual request headers = %#v, want safe lowercase fields", manualHeaders)
+	}
+
+	detached := BuildAccessLogFromSnapshot(LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			Host:   "gateway.test:9443",
+			Header: testAccessLogHeaders(),
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: testAccessLogHeaders()},
+		Started:  time.Unix(100, 0),
+		Finished: time.Unix(101, 0),
+	}, "route-1")
+	assertSafeDefaultAccessLogHeaders(t, detached)
+}
+
+var testSensitiveAccessLogHeaders = []string{
+	"authorization",
+	"proxy-authorization",
+	"cookie",
+	"set-cookie",
+	"x-api-key",
+	"x-functions-key",
+	"x-amz-security-token",
+	"x-goog-api-key",
+}
+
+func testAccessLogHeaders() http.Header {
+	return http.Header{
+		"aUtHoRiZaTiOn":        {"secret-authorization"},
+		"pRoXy-AuThOrIzAtIoN":  {"secret-proxy-authorization"},
+		"cOoKiE":               {"secret-cookie"},
+		"sEt-CoOkIe":           {"secret-set-cookie"},
+		"x-aPi-kEy":            {"secret-api-key"},
+		"x-fUnCtIoNs-kEy":      {"secret-functions-key"},
+		"x-aMz-SeCuRiTy-ToKeN": {"secret-amz-token"},
+		"x-GoOg-aPi-KeY":       {"secret-goog-key"},
+		"Host":                 {"gateway.test"},
+		"X-Visible":            {"first", "second"},
+	}
+}
+
+func assertSafeDefaultAccessLogHeaders(t *testing.T, fields map[string]any) {
+	t.Helper()
+	for _, section := range []string{"request", "response"} {
+		payload, ok := fields[section].(map[string]any)
+		if !ok {
+			t.Fatalf("%s payload = %#v, want object", section, fields[section])
+		}
+		headers, ok := payload["headers"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s headers = %#v, want object", section, payload["headers"])
+		}
+		for _, name := range testSensitiveAccessLogHeaders {
+			if _, ok := headers[name]; ok {
+				t.Fatalf("%s sensitive header %q = %#v, want omitted", section, name, headers[name])
+			}
+		}
+		if got := headers["x-visible"]; got == nil {
+			t.Fatalf("%s headers = %#v, want benign header", section, headers)
+		}
+	}
+	request := fields["request"].(map[string]any)
+	if request["headers"].(map[string]any)["host"] == nil {
+		t.Fatalf("request headers = %#v, want host", request["headers"])
 	}
 }

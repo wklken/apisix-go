@@ -149,13 +149,18 @@ func TestSendWritesTLSMessageWithServerName(t *testing.T) {
 	host, port := splitAddr(t, addr)
 	serverName := "logs.example.test"
 
-	p := newTestPlugin(t, Config{
-		Host:       host,
-		Port:       mustAtoi(t, port),
-		TLS:        true,
-		TLSOptions: &serverName,
-		Timeout:    1000,
-	})
+	var config Config
+	if err := util.Parse(map[string]any{
+		"host":        host,
+		"port":        mustAtoi(t, port),
+		"tls":         true,
+		"tls_options": serverName,
+		"ssl_verify":  false,
+		"timeout":     1000,
+	}, &config); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := newTestPlugin(t, config)
 	p.Send(map[string]any{"path": "/secure"})
 
 	select {
@@ -177,6 +182,47 @@ func TestSendWritesTLSMessageWithServerName(t *testing.T) {
 	}
 }
 
+func TestSendRejectsUntrustedTLSMessageByDefault(t *testing.T) {
+	addr, _, _ := startTLSServer(t)
+	host, port := splitAddr(t, addr)
+
+	p := newTestPlugin(t, Config{
+		Host:    host,
+		Port:    mustAtoi(t, port),
+		TLS:     true,
+		Timeout: 1000,
+	})
+	if err := p.sendBody(context.Background(), []byte("secure")); err == nil {
+		t.Fatal("sendBody() error = nil, want untrusted TLS peer rejection")
+	}
+}
+
+func TestTLSUsesHostAsServerNameWhenVerificationEnabled(t *testing.T) {
+	addr, _, serverNames := startTLSServer(t)
+	_, port := splitAddr(t, addr)
+	blankServerName := ""
+
+	p := newTestPlugin(t, Config{
+		Host:       "localhost",
+		Port:       mustAtoi(t, port),
+		TLS:        true,
+		TLSOptions: &blankServerName,
+		Timeout:    1000,
+	})
+	if err := p.sendBody(context.Background(), []byte("secure")); err == nil {
+		t.Fatal("sendBody() error = nil, want untrusted TLS peer rejection")
+	}
+
+	select {
+	case got := <-serverNames:
+		if got != "localhost" {
+			t.Fatalf("SNI = %q, want configured host localhost", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for host-derived TLS server name")
+	}
+}
+
 func TestPostInitAppliesBatchDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "127.0.0.1", Port: 9})
 
@@ -191,6 +237,9 @@ func TestPostInitAppliesBatchDefaults(t *testing.T) {
 	}
 	if p.config.RetryDelay != 1 {
 		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("SSLVerify = %v, want true", p.config.SSLVerify)
 	}
 }
 
@@ -728,6 +777,21 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official batch fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsSSLVerify(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{
+		"host":       "127.0.0.1",
+		"port":       9000,
+		"ssl_verify": false,
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected ssl_verify: %v", err)
 	}
 }
 

@@ -60,14 +60,20 @@ func httpConnectionStateLabel(state http.ConnState) (string, bool) {
 // RecordEtcdReachable records whether the configuration provider is currently
 // reachable. Configuration acceptance remains owned by config_apply_ready.
 func RecordEtcdReachable(reachable bool) {
-	if EtcdReachable == nil {
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+
+	gauge := syncEtcdReachabilityLocked()
+	configApplyState.etcdObserved = true
+	configApplyState.etcdHealthy = reachable
+	if gauge == nil {
 		return
 	}
 	value := 0.0
 	if reachable {
 		value = 1
 	}
-	EtcdReachable.Set(value)
+	gauge.Set(value)
 }
 
 // RecordEtcdAppliedRevision advances the last successfully applied etcd

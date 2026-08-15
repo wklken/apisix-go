@@ -52,7 +52,7 @@ func CaptureMinimalAccessLogRequest(r *http.Request, started time.Time) AccessLo
 
 // CaptureAccessLogRequest snapshots a request for an access-log entry.
 func CaptureAccessLogRequest(r *http.Request, started time.Time, serverAddr string) AccessLogRequest {
-	headers := CollapseHeaderValues(r.Header)
+	headers := CollapseAccessLogHeaderValues(r.Header)
 	headers["host"] = r.Host
 	return AccessLogRequest{
 		Method:        r.Method,
@@ -90,13 +90,13 @@ func BuildAccessLogSnapshot(
 			"url":         request.URL,
 			"uri":         request.URI,
 			"method":      request.Method,
-			"headers":     request.Headers,
+			"headers":     collapseAccessLogHeaderMap(request.Headers),
 			"querystring": request.QueryString,
 			"size":        request.ContentLength,
 		},
 		"response": map[string]any{
 			"status":  status,
-			"headers": CollapseHeaderValues(responseHeaders),
+			"headers": CollapseAccessLogHeaderValues(responseHeaders),
 			"size":    responseSize,
 		},
 		"server": map[string]any{
@@ -129,7 +129,7 @@ func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr
 	if routeID == "" {
 		routeID = fmt.Sprint(SnapshotValue(snapshot, "$route_id"))
 	}
-	headers := CollapseHeaderValues(snapshot.Request.Header)
+	headers := CollapseAccessLogHeaderValues(snapshot.Request.Header)
 	headers["host"] = snapshot.Request.Host
 	fields := map[string]any{
 		"request": map[string]any{
@@ -139,7 +139,7 @@ func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr
 			"size":        max(snapshot.Request.ContentLength, 0),
 		},
 		"response": map[string]any{
-			"status": snapshot.Outcome.Status, "headers": CollapseHeaderValues(snapshot.Response.Header),
+			"status": snapshot.Outcome.Status, "headers": CollapseAccessLogHeaderValues(snapshot.Response.Header),
 			"size": snapshot.Outcome.Bytes,
 		},
 		"server":     map[string]any{"hostname": Hostname(), "version": accessLogVersion},
@@ -217,12 +217,48 @@ func RequestURL(r *http.Request, serverAddr string) string {
 // CollapseHeaderValues normalizes header names to lowercase and collapses
 // single-value headers to plain strings.
 func CollapseHeaderValues(values http.Header) map[string]any {
+	return collapseHeaderValues(values, nil)
+}
+
+// CollapseAccessLogHeaderValues normalizes default access-log headers while
+// omitting sensitive credentials and tokens.
+func CollapseAccessLogHeaderValues(values http.Header) map[string]any {
+	return collapseHeaderValues(values, sensitiveAccessLogHeaders)
+}
+
+var sensitiveAccessLogHeaders = map[string]struct{}{
+	"authorization":        {},
+	"proxy-authorization":  {},
+	"cookie":               {},
+	"set-cookie":           {},
+	"x-api-key":            {},
+	"x-functions-key":      {},
+	"x-amz-security-token": {},
+	"x-goog-api-key":       {},
+}
+
+func collapseHeaderValues(values http.Header, omitted map[string]struct{}) map[string]any {
 	normalized := make(map[string][]string, len(values))
 	for key, value := range values {
 		key = strings.ToLower(key)
+		if _, ok := omitted[key]; ok {
+			continue
+		}
 		normalized[key] = append(normalized[key], value...)
 	}
 	return CollapseQueryValues(normalized)
+}
+
+func collapseAccessLogHeaderMap(values map[string]any) map[string]any {
+	collapsed := make(map[string]any, len(values))
+	for key, value := range values {
+		key = strings.ToLower(key)
+		if _, ok := sensitiveAccessLogHeaders[key]; ok {
+			continue
+		}
+		collapsed[key] = value
+	}
+	return collapsed
 }
 
 // CollapseQueryValues collapses single-value query parameters to plain

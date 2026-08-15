@@ -6,6 +6,27 @@ including its scalar and mapping forms for listeners. The Go loader keeps
 configuration that has no direct Go equivalent in the typed configuration
 object so an official file can be loaded without being rewritten.
 
+## Production container configuration
+
+The image starts with `conf/config-production.yaml` layered over
+`conf/config-default.yaml`. This production override intentionally contains no
+etcd endpoint, so the image fails configuration validation until an operator
+provides `APISIXGO_DEPLOYMENT_ETCD_HOST` (comma-separated for multiple
+endpoints), or mounts an operator-managed configuration override. The endpoint
+must be supplied explicitly; the image does not fall back to a local etcd
+address.
+
+The production HTTP allowlist is deliberately limited to `request-id`, `cors`,
+`key-auth`, `jwt-auth`, `basic-auth`, and `prometheus`. Stream proxy mode and
+stream plugins are disabled, the deployment uses the data-plane etcd provider,
+etcd TLS verification is enabled, and no admin or data-encryption key material
+is embedded in the image defaults.
+
+`/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
+503 until configuration has been applied and the configured etcd provider is
+reachable, then returns HTTP 200 with the config-apply and etcd-reachability
+state. The image healthcheck uses `/readyz`.
+
 ## Applied by the Go runtime
 
 | Configuration | Go behavior |
@@ -33,6 +54,8 @@ object so an official file can be loaded without being rewritten.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
 - An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
+- Route-level `script` and non-empty `filter_func` are rejected because the Go data plane does not execute Lua route logic; they are never silently discarded.
+- HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.
@@ -79,10 +102,10 @@ listed above:
   addresses, and bind failures are rejected at startup rather than ignored.
   HTTPS certificate selection is a dynamic APISIX resource concern, not
   represented by the official listener-only config fields.
-- General stream-plugin chaining, stream metrics, and a dynamic readiness
-  endpoint. The repository has no readiness endpoint; startup failures are
-  surfaced through the process return and dynamic health publication belongs to
-  a later observability contract.
+- General stream-plugin chaining and stream metrics. Liveness and readiness are
+  exposed through `/livez` and `/readyz`; startup failures are surfaced through
+  the process return, and `/readyz` remains unavailable until configuration and
+  the configured etcd provider are ready.
 - The APISIX Admin API, control API, status server, admin UI, admin CORS/IP
   restrictions, and admin mTLS. The current Go admin router is not a complete
   APISIX Admin API implementation.

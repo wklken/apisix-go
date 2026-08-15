@@ -116,6 +116,9 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.RetryDelay != 1 {
 		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
 	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("SSLVerify = %v, want true", p.config.SSLVerify)
+	}
 }
 
 func TestEncodeRFC5424UsesSyslogInfoEnvelope(t *testing.T) {
@@ -186,7 +189,46 @@ func TestSendWritesTCPMessage(t *testing.T) {
 }
 
 func TestSendWritesTLSMessage(t *testing.T) {
-	addr, received := startTLSServer(t)
+	addr, received, serverNames := startTLSServer(t)
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	var config Config
+	if err := util.Parse(map[string]any{
+		"host":        "localhost",
+		"port":        mustAtoi(t, port),
+		"timeout":     3000,
+		"flush_limit": 1,
+		"sock_type":   "tcp",
+		"tls":         true,
+		"ssl_verify":  false,
+	}, &config); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := newTestPlugin(t, config)
+	p.Send(map[string]any{"path": "/secure"})
+
+	select {
+	case message := <-received:
+		assertDirectRFC5424Frame(t, message, `{"path":"/secure"}`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog TLS message")
+	}
+
+	select {
+	case got := <-serverNames:
+		if got != "localhost" {
+			t.Fatalf("SNI = %q, want configured host localhost", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog TLS server name")
+	}
+}
+
+func TestSendRejectsUntrustedTLSMessageByDefault(t *testing.T) {
+	addr, _, _ := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split tls addr: %v", err)
@@ -200,13 +242,8 @@ func TestSendWritesTLSMessage(t *testing.T) {
 		SockType:   "tcp",
 		TLS:        true,
 	})
-	p.Send(map[string]any{"path": "/secure"})
-
-	select {
-	case message := <-received:
-		assertDirectRFC5424Frame(t, message, `{"path":"/secure"}`)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for syslog TLS message")
+	if err := p.sendBody(context.Background(), []byte("secure")); err == nil {
+		t.Fatal("sendBody() error = nil, want untrusted TLS peer rejection")
 	}
 }
 
@@ -942,6 +979,21 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 }
 
+func TestSchemaAcceptsSSLVerify(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{
+		"host":       "127.0.0.1",
+		"port":       514,
+		"ssl_verify": false,
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected ssl_verify: %v", err)
+	}
+}
+
 func TestSchemaAcceptsLogFormatExtraAndExposesMetadataSchema(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -1121,11 +1173,16 @@ func startTCPServer(t *testing.T) (string, <-chan string) {
 	return listener.Addr().String(), received
 }
 
-func startTLSServer(t *testing.T) (string, <-chan string) {
+func startTLSServer(t *testing.T) (string, <-chan string, <-chan string) {
 	t.Helper()
 
+	serverNames := make(chan string, 1)
 	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{testCertificate(t)},
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			serverNames <- info.ServerName
+			return nil, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("listen tls: %v", err)
@@ -1134,7 +1191,7 @@ func startTLSServer(t *testing.T) (string, <-chan string) {
 
 	received := make(chan string, 1)
 	go acceptMessage(listener, received)
-	return listener.Addr().String(), received
+	return listener.Addr().String(), received, serverNames
 }
 
 func acceptMessage(listener net.Listener, received chan<- string) {

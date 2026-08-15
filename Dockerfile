@@ -29,14 +29,14 @@ RUN apk add --no-cache ca-certificates curl \
 
 WORKDIR /usr/local/apisix
 
-COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/
+COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml conf/config-production.yaml /usr/local/apisix/conf/
 
 COPY --from=builder /apisix /usr/bin/apisix
 
 USER 10001:10001
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=12 \
-    CMD curl --silent --show-error --output /dev/null http://127.0.0.1:9080/ || exit 1
+    CMD curl --fail --silent --show-error --output /dev/null http://127.0.0.1:9080/readyz || exit 1
 
 ENTRYPOINT ["/usr/bin/apisix"]
-CMD ["-c", "/usr/local/apisix/conf/config.yaml"]
+CMD ["-c", "/usr/local/apisix/conf/config-production.yaml"]

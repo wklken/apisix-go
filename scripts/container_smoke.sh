@@ -90,7 +90,7 @@ YAML
 docker run --detach --name "$gateway" --network "$network" --publish 127.0.0.1::9080 \
     --volume "$temp_dir/config.yaml:/usr/local/apisix/conf/config.yaml:ro" \
     --volume "$temp_dir/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro" \
-    "$image" >/dev/null
+    "$image" -c /usr/local/apisix/conf/config.yaml >/dev/null
 
 deadline=$((SECONDS + 90))
 while (( SECONDS < deadline )); do

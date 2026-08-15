@@ -91,8 +91,24 @@ func (r *ClusterRegistry) release(key ClusterKey) func() {
 			return
 		}
 		delete(r.entries, key)
-		r.mu.Unlock()
+		deleteMetrics := true
+		for _, remaining := range r.entries {
+			if remaining.cluster.config.Name == entry.cluster.config.Name {
+				deleteMetrics = false
+				break
+			}
+		}
+		if !deleteMetrics {
+			r.mu.Unlock()
+			entry.cluster.Close()
+			return
+		}
+		// Keep replacement acquisition serialized through cluster shutdown and
+		// metric deletion. Otherwise a same-name replacement could publish a
+		// fresh series that this retiring generation immediately deletes.
 		entry.cluster.Close()
+		r.observer.DeleteCluster(entry.cluster.config.Name)
+		r.mu.Unlock()
 	}
 }
 
@@ -115,12 +131,17 @@ func (r *ClusterRegistry) Close() {
 	}
 	r.closed = true
 	entries := make([]*clusterEntry, 0, len(r.entries))
+	names := make(map[string]struct{}, len(r.entries))
 	for _, entry := range r.entries {
 		entries = append(entries, entry)
+		names[entry.cluster.config.Name] = struct{}{}
 	}
 	r.entries = make(map[ClusterKey]*clusterEntry)
 	r.mu.Unlock()
 	for _, entry := range entries {
 		entry.cluster.Close()
+	}
+	for name := range names {
+		r.observer.DeleteCluster(name)
 	}
 }

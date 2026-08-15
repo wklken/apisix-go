@@ -18,7 +18,8 @@ import (
 
 func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/orders?q=one", strings.NewReader("request"))
-	request = ctx.WithApisixVars(request, map[string]string{"$route_id": "route-1"})
+	request = request.WithContext(context.WithValue(request.Context(), ctx.RequestIDKey, "request-1"))
+	request = ctx.WithApisixVars(request, map[string]string{"$route_id": "route-1", "$node_id": "node-1"})
 	ctx.RegisterApisixVar(request, "$nested", map[string]any{"key": "value"})
 	response := ResponseSnapshot{
 		Header:  http.Header{"X-Trace": {"one"}},
@@ -43,6 +44,9 @@ func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 	}
 	if snapshot.Started != time.Unix(1, 0) || snapshot.Finished != time.Unix(2, 0) {
 		t.Fatalf("snapshot timestamps = %v/%v", snapshot.Started, snapshot.Finished)
+	}
+	if snapshot.Request.ID != "request-1" || snapshot.NodeID != "node-1" {
+		t.Fatalf("snapshot correlation = request %q node %q", snapshot.Request.ID, snapshot.NodeID)
 	}
 }
 

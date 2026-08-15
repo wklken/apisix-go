@@ -22,15 +22,12 @@ var initOnce sync.Once
 
 var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000}
 
-// FIXME: how to set etcd reachable?
-
 var (
 	Connections           *prometheus.GaugeVec
 	Requests              prometheus.Counter
 	EtcdReachable         prometheus.Gauge
 	HostInfo              *prometheus.GaugeVec
-	EtcdModifyIndexed     *prometheus.GaugeVec
-	UpstreamStatus        *prometheus.GaugeVec
+	EtcdRevision          prometheus.Gauge
 	HttpStatus            *prometheus.CounterVec
 	HttpLatency           *prometheus.HistogramVec
 	Bandwidth             *prometheus.CounterVec
@@ -123,7 +120,6 @@ func initMetrics() {
 	metricConfig := newPrometheusMetricConfig(attr)
 	prometheusExtraLabels = metricConfig.ExtraLabels
 
-	// FIXME
 	Connections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "http_current_connections",
@@ -139,7 +135,6 @@ func initMetrics() {
 		},
 	)
 
-	// FIXME
 	EtcdReachable = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "etcd_reachable",
@@ -156,20 +151,11 @@ func initMetrics() {
 		},
 	)
 
-	// FIXME
-	EtcdModifyIndexed = prometheus.NewGaugeVec(
+	EtcdRevision = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: metricConfig.MetricPrefix + "etcd_modify_indexes",
-			Help: "Etcd modify index for APISIX keys",
-		}, []string{"key"},
-	)
-
-	// FIXME
-	UpstreamStatus = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: metricConfig.MetricPrefix + "upstream_status",
-			Help: "Upstream status from health check",
-		}, []string{"name", "ip", "port"},
+			Name: metricConfig.MetricPrefix + "etcd_revision",
+			Help: "Last successfully applied etcd revision",
+		},
 	)
 
 	// pkg/plugin/request_context/plugin.go
@@ -319,8 +305,7 @@ func initMetrics() {
 		Requests,
 		EtcdReachable,
 		HostInfo,
-		EtcdModifyIndexed,
-		UpstreamStatus,
+		EtcdRevision,
 		HttpStatus,
 		HttpLatency,
 		Bandwidth,

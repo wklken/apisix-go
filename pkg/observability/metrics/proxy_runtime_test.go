@@ -60,6 +60,24 @@ func TestNewProxyRuntimeObserverReturnsNonNil(t *testing.T) {
 	}
 }
 
+func TestProxyRuntimeObserverDeletesAllClusterSeries(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	observer := newProxyRuntimeObserver(registry)
+	observer.SetInFlight("orders", 1)
+	observer.ObserveRejected("orders")
+	observer.ObserveRetry("orders", "success")
+	observer.SetHealth("orders", "127.0.0.1:8080", true)
+
+	observer.DeleteCluster("orders")
+	metrics, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather private registry: %v", err)
+	}
+	if len(metrics) != 0 {
+		t.Fatalf("metric families after cluster retirement = %d, want 0", len(metrics))
+	}
+}
+
 func gaugeVecValue(t *testing.T, gauge prometheus.Gauge) float64 {
 	t.Helper()
 	metric := &dto.Metric{}

@@ -506,6 +506,9 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 	if result.Decision != base.RequestContinue {
 		t.Fatalf("request phase decision = %d, want continue", result.Decision)
 	}
+	result.Request.Header.Set("X-Request-Id", "trace-request-1")
+	apisixctx.RegisterRequestVar(result.Request, "$retry_count", 2)
+	apisixctx.RegisterRequestVar(result.Request, "$upstream_status", http.StatusCreated)
 	lifecycle.Complete(
 		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated},
 		time.Now(),
@@ -528,6 +531,10 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 		}
 		if tags["apisix.response_source"] != string(apisixctx.ResponseSourceCacheHit) {
 			t.Fatalf("response source = %q, want cache_hit", tags["apisix.response_source"])
+		}
+		if tags["apisix.request_id"] != "trace-request-1" || tags["apisix.outcome"] != "completed" ||
+			tags["apisix.retry_count"] != "2" || tags["http.upstream_status_code"] != "201" {
+			t.Fatalf("correlation tags = %#v", tags)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for lifecycle-owned span")

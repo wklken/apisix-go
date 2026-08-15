@@ -48,6 +48,11 @@ func TestTrackReportsServerWideRequestCounters(t *testing.T) {
 		response.Status["handled"] != "1" || response.Status["total"] != "2" {
 		t.Fatalf("status counters = %#v, want active=1 accepted=2 handled=1 total=2", response.Status)
 	}
+	for _, unsupported := range []string{"reading", "writing", "waiting"} {
+		if _, ok := response.Status[unsupported]; ok {
+			t.Fatalf("status includes unowned %q counter: %#v", unsupported, response.Status)
+		}
+	}
 }
 
 func TestStringUintBoundaryValues(t *testing.T) {

@@ -715,6 +715,9 @@ func TestTraceUsesFinalReplacementRequestSourceAndOutcome(t *testing.T) {
 	result := p.RunRequestPhase(httptest.NewRecorder(), request)
 	replacement := result.Request.Clone(result.Request.Context())
 	replacement.URL.Path = "/replacement"
+	replacement.Header.Set("X-Request-Id", "trace-request-1")
+	apisixctx.RegisterRequestVar(replacement, "$retry_count", 2)
+	apisixctx.RegisterRequestVar(replacement, "$upstream_status", http.StatusNotModified)
 	lifecycle.SetFinalRequest(replacement)
 	apisixctx.SetResponseSource(replacement, apisixctx.ResponseSourceCacheHit)
 	finished := time.Now()
@@ -737,6 +740,10 @@ func TestTraceUsesFinalReplacementRequestSourceAndOutcome(t *testing.T) {
 	}
 	if attrs["apisix.response_source"] != string(apisixctx.ResponseSourceCacheHit) {
 		t.Fatalf("response source = %q, want cache_hit", attrs["apisix.response_source"])
+	}
+	if attrs["apisix.request_id"] != "trace-request-1" || attrs["apisix.outcome"] != "completed" ||
+		attrs["apisix.retry_count"] != "2" || attrs["http.upstream_status_code"] != "304" {
+		t.Fatalf("correlation attributes = %#v", attrs)
 	}
 }
 

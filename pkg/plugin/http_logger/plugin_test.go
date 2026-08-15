@@ -61,7 +61,9 @@ func TestRunLogPhasePreservesDefaultFieldsAndRouteLabels(t *testing.T) {
 
 	p.logFormat = nil
 	fields := p.defaultSnapshotLogFields(snapshot)
-	if fields["route_id"] != "no-matched" || fields["response"].(map[string]any)["status"] != http.StatusUnauthorized {
+	if fields["route_id"] != "no-matched" || fields["response"].(map[string]any)["status"] != http.StatusUnauthorized ||
+		fields["request"].(map[string]any)["method"] != http.MethodGet || fields["server"] == nil ||
+		fields["client_ip"] != "192.0.2.3" {
 		t.Fatalf("default fields = %#v", fields)
 	}
 }

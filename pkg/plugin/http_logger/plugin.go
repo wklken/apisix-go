@@ -521,21 +521,7 @@ func (p *Plugin) defaultSnapshotLogFields(snapshot base.LogSnapshot) map[string]
 	if routeID == "" {
 		routeID = "no-matched"
 	}
-	fields := map[string]any{
-		"route_id": routeID,
-		"request": map[string]any{
-			"method": snapshot.Request.Method,
-			"uri":    snapshot.Request.URI,
-		},
-		"response": map[string]any{"status": snapshot.Outcome.Status},
-	}
-	if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
-		fields["service_id"] = serviceID
-	}
-	if consumerName := snapshot.Request.Consumer.Username; consumerName != "" {
-		fields["consumer"] = map[string]any{"username": consumerName}
-	}
-	return fields
+	return base.BuildAccessLogFromSnapshot(snapshot, routeID, p.ServerAddr)
 }
 
 func resolveLogFormat(

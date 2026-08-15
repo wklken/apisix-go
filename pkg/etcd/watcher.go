@@ -150,8 +150,10 @@ func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
 	defer cancel()
 	response, err := c.loadSnapshot(snapshotCtx)
 	if err != nil {
+		metrics.RecordEtcdReachable(false)
 		return err
 	}
+	metrics.RecordEtcdReachable(true)
 	return c.applySnapshot(ctx, response)
 }
 
@@ -160,21 +162,28 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 	retry := 0
 	for ctx.Err() == nil {
 		stream := c.openWatch(ctx, revision)
+		markUnreachable := true
 		for response := range stream {
 			if err := response.Err(); err != nil {
+				metrics.RecordEtcdReachable(false)
 				logger.Errorf("etcd watch canceled: %v", err)
 				break
 			}
+			metrics.RecordEtcdReachable(true)
 			if err := c.applyWatchResponse(ctx, response); err != nil {
 				if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
+				markUnreachable = false
 				logger.Errorf("apply etcd watch response: %v", err)
 				break
 			}
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if markUnreachable {
+			metrics.RecordEtcdReachable(false)
 		}
 		for {
 			if err := c.recoverSnapshot(ctx); err == nil {
@@ -242,6 +251,7 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = response.Header.Revision
+	metrics.RecordEtcdAppliedRevision(c.lastRevision)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil
 }
@@ -278,6 +288,7 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = nextRevision
+	metrics.RecordEtcdAppliedRevision(c.lastRevision)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil
 }
@@ -300,11 +311,13 @@ func (c *ConfigClient) FetchAll() error {
 		resp, err = c.loadSnapshot(loadCtx)
 		loadCancel()
 		if err != nil {
+			metrics.RecordEtcdReachable(false)
 			if attempt < c.startupRetry {
 				time.Sleep(100 * time.Millisecond)
 			}
 			continue
 		}
+		metrics.RecordEtcdReachable(true)
 		logger.Info("got response")
 		snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), c.requestTimeout)
 		defer snapshotCancel()

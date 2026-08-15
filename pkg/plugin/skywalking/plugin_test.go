@@ -415,6 +415,9 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 	if result.Decision != base.RequestContinue {
 		t.Fatalf("request phase decision = %d, want continue", result.Decision)
 	}
+	result.Request.Header.Set("X-Request-Id", "trace-request-1")
+	apisixctx.RegisterRequestVar(result.Request, "$retry_count", 2)
+	apisixctx.RegisterRequestVar(result.Request, "$upstream_status", http.StatusCreated)
 	lifecycle.Complete(
 		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated},
 		time.Now(),
@@ -438,18 +441,18 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 		}
 		span := spans[0].(map[string]any)
 		tags, ok := span["tags"].([]any)
-		if !ok || len(tags) != 4 {
+		if !ok || len(tags) < 4 {
 			t.Fatalf("tags = %#v, want detached outcome and source tags", span["tags"])
 		}
-		foundSource := false
+		found := map[string]string{}
 		for _, value := range tags {
 			tag := value.(map[string]any)
-			if tag["key"] == "apisix.response_source" && tag["value"] == "cache_hit" {
-				foundSource = true
-			}
+			found[tag["key"].(string)] = tag["value"].(string)
 		}
-		if !foundSource {
-			t.Fatalf("tags = %#v, want cache_hit source tag", tags)
+		if found["apisix.response_source"] != "cache_hit" || found["apisix.request_id"] != "trace-request-1" ||
+			found["apisix.outcome"] != "completed" || found["apisix.retry_count"] != "2" ||
+			found["http.upstream_status_code"] != "201" {
+			t.Fatalf("correlation tags = %#v", found)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for lifecycle-owned segment")

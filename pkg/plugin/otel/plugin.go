@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/riandyrn/otelchi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -526,6 +527,7 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			state.span.SetStatus(codes.Error, http.StatusText(outcome.Status))
 		}
 		if request != nil {
+			correlation := apisixlog.CaptureRequestCorrelation(request)
 			requestTime := finished.Sub(state.started).Seconds()
 			if requestTime < 0 {
 				requestTime = 0
@@ -540,6 +542,21 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 			)
 			if source := lifecycle.ResponseSource(); source != apisixctx.ResponseSourceUnknown {
 				attrs = append(attrs, attribute.String("apisix.response_source", string(source)))
+			}
+			if correlation.RequestID != "" {
+				attrs = append(attrs, attribute.String("apisix.request_id", correlation.RequestID))
+			}
+			if correlation.NodeID != "" {
+				attrs = append(attrs, attribute.String("apisix.node_id", correlation.NodeID))
+			}
+			if outcome.Kind != "" {
+				attrs = append(attrs, attribute.String("apisix.outcome", string(outcome.Kind)))
+			}
+			if correlation.RetryCount != "" {
+				attrs = append(attrs, attribute.String("apisix.retry_count", correlation.RetryCount))
+			}
+			if correlation.UpstreamStatus != "" {
+				attrs = append(attrs, attribute.String("http.upstream_status_code", correlation.UpstreamStatus))
 			}
 			state.span.SetAttributes(attrs...)
 		}

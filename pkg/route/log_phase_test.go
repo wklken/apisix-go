@@ -120,7 +120,8 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "phase-closure",
 		Plugins: map[string]resource.PluginConfig{
-			"key-auth": map[string]any{},
+			"request-id": map[string]any{},
+			"key-auth":   map[string]any{},
 			"cors": map[string]any{
 				"allow_origins": "*",
 			},
@@ -144,6 +145,7 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/phase", nil)
 	request.Header.Set("Origin", "https://client.test")
+	request.Header.Set("X-Request-Id", "phase-request-1")
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
 	request = apisixctx.WithApisixVars(request, map[string]string{"$closure_marker": "live"})
 	request = apisixctx.WithRequestVars(request)
@@ -197,6 +199,10 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 		responseFields, ok := payload["response"].(map[string]any)
 		if !ok || responseFields["status"] != float64(http.StatusUnauthorized) {
 			t.Fatalf("logger payload = %#v", payload)
+		}
+		if payload["request_id"] != "phase-request-1" || payload["response_source"] != "early_stop" ||
+			payload["outcome"] != "completed" {
+			t.Fatalf("logger correlation fields = %#v", payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("auth rejection did not execute detached logger exactly once")

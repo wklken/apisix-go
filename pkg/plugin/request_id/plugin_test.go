@@ -164,6 +164,8 @@ func TestKSUIDGeneratesSortableBase62RequestID(t *testing.T) {
 func TestHandlerPreservesIncomingRequestID(t *testing.T) {
 	p := newTestPlugin(t, Config{Algorithm: "uuid"})
 	req := httptest.NewRequest(http.MethodGet, "/request-id", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	req = apisixctx.WithRequestVars(req)
 	req.Header.Set("X-Request-Id", "client-provided")
 
 	rr := httptest.NewRecorder()
@@ -173,6 +175,9 @@ func TestHandlerPreservesIncomingRequestID(t *testing.T) {
 		}
 		if got := r.Context().Value(apisixctx.RequestIDKey); got != "client-provided" {
 			t.Fatalf("context request_id = %#v, want client-provided", got)
+		}
+		if got := apisixctx.GetApisixVar(r, "$request_id"); got != "client-provided" {
+			t.Fatalf("APISIX request_id = %#v, want client-provided", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

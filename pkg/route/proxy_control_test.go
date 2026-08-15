@@ -226,6 +226,9 @@ func TestModifyResponseRecordsUpstreamLatency(t *testing.T) {
 	if got := apisixctx.GetRequestVar(req, "$status"); got != http.StatusAccepted {
 		t.Fatalf("$status = %v, want %d", got, http.StatusAccepted)
 	}
+	if got := apisixctx.GetRequestVar(req, "$upstream_status"); got != http.StatusAccepted {
+		t.Fatalf("$upstream_status = %v, want %d", got, http.StatusAccepted)
+	}
 	if got := apisixctx.GetRequestVar(req, "$response_source"); got != "upstream" {
 		t.Fatalf("$response_source = %v, want upstream", got)
 	}

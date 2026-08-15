@@ -332,6 +332,7 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	server := &http.Server{
 		Handler:           handler,
 		Protocols:         protocols,
+		ConnState:         metrics.NewHTTPConnectionStateObserver(),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		IdleTimeout:       defaultHTTPIdleTimeout,
 	}

@@ -2,6 +2,7 @@ package log
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -24,6 +25,7 @@ const (
 type LogSnapshot struct {
 	Request  RequestLogSnapshot
 	Response ResponseLogSnapshot
+	NodeID   string
 	Outcome  apisixctx.ResponseOutcome
 	Source   apisixctx.ResponseSource
 	Started  time.Time
@@ -31,6 +33,7 @@ type LogSnapshot struct {
 }
 
 type RequestLogSnapshot struct {
+	ID            string
 	Method        string
 	URI           string
 	URL           string
@@ -71,6 +74,46 @@ type ResponseSnapshot struct {
 type SafeConsumerLogIdentity struct {
 	Username string
 	GroupID  string
+}
+
+// RequestCorrelation is the bounded identity and upstream-attempt view shared
+// by the final log snapshot and lifecycle-owned trace exporters.
+type RequestCorrelation struct {
+	RequestID      string
+	NodeID         string
+	UpstreamStatus string
+	RetryCount     string
+}
+
+// CaptureRequestCorrelation reads only detached-safe scalar values. The
+// request-id context is authoritative after the plugin runs; the APISIX value
+// covers replacement requests, and the conventional header preserves early
+// rejection correlation before route rewrite plugins execute.
+func CaptureRequestCorrelation(r *http.Request) RequestCorrelation {
+	if r == nil {
+		return RequestCorrelation{}
+	}
+	correlation := RequestCorrelation{}
+	correlation.RequestID, _ = r.Context().Value(apisixctx.RequestIDKey).(string)
+	apisixVars := apisixctx.GetApisixVars(r)
+	if correlation.RequestID == "" {
+		correlation.RequestID, _ = apisixVars["$request_id"].(string)
+	}
+	if correlation.RequestID == "" {
+		correlation.RequestID = r.Header.Get("X-Request-Id")
+	}
+	correlation.NodeID, _ = apisixVars["$node_id"].(string)
+	requestVars := apisixctx.GetRequestVars(r)
+	correlation.UpstreamStatus = scalarString(requestVars["$upstream_status"])
+	correlation.RetryCount = scalarString(requestVars["$retry_count"])
+	return correlation
+}
+
+func scalarString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 // CloneSafeValue returns a detached JSON-like value.  Unsupported values are
@@ -368,6 +411,9 @@ func BuildSnapshot(
 		request.APISIXVars["$remote_port"] = remotePort
 	}
 	request.RequestVars = cloneSafeMap(apisixctx.GetRequestVars(r), &remaining)
+	correlation := CaptureRequestCorrelation(r)
+	request.ID = correlation.RequestID
+	snapshot.NodeID = correlation.NodeID
 	request.Consumer = safeConsumerIdentity(request.APISIXVars)
 	snapshot.Request = request
 	return snapshot

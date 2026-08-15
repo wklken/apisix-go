@@ -41,31 +41,6 @@ The detailed plugin comparison is maintained in [docs/plugins.md](docs/plugins.m
 - **Go-native extensibility:** build and test HTTP middleware and plugins with the Go toolchain.
 - **Observable by design:** use Go-native logging, metrics, tracing, and traffic-management plugins.
 
-### Supported
-
-- [x] Route
-- [x] Service
-- [x] Upstream
-- [x] Plugin Metadata
-- [x] Global Rules
-- [x] Plugin Attr
-- [x] Consumer
-- [x] Consumer Group (store/resource support and `consumer-restriction` path)
-- [x] Plugin Config
-- [ ] Script
-- [ ] Secret (generic secret resource is not complete; plugin-level APISIX data-encryption fields are supported)
-
-### Local Go environment
-
-Source `.envrc` before running Go commands (this is local to the checkout and does not require `direnv allow`):
-
-```bash
-source .envrc
-go test ./...
-```
-
-The main checkout's `.cache/shared/` directory holds one copy of Go toolchains, modules, build cache, and installed development tools for all linked worktrees. Each worktree keeps temporary files, telemetry, benchmark/coverage evidence, and the `make build` output (`.cache/out/apisix`, set by `.envrc` via `BINARY_PATH`) in its own `.cache/`. Without `.envrc`, a plain `make build` writes `./apisix` at the repo root. All of these paths are ignored by Git, so normal tests and builds do not write to user-level `/private` or home-directory caches. Run `make cache-status` to inspect the resolved paths, `make clean` to remove the local application binary, or `make cache-clean-local` after stopping an agent to remove that worktree's pre-migration duplicate Go caches.
-
 ## Plugin support
 
 The complete APISIX 3.17 comparison, category summary, per-plugin supported/unsupported behavior, execution backlog, and remaining gap catalog are maintained in [docs/plugins.md](docs/plugins.md).
@@ -87,12 +62,3 @@ apisix-go is released under the [Apache License 2.0](LICENSE) and developed in p
 - [Explore the design and plugin status](docs/)
 
 If apisix-go is useful to you, [star the repository](https://github.com/wklken/apisix-go) and share it with teams exploring Go-native API and edge gateways.
-
-## TODO
-
-The APISIX 3.17 plugin parity backlog is maintained in [docs/plugins.md](docs/plugins.md). The legacy project TODOs below are separate repository-level work and are not plugin parity claims.
-
-- [x] standalone mode
-- [ ] handle etcd compact
-- [x] github action: go releaser
-- [ ] logforamt change didn't take effect immediately

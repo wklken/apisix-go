@@ -45,18 +45,6 @@ deployment:
   role_data_plane:
     config_provider: yaml
 YAML
-cat >"$temp_dir/apisix.yaml" <<'YAML'
-routes:
-  - id: container-smoke
-    uri: /smoke
-    plugins:
-      request-id: {}
-    upstream:
-      type: roundrobin
-      nodes:
-        "apisix-smoke-upstream:8081": 1
-#END
-YAML
 
 if [[ ${APISIX_SKIP_BUILD:-0} != 1 ]]; then
     docker build \
@@ -72,6 +60,23 @@ docker run --detach --name "$upstream" --network "$network" --network-alias apis
     alpine:3.24.1 sh -c \
     'mkdir -p /www && printf "%s" "apisix-container-smoke" >/www/index.html && exec httpd -f -p 8081 -h /www' \
     >/dev/null
+upstream_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$upstream")
+if [[ -z "$upstream_ip" ]]; then
+    printf 'upstream container has no network address\n' >&2
+    exit 1
+fi
+cat >"$temp_dir/apisix.yaml" <<YAML
+routes:
+  - id: container-smoke
+    uri: /smoke
+    plugins:
+      request-id: {}
+    upstream:
+      type: roundrobin
+      nodes:
+        "${upstream_ip}:8081": 1
+#END
+YAML
 docker run --detach --name "$gateway" --network "$network" --publish 127.0.0.1::9080 \
     --volume "$temp_dir/config.yaml:/usr/local/apisix/conf/config.yaml:ro" \
     --volume "$temp_dir/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro" \

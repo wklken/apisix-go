@@ -1,12 +1,12 @@
 package ua_restriction
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -90,24 +90,20 @@ func (p *Plugin) PostInit() error {
 
 	if len(p.config.AllowList) > 0 {
 		p.allowList = make([]*regexp.Regexp, 0, len(p.config.AllowList))
-		for _, pattern := range p.config.AllowList {
+		for index, pattern := range p.config.AllowList {
 			g, err := regexp.Compile(pattern)
 			if err != nil {
-				logger.Warnf("failed to compile allowList pattern: %s", pattern)
-				continue
-				// return err
+				return fmt.Errorf("compile allowlist[%d] %q: %w", index, pattern, err)
 			}
 			p.allowList = append(p.allowList, g)
 		}
 	}
 	if len(p.config.DenyList) > 0 {
 		p.denyList = make([]*regexp.Regexp, 0, len(p.config.DenyList))
-		for _, pattern := range p.config.DenyList {
+		for index, pattern := range p.config.DenyList {
 			g, err := regexp.Compile(pattern)
 			if err != nil {
-				logger.Warnf("failed to compile denyList pattern: %s", pattern)
-				continue
-				// return err
+				return fmt.Errorf("compile denylist[%d] %q: %w", index, pattern, err)
 			}
 			p.denyList = append(p.denyList, g)
 		}

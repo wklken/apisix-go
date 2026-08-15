@@ -1,0 +1,122 @@
+name: Security And Release Gates
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  race-and-vulnerability:
+    name: Focused Race And Reachable Vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run focused race tests
+        run: go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1
+
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+  container-evidence:
+    name: Container Smoke And Release Evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      APISIX_IMAGE: apisix-go:${{ github.sha }}
+      EVIDENCE_DIR: .cache/release-evidence
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Create evidence directory
+        run: mkdir -p "$EVIDENCE_DIR"
+
+      - name: Build container image
+        run: |
+          docker build \
+            --build-arg VERSION=security-release-gate \
+            --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_TIME=security-release-gate \
+            --build-arg GO_VERSION="$(go version)" \
+            --tag "$APISIX_IMAGE" .
+
+      - name: Run non-root proxy and shutdown smoke
+        env:
+          APISIX_SKIP_BUILD: "1"
+        run: bash scripts/container_smoke.sh
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          image: ${{ env.APISIX_IMAGE }}
+          format: cyclonedx-json
+          output-file: ${{ env.EVIDENCE_DIR }}/sbom.cdx.json
+          upload-artifact: false
+          dependency-snapshot: false
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.APISIX_IMAGE }}
+          format: json
+          output: ${{ env.EVIDENCE_DIR }}/trivy.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Export runnable image archive
+        run: docker save "$APISIX_IMAGE" | gzip --best >"$EVIDENCE_DIR/apisix-image.tar.gz"
+
+      - name: Write rollback metadata
+        env:
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          bash scripts/release_metadata.sh \
+            "$APISIX_IMAGE" \
+            "$EVIDENCE_DIR/rollback-metadata.json" \
+            "$EVIDENCE_DIR/sbom.cdx.json" \
+            "$EVIDENCE_DIR/trivy.json" \
+            "$EVIDENCE_DIR/apisix-image.tar.gz"
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: security-release-evidence-${{ github.sha }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Reject high or critical image vulnerabilities
+        run: |
+          jq -e '
+            [.Results[]?.Vulnerabilities[]?
+              | select(.Severity == "HIGH" or .Severity == "CRITICAL")]
+            | length == 0
+          ' "$EVIDENCE_DIR/trivy.json" >/dev/null

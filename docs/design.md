@@ -4,6 +4,50 @@
 >
 > The design baseline is APISIX `release/3.17`; these notes describe intentional Go-native boundaries and separate-subsystem decisions.
 
+## Configuration, container, and release gates
+
+Runtime configuration has one deterministic precedence chain:
+`default -> selected override -> APISIXGO_*`. The base file is always
+`conf/config-default.yaml`; `-c/--config` selects an optional override, and
+environment variables are applied last. Nested maps merge and lists replace.
+The process validates the fully merged result before publishing global state:
+the HTTP plugin allowlist and listener set must be non-empty, listeners must be
+valid, proxy connection limits must be positive, and the effective `etcd`
+provider must have endpoints and a prefix.
+
+Startup logs only the bounded `config.CapabilitySummary`: debug mode, bounded
+role/provider values, listener and plugin counts, protocol-mode booleans, the
+etcd endpoint count, and whether proxy limits are configured. It excludes
+addresses, credentials, keys, certificates, tokens, and secret references.
+
+The runtime image is pinned to Alpine 3.24.1, contains the CA bundle and the
+`curl` healthcheck dependency, and runs as UID/GID 10001. The image explicitly
+passes `/usr/local/apisix/conf/config.yaml` as an override, so its effective
+configuration uses the same merge rules as local execution. The executable
+`scripts/container_smoke.sh` serializes real-process runs, starts an isolated
+upstream and standalone route, checks health and a proxied response, verifies
+the runtime UID, sends `TERM`, and requires exit code zero. Run its static
+contract locally with `bash scripts/container_smoke_test.sh`; run the real
+smoke only on a host with Docker.
+
+`.github/workflows/security-release-gates.yml` runs the focused race suite and
+the pinned `govulncheck` scanner, then builds the image once and reuses it for
+the container smoke, CycloneDX SBOM, and Trivy scan. It uploads
+`sbom.cdx.json`, `trivy.json`, `apisix-image.tar.gz`, and
+`rollback-metadata.json`. The rollback file binds the source ref and commit to
+the immutable image ID and artifact checksums. Before rollback, operators
+download the evidence bundle, verify every recorded checksum, run
+`gzip -dc apisix-image.tar.gz | docker load`, confirm the loaded image ID, and
+redeploy the restored tag through the existing deployment process. The
+metadata is evidence, not a new deployment controller. Local deterministic
+checks are:
+
+```bash
+bash scripts/container_smoke_test.sh
+bash scripts/release_metadata_test.sh
+bash scripts/release_gate_test.sh
+```
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12

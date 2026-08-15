@@ -7,12 +7,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -28,7 +26,7 @@ var globalConfig *config.Config
 
 func initConfig() error {
 	var err error
-	globalConfig, err = config.Load()
+	globalConfig, err = config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("load configurations from file: %w", err)
 	}
@@ -45,12 +43,6 @@ func configureLogger(cfg *config.Config) error {
 func init() {
 	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
 	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
-
-	viper.SetDefault("author", "wklken")
-
-	viper.AutomaticEnv()
-	viper.SetEnvPrefix("APISIXGO")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 }
 
 var rootCmd = &cobra.Command{
@@ -69,37 +61,7 @@ func Execute() {
 	}
 }
 
-func startupConfigSummary(cfg *config.Config) map[string]any {
-	if cfg == nil {
-		return nil
-	}
-	configProvider := strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleTraditional.ConfigProvider))
-	if configProvider == "" {
-		configProvider = strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleDataPlane.ConfigProvider))
-	}
-	if configProvider == "" {
-		configProvider = strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleControlPlane.ConfigProvider))
-	}
-	return map[string]any{
-		"debug":             cfg.Debug,
-		"role":              cfg.Deployment.Role,
-		"config_provider":   configProvider,
-		"node_listen":       cfg.Apisix.ListenAddresses(),
-		"enabled_plugins":   len(cfg.Plugins),
-		"etcd_endpoints":    len(cfg.Deployment.Etcd.Host),
-		"enabled_ssl":       cfg.Apisix.Ssl.Enable,
-		"admin_api_version": cfg.Deployment.Admin.AdminAPIVersion,
-	}
-}
-
 func Start() error {
-	// FIXME: merge config.yaml and config-default.yaml
-	// load global config
-	if cfgFile != "" {
-		// Use config file from the flag.
-		// log.Infof("Load config file: %s", cfgFile)
-		viper.SetConfigFile(cfgFile)
-	}
 	if err := initConfig(); err != nil {
 		return err
 	}
@@ -107,7 +69,7 @@ func Start() error {
 		return fmt.Errorf("configure logger: %s", err)
 	}
 
-	logger.Infof("startup config summary: %v", startupConfigSummary(globalConfig))
+	logger.Infof("startup config summary: %v", config.CapabilitySummary(globalConfig))
 
 	logger.Info("Starting server")
 	srv, err := server.NewServer()

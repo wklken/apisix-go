@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,23 +21,6 @@ func TestStartHasNoDebugBannerPrint(t *testing.T) {
 	for line := range strings.SplitSeq(string(source), "\n") {
 		if strings.Contains(line, `fmt.Println("It's apisix")`) {
 			t.Fatalf("stray debug banner print remains in root.go: %q", line)
-		}
-	}
-}
-
-func TestStartupConfigSummaryExcludesSecrets(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Deployment.Admin.AdminKey = []config.AdminKey{{Key: "admin-secret"}}
-	cfg.Deployment.Etcd.Password = "etcd-secret"
-	cfg.Apisix.DataEncryption.Keyring = []string{"0123456789abcdef"}
-
-	encoded, err := json.Marshal(startupConfigSummary(cfg))
-	if err != nil {
-		t.Fatalf("marshal summary: %v", err)
-	}
-	for _, secret := range []string{"admin-secret", "etcd-secret", "0123456789abcdef"} {
-		if bytes.Contains(encoded, []byte(secret)) {
-			t.Fatalf("startup summary contains %q: %s", secret, encoded)
 		}
 	}
 }

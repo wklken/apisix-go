@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,12 +16,50 @@ import (
 
 var GlobalConfig *Config
 
-func Load() (*Config, error) {
-	v := viper.GetViper()
+const DefaultConfigFile = "conf/config-default.yaml"
+
+func Load(overridePath string) (*Config, error) {
+	return loadConfigFiles(DefaultConfigFile, overridePath)
+}
+
+func loadConfigFiles(defaultPath, overridePath string) (*Config, error) {
+	v := viper.NewWithOptions(viper.ExperimentalBindStruct())
+	v.SetConfigFile(defaultPath)
 	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("fail to load config file, %w", err)
+		return nil, fmt.Errorf("load default config %q: %w", defaultPath, err)
 	}
-	return load(v)
+
+	if overridePath != "" && !sameConfigPath(defaultPath, overridePath) {
+		v.SetConfigFile(overridePath)
+		if err := v.MergeInConfig(); err != nil {
+			return nil, fmt.Errorf("merge config override %q: %w", overridePath, err)
+		}
+	}
+	v.SetEnvPrefix("APISIXGO")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AllowEmptyEnv(true)
+	v.AutomaticEnv()
+
+	cfg, err := load(v)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	GlobalConfig = cfg
+	data_encryption.Configure(cfg.Apisix.DataEncryption.EnableEncryptFields, cfg.Apisix.DataEncryption.Keyring)
+	return cfg, nil
+}
+
+func sameConfigPath(first, second string) bool {
+	firstPath, firstErr := filepath.Abs(first)
+	secondPath, secondErr := filepath.Abs(second)
+	if firstErr == nil && secondErr == nil {
+		return filepath.Clean(firstPath) == filepath.Clean(secondPath)
+	}
+	return filepath.Clean(first) == filepath.Clean(second)
 }
 
 func load(v *viper.Viper) (*Config, error) {
@@ -45,9 +85,6 @@ func load(v *viper.Viper) (*Config, error) {
 		)
 	}
 
-	GlobalConfig = &cfg
-	data_encryption.Configure(cfg.Apisix.DataEncryption.EnableEncryptFields, cfg.Apisix.DataEncryption.Keyring)
-
 	for _, limit := range []struct {
 		field string
 		value int
@@ -63,6 +100,126 @@ func load(v *viper.Viper) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func validateRuntimeConfig(cfg *Config) error {
+	if len(cfg.Plugins) == 0 {
+		return fmt.Errorf("plugins must contain at least one HTTP plugin")
+	}
+	if len(cfg.Apisix.NodeListen) == 0 {
+		return fmt.Errorf("apisix.node_listen must contain at least one listener")
+	}
+	for index, listener := range cfg.Apisix.NodeListen {
+		if listener.Port < 1 || listener.Port > 65535 {
+			return fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port)
+		}
+		if listener.Ip != "" && net.ParseIP(listener.Ip) == nil {
+			return fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip)
+		}
+	}
+	for _, limit := range []struct {
+		field string
+		value int
+	}{
+		{field: "proxy.max_idle_conns", value: cfg.Proxy.MaxIdleConns},
+		{field: "proxy.max_idle_conns_per_host", value: cfg.Proxy.MaxIdleConnsPerHost},
+		{field: "proxy.max_conns_per_host", value: cfg.Proxy.MaxConnsPerHost},
+		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
+	} {
+		if limit.value <= 0 {
+			return fmt.Errorf("%s must be positive, got %d", limit.field, limit.value)
+		}
+	}
+
+	provider, err := EffectiveConfigProvider(cfg)
+	if err != nil {
+		return err
+	}
+	if provider == "etcd" {
+		if len(cfg.Deployment.Etcd.Host) == 0 {
+			return fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider")
+		}
+		for index, endpoint := range cfg.Deployment.Etcd.Host {
+			if strings.TrimSpace(endpoint) == "" {
+				return fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index)
+			}
+		}
+		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
+			return fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider")
+		}
+	}
+	return nil
+}
+
+func EffectiveConfigProvider(cfg *Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("deployment config must not be nil")
+	}
+	role := strings.ToLower(strings.TrimSpace(cfg.Deployment.Role))
+	var provider string
+	switch role {
+	case "data_plane":
+		provider = cfg.Deployment.RoleDataPlane.ConfigProvider
+	case "control_plane":
+		provider = cfg.Deployment.RoleControlPlane.ConfigProvider
+	case "traditional":
+		provider = cfg.Deployment.RoleTraditional.ConfigProvider
+	default:
+		return "", fmt.Errorf("deployment.role %q is unsupported", cfg.Deployment.Role)
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if role == "data_plane" {
+		if slices.Contains([]string{"etcd", "yaml", "json"}, provider) {
+			return provider, nil
+		}
+		return "", fmt.Errorf("deployment.role_data_plane.config_provider %q is unsupported", provider)
+	}
+	if provider != "etcd" {
+		return "", fmt.Errorf("deployment.%s config_provider must be etcd, got %q", role, provider)
+	}
+	return provider, nil
+}
+
+func CapabilitySummary(cfg *Config) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	http2Enabled := cfg.Apisix.EnableHttp2
+	for _, listener := range cfg.Apisix.NodeListen {
+		http2Enabled = http2Enabled || listener.EnableHttp2
+	}
+	provider, err := EffectiveConfigProvider(cfg)
+	if err != nil {
+		provider = "unknown"
+	}
+	streamListeners := len(cfg.Apisix.StreamProxy.Tcp) + len(cfg.Apisix.StreamProxy.Udp)
+	return map[string]any{
+		"debug":                 cfg.Debug,
+		"role":                  boundedSummaryValue(cfg.Deployment.Role, "traditional", "data_plane", "control_plane"),
+		"config_provider":       boundedSummaryValue(provider, "etcd", "yaml", "json"),
+		"http_listener_count":   len(cfg.Apisix.NodeListen),
+		"https_listener_count":  len(cfg.Apisix.Ssl.Listen),
+		"stream_listener_count": streamListeners,
+		"http2_enabled":         http2Enabled,
+		"tls_enabled":           cfg.Apisix.Ssl.Enable && len(cfg.Apisix.Ssl.Listen) > 0,
+		"stream_enabled":        streamListeners > 0,
+		"plugin_count":          len(cfg.Plugins),
+		"stream_plugin_count":   len(cfg.StreamPlugins),
+		"etcd_endpoint_count":   len(cfg.Deployment.Etcd.Host),
+		"proxy_limits_configured": cfg.Proxy.MaxIdleConns > 0 &&
+			cfg.Proxy.MaxIdleConnsPerHost > 0 && cfg.Proxy.MaxConnsPerHost > 0 && cfg.Proxy.MaxInFlight > 0,
+	}
+}
+
+func boundedSummaryValue(value string, allowed ...string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if slices.Contains(allowed, value) {
+		return value
+	}
+	if value == "" {
+		return "unset"
+	}
+	return "unknown"
 }
 
 func decodeHTTPPluginAllowlist(raw any) ([]string, bool) {

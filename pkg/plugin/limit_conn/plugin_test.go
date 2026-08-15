@@ -3,9 +3,11 @@ package limit_conn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -258,10 +260,10 @@ func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
 	globalPlugin.redisLimiter = globalLimiter
 	globalPlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
 
-	if _, _, err := routePlugin.increase("192.0.2.70", 4, 1); err != nil {
+	if _, _, _, err := routePlugin.increase("192.0.2.70", 4, 1); err != nil {
 		t.Fatalf("route increase error = %v", err)
 	}
-	if _, _, err := globalPlugin.increase("192.0.2.70", 2, 1); err != nil {
+	if _, _, _, err := globalPlugin.increase("192.0.2.70", 2, 1); err != nil {
 		t.Fatalf("global increase error = %v", err)
 	}
 	if routeLimiter.key == globalLimiter.key {
@@ -515,7 +517,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		OnlyUseDefaultDelay: true,
 	})
 
-	firstDelay, allowed, err := p.increase("client", 1, 2)
+	firstDelay, allowed, _, err := p.increase("client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -526,7 +528,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("first delay = %s, want 0", firstDelay)
 	}
 
-	secondDelay, allowed, err := p.increase("client", 1, 2)
+	secondDelay, allowed, _, err := p.increase("client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -537,7 +539,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("second delay = %s, want 200ms", secondDelay)
 	}
 
-	thirdDelay, allowed, err := p.increase("client", 1, 2)
+	thirdDelay, allowed, _, err := p.increase("client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -557,16 +559,17 @@ func TestDecreaseAdaptsUnitDelayFromDownstreamLatency(t *testing.T) {
 		Key:              "remote_addr",
 	})
 
-	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+	_, allowed, release, err := p.increase("client", 1, 1)
+	if err != nil || !allowed {
 		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
 	}
 	latency := 600 * time.Millisecond
-	p.decrease("client", &latency)
+	release(&latency)
 
-	if delay, allowed, err := p.increase("client", 1, 1); err != nil || !allowed || delay != 0 {
+	if delay, allowed, _, err := p.increase("client", 1, 1); err != nil || !allowed || delay != 0 {
 		t.Fatalf("first adapted increase = delay %s, allowed %v, error %v", delay, allowed, err)
 	}
-	delay, allowed, err := p.increase("client", 1, 1)
+	delay, allowed, _, err := p.increase("client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("second adapted increase = allowed %v, error %v", allowed, err)
 	}
@@ -584,15 +587,16 @@ func TestDecreaseKeepsDefaultUnitDelayWhenConfigured(t *testing.T) {
 		OnlyUseDefaultDelay: true,
 	})
 
-	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+	_, allowed, release, err := p.increase("client", 1, 1)
+	if err != nil || !allowed {
 		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
 	}
 	latency := 600 * time.Millisecond
-	p.decrease("client", &latency)
-	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+	release(&latency)
+	if _, allowed, _, err := p.increase("client", 1, 1); err != nil || !allowed {
 		t.Fatalf("first fixed increase = allowed %v, error %v", allowed, err)
 	}
-	delay, allowed, err := p.increase("client", 1, 1)
+	delay, allowed, _, err := p.increase("client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("second fixed increase = allowed %v, error %v", allowed, err)
 	}
@@ -1061,7 +1065,7 @@ func TestDecreaseLogsMeasuredAndDefaultRequestLatency(t *testing.T) {
 			defer stop()
 
 			latency := 100 * time.Millisecond
-			p.decrease("client", &latency)
+			p.decreaseLocal("client", &latency)
 			select {
 			case entry := <-entries:
 				if entry.Message != test.want {
@@ -1108,6 +1112,7 @@ type fakeRedisConnLimiter struct {
 	err         error
 	left        int
 	observe     func(string)
+	members     []string
 }
 
 type scriptedConnRedisClient struct {
@@ -1129,24 +1134,30 @@ func (f *scriptedConnRedisClient) PoolStats() *redis.PoolStats {
 }
 
 func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
+	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
 	client := &scriptedConnRedisClient{result: []any{int64(1), "250"}}
 	limiter := &redisConnLimiter{
-		client:    client,
-		unitDelay: 2,
-		keyTTL:    90 * time.Second,
+		client:      client,
+		unitDelay:   2,
+		keyTTL:      90 * time.Second,
+		now:         func() time.Time { return now },
+		newMemberID: func() (string, error) { return "request-member", nil },
 	}
 
-	delay, allowed, err := limiter.incoming("route-a:client-a", 3, 4)
+	delay, member, allowed, err := limiter.incoming("route-a:client-a", 3, 4)
 	if err != nil {
 		t.Fatalf("incoming() error = %v", err)
 	}
 	if delay != 250*time.Millisecond || !allowed {
 		t.Fatalf("incoming() = delay %s, allowed %t", delay, allowed)
 	}
+	if member != "request-member" {
+		t.Fatalf("incoming member = %q, want request-member", member)
+	}
 	if len(client.keys) != 1 || client.keys[0] != "plugin-limit-conn:route-a:client-a" {
 		t.Fatalf("Eval keys = %#v", client.keys)
 	}
-	wantArgs := []any{3, 4, float64(2), int64(90_000)}
+	wantArgs := []any{3, 4, float64(2), int64(90_000), now.UnixMilli(), "request-member"}
 	if len(client.args) != len(wantArgs) {
 		t.Fatalf("Eval args = %#v, want %#v", client.args, wantArgs)
 	}
@@ -1158,11 +1169,22 @@ func TestRedisConnLimiterDecodesAdmissionAndUpdatesMeasuredDelay(t *testing.T) {
 
 	latency := 4 * time.Second
 	client.result = nil
-	if err := limiter.leaving("route-a:client-a", &latency); err != nil {
+	if err := limiter.leaving("route-a:client-a", member, &latency); err != nil {
 		t.Fatalf("leaving() error = %v", err)
 	}
 	if limiter.unitDelay != 3 {
 		t.Fatalf("unitDelay = %v, want averaged 3 seconds", limiter.unitDelay)
+	}
+}
+
+func TestRedisLimitConnUsesExpiringUniqueMembers(t *testing.T) {
+	for _, operation := range []string{"ZREMRANGEBYSCORE", "ZCARD", "ZADD"} {
+		if !strings.Contains(strings.ToUpper(redisLimitConnIncomingScript), operation) {
+			t.Fatalf("Redis admission script is missing %s:\n%s", operation, redisLimitConnIncomingScript)
+		}
+	}
+	if !strings.Contains(strings.ToUpper(redisLimitConnLeavingScript), "ZREM") {
+		t.Fatalf("Redis release script is missing ZREM:\n%s", redisLimitConnLeavingScript)
 	}
 }
 
@@ -1185,7 +1207,7 @@ func TestRedisConnLimiterFailsClosedOnBackendAndProtocolErrors(t *testing.T) {
 				client: &scriptedConnRedisClient{result: test.result, err: test.err},
 				keyTTL: time.Minute,
 			}
-			_, _, err := limiter.incoming("key", 1, 2)
+			_, _, _, err := limiter.incoming("key", 1, 2)
 			if err == nil {
 				t.Fatal("incoming() error = nil")
 			}
@@ -1198,7 +1220,7 @@ func TestRedisConnLimiterLeavingPreservesConfiguredDelayAndErrors(t *testing.T) 
 	client := &scriptedConnRedisClient{err: backendErr}
 	limiter := &redisConnLimiter{client: client, unitDelay: 2}
 	latency := 4 * time.Second
-	if err := limiter.leaving("key", &latency); !errors.Is(err, backendErr) {
+	if err := limiter.leaving("key", "member", &latency); !errors.Is(err, backendErr) {
 		t.Fatalf("leaving() error = %v, want %v", err, backendErr)
 	}
 	if limiter.unitDelay != 2 {
@@ -1207,7 +1229,7 @@ func TestRedisConnLimiterLeavingPreservesConfiguredDelayAndErrors(t *testing.T) 
 
 	client.err = nil
 	limiter.onlyUseDefaultDelay = true
-	if err := limiter.leaving("key", &latency); err != nil {
+	if err := limiter.leaving("key", "member", &latency); err != nil {
 		t.Fatalf("leaving(default delay) error = %v", err)
 	}
 	if limiter.unitDelay != 2 {
@@ -1215,7 +1237,7 @@ func TestRedisConnLimiterLeavingPreservesConfiguredDelayAndErrors(t *testing.T) 
 	}
 
 	limiter.onlyUseDefaultDelay = false
-	if err := limiter.leaving("key", nil); err != nil {
+	if err := limiter.leaving("key", "member", nil); err != nil {
 		t.Fatalf("leaving(nil latency) error = %v", err)
 	}
 	if limiter.unitDelay != 2 {
@@ -1252,15 +1274,18 @@ func (f fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
 	return &redis.PoolStats{Hits: f.hits}
 }
 
-func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
+func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, string, bool, error) {
 	f.key = key
-	return f.delay, f.allowed, f.err
+	member := fmt.Sprintf("member-%d", len(f.members)+1)
+	f.members = append(f.members, member)
+	return f.delay, member, f.allowed, f.err
 }
 
-func (f *fakeRedisConnLimiter) leaving(key string, _ *time.Duration) error {
+func (f *fakeRedisConnLimiter) leaving(key string, member string, _ *time.Duration) error {
 	f.leavingKey = key
 	f.leavingKeys = append(f.leavingKeys, key)
 	f.left++
+	f.members = append(f.members, "released:"+member)
 	if f.observe != nil {
 		f.observe(key)
 	}
@@ -1511,6 +1536,10 @@ func TestRequestPhaseLimitConnCapturesExactAdmissionSet(t *testing.T) {
 	if len(limiter.leavingKeys) != 2 || !strings.Contains(limiter.leavingKeys[0], "tenant-a") ||
 		!strings.Contains(limiter.leavingKeys[1], "user-a") {
 		t.Fatalf("release keys = %#v, want captured tenant-a/user-a keys", limiter.leavingKeys)
+	}
+	wantMembers := []string{"member-1", "member-2", "released:member-1", "released:member-2"}
+	if !reflect.DeepEqual(limiter.members, wantMembers) {
+		t.Fatalf("admission/release members = %#v, want %#v", limiter.members, wantMembers)
 	}
 	apisixctx.RecycleVars(request)
 }

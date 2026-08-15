@@ -41,11 +41,13 @@ type Plugin struct {
 	ruleLimiters      []*limiter.Limiter
 	routeID           string
 	localLimiterStore limiter.Store
+	fixedStore        limiter.Store
 	dynamicLimits     bool
 	groupRegistered   bool
 
-	clientMu       sync.Mutex
-	clientReleases []func()
+	backendMu     sync.Mutex
+	backendClient redis.UniversalClient
+	clientRelease func()
 }
 
 const (
@@ -796,33 +798,67 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 	switch p.config.Policy {
 	case "local":
 		store = p.localStore()
-	case "redis":
-		// each route has its own limit => we should share the redis client
-		configUID := shared.NewConfigUID()
-		configUID.Add(p.config.Redis.String())
-		c := redis.NewClient(p.redisConnConfig().Options())
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) { return c, nil },
-			shared.CloseRedisClient,
-		)
+	case "redis", "redis-cluster", "redis-sentinel":
+		var err error
+		store, err = p.fixedWindowStore()
 		if err != nil {
 			return nil, err
 		}
-		client := value.(*redis.Client)
-		p.trackClientRelease(release)
+	}
 
-		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
-			Prefix:   "limit-count",
-			MaxRetry: 3,
-		})
-		// TODO: handle the error
-		if err != nil {
-			return nil, err
+	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
+}
+
+func (p *Plugin) fixedWindowStore() (limiter.Store, error) {
+	p.backendMu.Lock()
+	defer p.backendMu.Unlock()
+	if p.fixedStore != nil {
+		return p.fixedStore, nil
+	}
+
+	client, err := p.redisBackendClientLocked()
+	if err != nil {
+		return nil, err
+	}
+	store, err := sredis.NewStoreWithOptions(client, limiter.StoreOptions{
+		Prefix:   "limit-count",
+		MaxRetry: 3,
+	})
+	if err != nil {
+		release := p.clientRelease
+		p.clientRelease = nil
+		p.backendClient = nil
+		if release != nil {
+			release()
 		}
-		store = newRedisDiagnosticStore(store, client)
+		return nil, err
+	}
+	if single, ok := client.(*redis.Client); ok {
+		store = newRedisDiagnosticStore(store, single)
+	}
+	p.fixedStore = store
+	return store, nil
+}
+
+func (p *Plugin) redisBackendClient() (redis.UniversalClient, error) {
+	p.backendMu.Lock()
+	defer p.backendMu.Unlock()
+	return p.redisBackendClientLocked()
+}
+
+func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
+	if p.backendClient != nil {
+		return p.backendClient, nil
+	}
+
+	configUID := shared.NewConfigUID()
+	configUID.Add(p.config.Policy)
+	var create func() (any, error)
+	switch p.config.Policy {
+	case "redis":
+		configUID.Add(p.config.Redis.String())
+		create = func() (any, error) { return redis.NewClient(p.redisConnConfig().Options()), nil }
 	case "redis-cluster":
-		configUID := shared.NewConfigUID()
 		configUID.Add(
 			p.config.RedisCluster.RedisClusterName,
 			strings.Join(p.config.RedisCluster.RedisClusterNodes, ","),
@@ -833,28 +869,10 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 			p.config.RedisCluster.RedisKeepaliveTimeout,
 			p.config.RedisCluster.RedisKeepalivePool,
 		)
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) {
-				return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
-			},
-			shared.CloseRedisClient,
-		)
-		if err != nil {
-			return nil, err
-		}
-		client := value.(*redis.ClusterClient)
-		p.trackClientRelease(release)
-
-		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
-			Prefix:   "limit-count",
-			MaxRetry: 3,
-		})
-		if err != nil {
-			return nil, err
+		create = func() (any, error) {
+			return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
 		}
 	case "redis-sentinel":
-		configUID := shared.NewConfigUID()
 		configUID.Add(
 			p.config.RedisMasterName,
 			p.config.RedisRole,
@@ -866,29 +884,22 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 			p.config.SentinelUsername,
 			p.config.SentinelPassword,
 		)
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) {
-				return redis.NewFailoverClient(p.redisSentinelOptions()), nil
-			},
-			shared.CloseRedisClient,
-		)
-		if err != nil {
-			return nil, err
-		}
-		client := value.(*redis.Client)
-		p.trackClientRelease(release)
-
-		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
-			Prefix:   "limit-count",
-			MaxRetry: 3,
-		})
-		if err != nil {
-			return nil, err
-		}
+		create = func() (any, error) { return redis.NewFailoverClient(p.redisSentinelOptions()), nil }
+	default:
+		return nil, fmt.Errorf("policy %q has no Redis backend", p.config.Policy)
 	}
 
-	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
+	value, release, err := shared.AcquireClient(
+		shared.ClientKey(name, configUID),
+		create,
+		shared.CloseRedisClient,
+	)
+	if err != nil {
+		return nil, err
+	}
+	p.backendClient = value.(redis.UniversalClient)
+	p.clientRelease = release
+	return p.backendClient, nil
 }
 
 func staticLimitValue(value any, name string) (int64, bool, error) {
@@ -1256,72 +1267,11 @@ func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
 	switch p.config.Policy {
 	case "local":
 		return newMemorySlidingWindowStore(), nil
-	case "redis":
-		configUID := shared.NewConfigUID()
-		configUID.Add(p.config.Redis.String())
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) {
-				return redis.NewClient(p.redisConnConfig().Options()), nil
-			},
-			shared.CloseRedisClient,
-		)
+	case "redis", "redis-cluster", "redis-sentinel":
+		client, err := p.redisBackendClient()
 		if err != nil {
 			return nil, err
 		}
-		client := value.(*redis.Client)
-		p.trackClientRelease(release)
-		return newRedisSlidingWindowStore(client), nil
-	case "redis-cluster":
-		configUID := shared.NewConfigUID()
-		configUID.Add(
-			p.config.RedisCluster.RedisClusterName,
-			strings.Join(p.config.RedisCluster.RedisClusterNodes, ","),
-			p.config.RedisCluster.RedisPassword,
-			p.config.RedisCluster.RedisTimeout,
-			*p.config.RedisCluster.RedisClusterSSL,
-			*p.config.RedisCluster.RedisClusterSSLVerify,
-			p.config.RedisCluster.RedisKeepaliveTimeout,
-			p.config.RedisCluster.RedisKeepalivePool,
-		)
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) {
-				return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
-			},
-			shared.CloseRedisClient,
-		)
-		if err != nil {
-			return nil, err
-		}
-		client := value.(*redis.ClusterClient)
-		p.trackClientRelease(release)
-		return newRedisSlidingWindowStore(client), nil
-	case "redis-sentinel":
-		configUID := shared.NewConfigUID()
-		configUID.Add(
-			p.config.RedisMasterName,
-			p.config.RedisRole,
-			p.config.RedisSentinels,
-			p.config.RedisUsername,
-			p.config.RedisPassword,
-			p.config.RedisDatabase,
-			p.config.RedisTimeout,
-			p.config.SentinelUsername,
-			p.config.SentinelPassword,
-		)
-		value, release, err := shared.AcquireClient(
-			shared.ClientKey(name, configUID),
-			func() (any, error) {
-				return redis.NewFailoverClient(p.redisSentinelOptions()), nil
-			},
-			shared.CloseRedisClient,
-		)
-		if err != nil {
-			return nil, err
-		}
-		client := value.(*redis.Client)
-		p.trackClientRelease(release)
 		return newRedisSlidingWindowStore(client), nil
 	default:
 		return nil, fmt.Errorf("unsupported sliding-window policy %q", p.config.Policy)
@@ -1552,12 +1502,6 @@ func (p *Plugin) runDelayedLimit(
 	return true
 }
 
-func (p *Plugin) trackClientRelease(release func()) {
-	p.clientMu.Lock()
-	p.clientReleases = append(p.clientReleases, release)
-	p.clientMu.Unlock()
-}
-
 func (p *Plugin) Stop() {
 	p.releaseGroup()
 
@@ -1577,11 +1521,13 @@ func (p *Plugin) Stop() {
 		syncer.Stop()
 	}
 
-	p.clientMu.Lock()
-	releases := append([]func(){}, p.clientReleases...)
-	p.clientReleases = nil
-	p.clientMu.Unlock()
-	for _, release := range releases {
+	p.backendMu.Lock()
+	release := p.clientRelease
+	p.clientRelease = nil
+	p.backendClient = nil
+	p.fixedStore = nil
+	p.backendMu.Unlock()
+	if release != nil {
 		release()
 	}
 }

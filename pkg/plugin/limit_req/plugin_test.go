@@ -641,3 +641,64 @@ func TestLimitReqLocalBucketsEvictOldestAndExpired(t *testing.T) {
 		t.Fatalf("expired key user-5 delay = %v, want 0", delay)
 	}
 }
+
+func TestLimitReqLocalRejectDoesNotAdvanceBucketState(t *testing.T) {
+	base := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
+	now := base
+	p := newTestPlugin(t, Config{Rate: 2, Burst: 0, Policy: "local"})
+	p.now = func() time.Time { return now }
+
+	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || !allowed {
+		t.Fatalf("first admission = allowed %t, error %v; want true, nil", allowed, err)
+	}
+	now = base.Add(250 * time.Millisecond)
+	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || allowed {
+		t.Fatalf("rejected admission = allowed %t, error %v; want false, nil", allowed, err)
+	}
+	now = base.Add(500 * time.Millisecond)
+	if _, allowed, err := p.incomingWithConsumer("stable", ""); err != nil || !allowed {
+		t.Fatalf("recovered admission = allowed %t, error %v; want true, nil", allowed, err)
+	}
+}
+
+func TestLimitReqLocalAcceptedTrafficRefreshesBucketExpiry(t *testing.T) {
+	base := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
+	now := base
+	p := newTestPlugin(t, Config{Rate: 1, Burst: 2, Policy: "local"})
+	p.now = func() time.Time { return now }
+
+	for _, offset := range []time.Duration{0, 500 * time.Millisecond, 2500 * time.Millisecond} {
+		now = base.Add(offset)
+		if _, allowed, err := p.incomingWithConsumer("active", ""); err != nil || !allowed {
+			t.Fatalf("admission at %s = allowed %t, error %v; want true, nil", offset, allowed, err)
+		}
+	}
+
+	// The original t=0 expiry is t=3s. The accepted request at t=2.5s must
+	// refresh it, so the bucket still carries excess at t=3.25s.
+	now = base.Add(3250 * time.Millisecond)
+	delay, allowed, err := p.incomingWithConsumer("active", "")
+	if err != nil || !allowed {
+		t.Fatalf("admission after original expiry = allowed %t, error %v; want true, nil", allowed, err)
+	}
+	if delay <= 0 {
+		t.Fatalf("delay after refreshed expiry = %s, want positive retained excess", delay)
+	}
+}
+
+func TestRedisLimitReqRejectReturnsBeforeStateMutation(t *testing.T) {
+	reject := strings.Index(redisLimitReqScript, "if excess > max_excess then")
+	returnRejected := strings.Index(redisLimitReqScript, "return {0, 0}")
+	writeState := strings.Index(redisLimitReqScript, `redis.call("HMSET"`)
+	if reject < 0 || returnRejected < 0 || writeState < 0 {
+		t.Fatalf(
+			"Redis script is missing rejection or mutation contract: reject=%d return=%d write=%d",
+			reject,
+			returnRejected,
+			writeState,
+		)
+	}
+	if returnRejected < reject || returnRejected > writeState {
+		t.Fatalf("Redis rejection does not return before mutation:\n%s", redisLimitReqScript)
+	}
+}

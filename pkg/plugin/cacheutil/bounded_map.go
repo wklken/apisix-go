@@ -96,11 +96,12 @@ func (m *BoundedTTLMap[V]) Set(key string, value V, ttl time.Duration) {
 	for len(m.entries) > m.cap {
 		top := heap.Pop(&m.order).(ttlEntry[V])
 		live, ok := m.entries[top.key]
-		if !ok || !live.expiresAt.Equal(top.expiresAt) {
+		if !ok || live.seq != top.seq {
 			continue
 		}
 		delete(m.entries, top.key)
 	}
+	m.compactOrderLocked()
 }
 
 // Mutate runs fn under the map lock with the live value for key (or the zero
@@ -129,11 +130,12 @@ func (m *BoundedTTLMap[V]) Mutate(key string, fn func(value V, now time.Time) (V
 	for len(m.entries) > m.cap {
 		top := heap.Pop(&m.order).(ttlEntry[V])
 		live, ok := m.entries[top.key]
-		if !ok || !live.expiresAt.Equal(top.expiresAt) {
+		if !ok || live.seq != top.seq {
 			continue
 		}
 		delete(m.entries, top.key)
 	}
+	m.compactOrderLocked()
 }
 
 // Delete removes key.
@@ -141,6 +143,7 @@ func (m *BoundedTTLMap[V]) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.entries, key)
+	m.compactOrderLocked()
 }
 
 // PurgeExpired evicts every expired entry and returns how many were removed.
@@ -165,7 +168,7 @@ func (m *BoundedTTLMap[V]) evictExpiredLocked(now time.Time) int {
 	for m.order.Len() > 0 {
 		top := m.order[0]
 		live, ok := m.entries[top.key]
-		if !ok || !live.expiresAt.Equal(top.expiresAt) {
+		if !ok || live.seq != top.seq {
 			heap.Pop(&m.order)
 			continue
 		}
@@ -177,4 +180,15 @@ func (m *BoundedTTLMap[V]) evictExpiredLocked(now time.Time) int {
 		evicted++
 	}
 	return evicted
+}
+
+func (m *BoundedTTLMap[V]) compactOrderLocked() {
+	if m.order.Len() <= len(m.entries)*2+64 {
+		return
+	}
+	m.order = make(ttlHeap[V], 0, len(m.entries))
+	for _, entry := range m.entries {
+		m.order = append(m.order, entry)
+	}
+	heap.Init(&m.order)
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -32,8 +33,7 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	mu       sync.Mutex
-	counters map[string]*counter
+	counters *cacheutil.BoundedTTLMap[counter]
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
 	redis    redisClient
@@ -46,7 +46,6 @@ type Plugin struct {
 // inject a counting fake that asserts request context propagation and round
 // trips per decision.
 type redisClient interface {
-	Get(ctx context.Context, key string) *redis.StringCmd
 	Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd
 	Close() error
 }
@@ -61,16 +60,50 @@ var (
 	quotaVariablePattern = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)(?:\s*\?\?\s*([^}]+))?\}|\$([A-Za-z0-9_]+)`)
 )
 
-var errNoUsableRules = errors.New("no usable rate limit rules")
+var (
+	errNoUsableRules     = errors.New("no usable rate limit rules")
+	errQuotaStateMissing = errors.New("AI rate limit quota is exhausted before response accounting")
+)
 
-const redisChargeScript = `
-local current = redis.call("INCRBY", KEYS[1], ARGV[1])
+const redisReserveScript = `
+-- apisix-go AI quota reservation
+local cost = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local window = tonumber(ARGV[3])
+local current = tonumber(redis.call("GET", KEYS[1]) or 0)
 local ttl = redis.call("PTTL", KEYS[1])
 if ttl < 0 then
-  redis.call("PEXPIRE", KEYS[1], ARGV[2])
-  ttl = tonumber(ARGV[2])
+  current = 0
 end
-return {current, ttl}
+if cost > limit - current then
+  return 0
+end
+if ttl < 0 then
+  redis.call("SET", KEYS[1], current + cost, "PX", window)
+else
+  redis.call("INCRBY", KEYS[1], cost)
+end
+return 1
+`
+
+const redisReconcileScript = `
+-- apisix-go AI quota response reconciliation
+local delta = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local window = tonumber(ARGV[3])
+local create = tonumber(ARGV[4])
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl < 0 and create ~= 1 then
+  return 0
+end
+local current = tonumber(redis.call("GET", KEYS[1]) or 0)
+local next = math.max(0, math.min(limit, current + delta))
+if ttl < 0 then
+  redis.call("SET", KEYS[1], next, "PX", window)
+else
+  redis.call("SET", KEYS[1], next, "KEEPTTL")
+end
+return next
 `
 
 const redisSnapshotScript = `
@@ -419,11 +452,11 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 
-	if p.counters == nil {
-		p.counters = map[string]*counter{}
-	}
 	if p.now == nil {
 		p.now = time.Now
+	}
+	if p.counters == nil {
+		p.counters = cacheutil.NewBoundedTTLMap[counter](100000, p.now)
 	}
 	p.refreshConfigIdentity()
 	return nil
@@ -497,7 +530,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		if !ok {
 			return base.ContinueRequest(r)
 		}
-		rejectedIndex := p.firstRejectedQuota(r.Context(), quotas)
+		rejectedIndex := p.reserveQuotas(r.Context(), quotas)
 		if rejectedIndex < 0 {
 			break
 		}
@@ -538,16 +571,12 @@ func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
 // accounting. The returned writer owns exactly-once finalization; no quota
 // counters are kept on the plugin instance for a live request.
 func (p *Plugin) WrapStreamingResponse(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, error) {
-	state := requestQuotaStateFromRequest(r)
+	state, err := p.responseQuotaState(r)
+	if err != nil {
+		return nil, err
+	}
 	if state == nil {
-		quotas, ok, err := p.quotasForRequest(r)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return w, nil
-		}
-		state = &requestQuotaState{quotas: append([]quota(nil), quotas...)}
+		return w, nil
 	}
 	return &quotaResponseWriter{ResponseWriter: w, plugin: p, request: r, state: state}, nil
 }
@@ -558,16 +587,12 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, response *base.ResponseS
 	if response == nil {
 		return nil
 	}
-	state := requestQuotaStateFromRequest(r)
+	state, err := p.responseQuotaState(r)
+	if err != nil {
+		return err
+	}
 	if state == nil {
-		quotas, ok, err := p.quotasForRequest(r)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-		state = &requestQuotaState{quotas: append([]quota(nil), quotas...)}
+		return nil
 	}
 	if response.Header == nil {
 		response.Header = make(http.Header)
@@ -577,6 +602,20 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, response *base.ResponseS
 	}
 	state.chargeOnce(p, r, response.Body)
 	return nil
+}
+
+func (p *Plugin) responseQuotaState(r *http.Request) (*requestQuotaState, error) {
+	if state := requestQuotaStateFromRequest(r); state != nil {
+		return state, nil
+	}
+	quotas, ok, err := p.quotasForRequest(r)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if p.reserveQuotas(r.Context(), quotas) >= 0 {
+		return nil, errQuotaStateMissing
+	}
+	return &requestQuotaState{quotas: append([]quota(nil), quotas...)}, nil
 }
 
 func (s *requestQuotaState) quotasForResponse(p *Plugin, r *http.Request) []quota {
@@ -603,82 +642,65 @@ func (s *requestQuotaState) chargeOnce(p *Plugin, r *http.Request, body []byte) 
 	s.charged = true
 	s.mu.Unlock()
 	usedTokens := p.responseTokenCostForRequest(r, body)
+	finalQuotas := s.quotasForResponse(p, r)
+	if sameQuotaSet(s.quotas, finalQuotas) {
+		for _, q := range s.quotas {
+			p.reconcile(r.Context(), q, usedTokens-1, false)
+		}
+		return
+	}
+	for _, q := range s.quotas {
+		p.reconcile(r.Context(), q, -1, false)
+	}
 	if usedTokens <= 0 {
 		return
 	}
-	for _, q := range s.quotasForResponse(p, r) {
-		p.charge(r.Context(), q, usedTokens)
+	for _, q := range finalQuotas {
+		p.reconcile(r.Context(), q, usedTokens, true)
 	}
+}
+
+func sameQuotaSet(left []quota, right []quota) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		var quotas []quota
-		for {
-			var ok bool
-			var err error
-			quotas, ok, err = p.quotasForRequest(r)
-			if err != nil {
-				http.Error(w, "failed to get rate limit rules", http.StatusInternalServerError)
-				return
-			}
-			if !ok {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			rejectedIndex := p.firstRejectedQuota(r.Context(), quotas)
-			if rejectedIndex < 0 {
-				break
-			}
-			state := ai_runtime.FromRequest(r)
-			if len(p.config.Rules) == 0 && state != nil && state.RateLimitFallbackEnabled() &&
-				state.AdvanceRateLimitTarget() {
-				continue
-			}
-			for _, headerQuota := range quotas[:rejectedIndex+1] {
-				p.writeQuotaHeaders(r.Context(), w.Header(), headerQuota)
-			}
-			p.reject(w)
+		result := p.RunRequestPhase(w, r)
+		if result.Decision != base.RequestContinue {
 			return
 		}
-		if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
-			writer := &quotaResponseWriter{ResponseWriter: w, plugin: p, request: r}
-			next.ServeHTTP(writer, r)
+		request := result.Request
+		if request == nil {
+			request = r
+		}
+		state := requestQuotaStateFromRequest(request)
+		if state == nil {
+			next.ServeHTTP(w, request)
+			return
+		}
+		if runtimeState := ai_runtime.FromRequest(request); runtimeState != nil && runtimeState.Streaming() {
+			writer := &quotaResponseWriter{ResponseWriter: w, plugin: p, request: request, state: state}
+			next.ServeHTTP(writer, request)
 			writer.writeQuotaHeaders()
-			if len(p.config.Rules) == 0 {
-				if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
-					quotas = finalQuotas
-				} else if err == nil {
-					quotas = nil
-				}
-			}
-			if usedTokens := p.responseTokenCostForRequest(r, nil); usedTokens > 0 {
-				for _, q := range quotas {
-					p.charge(r.Context(), q, usedTokens)
-				}
-			}
+			state.chargeOnce(p, request, nil)
 			return
 		}
 
-		recorder := base.GetOrCreateTransformResponseWriter(r)
-		next.ServeHTTP(recorder, r)
-		if len(p.config.Rules) == 0 {
-			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
-				quotas = finalQuotas
-			} else if err == nil {
-				quotas = nil
-			}
+		recorder := base.GetOrCreateTransformResponseWriter(request)
+		next.ServeHTTP(recorder, request)
+		for _, q := range state.quotasForResponse(p, request) {
+			p.writeQuotaHeaders(request.Context(), recorder.Header(), q)
 		}
-		for _, q := range quotas {
-			p.writeQuotaHeaders(r.Context(), recorder.Header(), q)
-		}
-		usedTokens := p.responseTokenCostForRequest(r, recorder.Body())
-		if usedTokens > 0 {
-			for _, q := range quotas {
-				p.charge(r.Context(), q, usedTokens)
-			}
-		}
+		state.chargeOnce(p, request, recorder.Body())
 		recorder.Commit(w)
 	}
 	return http.HandlerFunc(fn)
@@ -746,9 +768,12 @@ func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 	return base.ResponseModeDescriptor{Modes: base.ResponseModeBounded | base.ResponseModeStreaming}, nil
 }
 
-func (p *Plugin) firstRejectedQuota(ctx context.Context, quotas []quota) int {
+func (p *Plugin) reserveQuotas(ctx context.Context, quotas []quota) int {
 	for i, q := range quotas {
-		if !p.allowed(ctx, q) {
+		if !p.reserve(ctx, q, 1) {
+			for _, reserved := range quotas[:i] {
+				p.reconcile(ctx, reserved, -1, false)
+			}
 			return i
 		}
 	}
@@ -963,44 +988,69 @@ func requestVariable(r *http.Request, key string) string {
 	return v.GetNginxVar(r, variableName)
 }
 
-func (p *Plugin) allowed(ctx context.Context, q quota) bool {
-	if p.redis != nil {
-		value, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
-		return err == redis.Nil || (err == nil && value < q.limit)
+func (p *Plugin) reserve(ctx context.Context, q quota, tokens int64) bool {
+	if tokens <= 0 || tokens > q.limit {
+		return false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	if p.redis != nil {
+		allowed, err := p.redis.Eval(
+			ctx,
+			redisReserveScript,
+			[]string{p.redisKey(q)},
+			tokens,
+			q.limit,
+			q.window.Milliseconds(),
+		).Int64()
+		return err == nil && allowed == 1
+	}
 
-	state := p.state(q)
-	return state.used < q.limit
+	accepted := false
+	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
+		if current.reset.IsZero() || !now.Before(current.reset) {
+			current = counter{reset: now.Add(q.window)}
+		}
+		if current.used > q.limit-tokens {
+			return current, 0, false
+		}
+		current.used += tokens
+		accepted = true
+		return current, max(current.reset.Sub(now), 0), true
+	})
+	return accepted
 }
 
-func (p *Plugin) charge(ctx context.Context, q quota, tokens int64) {
+func (p *Plugin) reconcile(ctx context.Context, q quota, delta int64, create bool) {
+	delta = max(min(delta, q.limit), -q.limit)
 	if p.redis != nil {
 		_ = p.redis.Eval(
 			ctx,
-			redisChargeScript,
+			redisReconcileScript,
 			[]string{p.redisKey(q)},
-			tokens,
+			delta,
+			q.limit,
 			q.window.Milliseconds(),
+			boolToInt(create),
 		).Err()
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	state := p.state(q)
-	state.used += tokens
+	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
+		if current.reset.IsZero() || !now.Before(current.reset) {
+			if !create {
+				return current, 0, false
+			}
+			current = counter{reset: now.Add(q.window)}
+		}
+		current.used = max(min(current.used+delta, q.limit), 0)
+		return current, max(current.reset.Sub(now), 0), true
+	})
 }
 
-func (p *Plugin) state(q quota) *counter {
-	now := p.now()
-	state, ok := p.counters[q.key]
-	if !ok || !now.Before(state.reset) {
-		state = &counter{reset: now.Add(q.window)}
-		p.counters[q.key] = state
+func boolToInt(value bool) int {
+	if value {
+		return 1
 	}
-	return state
+	return 0
 }
 
 func (p *Plugin) responseTokenCost(body []byte) int64 {
@@ -1201,11 +1251,17 @@ func (p *Plugin) snapshot(ctx context.Context, q quota) (int64, int64) {
 		}
 		return used, max(int64(math.Ceil(float64(ttl)/1000)), 0)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	state := p.state(q)
-	return state.used, max(int64(math.Ceil(state.reset.Sub(p.now()).Seconds())), 0)
+	used := int64(0)
+	reset := max(int64(math.Ceil(q.window.Seconds())), 0)
+	p.counters.Mutate(q.key, func(current counter, now time.Time) (counter, time.Duration, bool) {
+		if current.reset.IsZero() || !now.Before(current.reset) {
+			return current, 0, false
+		}
+		used = current.used
+		reset = max(int64(math.Ceil(current.reset.Sub(now).Seconds())), 0)
+		return current, 0, false
+	})
+	return used, reset
 }
 
 // snapshotInteger converts a Lua script reply element to an integer; nil

@@ -3,6 +3,7 @@ package ai_rate_limiting
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -34,6 +36,15 @@ func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	}
 
 	return p
+}
+
+func localCounterUsed(t *testing.T, p *Plugin, key string) int64 {
+	t.Helper()
+	state, ok := p.counters.Get(key)
+	if !ok {
+		return 0
+	}
+	return state.used
 }
 
 func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
@@ -61,8 +72,8 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	if got := first.Header().Get("X-AI-RateLimit-Limit-global"); got != "10" {
 		t.Fatalf("limit header = %q, want 10", got)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "10" {
-		t.Fatalf("remaining header = %q, want 10 before charging response tokens", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "9" {
+		t.Fatalf("remaining header = %q, want 9 after atomic reservation", got)
 	}
 	if got := first.Header().Get("X-AI-RateLimit-Reset-global"); got != "60" {
 		t.Fatalf("reset header = %q, want remaining window duration 60", got)
@@ -392,11 +403,11 @@ func TestHandlerReportsPinnedPreChargeSnapshots(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
 	})
-	for i, want := range []string{"30", "20", "10", "0"} {
+	for i, want := range []string{"29", "19", "9", "0"} {
 		response := httptest.NewRecorder()
 		p.Handler(upstream).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
 		if got := response.Header().Get("X-AI-RateLimit-Remaining-global"); got != want {
-			t.Fatalf("response %d remaining = %q, want pre-charge snapshot %q", i+1, got, want)
+			t.Fatalf("response %d remaining = %q, want reserved snapshot %q", i+1, got, want)
 		}
 		wantStatus := http.StatusOK
 		if i == 3 {
@@ -450,8 +461,8 @@ func TestAIProxyAndRateLimiterExecuteInAPISIXPhaseOrder(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "2" {
-		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "1" {
+		t.Fatalf("remaining header = %q, want reserved quota 1", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -566,8 +577,8 @@ func TestAIProxyMultiPublishesInstanceBeforeRateLimitPreflight(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "2" {
-		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "1" {
+		t.Fatalf("remaining header = %q, want reserved quota 1", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -609,10 +620,10 @@ func TestAIProxyMultiFallbackPublishesOnlyFinalInstanceHeaders(t *testing.T) {
 		t.Fatalf("response status = %d, want 200", response.Code)
 	}
 	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
-	if got := rate.counters["instance:model-b"].used; got != 3 {
+	if got := localCounterUsed(t, rate, "instance:model-b"); got != 3 {
 		t.Fatalf("model-b used tokens = %d, want 3", got)
 	}
-	if got := rate.counters["instance:model-a"].used; got != 0 {
+	if got := localCounterUsed(t, rate, "instance:model-a"); got != 0 {
 		t.Fatalf("retryable model-a used tokens = %d, want 0", got)
 	}
 }
@@ -652,10 +663,10 @@ func TestAIProxyMultiStreamingFallbackPublishesOnlyFinalInstanceHeaders(t *testi
 		t.Fatal("streaming fallback response was not flushed")
 	}
 	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
-	if got := rate.counters["instance:model-b"].used; got != 6 {
+	if got := localCounterUsed(t, rate, "instance:model-b"); got != 6 {
 		t.Fatalf("model-b used tokens = %d, want 6", got)
 	}
-	if got := rate.counters["instance:model-a"].used; got != 0 {
+	if got := localCounterUsed(t, rate, "instance:model-a"); got != 0 {
 		t.Fatalf("retryable model-a stream used tokens = %d, want 0", got)
 	}
 }
@@ -769,10 +780,11 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 		{Name: "model-a", Limit: 1, TimeWindow: 60},
 		{Name: "model-b", Limit: 5, TimeWindow: 60},
 	}}, time.Now)
-	rate.charge(
+	rate.reconcile(
 		context.Background(),
 		quota{key: "instance:model-a", headerName: "model-a", limit: 1, window: time.Minute},
 		1,
+		true,
 	)
 	handler := ai_runtime.EnableTerminal(proxy.Handler(rate.Handler(ai_runtime.TerminalHandler(http.HandlerFunc(func(
 		http.ResponseWriter,
@@ -797,14 +809,15 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 	if firstCalls.Load() != 0 || secondCalls.Load() != 1 {
 		t.Fatalf("provider calls = (%d, %d), want (0, 1)", firstCalls.Load(), secondCalls.Load())
 	}
-	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "5" {
-		t.Fatalf("model-b remaining header = %q, want pre-charge quota 5", got)
+	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "4" {
+		t.Fatalf("model-b remaining header = %q, want reserved quota 4", got)
 	}
 
-	rate.charge(
+	rate.reconcile(
 		context.Background(),
 		quota{key: "instance:model-b", headerName: "model-b", limit: 5, window: time.Minute},
 		4,
+		true,
 	)
 	blocked := httptest.NewRecorder()
 	handler.ServeHTTP(blocked, request())
@@ -1060,7 +1073,7 @@ func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
 	p.Handler(upstream).ServeHTTP(first, request())
 	for header, want := range map[string]string{
 		"X-AI-1-RateLimit-Limit":     "1",
-		"X-AI-1-RateLimit-Remaining": "1",
+		"X-AI-1-RateLimit-Remaining": "0",
 		"X-AI-1-RateLimit-Reset":     "2",
 	} {
 		if got := first.Header().Get(header); got != want {
@@ -1079,8 +1092,8 @@ func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
 	if replayed.Code != http.StatusOK {
 		t.Fatalf("replayed response status = %d, want 200 after fixed-window reset", replayed.Code)
 	}
-	if got := replayed.Header().Get("X-AI-1-RateLimit-Remaining"); got != "1" {
-		t.Fatalf("replayed remaining = %q, want reset quota 1", got)
+	if got := replayed.Header().Get("X-AI-1-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("replayed remaining = %q, want reserved quota 0 after reset", got)
 	}
 }
 
@@ -1168,8 +1181,8 @@ func TestHandlerExpressionUsesRawUsageFromRequestContext(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
 	})).ServeHTTP(rr, req)
 
-	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "20" {
-		t.Fatalf("remaining header = %q, want pre-charge quota 20", got)
+	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "19" {
+		t.Fatalf("remaining header = %q, want reserved quota 19", got)
 	}
 }
 
@@ -1311,8 +1324,28 @@ func (c *countingRedis) Eval(ctx context.Context, script string, keys []string, 
 	if c.evalErr != nil {
 		return redis.NewCmdResult(nil, c.evalErr)
 	}
-	if strings.Contains(script, `redis.call("INCRBY"`) {
-		return redis.NewCmdResult([]any{int64(1), int64(60000)}, nil)
+	if strings.Contains(script, "AI quota reservation") {
+		if c.getError != nil && !errors.Is(c.getError, redis.Nil) {
+			return redis.NewCmdResult(nil, c.getError)
+		}
+		current := c.getResult
+		if errors.Is(c.getError, redis.Nil) {
+			current = 0
+		}
+		cost := snapshotInteger(args[0])
+		limit := snapshotInteger(args[1])
+		if current > limit-cost {
+			return redis.NewCmdResult(int64(0), nil)
+		}
+		c.getResult = current + cost
+		c.getError = nil
+		return redis.NewCmdResult(int64(1), nil)
+	}
+	if strings.Contains(script, "AI quota response reconciliation") {
+		delta := snapshotInteger(args[0])
+		limit := snapshotInteger(args[1])
+		c.getResult = max(min(c.getResult+delta, limit), 0)
+		return redis.NewCmdResult(c.getResult, nil)
 	}
 	return redis.NewCmdResult([]any{int64(c.getResult), int64(c.ttlResult)}, nil)
 }
@@ -1362,19 +1395,19 @@ func TestRedisDecisionsUseRequestContextAndSingleRoundTrip(t *testing.T) {
 
 	q := quota{key: "global", limit: 10, window: 60 * time.Second}
 
-	if !p.allowed(ctx, q) {
-		t.Fatalf("allowed() = false with used 0, want true")
+	if !p.reserve(ctx, q, 1) {
+		t.Fatalf("reserve() = false with used 0, want true")
 	}
-	p.charge(ctx, q, 5)
+	p.reconcile(ctx, q, 4, false)
 	if _, reset := p.snapshot(ctx, q); reset != 60 {
 		t.Fatalf("snapshot() reset = %d, want 60", reset)
 	}
 
-	if got := redisFake.commandsOf("GET " + p.redisKey(q)); got != 1 {
-		t.Fatalf("allowed() issued %d GET commands, want exactly 1 round trip", got)
+	if got := redisFake.commandsOf("GET " + p.redisKey(q)); got != 0 {
+		t.Fatalf("reservation issued %d GET commands, want atomic Lua only", got)
 	}
-	if got := redisFake.commandsOf("EVAL " + p.redisKey(q)); got != 2 {
-		t.Fatalf("charge+snapshot issued %d EVAL commands, want exactly 2 round trips", got)
+	if got := redisFake.commandsOf("EVAL " + p.redisKey(q)); got != 3 {
+		t.Fatalf("reserve+reconcile+snapshot issued %d EVAL commands, want exactly 3", got)
 	}
 	if problems := redisFake.contextsAreRequestContexts(ctx); len(problems) > 0 {
 		t.Fatalf("redis commands did not use the request context: %v", problems)
@@ -1393,8 +1426,8 @@ func TestRedisRejectsAtLimitAndFailsClosedOnBackendError(t *testing.T) {
 	)
 	_ = atLimitPlugin.redis.Close()
 	atLimitPlugin.redis = atLimit
-	if atLimitPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
-		t.Fatalf("allowed() = true at used == limit, want false")
+	if atLimitPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
+		t.Fatalf("reserve() = true at used == limit, want false")
 	}
 
 	expired := &countingRedis{getError: redis.Nil, ttlResult: 60000}
@@ -1405,8 +1438,8 @@ func TestRedisRejectsAtLimitAndFailsClosedOnBackendError(t *testing.T) {
 	)
 	_ = expiredPlugin.redis.Close()
 	expiredPlugin.redis = expired
-	if !expiredPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
-		t.Fatalf("allowed() = false on expired key, want true (fail-open for missing counters)")
+	if !expiredPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
+		t.Fatalf("reserve() = false on expired key, want true")
 	}
 
 	backendError := &countingRedis{getError: fmt.Errorf("backend down"), ttlResult: 60000}
@@ -1417,8 +1450,8 @@ func TestRedisRejectsAtLimitAndFailsClosedOnBackendError(t *testing.T) {
 	)
 	_ = backendPlugin.redis.Close()
 	backendPlugin.redis = backendError
-	if backendPlugin.allowed(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}) {
-		t.Fatalf("allowed() = true on backend error, want false (fail-closed decision)")
+	if backendPlugin.reserve(ctx, quota{key: "global", limit: 10, window: 60 * time.Second}, 1) {
+		t.Fatalf("reserve() = true on backend error, want false (fail-closed decision)")
 	}
 }
 
@@ -1438,5 +1471,70 @@ func TestRedisSnapshotFailsOpenOnBackendError(t *testing.T) {
 	used, reset := p.snapshot(ctx, quota{key: "global", limit: 10, window: 60 * time.Second})
 	if used != 0 || reset != 60 {
 		t.Fatalf("snapshot() = (%d, %d) on backend error, want (0, 60) fail-open", used, reset)
+	}
+}
+
+func TestConcurrentRequestPhaseReservesQuotaAtomically(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 1, TimeWindow: 60}, time.Now)
+	const requests = 100
+	start := make(chan struct{})
+	var allowed atomic.Int64
+	var wait sync.WaitGroup
+	wait.Add(requests)
+	for range requests {
+		go func() {
+			defer wait.Done()
+			<-start
+			result := p.RunRequestPhase(
+				httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+			)
+			if result.Decision == base.RequestContinue {
+				allowed.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	if got := allowed.Load(); got != 1 {
+		t.Fatalf("concurrent admissions = %d, want exactly 1", got)
+	}
+}
+
+func TestLocalQuotaStateIsBoundedAndResponseDeltaIsCapped(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	q := quota{key: "bounded-delta", limit: 10, window: time.Minute}
+	p.reconcile(context.Background(), q, 1000, true)
+	if got := localCounterUsed(t, p, q.key); got != q.limit {
+		t.Fatalf("charged counter = %d, want capped limit %d", got, q.limit)
+	}
+
+	const capacity = 100000
+	for i := 0; i <= capacity; i++ {
+		p.reserve(context.Background(), quota{
+			key:    "high-cardinality-" + strconv.Itoa(i),
+			limit:  10,
+			window: time.Minute,
+		}, 1)
+	}
+	if got := p.counters.Len(); got > capacity {
+		t.Fatalf("live AI quota counters = %d, want at most %d", got, capacity)
+	}
+}
+
+func TestBufferedResponseFallbackStillReservesQuota(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Limit:         1,
+		TimeWindow:    60,
+		LimitStrategy: "total_tokens",
+	}, time.Now)
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	response := &base.ResponseState{Body: []byte(`{"usage":{"total_tokens":1}}`)}
+
+	if err := p.RunBufferedBodyFilter(request, response); err != nil {
+		t.Fatalf("first RunBufferedBodyFilter() error = %v", err)
+	}
+	if err := p.RunBufferedBodyFilter(request, response); err == nil {
+		t.Fatal("second RunBufferedBodyFilter() error = nil, want exhausted quota")
 	}
 }

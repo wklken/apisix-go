@@ -8,9 +8,9 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -31,7 +31,9 @@ const (
 
 	DefaultURI              = "/apisix/batch-requests"
 	defaultMaxBodySize      = 1024 * 1024
-	defaultMaxPipelineItems = 1000
+	defaultMaxResponseSize  = 4 * 1024 * 1024
+	defaultMaxPipelineItems = 20
+	defaultMaxConcurrency   = 8
 	defaultTimeout          = 30 * time.Second
 )
 
@@ -49,7 +51,17 @@ const metadataSchema = `
     "max_pipeline_items": {
       "type": "integer",
       "exclusiveMinimum": 0,
-      "default": 1000
+      "default": 20
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 8
+    },
+    "max_response_body_size": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 4194304
     }
   }
 }
@@ -68,8 +80,10 @@ func mustCompileBatchLimitsSchema() *util.CompiledSchema {
 type Config struct{}
 
 type Limits struct {
-	MaxBodySize      int64 `json:"max_body_size,omitempty"`
-	MaxPipelineItems int   `json:"max_pipeline_items,omitempty"`
+	MaxBodySize         int64 `json:"max_body_size,omitempty"`
+	MaxResponseBodySize int64 `json:"max_response_body_size,omitempty"`
+	MaxPipelineItems    int   `json:"max_pipeline_items,omitempty"`
+	MaxConcurrency      int   `json:"max_concurrency,omitempty"`
 }
 
 type Request struct {
@@ -128,8 +142,9 @@ func NewHandler(dispatcher http.Handler) http.Handler {
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	limits = applyLimitDefaults(limits)
+	batchDispatcher := newBatchDispatcher(dispatcher, limits.MaxConcurrency)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveBatchRequest(dispatcher, limits, w, r)
+		serveBatchRequest(batchDispatcher, limits, w, r)
 	})
 }
 
@@ -137,7 +152,12 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 	// Seed the Store-owned last-good snapshot before the public endpoint serves
 	// its first request. Later router generations repeat this validation against
 	// the same active Store.
-	_, _ = loader()
+	initial, err := loader()
+	if err != nil {
+		initial = Limits{}
+	}
+	initial = applyLimitDefaults(initial)
+	batchDispatcher := newBatchDispatcher(dispatcher, initial.MaxConcurrency)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limits, err := loader()
 		if err != nil {
@@ -148,11 +168,13 @@ func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) 
 			}
 			return
 		}
-		serveBatchRequest(dispatcher, limits, w, r)
+		limits = applyLimitDefaults(limits)
+		batchDispatcher.setLimit(limits.MaxConcurrency)
+		serveBatchRequest(batchDispatcher, limits, w, r)
 	})
 }
 
-func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWriter, r *http.Request) {
+func serveBatchRequest(dispatcher *batchDispatcher, limits Limits, w http.ResponseWriter, r *http.Request) {
 	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
 	if err != nil {
 		if writeErr := util.WriteJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()}); writeErr != nil {
@@ -166,7 +188,7 @@ func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWr
 }
 
 func handleBatchRequest(
-	dispatcher http.Handler,
+	dispatcher *batchDispatcher,
 	w http.ResponseWriter,
 	r *http.Request,
 	limits Limits,
@@ -207,9 +229,9 @@ func handleBatchRequest(
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
-		response, timedOut := dispatchPipelineRequest(dispatcher, r, req, item, timeout)
+		response, timedOut := dispatcher.dispatch(r, req, item, timeout, limits.MaxResponseBodySize)
 		responses = append(responses, response)
-		if timedOut {
+		if timedOut && r.Context().Err() != nil {
 			break
 		}
 	}
@@ -306,6 +328,12 @@ func applyLimitDefaults(limits Limits) Limits {
 	if limits.MaxPipelineItems <= 0 {
 		limits.MaxPipelineItems = defaultMaxPipelineItems
 	}
+	if limits.MaxResponseBodySize <= 0 {
+		limits.MaxResponseBodySize = defaultMaxResponseSize
+	}
+	if limits.MaxConcurrency <= 0 {
+		limits.MaxConcurrency = defaultMaxConcurrency
+	}
 	return limits
 }
 
@@ -346,12 +374,81 @@ type pipelineResult struct {
 	response PipelineResponse
 }
 
-func dispatchPipelineRequest(
-	dispatcher http.Handler,
+type batchDispatcher struct {
+	handler http.Handler
+
+	mu      sync.Mutex
+	active  int
+	limit   int
+	changed chan struct{}
+}
+
+func newBatchDispatcher(handler http.Handler, limit int) *batchDispatcher {
+	return &batchDispatcher{
+		handler: handler,
+		limit:   limit,
+		changed: make(chan struct{}),
+	}
+}
+
+func (d *batchDispatcher) setLimit(limit int) {
+	d.mu.Lock()
+	if d.limit != limit {
+		d.limit = limit
+		close(d.changed)
+		d.changed = make(chan struct{})
+	}
+	d.mu.Unlock()
+}
+
+func (d *batchDispatcher) acquire(ctx context.Context) bool {
+	for {
+		d.mu.Lock()
+		if ctx.Err() != nil {
+			d.mu.Unlock()
+			return false
+		}
+		if d.active < d.limit {
+			d.active++
+			d.mu.Unlock()
+			return true
+		}
+		changed := d.changed
+		d.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+func (d *batchDispatcher) release() {
+	d.mu.Lock()
+	d.active--
+	close(d.changed)
+	d.changed = make(chan struct{})
+	d.mu.Unlock()
+}
+
+func (d *batchDispatcher) dispatch(
 	outer *http.Request,
 	batch Request,
 	item PipelineRequest,
 	timeout time.Duration,
+	maxResponseBodySize int64,
+) (PipelineResponse, bool) {
+	return dispatchPipelineRequestBounded(d, outer, batch, item, timeout, maxResponseBodySize)
+}
+
+func dispatchPipelineRequestBounded(
+	dispatcher *batchDispatcher,
+	outer *http.Request,
+	batch Request,
+	item PipelineRequest,
+	timeout time.Duration,
+	maxResponseBodySize int64,
 ) (PipelineResponse, bool) {
 	// The subrequest context derives from the incoming request so canceling
 	// the parent cancels every subrequest.
@@ -361,7 +458,6 @@ func dispatchPipelineRequest(
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-
 	method := item.Method
 	if method == "" {
 		method = http.MethodGet
@@ -376,6 +472,9 @@ func dispatchPipelineRequest(
 	if err != nil {
 		return PipelineResponse{Status: http.StatusBadRequest, Reason: http.StatusText(http.StatusBadRequest)}, false
 	}
+	if !dispatcher.acquire(ctx) {
+		return timeoutResponse(), true
+	}
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
@@ -384,21 +483,12 @@ func dispatchPipelineRequest(
 		req.Header.Del("Host")
 	}
 
-	recorder := httptest.NewRecorder()
+	recorder := newBoundedResponseRecorder(maxResponseBodySize)
 	done := make(chan pipelineResult, 1)
 	go func() {
-		dispatcher.ServeHTTP(recorder, req)
-		result := recorder.Result()
-		body, err := io.ReadAll(result.Body)
-		_ = result.Body.Close()
-		resp := PipelineResponse{
-			Status:  result.StatusCode,
-			Reason:  http.StatusText(result.StatusCode),
-			Headers: flattenHeaders(result.Header),
-		}
-		if err == nil && len(body) > 0 {
-			resp.Body = string(body)
-		}
+		defer dispatcher.release()
+		dispatcher.handler.ServeHTTP(recorder, req)
+		resp := recorder.pipelineResponse()
 		done <- pipelineResult{response: resp}
 	}()
 
@@ -414,6 +504,66 @@ func dispatchPipelineRequest(
 		}
 		return result.response, false
 	}
+}
+
+type boundedResponseRecorder struct {
+	header       http.Header
+	resultHeader http.Header
+	body         bytes.Buffer
+	status       int
+	written      int64
+	maxBytes     int64
+}
+
+func newBoundedResponseRecorder(maxBytes int64) *boundedResponseRecorder {
+	return &boundedResponseRecorder{header: make(http.Header), maxBytes: maxBytes}
+}
+
+func (r *boundedResponseRecorder) Header() http.Header { return r.header }
+
+func (r *boundedResponseRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+		r.resultHeader = r.header.Clone()
+	}
+}
+
+func (r *boundedResponseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	r.written += int64(len(body))
+	remaining := r.maxBytes + 1 - int64(r.body.Len())
+	if remaining > 0 {
+		keep := min(int64(len(body)), remaining)
+		_, _ = r.body.Write(body[:keep])
+	}
+	return len(body), nil
+}
+
+func (r *boundedResponseRecorder) Flush() {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+}
+
+func (r *boundedResponseRecorder) pipelineResponse() PipelineResponse {
+	if r.written > r.maxBytes {
+		return PipelineResponse{Status: http.StatusBadGateway, Reason: http.StatusText(http.StatusBadGateway)}
+	}
+	status := r.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	response := PipelineResponse{
+		Status:  status,
+		Reason:  http.StatusText(status),
+		Headers: flattenHeaders(r.resultHeader),
+	}
+	if r.body.Len() > 0 {
+		response.Body = r.body.String()
+	}
+	return response
 }
 
 type contextWithoutValues struct {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -685,7 +686,10 @@ func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request = apisixctx.WithBeforeProxyHook(
 		request,
-		func(*http.Request) { order = append(order, "before-proxy") },
+		func(*http.Request) error {
+			order = append(order, "before-proxy")
+			return nil
+		},
 	)
 	pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		order = append(order, "terminal")
@@ -1002,7 +1006,10 @@ func TestRequestPipelinePropagatesEveryReplacementRequest(t *testing.T) {
 func TestRequestPipelineRunsBeforeProxyOnce(t *testing.T) {
 	hookCalls := 0
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) { hookCalls++ })
+	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) error {
+		hookCalls++
+		return nil
+	})
 	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
 		return ConsumerResolution{Request: r, Resolved: true}, nil
 	})
@@ -1012,6 +1019,22 @@ func TestRequestPipelineRunsBeforeProxyOnce(t *testing.T) {
 	)
 	if hookCalls != 1 {
 		t.Fatalf("before-proxy hook calls = %d, want 1", hookCalls)
+	}
+}
+
+func TestRequestPipelineMapsOversizedBeforeProxyBodyTo413(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("123456"))
+	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) error {
+		return &base.BodyTooLargeError{Limit: 5}
+	})
+	terminalCalled := false
+	response := httptest.NewRecorder()
+	NewRequestPipeline(nil, nil).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		terminalCalled = true
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge || terminalCalled {
+		t.Fatalf("status=%d terminal=%t, want 413 before terminal", response.Code, terminalCalled)
 	}
 }
 

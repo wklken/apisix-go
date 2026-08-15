@@ -354,7 +354,17 @@ func (p RequestPipeline) buildPostResolutionHandler(
 			}
 		}
 		apisixctx.FinalizeProxyRewrite(r)
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			status := http.StatusInternalServerError
+			message := "Internal Server Error"
+			if base.IsBodyTooLarge(err) {
+				status = http.StatusRequestEntityTooLarge
+				message = "Request Entity Too Large"
+			}
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+			writeStableResponseError(w, status, message)
+			return
+		}
 		if execution != nil {
 			if err := execution.selectRequestResponseMode(r); err != nil {
 				execution.internalFailure = true

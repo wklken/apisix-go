@@ -2,6 +2,7 @@ package base
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,26 @@ import (
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+const (
+	DefaultRequestBodyMaxBytes  = 1 << 20
+	DefaultResponseBodyMaxBytes = 4 << 20
+)
+
+// BodyTooLargeError reports a bounded read that retained at most Limit+1
+// bytes. Callers can map this error to the protocol-specific 413/502 status.
+type BodyTooLargeError struct {
+	Limit int64
+}
+
+func (e *BodyTooLargeError) Error() string {
+	return fmt.Sprintf("body exceeds maximum size %d", e.Limit)
+}
+
+func IsBodyTooLarge(err error) bool {
+	var sizeErr *BodyTooLargeError
+	return errors.As(err, &sizeErr)
+}
 
 func ReadRequestBody(r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
@@ -31,13 +52,22 @@ func ReadRequestBodyLimited(r *http.Request, maxSize int) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSize)+1))
+	body, err := readBodyLimited(r.Body, int64(maxSize))
 	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err == nil && len(body) > maxSize {
-		err = fmt.Errorf("graphql request body exceeds maximum size %d", maxSize)
+	return body, err
+}
+
+func ReadResponseBodyLimited(reader io.Reader, maxSize int64) ([]byte, error) {
+	return readBodyLimited(reader, maxSize)
+}
+
+func readBodyLimited(reader io.Reader, maxSize int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxSize+1))
+	if err == nil && int64(len(body)) > maxSize {
+		err = &BodyTooLargeError{Limit: maxSize}
 	}
 	return body, err
 }

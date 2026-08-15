@@ -1,9 +1,12 @@
 package batch_requests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +29,8 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 	for _, metadata := range []map[string]any{
 		{"max_body_size": 0},
 		{"max_pipeline_items": 0},
+		{"max_concurrency": 0},
+		{"max_response_body_size": 0},
 	} {
 		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
 			t.Fatalf("metadata %#v validated, want positive-limit rejection", metadata)
@@ -129,14 +134,15 @@ func TestHandlerReportsSSLVerifyTypeMismatchAsBadRequestBody(t *testing.T) {
 	}
 }
 
-func TestHandlerStopsAfterTimedOutPipelineRequest(t *testing.T) {
+func TestHandlerContinuesAfterTimedOutPipelineRequest(t *testing.T) {
 	var calls atomic.Int32
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/slow" {
-			t.Fatalf("unexpected dispatch path %q after timeout", r.URL.Path)
+		if r.URL.Path == "/slow" {
+			<-r.Context().Done()
+			return
 		}
-		<-r.Context().Done()
+		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
@@ -149,12 +155,117 @@ func TestHandlerStopsAfterTimedOutPipelineRequest(t *testing.T) {
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
-	responses := decodePipelineResponses(t, res.Body.String())
+	responses := decodeAllPipelineResponses(t, res.Body.String())
 	if responses[0].Status != http.StatusGatewayTimeout {
 		t.Fatalf("pipeline status = %d, want 504", responses[0].Status)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("dispatcher calls = %d, want 1", got)
+	if len(responses) != 2 || responses[1].Status != http.StatusNoContent {
+		t.Fatalf("responses = %#v, want timeout followed by 204", responses)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("dispatcher calls = %d, want 2", got)
+	}
+}
+
+func TestHandlerBoundsCancellationIgnoringWorkers(t *testing.T) {
+	release := make(chan struct{})
+	var active atomic.Int32
+	var peak atomic.Int32
+	dispatcher := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		current := active.Add(1)
+		for {
+			old := peak.Load()
+			if current <= old || peak.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{MaxConcurrency: 2})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"timeout": 20,
+		"pipeline": [{"path":"/1"},{"path":"/2"},{"path":"/3"},{"path":"/4"}]
+	}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	close(release)
+
+	responses := decodeAllPipelineResponses(t, res.Body.String())
+	if len(responses) != 4 {
+		t.Fatalf("responses length = %d, want 4", len(responses))
+	}
+	if got := peak.Load(); got != 2 {
+		t.Fatalf("peak workers = %d, want exactly 2 admitted slots", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for active.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("active workers = %d after release, want 0", active.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestHandlerBoundsPipelineResponseBody(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "123456")
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{MaxResponseBodySize: 5})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/large"},{"path":"/large-again"}]
+	}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	responses := decodeAllPipelineResponses(t, res.Body.String())
+	if len(responses) != 2 || responses[0].Status != http.StatusBadGateway ||
+		responses[1].Status != http.StatusBadGateway {
+		t.Fatalf("responses = %#v, want two bounded 502 responses", responses)
+	}
+	if responses[0].Body != "" || responses[1].Body != "" {
+		t.Fatalf("oversized bodies retained: %#v", responses)
+	}
+}
+
+func TestHandlerRetainsPipelineResponseAtExactLimit(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Exact", "yes")
+		_, _ = io.WriteString(w, "12345")
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{MaxResponseBodySize: 5})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		DefaultURI,
+		strings.NewReader(`{"pipeline":[{"path":"/exact"}]}`),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	item := decodePipelineResponses(t, response.Body.String())[0]
+	if item.Status != http.StatusOK || item.Body != "12345" || item.Headers["X-Exact"] != "yes" {
+		t.Fatalf("pipeline response = %#v, want exact body and committed header", item)
+	}
+}
+
+func TestHandlerDefaultsToTwentyPipelineItems(t *testing.T) {
+	items := make([]PipelineRequest, 21)
+	for index := range items {
+		items[index].Path = fmt.Sprintf("/%d", index)
+	}
+	body, err := json.Marshal(Request{Pipeline: items})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	response := httptest.NewRecorder()
+	NewHandlerWithLimits(http.NewServeMux(), Limits{}).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)),
+	)
+
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "21 exceeds the maximum of 20") {
+		t.Fatalf("status=%d body=%q, want default item-limit rejection", response.Code, response.Body.String())
 	}
 }
 
@@ -582,7 +693,10 @@ func TestDispatchPipelineRequestInvalidTargetReturnsBadRequest(t *testing.T) {
 	outer := httptest.NewRequest(http.MethodGet, "http://example.com/batch", nil)
 	item := PipelineRequest{Path: "/%zz"}
 
-	response, timedOut := dispatchPipelineRequest(dispatcher, outer, Request{}, item, time.Second)
+	limits := applyLimitDefaults(Limits{})
+	response, timedOut := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
+		outer, Request{}, item, time.Second, limits.MaxResponseBodySize,
+	)
 
 	if timedOut {
 		t.Fatal("invalid target reported a timeout")
@@ -606,7 +720,10 @@ func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testin
 	item := PipelineRequest{Path: "/slow"}
 
 	start := time.Now()
-	response, timedOut := dispatchPipelineRequest(dispatcher, outer, Request{}, item, 20*time.Millisecond)
+	limits := applyLimitDefaults(Limits{})
+	response, timedOut := newBatchDispatcher(dispatcher, limits.MaxConcurrency).dispatch(
+		outer, Request{}, item, 20*time.Millisecond, limits.MaxResponseBodySize,
+	)
 	elapsed := time.Since(start)
 
 	if !timedOut {
@@ -622,13 +739,19 @@ func TestDispatchPipelineRequestTimeoutWhenHandlerIgnoringCancellation(t *testin
 
 func decodePipelineResponses(t *testing.T, body string) []PipelineResponse {
 	t.Helper()
+	responses := decodeAllPipelineResponses(t, body)
+	if len(responses) != 1 {
+		t.Fatalf("responses length = %d, want 1", len(responses))
+	}
+	return responses
+}
+
+func decodeAllPipelineResponses(t *testing.T, body string) []PipelineResponse {
+	t.Helper()
 
 	var responses []PipelineResponse
 	if err := json.Unmarshal([]byte(body), &responses); err != nil {
 		t.Fatalf("decode batch response: %v, body=%q", err, body)
-	}
-	if len(responses) != 1 {
-		t.Fatalf("responses length = %d, want 1", len(responses))
 	}
 	return responses
 }

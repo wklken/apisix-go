@@ -16,11 +16,12 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-type BeforeProxyHook func(*http.Request)
+type BeforeProxyHook func(*http.Request) error
 
 type beforeProxyHooks struct {
 	once  sync.Once
 	hooks []BeforeProxyHook
+	err   error
 }
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
@@ -196,16 +197,20 @@ func WithBeforeProxyHook(r *http.Request, hook BeforeProxyHook) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), beforeProxyHooksKey, &beforeProxyHooks{hooks: hooks}))
 }
 
-func RunBeforeProxyHooks(r *http.Request) {
+func RunBeforeProxyHooks(r *http.Request) error {
 	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
 	if registered == nil {
-		return
+		return nil
 	}
 	registered.once.Do(func() {
 		for _, hook := range registered.hooks {
-			hook(r)
+			if err := hook(r); err != nil {
+				registered.err = err
+				return
+			}
 		}
 	})
+	return registered.err
 }
 
 type ProxyRewrite struct {

@@ -483,7 +483,10 @@ func TestPlan14V2DeferredLegacyDoesNotObserveAuthFailure(t *testing.T) {
 func TestPlan14V2BeforeProxyAndFinalizeRunOnce(t *testing.T) {
 	hookCalls := 0
 	request := httptest.NewRequest(http.MethodGet, "/before", nil)
-	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) { hookCalls++ })
+	request = apisixctx.WithBeforeProxyHook(request, func(*http.Request) error {
+		hookCalls++
+		return nil
+	})
 	pipeline := plugin.NewRequestPipeline(nil, func(r *http.Request) (plugin.ConsumerResolution, error) {
 		return plugin.ConsumerResolution{Request: r, Resolved: true}, nil
 	})

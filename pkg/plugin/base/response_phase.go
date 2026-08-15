@@ -10,7 +10,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
-const DefaultBufferedResponseMaxBytes int64 = 4 << 20
+const DefaultBufferedResponseMaxBytes int64 = DefaultResponseBodyMaxBytes
 
 // BufferedResponseConfig controls the bounded response capture.
 type BufferedResponseConfig struct {

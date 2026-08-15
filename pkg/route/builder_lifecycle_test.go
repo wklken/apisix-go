@@ -55,12 +55,15 @@ func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
 		}),
 	)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = apisixctx.WithBeforeProxyHook(r, func(r *http.Request) {
+		r = apisixctx.WithBeforeProxyHook(r, func(r *http.Request) error {
 			order = append(order, "hook:"+r.URL.Path)
+			return nil
 		})
 		r.URL.Path = "/final"
 		fallback.ServeHTTP(w, r)
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
 	})
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/original", nil))

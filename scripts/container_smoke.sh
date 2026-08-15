@@ -57,7 +57,7 @@ fi
 
 docker network create "$network" >/dev/null
 docker run --detach --name "$upstream" --network "$network" --network-alias apisix-smoke-upstream \
-    alpine:3.24.1 sh -c \
+    busybox:1.37.0 sh -c \
     'mkdir -p /www && printf "%s" "apisix-container-smoke" >/www/index.html && exec httpd -f -p 8081 -h /www' \
     >/dev/null
 upstream_deadline=$((SECONDS + 30))

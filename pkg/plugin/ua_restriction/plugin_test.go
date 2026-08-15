@@ -9,6 +9,63 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+func TestUARestrictionPostInitRejectsInvalidRegex(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		config  Config
+		field   string
+		pattern string
+	}{
+		{
+			name: "allowlist",
+			config: Config{
+				AllowList: []string{"valid", "[invalid"},
+			},
+			field: "allowlist", pattern: "[invalid",
+		},
+		{
+			name: "denylist",
+			config: Config{
+				DenyList: []string{"valid", "(?invalid"},
+			},
+			field: "denylist", pattern: "(?invalid",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: test.config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if err == nil {
+				t.Fatal("PostInit() error = nil, want invalid regex rejection")
+			}
+			for _, want := range []string{test.field + "[1]", test.pattern} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("PostInit() error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestUARestrictionValidRegexListCompilesAllPatterns(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowList: []string{`^allowed-`, `-bot$`}})
+	for _, userAgent := range []string{"allowed-client", "crawler-bot"} {
+		req := httptest.NewRequest(http.MethodGet, "/ua", nil)
+		req.Header.Set("User-Agent", userAgent)
+		response := httptest.NewRecorder()
+
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(response, req)
+
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("User-Agent %q status = %d, want 204", userAgent, response.Code)
+		}
+	}
+}
+
 func TestSchemaRejectsAllowlistAndDenylistTogether(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

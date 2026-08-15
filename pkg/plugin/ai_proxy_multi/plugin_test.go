@@ -21,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -1403,6 +1404,7 @@ func TestHandlerForwardsSelectedBedrockEventStreamInstance(t *testing.T) {
 	}
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(1))
+	assertLLMRequestVar(t, req, "$ai_stream_outcome", string(ai_stream.StreamOutcomeSuccess))
 }
 
 func TestHandlerAppliesGCPAccessTokenForSelectedInstance(t *testing.T) {

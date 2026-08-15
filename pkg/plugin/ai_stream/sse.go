@@ -45,6 +45,20 @@ func ForwardSSE(
 	usage := Usage{Raw: make(map[string]any), PromptTokens: -1, CompletionTokens: -1}
 	reader := bufio.NewReader(body)
 	var total int64
+	var event strings.Builder
+	writeEvent := func() error {
+		if event.Len() == 0 {
+			return nil
+		}
+		if _, err := io.WriteString(w, event.String()); err != nil {
+			return fmt.Errorf("%w: %v", ErrClientDisconnected, err)
+		}
+		event.Reset()
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	}
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
@@ -52,16 +66,21 @@ func ForwardSSE(
 			if maxBytes > 0 && total > maxBytes {
 				return usage, fmt.Errorf("max_response_bytes exceeded")
 			}
-			mergeSSEUsage(&usage, protocol, line)
-			if _, writeErr := io.WriteString(w, line); writeErr != nil {
-				return usage, fmt.Errorf("%w: %v", ErrClientDisconnected, writeErr)
+			if mergeErr := mergeSSEUsage(&usage, protocol, line); mergeErr != nil {
+				return usage, mergeErr
 			}
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
+			event.WriteString(line)
+			if strings.TrimRight(line, "\r\n") == "" {
+				if writeErr := writeEvent(); writeErr != nil {
+					return usage, writeErr
+				}
 			}
 		}
 		if err != nil {
 			if err == io.EOF {
+				if writeErr := writeEvent(); writeErr != nil {
+					return usage, writeErr
+				}
 				break
 			}
 			return usage, err
@@ -76,18 +95,18 @@ func ForwardSSE(
 	return usage, nil
 }
 
-func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
+func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) error {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "data:") {
-		return
+		return nil
 	}
 	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	if data == "" || data == "[DONE]" {
-		return
+		return nil
 	}
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return
+		return fmt.Errorf("invalid SSE data: %w", err)
 	}
 	if model, ok := event["model"].(string); ok {
 		usage.Model = model
@@ -142,6 +161,7 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 		}
 		mergeOpenAIUsage(usage, event["usage"], false)
 	}
+	return nil
 }
 
 func mergeOpenAIUsage(usage *Usage, value any, responses bool) {

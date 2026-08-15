@@ -3,7 +3,6 @@ package traffic_split
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"mime"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/chash"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -187,12 +187,8 @@ type compiledTarget struct {
 	overrides map[string]*Override
 	hashOn    string
 	key       string
-	hashNodes []hashNode
-}
-
-type hashNode struct {
-	id     string
-	weight int
+	ring      *chash.Ring
+	retryScan int
 }
 
 type overrideKey struct{}
@@ -367,7 +363,8 @@ func (p *Plugin) PostInit() error {
 			}
 			nodeWeights := map[string]int{}
 			nodeOverrides := map[string]*Override{}
-			hashNodes := make([]hashNode, 0, len(upstream.Nodes))
+			hashNodes := make([]chash.Node, 0, len(upstream.Nodes))
+			retryScan := 0
 			for _, node := range upstream.Nodes {
 				override := overrideFromNode(upstream, node)
 				nodeWeight := configuredWeight(node.Weight, node.weightSet)
@@ -377,7 +374,10 @@ func (p *Plugin) PostInit() error {
 				nodeID := fmt.Sprintf("%s-node-%d", targetID, len(nodeWeights))
 				nodeWeights[nodeID] = nodeWeight
 				nodeOverrides[nodeID] = override
-				hashNodes = append(hashNodes, hashNode{id: nodeID, weight: nodeWeight})
+				hashNodes = append(hashNodes, chash.Node{
+					ID: override.Host, Target: nodeID, Weight: nodeWeight,
+				})
+				retryScan += nodeWeight
 			}
 			if len(nodeWeights) == 0 {
 				continue
@@ -387,6 +387,14 @@ func (p *Plugin) PostInit() error {
 				hashOn = upstream.HashOn
 				if hashOn == "" {
 					hashOn = "vars"
+				}
+			}
+			var ring *chash.Ring
+			if hashOn != "" {
+				var ringErr error
+				ring, ringErr = chash.New(hashNodes)
+				if ringErr != nil {
+					return fmt.Errorf("traffic-split rule %d chash ring invalid: %w", ruleIndex, ringErr)
 				}
 			}
 			targetBalancer, err := pxy.NewUpstreamLoadBalance(nodeWeights, upstream.Checks)
@@ -404,7 +412,8 @@ func (p *Plugin) PostInit() error {
 				overrides: nodeOverrides,
 				hashOn:    hashOn,
 				key:       upstream.Key,
-				hashNodes: hashNodes,
+				ring:      ring,
+				retryScan: retryScan,
 			}
 		}
 
@@ -497,15 +506,8 @@ func (target compiledTarget) nextRetryNode(previous string) string {
 	if target.balancer == nil || len(target.overrides) < 2 {
 		return ""
 	}
-	scanLimit := 0
-	for _, node := range target.hashNodes {
-		if node.weight > 0 {
-			scanLimit += node.weight
-		}
-	}
-	if scanLimit < len(target.overrides) {
-		scanLimit = len(target.overrides)
-	}
+	scanLimit := target.retryScan
+	scanLimit = max(scanLimit, len(target.overrides))
 	for range scanLimit + 1 {
 		nodeID := target.balancer.Next()
 		if nodeID != "" && nodeID != previous {
@@ -556,37 +558,20 @@ func validateUpstreamHash(upstream *Upstream) error {
 }
 
 func (target compiledTarget) selectHashedNode(r *http.Request) string {
-	if len(target.hashNodes) == 0 {
+	if target.ring == nil {
 		return ""
 	}
 	value := resolveHashValue(r, target.hashOn, target.key)
 	if value == "" {
 		value = pluginexpr.String(pluginexpr.RequestValue(r, "remote_addr"))
 	}
-	hasher := fnv.New32a()
-	_, _ = hasher.Write([]byte(value))
-	var total uint64
-	for _, node := range target.hashNodes {
-		if node.weight > 0 {
-			total += uint64(node.weight)
+	for _, selected := range target.ring.Candidates(value) {
+		if health, ok := target.balancer.(interface{ IsHealthy(string) bool }); ok && !health.IsHealthy(selected) {
+			continue
 		}
+		return selected
 	}
-	if total == 0 {
-		return target.balancer.Next()
-	}
-	offset := uint64(hasher.Sum32()) % total
-	selected := target.hashNodes[len(target.hashNodes)-1].id
-	for _, node := range target.hashNodes {
-		if offset < uint64(node.weight) {
-			selected = node.id
-			break
-		}
-		offset -= uint64(node.weight)
-	}
-	if health, ok := target.balancer.(interface{ IsHealthy(string) bool }); ok && !health.IsHealthy(selected) {
-		return target.balancer.Next()
-	}
-	return selected
+	return target.balancer.Next()
 }
 
 func resolveHashValue(r *http.Request, hashOn string, key string) string {

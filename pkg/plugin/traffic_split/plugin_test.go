@@ -309,6 +309,28 @@ func TestHandlerUsesStableHashForChashHeader(t *testing.T) {
 	}
 }
 
+func TestTrafficSplitChashUsesPinnedKetamaOwner(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Type: "chash", HashOn: "header", Key: "X-Tenant",
+				Nodes: []Node{
+					{Host: "10.0.0.1", Port: 80, Weight: 1},
+					{Host: "10.0.0.2", Port: 80, Weight: 2},
+					{Host: "10.0.0.3", Port: 80, Weight: 1},
+				},
+			},
+		}},
+	}}})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request.Header.Set("X-Tenant", "alpha")
+
+	override := performRequestWithRequest(t, p, request)
+	if override == nil || override.Host != "10.0.0.3:80" {
+		t.Fatalf("chash override = %#v, want pinned 10.0.0.3:80", override)
+	}
+}
+
 func TestResolveHashValueSupportsVariableCombinations(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/pets?id=42", nil)
 	req.RemoteAddr = "192.0.2.40:12345"

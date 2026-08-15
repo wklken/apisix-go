@@ -13,7 +13,7 @@ type State struct {
 	mu                     sync.RWMutex
 	instanceName           string
 	execute                ExecuteFunc
-	streaming              bool
+	streamingIntent        bool
 	rateLimitFallback      bool
 	advanceRateLimitTarget func() bool
 	consumed               atomic.Bool
@@ -63,16 +63,16 @@ func (s *State) SetInstanceName(instanceName string) {
 	s.mu.Unlock()
 }
 
-func (s *State) SetStreaming(streaming bool) {
+func (s *State) SetStreamingIntent(streaming bool) {
 	s.mu.Lock()
-	s.streaming = streaming
+	s.streamingIntent = streaming
 	s.mu.Unlock()
 }
 
-func (s *State) Streaming() bool {
+func (s *State) StreamingIntent() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.streaming
+	return s.streamingIntent
 }
 
 func (s *State) Execute(w http.ResponseWriter, r *http.Request) bool {

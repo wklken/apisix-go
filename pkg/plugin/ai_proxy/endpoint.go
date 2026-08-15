@@ -39,7 +39,7 @@ func (p *Plugin) endpointDocument(protocol ai_protocols.Protocol, document ai_pr
 	case "deepseek":
 		return "https://api.deepseek.com/chat/completions", nil
 	case "aimlapi":
-		return "https://api.aimlapi.com/v1/chat/completions", nil
+		return "https://api.aimlapi.com/chat/completions", nil
 	case "openrouter":
 		return "https://openrouter.ai/api/v1/chat/completions", nil
 	case "gemini":

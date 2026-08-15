@@ -561,7 +561,7 @@ func requestQuotaStateFromRequest(r *http.Request) *requestQuotaState {
 // SelectResponseMode chooses the one response accounting path after AI request
 // preparation has published whether the selected operation is streaming.
 func (*Plugin) SelectResponseMode(r *http.Request) base.RequestResponseMode {
-	if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
+	if state := ai_runtime.FromRequest(r); state != nil && state.StreamingIntent() {
 		return base.RequestResponseModeStreaming
 	}
 	return base.RequestResponseModeBounded
@@ -687,7 +687,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, request)
 			return
 		}
-		if runtimeState := ai_runtime.FromRequest(request); runtimeState != nil && runtimeState.Streaming() {
+		if runtimeState := ai_runtime.FromRequest(request); runtimeState != nil && runtimeState.StreamingIntent() {
 			writer := &quotaResponseWriter{ResponseWriter: w, plugin: p, request: request, state: state}
 			next.ServeHTTP(writer, request)
 			writer.writeQuotaHeaders()

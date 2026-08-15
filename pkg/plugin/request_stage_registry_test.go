@@ -70,7 +70,7 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 		"ai-prompt-template":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"ai-rag":                       {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"ai-request-rewrite":           {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
-		"data-mask":                    {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
+		"data-mask":                    {Stage: RequestStageNone},
 		"degraphql":                    {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"example-plugin":               {Stage: RequestStageRewrite, AdaptLegacyHandler: true},
 		"jwe-decrypt":                  {Stage: RequestStageRewrite, AdaptLegacyHandler: true},

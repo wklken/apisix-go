@@ -1,6 +1,7 @@
 package data_mask
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -40,7 +42,47 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestHandlerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
+func serveSanitizedSnapshot(
+	t *testing.T,
+	p *Plugin,
+	recorder http.ResponseWriter,
+	request *http.Request,
+	next http.Handler,
+) {
+	t.Helper()
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatalf("read snapshot input: %v", err)
+	}
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Method:        request.Method,
+		URI:           request.URL.RequestURI(),
+		URL:           request.URL.String(),
+		Host:          request.Host,
+		Proto:         request.Proto,
+		ContentLength: request.ContentLength,
+		Header:        request.Header.Clone(),
+		Query:         request.URL.Query(),
+		Body:          body,
+	}}
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		http.Error(recorder, err.Error(), http.StatusBadRequest)
+		return
+	}
+	masked := request.Clone(request.Context())
+	maskedURL, err := url.Parse(snapshot.Request.URL)
+	if err != nil {
+		t.Fatalf("parse sanitized URL: %v", err)
+	}
+	masked.URL = maskedURL
+	masked.RequestURI = snapshot.Request.URI
+	masked.Header = snapshot.Request.Header.Clone()
+	masked.Body = io.NopCloser(bytes.NewReader(snapshot.Request.Body))
+	masked.ContentLength = int64(len(snapshot.Request.Body))
+	next.ServeHTTP(recorder, masked)
+}
+
+func TestLogSnapshotSanitizerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{
 			{Type: "query", Name: "password", Action: "remove"},
@@ -63,7 +105,7 @@ func TestHandlerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		if query.Get("password") != "" {
 			t.Fatalf("password query = %q, want removed", query.Get("password"))
@@ -94,10 +136,10 @@ func TestHandlerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
 		if values.Get("keep") != "yes" {
 			t.Fatalf("keep = %q, want preserved", values.Get("keep"))
 		}
-	})).ServeHTTP(rr, req)
+	}))
 }
 
-func TestHandlerMasksParsedPrefixWhenURLEncodedBodyExceedsArgumentLimit(t *testing.T) {
+func TestLogSnapshotSanitizerFailsClosedWhenURLEncodedBodyExceedsArgumentLimit(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		MaxReqPostArgs: new(1),
 		Request: []MaskRule{{
@@ -116,53 +158,13 @@ func TestHandlerMasksParsedPrefixWhenURLEncodedBodyExceedsArgumentLimit(t *testi
 	)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read body: %v", err)
-		}
-		values := mustParseQuery(t, string(body))
-		if values.Get("token") != "*****" {
-			t.Fatalf("token = %q, want masked parsed prefix", values.Get("token"))
-		}
-		if values.Get("keep") != "" {
-			t.Fatalf("keep = %q, want unparsed suffix omitted", values.Get("keep"))
-		}
-	})).ServeHTTP(rr, req)
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("incomplete sanitized form reached the snapshot consumer")
+	}))
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
 	}
-}
-
-func TestHandlerReencodesTruncatedURLEncodedBodyAfterIdentityRegexMatch(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		MaxReqPostArgs: new(1),
-		Request: []MaskRule{{
-			Type:       "body",
-			BodyFormat: "urlencoded",
-			Name:       "arg1",
-			Action:     "regex",
-			Regex:      `(\d+)$`,
-			Value:      "$1",
-		}},
-	})
-
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"http://example.com/orders",
-		strings.NewReader("arg1=1&arg2=2"),
-	)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read body: %v", err)
-		}
-		if string(body) != "arg1=1" {
-			t.Fatalf("body = %q, want matched prefix re-encoded without arg2", body)
-		}
-	})).ServeHTTP(rr, req)
 }
 
 func TestMaskStringReplacesOnlyTheFirstMatch(t *testing.T) {
@@ -175,13 +177,13 @@ func TestMaskStringReplacesOnlyTheFirstMatch(t *testing.T) {
 	}
 }
 
-func TestHandlerMasksRequestLineForLoggerFields(t *testing.T) {
+func TestLogSnapshotSanitizerMasksRequestLineForLoggerFields(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{Type: "query", Name: "token", Action: "replace", Value: "*****"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?token=secret&keep=yes", nil)
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := apisixlog.GetField(r, "$request_uri"); got != "/orders?keep=yes&token=%2A%2A%2A%2A%2A" {
 			t.Fatalf("request_uri log field = %q, want masked URI", got)
 		}
@@ -189,14 +191,14 @@ func TestHandlerMasksRequestLineForLoggerFields(t *testing.T) {
 			t.Fatalf("request_line log field = %q, want masked request line", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
 
-func TestHandlerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{
 			{Type: "body", BodyFormat: "json", Name: "$.password", Action: "remove"},
@@ -222,7 +224,7 @@ func TestHandlerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -249,10 +251,10 @@ func TestHandlerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 		if second != "9876-****-****-7654" {
 			t.Fatalf("second card = %v, want masked", second)
 		}
-	})).ServeHTTP(rr, req)
+	}))
 }
 
-func TestHandlerRejectsMalformedJSONWithoutCallingNext(t *testing.T) {
+func TestLogSnapshotSanitizerRejectsMalformedJSON(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
@@ -262,9 +264,9 @@ func TestHandlerRejectsMalformedJSONWithoutCallingNext(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler was called for malformed JSON")
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
@@ -274,7 +276,7 @@ func TestHandlerRejectsMalformedJSONWithoutCallingNext(t *testing.T) {
 	}
 }
 
-func TestHandlerMasksJSONBodyWithRootArrayJSONPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithRootArrayJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type:       "body",
@@ -292,7 +294,7 @@ func TestHandlerMasksJSONBodyWithRootArrayJSONPath(t *testing.T) {
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -306,14 +308,14 @@ func TestHandlerMasksJSONBodyWithRootArrayJSONPath(t *testing.T) {
 				t.Fatalf("item %d token = %v, want masked", index, item["token"])
 			}
 		}
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 }
 
-func TestHandlerMasksJSONBodyWithPathWithoutDollarPrefix(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithPathWithoutDollarPrefix(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{
 			{Type: "body", BodyFormat: "json", Name: "users[*].token", Action: "replace", Value: "*****"},
@@ -328,7 +330,7 @@ func TestHandlerMasksJSONBodyWithPathWithoutDollarPrefix(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -342,14 +344,14 @@ func TestHandlerMasksJSONBodyWithPathWithoutDollarPrefix(t *testing.T) {
 				t.Fatalf("token = %v, want masked", got)
 			}
 		}
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 }
 
-func TestHandlerMasksJSONBodyWithArrayIndexJSONPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithArrayIndexJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{
 			{Type: "body", BodyFormat: "json", Name: "$.users[0].token", Action: "replace", Value: "*****"},
@@ -373,7 +375,7 @@ func TestHandlerMasksJSONBodyWithArrayIndexJSONPath(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -399,10 +401,10 @@ func TestHandlerMasksJSONBodyWithArrayIndexJSONPath(t *testing.T) {
 		if secondCard != "9876-****-****-7654" {
 			t.Fatalf("second card = %v, want masked", secondCard)
 		}
-	})).ServeHTTP(rr, req)
+	}))
 }
 
-func TestHandlerMasksJSONBodyWithQuotedBracketPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithQuotedBracketPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type:       "body",
@@ -420,7 +422,7 @@ func TestHandlerMasksJSONBodyWithQuotedBracketPath(t *testing.T) {
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -428,14 +430,14 @@ func TestHandlerMasksJSONBodyWithQuotedBracketPath(t *testing.T) {
 		if !strings.Contains(string(body), `"token":"*****"`) {
 			t.Fatalf("body = %q, want quoted bracket path masked", body)
 		}
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 }
 
-func TestHandlerMasksJSONBodyWithQuotedDottedKey(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithQuotedDottedKey(t *testing.T) {
 	p := newTestPlugin(t, Config{Request: []MaskRule{{
 		Type: "body", BodyFormat: "json", Name: `$["a.b"]`, Action: "replace", Value: "*****",
 	}}})
@@ -445,22 +447,28 @@ func TestHandlerMasksJSONBodyWithQuotedDottedKey(t *testing.T) {
 		strings.NewReader(`{"a.b":"secret","a":{"b":"preserve"}}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
-	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read body: %v", err)
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal(body, &decoded); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if decoded["a.b"] != "*****" || decoded["a"].(map[string]any)["b"] != "preserve" {
-			t.Fatalf("body = %s, want only literal dotted key masked", body)
-		}
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	serveSanitizedSnapshot(
+		t,
+		p,
+		httptest.NewRecorder(),
+		req,
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if decoded["a.b"] != "*****" || decoded["a"].(map[string]any)["b"] != "preserve" {
+				t.Fatalf("body = %s, want only literal dotted key masked", body)
+			}
+		}),
+	)
 }
 
-func TestHandlerMasksJSONBodyWithRecursiveWildcardPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithRecursiveWildcardPath(t *testing.T) {
 	p := newTestPlugin(t, Config{Request: []MaskRule{{
 		Type: "body", BodyFormat: "json", Name: "$..users[*].token", Action: "replace", Value: "*****",
 	}}})
@@ -470,32 +478,44 @@ func TestHandlerMasksJSONBodyWithRecursiveWildcardPath(t *testing.T) {
 		strings.NewReader(`{"group":{"users":[{"token":"one"},{"token":"two"}]}}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
-	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read body: %v", err)
-		}
-		if strings.Contains(string(body), `"token":"one"`) || strings.Contains(string(body), `"token":"two"`) {
-			t.Fatalf("body = %s, want recursive wildcard tokens masked", body)
-		}
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	serveSanitizedSnapshot(
+		t,
+		p,
+		httptest.NewRecorder(),
+		req,
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if strings.Contains(string(body), `"token":"one"`) || strings.Contains(string(body), `"token":"two"`) {
+				t.Fatalf("body = %s, want recursive wildcard tokens masked", body)
+			}
+		}),
+	)
 }
 
-func TestHandlerMasksTerminalNamedArraySelector(t *testing.T) {
+func TestLogSnapshotSanitizerMasksTerminalNamedArraySelector(t *testing.T) {
 	p := newTestPlugin(t, Config{Request: []MaskRule{{
 		Type: "body", BodyFormat: "json", Name: "$.users[0]", Action: "replace", Value: "masked",
 	}}})
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"users":["one","two"]}`))
 	req.Header.Set("Content-Type", "application/json")
-	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if string(body) != `{"users":["masked","two"]}` {
-			t.Fatalf("body = %s, want only selected array element masked", body)
-		}
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	serveSanitizedSnapshot(
+		t,
+		p,
+		httptest.NewRecorder(),
+		req,
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != `{"users":["masked","two"]}` {
+				t.Fatalf("body = %s, want only selected array element masked", body)
+			}
+		}),
+	)
 }
 
-func TestHandlerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
+func TestLogSnapshotSanitizerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type:       "body",
@@ -513,7 +533,7 @@ func TestHandlerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -521,7 +541,7 @@ func TestHandlerMasksJSONBodyWithRecursiveJSONPath(t *testing.T) {
 		if strings.Contains(string(body), `"token":"one"`) || strings.Contains(string(body), `"token":"two"`) {
 			t.Fatalf("body = %q, want recursive token masking", body)
 		}
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -602,42 +622,7 @@ func TestSchemaRequiresConditionalMaskRuleFields(t *testing.T) {
 	}
 }
 
-func TestHandlerSkipsJSONMaskWhenBodyExceedsLimit(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		MaxBodySize: 10,
-		Request: []MaskRule{{
-			Type:       "body",
-			BodyFormat: "json",
-			Name:       "$.token",
-			Action:     "replace",
-			Value:      "*****",
-		}},
-	})
-
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"http://example.com/orders",
-		strings.NewReader(`{"token":"secret"}`),
-	)
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read body: %v", err)
-		}
-		if !strings.Contains(string(body), `"token":"secret"`) {
-			t.Fatalf("body = %q, want oversized body left unchanged", body)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rr.Code)
-	}
-}
-
-func TestHandlerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
+func TestLogSnapshotSanitizerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
@@ -647,16 +632,16 @@ func TestHandlerAcceptsEmptyBodyWithBodyRules(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", http.NoBody)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204 with an empty body", rr.Code)
 	}
 }
 
-func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
+func TestLogSnapshotSanitizerAcceptsEmptyJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type:       "body",
@@ -670,7 +655,7 @@ func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", http.NoBody)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -679,14 +664,14 @@ func TestHandlerAcceptsEmptyJSONBody(t *testing.T) {
 			t.Fatalf("body = %q, want empty", body)
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	}))
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
-func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
+func TestHandlerPreservesOriginalBodyOwnership(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
@@ -697,40 +682,15 @@ func TestHandlerClosesOriginalBodyOnceWhenMasking(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", spy)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != spy {
+			t.Fatal("data-mask replaced the live request body")
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if !spy.closed {
-		t.Fatal("original request body was not closed")
-	}
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rr.Code)
-	}
-}
-
-func TestHandlerClosesOriginalRequestBody(t *testing.T) {
-	p := newTestPlugin(t, Config{
-		Request: []MaskRule{{
-			Type:       "body",
-			BodyFormat: "json",
-			Name:       "$.token",
-			Action:     "replace",
-			Value:      "*****",
-		}},
-	})
-
-	spy := &closeSpyBody{ReadCloser: io.NopCloser(strings.NewReader(`{"token":"secret"}`))}
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", nil)
-	req.Body = spy
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
-
-	if !spy.closed {
-		t.Fatalf("original request body was not closed")
+	if spy.closed {
+		t.Fatal("data-mask closed the live request body")
 	}
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)

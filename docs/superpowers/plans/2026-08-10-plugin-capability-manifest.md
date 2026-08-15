@@ -9,7 +9,7 @@
 - The registry contains 115 factory keys and 114 implementation identities.
 - `otel` is a factory alias of the `opentelemetry` identity and must resolve to identical capabilities.
 - `request-context` is the factory key; `request_context` is only that plugin's `GetName` identity and is not a second factory.
-- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `final_response_store`, `streaming_body_filter`, `compression_offer`, `streaming_response_owner`, `exclusive_protocol_owner`, `protocol_owner`, `log`, `finalizer`, `generation_owner`, `separate_subsystem`.
+- Capabilities are: `system`, `request_rewrite`, `consumer_rewrite`, `request_access`, `before_proxy`, `conditional_terminal`, `header_filter`, `buffered_body_filter`, `final_response_store`, `streaming_body_filter`, `compression_offer`, `streaming_response_owner`, `exclusive_protocol_owner`, `protocol_owner`, `log`, `log_sanitizer`, `finalizer`, `generation_owner`, `separate_subsystem`.
 - Multiple `conditional_terminal` plugins are legal and ordered by scope/stage/priority. `protocol_owner` is exclusive only when the route build matrix says two protocol owners cannot coexist.
 - `log` body observation is not `buffered_body_filter`; it uses the bounded log-capture observer from Plan 17.
 - A later plan may implement an already-declared secondary capability, but it may not add an unlisted identity or capability without updating this manifest and its completeness test first.
@@ -28,7 +28,6 @@
 | ai-prompt-template | request_rewrite, conditional_terminal | 13 |
 | ai-rag | request_rewrite, conditional_terminal | 13 |
 | ai-request-rewrite | request_rewrite, conditional_terminal | 13 |
-| data-mask | request_rewrite, conditional_terminal | 13 |
 | degraphql | request_rewrite, conditional_terminal | 13 |
 | example-plugin | request_rewrite, system, separate_subsystem | 13/17 |
 | jwe-decrypt | request_rewrite, conditional_terminal | 13 |
@@ -166,6 +165,16 @@ Route-owned Kafka websocket and Dubbo/http-Dubbo terminal behavior is part of th
 | udp-logger | log | 17 |
 | zipkin | request_rewrite, finalizer | 17 |
 
+## Plan 20 request data contract identity
+
+| Identity | Capabilities | Primary plan |
+| --- | --- | --- |
+| data-mask | log_sanitizer | 20 |
+
+`data-mask` runs against the detached canonical log snapshot before any logger
+or snapshot finalizer. It has no request-stage owner and never changes the
+request sent upstream.
+
 `finalizer` means a per-request `FinalizerPhasePlugin` only. `generation_owner` covers process/route-generation Start/Stop ownership and never installs a per-request finalizer. Existing `error-log-logger`, `log-rotate`, and `server-info` generation lifecycles are audited for exactly-once retirement but do not enter `RunLogPhase`; `node-status` remains a separately installed server wrapper.
 
 ## Conditional-terminal request-stage manifest
@@ -174,7 +183,8 @@ Every `conditional_terminal` identity has exactly one execution owner at runtime
 
 | Request stage | Identities |
 | --- | --- |
-| `request_rewrite` | ai-prompt-decorator, ai-prompt-template, ai-rag, ai-request-rewrite, data-mask, degraphql, jwe-decrypt, request-id, traffic-split, cors, fault-injection, redirect |
+| `request_rewrite` | ai-prompt-decorator, ai-prompt-template, ai-rag, ai-request-rewrite, degraphql, jwe-decrypt, request-id, traffic-split, cors, fault-injection, redirect |
+| `log_sanitizer` | data-mask |
 | `request_access` | limit-conn, acl, ai-aws-content-moderation, ai-prompt-guard, authz-casbin, authz-casdoor, authz-keycloak, basic-auth, cas-auth, chaitin-waf, client-control, consumer-restriction, csrf, dingtalk-auth, feishu-auth, forward-auth, graphql-limit-count, hmac-auth, ip-restriction, jwt-auth, key-auth, ldap-auth, limit-count, limit-req, multi-auth, oas-validator, opa, openid-connect, referer-restriction, request-validation, saml-auth, ua-restriction, uri-blocker, wolf-rbac, workflow, api-breaker, graphql-proxy-cache, proxy-cache, ai-aliyun-content-moderation, ai-proxy, ai-proxy-multi, ai-rate-limiting, aws-lambda, azure-functions, dubbo-proxy, grpc-transcode, grpc-web, kafka-proxy, mcp-bridge, mocking, openfunction, openwhisk, public-api |
 | `request_rewrite`, `request_access`, or `before_proxy` (validated config) | serverless-pre-function, serverless-post-function; header-filter, body-filter, and log configs select non-request capabilities and do not enter a request stage |
 | `before_proxy` stage | http-dubbo; AI proxy/multi, Dubbo, and Kafka are prepared at access and consumed once by the response-plan protocol boundary after all request stages |

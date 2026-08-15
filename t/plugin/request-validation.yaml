@@ -2,17 +2,36 @@ sources:
   - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/request-validation.t, tests: 53}
   - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/request-validation2.t, tests: 2}
 cases:
-  - name: empty-body-schema-is-valid
+  - name: body-schema-requires-bytes-and-accepts-present-values
     source: {file: t/plugin/request-validation.t, tests: [1]}
     config:
       routes:
         - id: request-validation-empty-body-schema
           uri: /empty-body-schema
           plugins: {request-validation: {body_schema: {}}}
-          upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}
-    input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: '{"anything":true}'}
-    upstream: {expect: {body: {equals: '{"anything":true}'}}, respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {body: {equals: '{"anything":true}'}}
+          - {body: {equals: 'null'}}
+        respond:
+          - {status: 200, body: ok}
+          - {status: 200, body: ok}
+    steps:
+      - name: present-object-is-valid
+        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: '{"anything":true}'}
+        output: {status: 200, body: {equals: ok}}
+      - name: missing-body-rejected
+        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}}
+        output: {status: 400, body: {matches: 'request body is required'}}
+      - name: whitespace-body-rejected
+        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: '   '}
+        output: {status: 400, body: {matches: 'request body is required'}}
+      - name: json-null-is-evaluated-by-schema
+        input: {method: POST, path: /empty-body-schema, headers: {Content-Type: application/json}, body: 'null'}
+        output: {status: 200, body: {equals: ok}}
 
   - name: missing-header-and-body-schema-is-rejected
     source: {file: t/plugin/request-validation.t, tests: [2]}

@@ -40,6 +40,26 @@ type metadataLogResponseContractPlugin struct {
 	config metadataPhaseConfig
 }
 
+type metadataSanitizerContractPlugin struct {
+	metadataResponseContractPlugin
+	calls    int
+	sanitize func(*base.LogSnapshot)
+}
+
+func (p *metadataSanitizerContractPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	return base.LogCapturePolicy{RequestBodyBytes: 5}
+}
+
+func (p *metadataSanitizerContractPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	p.calls++
+	if p.sanitize != nil {
+		p.sanitize(snapshot)
+		return nil
+	}
+	snapshot.Request.Header.Set("Authorization", "[REDACTED]")
+	return nil
+}
+
 func (p *metadataLogResponseContractPlugin) Config() any { return p.config }
 
 func TestRoutePipelineInstallsStaticLogExecutorBeforeTerminal(t *testing.T) {
@@ -268,6 +288,138 @@ func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
 	}
 }
 
+func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) {
+	ensureRouteStore(t)
+	type upstreamObservation struct {
+		requestURI    string
+		authorization string
+		requestID     string
+		body          string
+	}
+	upstreamSeen := make(chan upstreamObservation, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		upstreamSeen <- upstreamObservation{
+			requestURI:    request.RequestURI,
+			authorization: request.Header.Get("Authorization"),
+			requestID:     request.Header.Get("X-Request-Id"),
+			body:          string(body),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(upstreamURL.Port())
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+	logged := make(chan map[string]any, 1)
+	logSink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Errorf("read logger payload: %v", readErr)
+		} else {
+			var payload map[string]any
+			if decodeErr := json.Unmarshal(body, &payload); decodeErr != nil {
+				t.Errorf("decode logger payload %q: %v", body, decodeErr)
+			} else {
+				logged <- payload
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(logSink.Close)
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.buildHandlerStrict(resource.Route{
+		ID:  "data-mask-detached-log",
+		Uri: "/mask",
+		Plugins: map[string]resource.PluginConfig{
+			"data-mask": map[string]any{
+				"request": []any{
+					map[string]any{"type": "query", "name": "token", "action": "replace", "value": "***"},
+					map[string]any{"type": "header", "name": "Authorization", "action": "remove"},
+					map[string]any{
+						"type": "header", "name": "X-Request-Id", "action": "replace", "value": "masked-id",
+					},
+					map[string]any{
+						"type": "body", "body_format": "json", "name": "$.token",
+						"action": "replace", "value": "***",
+					},
+				},
+			},
+			"http-logger": map[string]any{
+				"uri":              logSink.URL,
+				"batch_max_size":   1,
+				"include_req_body": true,
+			},
+		},
+		Upstream: resource.Upstream{
+			Type:   "roundrobin",
+			Scheme: upstreamURL.Scheme,
+			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+	const originalURI = "/mask?token=one&keep=%2f&token=two"
+	const originalBody = " {\n \"token\":\"secret\", \"amount\":1.00\n} "
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test"+originalURI, strings.NewReader(originalBody))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-Id", "raw-request-id")
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(request, time.Now())
+	request = apisixctx.WithRequestVars(request)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	lifecycle.Complete(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: response.Code, Committed: true,
+	}, time.Now())
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	apisixctx.RecycleVars(request)
+
+	select {
+	case seen := <-upstreamSeen:
+		if seen.requestURI != originalURI || seen.authorization != "Bearer secret" ||
+			seen.requestID != "raw-request-id" || seen.body != originalBody {
+			t.Fatalf("upstream request changed: %#v", seen)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream request was not observed")
+	}
+	select {
+	case payload := <-logged:
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatalf("marshal logger payload: %v", marshalErr)
+		}
+		text := string(encoded)
+		for _, secret := range []string{
+			"Bearer secret", `"token":"secret"`, "token=one", "token=two", "raw-request-id",
+		} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("logger payload leaked %q: %s", secret, text)
+			}
+		}
+		if payload["request_id"] != "masked-id" || !strings.Contains(text, `\"token\":\"***\"`) ||
+			!strings.Contains(text, "token=%2A%2A%2A") {
+			t.Fatalf("logger payload is not fully sanitized: %#v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached logger did not receive sanitized payload")
+	}
+}
+
 func (p *metadataLogContractPlugin) RunRequestPhase(
 	_ http.ResponseWriter,
 	r *http.Request,
@@ -356,6 +508,115 @@ func TestMetadataSnapshotFilterPreservesRequestValueSemantics(t *testing.T) {
 		if !metadataSnapshotFilterMatches(filter, snapshot) {
 			t.Fatalf("detached filter changed live %s semantics", name)
 		}
+	}
+}
+
+func TestMetadataLogSanitizerPreservesExactOwnerAndDetachedFilter(t *testing.T) {
+	target := &metadataSanitizerContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
+		name: "data-mask",
+	}}
+	filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
+	if err != nil {
+		t.Fatalf("compile filter: %v", err)
+	}
+	wrapper, err := newMetadataPlugin("data-mask", target, pluginMetadata{filter: filter})
+	if err != nil {
+		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+	}
+	sanitizer, ok := wrapper.(base.LogSnapshotSanitizerPlugin)
+	if !ok {
+		t.Fatalf("metadata data-mask lost sanitizer callback: %T", wrapper)
+	}
+	selector, ok := wrapper.(base.LogSnapshotSanitizerSelectorPlugin)
+	if !ok {
+		t.Fatalf("metadata data-mask lost pre-sanitized selector: %T", wrapper)
+	}
+	if _, ok := wrapper.(base.LogPhasePlugin); ok {
+		t.Fatalf("metadata data-mask gained log callback: %T", wrapper)
+	}
+	if _, ok := wrapper.(base.SnapshotFinalizerPlugin); ok {
+		t.Fatalf("metadata data-mask gained finalizer callback: %T", wrapper)
+	}
+	policy, ok := wrapper.(base.LogCapturePolicyPlugin)
+	if !ok || policy.LogCapturePolicy().RequestBodyBytes != 5 {
+		t.Fatalf("metadata data-mask policy = %#v/%v", policy, ok)
+	}
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Query:  url.Values{"enabled": {"no"}},
+		Header: http.Header{"Authorization": {"Bearer secret"}},
+	}}
+	if selector.ShouldSanitizeLogSnapshot(snapshot) {
+		t.Fatal("disabled sanitizer selector = true")
+	}
+	if target.calls != 0 || snapshot.Request.Header.Get("Authorization") != "Bearer secret" {
+		t.Fatalf("disabled sanitizer changed snapshot: calls=%d header=%q", target.calls, snapshot.Request.Header)
+	}
+	snapshot.Request.Query.Set("enabled", "yes")
+	if !selector.ShouldSanitizeLogSnapshot(snapshot) {
+		t.Fatal("enabled sanitizer selector = false")
+	}
+	if err := sanitizer.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("enabled SanitizeLogSnapshot() error = %v", err)
+	}
+	if target.calls != 1 || snapshot.Request.Header.Get("Authorization") != "[REDACTED]" {
+		t.Fatalf("enabled sanitizer state: calls=%d header=%q", target.calls, snapshot.Request.Header)
+	}
+}
+
+func TestMetadataLogSanitizersEvaluateFiltersAgainstSamePreSanitizedSnapshot(t *testing.T) {
+	global := &metadataSanitizerContractPlugin{
+		metadataResponseContractPlugin: metadataResponseContractPlugin{name: "data-mask"},
+		sanitize: func(snapshot *base.LogSnapshot) {
+			snapshot.Request.Query.Set("enabled", "masked")
+		},
+	}
+	route := &metadataSanitizerContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
+		name: "data-mask",
+	}}
+	filter, err := pluginexpr.Compile([]any{[]any{"arg_enabled", "==", "yes"}})
+	if err != nil {
+		t.Fatalf("compile filter: %v", err)
+	}
+	wrappedRoute, err := newMetadataPlugin("data-mask", route, pluginMetadata{filter: filter})
+	if err != nil {
+		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+	}
+	logger := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
+		name: "http-logger",
+	}}
+	bindings := []pluginpkg.Binding{
+		pluginpkg.BindPlugin("data-mask", global, pluginpkg.ScopeGlobal,
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceGlobalRule, ID: "global-mask"}),
+		pluginpkg.BindPlugin("data-mask", wrappedRoute, pluginpkg.ScopeRoute,
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-mask"}),
+		pluginpkg.BindPlugin("http-logger", logger, pluginpkg.ScopeRoute,
+			pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "route-mask"}),
+	}
+	executor, err := pluginpkg.NewLogExecutorFromBindings(bindings)
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/?enabled=yes", nil),
+		time.Unix(1, 0),
+	)
+	request.Header.Set("Authorization", "Bearer secret")
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	lifecycle.SetFinalRequest(request)
+	lifecycle.Complete(apisixctx.ResponseOutcome{
+		Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusNoContent, Committed: true,
+	}, time.Unix(2, 0))
+	if !executor.RegisterComposite(request) {
+		t.Fatal("RegisterComposite() = false")
+	}
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if global.calls != 1 || route.calls != 1 {
+		t.Fatalf("sanitizer calls = global:%d route:%d, want 1/1", global.calls, route.calls)
 	}
 }
 

@@ -1423,6 +1423,32 @@ type metadataLogPlugin struct {
 	filter *pluginexpr.Expression
 }
 
+type metadataSnapshotSanitizerPlugin struct {
+	plugin.Plugin
+	target plugin.Plugin
+	filter *pluginexpr.Expression
+}
+
+func (p metadataSnapshotSanitizerPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	provider, ok := p.target.(base.LogCapturePolicyPlugin)
+	if !ok {
+		return base.LogCapturePolicy{}
+	}
+	return provider.LogCapturePolicy()
+}
+
+func (p metadataSnapshotSanitizerPlugin) ShouldSanitizeLogSnapshot(snapshot base.LogSnapshot) bool {
+	return metadataSnapshotFilterMatches(p.filter, snapshot)
+}
+
+func (p metadataSnapshotSanitizerPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	sanitizer, ok := p.target.(base.LogSnapshotSanitizerPlugin)
+	if !ok {
+		return fmt.Errorf("plugin %q has no log sanitizer callback", p.target.GetName())
+	}
+	return sanitizer.SanitizeLogSnapshot(snapshot)
+}
+
 func (p metadataLogPlugin) LogCapturePolicy() base.LogCapturePolicy {
 	provider, ok := p.target.(base.LogCapturePolicyPlugin)
 	if !ok {
@@ -2198,6 +2224,7 @@ func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetad
 	}
 	phaseSpec, classified := plugin.CapabilitySpecForFactory(factoryName)
 	if classified {
+		ownsSanitizer := phaseSpec.Capabilities&plugin.CapabilityLogSanitizer != 0
 		ownsLog := phaseSpec.Capabilities&plugin.CapabilityLog != 0
 		if ownsLog && (factoryName == "serverless-pre-function" || factoryName == "serverless-post-function") {
 			descriptor, descriptorErr := metadataBindingPhaseDescriptor(p, factoryName)
@@ -2208,6 +2235,12 @@ func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetad
 		}
 		ownsSnapshot := phaseSpec.Finalizer == plugin.FinalizerSnapshot
 		switch {
+		case ownsSanitizer:
+			return metadataSnapshotSanitizerPlugin{
+				Plugin: wrapped,
+				target: p,
+				filter: metadata.filter,
+			}, nil
 		case ownsLog:
 			return metadataLogPlugin{Plugin: wrapped, target: p, filter: metadata.filter}, nil
 		case ownsSnapshot:

@@ -135,6 +135,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
+			if len(bytes.TrimSpace(body)) == 0 {
+				err = fmt.Errorf("request body is required")
+				logger.Error(err.Error())
+				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+				return
+			}
 
 			bodyData, bodyIsJSON, err := parseRequestBody(r, body)
 			if err != nil {
@@ -199,18 +205,11 @@ func requestHeaders(r *http.Request) map[string]any {
 }
 
 func parseRequestBody(r *http.Request, body []byte) (any, bool, error) {
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, false, nil
-	}
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
 		data, err := parseURLEncodedForm(body)
 		return data, false, err
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, false, nil
-	}
-
 	data, err := parseJSON(body)
 	return data, true, err
 }

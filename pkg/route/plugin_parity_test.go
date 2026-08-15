@@ -265,7 +265,7 @@ func TestBodyTransformerRouteChainRejectsMalformedRequest(t *testing.T) {
 	}
 }
 
-func TestDataMaskRouteChainMasksQuery(t *testing.T) {
+func TestDataMaskRouteChainPreservesQuery(t *testing.T) {
 	handler := buildRoutePluginChainWithFallback(t, "data-mask", map[string]any{
 		"request": []any{
 			map[string]any{
@@ -276,8 +276,8 @@ func TestDataMaskRouteChainMasksQuery(t *testing.T) {
 			},
 		},
 	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("token"); got != "***" {
-			t.Fatalf("masked query token = %q, want ***", got)
+		if got := r.URL.Query().Get("token"); got != "secret" {
+			t.Fatalf("upstream query token = %q, want original secret", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -291,8 +291,8 @@ func TestDataMaskRouteChainMasksQuery(t *testing.T) {
 	}
 }
 
-func TestDataMaskRouteChainRejectsMalformedJSON(t *testing.T) {
-	handler := buildRoutePluginChain(t, "data-mask", map[string]any{
+func TestDataMaskRouteChainPreservesMalformedJSON(t *testing.T) {
+	handler := buildRoutePluginChainWithFallback(t, "data-mask", map[string]any{
 		"request": []any{
 			map[string]any{
 				"type":        "body",
@@ -302,18 +302,24 @@ func TestDataMaskRouteChainRejectsMalformedJSON(t *testing.T) {
 				"value":       "***",
 			},
 		},
-	})
+	}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		if string(body) != `{"token":` {
+			t.Fatalf("upstream body = %q, want original malformed JSON", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 
 	req := httptest.NewRequest(http.MethodPost, "http://route.example.com/pets", strings.NewReader(`{"token":`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", res.Code, http.StatusBadRequest)
-	}
-	if res.Header().Get("X-Route-Fallback") != "" {
-		t.Fatal("fallback handler was reached after data-mask rejection")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusNoContent)
 	}
 }
 

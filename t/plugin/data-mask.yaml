@@ -36,7 +36,7 @@ cases:
     upstream: &query_fixture
       expect:
         path:
-          equals: /hello?card=1234-%2A%2A%2A%2A-%2A%2A%2A%2A-1234&token=%2A%2A%2A%2A%2A
+          equals: /hello?password=abc&token=xyz&card=1234-1234-1234-1234
       respond: &done_response
         status: 200
         body: done
@@ -78,11 +78,11 @@ cases:
       expect:
         headers:
           password:
-            absent: true
+            equals: abc
           token:
-            equals: "*****"
+            equals: xyz
           card:
-            equals: 1234-****-****-1234
+            equals: 1234-1234-1234-1234
       respond: *done_response
     output: *done_output
 
@@ -119,7 +119,7 @@ cases:
     upstream:
       expect:
         body:
-          equals: card=1234-%2A%2A%2A%2A-%2A%2A%2A%2A-1234&token=%2A%2A%2A%2A%2A
+          equals: password=abc&token=xyz&card=1234-1234-1234-1234
       respond: *done_response
     output: *done_output
 
@@ -156,7 +156,7 @@ cases:
     upstream:
       expect:
         body:
-          equals: '{"users":[{"credit":{"card":"1234-****-****-1234"},"token":"*****"},{"credit":{"card":"1234-****-****-1234"},"token":"*****"}]}'
+          equals: '{"password":"abc","users":[{"token":"xyz","credit":{"card":"1234-1234-1234-1234"}},{"token":"xyz","credit":{"card":"1234-1234-1234-1234"}}]}'
       respond: *done_response
     output: *done_output
 
@@ -214,7 +214,7 @@ cases:
     upstream:
       expect:
         body:
-          equals: arg1=1&arg10=10&arg100=100&arg11=11&arg12=12&arg13=13&arg14=14&arg15=15&arg16=16&arg17=17&arg18=18&arg19=19&arg2=2&arg20=20&arg21=21&arg22=22&arg23=23&arg24=24&arg25=25&arg26=26&arg27=27&arg28=28&arg29=29&arg3=3&arg30=30&arg31=31&arg32=32&arg33=33&arg34=34&arg35=35&arg36=36&arg37=37&arg38=38&arg39=39&arg4=4&arg40=40&arg41=41&arg42=42&arg43=43&arg44=44&arg45=45&arg46=46&arg47=47&arg48=48&arg49=49&arg5=5&arg50=50&arg51=51&arg52=52&arg53=53&arg54=54&arg55=55&arg56=56&arg57=57&arg58=58&arg59=59&arg6=6&arg60=60&arg61=61&arg62=62&arg63=63&arg64=64&arg65=65&arg66=66&arg67=67&arg68=68&arg69=69&arg7=7&arg70=70&arg71=71&arg72=72&arg73=73&arg74=74&arg75=75&arg76=76&arg77=77&arg78=78&arg79=79&arg8=8&arg80=80&arg81=81&arg82=82&arg83=83&arg84=84&arg85=85&arg86=86&arg87=87&arg88=88&arg89=89&arg9=9&arg90=90&arg91=91&arg92=92&arg93=93&arg94=94&arg95=95&arg96=96&arg97=97&arg98=98&arg99=99
+          matches: 'arg1=1&arg2=2.*arg100=100&arg101=101.*arg110=110'
       respond: *done_response
     output: *done_output
 
@@ -243,7 +243,7 @@ cases:
     upstream:
       expect:
         body:
-          equals: arg1=1&arg10=10&arg2=2&arg3=3&arg4=4&arg5=5&arg6=6&arg7=7&arg8=8&arg9=9
+          matches: 'arg1=1&arg2=2.*arg10=10&arg11=11.*arg110=110'
       respond: *done_response
     output: *done_output
 
@@ -268,7 +268,7 @@ cases:
     upstream:
       expect:
         path:
-          equals: /hello?token=%2Abc&token=%2Aef
+          equals: /hello?token=abc&token=def
       respond: *done_response
     output: *done_output
 
@@ -301,7 +301,7 @@ cases:
     upstream:
       expect:
         body:
-          equals: '{"count":42,"name":"***"}'
+          equals: '{"count":42,"name":"Alice"}'
       respond: *done_response
     output: *done_output
 
@@ -322,8 +322,9 @@ cases:
                   name: token
                   action: replace
                   value: "*****"
-            file-logger:
-              path: '{{WORK_DIR}}/data-mask-access.log'
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
               log_format:
                 request_line: $request_line
           upstream:
@@ -336,19 +337,21 @@ cases:
         expect:
           - method: GET
             path:
-              equals: /hello?token=%2A%2A%2A%2A%2A
+              equals: /hello?password=secret&token=mytoken
         respond:
           - status: 200
             body: done
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /logs}
+            body:
+              json_equals: '{"request_line":"GET /hello?token=%2A%2A%2A%2A%2A HTTP/1.1"}'
+        respond:
+          - status: 200
     steps:
-      - name: masked-request-line-is-written-to-file
+      - name: masked-request-line-is-sent-to-detached-logger
         input:
           path: /hello?password=secret&token=mytoken
         output: *done_output
-        file_assertions:
-          - path: {equals: '{{WORK_DIR}}/data-mask-access.log'}
-            body:
-              matches: '"request_line":"GET /hello\?token=%2A%2A%2A%2A%2A HTTP/1\.1"'
-          - path: {equals: '{{WORK_DIR}}/data-mask-access.log'}
-            body:
-              not_matches: '(password=secret|token=mytoken)'

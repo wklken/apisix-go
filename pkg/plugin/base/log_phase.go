@@ -29,6 +29,20 @@ type SnapshotFinalizerPlugin interface {
 	RunSnapshotFinalizer(LogSnapshot) error
 }
 
+// LogSnapshotSanitizerPlugin mutates only the detached canonical logging
+// snapshot. The log executor runs sanitizers before cloning the snapshot for
+// any logger or snapshot finalizer callback.
+type LogSnapshotSanitizerPlugin interface {
+	SanitizeLogSnapshot(*LogSnapshot) error
+}
+
+// LogSnapshotSanitizerSelectorPlugin optionally restricts a sanitizer to a
+// detached snapshot. The log executor evaluates every selector against the
+// same pre-sanitized snapshot before running any sanitizer callback.
+type LogSnapshotSanitizerSelectorPlugin interface {
+	ShouldSanitizeLogSnapshot(LogSnapshot) bool
+}
+
 // GetFieldsFromSnapshot keeps field expansion in the detached snapshot layer
 // while giving plugin packages the same base-level entry point as the legacy
 // live-request helper.

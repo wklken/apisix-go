@@ -29,6 +29,7 @@ const (
 	CapabilityFinalizer
 	CapabilityGenerationOwner
 	CapabilitySeparateSubsystem
+	CapabilityLogSanitizer
 )
 
 type RequestOwnerKind uint8
@@ -264,7 +265,6 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		"ai-prompt-template",
 		"ai-rag",
 		"ai-request-rewrite",
-		"data-mask",
 		"degraphql",
 		"jwe-decrypt",
 		"request-id",
@@ -476,6 +476,7 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		"skywalking",
 		"zipkin",
 	)
+	add("Plan 20", CapabilityLogSanitizer, "data-mask")
 	return entries
 }
 
@@ -636,7 +637,7 @@ func isConditionalTerminalIdentity(identity string) bool {
 		"wolf-rbac", "workflow", "api-breaker", "graphql-proxy-cache", "proxy-cache", "serverless-pre-function",
 		"serverless-post-function", "cors", "fault-injection", "grpc-transcode", "grpc-web", "jwe-decrypt",
 		"mcp-bridge", "mocking", "openfunction", "openwhisk", "public-api", "redirect", "request-id",
-		"data-mask", "degraphql", "traffic-split",
+		"degraphql", "traffic-split",
 	}, identity)
 }
 

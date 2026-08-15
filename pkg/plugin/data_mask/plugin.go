@@ -143,68 +143,141 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := p.maskRequest(r); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return next
 }
 
-func (p *Plugin) maskRequest(r *http.Request) error {
+func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
+	if len(p.bodyRules) == 0 {
+		return base.LogCapturePolicy{}
+	}
+	return base.LogCapturePolicy{RequestBodyBytes: min(p.config.MaxBodySize, base.MAX_REQ_BODY)}
+}
+
+func (p *Plugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("cannot sanitize a nil log snapshot")
+	}
+	queryChanged := false
 	for _, rule := range p.config.Request {
 		switch rule.Type {
 		case "query":
-			maskQuery(r, rule)
+			queryChanged = maskSnapshotQuery(snapshot, rule) || queryChanged
 		case "header":
-			maskHeader(r, rule)
+			maskSnapshotHeader(snapshot, rule)
+		}
+	}
+	if queryChanged {
+		if err := updateSnapshotRequestTargets(snapshot); err != nil {
+			return err
 		}
 	}
 	if len(p.bodyRules) == 0 {
 		return nil
 	}
-	body, err := base.ReadRequestBody(r)
-	if err != nil {
-		return err
-	}
-	if len(body) == 0 {
+	if len(snapshot.Request.Body) == 0 {
 		return nil
 	}
-	body, _, err = p.maskBodyRules(body, p.bodyRules)
-	if err != nil {
-		return err
+	if snapshot.Request.BodyTruncated || len(snapshot.Request.Body) > p.config.MaxBodySize {
+		snapshot.Request.Body = nil
+		snapshot.Request.BodyTruncated = true
+		return fmt.Errorf("request body is incomplete for data masking")
 	}
-	base.ReplaceRequestBody(r, body)
+	body, _, err := p.maskBodyRules(snapshot.Request.Body, p.bodyRules)
+	if err != nil {
+		snapshot.Request.Body = nil
+		snapshot.Request.BodyTruncated = true
+		return fmt.Errorf("mask request body: %w", err)
+	}
+	snapshot.Request.Body = body
+	delete(snapshot.Request.RequestVars, "$request_body")
 	return nil
 }
 
-func maskQuery(r *http.Request, rule MaskRule) {
-	values := r.URL.Query()
-	if !maskValues(values, rule) {
-		return
+func maskSnapshotQuery(snapshot *base.LogSnapshot, rule MaskRule) bool {
+	if snapshot.Request.Query == nil {
+		snapshot.Request.Query = make(url.Values)
 	}
-	r.URL.RawQuery = values.Encode()
-	if r.RequestURI != "" {
-		r.RequestURI = r.URL.RequestURI()
-	}
+	return maskValues(snapshot.Request.Query, rule)
 }
 
-func maskHeader(r *http.Request, rule MaskRule) {
-	value := r.Header.Get(rule.Name)
+func maskSnapshotHeader(snapshot *base.LogSnapshot, rule MaskRule) {
+	if snapshot.Request.Header == nil {
+		snapshot.Request.Header = make(http.Header)
+	}
+	value := snapshot.Request.Header.Get(rule.Name)
 	if value == "" {
 		return
 	}
+	masked := value
+	changed := true
 	switch rule.Action {
 	case "remove":
-		r.Header.Del(rule.Name)
+		snapshot.Request.Header.Del(rule.Name)
+		masked = ""
 	case "replace":
-		r.Header.Set(rule.Name, rule.Value)
+		snapshot.Request.Header.Set(rule.Name, rule.Value)
+		masked = rule.Value
 	case "regex":
-		if masked, ok := maskString(value, rule); ok {
-			r.Header.Set(rule.Name, masked)
+		var ok bool
+		masked, ok = maskString(value, rule)
+		if ok {
+			snapshot.Request.Header.Set(rule.Name, masked)
+		} else {
+			changed = false
+		}
+	default:
+		changed = false
+	}
+	if changed && strings.EqualFold(rule.Name, "X-Request-Id") {
+		maskSnapshotRequestID(snapshot, value, masked)
+	}
+}
+
+func maskSnapshotRequestID(snapshot *base.LogSnapshot, original, masked string) {
+	if snapshot.Request.ID == original {
+		snapshot.Request.ID = masked
+	}
+	for _, variables := range []map[string]any{
+		snapshot.Request.APISIXVars,
+		snapshot.Request.RequestVars,
+	} {
+		for _, key := range []string{"$request_id", "$http_x_request_id"} {
+			value, ok := variables[key].(string)
+			if !ok || value != original {
+				continue
+			}
+			if masked == "" {
+				delete(variables, key)
+			} else {
+				variables[key] = masked
+			}
 		}
 	}
+}
+
+func updateSnapshotRequestTargets(snapshot *base.LogSnapshot) error {
+	encoded := snapshot.Request.Query.Encode()
+	if snapshot.Request.URI != "" {
+		parsed, err := url.ParseRequestURI(snapshot.Request.URI)
+		if err != nil {
+			snapshot.Request.URI = ""
+			snapshot.Request.URL = ""
+			return fmt.Errorf("parse detached request URI: %w", err)
+		}
+		parsed.RawQuery = encoded
+		snapshot.Request.URI = parsed.RequestURI()
+	}
+	if snapshot.Request.URL != "" {
+		parsed, err := url.Parse(snapshot.Request.URL)
+		if err != nil {
+			snapshot.Request.URI = ""
+			snapshot.Request.URL = ""
+			return fmt.Errorf("parse detached request URL: %w", err)
+		}
+		parsed.RawQuery = encoded
+		snapshot.Request.URL = parsed.String()
+	}
+	return nil
 }
 
 func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, error) {
@@ -231,23 +304,21 @@ func (p *Plugin) maskBodyRules(body []byte, rules []MaskRule) ([]byte, bool, err
 				masked = true
 			}
 		case "json":
-			if len(body) <= p.config.MaxBodySize {
-				var obj any
-				if err := json.Unmarshal(body, &obj); err != nil {
+			var obj any
+			if err := json.Unmarshal(body, &obj); err != nil {
+				return nil, false, err
+			}
+			groupMasked := false
+			for _, rule := range rules[start:end] {
+				groupMasked = maskJSONPath(obj, rule) || groupMasked
+			}
+			if groupMasked {
+				encoded, err := json.Marshal(obj)
+				if err != nil {
 					return nil, false, err
 				}
-				groupMasked := false
-				for _, rule := range rules[start:end] {
-					groupMasked = maskJSONPath(obj, rule) || groupMasked
-				}
-				if groupMasked {
-					encoded, err := json.Marshal(obj)
-					if err != nil {
-						return nil, false, err
-					}
-					body = encoded
-					masked = true
-				}
+				body = encoded
+				masked = true
 			}
 		}
 		start = end
@@ -271,7 +342,7 @@ func parseURLValues(raw string, maxArgs int) (url.Values, error) {
 			continue
 		}
 		if parsed >= maxArgs {
-			break
+			return nil, fmt.Errorf("urlencoded body exceeds max_req_post_args %d", maxArgs)
 		}
 		key, value, hasValue := strings.Cut(pair, "=")
 		decodedKey, err := url.QueryUnescape(key)

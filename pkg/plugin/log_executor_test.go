@@ -39,6 +39,27 @@ type logExecutorNoCallbackPlugin struct {
 	config any
 }
 
+type logSanitizerTestPlugin struct {
+	base.BasePlugin
+	order *[]string
+	err   error
+}
+
+func (p *logSanitizerTestPlugin) Init() error                            { return nil }
+func (p *logSanitizerTestPlugin) PostInit() error                        { return nil }
+func (p *logSanitizerTestPlugin) Config() any                            { return nil }
+func (p *logSanitizerTestPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *logSanitizerTestPlugin) LogCapturePolicy() base.LogCapturePolicy {
+	return base.LogCapturePolicy{RequestBodyBytes: 6}
+}
+
+func (p *logSanitizerTestPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	*p.order = append(*p.order, p.GetName()+":sanitize")
+	snapshot.Request.Header.Set("Authorization", "[REDACTED]")
+	snapshot.Request.Body = []byte("masked")
+	return p.err
+}
+
 func (*logExecutorNoCallbackPlugin) Init() error                            { return nil }
 func (*logExecutorNoCallbackPlugin) PostInit() error                        { return nil }
 func (p *logExecutorNoCallbackPlugin) Config() any                          { return p.config }
@@ -107,6 +128,99 @@ func newLogExecutorTestPlugin(name string, priority int, order *[]string) *logEx
 	plugin.Name = name
 	plugin.SetPriority(priority)
 	return plugin
+}
+
+func TestLogSnapshotSanitizerRunsBeforeLoggerAndFinalizer(t *testing.T) {
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodPost, "/", strings.NewReader("secret-body")),
+		time.Unix(1, 0),
+	)
+	request.Header.Set("Authorization", "Bearer secret")
+	order := []string{}
+	sanitizer := &logSanitizerTestPlugin{order: &order}
+	sanitizer.Name = "sanitizer"
+	sanitizer.SetPriority(100)
+	loggerPlugin := newLogExecutorTestPlugin("logger", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Plugin: loggerPlugin, Scope: ScopeRoute, Policy: base.LogCapturePolicy{RequestBodyBytes: 11}},
+		{Plugin: sanitizer, Scope: ScopeGlobal, Policy: sanitizer.LogCapturePolicy()},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	lifecycle.Complete(
+		ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Unix(2, 0),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if got, want := order, []string{
+		"sanitizer:sanitize",
+		"logger:log",
+		"logger:finalizer",
+	}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
+		t.Fatalf("callback order = %v, want %v", got, want)
+	}
+	if got := loggerPlugin.seen[0].Request.Header.Get("Authorization"); got != "[REDACTED]" {
+		t.Fatalf("logger Authorization = %q, want redacted", got)
+	}
+	if got := string(loggerPlugin.seen[0].Request.Body); got != "masked" {
+		t.Fatalf("logger body = %q, want masked", got)
+	}
+	loggerPlugin.seen[0].Request.Header.Set("Authorization", "mutated")
+	if got := request.Header.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("live request Authorization = %q, want unchanged", got)
+	}
+}
+
+func TestLogSnapshotSanitizerErrorStopsRawSnapshotConsumers(t *testing.T) {
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodPost, "/", strings.NewReader("secret-body")),
+		time.Unix(1, 0),
+	)
+	order := []string{}
+	sanitizer := &logSanitizerTestPlugin{order: &order, err: errors.New("sanitize failed")}
+	sanitizer.Name = "sanitizer"
+	loggerPlugin := newLogExecutorTestPlugin("logger", 10, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Plugin: sanitizer, Scope: ScopeRoute, Policy: sanitizer.LogCapturePolicy()},
+		{Plugin: loggerPlugin, Scope: ScopeRoute, Policy: base.LogCapturePolicy{RequestBodyBytes: 11}},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	lifecycle.Complete(
+		ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Unix(2, 0),
+	)
+	failures := lifecycle.Finalize()
+	if len(failures) != 1 || !strings.Contains(failures[0].Err.Error(), "sanitize failed") {
+		t.Fatalf("Finalize() failures = %#v, want sanitizer failure", failures)
+	}
+	if got, want := order, []string{"sanitizer:sanitize"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("callback order = %v, want %v", got, want)
+	}
+	if len(loggerPlugin.seen) != 0 {
+		t.Fatalf("logger saw raw snapshot after sanitizer error: %#v", loggerPlugin.seen)
+	}
 }
 
 func TestLogExecutorSealAndRegisterAreIdempotent(t *testing.T) {

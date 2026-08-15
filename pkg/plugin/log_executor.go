@@ -68,9 +68,9 @@ func NewLogExecutor(bindings []LogBinding) (LogExecutor, error) {
 	}, nil
 }
 
-// NewLogExecutorFromBindings selects only explicit log and snapshot-finalizer
-// owners from one materialized binding set. Dynamic finalizers register their
-// own lifecycle callbacks and never enter this executor.
+// NewLogExecutorFromBindings selects explicit sanitizer, log, and snapshot-
+// finalizer owners from one materialized binding set. Dynamic finalizers
+// register their own lifecycle callbacks and never enter this executor.
 func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 	logBindings := make([]LogBinding, 0)
 	for _, binding := range bindings {
@@ -87,6 +87,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.factoryName)
 		}
 		ownsLog := spec.Capabilities&CapabilityLog != 0
+		ownsSanitizer := spec.Capabilities&CapabilityLogSanitizer != 0
 		if ownsLog && isServerlessIdentity(binding.factoryName) {
 			phase, err := configuredPhase(binding.Plugin.Config())
 			if err != nil {
@@ -95,8 +96,18 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			ownsLog = phase == "log"
 		}
 		ownsSnapshotFinalizer := spec.Finalizer == FinalizerSnapshot
-		if !ownsLog && !ownsSnapshotFinalizer {
+		if !ownsSanitizer && !ownsLog && !ownsSnapshotFinalizer {
 			continue
+		}
+		if ownsSanitizer {
+			if _, ok := binding.Plugin.(base.LogSnapshotSanitizerPlugin); !ok {
+				return LogExecutor{}, fmt.Errorf(
+					"factory %q declares log sanitizer ownership without callback (resource=%s/%s)",
+					binding.factoryName,
+					binding.Provenance.Kind,
+					binding.Provenance.ID,
+				)
+			}
 		}
 		if ownsLog {
 			if _, ok := binding.Plugin.(base.LogPhasePlugin); !ok {
@@ -350,6 +361,42 @@ func (e LogExecutor) runComposite(
 		}
 		return b.Plugin.GetPriority() - a.Plugin.GetPriority()
 	})
+	selectedSanitizers := make([]bool, len(bindings))
+	preSanitizedSnapshot := base.CloneLogSnapshotForPolicy(snapshot, base.LogCapturePolicy{
+		RequestBodyBytes:  base.MAX_REQ_BODY,
+		ResponseBodyBytes: base.MAX_RESP_BODY,
+	})
+	for index, binding := range bindings {
+		if binding.Plugin == nil {
+			continue
+		}
+		_, ok := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
+		if !ok {
+			continue
+		}
+		selectedSanitizers[index] = true
+		selector, ok := binding.Plugin.(base.LogSnapshotSanitizerSelectorPlugin)
+		if !ok {
+			continue
+		}
+		if err := runLogCallback(func() error {
+			selectedSanitizers[index] = selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("log sanitizer selector %q: %w", binding.Plugin.GetName(), err)
+		}
+	}
+	for index, binding := range bindings {
+		if !selectedSanitizers[index] {
+			continue
+		}
+		callback := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
+		if err := runLogCallback(func() error {
+			return callback.SanitizeLogSnapshot(&snapshot)
+		}); err != nil {
+			return fmt.Errorf("log sanitizer %q: %w", binding.Plugin.GetName(), err)
+		}
+	}
 	for _, binding := range bindings {
 		if binding.Plugin == nil {
 			continue

@@ -60,8 +60,18 @@ docker run --detach --name "$upstream" --network "$network" --network-alias apis
     alpine:3.24.1 sh -c \
     'mkdir -p /www && printf "%s" "apisix-container-smoke" >/www/index.html && exec httpd -f -p 8081 -h /www' \
     >/dev/null
-upstream_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$upstream")
+upstream_deadline=$((SECONDS + 30))
+upstream_ip=""
+while (( SECONDS < upstream_deadline )); do
+    upstream_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$upstream")
+    if [[ -n "$upstream_ip" ]]; then
+        break
+    fi
+    sleep 1
+done
 if [[ -z "$upstream_ip" ]]; then
+    docker inspect --format '{{json .State}} {{json .NetworkSettings.Networks}}' "$upstream" >&2
+    docker logs "$upstream" >&2
     printf 'upstream container has no network address\n' >&2
     exit 1
 fi

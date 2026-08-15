@@ -1,6 +1,7 @@
 package base
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ func TestReadRequestBodyLimited(t *testing.T) {
 			body:    "123456",
 			maxSize: 5,
 			want:    "123456",
-			errText: "graphql request body exceeds maximum size 5",
+			errText: "body exceeds maximum size 5",
 		},
 		{name: "empty body", body: "", maxSize: 5},
 	}
@@ -36,6 +37,9 @@ func TestReadRequestBodyLimited(t *testing.T) {
 			if tt.errText != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.errText) {
 					t.Fatalf("ReadRequestBodyLimited() error = %v, want substring %q", err, tt.errText)
+				}
+				if !IsBodyTooLarge(err) {
+					t.Fatalf("ReadRequestBodyLimited() error = %v, want typed size error", err)
 				}
 			} else if err != nil {
 				t.Fatalf("ReadRequestBodyLimited() error = %v", err)
@@ -54,6 +58,28 @@ func TestReadRequestBodyLimited(t *testing.T) {
 		})
 	}
 }
+
+func TestReadBodyLimitedContracts(t *testing.T) {
+	body, err := ReadResponseBodyLimited(strings.NewReader("12345"), 5)
+	if err != nil || string(body) != "12345" {
+		t.Fatalf("exact-limit read = %q, %v", body, err)
+	}
+
+	body, err = ReadResponseBodyLimited(strings.NewReader("123456789"), 5)
+	if !IsBodyTooLarge(err) || string(body) != "123456" {
+		t.Fatalf("limit+1 read = %q, %v; want six retained bytes and typed size error", body, err)
+	}
+
+	readErr := errors.New("read failed")
+	body, err = ReadResponseBodyLimited(io.MultiReader(strings.NewReader("12"), errorReader{err: readErr}), 5)
+	if !errors.Is(err, readErr) || string(body) != "12" {
+		t.Fatalf("failed read = %q, %v; want partial bytes and source error", body, err)
+	}
+}
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestReadRequestBodyLimitedNilAndNoBody(t *testing.T) {
 	for name, req := range map[string]*http.Request{

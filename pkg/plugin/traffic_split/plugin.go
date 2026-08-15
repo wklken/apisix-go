@@ -1,11 +1,9 @@
 package traffic_split
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -112,13 +110,19 @@ const schema = `
           }
         }
       }
+    },
+    "max_body_size": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1048576
     }
   }
 }
 `
 
 type Config struct {
-	Rules []Rule `json:"rules,omitempty"`
+	Rules       []Rule `json:"rules,omitempty"`
+	MaxBodySize int    `json:"max_body_size,omitempty"`
 }
 
 type Rule struct {
@@ -309,6 +313,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.MaxBodySize <= 0 {
+		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
+	}
 	p.rules = p.rules[:0]
 	for ruleIndex, rule := range p.config.Rules {
 		targetWeights := map[string]int{}
@@ -423,7 +430,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		override, err := p.nextOverride(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			message := err.Error()
+			if base.IsBodyTooLarge(err) {
+				status = http.StatusRequestEntityTooLarge
+				message = http.StatusText(status)
+			}
+			http.Error(w, message, status)
 			return
 		}
 		if override == nil {
@@ -441,7 +454,11 @@ func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 		if rule.err != nil {
 			return nil, rule.err
 		}
-		if !matchRule(r, rule.exprs) {
+		matched, err := p.matchRule(r, rule.exprs)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
 			continue
 		}
 		if rule.balancer == nil {
@@ -732,46 +749,52 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 	return upstream
 }
 
-func matchRule(r *http.Request, exprs []*pluginexpr.Expression) bool {
+func (p *Plugin) matchRule(r *http.Request, exprs []*pluginexpr.Expression) (bool, error) {
 	if len(exprs) == 0 {
-		return true
+		return true, nil
 	}
 	var postArgs url.Values
+	var postArgsErr error
 	postArgsLoaded := false
 	for _, expr := range exprs {
 		if expr.Eval(func(name string) any {
 			name = strings.TrimPrefix(name, "$")
 			if strings.HasPrefix(name, "post_arg_") {
 				if !postArgsLoaded {
-					postArgs = requestPostArgs(r)
+					postArgs, postArgsErr = p.requestPostArgs(r)
 					postArgsLoaded = true
+				}
+				if postArgsErr != nil {
+					return ""
 				}
 				return postArgs.Get(strings.TrimPrefix(name, "post_arg_"))
 			}
 			return pluginexpr.RequestValue(r, name)
 		}) {
-			return true
+			return true, postArgsErr
+		}
+		if postArgsErr != nil {
+			return false, postArgsErr
 		}
 	}
-	return false
+	return false, nil
 }
 
-func requestPostArgs(r *http.Request) url.Values {
+func (p *Plugin) requestPostArgs(r *http.Request) (url.Values, error) {
 	if r.Body == nil || r.Body == http.NoBody {
-		return nil
+		return nil, nil
 	}
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/x-www-form-urlencoded" {
-		return nil
+		return nil, nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return values
+	return values, nil
 }

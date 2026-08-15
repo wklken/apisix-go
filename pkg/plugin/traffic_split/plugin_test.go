@@ -485,6 +485,24 @@ func TestHandlerMatchesFormPostArgumentWithoutConsumingBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsOversizedFormPostArgument(t *testing.T) {
+	p := newTestPlugin(t, Config{MaxBodySize: 5, Rules: []Rule{{
+		Match: []Match{{Vars: []any{[]any{"post_arg_id", "==", "1"}}}},
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{Nodes: []Node{{Host: "form.example.com", Port: 80, Weight: 1}}},
+		}},
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/form", strings.NewReader("id=1&name=jack"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	called := false
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(response, req)
+
+	if response.Code != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("status=%d called=%t, want 413 before downstream", response.Code, called)
+	}
+}
+
 func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rules: []Rule{

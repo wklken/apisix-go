@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
@@ -56,6 +57,11 @@ const schema = `
       "minimum": 0.00001,
       "maximum": 1,
       "default": 1
+    },
+    "max_body_size": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1048576
     }
   },
   "required": ["host"]
@@ -67,6 +73,7 @@ type Config struct {
 	Path           string  `json:"path,omitempty"`
 	PathConcatMode string  `json:"path_concat_mode,omitempty"`
 	SampleRatio    float64 `json:"sample_ratio,omitempty"`
+	MaxBodySize    int     `json:"max_body_size,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -83,6 +90,9 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.SampleRatio == 0 {
 		p.config.SampleRatio = 1
+	}
+	if p.config.MaxBodySize <= 0 {
+		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
 	}
 	p.client = &http.Client{
 		Timeout:   5 * time.Second,
@@ -116,34 +126,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) mirrorFinalizedRequest(r *http.Request) {
+func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 	if !p.shouldMirror() {
-		return
+		return nil
 	}
-	body, err := readAndRestoreBody(r)
+	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
 	if err != nil {
-		logger.Errorf("proxy-mirror read request body: %s", err)
-		return
+		return fmt.Errorf("proxy-mirror read request body: %w", err)
 	}
 	mirrorReq, err := p.buildMirrorRequest(r, body)
 	if err != nil {
 		logger.Errorf("proxy-mirror build request to %s: %s", p.config.Host, err)
-		return
+		return nil
 	}
 	go p.sendMirror(mirrorReq)
-}
-
-func readAndRestoreBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
-		return nil, nil
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, nil
+	return nil
 }
 
 func (p *Plugin) shouldMirror() bool {

@@ -201,6 +201,19 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 	}
 }
 
+func TestMessageEndpointRejectsOversizedBody(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: "cat", MaxBodySize: 5})
+	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=missing", strings.NewReader("123456"))
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", response.Code)
+	}
+}
+
 func TestSSEEmitsPeriodicPingRequests(t *testing.T) {
 	p := newTestPlugin(t, Config{Command: "cat"})
 	p.pingInterval = 10 * time.Millisecond

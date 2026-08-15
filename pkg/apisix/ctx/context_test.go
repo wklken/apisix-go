@@ -187,19 +187,49 @@ func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {
 func TestBeforeProxyHooksRunInRegistrationOrder(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
 	var calls []string
-	req = WithBeforeProxyHook(req, func(r *http.Request) {
+	req = WithBeforeProxyHook(req, func(r *http.Request) error {
 		calls = append(calls, "first:"+r.URL.Path)
+		return nil
 	})
-	req = WithBeforeProxyHook(req, func(r *http.Request) {
+	req = WithBeforeProxyHook(req, func(r *http.Request) error {
 		calls = append(calls, "second:"+r.URL.Path)
+		return nil
 	})
 	req.URL.Path = "/final"
 
-	RunBeforeProxyHooks(req)
-	RunBeforeProxyHooks(req)
+	if err := RunBeforeProxyHooks(req); err != nil {
+		t.Fatalf("RunBeforeProxyHooks() error = %v", err)
+	}
+	if err := RunBeforeProxyHooks(req); err != nil {
+		t.Fatalf("repeat RunBeforeProxyHooks() error = %v", err)
+	}
 
 	if got, want := calls, []string{"first:/final", "second:/final"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hook calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestBeforeProxyHooksStopAtFirstErrorAndRepeatIt(t *testing.T) {
+	stopErr := errors.New("stop")
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	calls := 0
+	req = WithBeforeProxyHook(req, func(*http.Request) error {
+		calls++
+		return stopErr
+	})
+	req = WithBeforeProxyHook(req, func(*http.Request) error {
+		calls++
+		return nil
+	})
+
+	if err := RunBeforeProxyHooks(req); !errors.Is(err, stopErr) {
+		t.Fatalf("RunBeforeProxyHooks() error = %v, want stop", err)
+	}
+	if err := RunBeforeProxyHooks(req); !errors.Is(err, stopErr) {
+		t.Fatalf("repeat error = %v, want stop", err)
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
 	}
 }
 

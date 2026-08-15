@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -84,7 +85,9 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read upstream body: %v", err)
@@ -117,6 +120,28 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestBeforeProxyRejectsOversizedMirrorBodyBeforePrimaryUpstream(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com", MaxBodySize: 5})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/original", strings.NewReader("123456789"))
+	var hookErr error
+	var forwarded *http.Request
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		forwarded = r
+		hookErr = apisixctx.RunBeforeProxyHooks(r)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	if !base.IsBodyTooLarge(hookErr) {
+		t.Fatalf("before-proxy error = %v, want body-too-large", hookErr)
+	}
+	restored, err := io.ReadAll(forwarded.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if got := string(restored); got != "123456" {
+		t.Fatalf("retained body = %q, want limit+1 bytes", got)
+	}
+}
+
 func TestHandlerMirrorsFinalizedRequestAfterLowerPriorityPlugins(t *testing.T) {
 	mirror, seen := newMirrorServer(t)
 	defer mirror.Close()
@@ -127,7 +152,9 @@ func TestHandlerMirrorsFinalizedRequestAfterLowerPriorityPlugins(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "/final"
 		r.Body = io.NopCloser(strings.NewReader("after"))
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
@@ -158,7 +185,9 @@ func TestHandlerRegistersBeforeProxyHookWithoutExecutingIt(t *testing.T) {
 		t.Fatal("next handler did not receive the request carrying the hook")
 	}
 
-	apisixctx.RunBeforeProxyHooks(forwarded)
+	if err := apisixctx.RunBeforeProxyHooks(forwarded); err != nil {
+		t.Fatalf("run before-proxy hook: %v", err)
+	}
 	if body.reads == 0 {
 		t.Fatal("registered before-proxy hook did not read the request body")
 	}
@@ -213,7 +242,9 @@ func TestHandlerMirrorsUnaryGRPCOverHTTP2(t *testing.T) {
 	req.Header.Set("Content-Type", "application/grpc")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read main gRPC body: %v", err)
@@ -327,7 +358,10 @@ func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RunBeforeProxyHooks(r)
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 	return rr

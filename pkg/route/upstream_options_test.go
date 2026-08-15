@@ -32,6 +32,49 @@ func TestResolveUpstreamTimeoutsKeepsExistingDefaults(t *testing.T) {
 	}
 }
 
+func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
+	for _, test := range []struct {
+		scheme string
+		want   bool
+	}{
+		{scheme: "grpc", want: true},
+		{scheme: "grpcs", want: false},
+		{scheme: "http", want: false},
+		{scheme: "https", want: false},
+	} {
+		t.Run(test.scheme, func(t *testing.T) {
+			config, err := buildClusterConfigWithSSLResolver(
+				resource.Route{},
+				resource.Upstream{Scheme: test.scheme},
+				map[string]int{"http://127.0.0.1:8080": 1},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("buildClusterConfigWithSSLResolver() error = %v", err)
+			}
+			if config.HTTP2Cleartext != test.want {
+				t.Fatalf("HTTP2Cleartext = %t, want %t", config.HTTP2Cleartext, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildReverseHandlerUsesClusterForDynamicGRPCSTarget(t *testing.T) {
+	registry := proxy.NewClusterRegistry(proxy.NopClusterObserver{})
+	t.Cleanup(registry.Close)
+	builder := NewBuilderWithClusterRegistry(nil, "", registry)
+	t.Cleanup(builder.Stop)
+
+	if _, err := builder.buildReverseHandler(resource.Route{
+		Upstream: resource.Upstream{Scheme: "grpcs"},
+	}, resource.Service{}); err != nil {
+		t.Fatalf("buildReverseHandler() error = %v", err)
+	}
+	if got := registry.Len(); got != 1 {
+		t.Fatalf("cluster registry size = %d, want 1 for dynamic grpcs target", got)
+	}
+}
+
 func TestUpstreamTLSInsecureSkipVerify(t *testing.T) {
 	tests := []struct {
 		name     string

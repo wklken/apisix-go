@@ -3,6 +3,7 @@ package grpc_transcode
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	stdjson "encoding/json"
@@ -11,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
+	"golang.org/x/net/http2"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
@@ -122,9 +126,10 @@ func TestRequestAndBufferedResponsePhasesTranscodeUnaryCall(t *testing.T) {
 		t.Fatalf("upstream path = %q", result.Request.URL.Path)
 	}
 	state := &base.ResponseState{
-		Status: http.StatusOK,
-		Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}},
-		Body:   frameGRPCMessageForTest(t, encodeEchoMessage(t, "Hello")),
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/grpc"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}},
+		Body:    frameGRPCMessageForTest(t, encodeEchoMessage(t, "Hello")),
 	}
 	if err := p.RunBufferedBodyFilter(result.Request, state); err != nil {
 		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
@@ -133,28 +138,104 @@ func TestRequestAndBufferedResponsePhasesTranscodeUnaryCall(t *testing.T) {
 		string(state.Body) != `{"msg":"Hello"}` {
 		t.Fatalf("transcoded state = status:%d header:%v body:%q", state.Status, state.Header, state.Body)
 	}
+	if state.Trailer.Get("Grpc-Status") != "0" {
+		t.Fatalf("transcoded trailers = %v", state.Trailer)
+	}
+	if _, declared := state.Trailer["Grpc-Message"]; !declared {
+		t.Fatalf("transcoded trailers = %v, want declared grpc message", state.Trailer)
+	}
 }
 
-func TestHandlerRejectsStreamingMethodDescriptor(t *testing.T) {
-	restore := stubProtoContent(t, "streaming-proto", streamingDescriptorContent(t))
+func TestBufferedResponsePreservesNonzeroStatusBodyWhenStatusBodyDisabled(t *testing.T) {
+	restore := stubProtoContent(t, "phase-error-proto", testDescriptorContent(t))
 	defer restore()
 
 	p := newTestPlugin(t, Config{
-		ProtoID: "streaming-proto",
-		Service: "echo.EchoService",
-		Method:  "Echo",
+		ProtoID: "phase-error-proto", Service: "echo.EchoService", Method: "Echo",
+		ShowStatusInBody: false,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil)
-	res := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler was called for an unsupported streaming method")
-	})).ServeHTTP(res, req)
-
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503: %s", res.Code, res.Body.String())
+	result := p.RunRequestPhase(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil),
+	)
+	state := &base.ResponseState{
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/grpc"}},
+		Trailer: http.Header{"Grpc-Status": {"7"}, "Grpc-Message": {"permission%20denied"}},
 	}
-	if !strings.Contains(res.Body.String(), "streaming") {
-		t.Fatalf("response body = %q, want explicit streaming rejection", res.Body.String())
+	if err := p.RunBufferedBodyFilter(result.Request, state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusForbidden ||
+		string(state.Body) != `{"error":{"code":7,"message":"permission denied"}}` {
+		t.Fatalf("transcoded error = status:%d body:%q", state.Status, state.Body)
+	}
+	if state.Trailer.Get("Grpc-Status") != "7" {
+		t.Fatalf("transcoded error trailers = %v", state.Trailer)
+	}
+}
+
+func TestBufferedResponseMapsMalformedUnaryFrameToBadGateway(t *testing.T) {
+	restore := stubProtoContent(t, "phase-malformed-proto", testDescriptorContent(t))
+	defer restore()
+
+	p := newTestPlugin(t, Config{
+		ProtoID: "phase-malformed-proto", Service: "echo.EchoService", Method: "Echo",
+	})
+	result := p.RunRequestPhase(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil),
+	)
+	state := &base.ResponseState{
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/grpc"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}},
+		Body:    []byte{0, 0, 0, 0, 4, 1},
+	}
+	if err := p.RunBufferedBodyFilter(result.Request, state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusBadGateway || string(state.Body) != `{"message":"Bad Gateway"}` {
+		t.Fatalf("malformed response = status:%d body:%q", state.Status, state.Body)
+	}
+}
+
+func TestPostInitRejectsStreamingMethodDescriptor(t *testing.T) {
+	restore := stubProtoContent(t, "streaming-build-proto", streamingDescriptorContent(t))
+	defer restore()
+
+	p := &Plugin{config: Config{
+		ProtoID: "streaming-build-proto", Service: "echo.EchoService", Method: "Echo",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "streaming methods are unsupported") {
+		t.Fatalf("PostInit() error = %v, want streaming rejection", err)
+	}
+}
+
+func TestHandlerDeclaresAndForwardsSuccessfulGRPCTrailers(t *testing.T) {
+	restore := stubProtoContent(t, "trailer-proto", testDescriptorContent(t))
+	defer restore()
+
+	p := newTestPlugin(t, Config{
+		ProtoID: "trailer-proto", Service: "echo.EchoService", Method: "Echo",
+		PBOption: []string{"no_default_values"},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil)
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Add("Trailer", "Grpc-Status, Grpc-Message")
+		_, _ = w.Write(frameGRPCMessageForTest(t, encodeEchoMessage(t, "Hello")))
+		w.Header().Set("Grpc-Status", "0")
+		w.Header().Set("Grpc-Message", "complete")
+	})).ServeHTTP(response, request)
+
+	result := response.Result()
+	if result.Trailer.Get("Grpc-Status") != "0" || result.Trailer.Get("Grpc-Message") != "complete" {
+		t.Fatalf("response trailers = %v", result.Trailer)
 	}
 }
 
@@ -494,6 +575,80 @@ func TestHandlerTranscodesThroughInProcessGRPCServer(t *testing.T) {
 	}
 }
 
+func TestHandlerTranscodesRealGRPCTrailers(t *testing.T) {
+	detailed, err := status.New(codes.PermissionDenied, "denied").WithDetails(
+		&errdetails.ErrorInfo{Reason: "AUTH_REQUIRED"},
+	)
+	if err != nil {
+		t.Fatalf("WithDetails() error = %v", err)
+	}
+	for _, test := range []struct {
+		name       string
+		serverErr  error
+		showStatus bool
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "success", wantStatus: http.StatusOK, wantBody: `{"msg":"echoed"}`},
+		{
+			name: "nonzero without details body", serverErr: status.Error(codes.PermissionDenied, "denied"),
+			wantStatus: http.StatusForbidden, wantBody: `{"error":{"code":7,"message":"denied"}}`,
+		},
+		{
+			name: "nonzero with details", serverErr: detailed.Err(), showStatus: true,
+			wantStatus: http.StatusForbidden, wantBody: "AUTH_REQUIRED",
+		},
+		{
+			name: "unknown status", serverErr: status.Error(codes.Code(99), "unknown"),
+			wantStatus: 599, wantBody: `{"error":{"code":99,"message":"unknown"}}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restore := stubProtoContent(t, "real-trailer-proto", testDescriptorContent(t))
+			defer restore()
+			address := startEchoGRPCServer(t, test.serverErr)
+			target, parseErr := url.Parse("http://" + address)
+			if parseErr != nil {
+				t.Fatalf("url.Parse() error = %v", parseErr)
+			}
+			upstream := httputil.NewSingleHostReverseProxy(target)
+			upstream.Transport = &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, address)
+				},
+			}
+
+			p := newTestPlugin(t, Config{
+				ProtoID: "real-trailer-proto", Service: "echo.EchoService", Method: "Echo",
+				PBOption: []string{"no_default_values"}, ShowStatusInBody: test.showStatus,
+			})
+			response := httptest.NewRecorder()
+			p.Handler(upstream).ServeHTTP(
+				response,
+				httptest.NewRequest(http.MethodGet, "/echo?msg=hello", nil),
+			)
+			result := response.Result()
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%q", response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.showStatus {
+				if !strings.Contains(response.Body.String(), test.wantBody) {
+					t.Fatalf("body = %q, want substring %q", response.Body.String(), test.wantBody)
+				}
+			} else if response.Body.String() != test.wantBody {
+				t.Fatalf("body = %q, want %q", response.Body.String(), test.wantBody)
+			}
+			if result.Trailer.Get("Grpc-Status") == "" {
+				t.Fatalf("response trailers = %v, want grpc status", result.Trailer)
+			}
+			if _, declared := result.Trailer["Grpc-Message"]; !declared {
+				t.Fatalf("response trailers = %v, want declared grpc message", result.Trailer)
+			}
+		})
+	}
+}
+
 func TestHandlerSupportsPlainProtoSourceAndImports(t *testing.T) {
 	restore := stubProtoSources(t, map[string]string{
 		"echo-source": `syntax = "proto3";
@@ -547,11 +702,12 @@ service EchoService {
 	})
 	defer restore()
 
-	p := newTestPlugin(t, Config{
+	p := &Plugin{config: Config{
 		ProtoID: "echo-source",
 		Service: "echo.EchoService",
 		Method:  "Echo",
-	})
+	}}
+	_ = p.Init()
 	if _, err := p.loadBinding(); err == nil {
 		t.Fatal("loadBinding() error = nil, want missing import error")
 	}
@@ -854,8 +1010,8 @@ func TestHandlerMapsGRPCStatusToHTTPStatus(t *testing.T) {
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", res.Code)
 	}
-	if got := res.Body.String(); got != "" {
-		t.Fatalf("response body = %q, want empty error body by default", got)
+	if got := res.Body.String(); got != `{"error":{"code":7,"message":"permission denied"}}` {
+		t.Fatalf("response body = %q, want normalized error status", got)
 	}
 }
 
@@ -1013,48 +1169,33 @@ func TestHandlerRejectsMalformedGRPCStatusDetails(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsMissingProtoResource(t *testing.T) {
+func TestPostInitRejectsMissingProtoResource(t *testing.T) {
 	restore := stubProtoContent(t, "other-proto", testDescriptorContent(t))
 	defer restore()
 
-	p := newTestPlugin(t, Config{
+	p := &Plugin{config: Config{
 		ProtoID: "echo-proto",
 		Service: "echo.EchoService",
 		Method:  "Echo",
-	})
-	req := httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil)
-	res := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})).ServeHTTP(res, req)
-
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", res.Code)
+	}}
+	_ = p.Init()
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want missing proto error")
 	}
 }
 
-func TestHandlerRejectsInvalidDescriptorResource(t *testing.T) {
+func TestPostInitRejectsInvalidDescriptorResource(t *testing.T) {
 	restore := stubProtoContent(t, "bad-proto", "not-a-file-descriptor-set")
 	defer restore()
 
-	p := newTestPlugin(t, Config{
+	p := &Plugin{config: Config{
 		ProtoID: "bad-proto",
 		Service: "echo.EchoService",
 		Method:  "Echo",
-	})
-	req := httptest.NewRequest(http.MethodGet, "/echo?msg=Hello", nil)
-	res := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})).ServeHTTP(res, req)
-
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", res.Code)
-	}
-	if !strings.Contains(res.Body.String(), "FileDescriptorSet") {
-		t.Fatalf("error body = %q, want descriptor-set error", res.Body.String())
+	}}
+	_ = p.Init()
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "FileDescriptorSet") {
+		t.Fatalf("PostInit() error = %v, want descriptor-set error", err)
 	}
 }
 

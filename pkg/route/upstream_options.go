@@ -206,6 +206,7 @@ func buildClusterConfigWithTransport(
 		Retries:           httpRetryCount(upstream),
 		RetriesConfigured: upstream.RetriesConfigured(),
 		MaxInFlight:       maxInFlight,
+		HTTP2Cleartext:    strings.EqualFold(upstream.Scheme, "grpc"),
 	}
 	if config.Name == "" {
 		key, err := config.Key()

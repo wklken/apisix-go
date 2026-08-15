@@ -200,6 +200,9 @@ func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState
 	if err != nil || !ok {
 		return err
 	}
+	if len(state.Trailer) > 0 {
+		return nil
+	}
 	if p.hasTruthyValue(r, p.config.NoCache) {
 		return nil
 	}

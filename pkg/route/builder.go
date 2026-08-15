@@ -44,7 +44,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
-	"golang.org/x/net/http2"
 )
 
 const (
@@ -2659,14 +2658,13 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	// Never construct an empty round-robin picker: without nodes, target
 	// selection reports a classified director error unless traffic-split
 	// supplies an override for the request.
-	timeouts := resolveUpstreamTimeouts(r.Timeout, upstream.Timeout)
 	transportOption, err := buildTransportOption(r, upstream)
 	if err != nil {
 		return nil, routeProtocolTerminals{}, err
 	}
 	var lb pxy.LoadBalancer
 	var transport http.RoundTripper
-	if len(servers) > 0 {
+	if len(servers) > 0 || strings.EqualFold(scheme, "grpc") || strings.EqualFold(scheme, "grpcs") {
 		if b.clusterRegistry == nil {
 			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			b.ownsClusterRegistry = true
@@ -2740,16 +2738,6 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		// } else {
 		// 	req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 		// }
-	}
-
-	if strings.EqualFold(scheme, "grpc") {
-		transport = &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
-				return (&net.Dialer{Timeout: timeouts.connect}).DialContext(ctx, network, address)
-			},
-		}
-		transport = pxy.NewRetryTransport(transport)
 	}
 
 	modifyResponse := newModifyResponse()

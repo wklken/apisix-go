@@ -188,6 +188,9 @@ func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState
 	if err != nil || !ok {
 		return err
 	}
+	if len(state.Trailer) > 0 {
+		return nil
+	}
 
 	canonical := base.CloneResponseState(state)
 	removeDerivedGraphQLCacheHeaders(canonical.Header)

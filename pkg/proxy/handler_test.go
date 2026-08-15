@@ -124,6 +124,32 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 	}
 }
 
+func TestRetryTransportRetriesReplayableGRPCPost(t *testing.T) {
+	attempts := 0
+	transport := NewRetryTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("connection reset")
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Request: request}, nil
+	}))
+	request, err := http.NewRequest(http.MethodPost, "http://upstream.example/echo", strings.NewReader("frame"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request = WithRetries(request, 1, func(*http.Request) bool { return true })
+
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	_ = response.Body.Close()
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestRetryTransportDoesNotRetryUnsafePOST(t *testing.T) {
 	attempts := 0
 	transport := NewRetryTransport(roundTripperFunc(func(*http.Request) (*http.Response, error) {
@@ -157,6 +183,10 @@ func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
 	nonReplayable := func() *http.Request {
 		request := httptest.NewRequest(http.MethodPut, "http://upstream.test/", strings.NewReader("payload"))
 		request.GetBody = nil
+		return request
+	}
+	withContentType := func(request *http.Request, contentType string) *http.Request {
+		request.Header.Set("Content-Type", contentType)
 		return request
 	}
 	tests := []struct {
@@ -194,6 +224,16 @@ func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
 			name:    "POST with Idempotency-Key",
 			request: keyed(replayableRequest(http.MethodPost), "Idempotency-Key"),
 			want:    true,
+		},
+		{
+			name:    "POST with unary gRPC content type",
+			request: withContentType(replayableRequest(http.MethodPost), "application/grpc+proto; charset=utf-8"),
+			want:    true,
+		},
+		{
+			name:    "POST with gRPC-Web content type still requires idempotency key",
+			request: withContentType(replayableRequest(http.MethodPost), "application/grpc-web+proto"),
+			want:    false,
 		},
 		{
 			name:    "PATCH with X-Idempotency-Key",

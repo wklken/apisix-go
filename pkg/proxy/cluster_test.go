@@ -1,13 +1,19 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 func testClusterConfig() ClusterConfig {
@@ -64,6 +70,24 @@ func TestClusterConfigKeyChangesWhenTransportChanges(t *testing.T) {
 	}
 	if baseKey == changedKey {
 		t.Fatal("changing response header timeout did not change the cluster key")
+	}
+}
+
+func TestClusterConfigKeyIncludesCleartextHTTP2Mode(t *testing.T) {
+	regular := testClusterConfig()
+	h2c := testClusterConfig()
+	h2c.HTTP2Cleartext = true
+
+	regularKey, err := regular.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2cKey, err := h2c.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regularKey == h2cKey {
+		t.Fatal("cleartext HTTP/2 mode did not change the cluster key")
 	}
 }
 
@@ -197,4 +221,172 @@ func TestClusterCloseIsIdempotent(t *testing.T) {
 	if !cluster.Closed() {
 		t.Fatal("cluster did not report closed")
 	}
+}
+
+func TestCleartextHTTP2ClusterPreservesAdmissionProgressTimeoutAndClose(t *testing.T) {
+	hold := make(chan struct{})
+	address := startClusterH2CServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/headers" {
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		switch r.URL.Path {
+		case "/hold":
+			<-hold
+			_, _ = io.WriteString(w, "done")
+		case "/stall":
+			<-r.Context().Done()
+		default:
+			_, _ = io.WriteString(w, "ok")
+		}
+	}))
+
+	config := testClusterConfig()
+	config.Targets = map[string]int{"http://" + address: 1}
+	config.HTTP2Cleartext = true
+	config.ReadTimeout = 25 * time.Millisecond
+	config.Transport = (&TransportOptionBuilder{}).
+		WithDialTimeout(time.Second).
+		WithResponseHeaderTimeout(25 * time.Millisecond).
+		Build()
+	cluster, err := newCluster(config, NopClusterObserver{})
+	if err != nil {
+		t.Fatalf("newCluster() error = %v", err)
+	}
+	t.Cleanup(cluster.Close)
+
+	first, err := cluster.RoundTripper().RoundTrip(
+		httptest.NewRequest(http.MethodGet, "http://"+address+"/hold", nil),
+	)
+	if err != nil {
+		t.Fatalf("first h2c RoundTrip() error = %v", err)
+	}
+	_, err = cluster.RoundTripper().RoundTrip(
+		httptest.NewRequest(http.MethodGet, "http://"+address+"/hold", nil),
+	)
+	if !errors.Is(err, ErrClusterOverloaded) {
+		t.Fatalf("second h2c RoundTrip() error = %v, want ErrClusterOverloaded", err)
+	}
+	close(hold)
+	_, _ = io.ReadAll(first.Body)
+	_ = first.Body.Close()
+
+	stalled, err := cluster.RoundTripper().RoundTrip(
+		httptest.NewRequest(http.MethodGet, "http://"+address+"/stall", nil),
+	)
+	if err != nil {
+		t.Fatalf("stalled h2c RoundTrip() error = %v", err)
+	}
+	_, err = stalled.Body.Read(make([]byte, 1))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled h2c body read error = %v, want deadline exceeded", err)
+	}
+	_ = stalled.Body.Close()
+
+	_, err = cluster.RoundTripper().RoundTrip(
+		httptest.NewRequest(http.MethodGet, "http://"+address+"/headers", nil),
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled h2c headers error = %v, want deadline exceeded", err)
+	}
+
+	cluster.Close()
+	if !cluster.Closed() {
+		t.Fatal("h2c cluster did not close its transport owner")
+	}
+}
+
+type recordingRetryObserver struct {
+	NopClusterObserver
+	mu      sync.Mutex
+	results []string
+}
+
+func (observer *recordingRetryObserver) ObserveRetry(_ string, result string) {
+	observer.mu.Lock()
+	observer.results = append(observer.results, result)
+	observer.mu.Unlock()
+}
+
+func (observer *recordingRetryObserver) retryResults() []string {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	return append([]string(nil), observer.results...)
+}
+
+func TestCleartextHTTP2ClusterRetriesReplayableGRPCAndObservesOutcome(t *testing.T) {
+	address := startClusterH2CServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	closedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen closed target: %v", err)
+	}
+	closedAddress := closedListener.Addr().String()
+	_ = closedListener.Close()
+
+	observer := &recordingRetryObserver{}
+	config := testClusterConfig()
+	config.HTTP2Cleartext = true
+	config.Retries = 1
+	cluster, err := newCluster(config, observer)
+	if err != nil {
+		t.Fatalf("newCluster() error = %v", err)
+	}
+	t.Cleanup(cluster.Close)
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"http://"+closedAddress+"/echo",
+		strings.NewReader("frame"),
+	)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/grpc")
+	request = WithRetries(request, 1, func(retry *http.Request) bool {
+		retry.URL.Host = address
+		return true
+	})
+	response, err := cluster.RoundTripper().RoundTrip(request)
+	if err != nil {
+		t.Fatalf("h2c retry RoundTrip() error = %v", err)
+	}
+	_ = response.Body.Close()
+	if got := observer.retryResults(); len(got) != 1 || got[0] != "success" {
+		t.Fatalf("retry observer results = %v, want [success]", got)
+	}
+}
+
+func startClusterH2CServer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen h2c: %v", err)
+	}
+	var connectionsMu sync.Mutex
+	connections := make([]net.Conn, 0, 1)
+	t.Cleanup(func() {
+		_ = listener.Close()
+		connectionsMu.Lock()
+		defer connectionsMu.Unlock()
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	})
+	go func() {
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			connectionsMu.Lock()
+			connections = append(connections, connection)
+			connectionsMu.Unlock()
+			go (&http2.Server{}).ServeConn(connection, &http2.ServeConnOpts{Handler: handler})
+		}
+	}()
+	return listener.Addr().String()
 }

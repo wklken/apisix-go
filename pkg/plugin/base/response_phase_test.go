@@ -6,23 +6,64 @@ import (
 )
 
 func TestCloneResponseStateDeepCopiesRepresentation(t *testing.T) {
-	original := ResponseState{Status: 201, Header: http.Header{"X-Test": {"one"}}, Body: []byte("body")}
+	original := ResponseState{
+		Status:  201,
+		Header:  http.Header{"X-Test": {"one"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}},
+		Body:    []byte("body"),
+	}
 	clone := CloneResponseState(original)
 	clone.Header.Set("X-Test", "two")
+	clone.Trailer.Set("Grpc-Status", "7")
 	clone.Body[0] = 'B'
-	if original.Header.Get("X-Test") != "one" || string(original.Body) != "body" {
+	if original.Header.Get("X-Test") != "one" || original.Trailer.Get("Grpc-Status") != "0" ||
+		string(original.Body) != "body" {
 		t.Fatalf("clone mutated original: %#v", original)
+	}
+}
+
+func TestExtractResponseTrailersPreservesDeclarationsAndPrefixedValues(t *testing.T) {
+	header := http.Header{
+		"Trailer":                     {"Grpc-Status, Grpc-Message"},
+		"Grpc-Status":                 {"0"},
+		http.TrailerPrefix + "X-Late": {"value"},
+		"X-Response":                  {"kept"},
+	}
+
+	trailer := ExtractResponseTrailers(header)
+	if got := trailer.Get("Grpc-Status"); got != "0" {
+		t.Fatalf("Grpc-Status = %q, want 0", got)
+	}
+	if _, ok := trailer["Grpc-Message"]; !ok {
+		t.Fatal("empty Grpc-Message declaration was lost")
+	}
+	if got := trailer.Get("X-Late"); got != "value" {
+		t.Fatalf("X-Late = %q, want value", got)
+	}
+	if header.Get("Trailer") != "" || header.Get("Grpc-Status") != "" ||
+		header.Get(http.TrailerPrefix+"X-Late") != "" {
+		t.Fatalf("trailer fields remain in response header: %#v", header)
+	}
+	if got := header.Get("X-Response"); got != "kept" {
+		t.Fatalf("response header = %q, want kept", got)
 	}
 }
 
 func TestCacheHitHolderDeepCopiesAndConsumesExactlyOnce(t *testing.T) {
 	holder := &CacheHitResponseHolder{}
-	state := CachedResponseState{Status: 200, Header: http.Header{"X-Test": {"one"}}, Body: []byte("body")}
+	state := CachedResponseState{
+		Status:  200,
+		Header:  http.Header{"X-Test": {"one"}},
+		Trailer: http.Header{"X-Trailer": {"one"}},
+		Body:    []byte("body"),
+	}
 	holder.Publish(state)
 	state.Header.Set("X-Test", "changed-after-publish")
+	state.Trailer.Set("X-Trailer", "changed-after-publish")
 	state.Body[0] = 'X'
 	got, err := holder.Consume()
-	if err != nil || got.Status != 200 || got.Header.Get("X-Test") != "one" || string(got.Body) != "body" {
+	if err != nil || got.Status != 200 || got.Header.Get("X-Test") != "one" ||
+		got.Trailer.Get("X-Trailer") != "one" || string(got.Body) != "body" {
 		t.Fatalf("Consume() = %#v, err=%v", got, err)
 	}
 	got.Header.Set("X-Test", "two")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -18,12 +19,13 @@ type BufferedResponseConfig struct {
 }
 
 // ResponseState is the canonical response representation passed between
-// response callbacks. Keep this deliberately limited to status, headers and
-// body; request/lifecycle/cache state belongs to their owning components.
+// response callbacks. Keep this deliberately limited to status, headers,
+// trailers and body; request/lifecycle/cache state belongs to their owners.
 type ResponseState struct {
-	Status int
-	Header http.Header
-	Body   []byte
+	Status  int
+	Header  http.Header
+	Trailer http.Header
+	Body    []byte
 }
 
 func CloneResponseState(state ResponseState) ResponseState {
@@ -31,8 +33,48 @@ func CloneResponseState(state ResponseState) ResponseState {
 	if state.Header != nil {
 		cloned.Header = state.Header.Clone()
 	}
+	if state.Trailer != nil {
+		cloned.Trailer = state.Trailer.Clone()
+	}
 	cloned.Body = slices.Clone(state.Body)
 	return cloned
+}
+
+// ExtractResponseTrailers removes trailer declarations and values from a
+// detached header map and returns them as a separate canonical trailer map.
+func ExtractResponseTrailers(header http.Header) http.Header {
+	if header == nil {
+		return nil
+	}
+	declared := make(map[string]struct{})
+	for _, value := range header.Values("Trailer") {
+		for name := range strings.SplitSeq(value, ",") {
+			name = http.CanonicalHeaderKey(strings.TrimSpace(name))
+			if name != "" {
+				declared[name] = struct{}{}
+			}
+		}
+	}
+	header.Del("Trailer")
+	trailer := make(http.Header)
+	for field, values := range header {
+		if !strings.HasPrefix(strings.ToLower(field), strings.ToLower(http.TrailerPrefix)) {
+			continue
+		}
+		name := http.CanonicalHeaderKey(field[len(http.TrailerPrefix):])
+		if name != "" {
+			trailer[name] = append([]string(nil), values...)
+		}
+		delete(header, field)
+	}
+	for name := range declared {
+		trailer[name] = append([]string(nil), header.Values(name)...)
+		header.Del(name)
+	}
+	if len(trailer) == 0 {
+		return nil
+	}
+	return trailer
 }
 
 type HeaderFilterPlugin interface {
@@ -55,9 +97,10 @@ type ResponseEligibility interface {
 // lookup to the response executor. It intentionally mirrors only the
 // canonical response fields.
 type CachedResponseState struct {
-	Status int
-	Header http.Header
-	Body   []byte
+	Status  int
+	Header  http.Header
+	Trailer http.Header
+	Body    []byte
 }
 
 var ErrCacheHitResponseAlreadyConsumed = errors.New("cache hit response already consumed")
@@ -130,6 +173,12 @@ func cloneCachedResponseState(state CachedResponseState) CachedResponseState {
 				return nil
 			}
 			return state.Header.Clone()
+		}(),
+		Trailer: func() http.Header {
+			if state.Trailer == nil {
+				return nil
+			}
+			return state.Trailer.Clone()
 		}(),
 		Body: slices.Clone(state.Body),
 	}

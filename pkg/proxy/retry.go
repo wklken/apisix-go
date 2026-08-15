@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
@@ -47,11 +48,20 @@ func retryRequestAllowed(request *http.Request) bool {
 		http.MethodPut, http.MethodDelete:
 		return request.Body == nil || request.Body == http.NoBody || request.GetBody != nil
 	case http.MethodPost, http.MethodPatch:
+		if request.Method == http.MethodPost && request.GetBody != nil &&
+			isGRPCContentType(request.Header.Get("Content-Type")) {
+			return true
+		}
 		keyed := request.Header.Get("Idempotency-Key") != "" || request.Header.Get("X-Idempotency-Key") != ""
 		return keyed && (request.Body == nil || request.Body == http.NoBody || request.GetBody != nil)
 	default:
 		return false
 	}
+}
+
+func isGRPCContentType(value string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+	return mediaType == "application/grpc" || strings.HasPrefix(mediaType, "application/grpc+")
 }
 
 // NewRetryTransport wraps a transport with bounded retries for connection and

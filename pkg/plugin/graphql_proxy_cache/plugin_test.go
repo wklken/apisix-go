@@ -119,6 +119,30 @@ func TestGraphQLCacheStoreIntentIsPerPluginInstanceAndConsumedOnce(t *testing.T)
 	}
 }
 
+func TestGraphQLCacheFinalStoreSkipsTrailerBearingResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/graphql",
+		strings.NewReader(`{"query":"query { viewer { id } }"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request = p.RunRequestPhase(httptest.NewRecorder(), request).Request
+	if err := p.RunFinalResponseStore(request, base.ResponseState{
+		Status:  http.StatusOK,
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Trailer: http.Header{"Grpc-Status": {"0"}},
+		Body:    []byte(`{"data":{}}`),
+	}); err != nil {
+		t.Fatalf("RunFinalResponseStore() error = %v", err)
+	}
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	if len(p.entries) != 0 {
+		t.Fatalf("cached trailer-bearing entries = %d, want 0", len(p.entries))
+	}
+}
+
 func TestGraphQLCacheStoreIntentUsesMissTimeVaryHeaderSnapshot(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
 	body := []byte(`{"query":"query { viewer { id } }"}`)

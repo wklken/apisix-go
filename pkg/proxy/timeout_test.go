@@ -2,6 +2,11 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,5 +53,20 @@ func TestProgressTimeoutBodyCloseDoesNotCancelContext(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Close() canceled the request context")
 	default:
+	}
+}
+
+func TestResponseHeaderTimeoutRejectsResponseReturnedAfterDeadline(t *testing.T) {
+	body := io.NopCloser(strings.NewReader("late"))
+	transport := newResponseHeaderTimeoutTransport(roundTripperFunc(
+		func(request *http.Request) (*http.Response, error) {
+			<-request.Context().Done()
+			return &http.Response{StatusCode: http.StatusOK, Body: body, Request: request}, nil
+		},
+	), 10*time.Millisecond)
+
+	response, err := transport.RoundTrip(httptest.NewRequest(http.MethodGet, "http://upstream.test", nil))
+	if !errors.Is(err, context.DeadlineExceeded) || response != nil {
+		t.Fatalf("RoundTrip() = response:%v error:%v, want nil/deadline exceeded", response, err)
 	}
 }

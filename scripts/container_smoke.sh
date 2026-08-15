@@ -55,6 +55,7 @@ routes:
       type: roundrobin
       nodes:
         "apisix-smoke-upstream:8081": 1
+#END
 YAML
 
 if [[ ${APISIX_SKIP_BUILD:-0} != 1 ]]; then

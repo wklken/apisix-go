@@ -111,6 +111,7 @@ jobs:
           name: security-release-evidence-${{ github.sha }}
           path: ${{ env.EVIDENCE_DIR }}
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 30
 
       - name: Reject high or critical image vulnerabilities

@@ -231,7 +231,8 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 	endpoint.Path = path.Join(endpoint.Path, "/v1", config.Prefix, key[:lastSlash])
 
 	cacheKey := id + "/" + key
-	if cached, ok := s.vaultSecretCache().Get(cacheKey); ok {
+	secretCache := s.vaultSecretCache()
+	if cached, ok := secretCache.Get(cacheKey); ok {
 		return cached, nil
 	}
 
@@ -274,7 +275,7 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("vault response does not contain string field %q", key[lastSlash+1:])
 	}
-	s.vaultSecretCache().Set(cacheKey, value, vaultSecretCacheTTL)
+	secretCache.Set(cacheKey, value, vaultSecretCacheTTL)
 	return value, nil
 }
 

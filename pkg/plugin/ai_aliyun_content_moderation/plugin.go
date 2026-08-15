@@ -27,15 +27,18 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config   Config
-	client   *http.Client
-	now      func() time.Time
-	nonce    func() string
-	failMode ai_common.SafetyFailMode
+	config          Config
+	client          *http.Client
+	now             func() time.Time
+	nonce           func() string
+	failMode        ai_common.SafetyFailMode
+	accessKeyID     *store.ResolvedSecret
+	accessKeySecret *store.ResolvedSecret
 
 	streamNow func() time.Time
 }
@@ -253,6 +256,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.accessKeyID == nil || p.accessKeySecret == nil {
+		if err := p.MaterializeSecrets(); err != nil {
+			return errors.New("ai-aliyun-content-moderation credentials are unavailable")
+		}
+	}
 	mode, err := ai_common.ParseSafetyFailMode(p.config.FailMode)
 	if err != nil {
 		return err
@@ -327,6 +335,31 @@ func (p *Plugin) PostInit() error {
 		Transport: p.transport(),
 	}
 	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	if p.accessKeyID != nil && p.accessKeySecret != nil {
+		return nil
+	}
+	accessKeyID, err := store.MaterializeSecret(p.config.AccessKeyID)
+	if err != nil {
+		return err
+	}
+	accessKeySecret, err := store.MaterializeSecret(p.config.AccessKeySecret)
+	if err != nil {
+		accessKeyID.Destroy()
+		return err
+	}
+	p.accessKeyID = accessKeyID
+	p.accessKeySecret = accessKeySecret
+	p.config.AccessKeyID = accessKeyID.Descriptor()
+	p.config.AccessKeySecret = accessKeySecret.Descriptor()
+	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.accessKeyID.Destroy()
+	p.accessKeySecret.Destroy()
 }
 
 // RunRequestPhase performs request-side moderation and publishes the parsed
@@ -1274,13 +1307,20 @@ func (p *Plugin) checkSingleContent(
 }
 
 func (p *Plugin) buildFormBody(sessionID string, content string, serviceName string) (string, error) {
+	accessKeyID := p.accessKeyID.Bytes()
+	accessKeySecret := p.accessKeySecret.Bytes()
+	defer clear(accessKeyID)
+	defer clear(accessKeySecret)
+	if len(accessKeyID) == 0 || len(accessKeySecret) == 0 {
+		return "", errors.New("aliyun moderation credentials are unavailable")
+	}
 	serviceParameters, err := json.Marshal(serviceParameters{SessionID: sessionID, Content: content})
 	if err != nil {
 		return "", fmt.Errorf("failed to encode service parameters: %w", err)
 	}
 
 	params := map[string]string{
-		"AccessKeyId":       p.config.AccessKeyID,
+		"AccessKeyId":       string(accessKeyID),
 		"Action":            "TextModerationPlus",
 		"Format":            "JSON",
 		"RegionId":          p.config.RegionID,
@@ -1292,7 +1332,7 @@ func (p *Plugin) buildFormBody(sessionID string, content string, serviceName str
 		"Timestamp":         p.now().UTC().Format("2006-01-02T15:04:05Z"),
 		"Version":           "2022-03-02",
 	}
-	params["Signature"] = aliyunSignature(params, p.config.AccessKeySecret+"&")
+	params["Signature"] = aliyunSignature(params, string(accessKeySecret)+"&")
 
 	keys := sortedKeys(params)
 	values := make(url.Values, len(params))

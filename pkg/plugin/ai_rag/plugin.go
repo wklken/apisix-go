@@ -2,6 +2,7 @@ package ai_rag
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -11,12 +12,15 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
+	config          Config
+	client          *http.Client
+	embeddingAPIKey *store.ResolvedSecret
+	searchAPIKey    *store.ResolvedSecret
 }
 
 const (
@@ -115,6 +119,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.embeddingAPIKey == nil || p.searchAPIKey == nil {
+		if err := p.MaterializeSecrets(); err != nil {
+			return errors.New("ai-rag provider credentials are unavailable")
+		}
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 30000
 	}
@@ -127,6 +136,40 @@ func (p *Plugin) PostInit() error {
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
 	}
 	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	if p.embeddingAPIKey != nil && p.searchAPIKey != nil {
+		return nil
+	}
+	embedding, err := store.MaterializeSecret(p.config.EmbeddingsProvider.AzureOpenAI.APIKey)
+	if err != nil {
+		return err
+	}
+	search, err := store.MaterializeSecret(p.config.VectorSearchProvider.AzureAISearch.APIKey)
+	if err != nil {
+		embedding.Destroy()
+		return err
+	}
+	p.embeddingAPIKey = embedding
+	p.searchAPIKey = search
+	p.config.EmbeddingsProvider.AzureOpenAI.APIKey = embedding.Descriptor()
+	p.config.VectorSearchProvider.AzureAISearch.APIKey = search.Descriptor()
+	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.embeddingAPIKey.Destroy()
+	p.searchAPIKey.Destroy()
+}
+
+func resolvedSecretString(secret *store.ResolvedSecret) (string, error) {
+	value := secret.Bytes()
+	defer clear(value)
+	if len(value) == 0 {
+		return "", errors.New("provider credential is unavailable")
+	}
+	return string(value), nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -221,7 +264,11 @@ func (p *Plugin) requestEmbeddings(r *http.Request, embeddingsReq map[string]any
 	}
 
 	provider := p.config.EmbeddingsProvider.AzureOpenAI
-	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, provider.APIKey, rawBody, "embeddings")
+	apiKey, err := resolvedSecretString(p.embeddingAPIKey)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err.Error()
+	}
+	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, apiKey, rawBody, "embeddings")
 	if status != http.StatusOK {
 		return nil, status, message
 	}
@@ -256,7 +303,11 @@ func (p *Plugin) requestVectorSearch(r *http.Request, fields string, embedding a
 	}
 
 	provider := p.config.VectorSearchProvider.AzureAISearch
-	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, provider.APIKey, rawBody, "vector search")
+	apiKey, err := resolvedSecretString(p.searchAPIKey)
+	if err != nil {
+		return "", http.StatusInternalServerError, err.Error()
+	}
+	respBody, status, message := p.postAzureJSON(r, provider.Endpoint, apiKey, rawBody, "vector search")
 	if status != http.StatusOK {
 		return "", status, message
 	}

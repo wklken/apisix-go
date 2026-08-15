@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,13 @@ import (
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	if cfg.SpecURL != "" && len(cfg.SpecURLAllowedAddresses) == 0 {
+		parsed, err := url.Parse(cfg.SpecURL)
+		if err != nil {
+			t.Fatalf("parse spec URL: %v", err)
+		}
+		cfg.SpecURLAllowedAddresses = []string{parsed.Hostname()}
+	}
 
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
@@ -159,6 +167,29 @@ func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to parse inline openapi spec") {
 		t.Fatalf("PostInit() error = %q, want inline spec parsing context", err)
 	}
+}
+
+func TestMaterializedInlineSpecCompilesWithoutExposingPlaintext(t *testing.T) {
+	const environmentName = "APISIX_GO_OAS_INLINE_SPEC"
+	const spec = `{"openapi":"3.0.0","info":{"title":"secret-spec","version":"1"},"paths":{}}`
+	t.Setenv(environmentName, spec)
+	p := &Plugin{config: Config{Spec: "$ENV://" + environmentName}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if strings.Contains(p.config.Spec, "secret-spec") {
+		t.Fatalf("materialized config exposed inline spec: %q", p.config.Spec)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if _, err := p.validator(); err != nil {
+		t.Fatalf("validator() error = %v", err)
+	}
+	p.Stop()
 }
 
 func TestHandlerValidatesRequestBodyWithLocalSchemaRef(t *testing.T) {
@@ -1137,7 +1168,11 @@ func TestHandlerResolvesExternalSchemaRef(t *testing.T) {
 		externalServer.URL+"/schemas/pet.json#/components/schemas/Pet",
 		1,
 	)
-	p := newTestPlugin(t, Config{Spec: spec, VerboseErrors: true})
+	p := newTestPlugin(t, Config{
+		Spec:                    spec,
+		SpecURLAllowedAddresses: []string{"127.0.0.1"},
+		VerboseErrors:           true,
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"age":3}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1237,7 +1272,7 @@ func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
     }
   }
 }`
-	p := &Plugin{config: Config{Spec: spec}}
+	p := &Plugin{config: Config{Spec: spec, SpecURLAllowedAddresses: []string{"127.0.0.1"}}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1280,7 +1315,7 @@ func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
 		externalServer.URL+"/missing.json#/components/schemas/Pet",
 		1,
 	)
-	p := &Plugin{config: Config{Spec: spec}}
+	p := &Plugin{config: Config{Spec: spec, SpecURLAllowedAddresses: []string{"127.0.0.1"}}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -2330,15 +2365,11 @@ func TestHandlerSpecRefreshIsBoundToPluginLifecycle(t *testing.T) {
 	}()
 	select {
 	case <-stopped:
-		t.Fatal("Stop returned while the spec refresh was still blocked")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Stop did not cancel and join the spec refresh")
 	}
 	close(release)
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop did not join the spec refresh")
-	}
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("fetches = %d, want the refresh to complete despite request cancellation", got)
 	}

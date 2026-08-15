@@ -109,6 +109,49 @@ func TestHandlerRunsAzureRAGAndAppendsSearchResultToChat(t *testing.T) {
 	}
 }
 
+func TestMaterializedAPIKeysRemainPrivateAndReachProviders(t *testing.T) {
+	t.Setenv("APISIX_GO_RAG_EMBEDDING_KEY", "resolved-embedding-key")
+	t.Setenv("APISIX_GO_RAG_SEARCH_KEY", "resolved-search-key")
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("api-key"); got != "resolved-embedding-key" {
+			t.Fatalf("embedding api-key = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[1]}]}`))
+	}))
+	defer embeddings.Close()
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("api-key"); got != "resolved-search-key" {
+			t.Fatalf("search api-key = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	}))
+	defer search.Close()
+	p := newTestPlugin(t, Config{
+		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{
+			Endpoint: embeddings.URL, APIKey: "$ENV://APISIX_GO_RAG_EMBEDDING_KEY",
+		}},
+		VectorSearchProvider: VectorSearchProvider{AzureAISearch: AzureProvider{
+			Endpoint: search.URL, APIKey: "$ENV://APISIX_GO_RAG_SEARCH_KEY",
+		}},
+	})
+	if strings.Contains(p.config.EmbeddingsProvider.AzureOpenAI.APIKey, "resolved-embedding-key") ||
+		strings.Contains(p.config.VectorSearchProvider.AzureAISearch.APIKey, "resolved-search-key") {
+		t.Fatalf("materialized config exposed plaintext: %#v", p.config)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[],
+	  "ai_rag":{"embeddings":{"input":"hello"},"vector_search":{"fields":"contentVector"}}
+	}`))
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body %q", response.Code, response.Body.String())
+	}
+	p.Stop()
+}
+
 func TestHandlerAppendsSearchResultToResponsesInput(t *testing.T) {
 	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[{"embedding":[1,2]}]}`))

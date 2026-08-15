@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -917,14 +916,7 @@ func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream 
 }
 
 func routeEventBucket(event *store.Event) (string, bool) {
-	if event == nil {
-		return "", false
-	}
-	parts := bytes.Split(event.Key, []byte("/"))
-	if len(parts) < 2 {
-		return "", false
-	}
-	return string(parts[len(parts)-2]), true
+	return store.EventBucket(event)
 }
 
 func logStreamResult(result streamruntime.Result) {

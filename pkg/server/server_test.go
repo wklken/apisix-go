@@ -1224,6 +1224,10 @@ func TestRouteEventBucket(t *testing.T) {
 	if bucket, ok := routeEventBucket(&store.Event{Key: []byte("/apisix/routes/route-1")}); !ok || bucket != "routes" {
 		t.Fatalf("routeEventBucket() = %q/%t, want routes/true", bucket, ok)
 	}
+	if bucket, ok := routeEventBucket(&store.Event{Key: []byte("/apisix/secrets/vault/test")}); !ok ||
+		bucket != "secrets" {
+		t.Fatalf("routeEventBucket(secret) = %q/%t, want secrets/true", bucket, ok)
+	}
 	if _, ok := routeEventBucket(&store.Event{Key: []byte("short")}); ok {
 		t.Fatal("routeEventBucket(short key) = ok, want missing bucket")
 	}

@@ -1,4 +1,4 @@
-FROM golang:1.26.6 AS builder
+FROM golang:1.26.6-alpine3.24 AS builder
 
 # build
 WORKDIR /app
@@ -19,16 +19,24 @@ COPY pkg /app/pkg
 RUN go build -ldflags "-X github.com/wklken/apisix-go/pkg/version.Version=${VERSION} -X github.com/wklken/apisix-go/pkg/version.Commit=${COMMIT} -X github.com/wklken/apisix-go/pkg/version.BuildTime=${BUILD_TIME} -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=${GO_VERSION}'" -o /apisix
 
 # deploy
-FROM alpine:3.19
+FROM alpine:3.24.1
 
-
-RUN mkdir -p /usr/local/apisix/conf/
-RUN mkdir -p /usr/local/apisix/logs/
+RUN apk add --no-cache ca-certificates curl \
+    && addgroup -S -g 10001 apisix \
+    && adduser -S -D -H -u 10001 -G apisix apisix \
+    && mkdir -p /usr/local/apisix/conf /usr/local/apisix/logs /usr/local/apisix/data \
+    && chown -R apisix:apisix /usr/local/apisix
 
 WORKDIR /usr/local/apisix
 
-COPY conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/
+COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml /usr/local/apisix/conf/
 
 COPY --from=builder /apisix /usr/bin/apisix
 
-ENTRYPOINT [ "/usr/bin/apisix", "-c", "/usr/local/apisix/conf/config.yaml" ]
+USER 10001:10001
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=12 \
+    CMD curl --silent --show-error --output /dev/null http://127.0.0.1:9080/ || exit 1
+
+ENTRYPOINT ["/usr/bin/apisix"]
+CMD ["-c", "/usr/local/apisix/conf/config.yaml"]

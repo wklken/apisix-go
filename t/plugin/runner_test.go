@@ -3168,6 +3168,13 @@ func runCase(t *testing.T, spec Case) {
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatalf("create conf directory: %v", err)
 	}
+	defaultConfig, err := os.ReadFile(filepath.Join("..", "..", "conf", "config-default.yaml"))
+	if err != nil {
+		t.Fatalf("read default runtime config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "config-default.yaml"), defaultConfig, 0o600); err != nil {
+		t.Fatalf("write default runtime config: %v", err)
+	}
 	standaloneConfigs := make([]map[string]any, 0, len(spec.Steps)+1)
 	standaloneConfigs = append(standaloneConfigs, standaloneResources)
 	for _, step := range spec.Steps {

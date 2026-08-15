@@ -1030,10 +1030,10 @@ func applyStandaloneSnapshot(
 }
 
 func standaloneConfigProvider(cfg *config.Config) string {
-	if cfg == nil || !strings.EqualFold(cfg.Deployment.Role, "data_plane") {
+	provider, err := config.EffectiveConfigProvider(cfg)
+	if err != nil {
 		return ""
 	}
-	provider := strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleDataPlane.ConfigProvider))
 	if provider != "yaml" && provider != "json" {
 		return ""
 	}

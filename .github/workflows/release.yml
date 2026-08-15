@@ -71,12 +71,17 @@ jobs:
       - name: Run standalone integration suite
         run: make test-integration
 
+  security-release-gates:
+    name: Release Security And Container Gates
+    uses: ./.github/workflows/security-release-gates.yml
+
   release:
     name: Publish Release
     needs:
       - lint
       - build-and-unit
       - integration
+      - security-release-gates
     runs-on: ubuntu-latest
     permissions:
       contents: write

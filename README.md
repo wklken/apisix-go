@@ -1,18 +1,24 @@
 # apisix-go
 
+[![CI](https://github.com/wklken/apisix-go/actions/workflows/unit-test.yml/badge.svg)](https://github.com/wklken/apisix-go/actions/workflows/unit-test.yml)
 [![License](https://img.shields.io/github/license/wklken/apisix-go)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/wklken/apisix-go?style=social)](https://github.com/wklken/apisix-go/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/wklken/apisix-go?style=social)](https://github.com/wklken/apisix-go)
 
-**apisix-go is an open-source, Go-native data plane compatible with [Apache APISIX](https://github.com/apache/apisix).** It is designed to make APISIX easier to distribute, operate, extend, and run as an edge gateway.
-
-It keeps the APISIX resource and plugin model familiar while providing a Go-native runtime that is straightforward to package and maintain.
+**apisix-go is an open-source, Go-native implementation of the [Apache APISIX](https://github.com/apache/apisix) data plane.** It targets APISIX 3.17 compatibility and is designed for straightforward distribution, operation, and extension across API and edge gateway deployments.
 
 > [!WARNING]
 > apisix-go is under active development and is not ready for production use.
 
+## Why apisix-go?
+
+- **Simple delivery:** build and distribute a single Go binary or container image.
+- **Flexible configuration:** use etcd for traditional deployments or local YAML/JSON files for standalone data-plane deployments.
+- **Familiar APISIX model:** configure routes, services, upstreams, consumers, SSL, stream routes, and plugins with APISIX resource shapes.
+- **Go-native ecosystem:** extend traffic handling with Go middleware and plugins, with built-in logging, metrics, and tracing integrations.
+
 ## Quick start
 
-Start `apisix-go` in standalone mode with the included example configuration:
+From the repository root, start `apisix-go` in standalone mode with the included example configuration:
 
 ```bash
 source .envrc && go run . -c conf/config-example.yaml
@@ -24,34 +30,20 @@ In another terminal, send a request through the gateway:
 curl http://127.0.0.1:9080/hello
 ```
 
-The example route in [`conf/apisix.yaml`](conf/apisix.yaml) proxies the request
-to the public `httpbingo.org` echo service. Stop the gateway with `Ctrl-C`.
+The example route in [`conf/apisix.yaml`](conf/apisix.yaml) proxies the request to the public [httpbingo.org](https://httpbingo.org) echo service and rewrites the upstream path to `/anything/hello`. A successful request returns HTTP 200 with the echoed request details. Stop the gateway with `Ctrl-C`.
 
-## APISIX 3.17 parity status
+## Compatibility
 
-The current Go-native parity baseline registers 100 of the 104 APISIX 3.17 default plugins (96.2%). The checklist tracks 89 plugins at the current supported monitoring level and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations—`ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`—depend on external plugin runners or Lua/OpenResty features.
+apisix-go currently registers 100 of the 104 APISIX 3.17 default plugins (96.2%). Of those defaults, 89 are supported at the project's documented Go-native level; remaining gaps are deferred to separate protocol work or depend on NGINX, OpenResty, Lua, or external plugin runtimes.
 
-The detailed plugin comparison is maintained in [docs/plugins.md](docs/plugins.md). Protocol-specific boundaries are documented in [docs/design.md](docs/design.md).
+The exact status definitions, supported behavior, and remaining gaps are maintained in [`docs/plugins.md`](docs/plugins.md), the authoritative plugin-status document.
 
-## Why apisix-go?
+## Documentation
 
-- **Easy to ship:** distribute a compact Go binary or container image.
-- **Edge friendly:** run in standalone YAML or JSON mode without etcd.
-- **Familiar APISIX model:** reuse APISIX routes, services, upstreams, consumers, and plugin configuration.
-- **Go-native extensibility:** build and test HTTP middleware and plugins with the Go toolchain.
-- **Observable by design:** use Go-native logging, metrics, tracing, and traffic-management plugins.
-
-## Plugin support
-
-The complete APISIX 3.17 comparison, category summary, per-plugin supported/unsupported behavior, execution backlog, and remaining gap catalog are maintained in [docs/plugins.md](docs/plugins.md).
-
-## Runtime boundaries
-
-- HTTP routes listen on `:8080` by default and are built from the bbolt store populated by the etcd watcher.
-- A `data_plane` deployment with `role_data_plane.config_provider: yaml` or `json` loads `conf/apisix.yaml` or `conf/apisix.json` and hot-reloads resource changes without etcd.
-- Traditional etcd deployments with `server-info` enabled periodically publish `<etcd-prefix>/data_plane/server_info/<apisix-id>` and renew the lease until shutdown.
-- TCP stream routing is enabled through `apisix.proxy_mode` and `apisix.stream_proxy.tcp`; the current main-server stream owner is `mqtt-proxy`, with weighted/chash upstream selection, route reload, cancellation, and lifecycle tests.
-- Kafka PubSub uses the dedicated WebSocket/protobuf owner; Dubbo and HTTP-Dubbo use route-terminal TCP owners. General stream-plugin chains, stream mTLS, active upstream probes, exact OpenResty phase timing, and full Lua runtime compatibility remain deferred.
+- [Plugin support and remaining gaps](docs/plugins.md)
+- [Configuration compatibility](docs/configuration.md)
+- [Design notes](docs/design.md)
+- [Standalone plugin integration tests](t/plugin/README.md)
 
 ## Open source
 
@@ -59,6 +51,6 @@ apisix-go is released under the [Apache License 2.0](LICENSE) and developed in p
 
 - [Report an issue](https://github.com/wklken/apisix-go/issues)
 - [Open a pull request](https://github.com/wklken/apisix-go/pulls)
-- [Explore the design and plugin status](docs/)
+- [Explore the documentation](docs/)
 
 If apisix-go is useful to you, [star the repository](https://github.com/wklken/apisix-go) and share it with teams exploring Go-native API and edge gateways.

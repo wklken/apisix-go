@@ -262,6 +262,7 @@ func initMetrics() {
 
 	AISafetyOutcomes = newAISafetyOutcomeVector(nil, metricConfig.MetricPrefix)
 	aiStreamOutcomes = newAIStreamOutcomeVector(nil, metricConfig.MetricPrefix)
+	functionUpstreamFailures = newFunctionUpstreamFailureVector(nil, metricConfig.MetricPrefix)
 
 	ProxyInFlight = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -318,6 +319,7 @@ func initMetrics() {
 		LLMActiveConnections,
 		AISafetyOutcomes,
 		aiStreamOutcomes,
+		functionUpstreamFailures,
 		ProxyInFlight,
 		ProxyRejected,
 		ProxyRetry,

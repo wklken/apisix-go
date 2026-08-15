@@ -493,6 +493,35 @@ func TestRouteHandlerAbortHandlerRunsFinalizersWithoutNewMetric(t *testing.T) {
 	}
 }
 
+func TestRouteHandlerAbortPreservesPostCommitFailureReason(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/abort", nil)
+	var outcome apisixctx.ResponseOutcome
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capture, ok := base.ResponseCaptureFromRequest(r)
+		if !ok {
+			t.Fatal("response capture is missing")
+		}
+		w.WriteHeader(http.StatusOK)
+		capture.RecordFailure(apisixctx.ResponseFailureUpstreamIdleTimeout)
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if !lifecycle.AddFinalizer("test", func() error {
+			outcome = lifecycle.Outcome()
+			return nil
+		}) {
+			t.Fatal("failed to register finalizer")
+		}
+		panic(http.ErrAbortHandler)
+	})
+
+	mustAbortHandlerPanic(t, func() { serveRouteRequest(recorder, request, handler) })
+	if outcome.Kind != apisixctx.RequestOutcomeHandlerAbort ||
+		outcome.FailureReason != apisixctx.ResponseFailureUpstreamIdleTimeout ||
+		!outcome.Committed {
+		t.Fatalf("finalizer outcome = %#v, want committed handler abort with idle timeout", outcome)
+	}
+}
+
 func TestRouteHandlerFinalizerPanicDoesNotSkipOtherFinalizers(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
 	var calls []string

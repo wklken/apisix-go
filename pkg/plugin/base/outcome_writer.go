@@ -177,6 +177,20 @@ func (c *ResponseCapture) Outcome() ctx.ResponseOutcome {
 	return c.outcome
 }
 
+// RecordFailure attaches the first bounded transport/application failure to
+// the final response outcome. Raw errors are deliberately excluded.
+func (c *ResponseCapture) RecordFailure(reason ctx.ResponseFailureReason) bool {
+	if c == nil || !ctx.ValidResponseFailureReason(reason) {
+		return false
+	}
+	c.mu.Lock()
+	if c.outcome.FailureReason == "" {
+		c.outcome.FailureReason = reason
+	}
+	c.mu.Unlock()
+	return true
+}
+
 func (c *ResponseCapture) Snapshot() ResponseCaptureSnapshot {
 	if c == nil {
 		return ResponseCaptureSnapshot{}

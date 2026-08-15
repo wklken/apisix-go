@@ -75,6 +75,12 @@ type progressTimeoutTransport struct {
 	read time.Duration
 }
 
+func (transport *progressTimeoutTransport) CloseIdleConnections() {
+	if closer, ok := transport.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 type responseHeaderTimeoutTransport struct {
 	base    http.RoundTripper
 	timeout time.Duration

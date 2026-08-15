@@ -155,6 +155,54 @@ func TestCheckCSRFTokenAllowsExpiredTokenWhenExpiresIsZero(t *testing.T) {
 	}
 }
 
+func TestGenCSRFTokenUsesInjectedReader(t *testing.T) {
+	reader := bytes.NewReader(bytes.Repeat([]byte{0xff}, 8))
+	tokenValue, err := genCSRFToken("secret", reader)
+	if err != nil {
+		t.Fatalf("genCSRFToken() error = %v", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(tokenValue)
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+	var token csrfToken
+	if err := json.Unmarshal(decoded, &token); err != nil {
+		t.Fatalf("unmarshal token: %v", err)
+	}
+
+	wantRandom := float64((uint64(1)<<53)-1) / float64(uint64(1)<<53)
+	if token.Random != wantRandom {
+		t.Fatalf("random = %.17g, want %.17g", token.Random, wantRandom)
+	}
+	if token.Random < 0 || token.Random >= 1 {
+		t.Fatalf("random = %.17g, want value in [0, 1)", token.Random)
+	}
+	if token.Sign != genSign(token.Random, token.Expires, "secret") {
+		t.Fatal("generated token signature does not match its serialized fields")
+	}
+}
+
+func TestHandlerFailsClosedWhenEntropyReadFails(t *testing.T) {
+	p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
+	p.randomReader = bytes.NewReader(nil)
+
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not run when csrf entropy fails")
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.com/safe", nil))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	if got := strings.TrimSpace(response.Body.String()); got != `{"error_msg":"failed to generate csrf token"}` {
+		t.Fatalf("body = %q, want generic csrf generation error", got)
+	}
+	if response.Header().Get("Set-Cookie") != "" {
+		t.Fatal("response set a csrf cookie after entropy failure")
+	}
+}
+
 func TestPostInitPreservesExplicitZeroExpires(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Key:     "secret",
@@ -248,7 +296,10 @@ func TestCheckCSRFTokenValidationTable(t *testing.T) {
 
 func TestHandlerValidPostRefreshesCookie(t *testing.T) {
 	p := newTestPlugin(t, Config{Key: "secret", Name: "csrf-token"})
-	token := genCSRFToken("secret")
+	token, err := genCSRFToken("secret", bytes.NewReader(make([]byte, 8)))
+	if err != nil {
+		t.Fatalf("genCSRFToken() error = %v", err)
+	}
 
 	request := httptest.NewRequest(http.MethodPost, "http://example.com/post", nil)
 	request.Header.Set("csrf-token", token)
@@ -351,5 +402,8 @@ func TestPluginConfigDefaultsAndIdentity(t *testing.T) {
 	}
 	if p.expires() != defaultCSRFExpires {
 		t.Fatalf("default expires = %d, want %d", p.expires(), defaultCSRFExpires)
+	}
+	if p.randomReader == nil {
+		t.Fatal("random reader is nil after PostInit()")
 	}
 }

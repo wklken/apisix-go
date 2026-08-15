@@ -24,6 +24,7 @@ require_pattern '^HEALTHCHECK ' "$dockerfile"
 
 test -x "$smoke"
 bash -n "$smoke"
+require_pattern '^[[:space:]]*"\$image" -c /usr/local/apisix/conf/config.yaml' "$smoke"
 require_pattern 'flock|mkdir .*lock' "$smoke"
 require_pattern 'docker network create' "$smoke"
 require_pattern 'busybox:1\.37\.0' "$smoke"

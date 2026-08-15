@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -39,6 +40,24 @@ type streamingCompression struct {
 	request *http.Request
 	state   *compression.State
 	offers  []compressionOfferEntry
+}
+
+type dynamicStreamingBindingsKey struct{}
+
+func withDynamicStreamingBindings(r *http.Request, bindings []Binding) *http.Request {
+	return r.WithContext(context.WithValue(
+		r.Context(),
+		dynamicStreamingBindingsKey{},
+		cloneBindings(bindings),
+	))
+}
+
+func dynamicStreamingBindings(r *http.Request) []Binding {
+	if r == nil {
+		return nil
+	}
+	bindings, _ := r.Context().Value(dynamicStreamingBindingsKey{}).([]Binding)
+	return cloneBindings(bindings)
 }
 
 func (f *streamingFinish) finish(cause error) error {
@@ -185,6 +204,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 	if e == nil {
 		return r, nil
 	}
+	dynamicHeaders := make([]Binding, 0)
 	for _, binding := range effective.all() {
 		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
 			continue
@@ -193,8 +213,12 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 		if err != nil {
 			return r, err
 		}
-		if capability.CompressionOffer || capability.StreamingBodyFilter ||
-			capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone {
+		buffered, err := MaterializeResponseBindings(EffectiveBindingSet{merged: []Binding{binding}})
+		if err != nil {
+			return r, err
+		}
+		if capability.CompressionOffer || capability.BufferedBodyFilter || capability.StreamingBodyFilter ||
+			capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone || len(buffered) > 0 {
 			return r, fmt.Errorf(
 				"dynamic response identity=%q resource=%s/%s is not supported",
 				binding.factoryName,
@@ -202,12 +226,36 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 				binding.Provenance.ID,
 			)
 		}
+		if capability.HeaderFilter {
+			dynamicHeaders = append(dynamicHeaders, binding)
+		}
+	}
+	if len(dynamicHeaders) > 0 {
+		return withDynamicStreamingBindings(r, dynamicHeaders), nil
 	}
 	return r, nil
 }
 
+func dynamicHeaderBindingsForEffective(effective EffectiveBindingSet) []Binding {
+	bindings := make([]Binding, 0)
+	for _, binding := range effective.all() {
+		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
+			continue
+		}
+		capability, err := responseCapabilityForBinding(binding)
+		if err != nil || !capability.HeaderFilter {
+			continue
+		}
+		bindings = append(bindings, binding)
+	}
+	return bindings
+}
+
 func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *base.StreamingResponseState) error {
-	headerBindings := e.phaseBindings(func(capability ResponseCapability) bool { return capability.HeaderFilter })
+	headerBindings := e.phaseBindingsFor(
+		mergeStreamingBindings(e.bindings, dynamicStreamingBindings(r)),
+		func(capability ResponseCapability) bool { return capability.HeaderFilter },
+	)
 	for _, binding := range headerBindings {
 		plugin, ok := binding.Plugin.(base.StreamingHeaderFilterPlugin)
 		if !ok {
@@ -508,8 +556,15 @@ func (e *StreamingResponseExecutor) CommitResponse(
 }
 
 func (e *StreamingResponseExecutor) phaseBindings(want func(ResponseCapability) bool) []Binding {
-	selected := make([]Binding, 0, len(e.bindings))
-	for _, binding := range e.bindings {
+	return e.phaseBindingsFor(e.bindings, want)
+}
+
+func (e *StreamingResponseExecutor) phaseBindingsFor(
+	bindings []Binding,
+	want func(ResponseCapability) bool,
+) []Binding {
+	selected := make([]Binding, 0, len(bindings))
+	for _, binding := range bindings {
 		capability, err := responseCapabilityForBinding(binding)
 		if err != nil || !want(capability) || capability.SeparateSubsystem && binding.factoryName == "mqtt-proxy" {
 			continue
@@ -518,6 +573,28 @@ func (e *StreamingResponseExecutor) phaseBindings(want func(ResponseCapability) 
 	}
 	slices.SortStableFunc(selected, compareBindings)
 	return selected
+}
+
+func mergeStreamingBindings(static, dynamic []Binding) []Binding {
+	merged := cloneBindings(static)
+	indexes := make(map[string]int, len(merged))
+	for index, binding := range merged {
+		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.factoryName == "" {
+			continue
+		}
+		indexes[binding.factoryName] = index
+	}
+	for _, binding := range dynamic {
+		if index, ok := indexes[binding.factoryName]; ok {
+			merged[index] = binding
+			continue
+		}
+		if binding.factoryName != "" {
+			indexes[binding.factoryName] = len(merged)
+		}
+		merged = append(merged, binding)
+	}
+	return merged
 }
 
 func compareBindings(a, b Binding) int {

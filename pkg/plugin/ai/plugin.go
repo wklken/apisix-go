@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -23,6 +24,10 @@ const schema = `
 }
 `
 
+var errUnsupportedControlPlane = errors.New(
+	"ai plugin is unsupported: control-plane AI runtime is not implemented",
+)
+
 type Config struct{}
 
 func (p *Plugin) Init() error {
@@ -34,7 +39,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	return nil
+	return errUnsupportedControlPlane
 }
 
 func (p *Plugin) Config() any {

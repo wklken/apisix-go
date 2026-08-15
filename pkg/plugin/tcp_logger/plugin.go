@@ -40,6 +40,10 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
+	  "ssl_verify": {
+		"type": "boolean",
+		"default": true
+	  },
 	  "tls_options": {
 		"type": "string"
 	  },
@@ -152,6 +156,7 @@ type Config struct {
 	Host                string         `json:"host"`
 	Port                int            `json:"port"`
 	TLS                 bool           `json:"tls,omitempty"`
+	SSLVerify           *bool          `json:"ssl_verify,omitempty"`
 	Timeout             int            `json:"timeout,omitempty"`
 	TLSOptions          *string        `json:"tls_options,omitempty"`
 	LogFormat           map[string]any `json:"log_format,omitempty"`
@@ -218,6 +223,10 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 1000
+	}
+	if p.config.SSLVerify == nil {
+		sslVerify := true
+		p.config.SSLVerify = &sslVerify
 	}
 	if p.config.MaxReqBodyBytes == 0 {
 		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
@@ -485,9 +494,15 @@ func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp", p.config.addr)
 	}
 
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	if p.config.TLSOptions != nil {
+	sslVerify := p.config.SSLVerify == nil || *p.config.SSLVerify
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: !sslVerify, //nolint:gosec // explicit ssl_verify=false is the user opt-out
+	}
+	if p.config.TLSOptions != nil && *p.config.TLSOptions != "" {
 		tlsConfig.ServerName = *p.config.TLSOptions
+	} else if sslVerify {
+		tlsConfig.ServerName = p.config.Host
 	}
 	timeout := time.Duration(p.config.Timeout) * time.Millisecond
 	if contextDeadline, ok := ctx.Deadline(); ok {

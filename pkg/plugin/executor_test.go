@@ -14,6 +14,8 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
+	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
 )
 
 type executorTraceKey struct{}
@@ -1155,5 +1157,321 @@ func TestEffectiveBindingSetClonePreservesPrivateFactoryStageScopeProvenance(t *
 	if clone.global[0].factoryName != "proxy-cache" || clone.global[0].Stage != global.Stage ||
 		clone.global[0].Scope != ScopeGlobal || clone.merged[0].Provenance.ID == "mutated" {
 		t.Fatalf("clone = %#v", clone)
+	}
+}
+
+func newExecutorCORSPlugin(t *testing.T, config corsplugin.Config) *corsplugin.Plugin {
+	t.Helper()
+	plugin := &corsplugin.Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("CORS Init() error = %v", err)
+	}
+	configured, ok := plugin.Config().(*corsplugin.Config)
+	if !ok {
+		t.Fatalf("CORS Config() type = %T, want *cors.Config", plugin.Config())
+	}
+	*configured = config
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("CORS PostInit() error = %v", err)
+	}
+	return plugin
+}
+
+type executorFilteredCORSPlugin struct {
+	*corsplugin.Plugin
+	filter func(*http.Request) bool
+}
+
+func (p *executorFilteredCORSPlugin) Handler(next http.Handler) http.Handler {
+	handler := p.Plugin.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.filter != nil && !p.filter(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func newExecutorRequestContextPlugin(t *testing.T, config requestcontext.Config) *requestcontext.Plugin {
+	t.Helper()
+	plugin := &requestcontext.Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("request-context Init() error = %v", err)
+	}
+	configured, ok := plugin.Config().(*requestcontext.Config)
+	if !ok {
+		t.Fatalf("request-context Config() type = %T, want *request_context.Config", plugin.Config())
+	}
+	*configured = config
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("request-context PostInit() error = %v", err)
+	}
+	return plugin
+}
+
+func countExecutorVaryToken(header http.Header, want string) int {
+	count := 0
+	for _, value := range header.Values("Vary") {
+		for token := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), want) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func TestProvisionalResponseWriterCommitsHeadersOnEarlyResponse(t *testing.T) {
+	response := httptest.NewRecorder()
+	writer := provisionalResponseWriter(response)
+	writer.Header().Set("Access-Control-Allow-Origin", "https://client.example")
+	writer.WriteHeader(http.StatusUnauthorized)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response status = %d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("response CORS origin = %q, want client origin", got)
+	}
+}
+
+func TestRequestPipelineCORSAddsHeadersToAuthenticationRejection(t *testing.T) {
+	cors := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins:  "https://client.example",
+		AllowMethods:  http.MethodGet,
+		AllowHeaders:  "Authorization",
+		ExposeHeaders: "X-Request-ID",
+	})
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("unauthorized"))
+			return base.StopRequest(r)
+		},
+	)
+	resolverCalls := 0
+	terminalCalls := 0
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", cors, ScopeRoute, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		resolverCalls++
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		terminalCalls++
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized || response.Body.String() != "unauthorized" {
+		t.Fatalf("authentication response = %d/%q, want 401/unauthorized", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want client origin", got)
+	}
+	if got := countExecutorVaryToken(response.Header(), "Origin"); got != 1 {
+		t.Fatalf("Vary: Origin count = %d, want 1 (headers=%v)", got, response.Header().Values("Vary"))
+	}
+	if resolverCalls != 0 || terminalCalls != 0 {
+		t.Fatalf("resolver/terminal calls = %d/%d, want 0/0", resolverCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineCORSPreflightRunsBeforeAuthentication(t *testing.T) {
+	cors := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+	})
+	authCalls := 0
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			authCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	terminalCalls := 0
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", cors, ScopeRoute, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil)
+	request := httptest.NewRequest(http.MethodOptions, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	request.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		terminalCalls++
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("preflight status = %d, want 200", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("preflight Access-Control-Allow-Origin = %q, want client origin", got)
+	}
+	if authCalls != 0 || terminalCalls != 0 {
+		t.Fatalf("auth/terminal calls = %d/%d, want 0/0", authCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelineCORSNormalizesSuccessfulResponseAfterStreamingFilter(t *testing.T) {
+	cors := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+		AllowMethods: http.MethodGet,
+	})
+	corsBinding := pipelineBinding("cors", cors, ScopeRoute, 4000)
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.Header().Set("X-UserId", "u-1")
+			w.Header().Set("X-Username", "alice")
+			w.Header().Set("X-Nickname", "Alice")
+			return base.ContinueRequest(r)
+		},
+	)
+	streaming, err := NewStreamingResponseExecutor([]Binding{corsBinding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	terminalCalls := 0
+	pipeline := NewRequestPipeline([]Binding{
+		corsBinding,
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, nil).WithStreamingResponseExecutor(streaming)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		terminalCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent || terminalCalls != 1 {
+		t.Fatalf("successful response = %d, terminal calls = %d, want 204/1", response.Code, terminalCalls)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("successful Access-Control-Allow-Origin = %q, want client origin", got)
+	}
+	if got := countExecutorVaryToken(response.Header(), "Origin"); got != 1 {
+		t.Fatalf("successful Vary: Origin count = %d, want 1 (headers=%v)", got, response.Header().Values("Vary"))
+	}
+	for name, want := range map[string]string{
+		"X-UserId": "u-1", "X-Username": "alice", "X-Nickname": "Alice",
+	} {
+		if got := response.Header().Get(name); got != want {
+			t.Fatalf("successful authentication header %s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestRequestPipelineCORSDoesNotApplyConsumerBindingBeforeAuthentication(t *testing.T) {
+	routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://route.example",
+	})
+	consumerCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://consumer.example",
+	})
+	auth := newExecutorRequestPlugin(
+		"auth",
+		1,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.WriteHeader(http.StatusUnauthorized)
+			return base.StopRequest(r)
+		},
+	)
+	resolverCalls := 0
+	pipeline := NewRequestPipeline([]Binding{
+		pipelineBinding("cors", routeCORS, ScopeRoute, 4000),
+		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+	}, func(r *http.Request) (ConsumerResolution, error) {
+		resolverCalls++
+		return ConsumerResolution{
+			Request:  r,
+			Resolved: true,
+			Bindings: []Binding{pipelineBinding("cors", consumerCORS, ScopeConsumer, 4000)},
+		}, nil
+	})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://route.example")
+	response := httptest.NewRecorder()
+	pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("terminal called after authentication rejection")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("authentication status = %d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://route.example" {
+		t.Fatalf("route CORS origin = %q, want route origin", got)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver calls = %d, want 0 before authentication succeeds", resolverCalls)
+	}
+}
+
+func TestRequestPipelineCORSFilterSeesRequestContextBeforeAuthentication(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		routeID    string
+		wantOrigin string
+	}{
+		{name: "matching route id", routeID: "route-match", wantOrigin: "https://client.example"},
+		{name: "non-matching route id", routeID: "route-other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cors := &executorFilteredCORSPlugin{
+				Plugin: newExecutorCORSPlugin(t, corsplugin.Config{
+					AllowOrigins: "https://client.example",
+				}),
+				filter: func(r *http.Request) bool {
+					return apisixctx.GetApisixVar(r, "$route_id") == "route-match"
+				},
+			}
+			requestContext := newExecutorRequestContextPlugin(t, requestcontext.Config{RouteID: test.routeID})
+			auth := newExecutorRequestPlugin(
+				"auth",
+				1,
+				func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("unauthorized"))
+					return base.StopRequest(r)
+				},
+			)
+			pipeline := NewRequestPipeline([]Binding{
+				pipelineBinding("request-context", requestContext, ScopeSystem, requestContext.GetPriority()),
+				pipelineBinding("cors", cors, ScopeRoute, 4000),
+				pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+			}, nil)
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+			request.Header.Set("Origin", "https://client.example")
+			response := httptest.NewRecorder()
+			pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("terminal called after authentication rejection")
+			})).ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnauthorized || response.Body.String() != "unauthorized" {
+				t.Fatalf(
+					"authentication response = %d/%q, want 401/unauthorized",
+					response.Code,
+					response.Body.String(),
+				)
+			}
+			if response.Header().Get("Access-Control-Allow-Origin") != test.wantOrigin {
+				t.Fatalf(
+					"CORS origin = %q, want %q for route_id=%q",
+					response.Header().Get("Access-Control-Allow-Origin"),
+					test.wantOrigin,
+					test.routeID,
+				)
+			}
+		})
 	}
 }

@@ -22,6 +22,20 @@ func TestRouteUnmarshalPreservesLabels(t *testing.T) {
 	}
 }
 
+func TestRouteUnmarshalPreservesScriptPresence(t *testing.T) {
+	var route Route
+	if err := json.Unmarshal([]byte(`{
+		"id": "script-route",
+		"script": "return true"
+	}`), &route); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if got, want := string(route.Script), `"return true"`; got != want {
+		t.Fatalf("Route.Script = %q, want raw JSON %q", got, want)
+	}
+}
+
 func TestUpstreamUnmarshalPreservesKafkaTLSOptions(t *testing.T) {
 	var upstream Upstream
 	if err := json.Unmarshal([]byte(`{

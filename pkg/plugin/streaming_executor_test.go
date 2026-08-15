@@ -11,6 +11,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
+	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
 )
 
 type plan16StreamingPlugin struct {
@@ -430,6 +431,126 @@ func TestStreamingExecutorRejectsDynamicConsumerResponseOwner(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "proxy-buffering") ||
 		!strings.Contains(err.Error(), "consumer-1") {
 		t.Fatalf("PostResolutionHook() error = %v, want dynamic consumer provenance", err)
+	}
+}
+
+func TestStreamingExecutorRejectsDynamicConsumerBodyFilter(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	body := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	binding := checkedResponseBinding(t, "body-transformer", body, ScopeConsumer, "consumer-body")
+	binding.Provenance.Kind = ResourceConsumer
+
+	_, err = executor.PostResolutionHook(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		EffectiveBindingSet{merged: []Binding{binding}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "body-transformer") ||
+		!strings.Contains(err.Error(), "consumer-body") {
+		t.Fatalf("PostResolutionHook() error = %v, want dynamic body-filter rejection", err)
+	}
+}
+
+func TestStreamingExecutorAppliesDynamicConsumerHeaderFilterPerRequest(t *testing.T) {
+	for _, provenanceKind := range []ResourceKind{ResourceConsumer, ResourceConsumerGroup} {
+		t.Run(string(provenanceKind), func(t *testing.T) {
+			routeCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+				AllowOrigins: "*",
+			})
+			consumerCORS := newExecutorCORSPlugin(t, corsplugin.Config{
+				AllowOrigins: "https://consumer.example",
+			})
+			routeBinding := pipelineBinding("cors", routeCORS, ScopeRoute, 4000)
+			consumerBinding := pipelineBinding("cors", consumerCORS, ScopeConsumer, 4000)
+			consumerBinding.Provenance = ResourceProvenance{
+				Kind: provenanceKind,
+				ID:   "dynamic-" + string(provenanceKind),
+			}
+			streaming, err := NewStreamingResponseExecutor([]Binding{routeBinding})
+			if err != nil {
+				t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+			}
+			auth := newExecutorRequestPlugin(
+				"auth",
+				1,
+				func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+					return base.ContinueRequest(r)
+				},
+			)
+			resolverCalls := 0
+			terminalCalls := 0
+			pipeline := NewRequestPipeline([]Binding{
+				routeBinding,
+				pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
+			}, func(r *http.Request) (ConsumerResolution, error) {
+				resolverCalls++
+				if r.Header.Get("X-Use-Consumer-CORS") == "yes" {
+					return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{consumerBinding}}, nil
+				}
+				return ConsumerResolution{Request: r, Resolved: true}, nil
+			}).WithStreamingResponseExecutor(streaming)
+
+			serve := func(origin, useConsumer string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+				request.Header.Set("Origin", origin)
+				if useConsumer != "" {
+					request.Header.Set("X-Use-Consumer-CORS", useConsumer)
+				}
+				request, _ = apisixctx.EnsureRequestLifecycle(request, time.Now())
+				response := httptest.NewRecorder()
+				pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					terminalCalls++
+					if useConsumer == "yes" {
+						dynamic := dynamicStreamingBindings(request)
+						if len(dynamic) != 1 {
+							t.Errorf("terminal dynamic streaming bindings = %d, want 1", len(dynamic))
+						}
+						merged := mergeStreamingBindings(streaming.bindings, dynamic)
+						if len(merged) != 1 || merged[0].Plugin != consumerCORS {
+							t.Errorf("terminal merged streaming bindings = %#v, want consumer CORS", merged)
+						}
+						if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://consumer.example" {
+							t.Errorf("terminal CORS origin = %q, want consumer origin", got)
+						}
+					}
+					w.WriteHeader(http.StatusNoContent)
+				})).ServeHTTP(response, request)
+				return response
+			}
+
+			consumerResponse := serve("https://consumer.example", "yes")
+			if got := consumerResponse.Header().Get("Access-Control-Allow-Origin"); got != "https://consumer.example" {
+				t.Fatalf("consumer CORS origin = %q, want consumer origin", got)
+			}
+			if got := countExecutorVaryToken(consumerResponse.Header(), "Origin"); got != 1 {
+				t.Fatalf(
+					"consumer Vary: Origin count = %d, want 1 (headers=%v)",
+					got,
+					consumerResponse.Header().Values("Vary"),
+				)
+			}
+
+			routeResponse := serve("https://route.example", "")
+			if got := routeResponse.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Fatalf("route CORS origin after consumer request = %q, want wildcard route origin", got)
+			}
+			if got := countExecutorVaryToken(routeResponse.Header(), "Origin"); got != 1 {
+				t.Fatalf(
+					"route Vary: Origin count = %d, want 1 (headers=%v)",
+					got,
+					routeResponse.Header().Values("Vary"),
+				)
+			}
+			if resolverCalls != 2 || terminalCalls != 2 {
+				t.Fatalf("resolver/terminal calls = %d/%d, want 2/2", resolverCalls, terminalCalls)
+			}
+		})
 	}
 }
 

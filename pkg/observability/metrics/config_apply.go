@@ -11,8 +11,17 @@ const (
 	configApplyReadyMetric    = "config_apply_ready"
 )
 
+// ReadinessState contains the bounded runtime state used by the HTTP health
+// endpoints. ConfigApplyReady requires both config-apply stages to have been
+// observed successful; EtcdReachable is the current etcd observation.
+type ReadinessState struct {
+	ConfigApplyReady bool
+	EtcdReachable    bool
+}
+
 // ConfigApplyStage identifies one bounded configuration-apply owner. Readiness
-// is healthy only when neither stage has a recorded failure.
+// is healthy only when both stages have been observed successful and neither
+// stage is currently unhealthy.
 type ConfigApplyStage uint8
 
 const (
@@ -27,10 +36,17 @@ var (
 
 var configApplyState struct {
 	sync.Mutex
-	providerBlocked   bool
-	httpRoutesBlocked bool
-	failures          prometheus.Counter
-	ready             prometheus.Gauge
+	providerBlocked    bool
+	httpRoutesBlocked  bool
+	providerObserved   bool
+	providerHealthy    bool
+	httpRoutesObserved bool
+	httpRoutesHealthy  bool
+	etcdObserved       bool
+	etcdHealthy        bool
+	failures           prometheus.Counter
+	ready              prometheus.Gauge
+	etcdReachable      prometheus.Gauge
 }
 
 func newConfigApplyMetrics(registry *prometheus.Registry, prefix string) (prometheus.Counter, prometheus.Gauge) {
@@ -59,8 +75,12 @@ func RecordConfigApplyStageFailure(stage ConfigApplyStage) {
 	switch stage {
 	case ConfigApplyStageProvider:
 		configApplyState.providerBlocked = true
+		configApplyState.providerObserved = true
+		configApplyState.providerHealthy = false
 	case ConfigApplyStageHTTPRoutes:
 		configApplyState.httpRoutesBlocked = true
+		configApplyState.httpRoutesObserved = true
+		configApplyState.httpRoutesHealthy = false
 	default:
 		return
 	}
@@ -88,8 +108,12 @@ func RecordConfigApplyStageSuccess(stage ConfigApplyStage) {
 	switch stage {
 	case ConfigApplyStageProvider:
 		configApplyState.providerBlocked = false
+		configApplyState.providerObserved = true
+		configApplyState.providerHealthy = true
 	case ConfigApplyStageHTTPRoutes:
 		configApplyState.httpRoutesBlocked = false
+		configApplyState.httpRoutesObserved = true
+		configApplyState.httpRoutesHealthy = true
 	default:
 		return
 	}
@@ -103,13 +127,45 @@ func RecordConfigApplySuccess() {
 	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
 }
 
+// GetReadiness returns the internal observed/healthy state for health
+// endpoints. It deliberately does not read values back from Prometheus
+// collectors, so replacing a collector resets the corresponding state.
+func GetReadiness() ReadinessState {
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+
+	syncConfigApplyMetricsLocked()
+	syncEtcdReachabilityLocked()
+	return ReadinessState{
+		ConfigApplyReady: configApplyState.providerObserved &&
+			configApplyState.providerHealthy &&
+			configApplyState.httpRoutesObserved &&
+			configApplyState.httpRoutesHealthy,
+		EtcdReachable: configApplyState.etcdObserved && configApplyState.etcdHealthy,
+	}
+}
+
 func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 	failures, ready := ConfigApplyFailures, ConfigApplyReady
 	if configApplyState.failures != failures || configApplyState.ready != ready {
 		configApplyState.providerBlocked = false
 		configApplyState.httpRoutesBlocked = false
+		configApplyState.providerObserved = false
+		configApplyState.providerHealthy = false
+		configApplyState.httpRoutesObserved = false
+		configApplyState.httpRoutesHealthy = false
 		configApplyState.failures = failures
 		configApplyState.ready = ready
 	}
 	return failures, ready
+}
+
+func syncEtcdReachabilityLocked() prometheus.Gauge {
+	reachable := EtcdReachable
+	if configApplyState.etcdReachable != reachable {
+		configApplyState.etcdObserved = false
+		configApplyState.etcdHealthy = false
+		configApplyState.etcdReachable = reachable
+	}
+	return reachable
 }

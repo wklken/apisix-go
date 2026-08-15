@@ -442,12 +442,12 @@ func snapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
 		"request": map[string]any{
 			"url": snapshot.Request.Scheme + "://" + base.RemoteIP(snapshot.Request.Host) + snapshot.Request.URI,
 			"uri": snapshot.Request.URI, "method": snapshot.Request.Method,
-			"headers":     base.CollapseHeaderValues(snapshot.Request.Header),
+			"headers":     fileRequestHeaders(snapshot.Request.Header, snapshot.Request.Host),
 			"querystring": base.CollapseHeaderValues(http.Header(snapshot.Request.Query)),
 			"size":        max(snapshot.Request.ContentLength, 0),
 		},
 		"response": map[string]any{
-			"status": snapshot.Outcome.Status, "headers": base.CollapseHeaderValues(snapshot.Response.Header),
+			"status": snapshot.Outcome.Status, "headers": base.CollapseAccessLogHeaderValues(snapshot.Response.Header),
 			"size": snapshot.Outcome.Bytes,
 		},
 		"server":     map[string]any{"hostname": hostname, "version": fileLoggerVersion},
@@ -556,13 +556,13 @@ func defaultLogFields(
 			"url":         request.scheme + "://" + request.host + request.uri,
 			"uri":         request.uri,
 			"method":      request.method,
-			"headers":     base.CollapseHeaderValues(request.headers),
+			"headers":     fileRequestHeaders(request.headers, r.Host),
 			"querystring": base.CollapseHeaderValues(http.Header(request.query)),
 			"size":        request.size,
 		},
 		"response": map[string]any{
 			"status":  metrics.Code,
-			"headers": base.CollapseHeaderValues(responseHeaders),
+			"headers": base.CollapseAccessLogHeaderValues(responseHeaders),
 			"size":    metrics.Written,
 		},
 		"server": map[string]any{
@@ -618,6 +618,12 @@ func resolveLogValue(value string, r *http.Request, request requestSnapshot, sta
 	}
 }
 
+func fileRequestHeaders(headers http.Header, host string) map[string]any {
+	collapsed := base.CollapseAccessLogHeaderValues(headers)
+	collapsed["host"] = host
+	return collapsed
+}
+
 func resolvedUpstream(r *http.Request) string {
 	host := base.RequestVar(r, "$balancer_ip", 0)
 	if host == "" {
@@ -651,7 +657,7 @@ func (w *appendFileWriteSyncer) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file == nil {
-		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			logger.Error(fmt.Sprintf("failed to open file: %s, error info: %s", w.path, err))
 			return 0, err

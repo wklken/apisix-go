@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -83,6 +84,150 @@ func TestSnapshotDefaultLogFieldsPreservesResolvedUpstream(t *testing.T) {
 	fields := snapshotDefaultLogFields(snapshot)
 	if fields["upstream"] != "127.0.0.1:1982" {
 		t.Fatalf("upstream = %#v, want resolved address", fields["upstream"])
+	}
+}
+
+func TestDefaultFileLoggerFieldsRedactSensitiveHeaders(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
+	r.Host = "gateway.test:9443"
+	r.Header = testFileLoggerHeaders()
+	request := captureRequest(r)
+
+	live := defaultLogFields(
+		r,
+		request,
+		testFileLoggerHeaders(),
+		httpsnoop.Metrics{Code: http.StatusOK, Written: 1},
+		time.Unix(100, 0),
+	)
+	assertSafeFileLoggerHeaders(t, live)
+
+	detached := snapshotDefaultLogFields(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			Host:   "gateway.test:9443",
+			Header: testFileLoggerHeaders(),
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: testFileLoggerHeaders()},
+		Started:  time.Unix(100, 0),
+		Finished: time.Unix(101, 0),
+	})
+	assertSafeFileLoggerHeaders(t, detached)
+}
+
+func TestCustomFileLoggerFormatRetainsSensitiveHeader(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	r.Header.Set("Authorization", "Bearer explicit")
+	r = apisixctx.WithRequestVars(r)
+	apisixctx.RegisterRequestVar(r, "$http_authorization", r.Header.Get("Authorization"))
+	p := &Plugin{logFormat: map[string]any{"authorization": "$http_authorization"}}
+
+	fields := p.buildLogFields(
+		r,
+		captureRequest(r),
+		nil,
+		httpsnoop.Metrics{Code: http.StatusOK},
+		time.Unix(100, 0),
+	)
+	if got := fields["authorization"]; got != "Bearer explicit" {
+		t.Fatalf("custom authorization = %#v, want explicit header value", got)
+	}
+}
+
+func TestAppendFileWriteSyncerFileModes(t *testing.T) {
+	t.Run("new file is private", func(t *testing.T) {
+		path := t.TempDir() + "/new.log"
+		writer := &appendFileWriteSyncer{path: path}
+		if _, err := writer.Write([]byte("entry")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat new file: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("new file mode = %o, want 600", got)
+		}
+	})
+
+	t.Run("existing file keeps mode", func(t *testing.T) {
+		path := t.TempDir() + "/existing.log"
+		if err := os.WriteFile(path, nil, 0o640); err != nil {
+			t.Fatalf("create existing file: %v", err)
+		}
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatalf("chmod existing file: %v", err)
+		}
+		writer := &appendFileWriteSyncer{path: path}
+		if _, err := writer.Write([]byte("entry")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat existing file: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o640 {
+			t.Fatalf("existing file mode = %o, want 640", got)
+		}
+	})
+}
+
+var testSensitiveFileLoggerHeaders = []string{
+	"authorization",
+	"proxy-authorization",
+	"cookie",
+	"set-cookie",
+	"x-api-key",
+	"x-functions-key",
+	"x-amz-security-token",
+	"x-goog-api-key",
+}
+
+func testFileLoggerHeaders() http.Header {
+	return http.Header{
+		"aUtHoRiZaTiOn":        {"secret-authorization"},
+		"pRoXy-AuThOrIzAtIoN":  {"secret-proxy-authorization"},
+		"cOoKiE":               {"secret-cookie"},
+		"sEt-CoOkIe":           {"secret-set-cookie"},
+		"x-aPi-kEy":            {"secret-api-key"},
+		"x-fUnCtIoNs-kEy":      {"secret-functions-key"},
+		"x-aMz-SeCuRiTy-ToKeN": {"secret-amz-token"},
+		"x-GoOg-aPi-KeY":       {"secret-goog-key"},
+		"Host":                 {"gateway.test"},
+		"X-Visible":            {"first", "second"},
+	}
+}
+
+func assertSafeFileLoggerHeaders(t *testing.T, fields map[string]any) {
+	t.Helper()
+	for _, section := range []string{"request", "response"} {
+		payload, ok := fields[section].(map[string]any)
+		if !ok {
+			t.Fatalf("%s payload = %#v, want object", section, fields[section])
+		}
+		headers, ok := payload["headers"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s headers = %#v, want object", section, payload["headers"])
+		}
+		for _, name := range testSensitiveFileLoggerHeaders {
+			if _, ok := headers[name]; ok {
+				t.Fatalf("%s sensitive header %q = %#v, want omitted", section, name, headers[name])
+			}
+		}
+		if got := headers["x-visible"]; got == nil {
+			t.Fatalf("%s headers = %#v, want benign header", section, headers)
+		}
+	}
+	request := fields["request"].(map[string]any)
+	if got := request["headers"].(map[string]any)["host"]; got == nil {
+		t.Fatalf("request headers = %#v, want host", request["headers"])
 	}
 }
 

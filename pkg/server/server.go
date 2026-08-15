@@ -154,7 +154,7 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
-	var handler http.Handler = routes
+	handler := newHealthHandler(routes, requiresEtcdReadiness(config.GlobalConfig))
 	var trustedAddresses []string
 	if config.GlobalConfig != nil {
 		trustedAddresses = config.GlobalConfig.Apisix.TrustedAddresses
@@ -183,6 +183,34 @@ func NewServer() (*Server, error) {
 		storage:         storage,
 		otelShutdown:    otelShutdown,
 	}, nil
+}
+
+func newHealthHandler(next http.Handler, requireEtcd bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez":
+			w.WriteHeader(http.StatusOK)
+		case "/readyz":
+			writeReadinessResponse(w, requireEtcd)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+func writeReadinessResponse(w http.ResponseWriter, requireEtcd bool) {
+	state := metrics.GetReadiness()
+	status := http.StatusOK
+	if !state.ConfigApplyReady || (requireEtcd && !state.EtcdReachable) {
+		status = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"config_apply_ready":%t,"etcd_reachable":%t}`, state.ConfigApplyReady, state.EtcdReachable)
+}
+
+func requiresEtcdReadiness(cfg *config.Config) bool {
+	return cfg != nil && standaloneConfigProvider(cfg) == ""
 }
 
 func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handler {

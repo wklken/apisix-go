@@ -127,3 +127,48 @@ func TestConfigApplyStagesAreConcurrencySafe(t *testing.T) {
 		t.Fatalf("ready after concurrent stage recovery = %v, want 1", got)
 	}
 }
+
+func TestGetReadinessRequiresBothConfigApplyStages(t *testing.T) {
+	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_readiness_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_ready"})
+	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
+
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true before either stage was observed")
+	}
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true before HTTP route stage was observed")
+	}
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("config apply readiness = false after both stages succeeded")
+	}
+
+	RecordConfigApplyStageFailure(ConfigApplyStageProvider)
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true after provider stage failed")
+	}
+}
+
+func TestGetReadinessResetsWhenConfigMetricsAreReplaced(t *testing.T) {
+	oldFailures, oldReady := ConfigApplyFailures, ConfigApplyReady
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_readiness_reset_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_reset_ready"})
+	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("config apply readiness = false before collector replacement")
+	}
+
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_readiness_reset_failures_replaced_total",
+	})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_reset_ready_replaced"})
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true after collector replacement")
+	}
+}

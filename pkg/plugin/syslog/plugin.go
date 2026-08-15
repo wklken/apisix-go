@@ -65,6 +65,10 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
+	  "ssl_verify": {
+		"type": "boolean",
+		"default": true
+	  },
 	  "log_format": {
 		"type": "object"
 	  },
@@ -179,6 +183,7 @@ type Config struct {
 	SockType            string         `json:"sock_type,omitempty"`
 	PoolSize            int            `json:"pool_size,omitempty"`
 	TLS                 bool           `json:"tls,omitempty"`
+	SSLVerify           *bool          `json:"ssl_verify,omitempty"`
 	IncludeReqBody      bool           `json:"include_req_body,omitempty"`
 	IncludeReqBodyExpr  [][]any        `json:"include_req_body_expr,omitempty"`
 	IncludeRespBody     bool           `json:"include_resp_body,omitempty"`
@@ -261,6 +266,10 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
+	}
+	if p.config.SSLVerify == nil {
+		sslVerify := true
+		p.config.SSLVerify = &sslVerify
 	}
 	if p.config.FlushLimit == 0 {
 		p.config.FlushLimit = 4096

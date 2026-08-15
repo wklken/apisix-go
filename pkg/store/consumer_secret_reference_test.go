@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,10 +9,112 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestMaterializeSecretClonesRedactsAndDestroysValue(t *testing.T) {
+	const name = "APISIX_GO_MATERIALIZED_SECRET_TEST"
+	const value = "materialized-secret-value"
+	t.Setenv(name, value)
+
+	secret, err := MaterializeSecret("$ENV://" + name)
+	if err != nil {
+		t.Fatalf("MaterializeSecret() error = %v", err)
+	}
+	if descriptor := secret.Descriptor(); !strings.Contains(descriptor, "$ENV://"+name) ||
+		strings.Contains(descriptor, value) {
+		t.Fatalf("Descriptor() = %q, want reference/fingerprint without plaintext", descriptor)
+	}
+	first := secret.Bytes()
+	first[0] = 'X'
+	if second := secret.Bytes(); !bytes.Equal(second, []byte(value)) {
+		t.Fatalf("Bytes() shared caller mutation: %q", second)
+	}
+	secret.Destroy()
+	secret.Destroy()
+	if got := secret.Bytes(); got != nil {
+		t.Fatalf("Bytes() after Destroy = %q, want nil", got)
+	}
+}
+
+func TestSecretStoreEventInvalidatesVaultCacheAndTriggersHTTPReload(t *testing.T) {
+	secretStore := newConsumerSnapshotStore(t)
+	secretStore.vaultSecretCache().Set("vault/test1/foo/key", "stale", time.Minute)
+	event := &Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/secrets/vault/test1"),
+		Value: []byte(`{"uri":"https://vault.example","prefix":"kv","token":"token"}`),
+	}
+	if err := secretStore.processEvent(event); err != nil {
+		t.Fatalf("processEvent(secret) error = %v", err)
+	}
+	if secretStore.vaultSecrets != nil {
+		t.Fatal("Vault cache survived secret resource replacement")
+	}
+	if bucket, ok := EventBucket(event); !ok || bucket != "secrets" {
+		t.Fatalf("EventBucket(secret) = %q/%t, want secrets/true", bucket, ok)
+	}
+	if !IsHTTPRouteReloadBucket("secrets") {
+		t.Fatal("secrets is not an HTTP route reload bucket")
+	}
+}
+
+func TestSecretStoreEventCannotBeRepopulatedByInflightVaultFetch(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	secretStore := newConsumerSnapshotStore(t)
+	secretStore.vaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"passwd":"stale"}}`)),
+		}, nil
+	})}
+	config, err := json.Marshal(vaultSecretConfig{
+		URI: "https://vault.example", Prefix: "kv", Token: "token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := secretStore.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("secrets")).Put([]byte("vault/test1"), config)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCache := secretStore.vaultSecretCache()
+	result := make(chan error, 1)
+	go func() {
+		_, resolveErr := secretStore.resolveVaultSecret("vault/test1", "foo/passwd")
+		result <- resolveErr
+	}()
+	<-started
+	if err := secretStore.processEvent(&Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/secrets/vault/test1"),
+		Value: config,
+	}); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	newCache := secretStore.vaultSecretCache()
+	if newCache == oldCache {
+		close(release)
+		t.Fatal("secret event retained the prior Vault cache")
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("in-flight Vault fetch error = %v", err)
+	}
+	if value, ok := newCache.Get("vault/test1/foo/passwd"); ok {
+		t.Fatalf("replacement cache was repopulated with stale value %q", value)
+	}
+}
 
 func TestResolveSecretReferencePreservesLiteral(t *testing.T) {
 	original := s

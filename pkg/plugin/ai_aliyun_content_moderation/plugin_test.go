@@ -289,6 +289,47 @@ func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	}
 }
 
+func TestMaterializeSecretsResolvesCredentialsAndRedactsConfig(t *testing.T) {
+	t.Setenv("APISIX_GO_ALIYUN_ACCESS_ID", "resolved-access-id")
+	t.Setenv("APISIX_GO_ALIYUN_ACCESS_SECRET", "resolved-access-secret")
+	p := &Plugin{config: Config{
+		Endpoint:        "https://moderation.example",
+		RegionID:        "cn-shanghai",
+		AccessKeyID:     "$ENV://APISIX_GO_ALIYUN_ACCESS_ID",
+		AccessKeySecret: "$ENV://APISIX_GO_ALIYUN_ACCESS_SECRET",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	if strings.Contains(p.config.AccessKeyID, "resolved-access-id") ||
+		strings.Contains(p.config.AccessKeySecret, "resolved-access-secret") {
+		t.Fatalf("materialized config exposed plaintext: %#v", p.config)
+	}
+	p.now = func() time.Time { return time.Unix(1, 0) }
+	p.nonce = func() string { return "nonce" }
+	body, err := p.buildFormBody("session", "hello", "llm_query_moderation")
+	if err != nil {
+		t.Fatalf("buildFormBody() error = %v", err)
+	}
+	form, err := url.ParseQuery(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := form.Get("AccessKeyId"); got != "resolved-access-id" {
+		t.Fatalf("AccessKeyId = %q, want resolved-access-id", got)
+	}
+	if got := form.Get("Signature"); got == "" {
+		t.Fatal("Signature is empty")
+	}
+	p.Stop()
+	if _, err := p.buildFormBody("session", "hello", "llm_query_moderation"); err == nil {
+		t.Fatal("buildFormBody() after Stop error = nil")
+	}
+}
+
 func TestHandlerRejectsOnModerationServiceErrorByDefault(t *testing.T) {
 	moderation := aliyunServer(t, `{"Data":{}}`, http.StatusOK)
 	defer moderation.Close()

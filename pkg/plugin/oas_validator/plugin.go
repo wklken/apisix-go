@@ -2,9 +2,8 @@ package oas_validator
 
 import (
 	"context"
-	"crypto/tls"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -14,16 +13,19 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config     Config
-	metadata   Metadata
-	mu         sync.Mutex
-	compiled   atomic.Pointer[compiledSpec]
-	compiledAt atomic.Int64
-	now        func() time.Time
+	config         Config
+	metadata       Metadata
+	mu             sync.Mutex
+	compiled       atomic.Pointer[compiledSpec]
+	compiledAt     atomic.Int64
+	now            func() time.Time
+	inlineSpec     *store.ResolvedSecret
+	requestHeaders map[string]*store.ResolvedSecret
 
 	refreshStart   sync.Once
 	refreshStop    sync.Once
@@ -39,6 +41,7 @@ const (
 	priority          = 512
 	name              = "oas-validator"
 	defaultSpecURLTTL = 3600
+	maxOASTotalBytes  = 4 << 20
 )
 
 const schema = `
@@ -58,6 +61,14 @@ const schema = `
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "spec_url_allowed_addresses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
     },
     "ssl_verify": {
       "type": "boolean",
@@ -127,6 +138,7 @@ type Config struct {
 	Spec                        string            `json:"spec,omitempty"`
 	SpecURL                     string            `json:"spec_url,omitempty"`
 	SpecURLRequestHeaders       map[string]string `json:"spec_url_request_headers,omitempty"`
+	SpecURLAllowedAddresses     []string          `json:"spec_url_allowed_addresses,omitempty"`
 	SSLVerify                   bool              `json:"ssl_verify,omitempty"`
 	Timeout                     int               `json:"timeout,omitempty"`
 	VerboseErrors               bool              `json:"verbose_errors,omitempty"`
@@ -155,6 +167,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if (p.config.Spec != "" && p.inlineSpec == nil) ||
+		(len(p.config.SpecURLRequestHeaders) > 0 && p.requestHeaders == nil) {
+		if err := p.MaterializeSecrets(); err != nil {
+			return errors.New("oas-validator secret materialization failed")
+		}
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 10000
 	}
@@ -162,13 +180,63 @@ func (p *Plugin) PostInit() error {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
 	p.metadata = base.LoadPluginMetadata[Metadata](name)
-	if p.config.Spec != "" {
+	if p.inlineSpec != nil {
+		spec := p.inlineSpec.Bytes()
+		defer clear(spec)
+		if len(spec) > maxOASTotalBytes {
+			return fmt.Errorf("inline openapi spec exceeds %d bytes", maxOASTotalBytes)
+		}
 		var raw any
-		if err := json.Unmarshal([]byte(p.config.Spec), &raw); err != nil {
+		if err := json.Unmarshal(spec, &raw); err != nil {
 			return fmt.Errorf("failed to parse inline openapi spec: %w", err)
 		}
 	}
 	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	if p.inlineSpec != nil || p.requestHeaders != nil {
+		return nil
+	}
+	var inline *store.ResolvedSecret
+	var err error
+	if p.config.Spec != "" {
+		inline, err = store.MaterializeSecret(p.config.Spec)
+		if err != nil {
+			return err
+		}
+	}
+	headers := make(map[string]*store.ResolvedSecret, len(p.config.SpecURLRequestHeaders))
+	for name, value := range p.config.SpecURLRequestHeaders {
+		resolved, resolveErr := store.MaterializeSecret(value)
+		if resolveErr != nil {
+			inline.Destroy()
+			for _, header := range headers {
+				header.Destroy()
+			}
+			return resolveErr
+		}
+		headers[name] = resolved
+	}
+	p.inlineSpec = inline
+	p.requestHeaders = headers
+	if inline != nil {
+		p.config.Spec = inline.Descriptor()
+	}
+	for name, header := range headers {
+		p.config.SpecURLRequestHeaders[name] = header.Descriptor()
+	}
+	return nil
+}
+
+func (p *Plugin) resolvedRequestHeaders() map[string]string {
+	headers := make(map[string]string, len(p.requestHeaders))
+	for name, secret := range p.requestHeaders {
+		value := secret.Bytes()
+		headers[name] = string(value)
+		clear(value)
+	}
+	return headers
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -268,31 +336,42 @@ func (p *Plugin) specRefreshLoop() {
 // compileValidator fetches and compiles the configured spec. It performs
 // network I/O and must never run while the published-validator lock is held.
 func (p *Plugin) compileValidator(ctx context.Context) (*compiledSpec, error) {
-	spec := p.config.Spec
-	if spec == "" {
-		fetched, err := p.fetchSpec(ctx)
-		if err != nil {
-			return nil, err
-		}
-		spec = fetched
-	}
-
-	var (
-		baseURL *url.URL
-		err     error
-	)
+	var baseURL *url.URL
 	if p.config.SpecURL != "" {
+		var err error
 		baseURL, err = url.Parse(p.config.SpecURL)
 		if err != nil {
 			return nil, err
 		}
 	}
+	headers := p.resolvedRequestHeaders()
+	client, err := newDocumentHTTPClient(
+		baseURL,
+		p.config.SpecURLAllowedAddresses,
+		headers,
+		p.config.SSLVerify,
+		p.config.Timeout,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var spec []byte
+	if p.inlineSpec != nil {
+		spec = p.inlineSpec.Bytes()
+		defer clear(spec)
+	} else {
+		fetched, err := fetchDocument(ctx, client, baseURL, headers, baseURL)
+		if err != nil {
+			return nil, err
+		}
+		spec = fetched
+	}
 	compiled, err := compileSpec(
 		ctx,
-		[]byte(spec),
+		spec,
 		baseURL,
-		p.httpClient(),
-		p.config.SpecURLRequestHeaders,
+		client,
+		headers,
 	)
 	if err != nil {
 		if p.config.SpecURL != "" {
@@ -314,12 +393,16 @@ func (p *Plugin) publishValidator(compiled *compiledSpec) {
 func (p *Plugin) Stop() {
 	p.refreshStop.Do(func() {
 		p.refreshStopped.Store(true)
+		if p.refreshCancel != nil {
+			p.refreshCancel()
+		}
 		if p.stopRefresh != nil {
 			close(p.stopRefresh)
 			<-p.refreshDone
 		}
-		if p.refreshCancel != nil {
-			p.refreshCancel()
+		p.inlineSpec.Destroy()
+		for _, header := range p.requestHeaders {
+			header.Destroy()
 		}
 	})
 }
@@ -336,39 +419,6 @@ func (p *Plugin) specURLTTL() time.Duration {
 		return time.Duration(p.metadata.SpecURLTTL) * time.Second
 	}
 	return defaultSpecURLTTL * time.Second
-}
-
-func (p *Plugin) fetchSpec(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.config.SpecURL, nil)
-	if err != nil {
-		return "", err
-	}
-	for name, value := range p.config.SpecURLRequestHeaders {
-		req.Header.Set(name, value)
-	}
-
-	res, err := p.httpClient().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = res.Body.Close() }()
-
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("spec URL returned status %d", res.StatusCode)
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
-}
-
-func (p *Plugin) httpClient() *http.Client {
-	client := &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
-	if !p.config.SSLVerify {
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
-	return client
 }
 
 func (p *Plugin) rejectIfNotMatch() bool {

@@ -1885,6 +1885,17 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 	if err := util.Parse(config, p.Config()); err != nil {
 		return fmt.Errorf("parse plugin %s metadata: %w", pluginName, err)
 	}
+	if err := plugin.MaterializePluginSecrets(p); err != nil {
+		return fmt.Errorf("materialize plugin %s secrets: %w", pluginName, err)
+	}
+	_, cleanupMaterializedSecrets := p.(plugin.SecretMaterializer)
+	defer func() {
+		if cleanupMaterializedSecrets {
+			if stopper, ok := p.(pluginStopper); ok {
+				stopper.Stop()
+			}
+		}
+	}()
 	if err := p.PostInit(); err != nil {
 		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
 	}
@@ -1892,6 +1903,7 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 	if stopper, ok := p.(pluginStopper); ok {
 		b.addStopper(stopper)
 	}
+	cleanupMaterializedSecrets = false
 	return nil
 }
 
@@ -2122,6 +2134,16 @@ func (b *Builder) initPluginBindingsStrict(
 		if err != nil {
 			return nil, sourceError(fmt.Errorf("parse plugin %s config: %w", name, err))
 		}
+		if err := plugin.MaterializePluginSecrets(p); err != nil {
+			return nil, sourceError(fmt.Errorf("materialize plugin %s secrets: %w", name, err))
+		}
+		secretStopperAdded := false
+		if _, ownsSecrets := p.(plugin.SecretMaterializer); ownsSecrets {
+			if stopper, ok := p.(pluginStopper); ok {
+				pendingStoppers = append(pendingStoppers, stopper)
+				secretStopperAdded = true
+			}
+		}
 
 		if setter, ok := p.(pluginRouteContextSetter); ok {
 			setter.SetRouteContext(routeContext.routeID, routeContext.serverAddr)
@@ -2146,7 +2168,7 @@ func (b *Builder) initPluginBindingsStrict(
 			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}
 		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
-		if stopper, ok := p.(pluginStopper); ok {
+		if stopper, ok := p.(pluginStopper); ok && !secretStopperAdded {
 			pendingStoppers = append(pendingStoppers, stopper)
 		}
 

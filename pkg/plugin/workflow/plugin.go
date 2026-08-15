@@ -150,6 +150,9 @@ func (p *Plugin) PostInit() error {
 				if err := util.Parse(action.Config, plugin.Config()); err != nil {
 					return err
 				}
+				if err := base.MaterializePluginSecrets(plugin); err != nil {
+					return err
+				}
 				if err := plugin.PostInit(); err != nil {
 					return err
 				}
@@ -163,6 +166,9 @@ func (p *Plugin) PostInit() error {
 					return err
 				}
 				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+					return err
+				}
+				if err := base.MaterializePluginSecrets(plugin); err != nil {
 					return err
 				}
 				if err := plugin.PostInit(); err != nil {
@@ -188,6 +194,9 @@ func (p *Plugin) PostInit() error {
 					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
 				}
 				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+					return err
+				}
+				if err := base.MaterializePluginSecrets(plugin); err != nil {
 					return err
 				}
 				if err := plugin.PostInit(); err != nil {

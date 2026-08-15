@@ -158,11 +158,28 @@ func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 // IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
 func IsHTTPRouteReloadBucket(bucket string) bool {
 	switch bucket {
-	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata", "ssls":
+	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata", "ssls", "secrets":
 		return true
 	default:
 		return false
 	}
+}
+
+// EventBucket returns the canonical resource bucket, including nested secret
+// keys such as /apisix/secrets/vault/name.
+func EventBucket(event *Event) (string, bool) {
+	if event == nil {
+		return "", false
+	}
+	parts := bytes.Split(event.Key, []byte("/"))
+	if len(parts) < 4 {
+		return "", false
+	}
+	bucket, _ := getTypeAndIDFromKey(event.Key)
+	if len(bucket) == 0 {
+		return "", false
+	}
+	return string(bucket), true
 }
 
 // IsStreamReloadBucket reports whether a resource change affects stream routing.
@@ -441,6 +458,11 @@ func (s *Store) processEvent(event *Event) error {
 	bucket := string(bucketName)
 	if bucket == "ssls" {
 		s.applySSLCertificateEvent(event.Type, util.BytesToString(id), event.Value)
+	}
+	if bucket == "secrets" {
+		s.vaultMu.Lock()
+		s.vaultSecrets = nil
+		s.vaultMu.Unlock()
 	}
 	if bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata" {
 		s.configGeneration.Add(1)

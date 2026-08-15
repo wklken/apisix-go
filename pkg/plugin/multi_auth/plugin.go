@@ -140,6 +140,9 @@ func (p *Plugin) PostInit() error {
 			if err := util.Parse(authConfig, auth.Config()); err != nil {
 				return fmt.Errorf("plugin %s parse config failed: %w", authName, err)
 			}
+			if err := base.MaterializePluginSecrets(auth); err != nil {
+				return fmt.Errorf("plugin %s materialize secrets failed: %w", authName, err)
+			}
 			if err := auth.PostInit(); err != nil {
 				return err
 			}

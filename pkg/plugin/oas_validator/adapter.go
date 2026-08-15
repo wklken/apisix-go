@@ -42,23 +42,23 @@ func compileSpec(
 	loader := openapi3.NewLoader()
 	loader.Context = ctx
 	loader.IsExternalRefsAllowed = true
+	documents, err := preloadDocumentGraph(
+		ctx,
+		raw,
+		origin,
+		func(ctx context.Context, refURL *url.URL) ([]byte, error) {
+			return fetchDocument(ctx, client, refURL, headers, origin)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
 	loader.ReadFromURIFunc = func(_ *openapi3.Loader, refURL *url.URL) ([]byte, error) {
-		req, err := http.NewRequest(http.MethodGet, refURL.String(), nil)
-		if err != nil {
-			return nil, err
+		document, ok := documents[documentURL(refURL)]
+		if !ok {
+			return nil, fmt.Errorf("external openapi document %q was not preloaded", refURL)
 		}
-		for name, value := range headers {
-			req.Header.Set(name, value)
-		}
-		res, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = res.Body.Close() }()
-		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("external $ref URL returned status %d", res.StatusCode)
-		}
-		return io.ReadAll(res.Body)
+		return append([]byte(nil), document...), nil
 	}
 
 	doc, err := loader.LoadFromDataWithPath(raw, refOrigin(origin))

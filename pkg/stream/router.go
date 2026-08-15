@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -246,6 +247,9 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		}
 		if err := util.Parse(config, p.Config()); err != nil {
 			return routeEntry{}, fmt.Errorf("parse stream plugin %s: %w", name, err)
+		}
+		if err := base.MaterializePluginSecrets(p); err != nil {
+			return routeEntry{}, fmt.Errorf("materialize stream plugin %s secrets: %w", name, err)
 		}
 		if err := p.PostInit(); err != nil {
 			return routeEntry{}, fmt.Errorf("initialize stream plugin %s: %w", name, err)

@@ -165,6 +165,24 @@ of generation shutdown.
   It is not an in-process reload; start a new process with the new merged
   configuration after the old generation has drained.
 
+## Operator authentication and TLS defaults
+
+These defaults match Apache APISIX 3.17. They are not Go bypasses, and they
+remain in effect on the exact six-plugin allowlist. Production operators must
+set them explicitly:
+
+- `jwt-auth.claims_to_verify` must include `exp`. Tokens without `exp` never
+  expire when the field is omitted.
+- HTTPS and gRPCS upstreams set `tls.verify: true`. Omitted or false skips
+  upstream certificate verification.
+- `key-auth`, `jwt-auth`, and `basic-auth` set `hide_credentials: true` so
+  validated credentials are not forwarded upstream.
+
+Do not enable request loggers, `sls-logger`, stream, or `gm` under this
+profile. Strip route `vars`, `remote_addrs`, and disabled (`status: 0`)
+routes before migration; the data plane now rejects or skips those fields
+instead of approximating them.
+
 ## Qualification status
 
 This profile is a conservative candidate, not a production-readiness claim. It

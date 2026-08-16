@@ -1,6 +1,7 @@
 package basic_auth
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -101,6 +102,9 @@ func attachLegacyConsumer(r *http.Request) {
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
 	authHeader := r.Header.Get("Authorization")
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
+	}
 	if authHeader == "" {
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
@@ -120,11 +124,6 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		p.writeAuthError(w, `{"message":"Invalid authorization in request"}`)
 		return base.StopRequest(r)
 	}
-	if *p.config.HideCredentials {
-		r.Header.Del("Authorization")
-	}
-	user = normalizeCredential(user)
-	pass = normalizeCredential(pass)
 
 	consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 	if err != nil {
@@ -156,7 +155,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	if pass != ba.Password {
+	if subtle.ConstantTimeCompare([]byte(pass), []byte(ba.Password)) != 1 {
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
 		}
@@ -191,10 +190,6 @@ func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(body))
-}
-
-func normalizeCredential(value string) string {
-	return strings.Join(strings.Fields(value), "")
 }
 
 type authorizationError string

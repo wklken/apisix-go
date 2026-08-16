@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
@@ -112,6 +114,77 @@ func TestErrorHandlerHidesUpstreamDetails(t *testing.T) {
 	}
 	if !strings.Contains(body, "upstream request failed") {
 		t.Fatalf("body = %q, want generic upstream failure message", body)
+	}
+}
+
+func TestProxyErrorHandlerRedactsQueryFromLog(t *testing.T) {
+	var entries []logger.Entry
+	stop := logger.ReplaceObserver("task5-query-redaction", func(entry logger.Entry) {
+		entries = append(entries, entry)
+	})
+	t.Cleanup(stop)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.test/pay?access_token=secret&code=123#fragment",
+		nil,
+	)
+	request.URL.User = url.UserPassword("alice", "password")
+	request = apisixctx.WithRequestVars(request)
+	response := httptest.NewRecorder()
+
+	newErrorHandler()(response, request, errors.New("upstream connection refused"))
+
+	if len(entries) != 1 {
+		t.Fatalf("proxy error log entries = %d, want 1", len(entries))
+	}
+	message := entries[0].Message
+	if !strings.Contains(message, "proxy request GET /pay failed") {
+		t.Fatalf("proxy error log = %q, want method and path", message)
+	}
+	if !strings.Contains(message, "upstream connection refused") {
+		t.Fatalf("proxy error log = %q, want error class", message)
+	}
+	for _, secret := range []string{
+		"access_token",
+		"secret",
+		"code=",
+		"/pay?access_token=secret&code=123",
+		"alice",
+		"password",
+		"fragment",
+	} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("proxy error log = %q, contains %q", message, secret)
+		}
+	}
+}
+
+func TestProxyFailureLogPathUsesEscapedPath(t *testing.T) {
+	requestWithEscapedPath := &http.Request{
+		URL: &url.URL{
+			Path:     "/pay/item",
+			RawPath:  "/pay%2Fitem",
+			RawQuery: "access_token=secret",
+			Fragment: "fragment",
+		},
+	}
+	tests := []struct {
+		name    string
+		request *http.Request
+		want    string
+	}{
+		{name: "nil request", request: nil, want: "/"},
+		{name: "nil URL", request: &http.Request{}, want: "/"},
+		{name: "empty URL", request: &http.Request{URL: &url.URL{}}, want: "/"},
+		{name: "escaped path", request: requestWithEscapedPath, want: "/pay%2Fitem"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := proxyFailureLogPath(test.request); got != test.want {
+				t.Fatalf("proxyFailureLogPath() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

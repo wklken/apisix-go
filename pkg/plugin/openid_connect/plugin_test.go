@@ -1028,7 +1028,8 @@ func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 	}
 	if p.config.Session.Storage != "cookie" || p.config.Session.CookieName != "session" ||
 		p.config.Session.CookiePath != "/" || p.config.Session.CookieHTTPOnly == nil ||
-		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSameSite != "Default" {
+		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSecure == nil ||
+		!*p.config.Session.CookieSecure || p.config.Session.CookieSameSite != "Default" {
 		t.Fatalf("OIDC session defaults not applied: %#v", p.config.Session)
 	}
 }
@@ -2196,7 +2197,7 @@ func TestSessionCookieHonorsConfiguredAttributesAndAbsoluteTimeout(t *testing.T)
 		CookieName:      "oidc-session",
 		CookiePath:      "/app",
 		CookieDomain:    "example.com",
-		CookieSecure:    true,
+		CookieSecure:    new(true),
 		CookieHTTPOnly:  new(false),
 		CookieSameSite:  "Strict",
 		AbsoluteTimeout: 3600,

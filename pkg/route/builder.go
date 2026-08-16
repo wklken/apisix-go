@@ -3453,9 +3453,20 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		logger.Errorf("proxy request %s %s failed: %v", r.Method, r.URL.RequestURI(), err)
+		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
+}
+
+func proxyFailureLogPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "/"
+	}
+	path := r.URL.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 func pinDecodedRoutePath(next http.Handler) http.Handler {

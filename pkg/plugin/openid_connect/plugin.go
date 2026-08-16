@@ -120,7 +120,7 @@ const schema = `
         "cookie_name": {"type": "string"},
         "cookie_path": {"type": "string"},
         "cookie_domain": {"type": "string"},
-        "cookie_secure": {"type": "boolean"},
+        "cookie_secure": {"type": "boolean", "default": true},
         "cookie_http_only": {"type": "boolean"},
         "cookie_same_site": {"type": "string", "enum": ["Strict", "Lax", "None", "Default"]},
         "idling_timeout": {"type": "integer", "minimum": 1},
@@ -353,7 +353,7 @@ type SessionConfig struct {
 	CookieName      string               `json:"cookie_name,omitempty"`
 	CookiePath      string               `json:"cookie_path,omitempty"`
 	CookieDomain    string               `json:"cookie_domain,omitempty"`
-	CookieSecure    bool                 `json:"cookie_secure,omitempty"`
+	CookieSecure    *bool                `json:"cookie_secure,omitempty"`
 	CookieHTTPOnly  *bool                `json:"cookie_http_only,omitempty"`
 	CookieSameSite  string               `json:"cookie_same_site,omitempty"`
 	IdlingTimeout   int                  `json:"idling_timeout,omitempty"`
@@ -504,6 +504,10 @@ func (p *Plugin) PostInit() error {
 		if p.config.Session.CookieHTTPOnly == nil {
 			b := true
 			p.config.Session.CookieHTTPOnly = &b
+		}
+		if p.config.Session.CookieSecure == nil {
+			b := true
+			p.config.Session.CookieSecure = &b
 		}
 		if p.config.Session.CookieSameSite == "" {
 			p.config.Session.CookieSameSite = "Default"

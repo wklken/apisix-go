@@ -57,6 +57,7 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
+	r.Header.Del("X-Consumer-Username")
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
 	bodyLimitState := requestBodyLimitStateFromRequest(request)
 	captureWriter := w

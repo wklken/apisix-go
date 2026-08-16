@@ -1,6 +1,8 @@
 package route
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -33,6 +35,20 @@ func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 			value:   `"return true"`,
 			wantErr: "filter_func",
 			routeID: "unsupported-filter-route",
+		},
+		{
+			name:    "vars",
+			field:   "vars",
+			value:   `[["http_user","==","ios"]]`,
+			wantErr: "vars",
+			routeID: "unsupported-vars-route",
+		},
+		{
+			name:    "remote_addrs",
+			field:   "remote_addrs",
+			value:   `["10.0.0.1"]`,
+			wantErr: "remote_addrs",
+			routeID: "unsupported-remote-addrs-route",
 		},
 	}
 
@@ -74,6 +90,74 @@ func TestBuildStrictAllowsBlankFilterFunc(t *testing.T) {
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
 		t.Fatalf("BuildStrict() = (%T, %v), want blank filter_func accepted", handler, err)
+	}
+}
+
+func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	const routeID = "nested-numeric-vars"
+	putRouteResource(t, routeID, []byte(`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want vars rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), routeID) || !strings.Contains(err.Error(), "vars") {
+		t.Fatalf("BuildStrict() error = %q, want route ID and vars", err)
+	}
+}
+
+func TestBuildStrictAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	for _, test := range []struct {
+		routeID string
+		payload string
+	}{
+		{routeID: "empty-vars", payload: `{"id":"empty-vars","uri":"/empty-vars","vars":[]}`},
+		{routeID: "null-vars", payload: `{"id":"null-vars","uri":"/null-vars","vars":null}`},
+		{routeID: "empty-remote", payload: `{"id":"empty-remote","uri":"/empty-remote","remote_addrs":[]}`},
+	} {
+		t.Run(test.routeID, func(t *testing.T) {
+			putRouteResource(t, test.routeID, []byte(test.payload))
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			handler, err := builder.BuildStrict()
+			if err != nil || handler == nil {
+				t.Fatalf("BuildStrict() = (%T, %v), want empty %s accepted", handler, err, test.routeID)
+			}
+		})
+	}
+}
+
+func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	const routeID = "vars-last-good"
+	putRouteResource(t, routeID, []byte(`{"id":"vars-last-good","uri":"/vars-last-good"}`))
+
+	validBuilder := NewBuilder(nil)
+	t.Cleanup(validBuilder.Stop)
+	lastGood, err := validBuilder.BuildStrict()
+	if err != nil || lastGood == nil {
+		t.Fatalf("valid BuildStrict() = (%T, %v)", lastGood, err)
+	}
+
+	putRouteResource(t, routeID, []byte(`{"id":"vars-last-good","uri":"/vars-last-good","vars":[["http_user","==","ios"]]}`))
+	invalidBuilder := NewBuilder(nil)
+	t.Cleanup(invalidBuilder.Stop)
+	handler, err := invalidBuilder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("invalid BuildStrict() = (%T, %v), want vars rejection", handler, err)
+	}
+
+	response := httptest.NewRecorder()
+	lastGood.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/vars-last-good", nil))
+	if response.Code == http.StatusNotFound {
+		t.Fatalf("last-good handler status = %d, want the previously compiled route", response.Code)
 	}
 }
 

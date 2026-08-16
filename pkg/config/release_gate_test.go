@@ -470,7 +470,8 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 				if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
 					t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
 				}
-				if strings.Contains(err.Error(), "logger.wasm") || strings.Contains(err.Error(), "/usr/local/bin/plugin") {
+				if strings.Contains(err.Error(), "logger.wasm") ||
+					strings.Contains(err.Error(), "/usr/local/bin/plugin") {
 					t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
 				}
 			})
@@ -712,7 +713,11 @@ func validHTTPDataPlaneV1Config() *Config {
 			Role:             "data_plane",
 			RoleDataPlane:    RoleConfig{ConfigProvider: "etcd"},
 			RoleControlPlane: RoleConfig{ConfigProvider: "etcd"},
-			Etcd:             Etcd{Host: []string{"https://etcd.example:2379"}, Prefix: "/apisix", TLS: EtcdTLS{Verify: &verify}},
+			Etcd: Etcd{
+				Host:   []string{"https://etcd.example:2379"},
+				Prefix: "/apisix",
+				TLS:    EtcdTLS{Verify: &verify},
+			},
 		},
 	}
 }

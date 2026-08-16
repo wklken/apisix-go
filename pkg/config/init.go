@@ -112,10 +112,16 @@ func validateRuntimeConfig(cfg *Config) error {
 	}
 	for index, listener := range cfg.Apisix.NodeListen {
 		if listener.Port < 1 || listener.Port > 65535 {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port))
+			return profileAwareRuntimeError(
+				cfg,
+				fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port),
+			)
 		}
 		if listener.Ip != "" && net.ParseIP(listener.Ip) == nil {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip))
+			return profileAwareRuntimeError(
+				cfg,
+				fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip),
+			)
 		}
 	}
 	for _, limit := range []struct {
@@ -144,15 +150,24 @@ func validateRuntimeConfig(cfg *Config) error {
 	}
 	if provider == "etcd" {
 		if len(cfg.Deployment.Etcd.Host) == 0 {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider"))
+			return profileAwareRuntimeError(
+				cfg,
+				fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider"),
+			)
 		}
 		for index, endpoint := range cfg.Deployment.Etcd.Host {
 			if strings.TrimSpace(endpoint) == "" {
-				return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index))
+				return profileAwareRuntimeError(
+					cfg,
+					fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index),
+				)
 			}
 		}
 		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider"))
+			return profileAwareRuntimeError(
+				cfg,
+				fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider"),
+			)
 		}
 	}
 	if err := validateUnsupportedRuntimeConfig(cfg); err != nil {
@@ -188,15 +203,27 @@ func validateUnsupportedRuntimeConfig(cfg *Config) error {
 		{field: "xrpc.protocols", isActive: len(cfg.XRPC.Protocols) > 0},
 	} {
 		if unsupported.isActive {
-			return fmt.Errorf("%s is unsupported; %s does not permit this runtime feature", unsupported.field, HTTPDataPlaneV1Profile)
+			return fmt.Errorf(
+				"%s is unsupported; %s does not permit this runtime feature",
+				unsupported.field,
+				HTTPDataPlaneV1Profile,
+			)
 		}
 	}
 	for index, listener := range cfg.Apisix.Ssl.Listen {
 		if listener.EnableQuic {
-			return fmt.Errorf("apisix.ssl.listen[%d].enable_quic is unsupported; %s does not permit this runtime feature", index, HTTPDataPlaneV1Profile)
+			return fmt.Errorf(
+				"apisix.ssl.listen[%d].enable_quic is unsupported; %s does not permit this runtime feature",
+				index,
+				HTTPDataPlaneV1Profile,
+			)
 		}
 		if listener.EnableHttp3 {
-			return fmt.Errorf("apisix.ssl.listen[%d].enable_http3 is unsupported; %s does not permit this runtime feature", index, HTTPDataPlaneV1Profile)
+			return fmt.Errorf(
+				"apisix.ssl.listen[%d].enable_http3 is unsupported; %s does not permit this runtime feature",
+				index,
+				HTTPDataPlaneV1Profile,
+			)
 		}
 	}
 	return nil
@@ -217,7 +244,11 @@ func validateHTTPDataPlaneV1Profile(cfg *Config) error {
 	for index, endpoint := range cfg.Deployment.Etcd.Host {
 		parsed, parseErr := url.Parse(endpoint)
 		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return profileFieldError(profile, fmt.Sprintf("deployment.etcd.host[%d]", index), "must use an HTTPS endpoint")
+			return profileFieldError(
+				profile,
+				fmt.Sprintf("deployment.etcd.host[%d]", index),
+				"must use an HTTPS endpoint",
+			)
 		}
 	}
 	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
@@ -246,7 +277,11 @@ func validateHTTPDataPlaneV1Profile(cfg *Config) error {
 	}
 	for index, address := range cfg.Apisix.TrustedAddresses {
 		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
-			return profileFieldError(profile, fmt.Sprintf("apisix.trusted_addresses[%d]", index), "must be a valid CIDR")
+			return profileFieldError(
+				profile,
+				fmt.Sprintf("apisix.trusted_addresses[%d]", index),
+				"must be a valid CIDR",
+			)
 		}
 	}
 	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}

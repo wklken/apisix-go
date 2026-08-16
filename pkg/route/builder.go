@@ -816,6 +816,7 @@ func newRequestPipelineWithLog(
 	pipeline := plugin.NewRequestPipeline(bindings, resolve)
 	return pipeline.WithLogExecutor(&logExecutor), nil
 }
+
 func ensureRouteLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request, _ := ctx.EnsureRequestLifecycle(r, time.Now())
@@ -841,7 +842,7 @@ func isWebsocketUpgradeRequest(r *http.Request) bool {
 		return false
 	}
 	for _, value := range r.Header.Values("Connection") {
-		for _, token := range strings.Split(value, ",") {
+		for token := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
 				return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
 			}
@@ -2481,8 +2482,15 @@ func resolveRouteUpstream(
 	if service.UpstreamID != "" {
 		upstream, err := store.GetUpstream(service.UpstreamID)
 		if err != nil {
-			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID},
-				fmt.Errorf("get upstream %q fail: %w", service.UpstreamID, err)
+			return resource.Upstream{}, plugin.ResourceProvenance{
+					Kind: plugin.ResourceUpstream,
+					ID:   service.UpstreamID,
+				},
+				fmt.Errorf(
+					"get upstream %q fail: %w",
+					service.UpstreamID,
+					err,
+				)
 		}
 		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID}, nil
 	}

@@ -203,7 +203,12 @@ func TestPostInitRejectsUnsupportedZipkinSpanVersionBeforeAllocation(t *testing.
 		t.Fatalf("PostInit() error = %q, want %q", err, want)
 	}
 	if p.client != nil || p.processor != nil || p.clientRelease != nil {
-		t.Fatalf("PostInit() allocated Zipkin resources before rejecting span version: client=%v processor=%v release=%v", p.client != nil, p.processor != nil, p.clientRelease != nil)
+		t.Fatalf(
+			"PostInit() allocated Zipkin resources before rejecting span version: client=%v processor=%v release=%v",
+			p.client != nil,
+			p.processor != nil,
+			p.clientRelease != nil,
+		)
 	}
 }
 

@@ -1177,3 +1177,33 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
 		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
+
+func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t, "workflow")
+	t.Setenv("ROUTE_DISABLED_WORKFLOW_SECRET", "")
+	putRouteResource(
+		t,
+		"disabled-workflow-secret",
+		[]byte(
+			`{"id":"disabled-workflow-secret","uri":"/disabled-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"time_window":60,"key":"$ENV://ROUTE_DISABLED_WORKFLOW_SECRET"}]]}]}}}`,
+		),
+	)
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want disabled nested workflow rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), `workflow action plugin "limit-count" is disabled`) ||
+		strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatalf("BuildStrict() error = %q, want disabled error before secret access", err)
+	}
+	builder.stopperMu.Lock()
+	stopperCount := len(builder.stoppers)
+	builder.stopperMu.Unlock()
+	if stopperCount != 0 {
+		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
+	}
+}

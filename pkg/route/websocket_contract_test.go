@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -22,6 +25,43 @@ type websocketBackend struct {
 	server       *httptest.Server
 	upgradeCalls atomic.Int32
 	httpCalls    atomic.Int32
+}
+
+type dynamicWebsocketHeaderPlugin struct {
+	base.BasePlugin
+	calls *atomic.Int32
+}
+
+func (p *dynamicWebsocketHeaderPlugin) Init() error     { return nil }
+func (p *dynamicWebsocketHeaderPlugin) PostInit() error { return nil }
+func (p *dynamicWebsocketHeaderPlugin) Config() any     { return nil }
+func (p *dynamicWebsocketHeaderPlugin) Handler(next http.Handler) http.Handler {
+	return next
+}
+
+func (p *dynamicWebsocketHeaderPlugin) ResponseCapability() plugin.ResponseCapability {
+	return plugin.ResponseCapability{HeaderFilter: true}
+}
+
+func (p *dynamicWebsocketHeaderPlugin) RunStreamingHeaderFilter(
+	_ *http.Request,
+	state *base.StreamingResponseState,
+) error {
+	p.calls.Add(1)
+	state.Header.Set("X-Dynamic-Response", "executed")
+	return nil
+}
+
+type websocketContractTerminal struct{}
+
+func (websocketContractTerminal) RunExclusiveProtocol(
+	w http.ResponseWriter,
+	r *http.Request,
+	_ http.Handler,
+) (base.ProtocolDisposition, *http.Request, apisixctx.ResponseSource, error) {
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+	w.WriteHeader(http.StatusSwitchingProtocols)
+	return base.ProtocolResponded, r, apisixctx.ResponseSourceUpstream, nil
 }
 
 func newWebsocketBackend(t *testing.T) *websocketBackend {
@@ -156,6 +196,89 @@ func TestRouteEnabledWebsocketUpgradeUsesReverseProxyHijack(t *testing.T) {
 	}
 	if got := backend.upgradeCalls.Load(); got != 1 {
 		t.Fatalf("upstream websocket calls = %d, want 1", got)
+	}
+}
+
+func TestKafkaRouteEnabledWebsocketUpgradeReachesExclusiveTerminal(t *testing.T) {
+	handler := buildWebsocketHandler(t, resource.Route{
+		ID:              "websocket-kafka-route",
+		EnableWebsocket: true,
+		Upstream: resource.Upstream{
+			Scheme: "kafka",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
+		},
+	})
+	gateway := httptest.NewServer(handler)
+	t.Cleanup(gateway.Close)
+
+	connection, response, err := dialWebsocket(t, gateway.URL)
+	if err != nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatalf("Kafka websocket dial: %v", err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("Kafka websocket response status = %d, want 101", response.StatusCode)
+	}
+}
+
+func TestTransparentUpgradeSkipsDynamicConsumerHeaderHook(t *testing.T) {
+	var calls atomic.Int32
+	dynamic := &dynamicWebsocketHeaderPlugin{calls: &calls}
+	plan, err := plugin.BuildResponsePlan(plugin.ResponsePlanInput{
+		RouteTerminals: []plugin.RouteTerminalCandidate{{
+			Identity: "websocket-contract-terminal",
+			Scope:    plugin.ScopeRoute,
+			Protocol: plugin.ProtocolKafka,
+			Provenance: plugin.ResourceProvenance{
+				Kind: plugin.ResourceRoute,
+				ID:   "websocket-contract-route",
+			},
+			Terminal: websocketContractTerminal{},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	binding := plugin.BindPlugin(
+		"dynamic-websocket-header",
+		dynamic,
+		plugin.ScopeConsumer,
+		plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: "dynamic-consumer"},
+	)
+	pipeline := plugin.NewRequestPipeline(nil, func(request *http.Request) (plugin.ConsumerResolution, error) {
+		return plugin.ConsumerResolution{
+			Request:  request,
+			Bindings: []plugin.Binding{binding},
+			Resolved: true,
+		}, nil
+	})
+	handler, err := buildTransparentUpgradeHandler(
+		pipeline,
+		plan,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("ordinary terminal reached")
+		}),
+	)
+	if err != nil {
+		t.Fatalf("buildTransparentUpgradeHandler() error = %v", err)
+	}
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Now(),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("transparent upgrade response status = %d, want 101", response.Code)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("dynamic response hook calls = %d, want 0", got)
+	}
+	if got := response.Header().Get("X-Dynamic-Response"); got != "" {
+		t.Fatalf("dynamic response header = %q, want absent", got)
 	}
 }
 

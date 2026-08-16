@@ -14,13 +14,14 @@ import (
 // cancels the surrounding request context, and closes the underlying body so
 // the reader unblocks.
 type progressTimeoutBody struct {
-	body     io.ReadCloser
-	timeout  time.Duration
-	timer    *time.Timer
-	timerMu  sync.Mutex
-	stopped  bool
-	timedOut atomic.Bool
-	cancel   context.CancelFunc
+	body       io.ReadCloser
+	timeout    time.Duration
+	timer      *time.Timer
+	timerMu    sync.Mutex
+	timerEpoch uint64
+	stopped    bool
+	timedOut   atomic.Bool
+	cancel     context.CancelFunc
 }
 
 func newProgressTimeoutBody(body io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) *progressTimeoutBody {
@@ -33,19 +34,26 @@ func (b *progressTimeoutBody) arm() {
 	}
 	b.timerMu.Lock()
 	defer b.timerMu.Unlock()
-	if b.stopped {
-		return
-	}
-	if b.timer == nil {
-		b.timer = time.AfterFunc(b.timeout, b.timeoutExpired)
-		return
-	}
-	b.timer.Reset(b.timeout)
+	b.armLocked()
 }
 
-func (b *progressTimeoutBody) timeoutExpired() {
-	b.timerMu.Lock()
+func (b *progressTimeoutBody) armLocked() {
 	if b.stopped {
+		return
+	}
+	b.timerEpoch++
+	epoch := b.timerEpoch
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.timer = time.AfterFunc(b.timeout, func() {
+		b.timeoutExpired(epoch)
+	})
+}
+
+func (b *progressTimeoutBody) timeoutExpired(epoch uint64) {
+	b.timerMu.Lock()
+	if b.stopped || epoch != b.timerEpoch {
 		b.timerMu.Unlock()
 		return
 	}
@@ -81,6 +89,7 @@ func (b *progressTimeoutBody) stop() {
 	b.timerMu.Lock()
 	if !b.stopped {
 		b.stopped = true
+		b.timerEpoch++
 		if b.timer != nil {
 			b.timer.Stop()
 		}
@@ -94,12 +103,13 @@ func (b *progressTimeoutBody) stop() {
 // io.Writer capability.
 type progressTimeoutDuplexBody struct {
 	*progressTimeoutBody
-	duplex        io.ReadWriteCloser
-	writeTimeout  time.Duration
-	writeTimer    *time.Timer
-	writeTimerMu  sync.Mutex
-	writeStopped  bool
-	writeTimedOut atomic.Bool
+	duplex          io.ReadWriteCloser
+	writeTimeout    time.Duration
+	writeTimer      *time.Timer
+	writeTimerMu    sync.Mutex
+	writeTimerEpoch uint64
+	writeStopped    bool
+	writeTimedOut   atomic.Bool
 }
 
 func (b *progressTimeoutDuplexBody) armWrite() {
@@ -108,19 +118,26 @@ func (b *progressTimeoutDuplexBody) armWrite() {
 	}
 	b.writeTimerMu.Lock()
 	defer b.writeTimerMu.Unlock()
-	if b.writeStopped {
-		return
-	}
-	if b.writeTimer == nil {
-		b.writeTimer = time.AfterFunc(b.writeTimeout, b.writeTimeoutExpired)
-		return
-	}
-	b.writeTimer.Reset(b.writeTimeout)
+	b.armWriteLocked()
 }
 
-func (b *progressTimeoutDuplexBody) writeTimeoutExpired() {
-	b.writeTimerMu.Lock()
+func (b *progressTimeoutDuplexBody) armWriteLocked() {
 	if b.writeStopped {
+		return
+	}
+	b.writeTimerEpoch++
+	epoch := b.writeTimerEpoch
+	if b.writeTimer != nil {
+		b.writeTimer.Stop()
+	}
+	b.writeTimer = time.AfterFunc(b.writeTimeout, func() {
+		b.writeTimeoutExpired(epoch)
+	})
+}
+
+func (b *progressTimeoutDuplexBody) writeTimeoutExpired(epoch uint64) {
+	b.writeTimerMu.Lock()
+	if b.writeStopped || epoch != b.writeTimerEpoch {
 		b.writeTimerMu.Unlock()
 		return
 	}
@@ -165,6 +182,7 @@ func (b *progressTimeoutDuplexBody) stop() {
 	b.writeTimerMu.Lock()
 	if !b.writeStopped {
 		b.writeStopped = true
+		b.writeTimerEpoch++
 		if b.writeTimer != nil {
 			b.writeTimer.Stop()
 		}

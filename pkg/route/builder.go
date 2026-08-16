@@ -785,7 +785,10 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 	handler = requireWebsocketEnablement(handler, r.EnableWebsocket || service.EnableWebsocket)
 	ordinaryHandler := plan.Install(pipeline, handler)
-	transparentUpgradeHandler := pipeline.Then(handler)
+	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(pipeline, plan, handler)
+	if err != nil {
+		return nil, err
+	}
 	return ensureRouteLifecycle(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if isWebsocketUpgradeRequest(request) {
 			transparentUpgradeHandler.ServeHTTP(w, request)
@@ -793,6 +796,26 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		}
 		ordinaryHandler.ServeHTTP(w, request)
 	})), nil
+}
+
+func buildTransparentUpgradeHandler(
+	pipeline plugin.RequestPipeline,
+	plan plugin.ResponsePlan,
+	terminal http.Handler,
+) (http.Handler, error) {
+	terminals := plan.RouteTerminals()
+	if len(terminals) == 0 {
+		return pipeline.Then(terminal), nil
+	}
+	streaming, err := plugin.NewStreamingResponseExecutor(nil)
+	if err != nil {
+		return nil, err
+	}
+	streaming, err = streaming.WithRouteTerminals(terminals)
+	if err != nil {
+		return nil, err
+	}
+	return pipeline.Then(streaming.Then(terminal)), nil
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {

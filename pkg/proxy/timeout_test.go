@@ -107,6 +107,42 @@ func TestProgressTimeoutBodyCloseDoesNotCancelContext(t *testing.T) {
 	}
 }
 
+func TestProgressTimeoutBodyStaleTimeoutAfterProgressDoesNotExpire(t *testing.T) {
+	var cancelCalls atomic.Int32
+	body := newBlockingBody()
+	timed := newProgressTimeoutBody(body, time.Hour, func() {
+		cancelCalls.Add(1)
+	})
+
+	timed.arm()
+	timed.timerMu.Lock()
+	staleEpoch := timed.timerEpoch
+	callbackStarted := make(chan struct{})
+	callbackDone := make(chan struct{})
+	go func() {
+		close(callbackStarted)
+		timed.timeoutExpired(staleEpoch)
+		close(callbackDone)
+	}()
+	<-callbackStarted
+	timed.armLocked()
+	timed.timerMu.Unlock()
+	<-callbackDone
+
+	if calls := cancelCalls.Load(); calls != 0 {
+		t.Fatalf("stale timeout cancellation calls = %d, want 0", calls)
+	}
+	select {
+	case <-body.closed:
+		t.Fatal("stale timeout closed the body")
+	default:
+	}
+	if timed.timedOut.Load() {
+		t.Fatal("stale timeout marked the body timed out")
+	}
+	timed.stop()
+}
+
 func TestProgressTimeoutTransportForwardsCloseIdleConnections(t *testing.T) {
 	base := &closeIdleRoundTripper{}
 	transport := NewProgressTimeoutTransport(base, time.Second, time.Second)
@@ -226,6 +262,46 @@ func TestProgressTimeoutDuplexBodyDoesNotRearmAfterClose(t *testing.T) {
 	if calls := timeoutCalls.Load(); calls != 0 {
 		t.Fatalf("timeout callback calls after Close() = %d, want 0", calls)
 	}
+}
+
+func TestProgressTimeoutDuplexBodyStaleWriteTimeoutAfterProgressDoesNotExpire(t *testing.T) {
+	var cancelCalls atomic.Int32
+	body := newBlockingDuplexWriteBody()
+	wrapped := wrapProgressTimeoutBody(body, time.Hour, time.Hour, func() {
+		cancelCalls.Add(1)
+	})
+	duplex, ok := wrapped.(*progressTimeoutDuplexBody)
+	if !ok {
+		t.Fatalf("wrapped body type = %T, want *progressTimeoutDuplexBody", wrapped)
+	}
+
+	duplex.armWrite()
+	duplex.writeTimerMu.Lock()
+	staleEpoch := duplex.writeTimerEpoch
+	callbackStarted := make(chan struct{})
+	callbackDone := make(chan struct{})
+	go func() {
+		close(callbackStarted)
+		duplex.writeTimeoutExpired(staleEpoch)
+		close(callbackDone)
+	}()
+	<-callbackStarted
+	duplex.armWriteLocked()
+	duplex.writeTimerMu.Unlock()
+	<-callbackDone
+
+	if calls := cancelCalls.Load(); calls != 0 {
+		t.Fatalf("stale write timeout cancellation calls = %d, want 0", calls)
+	}
+	select {
+	case <-body.closed:
+		t.Fatal("stale write timeout closed the body")
+	default:
+	}
+	if duplex.writeTimedOut.Load() {
+		t.Fatal("stale write timeout marked the body timed out")
+	}
+	duplex.stop()
 }
 
 func TestResponseHeaderTimeoutRejectsResponseReturnedAfterDeadline(t *testing.T) {

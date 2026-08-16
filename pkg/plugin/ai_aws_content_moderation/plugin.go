@@ -20,9 +20,12 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
-	now    func() time.Time
+	config          Config
+	client          *http.Client
+	now             func() time.Time
+	accessKeyID     *store.ResolvedSecret
+	secretAccessKey *store.ResolvedSecret
+	sessionToken    *store.ResolvedSecret
 }
 
 const (
@@ -149,21 +152,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.FailMode != "skip" && p.config.FailMode != "warn" && p.config.FailMode != "error" {
 		return fmt.Errorf("invalid fail_mode: %s", p.config.FailMode)
 	}
-	var err error
-	p.config.Comprehend.AccessKeyID, err = store.ResolveSecretReference(p.config.Comprehend.AccessKeyID)
-	if err != nil {
-		return fmt.Errorf("resolve comprehend access_key_id: %w", err)
-	}
-	p.config.Comprehend.SecretAccessKey, err = store.ResolveSecretReference(p.config.Comprehend.SecretAccessKey)
-	if err != nil {
-		return fmt.Errorf("resolve comprehend secret_access_key: %w", err)
-	}
-	if p.config.Comprehend.SessionToken != "" {
-		p.config.Comprehend.SessionToken, err = store.ResolveSecretReference(p.config.Comprehend.SessionToken)
-		if err != nil {
-			return fmt.Errorf("resolve comprehend session_token: %w", err)
-		}
-	}
 	if p.config.Comprehend.SSLVerify == nil {
 		sslVerify := true
 		p.config.Comprehend.SSLVerify = &sslVerify
@@ -184,6 +172,48 @@ func (p *Plugin) PostInit() error {
 		Transport: p.transport(),
 	}
 	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	if p.accessKeyID != nil && p.secretAccessKey != nil &&
+		(p.config.Comprehend.SessionToken == "" || p.sessionToken != nil) {
+		return nil
+	}
+
+	accessKeyID, err := store.MaterializeSecret(p.config.Comprehend.AccessKeyID)
+	if err != nil {
+		return err
+	}
+	secretAccessKey, err := store.MaterializeSecret(p.config.Comprehend.SecretAccessKey)
+	if err != nil {
+		accessKeyID.Destroy()
+		return err
+	}
+	var sessionToken *store.ResolvedSecret
+	if p.config.Comprehend.SessionToken != "" {
+		sessionToken, err = store.MaterializeSecret(p.config.Comprehend.SessionToken)
+		if err != nil {
+			accessKeyID.Destroy()
+			secretAccessKey.Destroy()
+			return err
+		}
+	}
+
+	p.accessKeyID = accessKeyID
+	p.secretAccessKey = secretAccessKey
+	p.sessionToken = sessionToken
+	p.config.Comprehend.AccessKeyID = accessKeyID.Descriptor()
+	p.config.Comprehend.SecretAccessKey = secretAccessKey.Descriptor()
+	if sessionToken != nil {
+		p.config.Comprehend.SessionToken = sessionToken.Descriptor()
+	}
+	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.accessKeyID.Destroy()
+	p.secretAccessKey.Destroy()
+	p.sessionToken.Destroy()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -325,10 +355,16 @@ func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendRes
 	}
 	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
 	req.Header.Set("X-Amz-Target", "Comprehend_20171127.DetectToxicContent")
+	accessKeyID := p.accessKeyID.Bytes()
+	secretAccessKey := p.secretAccessKey.Bytes()
+	sessionToken := p.sessionToken.Bytes()
+	defer clear(accessKeyID)
+	defer clear(secretAccessKey)
+	defer clear(sessionToken)
 	if err := ai_auth.SignAWSRequestWithOptions(req, payload, ai_auth.AWSConfig{
-		AccessKeyID:     p.config.Comprehend.AccessKeyID,
-		SecretAccessKey: p.config.Comprehend.SecretAccessKey,
-		SessionToken:    p.config.Comprehend.SessionToken,
+		AccessKeyID:     string(accessKeyID),
+		SecretAccessKey: string(secretAccessKey),
+		SessionToken:    string(sessionToken),
 	}, ai_auth.SignAWSRequestOptions{
 		Region:                 p.config.Comprehend.Region,
 		Service:                "comprehend",

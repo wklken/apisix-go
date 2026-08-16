@@ -633,6 +633,71 @@ func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
 	}
 }
 
+func TestRouteHandlerRetiresHijackedConnectionBeforeGenerationDrain(t *testing.T) {
+	tests := []struct {
+		name  string
+		close func(*routeHandler)
+	}{
+		{name: "replace", close: func(routes *routeHandler) {
+			routes.Replace(http.NotFoundHandler(), nil)
+		}},
+		{name: "close", close: func(routes *routeHandler) { routes.Close() }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			left, right := net.Pipe()
+			t.Cleanup(func() {
+				_ = left.Close()
+				_ = right.Close()
+			})
+			closed := &atomic.Int32{}
+			connection := &countingCloseConn{Conn: left, closed: closed}
+			started := make(chan struct{})
+			requestDone := make(chan struct{})
+			stopped := make(chan struct{})
+			routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+					t.Errorf("Hijack() error = %v", err)
+					return
+				}
+				close(started)
+				_, _ = connection.Read(make([]byte, 1))
+				close(requestDone)
+			}), func() { close(stopped) })
+
+			go func() {
+				routes.ServeHTTP(&hijackingRouteResponseWriter{header: make(http.Header), conn: connection},
+					httptest.NewRequest(http.MethodGet, "/socket", nil))
+			}()
+			<-started
+
+			closeDone := make(chan struct{})
+			go func() {
+				test.close(routes)
+				close(closeDone)
+			}()
+			select {
+			case <-closeDone:
+			case <-time.After(time.Second):
+				t.Fatal("generation retirement blocked behind a hijacked request")
+			}
+			select {
+			case <-requestDone:
+			case <-time.After(time.Second):
+				t.Fatal("closing a retired hijacked connection did not drain the request")
+			}
+			if got := closed.Load(); got == 0 {
+				t.Fatal("retired generation did not close the hijacked connection")
+			}
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("retired generation stopper did not run")
+			}
+		})
+	}
+}
+
 type countingCloseConn struct {
 	net.Conn
 	closed *atomic.Int32

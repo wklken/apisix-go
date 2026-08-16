@@ -274,7 +274,7 @@ func (t *admissionTransport) RoundTrip(request *http.Request) (*http.Response, e
 		t.release()
 		return response, nil
 	}
-	response.Body = &releaseBody{ReadCloser: response.Body, release: t.release}
+	response.Body = wrapReleaseBody(response.Body, t.release)
 	return response, nil
 }
 
@@ -303,4 +303,26 @@ func (b *releaseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(b.release)
 	return err
+}
+
+type releaseDuplexBody struct {
+	*releaseBody
+	duplex io.ReadWriteCloser
+}
+
+func (b *releaseDuplexBody) Write(payload []byte) (int, error) {
+	n, err := b.duplex.Write(payload)
+	if err != nil {
+		b.once.Do(b.release)
+	}
+	return n, err
+}
+
+func wrapReleaseBody(body io.ReadCloser, release func()) io.ReadCloser {
+	releaseBody := &releaseBody{ReadCloser: body, release: release}
+	duplex, ok := body.(io.ReadWriteCloser)
+	if !ok {
+		return releaseBody
+	}
+	return &releaseDuplexBody{releaseBody: releaseBody, duplex: duplex}
 }

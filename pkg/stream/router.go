@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/mqtt_proxy"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
@@ -177,6 +178,9 @@ func (r *Router) emit(result Result) {
 }
 
 func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struct{}) (routeEntry, error) {
+	if err := validateUnsupportedDiscovery(route); err != nil {
+		return routeEntry{}, err
+	}
 	if route.UpstreamID != "" && len(route.Upstream.Nodes) == 0 {
 		return routeEntry{}, fmt.Errorf("stream route %q upstream_id %q was not resolved", route.ID, route.UpstreamID)
 	}
@@ -260,6 +264,31 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		}
 	}
 	return entry, nil
+}
+
+func validateUnsupportedDiscovery(route resource.StreamRoute) error {
+	provenance := plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: route.ID}
+	if route.UpstreamID != "" {
+		provenance = plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: route.UpstreamID}
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "discovery_type", value: route.Upstream.DiscoveryType},
+		{name: "service_name", value: route.Upstream.ServiceName},
+	} {
+		if field.value == "" {
+			continue
+		}
+		return fmt.Errorf(
+			"unsupported upstream field %q from %s %q: dynamic discovery is not supported",
+			field.name,
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	return nil
 }
 
 func (e routeEntry) rawServe(ctx context.Context, client net.Conn, peer string) (string, string, error) {

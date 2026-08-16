@@ -391,7 +391,7 @@ func TestPostInitRejectsInvalidReturnCode(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsRejectsInvalidLimitCountActionBeforeSecretResolution(t *testing.T) {
+func TestValidatePreMaterializationRejectsInvalidLimitCountActionBeforeSecretResolution(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{
 			{Actions: []Action{{
@@ -406,12 +406,16 @@ func TestMaterializeSecretsRejectsInvalidLimitCountActionBeforeSecretResolution(
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.MaterializeSecrets()
+	err := p.ValidatePreMaterialization()
 	if err == nil || !strings.Contains(err.Error(), "time_window") {
-		t.Fatalf("MaterializeSecrets() error = %v, want missing time_window before secret resolution", err)
+		t.Fatalf("ValidatePreMaterialization() error = %v, want missing time_window before secret resolution", err)
 	}
 	if p.children != nil || p.childStoppers != nil {
 		t.Fatalf("invalid action retained child state: children=%v stoppers=%v", p.children, p.childStoppers)
+	}
+	action := p.config.Rules[0].Actions[0]
+	if action.limitReq != nil || action.limitConn != nil || action.limitCount != nil {
+		t.Fatalf("invalid action retained runtime child: %#v", action)
 	}
 }
 

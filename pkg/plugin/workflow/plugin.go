@@ -34,7 +34,6 @@ type workflowChild interface {
 	Init() error
 	PostInit() error
 	Config() any
-	GetSchema() string
 }
 
 type workflowChildStopper interface {
@@ -155,6 +154,20 @@ func (p *Plugin) ValidatePreMaterialization() error {
 					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
 				}
 			}
+			if action.Name != "limit-count" {
+				continue
+			}
+			child := &limit_count.Plugin{}
+			if err := child.Init(); err != nil {
+				return err
+			}
+			compiledSchema, err := util.CompileSchema(child.GetSchema())
+			if err != nil {
+				return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
+			}
+			if err := compiledSchema.Validate(action.Config); err != nil {
+				return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
+			}
 		}
 	}
 	return nil
@@ -179,19 +192,19 @@ func (p *Plugin) MaterializeSecrets() error {
 			switch action.Name {
 			case "limit-req":
 				child := &limit_req.Plugin{}
-				if err := p.materializeChild(ruleIndex, action, child); err != nil {
+				if err := p.materializeChild(action, child); err != nil {
 					return err
 				}
 				p.children[position] = child
 			case "limit-conn":
 				child := &limit_conn.Plugin{}
-				if err := p.materializeChild(ruleIndex, action, child); err != nil {
+				if err := p.materializeChild(action, child); err != nil {
 					return err
 				}
 				p.children[position] = child
 			case "limit-count":
 				child := &limit_count.Plugin{}
-				if err := p.materializeChild(ruleIndex, action, child); err != nil {
+				if err := p.materializeChild(action, child); err != nil {
 					return err
 				}
 				p.children[position] = child
@@ -202,18 +215,9 @@ func (p *Plugin) MaterializeSecrets() error {
 	return nil
 }
 
-func (p *Plugin) materializeChild(ruleIndex int, action *Action, child workflowChild) error {
+func (p *Plugin) materializeChild(action *Action, child workflowChild) error {
 	if err := child.Init(); err != nil {
 		return err
-	}
-	if action.Name == "limit-count" {
-		compiledSchema, err := util.CompileSchema(child.GetSchema())
-		if err != nil {
-			return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
-		}
-		if err := compiledSchema.Validate(action.Config); err != nil {
-			return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
-		}
 	}
 	if err := util.Parse(action.Config, child.Config()); err != nil {
 		return err

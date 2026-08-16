@@ -1207,3 +1207,32 @@ func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testi
 		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
 	}
 }
+
+func TestBuilderRejectsInvalidWorkflowChildBeforeSecretMaterialization(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t, "workflow", "limit-count")
+	t.Setenv("ROUTE_INVALID_WORKFLOW_SECRET", "")
+	putRouteResource(
+		t,
+		"invalid-workflow-secret",
+		[]byte(
+			`{"id":"invalid-workflow-secret","uri":"/invalid-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"key":"$ENV://ROUTE_INVALID_WORKFLOW_SECRET"}]]}]}}}`,
+		),
+	)
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want invalid nested workflow rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), "time_window") || strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatalf("BuildStrict() error = %q, want schema error before secret access", err)
+	}
+	builder.stopperMu.Lock()
+	stopperCount := len(builder.stoppers)
+	builder.stopperMu.Unlock()
+	if stopperCount != 0 {
+		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
+	}
+}

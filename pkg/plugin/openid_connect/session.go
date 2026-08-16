@@ -139,7 +139,7 @@ func (p *Plugin) writeSession(w http.ResponseWriter, session sessionData) error 
 		Value:    value,
 		Path:     p.config.Session.CookiePath,
 		Domain:   p.config.Session.CookieDomain,
-		Secure:   p.config.Session.CookieSecure,
+		Secure:   *p.config.Session.CookieSecure,
 		HttpOnly: *p.config.Session.CookieHTTPOnly,
 		SameSite: sessionSameSite(p.config.Session.CookieSameSite),
 	}
@@ -166,7 +166,7 @@ func (p *Plugin) clearSession(w http.ResponseWriter, session *sessionData) {
 		Value:    "",
 		Path:     p.config.Session.CookiePath,
 		Domain:   p.config.Session.CookieDomain,
-		Secure:   p.config.Session.CookieSecure,
+		Secure:   *p.config.Session.CookieSecure,
 		HttpOnly: *p.config.Session.CookieHTTPOnly,
 		SameSite: sessionSameSite(p.config.Session.CookieSameSite),
 		MaxAge:   -1,

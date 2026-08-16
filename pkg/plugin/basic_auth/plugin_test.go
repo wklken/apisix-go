@@ -269,24 +269,103 @@ func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
 	}
 }
 
-func TestHandlerNormalizesWhitespaceInCredentials(t *testing.T) {
-	addBasicAuthConsumer(t, "normalized-user", "secret")
-	p := newTestPlugin(t, Config{})
+func TestHandlerUsesExactCredentialBytes(t *testing.T) {
+	addBasicAuthConsumer(t, "user name", "sec ret")
+	addBasicAuthConsumer(t, "username", "secret")
+	addBasicAuthConsumer(t, "empty-password-user", "")
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
-	req = ctx.WithApisixVars(req, map[string]string{})
-	req.Header.Set("Authorization", basicHeader(" normalized-user ", " sec ret "))
-	rr := httptest.NewRecorder()
+	tests := []struct {
+		name         string
+		username     string
+		password     string
+		wantCode     int
+		wantConsumer string
+	}{
+		{
+			name:         "internal spaces exact",
+			username:     "user name",
+			password:     "sec ret",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "user name",
+		},
+		{
+			name:     "leading username space",
+			username: " user name",
+			password: "sec ret",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "trailing username space",
+			username: "user name ",
+			password: "sec ret",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "leading password space",
+			username: "user name",
+			password: " sec ret",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "trailing password space",
+			username: "user name",
+			password: "sec ret ",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:         "empty password",
+			username:     "empty-password-user",
+			password:     "",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "empty-password-user",
+		},
+		{
+			name:     "same-length wrong password",
+			username: "user name",
+			password: "sec rex",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "different-length wrong password",
+			username: "user name",
+			password: "sec",
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "spaceful username is not normalized to username",
+			username: "user name",
+			password: "secret",
+			wantCode: http.StatusUnauthorized,
+		},
+	}
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "normalized-user" {
-			t.Fatalf("consumer_name = %v, want normalized-user", got)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			request = ctx.WithApisixVars(request, map[string]string{})
+			request.Header.Set("Authorization", basicHeader(test.username, test.password))
+			response := httptest.NewRecorder()
+			nextCalled := false
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+			p := newTestPlugin(t, Config{})
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				if test.wantConsumer == "" {
+					t.Fatal("unexpected downstream request")
+				}
+				if got := ctx.GetApisixVar(r, "$consumer_name"); got != test.wantConsumer {
+					t.Fatalf("consumer_name = %v, want %q", got, test.wantConsumer)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, request)
+
+			if response.Code != test.wantCode {
+				t.Fatalf("response code = %d, want %d; body=%s", response.Code, test.wantCode, response.Body.String())
+			}
+			if nextCalled != (test.wantConsumer != "") {
+				t.Fatalf("nextCalled = %v, want %v", nextCalled, test.wantConsumer != "")
+			}
+		})
 	}
 }
 
@@ -426,6 +505,7 @@ func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
 
 	tests := []struct {
 		name              string
+		header            string
 		username          string
 		password          string
 		anonymousConsumer string
@@ -463,13 +543,31 @@ func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
 			anonymousConsumer: "hide-fallback-missing-anonymous",
 			wantCode:          http.StatusUnauthorized,
 		},
+		{
+			name:              "bearer anonymous fallback",
+			header:            "Bearer attacker",
+			anonymousConsumer: "hide-fallback-anonymous",
+			wantCode:          http.StatusNoContent,
+			wantConsumer:      "hide-fallback-anonymous",
+		},
+		{
+			name:              "invalid Basic Base64 anonymous fallback",
+			header:            "Basic not-base64",
+			anonymousConsumer: "hide-fallback-anonymous",
+			wantCode:          http.StatusNoContent,
+			wantConsumer:      "hide-fallback-anonymous",
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 			request = ctx.WithApisixVars(request, map[string]string{})
-			request.Header.Set("Authorization", basicHeader(test.username, test.password))
+			header := test.header
+			if header == "" {
+				header = basicHeader(test.username, test.password)
+			}
+			request.Header.Set("Authorization", header)
 			response := httptest.NewRecorder()
 			nextCalled := false
 

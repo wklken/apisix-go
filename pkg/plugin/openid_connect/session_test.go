@@ -15,8 +15,8 @@ func TestSessionCookieSecureValuesOnWrite(t *testing.T) {
 		wantSecure bool
 	}{
 		{name: "omitted", wantSecure: true},
-		{name: "explicit true", configured: boolPointer(true), wantSecure: true},
-		{name: "explicit false", configured: boolPointer(false), wantSecure: false},
+		{name: "explicit true", configured: new(true), wantSecure: true},
+		{name: "explicit false", configured: new(false), wantSecure: false},
 	}
 
 	for _, test := range tests {
@@ -45,8 +45,8 @@ func TestSessionCookieSecureValuesOnClear(t *testing.T) {
 		wantSecure bool
 	}{
 		{name: "omitted", wantSecure: true},
-		{name: "explicit true", configured: boolPointer(true), wantSecure: true},
-		{name: "explicit false", configured: boolPointer(false), wantSecure: false},
+		{name: "explicit true", configured: new(true), wantSecure: true},
+		{name: "explicit false", configured: new(false), wantSecure: false},
 	}
 
 	for _, test := range tests {
@@ -107,7 +107,7 @@ func sessionCookieTestConfig() Config {
 		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
 		Session: SessionConfig{
 			Secret:         "0123456789abcdef",
-			CookieHTTPOnly: boolPointer(true),
+			CookieHTTPOnly: new(true),
 			CookieSameSite: "Lax",
 		},
 	}
@@ -128,8 +128,4 @@ func assertSessionCookieAttributes(t *testing.T, cookies []*http.Cookie, wantSec
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("session cookie SameSite = %v, want Lax", cookie.SameSite)
 	}
-}
-
-func boolPointer(value bool) *bool {
-	return &value
 }

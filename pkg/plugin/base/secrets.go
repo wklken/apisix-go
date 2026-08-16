@@ -27,7 +27,7 @@ func MaterializePluginSecrets(p any) error {
 		return nil
 	}
 	if err := materializer.MaterializeSecrets(); err != nil {
-		return redactedSecretMaterializationError{cause: err}
+		return redactedSecretMaterializationError{}
 	}
 	if owner, ok := p.(configOwner); ok {
 		if path, found := firstUnmaterializedSecretReference(owner.Config()); found {
@@ -41,16 +41,14 @@ type configOwner interface {
 	Config() any
 }
 
-type redactedSecretMaterializationError struct {
-	cause error
-}
+type redactedSecretMaterializationError struct{}
 
 func (e redactedSecretMaterializationError) Error() string {
 	return "materialize plugin secrets: credential unavailable"
 }
 
-func (e redactedSecretMaterializationError) Unwrap() error {
-	return e.cause
+func (e redactedSecretMaterializationError) Is(target error) bool {
+	return target != nil && target.Error() == "credential unavailable"
 }
 
 func firstUnmaterializedSecretReference(config any) (string, bool) {
@@ -99,8 +97,8 @@ func firstSecretReference(value reflect.Value, path string, depth int, visited m
 		}
 		keys := value.MapKeys()
 		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
-		for _, key := range keys {
-			keyPath := appendSecretPath(path, key.String())
+		for index, key := range keys {
+			keyPath := fmt.Sprintf("%s[%d]", path, index)
 			if foundPath, found := firstSecretReference(value.MapIndex(key), keyPath, depth+1, visited); found {
 				return foundPath, true
 			}

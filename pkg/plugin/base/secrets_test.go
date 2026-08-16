@@ -50,7 +50,7 @@ func TestSecretMaterializationRejectsUnownedReferenceAtNestedPath(t *testing.T) 
 	if err == nil {
 		t.Fatal("MaterializePluginSecrets() error = nil, want unowned secret reference")
 	}
-	if !strings.Contains(err.Error(), "nested.credentials[0].token") {
+	if !strings.Contains(err.Error(), "nested.credentials[0][0]") {
 		t.Fatalf("MaterializePluginSecrets() error = %v, want bounded nested path", err)
 	}
 	if strings.Contains(err.Error(), "$ENV://TOKEN") {
@@ -78,11 +78,30 @@ func TestSecretMaterializationRedactsOwnerError(t *testing.T) {
 	p := &secretMaterializationTestPlugin{materializeErr: want}
 
 	err := MaterializePluginSecrets(p)
-	if !errors.Is(err, want) {
-		t.Fatalf("MaterializePluginSecrets() error = %v, want wrapped materializer error", err)
+	if errors.Is(err, want) {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want no original error chain", err)
+	}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Fatalf("errors.Unwrap(MaterializePluginSecrets()) = %v, want no error chain", unwrapped)
 	}
 	if strings.Contains(err.Error(), "$secret://vault/token") {
 		t.Fatalf("MaterializePluginSecrets() error exposed secret reference: %v", err)
+	}
+}
+
+func TestSecretMaterializationDoesNotExposeMapKeyInErrorPath(t *testing.T) {
+	const sensitiveMapKey = "credential-$secret://vault/token"
+	err := MaterializePluginSecrets(configOnlyPlugin{config: map[string]any{
+		sensitiveMapKey: "$ENV://TOKEN",
+	}})
+	if err == nil {
+		t.Fatal("MaterializePluginSecrets() error = nil, want unowned secret reference")
+	}
+	if strings.Contains(err.Error(), sensitiveMapKey) {
+		t.Fatalf("MaterializePluginSecrets() error exposed map key: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[0]") {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want indexed map path", err)
 	}
 }
 

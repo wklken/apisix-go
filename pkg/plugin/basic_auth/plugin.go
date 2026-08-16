@@ -102,6 +102,9 @@ func attachLegacyConsumer(r *http.Request) {
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
 	authHeader := r.Header.Get("Authorization")
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
+	}
 	if authHeader == "" {
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
@@ -110,9 +113,6 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	if *p.config.HideCredentials {
-		r.Header.Del("Authorization")
-	}
 	user, pass, err := parseBasicAuthorization(authHeader)
 	if err != nil {
 		if !ctx.RecordAuthProbeDiagnostic(r, err.Error()) {

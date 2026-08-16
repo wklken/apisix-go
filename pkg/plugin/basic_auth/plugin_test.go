@@ -484,6 +484,38 @@ func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestHandlerHideCredentialsRemovesDuplicateAuthorizationHeaders(t *testing.T) {
+	addBasicAuthConsumer(t, "hide-duplicate-anonymous", "unused")
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		HideCredentials:   &hideCredentials,
+		AnonymousConsumer: "hide-duplicate-anonymous",
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	request.Header.Add("Authorization", "")
+	request.Header.Add("Authorization", "Bearer attacker")
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := len(r.Header.Values("Authorization")); got != 0 {
+			t.Fatalf("Authorization header values = %d, want 0", got)
+		}
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "hide-duplicate-anonymous" {
+			t.Fatalf("consumer_name = %v, want hide-duplicate-anonymous", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if got := len(request.Header.Values("Authorization")); got != 0 {
+		t.Fatalf("request Authorization header values = %d, want 0", got)
+	}
+}
+
 func TestHandlerHideCredentialsOnAnonymousFallback(t *testing.T) {
 	const unresolvedPasswordEnv = "BASIC_AUTH_HIDDEN_CREDENTIALS_TEST_PASSWORD"
 	previous, existed := os.LookupEnv(unresolvedPasswordEnv)

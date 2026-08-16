@@ -58,6 +58,61 @@ func TestSecretMaterializationRejectsUnownedReferenceAtNestedPath(t *testing.T) 
 	}
 }
 
+func TestSecretMaterializationRejectsLowercaseEnvironmentReferenceWithoutOwner(t *testing.T) {
+	err := MaterializePluginSecrets(configOnlyPlugin{config: struct {
+		Token string `json:"token"`
+	}{Token: "$env://TOKEN"}})
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want lowercase environment reference rejected", err)
+	}
+	if strings.Contains(err.Error(), "$env://TOKEN") {
+		t.Fatalf("MaterializePluginSecrets() error exposed reference: %v", err)
+	}
+}
+
+func TestSecretMaterializationRejectsMixedCaseEnvironmentReferenceWithoutOwner(t *testing.T) {
+	err := MaterializePluginSecrets(configOnlyPlugin{config: struct {
+		Token string `json:"token"`
+	}{Token: "$eNv://TOKEN"}})
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want mixed-case environment reference rejected", err)
+	}
+	if strings.Contains(err.Error(), "$eNv://TOKEN") {
+		t.Fatalf("MaterializePluginSecrets() error exposed reference: %v", err)
+	}
+}
+
+func TestSecretMaterializationAcceptsMixedCaseEnvironmentDescriptorWithoutOwner(t *testing.T) {
+	err := MaterializePluginSecrets(configOnlyPlugin{config: struct {
+		Token string `json:"token"`
+	}{Token: "$eNv://TOKEN#sha256:fingerprint"}})
+	if err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want mixed-case descriptor accepted", err)
+	}
+}
+
+func TestSecretMaterializationDepthExhaustionFailsClosed(t *testing.T) {
+	config := nestedSecretScanValue(32, "literal")
+	err := MaterializePluginSecrets(configOnlyPlugin{config: config})
+	if err == nil || !strings.Contains(err.Error(), "secret reference scan depth exceeded") {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want bounded depth-exhaustion error", err)
+	}
+	if strings.Contains(err.Error(), "literal") {
+		t.Fatalf("MaterializePluginSecrets() error exposed config value: %v", err)
+	}
+}
+
+func TestSecretMaterializationFindsReferenceAtMaximumInspectableDepth(t *testing.T) {
+	config := nestedSecretScanValue(31, "$ENV://TOKEN")
+	err := MaterializePluginSecrets(configOnlyPlugin{config: config})
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want reference at maximum inspectable depth rejected", err)
+	}
+	if strings.Contains(err.Error(), "$ENV://TOKEN") {
+		t.Fatalf("MaterializePluginSecrets() error exposed reference: %v", err)
+	}
+}
+
 func TestSecretMaterializationInvokesOwnerOnceAndAcceptsDescriptor(t *testing.T) {
 	config := &secretMaterializationTestConfig{Token: "$ENV://TOKEN"}
 	p := &secretMaterializationTestPlugin{config: config}
@@ -111,4 +166,11 @@ type configOnlyPlugin struct {
 
 func (p configOnlyPlugin) Config() any {
 	return p.config
+}
+
+func nestedSecretScanValue(depth int, value any) any {
+	for range depth {
+		value = []any{value}
+	}
+	return value
 }

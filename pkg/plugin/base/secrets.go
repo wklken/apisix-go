@@ -20,8 +20,9 @@ func MaterializePluginSecrets(p any) error {
 	materializer, ownsSecrets := p.(SecretMaterializer)
 	if !ownsSecrets {
 		if owner, ok := p.(configOwner); ok {
-			if path, found := firstUnmaterializedSecretReference(owner.Config()); found {
-				return fmt.Errorf("unowned secret reference at %s", path)
+			result := firstUnmaterializedSecretReference(owner.Config())
+			if err := secretScanError(result, false); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -30,8 +31,9 @@ func MaterializePluginSecrets(p any) error {
 		return redactedSecretMaterializationError{}
 	}
 	if owner, ok := p.(configOwner); ok {
-		if path, found := firstUnmaterializedSecretReference(owner.Config()); found {
-			return fmt.Errorf("secret reference remains unmaterialized at %s", path)
+		result := firstUnmaterializedSecretReference(owner.Config())
+		if err := secretScanError(result, true); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -51,18 +53,36 @@ func (e redactedSecretMaterializationError) Is(target error) bool {
 	return target != nil && target.Error() == "credential unavailable"
 }
 
-func firstUnmaterializedSecretReference(config any) (string, bool) {
+type secretScanStatus uint8
+
+const (
+	secretScanClean secretScanStatus = iota
+	secretScanFound
+	secretScanDepthExceeded
+)
+
+const maxSecretScanDepth = 32
+
+type secretScanResult struct {
+	path   string
+	status secretScanStatus
+}
+
+func firstUnmaterializedSecretReference(config any) secretScanResult {
 	return firstSecretReference(reflect.ValueOf(config), "", 0, make(map[uintptr]struct{}))
 }
 
-func firstSecretReference(value reflect.Value, path string, depth int, visited map[uintptr]struct{}) (string, bool) {
-	if !value.IsValid() || depth >= 32 {
-		return "", false
+func firstSecretReference(value reflect.Value, path string, depth int, visited map[uintptr]struct{}) secretScanResult {
+	if !value.IsValid() {
+		return secretScanResult{status: secretScanClean}
+	}
+	if depth >= maxSecretScanDepth {
+		return secretScanResult{path: path, status: secretScanDepthExceeded}
 	}
 
 	for value.Kind() == reflect.Interface {
 		if value.IsNil() {
-			return "", false
+			return secretScanResult{status: secretScanClean}
 		}
 		value = value.Elem()
 	}
@@ -70,56 +90,80 @@ func firstSecretReference(value reflect.Value, path string, depth int, visited m
 	switch value.Kind() {
 	case reflect.Pointer:
 		if value.IsNil() {
-			return "", false
+			return secretScanResult{status: secretScanClean}
 		}
 		pointer := value.Pointer()
 		if _, ok := visited[pointer]; ok {
-			return "", false
+			return secretScanResult{status: secretScanClean}
 		}
 		visited[pointer] = struct{}{}
 		defer delete(visited, pointer)
 		return firstSecretReference(value.Elem(), path, depth+1, visited)
 	case reflect.String:
 		if isUnmaterializedSecretReference(value.String()) {
-			return path, true
+			return secretScanResult{path: path, status: secretScanFound}
 		}
 	case reflect.Struct:
 		typeOfValue := value.Type()
 		for i := 0; i < value.NumField(); i++ {
 			fieldPath := appendSecretPath(path, secretFieldName(typeOfValue.Field(i)))
-			if foundPath, found := firstSecretReference(value.Field(i), fieldPath, depth+1, visited); found {
-				return foundPath, true
+			result := firstSecretReference(value.Field(i), fieldPath, depth+1, visited)
+			if result.status != secretScanClean {
+				return result
 			}
 		}
 	case reflect.Map:
 		if value.Type().Key().Kind() != reflect.String {
-			return "", false
+			return secretScanResult{status: secretScanClean}
 		}
 		keys := value.MapKeys()
 		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
 		for index, key := range keys {
 			keyPath := fmt.Sprintf("%s[%d]", path, index)
-			if foundPath, found := firstSecretReference(value.MapIndex(key), keyPath, depth+1, visited); found {
-				return foundPath, true
+			result := firstSecretReference(value.MapIndex(key), keyPath, depth+1, visited)
+			if result.status != secretScanClean {
+				return result
 			}
 		}
 	case reflect.Array, reflect.Slice:
 		for i := 0; i < value.Len(); i++ {
 			indexPath := fmt.Sprintf("%s[%d]", path, i)
-			if foundPath, found := firstSecretReference(value.Index(i), indexPath, depth+1, visited); found {
-				return foundPath, true
+			result := firstSecretReference(value.Index(i), indexPath, depth+1, visited)
+			if result.status != secretScanClean {
+				return result
 			}
 		}
 	}
 
-	return "", false
+	return secretScanResult{status: secretScanClean}
+}
+
+func secretScanError(result secretScanResult, owned bool) error {
+	switch result.status {
+	case secretScanFound:
+		if owned {
+			return fmt.Errorf("secret reference remains unmaterialized at %s", result.path)
+		}
+		return fmt.Errorf("unowned secret reference at %s", result.path)
+	case secretScanDepthExceeded:
+		return fmt.Errorf("secret reference scan depth exceeded at %s", boundedSecretScanPath(result.path))
+	default:
+		return nil
+	}
+}
+
+func boundedSecretScanPath(path string) string {
+	if path == "" {
+		return "<root>"
+	}
+	return path
 }
 
 func isUnmaterializedSecretReference(value string) bool {
-	if !strings.HasPrefix(value, "$ENV://") && !strings.HasPrefix(value, "$secret://") {
-		return false
+	if len(value) >= len("$ENV://") && strings.EqualFold(value[:len("$ENV://")], "$ENV://") {
+		return !strings.Contains(value, "#sha256:")
 	}
-	return !strings.Contains(value, "#sha256:")
+	return strings.HasPrefix(value, "$secret://") && !strings.Contains(value, "#sha256:")
 }
 
 func appendSecretPath(path, segment string) string {

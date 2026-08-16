@@ -14,12 +14,14 @@ import (
 // cancels the surrounding request context, and closes the underlying body so
 // the reader unblocks.
 type progressTimeoutBody struct {
-	body     io.ReadCloser
-	timeout  time.Duration
-	timer    *time.Timer
-	once     sync.Once
-	timedOut atomic.Bool
-	cancel   context.CancelFunc
+	body       io.ReadCloser
+	timeout    time.Duration
+	timer      *time.Timer
+	timerMu    sync.Mutex
+	timerEpoch uint64
+	stopped    bool
+	timedOut   atomic.Bool
+	cancel     context.CancelFunc
 }
 
 func newProgressTimeoutBody(body io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) *progressTimeoutBody {
@@ -30,15 +32,37 @@ func (b *progressTimeoutBody) arm() {
 	if b.timeout <= 0 {
 		return
 	}
-	if b.timer == nil {
-		b.timer = time.AfterFunc(b.timeout, func() {
-			b.timedOut.Store(true)
-			b.cancel()
-			_ = b.body.Close()
-		})
+	b.timerMu.Lock()
+	defer b.timerMu.Unlock()
+	b.armLocked()
+}
+
+func (b *progressTimeoutBody) armLocked() {
+	if b.stopped {
 		return
 	}
-	b.timer.Reset(b.timeout)
+	b.timerEpoch++
+	epoch := b.timerEpoch
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.timer = time.AfterFunc(b.timeout, func() {
+		b.timeoutExpired(epoch)
+	})
+}
+
+func (b *progressTimeoutBody) timeoutExpired(epoch uint64) {
+	b.timerMu.Lock()
+	if b.stopped || epoch != b.timerEpoch {
+		b.timerMu.Unlock()
+		return
+	}
+	b.stopped = true
+	b.timedOut.Store(true)
+	b.timerMu.Unlock()
+
+	b.cancel()
+	_ = b.body.Close()
 }
 
 func (b *progressTimeoutBody) Read(p []byte) (int, error) {
@@ -62,11 +86,126 @@ func (b *progressTimeoutBody) Close() error {
 }
 
 func (b *progressTimeoutBody) stop() {
-	b.once.Do(func() {
+	b.timerMu.Lock()
+	if !b.stopped {
+		b.stopped = true
+		b.timerEpoch++
 		if b.timer != nil {
 			b.timer.Stop()
 		}
+	}
+	b.timerMu.Unlock()
+}
+
+// progressTimeoutDuplexBody keeps the optional write side that net/http uses
+// for a 101 Switching Protocols tunnel. The non-duplex wrapper intentionally
+// remains read-only so ordinary response bodies do not gain a misleading
+// io.Writer capability.
+type progressTimeoutDuplexBody struct {
+	*progressTimeoutBody
+	duplex          io.ReadWriteCloser
+	writeTimeout    time.Duration
+	writeTimer      *time.Timer
+	writeTimerMu    sync.Mutex
+	writeTimerEpoch uint64
+	writeStopped    bool
+	writeTimedOut   atomic.Bool
+}
+
+func (b *progressTimeoutDuplexBody) armWrite() {
+	if b.writeTimeout <= 0 {
+		return
+	}
+	b.writeTimerMu.Lock()
+	defer b.writeTimerMu.Unlock()
+	b.armWriteLocked()
+}
+
+func (b *progressTimeoutDuplexBody) armWriteLocked() {
+	if b.writeStopped {
+		return
+	}
+	b.writeTimerEpoch++
+	epoch := b.writeTimerEpoch
+	if b.writeTimer != nil {
+		b.writeTimer.Stop()
+	}
+	b.writeTimer = time.AfterFunc(b.writeTimeout, func() {
+		b.writeTimeoutExpired(epoch)
 	})
+}
+
+func (b *progressTimeoutDuplexBody) writeTimeoutExpired(epoch uint64) {
+	b.writeTimerMu.Lock()
+	if b.writeStopped || epoch != b.writeTimerEpoch {
+		b.writeTimerMu.Unlock()
+		return
+	}
+	b.writeStopped = true
+	b.writeTimedOut.Store(true)
+	b.writeTimerMu.Unlock()
+
+	b.cancel()
+	_ = b.body.Close()
+}
+
+func (b *progressTimeoutDuplexBody) Write(payload []byte) (int, error) {
+	b.armWrite()
+	n, err := b.duplex.Write(payload)
+	if n > 0 {
+		b.armWrite()
+	}
+	if err != nil {
+		b.stop()
+	}
+	if b.timedOut.Load() || b.writeTimedOut.Load() {
+		return n, context.DeadlineExceeded
+	}
+	return n, err
+}
+
+func (b *progressTimeoutDuplexBody) Read(payload []byte) (int, error) {
+	n, err := b.progressTimeoutBody.Read(payload)
+	if err != nil {
+		b.stop()
+	}
+	return n, err
+}
+
+func (b *progressTimeoutDuplexBody) Close() error {
+	b.stop()
+	return b.body.Close()
+}
+
+func (b *progressTimeoutDuplexBody) stop() {
+	b.progressTimeoutBody.stop()
+	b.writeTimerMu.Lock()
+	if !b.writeStopped {
+		b.writeStopped = true
+		b.writeTimerEpoch++
+		if b.writeTimer != nil {
+			b.writeTimer.Stop()
+		}
+	}
+	b.writeTimerMu.Unlock()
+}
+
+func wrapProgressTimeoutBody(
+	body io.ReadCloser,
+	readTimeout time.Duration,
+	writeTimeout time.Duration,
+	cancel context.CancelFunc,
+) io.ReadCloser {
+	progress := newProgressTimeoutBody(body, readTimeout, cancel)
+	duplex, ok := body.(io.ReadWriteCloser)
+	if !ok {
+		return progress
+	}
+	return &progressTimeoutDuplexBody{
+		progressTimeoutBody: progress,
+		duplex:              duplex,
+		writeTimeout:        writeTimeout,
+	}
 }
 
 type progressTimeoutTransport struct {
@@ -119,7 +258,7 @@ func (transport *responseHeaderTimeoutTransport) RoundTrip(request *http.Request
 		cancel()
 		return response, nil
 	}
-	response.Body = &cancelOnCloseBody{ReadCloser: response.Body, cancel: cancel}
+	response.Body = wrapCancelOnCloseBody(response.Body, cancel)
 	return response, nil
 }
 
@@ -141,6 +280,28 @@ func (body *cancelOnCloseBody) Close() error {
 	err := body.ReadCloser.Close()
 	body.once.Do(body.cancel)
 	return err
+}
+
+type cancelOnCloseDuplexBody struct {
+	*cancelOnCloseBody
+	duplex io.ReadWriteCloser
+}
+
+func (body *cancelOnCloseDuplexBody) Write(payload []byte) (int, error) {
+	n, err := body.duplex.Write(payload)
+	if err != nil {
+		body.once.Do(body.cancel)
+	}
+	return n, err
+}
+
+func wrapCancelOnCloseBody(body io.ReadCloser, cancel context.CancelFunc) io.ReadCloser {
+	cancelBody := &cancelOnCloseBody{ReadCloser: body, cancel: cancel}
+	duplex, ok := body.(io.ReadWriteCloser)
+	if !ok {
+		return cancelBody
+	}
+	return &cancelOnCloseDuplexBody{cancelOnCloseBody: cancelBody, duplex: duplex}
 }
 
 // NewProgressTimeoutTransport wraps a transport so request-body sends and
@@ -174,10 +335,18 @@ func (transport *progressTimeoutTransport) RoundTrip(request *http.Request) (*ht
 		cancel()
 		return response, err
 	}
-	if response.Body == nil || response.Body == http.NoBody || transport.read <= 0 {
+	if response.Body == nil || response.Body == http.NoBody {
 		cancel()
 		return response, nil
 	}
-	response.Body = newProgressTimeoutBody(response.Body, transport.read, cancel)
+	if transport.read <= 0 {
+		if _, duplex := response.Body.(io.ReadWriteCloser); !duplex || transport.send <= 0 {
+			cancel()
+			return response, nil
+		}
+		response.Body = wrapProgressTimeoutBody(response.Body, 0, transport.send, cancel)
+		return response, nil
+	}
+	response.Body = wrapProgressTimeoutBody(response.Body, transport.read, transport.send, cancel)
 	return response, nil
 }

@@ -150,6 +150,83 @@ func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T
 	}
 }
 
+func TestInlineUpstreamConfiguredIncludesDiscoveryFields(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		upstream resource.Upstream
+	}{
+		{name: "discovery type", upstream: resource.Upstream{DiscoveryType: "dns"}},
+		{name: "service name", upstream: resource.Upstream{ServiceName: "orders.default.svc"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !inlineUpstreamConfigured(test.upstream) {
+				t.Fatalf("inlineUpstreamConfigured(%#v) = false, want true", test.upstream)
+			}
+		})
+	}
+}
+
+func TestBuildHandlerRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
+	ensureRouteStore(t)
+	for _, test := range []struct {
+		name  string
+		field string
+		set   func(*resource.Upstream)
+	}{
+		{name: "discovery type", field: "discovery_type", set: func(upstream *resource.Upstream) {
+			upstream.DiscoveryType = "dns"
+		}},
+		{name: "service name", field: "service_name", set: func(upstream *resource.Upstream) {
+			upstream.ServiceName = "orders.default.svc"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := resource.Upstream{
+				Nodes: []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+			}
+			test.set(&upstream)
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			_, err := builder.buildHandlerStrict(resource.Route{
+				ID:       "dynamic-discovery-route",
+				Uri:      "/dynamic-discovery",
+				Upstream: upstream,
+			})
+			if err == nil {
+				t.Fatal("buildHandlerStrict() error = nil, want unsupported discovery error")
+			}
+			message := err.Error()
+			if !strings.Contains(message, "dynamic-discovery-route") ||
+				!strings.Contains(message, test.field) {
+				t.Fatalf("buildHandlerStrict() error = %q, want route and field provenance", message)
+			}
+		})
+	}
+}
+
+func TestResolveRouteUpstreamUsesReferencedUpstreamProvenance(t *testing.T) {
+	const upstreamID = "referenced-discovery-upstream"
+	putHTTPAllowlistResource(t, "upstreams", upstreamID, []byte(`{
+		"nodes": {"127.0.0.1:8080": 1},
+		"discovery_type": "dns"
+	}`))
+
+	upstream, provenance, err := resolveRouteUpstream(
+		resource.Route{ID: "referenced-discovery-route", UpstreamID: upstreamID},
+		resource.Service{},
+	)
+	if err != nil {
+		t.Fatalf("resolveRouteUpstream() error = %v", err)
+	}
+	if upstream.DiscoveryType != "dns" {
+		t.Fatalf("resolved discovery_type = %q, want dns", upstream.DiscoveryType)
+	}
+	want := pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceUpstream, ID: upstreamID}
+	if provenance != want {
+		t.Fatalf("upstream provenance = %#v, want %#v", provenance, want)
+	}
+}
+
 func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	ensureRouteStore(t)
 

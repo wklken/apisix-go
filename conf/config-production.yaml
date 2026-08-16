@@ -3,7 +3,15 @@
 debug: false
 
 apisix:
+  enable_admin: false
   proxy_mode: http
+  ssl:
+    enable: true
+    listen:
+      - port: 9443
+        enable_http2: true
+        enable_quic: false
+        enable_http3: false
   stream_proxy:
     tcp: []
     udp: []
@@ -21,7 +29,22 @@ plugins:
 
 stream_plugins: []
 
+nginx_config:
+  http:
+    enable_access_log: false
+    access_log: ""
+    access_log_buffer: 0
+    access_log_format: ""
+    access_log_format_escape: ""
+    client_max_body_size: 10485760
+  stream:
+    enable_access_log: false
+    access_log: ""
+    access_log_format: ""
+    access_log_format_escape: ""
+
 deployment:
+  profile: http-data-plane-v1
   role: data_plane
   role_data_plane:
     config_provider: etcd

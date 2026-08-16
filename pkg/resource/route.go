@@ -58,6 +58,9 @@ type Upstream struct {
 	Timeout Timeout      `json:"timeout"`
 	TLS     *UpstreamTLS `json:"tls,omitempty"`
 
+	DiscoveryType string `json:"discovery_type,omitempty"`
+	ServiceName   string `json:"service_name,omitempty"`
+
 	Retries      int `json:"retries,omitempty"`
 	retriesSet   bool
 	Checks       map[string]any `json:"checks,omitempty"`
@@ -77,8 +80,12 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 	}
 
 	var nodes []Node
-	if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
+	nodesRaw, nodesPresent := upstreamData["nodes"]
+	if err := json.Unmarshal(nodesRaw, &nodes); err == nil {
 		s.Nodes = nodes
+	} else if !nodesPresent && (len(upstreamData["discovery_type"]) > 0 || len(upstreamData["service_name"]) > 0) {
+		// Discovery-only upstreams have no static nodes. Preserve the
+		// compatibility fields so route compilation can reject them explicitly.
 	} else {
 		/*
 			"nodes": {
@@ -117,6 +124,8 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		{name: "scheme", raw: upstreamData["scheme"], dest: &s.Scheme},
 		{name: "timeout", raw: upstreamData["timeout"], dest: &s.Timeout},
 		{name: "tls", raw: upstreamData["tls"], dest: &s.TLS},
+		{name: "discovery_type", raw: upstreamData["discovery_type"], dest: &s.DiscoveryType},
+		{name: "service_name", raw: upstreamData["service_name"], dest: &s.ServiceName},
 		{name: "retries", raw: upstreamData["retries"], dest: &s.Retries},
 		{name: "checks", raw: upstreamData["checks"], dest: &s.Checks},
 		{name: "hash_on", raw: upstreamData["hash_on"], dest: &s.HashOn},
@@ -231,13 +240,14 @@ type Route struct {
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
-	PluginConfigID string          `json:"plugin_config_id,omitempty"`
-	ServiceID      string          `json:"service_id,omitempty"`
-	UpstreamID     string          `json:"upstream_id,omitempty"`
-	Upstream       Upstream        `json:"upstream"`
-	Timeout        Timeout         `json:"timeout"`
-	Script         json.RawMessage `json:"script,omitempty"`
-	FilterFunc     string          `json:"filter_func,omitempty"`
+	PluginConfigID  string          `json:"plugin_config_id,omitempty"`
+	ServiceID       string          `json:"service_id,omitempty"`
+	EnableWebsocket bool            `json:"enable_websocket,omitempty"`
+	UpstreamID      string          `json:"upstream_id,omitempty"`
+	Upstream        Upstream        `json:"upstream"`
+	Timeout         Timeout         `json:"timeout"`
+	Script          json.RawMessage `json:"script,omitempty"`
+	FilterFunc      string          `json:"filter_func,omitempty"`
 
 	CreateTime int64 `json:"create_time,omitempty"`
 	UpdateTime int64 `json:"update_time,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -109,6 +110,33 @@ func TestBuildReverseHandlerValidatesHTTPUpstreamTypes(t *testing.T) {
 				t.Fatalf("buildReverseHandler() error = %v, want unsupported upstream type", err)
 			}
 		})
+	}
+}
+
+func TestBuildReverseHandlerRejectsKafkaInHTTPDataPlaneProfile(t *testing.T) {
+	previous := appconfig.GlobalConfig
+	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	appconfig.GlobalConfig = &appconfig.Config{
+		Deployment: appconfig.Deployment{Profile: appconfig.HTTPDataPlaneV1Profile},
+	}
+
+	builder := &Builder{}
+	t.Cleanup(builder.Stop)
+	_, err := builder.buildReverseHandler(resource.Route{
+		ID:       "profile-kafka-route",
+		Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"},
+	}, resource.Service{})
+	if err == nil {
+		t.Fatal("buildReverseHandler() error = nil, want profile to reject kafka upstream")
+	}
+	for _, want := range []string{
+		appconfig.HTTPDataPlaneV1Profile,
+		"kafka",
+		"unsupported",
+	} {
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
+			t.Fatalf("buildReverseHandler() error = %q, want %q", err, want)
+		}
 	}
 }
 

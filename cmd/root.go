@@ -24,6 +24,13 @@ var cfgFile string
 
 var globalConfig *config.Config
 
+var errSIGHUPReloadUnsupported = errors.New("SIGHUP reload is unsupported")
+
+type serverLifecycle interface {
+	Start(context.Context) error
+	Shutdown(context.Context) error
+}
+
 func initConfig() error {
 	var err error
 	globalConfig, err = config.Load(cfgFile)
@@ -83,6 +90,13 @@ func Start() error {
 // shutdown, and a serving error cancels the root context and enters the
 // normal shutdown path. main remains the only process-exit boundary.
 func runServer(srv *server.Server) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(signals)
+	return runServerWithSignals(srv, signals)
+}
+
+func runServerWithSignals(srv serverLifecycle, signals <-chan os.Signal) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -90,10 +104,6 @@ func runServer(srv *server.Server) error {
 	go func() {
 		serveErr <- srv.Start(ctx)
 	}()
-
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	defer signal.Stop(signals)
 
 	select {
 	case err := <-serveErr:
@@ -105,10 +115,14 @@ func runServer(srv *server.Server) error {
 		logger.Infof("received signal %s, shutting down", received)
 		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer shutdownCancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("graceful shutdown: %w", err)
-		}
+		shutdownErr := srv.Shutdown(shutdownCtx)
 		cancel()
+		if shutdownErr != nil {
+			return fmt.Errorf("graceful shutdown: %w", shutdownErr)
+		}
+		if received == syscall.SIGHUP {
+			return errSIGHUPReloadUnsupported
+		}
 		return nil
 	}
 }

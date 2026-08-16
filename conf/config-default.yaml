@@ -33,7 +33,7 @@ apisix:
   #   - ip: 127.0.0.2          # If not set, default to `0.0.0.0`
   #     port: 9082
   #     enable_http2: true
-  enable_admin: true           # Admin API
+  enable_admin: false          # Admin API; enabling it fails startup because this Go runtime has no admin API.
   enable_dev_mode: false       # If true, set nginx `worker_processes` to 1.
   enable_reuseport: true       # If true, enable nginx SO_REUSEPORT option.
   show_upstream_status_in_response_header: false  # If true, include the upstream HTTP status code in
@@ -442,8 +442,6 @@ plugin_attr:          # Plugin attributes
       max_queue_size: 1024          # Set the maximum size of the span export queue.
       batch_timeout: 2              # Set the timeout for span batches to wait in the export queue before
                                     # being sent.
-      inactive_timeout: 1           # Set the timeout for spans to wait in the export queue before being sent,
-                                    # if the queue is not full.
       max_export_batch_size: 16     # Set the maximum number of spans to include in each batch sent to the
                                     # OpenTelemetry collector.
     set_ngx_var: false              # Export opentelemetry variables to NGINX variables.

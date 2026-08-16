@@ -42,6 +42,7 @@ The exact status definitions, supported behavior, and remaining gaps are maintai
 
 - [Plugin support and remaining gaps](docs/plugins.md)
 - [Configuration compatibility](docs/configuration.md)
+- [Candidate HTTP data-plane profile](docs/production-profile.md) (awaiting release and operations qualification)
 - [Design notes](docs/design.md)
 - [Standalone plugin integration tests](t/plugin/README.md)
 

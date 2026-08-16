@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -47,6 +48,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -371,6 +375,48 @@ func TestLazyLoadRefreshesExpiredServiceAccountToken(t *testing.T) {
 	}
 	if p.serviceAccountToken.refreshToken != "refresh-b" {
 		t.Fatalf("cached refresh token = %q, want refresh-b", p.serviceAccountToken.refreshToken)
+	}
+}
+
+func TestServiceAccountRefreshWithoutClientSecretFallsBackToClientCredentials(t *testing.T) {
+	var forms []url.Values
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		forms = append(forms, r.PostForm)
+		if got := r.PostForm.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret = %q, want optional empty value", got)
+		}
+		switch r.PostForm.Get("grant_type") {
+		case "refresh_token":
+			_, _ = w.Write([]byte(`{"refresh_token":"refresh-a","refresh_expires_in":3600}`))
+		case "client_credentials":
+			_, _ = w.Write([]byte(`{"access_token":"service-token","expires_in":300}`))
+		default:
+			t.Fatalf("unexpected grant_type %q", r.PostForm.Get("grant_type"))
+		}
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL,
+		ClientID:      "apisix",
+	})
+	p.serviceAccountToken = tokenCache{
+		value:                 "expired-token",
+		expiresAt:             time.Now().Add(-time.Second),
+		refreshToken:          "refresh-a",
+		refreshTokenExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	token, err := p.serviceAccountAccessToken()
+	if err != nil || token != "service-token" {
+		t.Fatalf("serviceAccountAccessToken() = %q, %v; want service-token, nil", token, err)
+	}
+	if len(forms) != 2 || forms[0].Get("grant_type") != "refresh_token" ||
+		forms[1].Get("grant_type") != "client_credentials" {
+		t.Fatalf("grant forms = %#v, want refresh_token then client_credentials", forms)
 	}
 }
 
@@ -762,17 +808,49 @@ func TestPostInitAppliesKeepaliveAndTLSOptions(t *testing.T) {
 	}
 }
 
-func TestPostInitResolvesEnvironmentClientSecret(t *testing.T) {
+func TestMaterializeSecretsRedactsClientSecretUsesResolvedFormsAndStopsOwner(t *testing.T) {
 	t.Setenv("AUTHZ_KEYCLOAK_CLIENT_SECRET", "environment-secret")
+	forms := make(chan url.Values, 1)
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		forms <- r.PostForm
+		_, _ = w.Write([]byte(`{"access_token":"service-token","expires_in":300}`))
+	}))
+	t.Cleanup(keycloak.Close)
 
 	p := newTestPlugin(t, Config{
-		TokenEndpoint: "http://keycloak.example.com/token",
+		TokenEndpoint: keycloak.URL,
 		ClientID:      "apisix",
 		ClientSecret:  "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET",
 	})
 
-	if p.config.ClientSecret != "environment-secret" {
-		t.Fatalf("client_secret = %q, want resolved environment value", p.config.ClientSecret)
+	if !strings.Contains(p.config.ClientSecret, "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET#sha256:") ||
+		strings.Contains(p.config.ClientSecret, "environment-secret") {
+		t.Fatalf("client_secret = %q, want safe environment descriptor", p.config.ClientSecret)
+	}
+	cacheKey := p.serviceAccountCacheKey(keycloak.URL)
+	if strings.Contains(cacheKey, "environment-secret") || strings.Contains(cacheKey, p.config.ClientSecret) {
+		t.Fatalf("service account cache key exposes secret material: %q", cacheKey)
+	}
+	if token, err := p.serviceAccountAccessToken(); err != nil || token != "service-token" {
+		t.Fatalf("serviceAccountAccessToken() = %q, %v; want service-token, nil", token, err)
+	}
+	if got := (<-forms).Get("client_secret"); got != "environment-secret" {
+		t.Fatalf("client_secret form value = %q, want materialized environment value", got)
+	}
+
+	owner := p.clientSecret
+	if owner == nil {
+		t.Fatal("client secret owner is not retained by the plugin generation")
+	}
+	p.Stop()
+	if p.clientSecret != nil {
+		t.Fatal("Stop() retained the client secret owner")
+	}
+	if got := owner.Bytes(); got != nil {
+		t.Fatalf("Stop() left client secret bytes = %q, want destroyed handle", got)
 	}
 }
 
@@ -837,12 +915,12 @@ func TestPostInitRedactsClientSecretResolutionError(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
+	err := base.MaterializePluginSecrets(p)
 	if err == nil {
-		t.Fatal("PostInit() error = nil, want secret resolution failure")
+		t.Fatal("MaterializePluginSecrets() error = nil, want secret resolution failure")
 	}
-	if got := err.Error(); got != "resolve authz-keycloak client_secret reference: credential unavailable" {
-		t.Fatalf("PostInit() error = %q, want redacted deterministic diagnostic", got)
+	if got := err.Error(); got != "materialize plugin secrets: credential unavailable" {
+		t.Fatalf("MaterializePluginSecrets() error = %q, want redacted deterministic diagnostic", got)
 	}
 	if strings.Contains(err.Error(), secretReference) {
 		t.Fatalf("PostInit() error exposed secret reference: %v", err)

@@ -410,19 +410,6 @@ func (p *Plugin) PostInit() error {
 			p.config.TokenSigningAlgValuesExpected,
 		)
 	}
-	resolvedPublicKey, err := store.ResolveSecretReference(p.config.PublicKey)
-	if err != nil {
-		return errors.New("resolve openid-connect public_key reference: credential unavailable")
-	}
-	p.config.PublicKey = resolvedPublicKey
-	if p.config.PublicKey != "" {
-		publicKey, err := parsePublicKey([]byte(p.config.PublicKey))
-		if err != nil {
-			return errors.New("failed to parse public key")
-		}
-		p.staticPublicKey = publicKey
-	}
-
 	if p.config.Scope == "" {
 		p.config.Scope = "openid"
 	}
@@ -567,6 +554,25 @@ func (p *Plugin) PostInit() error {
 		Transport: p.transport(),
 	}
 
+	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	if p.config.PublicKey == "" {
+		return nil
+	}
+	key, err := store.MaterializeSecret(p.config.PublicKey)
+	if err != nil {
+		return errors.New("resolve openid-connect public_key reference: credential unavailable")
+	}
+	defer key.Destroy()
+	encoded := key.Bytes()
+	defer clear(encoded)
+	p.staticPublicKey, err = parsePublicKey(encoded)
+	if err != nil {
+		return errors.New("failed to parse public key")
+	}
+	p.config.PublicKey = key.Descriptor()
 	return nil
 }
 

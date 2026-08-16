@@ -1160,3 +1160,100 @@ func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
 		t.Fatalf("registry.Len() = %d, want 2 distinct clusters", got)
 	}
 }
+
+func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{"realm": "$ENV://ROUTE_REALM"},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-unowned-secret"}),
+	)
+
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "realm") {
+		t.Fatalf("initPluginsStrict() error = %v, want unowned route secret rejection", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironmentPrefix(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{"realm": "$env://ROUTE_REALM"},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-unowned-lowercase-secret"}),
+	)
+
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "realm") {
+		t.Fatalf("initPluginsStrict() error = %v, want lowercase unowned route secret rejection", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t, "workflow")
+	t.Setenv("ROUTE_DISABLED_WORKFLOW_SECRET", "")
+	putRouteResource(
+		t,
+		"disabled-workflow-secret",
+		[]byte(
+			`{"id":"disabled-workflow-secret","uri":"/disabled-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"time_window":60,"key":"$ENV://ROUTE_DISABLED_WORKFLOW_SECRET"}]]}]}}}`,
+		),
+	)
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want disabled nested workflow rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), `workflow action plugin "limit-count" is disabled`) ||
+		strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatalf("BuildStrict() error = %q, want disabled error before secret access", err)
+	}
+	builder.stopperMu.Lock()
+	stopperCount := len(builder.stoppers)
+	builder.stopperMu.Unlock()
+	if stopperCount != 0 {
+		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
+	}
+}
+
+func TestBuilderRejectsInvalidWorkflowChildBeforeSecretMaterialization(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t, "workflow", "limit-count")
+	t.Setenv("ROUTE_INVALID_WORKFLOW_SECRET", "")
+	putRouteResource(
+		t,
+		"invalid-workflow-secret",
+		[]byte(
+			`{"id":"invalid-workflow-secret","uri":"/invalid-workflow-secret","plugins":{"workflow":{"rules":[{"actions":[["limit-count",{"count":1,"key":"$ENV://ROUTE_INVALID_WORKFLOW_SECRET"}]]}]}}}`,
+		),
+	)
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want invalid nested workflow rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), "time_window") || strings.Contains(err.Error(), "credential unavailable") {
+		t.Fatalf("BuildStrict() error = %q, want schema error before secret access", err)
+	}
+	builder.stopperMu.Lock()
+	stopperCount := len(builder.stoppers)
+	builder.stopperMu.Unlock()
+	if stopperCount != 0 {
+		t.Fatalf("builder stoppers = %d, want no retained workflow runtime state", stopperCount)
+	}
+}

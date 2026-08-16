@@ -588,3 +588,18 @@ func streamMQTTConnectPacket(clientID string) []byte {
 	body = append(body, clientID...)
 	return append([]byte{0x10, byte(len(body))}, body...)
 }
+
+func TestUnownedSecretReferenceRejectsStreamPlugin(t *testing.T) {
+	_, err := buildRouteEntry(resource.StreamRoute{
+		ID: "stream-unowned-secret",
+		Plugins: map[string]resource.PluginConfig{
+			"mqtt-proxy": map[string]any{"protocol_level": 4, "protocol_name": "$ENV://MQTT_PROTOCOL"},
+		},
+		Upstream: resource.Upstream{Nodes: []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: 1}}},
+	}, nil)
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "protocol_name") {
+		t.Fatalf("buildRouteEntry() error = %v, want stream secret rejection", err)
+	}
+}

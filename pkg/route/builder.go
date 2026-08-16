@@ -1177,6 +1177,10 @@ type pluginEnabledCheckerSetter interface {
 	SetPluginEnabledChecker(func(string) bool)
 }
 
+type pluginPreMaterializationValidator interface {
+	ValidatePreMaterialization() error
+}
+
 type pluginInitOptions struct {
 	allowRequestContext bool
 }
@@ -2163,6 +2167,15 @@ func (b *Builder) initPluginBindingsStrict(
 		if err != nil {
 			return nil, sourceError(fmt.Errorf("parse plugin %s config: %w", name, err))
 		}
+		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
+			checker := b.enabledPlugins.Contains
+			setter.SetPluginEnabledChecker(checker)
+		}
+		if validator, ok := p.(pluginPreMaterializationValidator); ok {
+			if err := validator.ValidatePreMaterialization(); err != nil {
+				return nil, sourceError(fmt.Errorf("validate plugin %s before secret materialization: %w", name, err))
+			}
+		}
 		if err := plugin.MaterializePluginSecrets(p); err != nil {
 			return nil, sourceError(fmt.Errorf("materialize plugin %s secrets: %w", name, err))
 		}
@@ -2188,11 +2201,6 @@ func (b *Builder) initPluginBindingsStrict(
 			}
 			setter.SetPriority(*metadata.priority)
 		}
-		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
-			checker := b.enabledPlugins.Contains
-			setter.SetPluginEnabledChecker(checker)
-		}
-
 		if err := p.PostInit(); err != nil {
 			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}

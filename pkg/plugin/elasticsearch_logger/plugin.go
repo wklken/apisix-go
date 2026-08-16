@@ -287,11 +287,11 @@ func (p *Plugin) PostInit() error {
 	}
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
-	if len(p.config.LogFormat) == 0 {
-		p.LogFormat = metadata.LogFormat
-	} else {
-		p.LogFormat = p.config.LogFormat
+	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
+	if err != nil {
+		return err
 	}
+	p.LogFormat = logFormat
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -123,6 +124,9 @@ func TestSendBatchCancelsElasticsearchBulkWithContext(t *testing.T) {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	if len(cfg.LogFormat) == 0 {
+		cfg.LogFormat = map[string]string{"request_id": "$request_id"}
+	}
 
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
@@ -132,6 +136,107 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
+}
+
+func TestEffectiveLogFormatRouteWins(t *testing.T) {
+	route := map[string]string{"route": "$request_id"}
+	metadata := map[string]string{"metadata": "$route_id"}
+	putPluginMetadata(t, metadata)
+
+	p := newRawTestPlugin(t, Config{
+		Field:     FieldConfig{Index: "apisix"},
+		LogFormat: route,
+	})
+	if len(p.LogFormat) != 1 || p.LogFormat["route"] != route["route"] {
+		t.Fatalf("effective format = %#v, want route format over metadata %#v", p.LogFormat, metadata)
+	}
+	route["route"] = "mutated"
+	if p.LogFormat["route"] == "mutated" {
+		t.Fatal("effective route format was not cloned")
+	}
+}
+
+func TestEffectiveLogFormatUsesMetadataFallback(t *testing.T) {
+	metadata := map[string]string{"route": "$route_id"}
+	putPluginMetadata(t, metadata)
+
+	p := newRawTestPlugin(t, Config{Field: FieldConfig{Index: "apisix"}})
+	if len(p.LogFormat) != 1 || p.LogFormat["route"] != metadata["route"] {
+		t.Fatalf("effective format = %#v, want metadata format %#v", p.LogFormat, metadata)
+	}
+	metadata["route"] = "mutated"
+	if p.LogFormat["route"] == "mutated" {
+		t.Fatal("effective metadata format was not cloned")
+	}
+}
+
+func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:9200"},
+		Field:         FieldConfig{Index: "apisix"},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "log_format") {
+		t.Fatalf("PostInit() error = %v, want %s log_format rejection", err, name)
+	}
+	if p.BatchProcessor != nil || len(p.clients) != 0 {
+		t.Fatalf("PostInit() side effects = batch=%v clients=%d, want none", p.BatchProcessor, len(p.clients))
+	}
+}
+
+func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func putPluginMetadata(t *testing.T, logFormat map[string]string) {
+	t.Helper()
+
+	events := make(chan *store.Event, 1)
+	storage, err := store.Open(t.TempDir()+"/store.db", events)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	previous := store.ReplaceGlobalStoreForTest(storage)
+	storage.Start()
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previous)
+		if err := storage.Stop(); err != nil {
+			t.Errorf("Store.Stop() error = %v", err)
+		}
+	})
+
+	value, err := json.Marshal(map[string]any{"log_format": logFormat})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	events <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/plugin_metadata/" + name),
+		Value: value,
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Store.Sync() error = %v", err)
+	}
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		t.Fatalf("GetPluginMetadata() error = %v", err)
+	}
+	if len(metadata.LogFormat) != len(logFormat) {
+		t.Fatalf("stored log format = %#v, want %#v", metadata.LogFormat, logFormat)
+	}
 }
 
 func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
@@ -177,6 +282,7 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 	p := &Plugin{config: Config{
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
+		LogFormat:     map[string]string{"request_id": "$request_id"},
 		Auth: &AuthConfig{
 			Username: "elastic",
 			Password: encryptElasticsearchTestValue(t, oldKey, "elasticsearch-secret"),

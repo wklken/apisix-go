@@ -73,7 +73,9 @@ func TestHTTPSeriesBudgetPreservesRequestTypeForLatencyAndBandwidth(t *testing.T
 	for _, family := range []string{httpLatencyMetric, bandwidthMetric} {
 		budget := newHTTPSeriesBudgetWithTail(1, overflow, []int{1, 2, 3, 4, 6, 7}, 8)
 		budget.admit([]string{"request", "route-a", "service-a", "consumer-a", "node-a", "type-a", "model-a", "llm-a"})
-		got := budget.admit([]string{"request", "route-b", "service-b", "consumer-b", "node-b", "type-b", "model-b", "llm-b"})
+		got := budget.admit(
+			[]string{"request", "route-b", "service-b", "consumer-b", "node-b", "type-b", "model-b", "llm-b"},
+		)
 		if got[5] != "type-b" {
 			t.Fatalf("%s request_type = %q, want bounded type-b", family, got[5])
 		}
@@ -124,7 +126,7 @@ func TestHTTPSeriesBudgetIsSafeAtConcurrentBoundary(t *testing.T) {
 	overflow := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_http_series_overflow_race"})
 	budget := newHTTPSeriesBudget(10, overflow, []int{0})
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -243,12 +245,33 @@ func TestRecordHTTPRequestUsesIndependentFamilyBudgets(t *testing.T) {
 	request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodGet, "/", nil))
 	apisixctx.RegisterRequestVar(request, "$request_type", "bounded-request-type")
 	httpSeriesOverflow = newHTTPMetricSeriesOverflow("test_budget_record_")
-	httpStatusBudget = newHTTPSeriesBudgetWithTail(1, httpSeriesOverflow.WithLabelValues(httpStatusMetric), []int{1, 2, 3, 4, 5, 6, 8, 9}, 11)
-	httpLatencyBudget = newHTTPSeriesBudgetWithTail(1, httpSeriesOverflow.WithLabelValues(httpLatencyMetric), []int{1, 2, 3, 4, 6, 7}, 8)
-	bandwidthBudget = newHTTPSeriesBudgetWithTail(1, httpSeriesOverflow.WithLabelValues(bandwidthMetric), []int{1, 2, 3, 4, 6, 7}, 8)
+	httpStatusBudget = newHTTPSeriesBudgetWithTail(
+		1,
+		httpSeriesOverflow.WithLabelValues(httpStatusMetric),
+		[]int{1, 2, 3, 4, 5, 6, 8, 9},
+		11,
+	)
+	httpLatencyBudget = newHTTPSeriesBudgetWithTail(
+		1,
+		httpSeriesOverflow.WithLabelValues(httpLatencyMetric),
+		[]int{1, 2, 3, 4, 6, 7},
+		8,
+	)
+	bandwidthBudget = newHTTPSeriesBudgetWithTail(
+		1,
+		httpSeriesOverflow.WithLabelValues(bandwidthMetric),
+		[]int{1, 2, 3, 4, 6, 7},
+		8,
+	)
 
-	RecordHTTPRequest(request, HTTPRequestMetrics{Status: 200, Route: "route-a", RequestLatency: 10, UpstreamLatency: 5})
-	RecordHTTPRequest(request, HTTPRequestMetrics{Status: 201, Route: "route-b", RequestLatency: 11, UpstreamLatency: 5})
+	RecordHTTPRequest(
+		request,
+		HTTPRequestMetrics{Status: 200, Route: "route-a", RequestLatency: 10, UpstreamLatency: 5},
+	)
+	RecordHTTPRequest(
+		request,
+		HTTPRequestMetrics{Status: 201, Route: "route-b", RequestLatency: 11, UpstreamLatency: 5},
+	)
 
 	if got := len(httpStatusBudget.seen); got != 1 {
 		t.Fatalf("status admitted tuples = %d, want 1", got)
@@ -274,11 +297,9 @@ func TestRecordHTTPRequestUsesIndependentFamilyBudgets(t *testing.T) {
 }
 
 func TestRecordHTTPRequestPreservesBoundedLabelsAndOverflowsExtras(t *testing.T) {
-	oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras :=
-		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels
+	oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras := httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels
 	defer func() {
-		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels =
-			oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras
+		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels = oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras
 	}()
 	extras := map[string][]prometheusExtraLabel{
 		httpStatusMetric: {{Name: "tenant", Variable: "$tenant"}},
@@ -290,7 +311,10 @@ func TestRecordHTTPRequestPreservesBoundedLabelsAndOverflowsExtras(t *testing.T)
 	RecordHTTPRequest(request, HTTPRequestMetrics{Status: 200, Route: "route-a", RequestLatency: 10})
 	apisixctx.RegisterRequestVar(request, "$request_type", "request-type-b")
 	apisixctx.RegisterRequestVar(request, "$tenant", "tenant-b")
-	RecordHTTPRequest(request, HTTPRequestMetrics{Status: 201, Route: "route-b", RequestLatency: 11, UpstreamLatency: 1})
+	RecordHTTPRequest(
+		request,
+		HTTPRequestMetrics{Status: 201, Route: "route-b", RequestLatency: 11, UpstreamLatency: 1},
+	)
 
 	status := HttpStatus.WithLabelValues(
 		"201", overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel,
@@ -312,11 +336,9 @@ func TestRecordHTTPRequestNormalizesInvalidStatus(t *testing.T) {
 }
 
 func TestRecordHTTPRequestNormalizesStatusExtraLabels(t *testing.T) {
-	oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras :=
-		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels
+	oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras := httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels
 	defer func() {
-		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels =
-			oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras
+		httpStatusBudget, httpLatencyBudget, bandwidthBudget, httpSeriesOverflow, prometheusExtraLabels = oldStatusBudget, oldLatencyBudget, oldBandwidthBudget, oldOverflow, oldExtras
 	}()
 	installBudgetedHTTPVectors(t, 10, map[string][]prometheusExtraLabel{
 		httpStatusMetric: {
@@ -324,7 +346,10 @@ func TestRecordHTTPRequestNormalizesStatusExtraLabels(t *testing.T) {
 			{Name: "upstream_status", Variable: "$upstream_status"},
 		},
 	})
-	RecordHTTPRequest(httptest.NewRequest(http.MethodGet, "/", nil), HTTPRequestMetrics{Status: 700, UpstreamLatency: 1})
+	RecordHTTPRequest(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		HTTPRequestMetrics{Status: 700, UpstreamLatency: 1},
+	)
 	status := HttpStatus.WithLabelValues(
 		"0", "", "", "", "", "", "", "", "", "", "upstream", "0", "0",
 	)

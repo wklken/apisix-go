@@ -428,13 +428,19 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 	requestLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, requestLatencyLabels)
 	HttpLatency.WithLabelValues(requestLatencyLabels...).Observe(float64(entry.RequestLatency))
 	if entry.UpstreamLatency > 0 {
-		upstreamLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"upstream"}, common...))
+		upstreamLatencyLabels := appendExtraLabelValues(
+			httpLatencyMetric,
+			r,
+			entry,
+			append([]string{"upstream"}, common...),
+		)
 		upstreamLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, upstreamLatencyLabels)
 		HttpLatency.WithLabelValues(upstreamLatencyLabels...).Observe(float64(entry.UpstreamLatency))
 	}
 	apisixLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))
 	apisixLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, apisixLatencyLabels)
-	HttpLatency.WithLabelValues(apisixLatencyLabels...).Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	HttpLatency.WithLabelValues(apisixLatencyLabels...).
+		Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
 
 	ingressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))
 	ingressLabels = admitHTTPMetricLabels(bandwidthMetric, ingressLabels)
@@ -657,7 +663,13 @@ func parseMaxHTTPSeries(raw any) (int, error) {
 		value = typed
 	case uint:
 		if uint64(typed) > uint64(maxInt()) {
-			return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+			return 0, fmt.Errorf(
+				"%s must be an integer between %d and %d, got %T",
+				fieldName,
+				minHTTPSeries,
+				maxHTTPSeries,
+				raw,
+			)
 		}
 		value = int64(typed)
 	case uint8:
@@ -668,11 +680,23 @@ func parseMaxHTTPSeries(raw any) (int, error) {
 		value = int64(typed)
 	case uint64:
 		if typed > uint64(maxInt()) {
-			return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+			return 0, fmt.Errorf(
+				"%s must be an integer between %d and %d, got %T",
+				fieldName,
+				minHTTPSeries,
+				maxHTTPSeries,
+				raw,
+			)
 		}
 		value = int64(typed)
 	default:
-		return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+		return 0, fmt.Errorf(
+			"%s must be an integer between %d and %d, got %T",
+			fieldName,
+			minHTTPSeries,
+			maxHTTPSeries,
+			raw,
+		)
 	}
 	if value < minHTTPSeries || value > maxHTTPSeries {
 		return 0, fmt.Errorf("%s must be between %d and %d, got %d", fieldName, minHTTPSeries, maxHTTPSeries, value)

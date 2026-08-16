@@ -130,6 +130,12 @@ func validateRuntimeConfig(cfg *Config) error {
 			return fmt.Errorf("%s must be positive, got %d", limit.field, limit.value)
 		}
 	}
+	if cfg.NginxConfig.HTTP.ClientMaxBodySize < 0 {
+		return fmt.Errorf(
+			"nginx_config.http.client_max_body_size must be non-negative, got %d",
+			cfg.NginxConfig.HTTP.ClientMaxBodySize,
+		)
+	}
 
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {

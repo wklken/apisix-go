@@ -1090,19 +1090,9 @@ func buildSystemPluginConfigs(
 	service resource.Service,
 	resourcePlugins map[string]resource.PluginConfig,
 ) map[string]resource.PluginConfig {
-	plugins := map[string]resource.PluginConfig{
+	return map[string]resource.PluginConfig{
 		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
 	}
-	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return plugins
-	}
-	if _, configured := resourcePlugins["client-control"]; configured {
-		return plugins
-	}
-	plugins["client-control"] = map[string]any{
-		"max_body_size": appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize,
-	}
-	return plugins
 }
 
 func buildRequestContextConfig(
@@ -3406,6 +3396,13 @@ func newErrorHandler() pxy.ErrorHandler {
 		// 	"error":       util.TruncateString(err.Error(), 200),
 		// 	"proxy_error": "1",
 		// })
+
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
+			_ = util.WriteJSONMessage(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError

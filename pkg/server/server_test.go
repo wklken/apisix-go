@@ -685,6 +685,24 @@ func TestHealthEndpointsKeepLivenessIndependentAndReserveExactPaths(t *testing.T
 	}
 }
 
+func TestConfiguredHTTPHandlerLimitsHealthEndpoints(t *testing.T) {
+	cfg := &config.Config{NginxConfig: config.NginxConfig{
+		HTTP: config.NginxHTTP{ClientMaxBodySize: 3},
+	}}
+	handler := newConfiguredHTTPHandler(http.NotFoundHandler(), cfg)
+
+	for _, path := range []string{"/livez", "/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("abcd"))
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			assertRequestBodyLimitResponse(t, response)
+		})
+	}
+}
+
 func TestReadyzRequiresEtcdReachabilityInEtcdMode(t *testing.T) {
 	restoreMetrics := installHealthMetrics(t)
 	defer restoreMetrics()

@@ -154,18 +154,7 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
-	handler := newHealthHandler(routes, requiresEtcdReadiness(config.GlobalConfig))
-	var trustedAddresses []string
-	if config.GlobalConfig != nil {
-		trustedAddresses = config.GlobalConfig.Apisix.TrustedAddresses
-	}
-	handler = normalizeForwardedHeaders(handler, trustedAddresses)
-	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.NormalizeURILikeServlet {
-		handler = normalizeRequestPath(handler)
-	}
-	if pluginConfigured("node-status") {
-		handler = node_status.Track(handler)
-	}
+	handler := newConfiguredHTTPHandler(routes, config.GlobalConfig)
 	addrs := configuredListenAddresses()
 	otelShutdown, err := otel.Init("apisix-go")
 	if err != nil {
@@ -183,6 +172,23 @@ func NewServer() (*Server, error) {
 		storage:         storage,
 		otelShutdown:    otelShutdown,
 	}, nil
+}
+
+func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Handler {
+	handler := newHealthHandler(routes, requiresEtcdReadiness(cfg))
+	var trustedAddresses []string
+	if cfg != nil {
+		handler = limitRequestBody(handler, cfg.NginxConfig.HTTP.ClientMaxBodySize)
+		trustedAddresses = cfg.Apisix.TrustedAddresses
+	}
+	handler = normalizeForwardedHeaders(handler, trustedAddresses)
+	if cfg != nil && cfg.Apisix.NormalizeURILikeServlet {
+		handler = normalizeRequestPath(handler)
+	}
+	if pluginConfigured("node-status") {
+		handler = node_status.Track(handler)
+	}
+	return handler
 }
 
 func newHealthHandler(next http.Handler, requireEtcd bool) http.Handler {

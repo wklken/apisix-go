@@ -556,3 +556,22 @@ func TestHandlerRunsLimitConnAction(t *testing.T) {
 		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
 	}
 }
+
+func TestUnownedSecretReferenceRejectsNestedWorkflowPlugin(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-req",
+		Config: map[string]any{
+			"rate":  1,
+			"burst": 0,
+			"key":   "$ENV://WORKFLOW_KEY",
+		},
+	}}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "key") {
+		t.Fatalf("PostInit() error = %v, want nested workflow secret rejection", err)
+	}
+}

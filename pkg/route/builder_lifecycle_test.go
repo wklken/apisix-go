@@ -1160,3 +1160,20 @@ func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
 		t.Fatalf("registry.Len() = %d, want 2 distinct clusters", got)
 	}
 }
+
+func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{"realm": "$ENV://ROUTE_REALM"},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-unowned-secret"}),
+	)
+
+	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "realm") {
+		t.Fatalf("initPluginsStrict() error = %v, want unowned route secret rejection", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}

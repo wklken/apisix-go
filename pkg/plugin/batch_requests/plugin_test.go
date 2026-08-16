@@ -499,6 +499,59 @@ func TestHandlerInjectsRealIPHeaderIntoPipelineRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerRemovesConsumerIdentityFromPipelineRequests(t *testing.T) {
+	tests := []struct {
+		name  string
+		batch Request
+	}{
+		{
+			name: "common headers",
+			batch: Request{
+				Headers:  map[string]string{"X-Consumer-Username": "attacker-common"},
+				Pipeline: []PipelineRequest{{Path: "/inner"}},
+			},
+		},
+		{
+			name: "item headers",
+			batch: Request{
+				Pipeline: []PipelineRequest{{
+					Path:    "/inner",
+					Headers: map[string]string{"X-Consumer-Username": "attacker-item"},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.batch)
+			if err != nil {
+				t.Fatalf("marshal batch request: %v", err)
+			}
+
+			var got string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/inner", func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("X-Consumer-Username")
+				w.WriteHeader(http.StatusNoContent)
+			})
+			handler := NewHandlerWithLimits(mux, Limits{})
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(
+				response,
+				httptest.NewRequest(http.MethodPost, DefaultURI, bytes.NewReader(body)),
+			)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("response code = %d, want 200; body=%q", response.Code, response.Body.String())
+			}
+			if got != "" {
+				t.Fatalf("pipeline endpoint saw X-Consumer-Username=%q, want header removed before dispatch", got)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsUnsupportedHTTPVersion(t *testing.T) {
 	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{

@@ -47,7 +47,10 @@ func TestExporterLifecycleBindsServesAndReleasesListener(t *testing.T) {
 }
 
 func TestPrometheusMetricConfigDefaults(t *testing.T) {
-	cfg := newPrometheusMetricConfig(nil)
+	cfg, err := newPrometheusMetricConfig(nil)
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
 
 	if cfg.MetricPrefix != "apisix_" {
 		t.Fatalf("MetricPrefix = %q, want apisix_", cfg.MetricPrefix)
@@ -92,7 +95,7 @@ func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 }
 
 func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
-	cfg := newPrometheusMetricConfig(map[string]any{
+	cfg, err := newPrometheusMetricConfig(map[string]any{
 		"metric_prefix":       "gateway_",
 		"default_buckets":     []any{10, 50.5, int64(100), "200"},
 		"llm_latency_buckets": []any{5, 25, 125},
@@ -105,6 +108,9 @@ func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
 
 	if cfg.MetricPrefix != "gateway_" {
 		t.Fatalf("MetricPrefix = %q, want gateway_", cfg.MetricPrefix)
@@ -160,9 +166,12 @@ func TestPrometheusStatusVariablesUseDecimalLabels(t *testing.T) {
 }
 
 func TestPrometheusMetricConfigKeepsDefaultsForInvalidBuckets(t *testing.T) {
-	cfg := newPrometheusMetricConfig(map[string]any{
+	cfg, err := newPrometheusMetricConfig(map[string]any{
 		"default_buckets": []any{10, "not-a-number"},
 	})
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
 
 	if !reflect.DeepEqual(cfg.Buckets, defaultLatencyBuckets) {
 		t.Fatalf("Buckets = %v, want default %v", cfg.Buckets, defaultLatencyBuckets)
@@ -474,8 +483,12 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 		},
 	}
 
-	Init()
-	Init()
+	if err := Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := Init(); err != nil {
+		t.Fatalf("second Init() error = %v", err)
+	}
 
 	if !HTTPRequestMetricsEnabled() {
 		t.Fatal("HTTPRequestMetricsEnabled() = false after Init()")

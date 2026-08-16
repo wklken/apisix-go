@@ -18,7 +18,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 )
 
-var initOnce sync.Once
+var (
+	initOnce sync.Once
+	initErr  error
+)
 
 var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000}
 
@@ -42,6 +45,10 @@ var (
 	ProxyRetry            *prometheus.CounterVec
 	ProxyHealth           *prometheus.GaugeVec
 	prometheusExtraLabels map[string][]prometheusExtraLabel
+	httpStatusBudget      *httpSeriesBudget
+	httpLatencyBudget     *httpSeriesBudget
+	bandwidthBudget       *httpSeriesBudget
+	httpSeriesOverflow    *prometheus.CounterVec
 )
 
 const (
@@ -108,16 +115,22 @@ type HTTPRequestMetrics struct {
 	EgressBytes     int64
 }
 
-func Init() {
-	initOnce.Do(initMetrics)
+func Init() error {
+	initOnce.Do(func() {
+		initErr = initMetrics()
+	})
+	return initErr
 }
 
-func initMetrics() {
+func initMetrics() error {
 	var attr map[string]any
 	if config.GlobalConfig != nil {
 		attr = config.GlobalConfig.PluginAttr["prometheus"]
 	}
-	metricConfig := newPrometheusMetricConfig(attr)
+	metricConfig, err := newPrometheusMetricConfig(attr)
+	if err != nil {
+		return err
+	}
 	prometheusExtraLabels = metricConfig.ExtraLabels
 
 	Connections = prometheus.NewGaugeVec(
@@ -294,6 +307,25 @@ func initMetrics() {
 	)
 	requestPanics = newRequestPanicMetrics(nil, metricConfig.MetricPrefix)
 	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
+	httpSeriesOverflow = newHTTPMetricSeriesOverflow(metricConfig.MetricPrefix)
+	httpStatusBudget = newHTTPSeriesBudgetWithTail(
+		metricConfig.MaxHTTPSeries,
+		httpSeriesOverflow.WithLabelValues(httpStatusMetric),
+		[]int{1, 2, 3, 4, 5, 6, 8, 9},
+		11,
+	)
+	httpLatencyBudget = newHTTPSeriesBudgetWithTail(
+		metricConfig.MaxHTTPSeries,
+		httpSeriesOverflow.WithLabelValues(httpLatencyMetric),
+		[]int{1, 2, 3, 4, 6, 7},
+		8,
+	)
+	bandwidthBudget = newHTTPSeriesBudgetWithTail(
+		metricConfig.MaxHTTPSeries,
+		httpSeriesOverflow.WithLabelValues(bandwidthMetric),
+		[]int{1, 2, 3, 4, 6, 7},
+		8,
+	)
 
 	hostName, err := os.Hostname()
 	if err != nil || hostName == "" {
@@ -310,6 +342,7 @@ func initMetrics() {
 		HttpStatus,
 		HttpLatency,
 		Bandwidth,
+		httpSeriesOverflow,
 		BatchProcessEntries,
 		LoggerBatchPendingEntries,
 		LoggerBatchEvents,
@@ -328,6 +361,7 @@ func initMetrics() {
 		ConfigApplyFailures,
 		ConfigApplyReady,
 	)
+	return nil
 }
 
 func BeginLLMRequest(r *http.Request) func() {
@@ -374,7 +408,7 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		requestVarString(r, "$llm_model"),
 	}
 	statusLabels := []string{
-		fmt.Sprint(entry.Status),
+		normalizedHTTPStatus(entry.Status),
 		entry.Route,
 		entry.MatchedURI,
 		entry.MatchedHost,
@@ -386,28 +420,50 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		common[6],
 		responseSource(r, entry.UpstreamLatency),
 	}
-	HttpStatus.WithLabelValues(appendExtraLabelValues(httpStatusMetric, r, entry, statusLabels)...).Inc()
+	statusLabels = appendExtraLabelValues(httpStatusMetric, r, entry, statusLabels)
+	statusLabels = admitHTTPMetricLabels(httpStatusMetric, statusLabels)
+	HttpStatus.WithLabelValues(statusLabels...).Inc()
 
-	HttpLatency.WithLabelValues(
-		appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"request"}, common...))...,
-	).Observe(float64(entry.RequestLatency))
+	requestLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"request"}, common...))
+	requestLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, requestLatencyLabels)
+	HttpLatency.WithLabelValues(requestLatencyLabels...).Observe(float64(entry.RequestLatency))
 	if entry.UpstreamLatency > 0 {
-		HttpLatency.WithLabelValues(
-			appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"upstream"}, common...))...,
-		).Observe(float64(entry.UpstreamLatency))
+		upstreamLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"upstream"}, common...))
+		upstreamLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, upstreamLatencyLabels)
+		HttpLatency.WithLabelValues(upstreamLatencyLabels...).Observe(float64(entry.UpstreamLatency))
 	}
-	HttpLatency.WithLabelValues(
-		appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))...,
-	).Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	apisixLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))
+	apisixLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, apisixLatencyLabels)
+	HttpLatency.WithLabelValues(apisixLatencyLabels...).Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
 
-	Bandwidth.WithLabelValues(
-		appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))...,
-	).Add(float64(entry.IngressBytes))
-	Bandwidth.WithLabelValues(
-		appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"egress"}, common...))...,
-	).Add(float64(entry.EgressBytes))
+	ingressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))
+	ingressLabels = admitHTTPMetricLabels(bandwidthMetric, ingressLabels)
+	Bandwidth.WithLabelValues(ingressLabels...).Add(float64(entry.IngressBytes))
+	egressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"egress"}, common...))
+	egressLabels = admitHTTPMetricLabels(bandwidthMetric, egressLabels)
+	Bandwidth.WithLabelValues(egressLabels...).Add(float64(entry.EgressBytes))
 
 	recordLLMMetrics(r, entry)
+}
+
+func admitHTTPMetricLabels(metricName string, labels []string) []string {
+	switch metricName {
+	case httpStatusMetric:
+		return httpStatusBudget.admit(labels)
+	case httpLatencyMetric:
+		return httpLatencyBudget.admit(labels)
+	case bandwidthMetric:
+		return bandwidthBudget.admit(labels)
+	default:
+		return labels
+	}
+}
+
+func normalizedHTTPStatus(status int) string {
+	if status < 100 || status > 599 {
+		return "0"
+	}
+	return strconv.Itoa(status)
 }
 
 func recordLLMMetrics(r *http.Request, entry HTTPRequestMetrics) {
@@ -459,6 +515,15 @@ func appendExtraLabelValues(
 }
 
 func prometheusVariable(r *http.Request, entry HTTPRequestMetrics, variable string) string {
+	switch variable {
+	case "$status":
+		return normalizedHTTPStatus(entry.Status)
+	case "$upstream_status":
+		if entry.UpstreamLatency > 0 {
+			return normalizedHTTPStatus(entry.Status)
+		}
+		return ""
+	}
 	if value := requestVarString(r, variable); value != "" {
 		return value
 	}
@@ -472,14 +537,8 @@ func prometheusVariable(r *http.Request, entry HTTPRequestMetrics, variable stri
 		return r.URL.Path
 	case "$request_method":
 		return r.Method
-	case "$status":
-		return strconv.Itoa(entry.Status)
 	case "$upstream_addr":
 		return entry.Node
-	case "$upstream_status":
-		if entry.UpstreamLatency > 0 {
-			return strconv.Itoa(entry.Status)
-		}
 	}
 	return ""
 }
@@ -544,20 +603,29 @@ func SetBatchProcessEntries(name string, routeID string, serverAddr string, coun
 }
 
 type prometheusMetricConfig struct {
-	MetricPrefix string
-	Buckets      []float64
-	LLMBuckets   []float64
-	ExtraLabels  map[string][]prometheusExtraLabel
+	MetricPrefix  string
+	Buckets       []float64
+	LLMBuckets    []float64
+	ExtraLabels   map[string][]prometheusExtraLabel
+	MaxHTTPSeries int
 }
 
-func newPrometheusMetricConfig(attr map[string]any) prometheusMetricConfig {
+func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, error) {
 	cfg := prometheusMetricConfig{
-		MetricPrefix: "apisix_",
-		Buckets:      append([]float64(nil), defaultLatencyBuckets...),
-		LLMBuckets:   append([]float64(nil), defaultLatencyBuckets...),
+		MetricPrefix:  "apisix_",
+		Buckets:       append([]float64(nil), defaultLatencyBuckets...),
+		LLMBuckets:    append([]float64(nil), defaultLatencyBuckets...),
+		MaxHTTPSeries: defaultMaxHTTPSeries,
 	}
 	if attr == nil {
-		return cfg
+		return cfg, nil
+	}
+	if raw, ok := attr["max_http_series"]; ok {
+		limit, err := parseMaxHTTPSeries(raw)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.MaxHTTPSeries = limit
 	}
 
 	if v, ok := attr["metric_prefix"].(string); ok && v != "" {
@@ -570,7 +638,50 @@ func newPrometheusMetricConfig(attr map[string]any) prometheusMetricConfig {
 		cfg.LLMBuckets = buckets
 	}
 	cfg.ExtraLabels = parseExtraLabels(attr["metrics"])
-	return cfg
+	return cfg, nil
+}
+
+func parseMaxHTTPSeries(raw any) (int, error) {
+	const fieldName = "plugin_attr.prometheus.max_http_series"
+	var value int64
+	switch typed := raw.(type) {
+	case int:
+		value = int64(typed)
+	case int8:
+		value = int64(typed)
+	case int16:
+		value = int64(typed)
+	case int32:
+		value = int64(typed)
+	case int64:
+		value = typed
+	case uint:
+		if uint64(typed) > uint64(maxInt()) {
+			return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+		}
+		value = int64(typed)
+	case uint8:
+		value = int64(typed)
+	case uint16:
+		value = int64(typed)
+	case uint32:
+		value = int64(typed)
+	case uint64:
+		if typed > uint64(maxInt()) {
+			return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+		}
+		value = int64(typed)
+	default:
+		return 0, fmt.Errorf("%s must be an integer between %d and %d, got %T", fieldName, minHTTPSeries, maxHTTPSeries, raw)
+	}
+	if value < minHTTPSeries || value > maxHTTPSeries {
+		return 0, fmt.Errorf("%s must be between %d and %d, got %d", fieldName, minHTTPSeries, maxHTTPSeries, value)
+	}
+	return int(value), nil
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
 }
 
 func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {

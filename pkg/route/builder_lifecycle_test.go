@@ -125,7 +125,7 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *testing.T) {
+func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T) {
 	previous := appconfig.GlobalConfig
 	t.Cleanup(func() { appconfig.GlobalConfig = previous })
 	appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
@@ -133,12 +133,8 @@ func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *te
 	}}
 
 	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{}, nil)
-	clientControl, ok := plugins["client-control"].(map[string]any)
-	if !ok {
-		t.Fatalf("client-control config = %#v, want generated config", plugins["client-control"])
-	}
-	if got := clientControl["max_body_size"]; got != int64(30) {
-		t.Fatalf("client-control max_body_size = %#v, want 30", got)
+	if _, ok := plugins["client-control"]; ok {
+		t.Fatalf("system client-control = %#v, want server-owned global streaming limit", plugins["client-control"])
 	}
 
 	plugins = buildSystemPluginConfigs(
@@ -147,7 +143,10 @@ func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *te
 		map[string]resource.PluginConfig{"client-control": map[string]any{"max_body_size": 50}},
 	)
 	if _, ok := plugins["client-control"]; ok {
-		t.Fatalf("system client-control = %#v, want route override only", plugins["client-control"])
+		t.Fatalf(
+			"system client-control = %#v, want explicit route plugin to remain resource-owned",
+			plugins["client-control"],
+		)
 	}
 }
 

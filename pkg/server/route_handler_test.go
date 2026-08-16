@@ -306,6 +306,84 @@ func TestRouteHandlerCompletesLifecycleAndAttachesCaptureBeforeFinalizers(t *tes
 	}
 }
 
+func TestRouteHandlerBodyLimitFinalizesCanonicalOutcome(t *testing.T) {
+	var finalOutcome apisixctx.ResponseOutcome
+	var finalSource apisixctx.ResponseSource
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if lifecycle == nil || !lifecycle.AddFinalizer("observe-body-limit", func() error {
+			finalOutcome = lifecycle.Outcome()
+			finalSource = lifecycle.ResponseSource()
+			return nil
+		}) {
+			t.Fatal("failed to register body-limit finalizer")
+		}
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("X-Stale", "remove-me")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream failure"))
+	})
+	routes := newRouteHandler(handler, nil)
+	limitedRoutes := limitRequestBody(routes, 3)
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
+	request.ContentLength = -1
+	response := httptest.NewRecorder()
+
+	limitedRoutes.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", response.Code)
+	}
+	if got, want := response.Body.String(), `{"message":"request body too large"}`; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if response.Header().Get("X-Stale") != "" {
+		t.Fatal("suppressed downstream header survived canonical 413")
+	}
+	if finalOutcome.Status != http.StatusRequestEntityTooLarge || !finalOutcome.Committed ||
+		finalOutcome.Bytes != int64(len(`{"message":"request body too large"}`)) {
+		t.Fatalf("finalizer outcome = %#v, want committed canonical 413", finalOutcome)
+	}
+	if finalSource != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("finalizer response source = %q, want %q", finalSource, apisixctx.ResponseSourceAPISIX)
+	}
+}
+
+func TestRouteHandlerBodyLimitFinalizesCanonicalOutcomeBeforePanicRecovery(t *testing.T) {
+	var finalOutcome apisixctx.ResponseOutcome
+	var finalSource apisixctx.ResponseSource
+	routes := newRouteHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		lifecycle := apisixctx.GetRequestLifecycle(r)
+		if lifecycle == nil || !lifecycle.AddFinalizer("observe-body-limit-panic", func() error {
+			finalOutcome = lifecycle.Outcome()
+			finalSource = lifecycle.ResponseSource()
+			return nil
+		}) {
+			t.Fatal("failed to register body-limit panic finalizer")
+		}
+		_, _ = io.ReadAll(r.Body)
+		panic("after request body overflow")
+	}), nil)
+	handler := limitRequestBody(routes, 3)
+	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("abcd"))
+	request.ContentLength = -1
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assertRequestBodyLimitResponse(t, response)
+	if finalOutcome.Kind != apisixctx.RequestOutcomeRecoveredPanic {
+		t.Fatalf("finalizer outcome kind = %q, want recovered panic", finalOutcome.Kind)
+	}
+	if finalOutcome.Status != http.StatusRequestEntityTooLarge || !finalOutcome.Committed ||
+		finalOutcome.Bytes != int64(len(requestBodyLimitTestMessage)) {
+		t.Fatalf("finalizer outcome = %#v, want committed canonical 413", finalOutcome)
+	}
+	if finalSource != apisixctx.ResponseSourceAPISIX {
+		t.Fatalf("finalizer response source = %q, want %q", finalSource, apisixctx.ResponseSourceAPISIX)
+	}
+}
+
 func TestRouteHandlerPanicResponseWriteFailureStillFinalizesAndAborts(t *testing.T) {
 	tests := []struct {
 		name      string

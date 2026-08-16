@@ -189,3 +189,30 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyErrorHandlerMapsMaxBytesErrorAsClientError(t *testing.T) {
+	reporter := &routeHealthRecorder{}
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/", nil)
+	request = apisixctx.WithRequestVars(request)
+	request = pxy.WithHealthReporter(request, reporter)
+	pxy.SetSelectedTarget(request, "http://upstream.test:80")
+	response := httptest.NewRecorder()
+
+	newErrorHandler()(response, request, &http.MaxBytesError{Limit: 3})
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", response.Code)
+	}
+	if got, want := response.Header().Get("Content-Type"), "application/json; charset=UTF-8"; got != want {
+		t.Fatalf("Content-Type = %q, want %q", got, want)
+	}
+	if got, want := response.Body.String(), `{"message":"request body too large"}`; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if got := apisixctx.GetRequestVar(request, "$response_source"); got != "apisix" {
+		t.Fatalf("$response_source = %v, want apisix", got)
+	}
+	if reporter.tcpCalls != 0 {
+		t.Fatalf("TCP failure calls = %d, want 0 for a client body-limit error", reporter.tcpCalls)
+	}
+}

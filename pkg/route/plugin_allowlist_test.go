@@ -146,7 +146,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 		}
 	})
 
-	t.Run("generated client control requires membership", func(t *testing.T) {
+	t.Run("global body limit does not require client control membership", func(t *testing.T) {
 		setHTTPPluginAllowlist(t)
 		previous := appconfig.GlobalConfig
 		appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
@@ -161,11 +161,8 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 		builder := NewBuilder(nil)
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
-		if err == nil || handler != nil {
-			t.Fatalf("BuildStrict() = (%T, %v), want generated client-control rejection", handler, err)
-		}
-		if !strings.Contains(err.Error(), "client-control") {
-			t.Fatalf("BuildStrict() error = %q, want client-control", err)
+		if err != nil || handler == nil {
+			t.Fatalf("BuildStrict() = (%T, %v), want server-owned limit without generated client-control", handler, err)
 		}
 	})
 

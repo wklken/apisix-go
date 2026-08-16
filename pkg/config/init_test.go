@@ -179,6 +179,42 @@ func TestLoadRejectsNonZeroNginxSendTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFilesClientMaxBodySizeValidation(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, test := range []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "negative", value: "-1", wantError: true},
+		{name: "zero remains unlimited", value: "0"},
+		{name: "positive", value: "1024"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			GlobalConfig = previous
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			overrideConfig := "nginx_config:\n  http:\n    client_max_body_size: " + test.value + "\n"
+			override := writeConfigFile(t, "override.yaml", overrideConfig)
+
+			_, err := loadConfigFiles(base, override)
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "nginx_config.http.client_max_body_size") {
+					t.Fatalf("loadConfigFiles() error = %v, want client_max_body_size rejection", err)
+				}
+				if GlobalConfig != previous {
+					t.Fatal("GlobalConfig changed before client_max_body_size validation")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadConfigFiles() error = %v, want compatibility for %s", err, test.value)
+			}
+		})
+	}
+}
+
 func TestApisixListenAddressesDefaultsToLegacyAddress(t *testing.T) {
 	if got, want := (Apisix{}).ListenAddresses(), []string{":8080"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)

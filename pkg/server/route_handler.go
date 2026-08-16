@@ -58,12 +58,24 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
-	wrapped, capture := base.CaptureResponseOutcomeController(w)
+	bodyLimitState := requestBodyLimitStateFromRequest(request)
+	captureWriter := w
+	if bodyLimitState != nil {
+		captureWriter = bodyLimitState.responseWriter
+	}
+	wrapped, capture := base.CaptureResponseOutcomeController(captureWriter)
+	if bodyLimitState != nil {
+		wrapped = bodyLimitState.wrapResponseWriter(wrapped)
+	}
 	request = base.WithResponseCapture(request, capture)
 	lifecycle.SetFinalRequest(request)
 
 	defer func() {
 		recovered := recover()
+		bodyLimitFinalized := false
+		if bodyLimitState != nil {
+			bodyLimitFinalized = bodyLimitState.writeCanonicalResponse(wrapped, request)
+		}
 		outcome := capture.Outcome()
 		aborted := false
 		isHandlerAbort := recovered == http.ErrAbortHandler
@@ -71,6 +83,10 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 		switch {
 		case recovered == nil:
 			outcome.Kind = apisixctx.RequestOutcomeCompleted
+		case bodyLimitFinalized:
+			logger.Errorf("recovered request panic after body-limit rejection: %v\n%s", recovered, debug.Stack())
+			metrics.RecordRequestPanic(metrics.RequestPanicPreCommit)
+			outcome.Kind = apisixctx.RequestOutcomeRecoveredPanic
 		case isHandlerAbort:
 			outcome.Kind = apisixctx.RequestOutcomeHandlerAbort
 		default:

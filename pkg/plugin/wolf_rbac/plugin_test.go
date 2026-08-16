@@ -98,8 +98,86 @@ func TestPostInitAppliesOfficialDefaults(t *testing.T) {
 	if p.config.HeaderPrefix != "X-" {
 		t.Fatalf("header_prefix = %q, want X-", p.config.HeaderPrefix)
 	}
-	if p.config.SSLVerify != nil {
-		t.Fatalf("ssl_verify = %v, want unset", *p.config.SSLVerify)
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("ssl_verify = %v, want true", p.config.SSLVerify)
+	}
+}
+
+func TestClientForConfigTLSSecurityMatrix(t *testing.T) {
+	wolf := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(wolf.Close)
+
+	cases := []struct {
+		name               string
+		pluginConfig       Config
+		injectedClient     bool
+		consumerConfig     consumerConfig
+		applyPluginDefault bool
+		wantErr            bool
+	}{
+		{
+			name:           "default nil rejects untrusted server",
+			consumerConfig: consumerConfig{Server: wolf.URL},
+			wantErr:        true,
+		},
+		{
+			name:           "explicit false succeeds",
+			consumerConfig: consumerConfig{Server: wolf.URL, SSLVerify: new(false)},
+		},
+		{
+			name:           "trusted injected transport succeeds with verification enabled",
+			injectedClient: true,
+			consumerConfig: consumerConfig{Server: wolf.URL, SSLVerify: new(true)},
+		},
+		{
+			name:               "consumer nil inherits route true",
+			injectedClient:     true,
+			consumerConfig:     consumerConfig{Server: wolf.URL},
+			applyPluginDefault: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{config: tc.pluginConfig}
+			if tc.injectedClient {
+				p.client = wolf.Client()
+			}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+
+			cfg := tc.consumerConfig
+			if tc.applyPluginDefault {
+				cfg.applyDefaults(p.config)
+				if cfg.SSLVerify == nil || !*cfg.SSLVerify {
+					t.Fatalf("consumer ssl_verify = %v, want inherited true", cfg.SSLVerify)
+				}
+			}
+
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+			status, _, _, err := p.checkPermission(request, cfg, rbacToken{
+				AppID:     "app-a",
+				WolfToken: "token-a",
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("checkPermission() error = nil, want untrusted TLS rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("checkPermission() error = %v", err)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+		})
 	}
 }
 

@@ -23,6 +23,8 @@ type upstreamTimeouts struct {
 	responseHeader time.Duration
 }
 
+const defaultUpstreamTimeout = 60 * time.Second
+
 func resolveUpstreamTimeouts(routeTimeout, upstreamTimeout resource.Timeout) upstreamTimeouts {
 	resolved := upstreamTimeout
 	if routeTimeout.Connect > 0 {
@@ -34,17 +36,19 @@ func resolveUpstreamTimeouts(routeTimeout, upstreamTimeout resource.Timeout) ups
 	if routeTimeout.Read > 0 {
 		resolved.Read = routeTimeout.Read
 	}
-	connect := proxy.DefaultDialTimeout
-	if resolved.Connect > 0 {
-		connect = time.Duration(resolved.Connect) * time.Second
-	}
-	read := time.Duration(resolved.Read) * time.Second
 	return upstreamTimeouts{
-		connect:        connect,
-		send:           time.Duration(resolved.Send) * time.Second,
-		read:           read,
-		responseHeader: read,
+		connect:        durationOrDefault(resolved.Connect),
+		send:           durationOrDefault(resolved.Send),
+		read:           durationOrDefault(resolved.Read),
+		responseHeader: durationOrDefault(resolved.Read),
 	}
+}
+
+func durationOrDefault(seconds int) time.Duration {
+	if seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return defaultUpstreamTimeout
 }
 
 func upstreamTLSInsecureSkipVerify(upstream resource.Upstream) bool {

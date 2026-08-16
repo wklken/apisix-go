@@ -68,7 +68,7 @@ func firstSecretReference(value reflect.Value, path string, depth int, visited m
 	}
 
 	switch value.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if value.IsNil() {
 			return "", false
 		}

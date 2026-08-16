@@ -822,7 +822,9 @@ func TestUnownedSecretReferenceRejectsNestedAuthPlugin(t *testing.T) {
 	}
 
 	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "realm") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "realm") {
 		t.Fatalf("PostInit() error = %v, want nested auth secret rejection", err)
 	}
 }

@@ -43,6 +43,9 @@ func TestSecretMaterializationGuardRejectsDirectResolution(t *testing.T) {
 		t.Fatalf("walk plugin sources: %v", err)
 	}
 	if len(violations) > 0 {
-		t.Fatalf("direct ResolveSecretReference calls bypass secret materialization: %s", strings.Join(violations, ", "))
+		t.Fatalf(
+			"direct ResolveSecretReference calls bypass secret materialization: %s",
+			strings.Join(violations, ", "),
+		)
 	}
 }

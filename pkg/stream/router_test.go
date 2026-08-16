@@ -597,7 +597,9 @@ func TestUnownedSecretReferenceRejectsStreamPlugin(t *testing.T) {
 		},
 		Upstream: resource.Upstream{Nodes: []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: 1}}},
 	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "protocol_name") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "protocol_name") {
 		t.Fatalf("buildRouteEntry() error = %v, want stream secret rejection", err)
 	}
 }

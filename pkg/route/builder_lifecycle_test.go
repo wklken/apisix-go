@@ -1170,7 +1170,9 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
 		builder.pluginRouteContext(resource.Route{ID: "route-unowned-secret"}),
 	)
 
-	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "realm") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "realm") {
 		t.Fatalf("initPluginsStrict() error = %v, want unowned route secret rejection", err)
 	}
 	if len(plugins) != 0 {

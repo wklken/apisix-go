@@ -53,6 +53,38 @@ bash scripts/release_metadata_test.sh
 bash scripts/release_gate_test.sh
 ```
 
+### Candidate HTTP data-plane profile and lifecycle
+
+`deployment.profile` accepts either the empty compatibility value or the
+strict `http-data-plane-v1` candidate. The strict profile is an ordered,
+HTTP-only contract: it uses the six-plugin allowlist
+`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`,
+disables Admin and stream listeners/plugins, requires data-plane etcd over
+verified HTTPS, a trusted source CIDR, a positive request-body limit, and no
+process access-log claims. Its full operator contract is in
+[`production-profile.md`](production-profile.md); it is awaiting release and
+operations qualification and does not change the repository-wide not-ready
+status.
+
+The loader retains recognized compatibility fields, but explicit activation of
+unsupported Admin, top-level discovery, external-plugin commands, WASM, XRPC,
+QUIC, or HTTP/3 fails closed. Route/upstream discovery fields remain decodable
+for migration diagnostics and are rejected by HTTP or stream compilation when
+they would require discovery runtime behavior. Frontend HTTPS serving is part
+of the implemented TLS boundary; direct Internet exposure still requires that
+frontend TLS boundary or a trusted TLS-terminating ingress whose source CIDRs
+are configured.
+
+WebSocket upgrades are admitted only when the effective route or service sets
+`enable_websocket: true`. Every WebSocket upgrade attempt skips response
+callbacks while request, authentication, access, before-proxy, and log phases
+run. A successful tunnel remains subject to cluster admission and timeout
+limits. Retiring a route generation closes its WebSocket connections. `SIGHUP` drains
+the server and returns an unsupported-reload error, so configuration changes
+require a new process rather than an in-process reload. Zipkin is v2-only, and
+OTel rejects `set_ngx_var` and non-zero `inactive_timeout` while retaining
+collector `request_timeout`.
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12
@@ -67,9 +99,10 @@ and unsupported plugin configuration is rejected before the server begins
 serving. An invalid route reload is rejected without replacing the last-good
 router generation. It does not yet expose a general stream-variable/plugin-chain
 API, active health probes, TLS/UDP stream owner, or Kafka-specific stream
-binding. There is no readiness endpoint in this repository; startup failures
-are returned to the process entrypoint. Protocol-owned bounded transport and
-stream boundaries therefore have different integration states:
+binding. The runtime exposes `/livez` and `/readyz`; startup failures are
+returned to the process entrypoint, and readiness remains unavailable until
+configuration and the configured provider are ready. Protocol-owned bounded
+transport and stream boundaries therefore have different integration states:
 
 | Plugin | Current local behavior | Design consequence |
 |---|---|---|

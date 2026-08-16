@@ -4,7 +4,10 @@
 [`conf/config.yaml.example`](https://github.com/apache/apisix/blob/master/conf/config.yaml.example),
 including its scalar and mapping forms for listeners. The Go loader keeps
 configuration that has no direct Go equivalent in the typed configuration
-object so an official file can be loaded without being rewritten.
+object so an official file can be loaded without being rewritten. Recognition
+is a compatibility boundary, not an activation guarantee: compatibility-only
+fields may be retained, while the explicitly unsupported runtime activations
+listed below fail closed when configured.
 
 ## Production container configuration
 
@@ -20,7 +23,18 @@ The production HTTP allowlist is deliberately limited to `request-id`, `cors`,
 `key-auth`, `jwt-auth`, `basic-auth`, and `prometheus`. Stream proxy mode and
 stream plugins are disabled, the deployment uses the data-plane etcd provider,
 etcd TLS verification is enabled, and no admin or data-encryption key material
-is embedded in the image defaults.
+is embedded in the image defaults. The selected `deployment.profile:
+http-data-plane-v1` is a conservative candidate profile; it still awaits the
+release and operations qualification described in
+[`production-profile.md`](production-profile.md).
+
+The profile requires `debug: false`, an HTTP-only `apisix.proxy_mode`, empty
+TCP/UDP stream listeners and `stream_plugins`, at least one valid
+`apisix.trusted_addresses` CIDR, a positive
+`nginx_config.http.client_max_body_size`, and no process access-log settings.
+Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
+be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
+`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`.
 
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
@@ -32,13 +46,14 @@ state. The image healthcheck uses `/readyz`.
 | Configuration | Go behavior |
 | --- | --- |
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
+| `deployment.profile` | Empty selects compatibility mode; `http-data-plane-v1` enables the strict candidate HTTP data-plane contract documented in [`production-profile.md`](production-profile.md). Other values are rejected. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
 | `plugins`, `stream_plugins`, and `plugin_attr` | Control the existing plugin registration, stream plugin selection, and plugin-specific settings. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
 | `nginx_config.http.keepalive_timeout` | Maps to `http.Server.IdleTimeout`. |
 | `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. |
-| `nginx_config.http.send_timeout` | Maps to `http.Server.WriteTimeout`. |
+| `nginx_config.http.send_timeout` | Must remain zero. A non-zero value fails startup because Go `net/http` cannot reproduce NGINX write-idle timeout semantics without imposing an absolute response deadline. |
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
 | `deployment.role: data_plane` with `role_data_plane.config_provider: yaml` or `json` | Loads resource snapshots from `conf/apisix.yaml` or `conf/apisix.json`, watches the file, and applies additions, updates, and removals through the local store. |
 | `proxy.max_idle_conns` | Global maximum number of idle (keep-alive) connections kept open across all upstream hosts. Default 1024; zero selects the default. |
@@ -83,25 +98,31 @@ groups, global rules, plugin configs, and protos.
 The loader also recognizes the remaining official top-level sections and
 nested fields, including `nginx_config`, `ext-plugin`, `wasm`, `xrpc`, `events`,
 `lru`, status/trusted-address settings, deployment roles, admin settings, and
-plugin attributes. Recognition means the file is accepted and values are
-retained; it does not imply that a native NGINX/Lua subsystem exists in the Go
-runtime.
+plugin attributes. Recognition retains values for compatibility and diagnostics;
+it does not imply that a native NGINX/Lua subsystem exists in the Go runtime.
+Explicit activation of Admin, top-level discovery, `ext-plugin.cmd`, WASM,
+XRPC, QUIC, or HTTP/3 fails startup. Route and upstream discovery fields are
+retained by the resource decoder but rejected during HTTP or stream route
+compilation when they would require an unsupported runtime.
 
 ## Intentionally unsupported
 
-These settings remain parsed but have no effect unless they map to a behavior
-listed above:
+These settings remain outside the Go runtime. Compatibility-only fields may be
+retained for migration diagnostics; explicit activation of the unsupported
+runtime features called out below is rejected rather than silently ignored:
 
 - OpenResty/NGINX worker directives, Lua module paths/hooks, Lua shared-dict
   sizing, NGINX configuration snippets, access-log formatting, and NGINX
-  variable/real-IP directives.
-- Dynamic HTTPS listener serving, HTTP/3/QUIC, stream TLS/mTLS, PROXY protocol,
-  and UDP stream proxying. In stream mode, empty TCP listener sets, listener or
-  upstream TLS/PROXY protocol flags, top-level TCP PROXY protocol flags,
+  variable/real-IP directives. The candidate profile also forbids process
+  access-log claims; use the documented request/metrics logging boundaries.
+- Frontend HTTPS listener serving is supported by the implemented Go TLS
+  listener. HTTP/3/QUIC, stream TLS/mTLS, PROXY protocol, and UDP stream
+  proxying remain unsupported. In stream mode, empty TCP listener sets, listener
+  or upstream TLS/PROXY protocol flags, top-level TCP PROXY protocol flags,
   unresolved upstream references, unsupported stream plugins, invalid listener
-  addresses, and bind failures are rejected at startup rather than ignored.
-  HTTPS certificate selection is a dynamic APISIX resource concern, not
-  represented by the official listener-only config fields.
+  addresses, and bind failures are rejected at startup. HTTPS certificate
+  selection uses the implemented frontend TLS and APISIX SSL resource path; a
+  listener-only field does not create a certificate.
 - General stream-plugin chaining and stream metrics. Liveness and readiness are
   exposed through `/livez` and `/readyz`; startup failures are surfaced through
   the process return, and `/readyz` remains unavailable until configuration and
@@ -110,9 +131,20 @@ listed above:
   restrictions, and admin mTLS. The current Go admin router is not a complete
   APISIX Admin API implementation.
 - Lua external plugins, WASM plugins, XRPC protocol plugins, and the official
-  discovery providers (`dns`, Eureka, Nacos, Consul, and Kubernetes).
+  discovery providers (`dns`, Eureka, Nacos, Consul, and Kubernetes). Top-level
+  discovery activation fails startup; route/upstream discovery compatibility
+  fields are preserved and rejected at route compilation.
 - etcd watch resync/health-check timing and exact APISIX/OpenResty lifecycle
   semantics.
+- WebSocket upgrades require effective route or service
+  `enable_websocket: true`. Every WebSocket upgrade attempt skips response
+  callbacks; request, authentication, access, before-proxy, and log phases
+  still run. Successful tunnels retain cluster admission and timeout limits,
+  and retired route generations close them during generation shutdown.
+- Zipkin is v2-only. OTel rejects `set_ngx_var: true` and any non-zero
+  `inactive_timeout`; collector `request_timeout` remains supported.
+- `SIGHUP` performs graceful shutdown and returns an unsupported-reload error;
+  it is not an in-process configuration reload.
 
 No placeholder implementation is added for these native or separate-runtime
 features. They should be treated as unsupported when deploying an official

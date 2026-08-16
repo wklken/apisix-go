@@ -294,6 +294,60 @@ func TestNewRouterRejectsUnsupportedUpstreamScheme(t *testing.T) {
 	}
 }
 
+func TestNewRouterRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		field string
+		set   func(*resource.Upstream)
+	}{
+		{name: "discovery type", field: "discovery_type", set: func(upstream *resource.Upstream) {
+			upstream.DiscoveryType = "dns"
+		}},
+		{name: "service name", field: "service_name", set: func(upstream *resource.Upstream) {
+			upstream.ServiceName = "orders.default.svc"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+			}
+			test.set(&upstream)
+			_, err := NewRouter([]resource.StreamRoute{{
+				ID:       "dynamic-discovery-stream",
+				Upstream: upstream,
+			}}, nil, nil)
+			if err == nil {
+				t.Fatal("NewRouter() error = nil, want unsupported discovery error")
+			}
+			message := err.Error()
+			if !strings.Contains(message, "dynamic-discovery-stream") || !strings.Contains(message, test.field) {
+				t.Fatalf("NewRouter() error = %q, want route and field provenance", message)
+			}
+		})
+	}
+}
+
+func TestNewRouterReportsReferencedUpstreamDiscoveryProvenance(t *testing.T) {
+	_, err := NewRouter([]resource.StreamRoute{{
+		ID:         "referenced-discovery-stream",
+		UpstreamID: "stream-upstream-42",
+		Upstream: resource.Upstream{
+			Scheme:        "tcp",
+			DiscoveryType: "dns",
+			Nodes:         []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+		},
+	}}, nil, nil)
+	if err == nil {
+		t.Fatal("NewRouter() error = nil, want unsupported discovery error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, `upstream "stream-upstream-42"`) ||
+		strings.Contains(message, "referenced-discovery-stream") {
+		t.Fatalf("NewRouter() error = %q, want upstream provenance without route fallback", message)
+	}
+}
+
 func TestRouterMQTTForwardsAndPublishesClientID(t *testing.T) {
 	packet := streamMQTTConnectPacket("route-client")
 	payload := []byte("publish-before-connect-ack")
@@ -587,4 +641,19 @@ func streamMQTTConnectPacket(clientID string) []byte {
 	body = append(body, length[:]...)
 	body = append(body, clientID...)
 	return append([]byte{0x10, byte(len(body))}, body...)
+}
+
+func TestUnownedSecretReferenceRejectsStreamPlugin(t *testing.T) {
+	_, err := buildRouteEntry(resource.StreamRoute{
+		ID: "stream-unowned-secret",
+		Plugins: map[string]resource.PluginConfig{
+			"mqtt-proxy": map[string]any{"protocol_level": 4, "protocol_name": "$ENV://MQTT_PROTOCOL"},
+		},
+		Upstream: resource.Upstream{Nodes: []resource.Node{{Host: "127.0.0.1", Port: 1883, Weight: 1}}},
+	}, nil)
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "protocol_name") {
+		t.Fatalf("buildRouteEntry() error = %v, want stream secret rejection", err)
+	}
 }

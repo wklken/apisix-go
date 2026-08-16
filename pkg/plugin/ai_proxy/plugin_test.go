@@ -2184,18 +2184,18 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		for i := range 8 {
+		for i := range 12 {
 			chunk := "data: {\"choices\":[{\"delta\":{\"content\":\"tok" + strconv.Itoa(i) + "\"}}]}\n\n"
 			_, _ = w.Write([]byte(chunk))
 			flusher.Flush()
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}))
 	defer upstream.Close()
 
 	p := newTestPlugin(t, Config{
 		Provider: "openai-compatible",
-		Timeout:  100,
+		Timeout:  500,
 		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
@@ -2209,7 +2209,7 @@ func TestHandlerProgressingStreamSurvivesConfiguredTimeout(t *testing.T) {
 	})).ServeHTTP(rr, req)
 
 	output := rr.Body.String()
-	for i := range 8 {
+	for i := range 12 {
 		if !strings.Contains(output, "tok"+strconv.Itoa(i)) {
 			t.Fatalf("progressing stream lost chunk %d; body = %q", i, output)
 		}

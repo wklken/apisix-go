@@ -48,6 +48,10 @@ type Plugin struct {
 	backendMu     sync.Mutex
 	backendClient redis.UniversalClient
 	clientRelease func()
+
+	keySecret               *store.ResolvedSecret
+	redisHostSecret         *store.ResolvedSecret
+	redisClusterNodeSecrets []*store.ResolvedSecret
 }
 
 const (
@@ -453,13 +457,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.Key == "" {
 		p.config.Key = "remote_addr"
 	}
-	if strings.HasPrefix(strings.ToUpper(p.config.Key), "$ENV://") {
-		key, err := store.ResolveSecretReference(p.config.Key)
-		if err != nil {
-			return fmt.Errorf("resolve limit-count key: %w", err)
-		}
-		p.config.Key = key
-	}
 	if p.config.KeyType == "" {
 		p.config.KeyType = "var"
 	}
@@ -486,13 +483,6 @@ func (p *Plugin) PostInit() error {
 	p.applyRootRedisClusterConfig()
 	switch p.config.Policy {
 	case "redis":
-		if strings.HasPrefix(strings.ToUpper(p.config.Redis.RedisHost), "$ENV://") {
-			host, err := store.ResolveSecretReference(p.config.Redis.RedisHost)
-			if err != nil {
-				return fmt.Errorf("resolve limit-count Redis host: %w", err)
-			}
-			p.config.Redis.RedisHost = host
-		}
 		if p.config.Redis.RedisPort == 0 {
 			p.config.Redis.RedisPort = 6379
 		}
@@ -521,16 +511,6 @@ func (p *Plugin) PostInit() error {
 			p.config.Redis.RedisSSLVerify = &b
 		}
 	case "redis-cluster":
-		for i, node := range p.config.RedisCluster.RedisClusterNodes {
-			if !strings.HasPrefix(strings.ToUpper(node), "$ENV://") {
-				continue
-			}
-			resolved, err := store.ResolveSecretReference(node)
-			if err != nil {
-				return fmt.Errorf("resolve limit-count Redis cluster node %d: %w", i, err)
-			}
-			p.config.RedisCluster.RedisClusterNodes[i] = resolved
-		}
 		if len(p.config.RedisCluster.RedisClusterNodes) == 0 {
 			return fmt.Errorf("redis_cluster_nodes is required")
 		}
@@ -653,6 +633,73 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	p.applyRootRedisConfig()
+	p.applyRootRedisClusterConfig()
+
+	keySecret, err := materializeSecretReference(p.config.Key)
+	if err != nil {
+		return errors.New("resolve limit-count key: credential unavailable")
+	}
+	redisHostSecret, err := materializeSecretReference(p.config.Redis.RedisHost)
+	if err != nil {
+		keySecret.Destroy()
+		return errors.New("resolve limit-count Redis host: credential unavailable")
+	}
+	clusterNodeSecrets := make([]*store.ResolvedSecret, len(p.config.RedisCluster.RedisClusterNodes))
+	for i, node := range p.config.RedisCluster.RedisClusterNodes {
+		clusterNodeSecrets[i], err = materializeSecretReference(node)
+		if err != nil {
+			keySecret.Destroy()
+			redisHostSecret.Destroy()
+			for _, secret := range clusterNodeSecrets {
+				secret.Destroy()
+			}
+			return fmt.Errorf("resolve limit-count Redis cluster node %d: credential unavailable", i)
+		}
+	}
+
+	p.keySecret = keySecret
+	p.redisHostSecret = redisHostSecret
+	p.redisClusterNodeSecrets = clusterNodeSecrets
+	if keySecret != nil {
+		p.config.Key = keySecret.Descriptor()
+	}
+	if redisHostSecret != nil {
+		p.config.Redis.RedisHost = redisHostSecret.Descriptor()
+	}
+	if p.config.RedisHost != "" {
+		p.config.RedisHost = p.config.Redis.RedisHost
+	}
+	for i, secret := range clusterNodeSecrets {
+		if secret != nil {
+			p.config.RedisCluster.RedisClusterNodes[i] = secret.Descriptor()
+		}
+	}
+	if len(p.config.RedisClusterNodes) > 0 {
+		p.config.RedisClusterNodes = append([]string(nil), p.config.RedisCluster.RedisClusterNodes...)
+	}
+	return nil
+}
+
+func materializeSecretReference(value string) (*store.ResolvedSecret, error) {
+	upper := strings.ToUpper(value)
+	if !strings.HasPrefix(upper, "$ENV://") && !strings.HasPrefix(value, "$secret://") {
+		return nil, nil
+	}
+	secret, err := store.MaterializeSecret(value)
+	if err != nil {
+		return nil, err
+	}
+	bytes := secret.Bytes()
+	defer clear(bytes)
+	if len(bytes) == 0 {
+		secret.Destroy()
+		return nil, errors.New("credential unavailable")
+	}
+	return secret, nil
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
@@ -856,12 +903,39 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 	var create func() (any, error)
 	switch p.config.Policy {
 	case "redis":
-		configUID.Add(p.config.Redis.String())
-		create = func() (any, error) { return redis.NewClient(p.redisConnConfig().Options()), nil }
+		identity := p.config.Redis
+		runtimeConfig := p.redisConnConfig()
+		if p.redisHostSecret != nil {
+			host := p.redisHostSecret.Bytes()
+			if len(host) == 0 {
+				return nil, errors.New("limit-count Redis host credential unavailable")
+			}
+			defer clear(host)
+			runtimeConfig.Host = string(host)
+			identity.RedisHost = p.redisHostSecret.Fingerprint()
+		}
+		configUID.Add(identity.String())
+		options := runtimeConfig.Options()
+		create = func() (any, error) { return redis.NewClient(options), nil }
 	case "redis-cluster":
+		runtimeConfig := p.redisClusterConnConfig()
+		runtimeConfig.Nodes = append([]string(nil), runtimeConfig.Nodes...)
+		identityNodes := append([]string(nil), p.config.RedisCluster.RedisClusterNodes...)
+		for i, secret := range p.redisClusterNodeSecrets {
+			if secret == nil {
+				continue
+			}
+			node := secret.Bytes()
+			if len(node) == 0 {
+				return nil, fmt.Errorf("limit-count Redis cluster node %d credential unavailable", i)
+			}
+			defer clear(node)
+			runtimeConfig.Nodes[i] = string(node)
+			identityNodes[i] = secret.Fingerprint()
+		}
 		configUID.Add(
 			p.config.RedisCluster.RedisClusterName,
-			strings.Join(p.config.RedisCluster.RedisClusterNodes, ","),
+			strings.Join(identityNodes, ","),
 			p.config.RedisCluster.RedisPassword,
 			p.config.RedisCluster.RedisTimeout,
 			*p.config.RedisCluster.RedisClusterSSL,
@@ -869,8 +943,9 @@ func (p *Plugin) redisBackendClientLocked() (redis.UniversalClient, error) {
 			p.config.RedisCluster.RedisKeepaliveTimeout,
 			p.config.RedisCluster.RedisKeepalivePool,
 		)
+		options := runtimeConfig.ClusterOptions()
 		create = func() (any, error) {
-			return redis.NewClusterClient(p.redisClusterConnConfig().ClusterOptions()), nil
+			return redis.NewClusterClient(options), nil
 		}
 	case "redis-sentinel":
 		configUID.Add(
@@ -1530,16 +1605,32 @@ func (p *Plugin) Stop() {
 	if release != nil {
 		release()
 	}
+	p.keySecret.Destroy()
+	p.keySecret = nil
+	p.redisHostSecret.Destroy()
+	p.redisHostSecret = nil
+	for _, secret := range p.redisClusterNodeSecrets {
+		secret.Destroy()
+	}
+	p.redisClusterNodeSecrets = nil
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {
+	configuredKey := p.config.Key
+	if p.keySecret != nil {
+		key := p.keySecret.Bytes()
+		defer clear(key)
+		if len(key) > 0 {
+			configuredKey = string(key)
+		}
+	}
 	var key string
 	switch p.config.KeyType {
 	case "constant":
-		key = p.config.Key
+		key = configuredKey
 	case "var_combination":
 		resolved := 0
-		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
+		key = varPattern.ReplaceAllStringFunc(configuredKey, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
 			value := limitCountRequestVar(r, name)
@@ -1552,7 +1643,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 			key = ""
 		}
 	default:
-		key = limitCountRequestVar(r, p.config.Key)
+		key = limitCountRequestVar(r, configuredKey)
 	}
 
 	if key == "" {

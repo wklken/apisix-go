@@ -811,3 +811,20 @@ func newMultiAuthRequest() *http.Request {
 	req = ctx.WithRequestVars(req)
 	return req
 }
+
+func TestUnownedSecretReferenceRejectsNestedAuthPlugin(t *testing.T) {
+	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
+		{"basic-auth": {"realm": "$ENV://MULTI_AUTH_REALM"}},
+		{"key-auth": {}},
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil ||
+		!strings.Contains(err.Error(), "unowned secret reference") ||
+		!strings.Contains(err.Error(), "realm") {
+		t.Fatalf("PostInit() error = %v, want nested auth secret rejection", err)
+	}
+}

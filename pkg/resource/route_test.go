@@ -332,6 +332,76 @@ func TestUpstreamUnmarshalCompleteDocument(t *testing.T) {
 	}
 }
 
+func TestUpstreamUnmarshalPreservesDiscoveryFieldsAndRoundTrip(t *testing.T) {
+	const config = `{
+		"discovery_type": "dns",
+		"service_name": "orders.default.svc.cluster.local",
+		"nodes": {"127.0.0.1:8080": 1}
+	}`
+
+	var upstream Upstream
+	if err := json.Unmarshal([]byte(config), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if upstream.DiscoveryType != "dns" || upstream.ServiceName != "orders.default.svc.cluster.local" {
+		t.Fatalf("discovery fields = %q/%q, want dns/service name", upstream.DiscoveryType, upstream.ServiceName)
+	}
+	roundTripped, err := json.Marshal(&upstream)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var decoded Upstream
+	if err := json.Unmarshal(roundTripped, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() round-trip error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, upstream) {
+		t.Fatalf("round-trip upstream = %#v, want %#v", decoded, upstream)
+	}
+}
+
+func TestUpstreamUnmarshalAcceptsDiscoveryOnlyDocument(t *testing.T) {
+	var upstream Upstream
+	if err := json.Unmarshal([]byte(`{
+		"discovery_type": "dns",
+		"service_name": "orders.default.svc.cluster.local"
+	}`), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if upstream.Nodes != nil {
+		t.Fatalf("discovery-only upstream nodes = %#v, want nil", upstream.Nodes)
+	}
+	if upstream.DiscoveryType != "dns" || upstream.ServiceName != "orders.default.svc.cluster.local" {
+		t.Fatalf("discovery fields = %q/%q, want dns/service name", upstream.DiscoveryType, upstream.ServiceName)
+	}
+}
+
+func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
+	var route Route
+	if err := json.Unmarshal([]byte(`{
+		"id": "websocket-route",
+		"uri": "/websocket",
+		"enable_websocket": true,
+		"service_id": "websocket-service"
+	}`), &route); err != nil {
+		t.Fatalf("route json.Unmarshal() error = %v", err)
+	}
+	if !route.EnableWebsocket || route.ServiceID != "websocket-service" {
+		t.Fatalf("route websocket/service = %t/%q, want true/websocket-service", route.EnableWebsocket, route.ServiceID)
+	}
+
+	var service Service
+	if err := json.Unmarshal([]byte(`{
+		"id": "websocket-service",
+		"name": "orders",
+		"enable_websocket": true
+	}`), &service); err != nil {
+		t.Fatalf("service json.Unmarshal() error = %v", err)
+	}
+	if !service.EnableWebsocket || service.Name != "orders" {
+		t.Fatalf("service websocket/name = %t/%q, want true/orders", service.EnableWebsocket, service.Name)
+	}
+}
+
 func TestUpstreamUnmarshalRejectsMalformedFields(t *testing.T) {
 	tests := []struct {
 		name string

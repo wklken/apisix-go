@@ -66,7 +66,7 @@ const schema = `
       "type": "string"
     },
     "span_version": {
-      "enum": [1, 2],
+      "enum": [2],
       "default": 2
     }
   },
@@ -137,6 +137,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.SpanVersion != 0 && p.config.SpanVersion != 2 {
+		return fmt.Errorf("zipkin span_version %d is unsupported; only v2 is emitted", p.config.SpanVersion)
+	}
 	if p.config.ServiceName == "" {
 		p.config.ServiceName = "APISIX"
 	}

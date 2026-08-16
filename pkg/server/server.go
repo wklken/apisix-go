@@ -549,6 +549,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := metrics.Init(); err != nil {
+		return fmt.Errorf("initialize prometheus metrics: %w", err)
+	}
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
 		s.storage.AddEventUpdateHook(
@@ -574,7 +577,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 
 	logger.Info("Starting storage")
 	s.storage.Start()
-	metrics.Init()
 	if err := s.startConfigProvider(ctx); err != nil {
 		return err
 	}
@@ -857,7 +859,9 @@ func (s *Server) startPrometheusExportServer() error {
 	if !slices.Contains(config.GlobalConfig.Plugins, "prometheus") {
 		return nil
 	}
-	metrics.Init()
+	if err := metrics.Init(); err != nil {
+		return fmt.Errorf("initialize prometheus metrics: %w", err)
+	}
 	exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
 	exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
 		Enabled: exportConfig.Enabled,
@@ -1100,10 +1104,11 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		prefix,
 		s.events,
 		etcd.ClientOptions{
-			DialTimeout:    requestTimeout,
-			RequestTimeout: requestTimeout,
-			StartupRetry:   etcdConfig.StartupRetry,
-			TLS:            tlsConfig,
+			DialTimeout:         requestTimeout,
+			RequestTimeout:      requestTimeout,
+			HealthCheckInterval: etcdHealthCheckInterval(etcdConfig.HealthCheckTimeout),
+			StartupRetry:        etcdConfig.StartupRetry,
+			TLS:                 tlsConfig,
 		},
 	)
 	if err != nil {
@@ -1138,6 +1143,13 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	logger.Info("watch etcd")
 	producer.Start()
 	return nil
+}
+
+func etcdHealthCheckInterval(timeout int) time.Duration {
+	if timeout <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(timeout) * time.Second
 }
 
 func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) error {

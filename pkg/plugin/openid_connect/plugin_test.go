@@ -37,6 +37,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -686,7 +689,7 @@ func TestHandlerUnauthActionPassAllowsRequestWithoutToken(t *testing.T) {
 	}
 }
 
-func TestPostInitResolvesPublicKeyEnvironmentReference(t *testing.T) {
+func TestMaterializeSecretsParsesPublicKeyAndKeepsOnlyDescriptor(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
@@ -702,11 +705,15 @@ func TestPostInitResolvesPublicKeyEnvironmentReference(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	if p.config.PublicKey != resolved {
-		t.Fatalf("PublicKey = %q, want resolved environment value", p.config.PublicKey)
+	if !strings.Contains(p.config.PublicKey, "$ENV://OPENID_CONNECT_PUBLIC_KEY#sha256:") ||
+		strings.Contains(p.config.PublicKey, resolved) {
+		t.Fatalf("PublicKey = %q, want safe environment descriptor", p.config.PublicKey)
 	}
 	if p.staticPublicKey == nil {
 		t.Fatal("staticPublicKey is nil after environment resolution")
@@ -737,14 +744,17 @@ func TestPostInitParsesStaticPublicKey(t *testing.T) {
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			err := p.PostInit()
+			err := base.MaterializePluginSecrets(p)
 			if test.wantErr {
-				if err == nil || err.Error() != "failed to parse public key" {
-					t.Fatalf("PostInit() error = %v, want failed to parse public key", err)
+				if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
+					t.Fatalf("MaterializePluginSecrets() error = %v, want redacted credential failure", err)
 				}
 				return
 			}
 			if err != nil {
+				t.Fatalf("MaterializePluginSecrets() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
 				t.Fatalf("PostInit() error = %v", err)
 			}
 			if p.staticPublicKey == nil {
@@ -1018,7 +1028,8 @@ func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 	}
 	if p.config.Session.Storage != "cookie" || p.config.Session.CookieName != "session" ||
 		p.config.Session.CookiePath != "/" || p.config.Session.CookieHTTPOnly == nil ||
-		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSameSite != "Default" {
+		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSecure == nil ||
+		!*p.config.Session.CookieSecure || p.config.Session.CookieSameSite != "Default" {
 		t.Fatalf("OIDC session defaults not applied: %#v", p.config.Session)
 	}
 }
@@ -2186,7 +2197,7 @@ func TestSessionCookieHonorsConfiguredAttributesAndAbsoluteTimeout(t *testing.T)
 		CookieName:      "oidc-session",
 		CookiePath:      "/app",
 		CookieDomain:    "example.com",
-		CookieSecure:    true,
+		CookieSecure:    new(true),
 		CookieHTTPOnly:  new(false),
 		CookieSameSite:  "Strict",
 		AbsoluteTimeout: 3600,

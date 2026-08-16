@@ -29,6 +29,7 @@ type Plugin struct {
 	client *resty.Client
 
 	clientRelease func()
+	clientSecret  *store.ResolvedSecret
 
 	mu                  sync.Mutex
 	discovery           discoveryData
@@ -266,12 +267,6 @@ func (p *Plugin) PostInit() error {
 		return errors.New("authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint")
 	}
 
-	resolvedClientSecret, err := store.ResolveSecretReference(p.config.ClientSecret)
-	if err != nil {
-		return fmt.Errorf("resolve %s client_secret reference: credential unavailable", name)
-	}
-	p.config.ClientSecret = resolvedClientSecret
-
 	transport, trustIdentity, err := p.transport()
 	if err != nil {
 		return err
@@ -307,11 +302,26 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) MaterializeSecrets() error {
+	if p.config.ClientSecret == "" {
+		return nil
+	}
+	clientSecret, err := store.MaterializeSecret(p.config.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("resolve %s client_secret reference: credential unavailable", name)
+	}
+	p.clientSecret = clientSecret
+	p.config.ClientSecret = clientSecret.Descriptor()
+	return nil
+}
+
 func (p *Plugin) Stop() {
 	if p.clientRelease != nil {
 		p.clientRelease()
 		p.clientRelease = nil
 	}
+	p.clientSecret.Destroy()
+	p.clientSecret = nil
 }
 
 func (p *Plugin) Config() any {
@@ -524,7 +534,6 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 		form := url.Values{}
 		form.Set("grant_type", "refresh_token")
 		form.Set("client_id", p.config.ClientID)
-		form.Set("client_secret", p.config.ClientSecret)
 		form.Set("refresh_token", cachedToken.refreshToken)
 
 		refreshed, err := p.requestServiceAccountToken(endpoint, form)
@@ -539,7 +548,6 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", p.config.ClientID)
-	form.Set("client_secret", p.config.ClientSecret)
 
 	response, err := p.requestServiceAccountToken(endpoint, form)
 	if err != nil {
@@ -553,23 +561,49 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 }
 
 func (p *Plugin) requestServiceAccountToken(endpoint string, form url.Values) (tokenEndpointResponse, error) {
-	resp, err := p.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(form.Encode()).
-		Post(endpoint)
+	var response tokenEndpointResponse
+	err := p.withClientSecret(func(clientSecret string) error {
+		requestForm := cloneForm(form)
+		requestForm.Set("client_secret", clientSecret)
+		resp, err := p.client.R().
+			SetHeader("Content-Type", "application/x-www-form-urlencoded").
+			SetBody(requestForm.Encode()).
+			Post(endpoint)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() != http.StatusOK {
+			return fmt.Errorf("token endpoint returned %d", resp.StatusCode())
+		}
+		return json.Unmarshal(resp.Body(), &response)
+	})
 	if err != nil {
 		return tokenEndpointResponse{}, err
 	}
-	if resp.StatusCode() != http.StatusOK {
-		return tokenEndpointResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode())
-	}
-
-	var response tokenEndpointResponse
-	if err := json.Unmarshal(resp.Body(), &response); err != nil {
-		return tokenEndpointResponse{}, err
-	}
-
 	return response, nil
+}
+
+func (p *Plugin) withClientSecret(call func(string) error) error {
+	if p.clientSecret == nil {
+		if p.config.ClientSecret != "" {
+			return errors.New("credential unavailable")
+		}
+		return call("")
+	}
+	clientSecret := p.clientSecret.Bytes()
+	if len(clientSecret) == 0 {
+		return errors.New("credential unavailable")
+	}
+	defer clear(clientSecret)
+	return call(string(clientSecret))
+}
+
+func cloneForm(form url.Values) url.Values {
+	cloned := make(url.Values, len(form)+1)
+	for key, values := range form {
+		cloned[key] = append([]string(nil), values...)
+	}
+	return cloned
 }
 
 func (p *Plugin) cacheServiceAccountToken(cacheKey string, response tokenEndpointResponse, previous tokenCache) string {
@@ -622,7 +656,7 @@ func (p *Plugin) serviceAccountCacheKey(endpoint string) string {
 		"%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s",
 		endpoint,
 		p.config.ClientID,
-		p.config.ClientSecret,
+		p.clientSecret.Fingerprint(),
 		p.config.CacheTTLSeconds,
 		p.config.AccessTokenExpiresIn,
 		p.config.AccessTokenExpiresLeeway,
@@ -811,14 +845,19 @@ func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("client_id", p.config.ClientID)
-	form.Set("client_secret", p.config.ClientSecret)
 	form.Set("username", username)
 	form.Set("password", password)
 
-	resp, err := p.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(form.Encode()).
-		Post(endpoint)
+	var resp *resty.Response
+	err = p.withClientSecret(func(clientSecret string) error {
+		requestForm := cloneForm(form)
+		requestForm.Set("client_secret", clientSecret)
+		resp, err = p.client.R().
+			SetHeader("Content-Type", "application/x-www-form-urlencoded").
+			SetBody(requestForm.Encode()).
+			Post(endpoint)
+		return err
+	})
 	if err != nil {
 		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Accessing token endpoint URL failed.")
 		return

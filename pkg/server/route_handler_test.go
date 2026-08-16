@@ -63,6 +63,99 @@ func (p *recordingSnapshotFinalizerPlugin) RunSnapshotFinalizer(snapshot base.Lo
 	return nil
 }
 
+type rejectingIngressAuthPlugin struct {
+	base.BasePlugin
+}
+
+func (p *rejectingIngressAuthPlugin) Init() error                            { return nil }
+func (p *rejectingIngressAuthPlugin) PostInit() error                        { return nil }
+func (p *rejectingIngressAuthPlugin) Config() any                            { return nil }
+func (p *rejectingIngressAuthPlugin) Handler(next http.Handler) http.Handler { return next }
+func (p *rejectingIngressAuthPlugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	w.WriteHeader(http.StatusUnauthorized)
+	return base.StopRequest(r)
+}
+
+func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
+	tests := []struct {
+		name       string
+		withAuth   bool
+		wantStatus int
+	}{
+		{name: "unauthenticated", wantStatus: http.StatusNoContent},
+		{name: "failed authentication", withAuth: true, wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			loggerPlugin := &panicSnapshotLogPlugin{}
+			loggerPlugin.Name = "test-ingress-logger"
+			finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
+			finalizerPlugin.Name = "request_context"
+			bindings := []pluginpkg.Binding{
+				pluginpkg.BindPlugin(
+					"http-logger",
+					loggerPlugin,
+					pluginpkg.ScopeRoute,
+					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: test.name},
+				),
+				pluginpkg.BindPlugin(
+					"request-context",
+					finalizerPlugin,
+					pluginpkg.ScopeSystem,
+					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
+				),
+			}
+			if test.withAuth {
+				authPlugin := &rejectingIngressAuthPlugin{}
+				authPlugin.Name = "jwt-auth"
+				bindings = append(bindings, pluginpkg.BindPlugin(
+					"jwt-auth",
+					authPlugin,
+					pluginpkg.ScopeRoute,
+					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: test.name},
+				))
+			}
+			executor, err := pluginpkg.NewLogExecutorFromBindings(bindings)
+			if err != nil {
+				t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+			}
+			handler := pluginpkg.NewRequestPipeline(bindings, nil).
+				WithLogExecutor(&executor).
+				Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if got := r.Header.Get("X-Consumer-Username"); got != "" {
+						t.Errorf("upstream consumer header = %q, want unset", got)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/identity", nil)
+			request.Header.Set("X-Consumer-Username", "attacker")
+			response := httptest.NewRecorder()
+			serveRouteRequest(response, request, handler)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+			if got := request.Header.Get("X-Consumer-Username"); got != "" {
+				t.Fatalf("ingress request consumer header = %q, want unset", got)
+			}
+			if len(loggerPlugin.snapshots) != 1 {
+				t.Fatalf("detached log snapshots = %d, want 1", len(loggerPlugin.snapshots))
+			}
+			if got := loggerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
+				t.Fatalf("detached log consumer header = %q, want unset", got)
+			}
+			if len(finalizerPlugin.snapshots) != 1 {
+				t.Fatalf("final log snapshots = %d, want 1", len(finalizerPlugin.snapshots))
+			}
+			if got := finalizerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
+				t.Fatalf("final log consumer header = %q, want unset", got)
+			}
+		})
+	}
+}
+
 type failingRouteResponseWriter struct {
 	header      http.Header
 	writeStatus int
@@ -537,6 +630,71 @@ func TestRouteHandlerSuccessfulHijackRetainsConnection(t *testing.T) {
 	}
 	if err := <-writeDone; err != nil {
 		t.Fatalf("retained connection write error = %v", err)
+	}
+}
+
+func TestRouteHandlerRetiresHijackedConnectionBeforeGenerationDrain(t *testing.T) {
+	tests := []struct {
+		name  string
+		close func(*routeHandler)
+	}{
+		{name: "replace", close: func(routes *routeHandler) {
+			routes.Replace(http.NotFoundHandler(), nil)
+		}},
+		{name: "close", close: func(routes *routeHandler) { routes.Close() }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			left, right := net.Pipe()
+			t.Cleanup(func() {
+				_ = left.Close()
+				_ = right.Close()
+			})
+			closed := &atomic.Int32{}
+			connection := &countingCloseConn{Conn: left, closed: closed}
+			started := make(chan struct{})
+			requestDone := make(chan struct{})
+			stopped := make(chan struct{})
+			routes := newRouteHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+					t.Errorf("Hijack() error = %v", err)
+					return
+				}
+				close(started)
+				_, _ = connection.Read(make([]byte, 1))
+				close(requestDone)
+			}), func() { close(stopped) })
+
+			go func() {
+				routes.ServeHTTP(&hijackingRouteResponseWriter{header: make(http.Header), conn: connection},
+					httptest.NewRequest(http.MethodGet, "/socket", nil))
+			}()
+			<-started
+
+			closeDone := make(chan struct{})
+			go func() {
+				test.close(routes)
+				close(closeDone)
+			}()
+			select {
+			case <-closeDone:
+			case <-time.After(time.Second):
+				t.Fatal("generation retirement blocked behind a hijacked request")
+			}
+			select {
+			case <-requestDone:
+			case <-time.After(time.Second):
+				t.Fatal("closing a retired hijacked connection did not drain the request")
+			}
+			if got := closed.Load(); got == 0 {
+				t.Fatal("retired generation did not close the hijacked connection")
+			}
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("retired generation stopper did not run")
+			}
+		})
 	}
 }
 

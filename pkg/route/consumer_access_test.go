@@ -1,10 +1,13 @@
 package route
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +98,102 @@ func TestConsumerResolutionPreservesGroupAndConsumerProvenance(t *testing.T) {
 	}
 	if _, ok := provenance["jwe-decrypt"]; ok {
 		t.Fatal("credential-only jwe-decrypt binding returned")
+	}
+}
+
+func TestAuthenticatedRouteOverwritesForgedConsumerHeader(t *testing.T) {
+	tests := []struct {
+		name         string
+		consumerID   string
+		consumerJSON string
+		pluginName   string
+		setAuth      func(*http.Request)
+	}{
+		{
+			name:         "basic-auth",
+			consumerID:   "route-basic-header",
+			consumerJSON: `{"username":"route-basic-header","plugins":{"basic-auth":{"username":"route-basic-header","password":"route-basic-secret"}}}`,
+			pluginName:   "basic-auth",
+			setAuth: func(request *http.Request) {
+				encoded := base64.StdEncoding.EncodeToString([]byte("route-basic-header:route-basic-secret"))
+				request.Header.Set("Authorization", "Basic "+encoded)
+			},
+		},
+		{
+			name:         "key-auth",
+			consumerID:   "route-key-header",
+			consumerJSON: `{"username":"route-key-header","plugins":{"key-auth":{"key":"route-key-secret"}}}`,
+			pluginName:   "key-auth",
+			setAuth: func(request *http.Request) {
+				request.Header.Set("apikey", "route-key-secret")
+			},
+		},
+		{
+			name:         "jwt-auth",
+			consumerID:   "route-jwt-header",
+			consumerJSON: `{"username":"route-jwt-header","plugins":{"jwt-auth":{"key":"route-jwt-key","secret":"route-jwt-secret","algorithm":"HS256"}}}`,
+			pluginName:   "jwt-auth",
+			setAuth: func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+signedScopedJWT(t, "route-jwt-key", "route-jwt-secret"))
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			putHTTPAllowlistResource(t, "consumers", test.consumerID, []byte(test.consumerJSON))
+
+			seen := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.Header.Get("X-Consumer-Username")
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(upstream.Close)
+			upstreamURL, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatalf("parse upstream URL: %v", err)
+			}
+			port, err := strconv.Atoi(upstreamURL.Port())
+			if err != nil {
+				t.Fatalf("parse upstream port: %v", err)
+			}
+
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			handler, err := builder.buildHandlerStrict(resource.Route{
+				ID:  "route-header-" + test.name,
+				Uri: "/route-header-" + test.name,
+				Plugins: map[string]resource.PluginConfig{
+					test.pluginName: map[string]any{},
+				},
+				Upstream: resource.Upstream{
+					Type:   "roundrobin",
+					Scheme: upstreamURL.Scheme,
+					Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("buildHandlerStrict() error = %v", err)
+			}
+
+			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/route-header-"+test.name, nil)
+			request.Header.Set("X-Consumer-Username", "attacker")
+			test.setAuth(request)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+			}
+			select {
+			case got := <-seen:
+				if got != test.consumerID {
+					t.Fatalf("upstream consumer header = %q, want %q", got, test.consumerID)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for authenticated upstream request")
+			}
+		})
 	}
 }
 

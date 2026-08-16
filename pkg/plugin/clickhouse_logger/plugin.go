@@ -240,6 +240,13 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
+	metadata := base.LoadPluginMetadata[pluginMetadata](name)
+	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
+	if err != nil {
+		return err
+	}
+	p.LogFormat = logFormat
+
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.endpointUID())
 	configUID.Add(p.config.User)
@@ -262,12 +269,6 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
-	if len(p.config.LogFormat) > 0 {
-		p.LogFormat = p.config.LogFormat
-	} else {
-		p.LogFormat = metadata.LogFormat
-	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}

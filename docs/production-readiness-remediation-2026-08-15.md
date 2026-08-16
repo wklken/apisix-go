@@ -64,10 +64,45 @@ This is a safe starting contract, not a declaration that every allowlisted plugi
 
 ### Observability
 
-1. Add a process-level access log contract or explicitly reject the parsed NGINX access-log settings.
-2. Give Elasticsearch, ClickHouse, and Tencent CLS meaningful safe defaults or require explicit `log_format`.
-3. Finish stream metrics and establish bounded HTTP status/latency label lifecycle budgets.
-4. Resolve SkyWalking single-span and OTel `inactive_timeout` semantic gaps.
+The Plan 5 observability contract closes the three implementation backlog items
+below. These closures do not qualify the repository or the candidate profile
+for production; stream metrics and SkyWalking parity remain explicit
+exclusions, and the validated OTel subset remains the only profile boundary.
+
+1. **Process access logs — closed.** Every compatibility/profile mode rejects
+   non-zero/non-empty NGINX HTTP and stream process access-log fields during
+   config load. Route/plugin loggers remain the supported compatibility/general-
+   plugin request-logging mechanism. The exact six-plugin candidate allowlist
+   contains no request logger and makes no request-logging egress claim.
+   Evidence: `TestLoadConfigFilesRejectsProcessAccessLogFields` covers each
+   parsed field, and `TestLoadConfigFilesAcceptsExplicitZeroProcessAccessLogValues`
+   preserves the zero-value compatibility case.
+2. **Required logger formats — closed.** Elasticsearch, ClickHouse, and
+   Tencent CLS require a non-empty effective flat-string `log_format` from
+   effective resource/plugin configuration or plugin metadata, with effective
+   resource/plugin configuration wins over plugin metadata, before any client
+   or batch processor is created. This is a compatibility/general-plugin
+   contract; the exact six-plugin candidate allowlist contains no request
+   logger. Evidence:
+   the three
+   `TestEffectiveLogFormat*` test groups cover precedence, metadata fallback,
+   and empty-format side-effect rejection.
+3. **Bounded HTTP metric series — closed.** `http_status`, `http_latency`,
+   and `bandwidth` use independent `plugin_attr.prometheus.max_http_series`
+   budgets (default `10000`, strict integer range `100`..`100000`). Existing
+   tuples remain stable; post-cap tuples preserve bounded control labels,
+   replace dynamic labels with `__overflow__`, and increment
+   `<metric_prefix>http_metric_series_overflow_total{metric}` (with default
+   `metric_prefix: apisix_`, this is
+   `apisix_http_metric_series_overflow_total{metric}`). Evidence:
+   `http_series_budget_test.go` covers exact admission, collision resistance,
+   overflow indexes, input immutability, family independence, concurrent
+   boundaries, invalid status normalization, and retained startup errors.
+
+Stream metrics remain excluded because `http-data-plane-v1` rejects stream
+activation. SkyWalking is not in the profile allowlist and its multi-span
+parity is not production-qualified; OTel rejects `set_ngx_var: true` and
+non-zero `inactive_timeout` outside the validated subset.
 
 ### High availability
 
@@ -75,10 +110,28 @@ Process-local state still diverges across replicas: local rate limiting, CAS/Din
 
 ### Release supply chain and operations
 
-1. Add image signing and verifiable provenance (for example, Sigstore/cosign plus a documented identity policy).
-2. Run security release gates for release candidates, not only selected CI paths.
-3. Add reproducible container build/run smoke, SBOM/vulnerability evidence, etcd disconnect/recovery fault injection, soak testing, and a standalone rollback/runbook contract.
-4. Verify the production image in a clean Docker environment. Docker was unavailable in the implementation environment for this branch.
+The release qualification mechanism and operator procedure are tracked in the
+[release provenance and operational qualification plan](superpowers/plans/2026-08-16-release-provenance-and-operational-qualification.md)
+and the [production release runbook](runbooks/production-release.md). They do
+not close this ledger. The following items remain open until a post-merge RC
+has passed against its own immutable image and the final release has
+independently passed and retained all evidence for the final immutable image:
+
+1. Complete image signing and verifiable provenance with the documented
+   Sigstore/cosign and GitHub attestation identity policy.
+2. Run the same security, container, recovery, and JSON soak gates for release
+   candidates, not only selected CI paths.
+3. Verify the production image in a clean Docker environment, including
+   verified-TLS etcd disconnect/recovery and an operator-supplied deployment
+   rollout. Docker was unavailable in the implementation environment for this
+   branch.
+4. Exercise immutable rollback using a distinct older published digest. The
+   first release has no previous digest, so rollback qualification remains a
+   bootstrap prerequisite rather than an implied result.
+5. Before a tag-triggered final release, have an operator allow the intended
+   `v*` tag policy in the existing `production-release` environment. Retain
+   required reviewers and the wait timer; this ledger does not authorize a
+   settings bypass.
 
 ### Explicit production exclusions
 

@@ -36,22 +36,102 @@ scripts/container_smoke_test.sh`; run the real smoke only on a host with
 Docker.
 
 `.github/workflows/security-release-gates.yml` runs the focused race suite and
-the pinned `govulncheck` scanner, then builds the image once and reuses it for
-the container smoke, CycloneDX SBOM, and Trivy scan. It uploads
+the pinned `govulncheck` scanner. Its read-only `container-evidence` job builds
+and loads one `linux/amd64` image, reuses it for the non-root container smoke,
+CycloneDX SBOM, and fail-closed Trivy scan, then uploads
 `sbom.cdx.json`, `trivy.json`, `apisix-image.tar.gz`, and
-`rollback-metadata.json`. The rollback file binds the source ref and commit to
-the immutable image ID and artifact checksums. Before rollback, operators
-download the evidence bundle, verify every recorded checksum, run
+`rollback-metadata.json`. A separate guarded `publish-image` job downloads and
+checks that exact archive; only it has registry, OIDC, and attestation write
+permissions, references the protected `production-release` environment, and
+pushes/signs/attests the captured immutable registry digest. The reusable
+workflow and its final caller both grant `attestations: write` where required;
+PR/master and RC paths remain read-only.
+
+Each qualification workflow resolves its selected ref once and all jobs use
+that immutable commit. RC and final runs build separate, digest-bound artifacts
+and each reruns the complete gate set; RC evidence is not relabeled or mixed
+with final-release evidence. The final workflow verifies all evidence identities,
+creates a checksum manifest, and attaches the evidence bundle and checksum to
+the GitHub release so the qualification record does not expire with Actions
+artifact retention.
+
+The rollback file binds the selected source ref and actual `git rev-parse HEAD`
+to the immutable image identity and artifact checksums. Before rollback,
+operators download the evidence bundle, verify every recorded checksum, run
 `gzip -dc apisix-image.tar.gz | docker load`, confirm the loaded image ID, and
-redeploy the restored tag through the existing deployment process. The
-metadata is evidence, not a new deployment controller. Local deterministic
-checks are:
+redeploy the previous digest through the existing deployment process. The
+metadata is evidence, not a new deployment controller. The canonical soak
+stores real JSON from `go test -json ... | tee
+.cache/release-evidence/proxy-soak.json`; `.cache/telemetry` is optional and is
+not evidence unless a producer populated it. Local deterministic checks are:
 
 ```bash
 bash scripts/container_smoke_test.sh
 bash scripts/release_metadata_test.sh
 bash scripts/release_gate_test.sh
 ```
+
+### Candidate HTTP data-plane profile and lifecycle
+
+`deployment.profile` accepts either the empty compatibility value or the
+strict `http-data-plane-v1` candidate. The strict profile is an ordered,
+HTTP-only contract: it uses the six-plugin allowlist
+`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`,
+disables Admin and stream listeners/plugins, requires data-plane etcd over
+verified HTTPS, a trusted source CIDR, a positive request-body limit, and no
+process access-log claims. It excludes Kafka PubSub and upstreams with
+`scheme: kafka`; the Kafka owner remains available in empty compatibility mode.
+Its full operator contract is in
+[`production-profile.md`](production-profile.md) and the
+[`production release runbook`](runbooks/production-release.md); it is awaiting
+post-merge RC/final release and operations evidence and does not change the
+repository-wide not-ready status. The first release has no previous immutable
+digest, so rollback qualification remains open until a distinct older
+published digest is exercised.
+
+NGINX HTTP and stream process access-log settings are unsupported in both the
+compatibility and candidate profiles: any explicitly non-zero boolean or
+numeric value, or non-empty string value, fails during configuration load.
+Route/plugin loggers are the supported compatibility/general-plugin request-
+logging mechanism. The exact six-plugin `http-data-plane-v1` allowlist contains
+no request logger and makes no request-logging egress claim. Elasticsearch,
+ClickHouse, and Tencent CLS loggers require a non-empty effective flat-string
+`log_format` from effective resource/plugin configuration or plugin metadata
+before acquiring clients or creating processors; effective resource/plugin
+configuration wins over plugin metadata.
+
+Prometheus admits HTTP `http_status`, `http_latency`, and `bandwidth` tuples
+through three independent budgets. `plugin_attr.prometheus.max_http_series`
+defaults to `10000` and accepts integers from `100` through `100000`. Existing
+tuples remain unchanged across route reloads; after a family reaches its limit,
+unseen tuples retain bounded family labels (`code` for status, `type` for
+latency/bandwidth, plus `request_type` and status `response_source`) and
+replace dynamic labels with `__overflow__`, incrementing
+`<metric_prefix>http_metric_series_overflow_total{metric}`. With the default
+`metric_prefix: apisix_`, this is
+`apisix_http_metric_series_overflow_total{metric}`. Budgets and their admitted
+series are initialized once for the process and are not reset by route reload.
+
+The loader retains recognized compatibility fields, but explicit activation of
+unsupported Admin, top-level discovery, external-plugin commands, WASM, XRPC,
+QUIC, or HTTP/3 fails closed. Route/upstream discovery fields remain decodable
+for migration diagnostics and are rejected by HTTP or stream compilation when
+they would require discovery runtime behavior. Frontend HTTPS serving is part
+of the implemented TLS boundary; direct Internet exposure still requires that
+frontend TLS boundary or a trusted TLS-terminating ingress whose source CIDRs
+are configured.
+
+WebSocket upgrades are admitted only when the effective route or service sets
+`enable_websocket: true`. Every WebSocket upgrade attempt skips response
+callbacks while request, authentication, access, before-proxy, and log phases
+run. For the candidate profile, a successful profile-allowed HTTP
+reverse-proxy tunnel remains subject to cluster admission and timeout limits;
+Kafka PubSub compatibility tunnels are outside that contract. Retiring a route
+generation closes its WebSocket connections. `SIGHUP` drains the server and
+returns an unsupported-reload error, so configuration changes require a new
+process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
+`set_ngx_var` and non-zero `inactive_timeout` while retaining collector
+`request_timeout`.
 
 ## APISIX 3.17 Protocol Bridge Design
 
@@ -67,9 +147,10 @@ and unsupported plugin configuration is rejected before the server begins
 serving. An invalid route reload is rejected without replacing the last-good
 router generation. It does not yet expose a general stream-variable/plugin-chain
 API, active health probes, TLS/UDP stream owner, or Kafka-specific stream
-binding. There is no readiness endpoint in this repository; startup failures
-are returned to the process entrypoint. Protocol-owned bounded transport and
-stream boundaries therefore have different integration states:
+binding. The runtime exposes `/livez` and `/readyz`; startup failures are
+returned to the process entrypoint, and readiness remains unavailable until
+configuration and the configured provider are ready. Protocol-owned bounded
+transport and stream boundaries therefore have different integration states:
 
 | Plugin | Current local behavior | Design consequence |
 |---|---|---|
@@ -137,7 +218,9 @@ real broker or external service to the default test suite.
 #### Contract decision
 
 The APISIX plugin is an upstream Kafka consumer bridge, not a REST producer
-facade. The official Go scope is therefore:
+facade. The following Kafka owner is available in compatibility mode; it is
+outside the `http-data-plane-v1` candidate profile. Its official Go scope is
+therefore:
 
 - support `scheme: kafka` upstream nodes and the APISIX WebSocket PubSub
   protobuf protocol;

@@ -22,7 +22,8 @@ type Plugin interface {
 // descriptors in their public config.
 type SecretMaterializer = base.SecretMaterializer
 
-// MaterializePluginSecrets runs the optional pre-PostInit secret phase.
+// MaterializePluginSecrets rejects unresolved references from plugins that do
+// not declare SecretMaterializer ownership before PostInit.
 func MaterializePluginSecrets(p Plugin) error {
 	return base.MaterializePluginSecrets(p)
 }

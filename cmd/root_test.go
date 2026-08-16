@@ -2,16 +2,41 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/version"
 )
+
+type fakeServerLifecycle struct {
+	start        func(context.Context) error
+	shutdown     func(context.Context) error
+	startDone    chan struct{}
+	shutdownDone chan struct{}
+}
+
+func (f *fakeServerLifecycle) Start(ctx context.Context) error {
+	if f.startDone != nil {
+		close(f.startDone)
+	}
+	return f.start(ctx)
+}
+
+func (f *fakeServerLifecycle) Shutdown(ctx context.Context) error {
+	if f.shutdownDone != nil {
+		close(f.shutdownDone)
+	}
+	return f.shutdown(ctx)
+}
 
 func TestStartHasNoDebugBannerPrint(t *testing.T) {
 	source, err := os.ReadFile("root.go")
@@ -95,6 +120,119 @@ func TestVersionCommandPrintsFullVersionInfo(t *testing.T) {
 	want := "Version: 1.2.3\nCommit: abc1234\nBuild Time: 2026-08-09_12:00:00\nGo Version: go1.26.5"
 	if got := strings.TrimSpace(buf.String()); got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestRunServerReturnsNilForTerminationSignals(t *testing.T) {
+	for _, signal := range []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT} {
+		t.Run(signal.String(), func(t *testing.T) {
+			started := make(chan struct{})
+			shutdown := make(chan struct{})
+			lifecycle := &fakeServerLifecycle{
+				startDone:    started,
+				shutdownDone: shutdown,
+				start: func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				},
+				shutdown: func(context.Context) error { return nil },
+			}
+			signals := make(chan os.Signal, 1)
+			result := make(chan error, 1)
+			go func() { result <- runServerWithSignals(lifecycle, signals) }()
+
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("runServerWithSignals() did not start the server")
+			}
+			signals <- signal
+
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatalf("runServerWithSignals() error = %v, want nil", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("runServerWithSignals() did not return after termination signal")
+			}
+			select {
+			case <-shutdown:
+			case <-time.After(time.Second):
+				t.Fatal("Shutdown() was not called")
+			}
+		})
+	}
+}
+
+func TestRunServerReturnsUnsupportedReloadErrorAfterSIGHUP(t *testing.T) {
+	started := make(chan struct{})
+	shutdown := make(chan struct{})
+	lifecycle := &fakeServerLifecycle{
+		startDone:    started,
+		shutdownDone: shutdown,
+		start: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdown: func(context.Context) error { return nil },
+	}
+	signals := make(chan os.Signal, 1)
+	result := make(chan error, 1)
+	go func() { result <- runServerWithSignals(lifecycle, signals) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not start the server")
+	}
+	signals <- syscall.SIGHUP
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, errSIGHUPReloadUnsupported) {
+			t.Fatalf("runServerWithSignals() error = %v, want %v", err, errSIGHUPReloadUnsupported)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not return after SIGHUP")
+	}
+	select {
+	case <-shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() was not called for SIGHUP")
+	}
+}
+
+func TestRunServerReturnsShutdownError(t *testing.T) {
+	started := make(chan struct{})
+	shutdownErr := errors.New("shutdown failed")
+	lifecycle := &fakeServerLifecycle{
+		startDone: started,
+		start: func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdown: func(context.Context) error { return shutdownErr },
+	}
+	signals := make(chan os.Signal, 1)
+	result := make(chan error, 1)
+	go func() { result <- runServerWithSignals(lifecycle, signals) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not start the server")
+	}
+	signals <- syscall.SIGHUP
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, shutdownErr) {
+			t.Fatalf("runServerWithSignals() error = %v, want shutdown error %v", err, shutdownErr)
+		}
+		if errors.Is(err, errSIGHUPReloadUnsupported) {
+			t.Fatalf("runServerWithSignals() error = %v, want shutdown failure instead of reload sentinel", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runServerWithSignals() did not return after shutdown failure")
 	}
 }
 

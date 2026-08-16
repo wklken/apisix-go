@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -28,6 +29,37 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
+	const childEnv = "APISIX_GO_SERVER_PROMETHEUS_INIT_CHILD"
+	if os.Getenv(childEnv) == "1" {
+		config.GlobalConfig = &config.Config{
+			Plugins: []string{"prometheus"},
+			PluginAttr: map[string]map[string]any{
+				"prometheus": {"max_http_series": "not-an-integer"},
+			},
+		}
+		if err := (&Server{}).startPrometheusExportServer(); err == nil ||
+			!strings.HasPrefix(err.Error(), "initialize prometheus metrics: ") {
+			t.Fatalf("startPrometheusExportServer() error = %v, want metrics init prefix", err)
+		}
+
+		// A nil store makes the ordering contract observable: invalid metrics
+		// configuration must return before storage hooks or Start are touched.
+		server := &Server{server: &http.Server{}}
+		if err := server.Start(context.Background()); err == nil ||
+			!strings.HasPrefix(err.Error(), "initialize prometheus metrics: ") {
+			t.Fatalf("Server.Start() error = %v, want metrics init prefix", err)
+		}
+		return
+	}
+	command := exec.Command(os.Args[0], "-test.run", "^TestPrometheusInitErrorsPropagateToServerCallers$")
+	command.Env = append(os.Environ(), childEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prometheus init propagation child failed: %v\n%s", err, output)
+	}
+}
 
 func TestServerShutdownClosesClusterRegistry(t *testing.T) {
 	clusters := proxy.NewClusterRegistry(proxy.NopClusterObserver{})
@@ -882,6 +914,24 @@ func TestEtcdTLSIsNotEnabledForHTTPEndpoints(t *testing.T) {
 	}
 	if !etcdTLSRequired([]string{"https://127.0.0.1:2379"}, settings) {
 		t.Fatal("etcdTLSRequired() = false for an HTTPS endpoint")
+	}
+}
+
+func TestEtcdHealthCheckIntervalMapping(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config int
+		want   time.Duration
+	}{
+		{name: "default", config: 0, want: 10 * time.Second},
+		{name: "negative default", config: -1, want: 10 * time.Second},
+		{name: "configured", config: 7, want: 7 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := etcdHealthCheckInterval(test.config); got != test.want {
+				t.Fatalf("etcdHealthCheckInterval(%d) = %s, want %s", test.config, got, test.want)
+			}
+		})
 	}
 }
 

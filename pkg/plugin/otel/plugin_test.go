@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +112,21 @@ func TestAdditionalSpanAttributesUseRequestVarsAndHeaders(t *testing.T) {
 			t.Fatalf("attribute %q present, want skipped; attrs=%v", key, got)
 		}
 	}
+}
+
+func TestCaptureHTTPSpanAttributesIncludesRequestMethod(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+
+	attrs := captureHTTPSpanAttributes(req)
+	for _, attr := range attrs {
+		if attr.Key == "http.method" {
+			if got := attr.Value.AsString(); got != http.MethodGet {
+				t.Fatalf("http.method = %q, want %q", got, http.MethodGet)
+			}
+			return
+		}
+	}
+	t.Fatal("http.method attribute missing")
 }
 
 func TestHandlerAddsDownstreamAndNumericAttributesBeforeSpanEnds(t *testing.T) {
@@ -391,6 +407,50 @@ func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
 	}
 }
 
+func TestNewTracerProviderRejectsSetNgxVarBeforeAllocation(t *testing.T) {
+	metadata := Metadata{
+		SetNgxVar: true,
+		Collector: CollectorConfig{Address: "://invalid"},
+	}
+
+	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+	if err == nil {
+		t.Fatal("newTracerProvider() error = nil, want unsupported set_ngx_var rejection")
+	}
+	const want = "opentelemetry set_ngx_var is unsupported by the Go data plane"
+	if err.Error() != want {
+		t.Fatalf("newTracerProvider() error = %q, want %q", err, want)
+	}
+	if provider != nil {
+		t.Fatal("newTracerProvider() returned a provider after rejecting set_ngx_var")
+	}
+}
+
+func TestNewTracerProviderRejectsAnyNonZeroInactiveTimeoutBeforeAllocation(t *testing.T) {
+	for _, inactiveTimeout := range []float64{1, -1} {
+		t.Run(fmt.Sprintf("inactive_timeout_%v", inactiveTimeout), func(t *testing.T) {
+			metadata := Metadata{
+				Collector: CollectorConfig{Address: "://invalid"},
+				BatchSpanProcessor: BatchSpanProcessorConfig{
+					InactiveTimeout: inactiveTimeout,
+				},
+			}
+
+			provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
+			if err == nil {
+				t.Fatal("newTracerProvider() error = nil, want unsupported inactive_timeout rejection")
+			}
+			const want = "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane"
+			if err.Error() != want {
+				t.Fatalf("newTracerProvider() error = %q, want %q", err, want)
+			}
+			if provider != nil {
+				t.Fatal("newTracerProvider() returned a provider after rejecting inactive_timeout")
+			}
+		})
+	}
+}
+
 func TestOTelResourceRestoresDottedKeysNestedByRuntimeConfigLoader(t *testing.T) {
 	resource := otelResource(map[string]any{
 		"service": map[string]any{"name": "gateway"},
@@ -431,7 +491,6 @@ func TestTracerProviderExportsOTLPHTTPWithConfiguredHeaders(t *testing.T) {
 		BatchSpanProcessor: BatchSpanProcessorConfig{
 			MaxQueueSize:       8,
 			BatchTimeout:       0.01,
-			InactiveTimeout:    1,
 			MaxExportBatchSize: 1,
 		},
 	}
@@ -499,6 +558,57 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	t.Cleanup(p.Stop)
 	if p.tracerProvider == nil {
 		t.Fatal("fallback tracer provider = nil")
+	}
+}
+
+func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]any
+		want     string
+	}{
+		{
+			name: "set_ngx_var",
+			metadata: map[string]any{
+				"set_ngx_var": true,
+			},
+			want: "opentelemetry set_ngx_var is unsupported by the Go data plane",
+		},
+		{
+			name: "inactive_timeout",
+			metadata: map[string]any{
+				"batch_span_processor": map[string]any{
+					"inactive_timeout": -1.0,
+				},
+			},
+			want: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config.GlobalConfig = &config.Config{
+				PluginAttr: map[string]map[string]any{name: tt.metadata},
+			}
+
+			p := &Plugin{}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			err := p.PostInit()
+			if err == nil {
+				t.Fatal("PostInit() error = nil, want unsupported metadata rejection")
+			}
+			if !errors.Is(err, errUnsupportedMetadata) {
+				t.Fatalf("PostInit() error = %v, want unsupported metadata sentinel", err)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("PostInit() error = %q, want %q", err, tt.want)
+			}
+			if p.tracerProvider != nil {
+				t.Fatal("PostInit() allocated fallback tracer provider after rejecting unsupported metadata")
+			}
+		})
 	}
 }
 

@@ -478,6 +478,7 @@ func dispatchPipelineRequestBounded(
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
+	req.Header.Del("X-Consumer-Username")
 	if host := req.Header.Get("Host"); host != "" {
 		req.Host = host
 		req.Header.Del("Host")

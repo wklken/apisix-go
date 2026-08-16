@@ -108,6 +108,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.HeaderPrefix == "" {
 		p.config.HeaderPrefix = "X-"
 	}
+	if p.config.SSLVerify == nil {
+		p.config.SSLVerify = new(true)
+	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
@@ -300,7 +303,7 @@ func remoteClientIP(r *http.Request) string {
 }
 
 func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
-	if cfg.SSLVerify != nil && *cfg.SSLVerify {
+	if cfg.SSLVerify == nil || *cfg.SSLVerify {
 		return p.client
 	}
 	// The insecure client is immutable and shared: build it once instead of

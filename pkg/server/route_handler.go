@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
@@ -21,6 +24,9 @@ type routeSet struct {
 	state       atomic.Uint64 // high bit is retired; remaining bits are active requests
 	drained     chan struct{}
 	drainedOnce sync.Once
+	hijackMu    sync.Mutex
+	hijacked    map[net.Conn]struct{}
+	hijackOnce  sync.Once
 }
 
 type routeHandler struct {
@@ -53,10 +59,20 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer h.finishRequest(current)
-	serveRouteRequest(w, r, current.handler)
+	serveRouteRequestForGeneration(w, r, current.handler, current)
 }
 
 func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Handler) {
+	serveRouteRequestForGeneration(w, r, handler, nil)
+}
+
+func serveRouteRequestForGeneration(
+	w http.ResponseWriter,
+	r *http.Request,
+	handler http.Handler,
+	generation *routeSet,
+) {
+	r.Header.Del("X-Consumer-Username")
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(r, time.Now())
 	bodyLimitState := requestBodyLimitStateFromRequest(request)
 	captureWriter := w
@@ -67,6 +83,25 @@ func serveRouteRequest(w http.ResponseWriter, r *http.Request, handler http.Hand
 	if bodyLimitState != nil {
 		wrapped = bodyLimitState.wrapResponseWriter(wrapped)
 	}
+	var unregisterHijacks []func()
+	if generation != nil {
+		wrapped = httpsnoop.Wrap(wrapped, httpsnoop.Hooks{
+			Hijack: func(hijack httpsnoop.HijackFunc) httpsnoop.HijackFunc {
+				return func() (net.Conn, *bufio.ReadWriter, error) {
+					connection, readWriter, err := hijack()
+					if err == nil && connection != nil {
+						unregisterHijacks = append(unregisterHijacks, generation.registerHijacked(connection))
+					}
+					return connection, readWriter, err
+				}
+			},
+		})
+	}
+	defer func() {
+		for _, unregister := range unregisterHijacks {
+			unregister()
+		}
+	}()
 	request = base.WithResponseCapture(request, capture)
 	lifecycle.SetFinalRequest(request)
 
@@ -225,12 +260,54 @@ func retireRouteSet(current *routeSet) {
 		}
 		retired := state | routeSetRetired
 		if current.state.CompareAndSwap(state, retired) {
+			current.closeHijacked()
 			if retired == routeSetRetired {
 				current.closeDrained()
 			}
 			return
 		}
 	}
+}
+
+func (r *routeSet) registerHijacked(connection net.Conn) func() {
+	if connection == nil {
+		return func() {}
+	}
+	r.hijackMu.Lock()
+	if r.state.Load()&routeSetRetired != 0 {
+		r.hijackMu.Unlock()
+		_ = connection.Close()
+		return func() {}
+	}
+	if r.hijacked == nil {
+		r.hijacked = make(map[net.Conn]struct{})
+	}
+	r.hijacked[connection] = struct{}{}
+	r.hijackMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.hijackMu.Lock()
+			delete(r.hijacked, connection)
+			r.hijackMu.Unlock()
+		})
+	}
+}
+
+func (r *routeSet) closeHijacked() {
+	r.hijackOnce.Do(func() {
+		r.hijackMu.Lock()
+		connections := make([]net.Conn, 0, len(r.hijacked))
+		for connection := range r.hijacked {
+			connections = append(connections, connection)
+		}
+		clear(r.hijacked)
+		r.hijackMu.Unlock()
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	})
 }
 
 func (r *routeSet) closeDrained() {
@@ -247,10 +324,10 @@ func stopRouteSet(current *routeSet) {
 	}
 }
 
-// retireAndStopRouteSet retires and stops an old route generation without
-// blocking the caller. Publication must never wait for a long-lived request
-// on a replaced generation; the stopper still runs only after that request
-// drains. It is used only from Replace.
+// retireAndStopRouteSet retires and stops a replaced route generation
+// asynchronously so replacement publication does not block on long-lived
+// requests. routeHandler.Close uses stopRouteSet directly and remains
+// synchronous.
 func retireAndStopRouteSet(current *routeSet) {
 	if current == nil {
 		return

@@ -159,6 +159,80 @@ func (b *controlledBody) Close() error {
 	return nil
 }
 
+type controlledDuplexBody struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newControlledDuplexBody() *controlledDuplexBody {
+	return &controlledDuplexBody{closed: make(chan struct{})}
+}
+
+func (b *controlledDuplexBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, io.EOF
+}
+
+func (b *controlledDuplexBody) Write(payload []byte) (int, error) {
+	select {
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	default:
+		return len(payload), nil
+	}
+}
+
+func (b *controlledDuplexBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestClusterUpgradeBodyPreservesDuplexAndAdmissionLifetime(t *testing.T) {
+	firstBody := newControlledDuplexBody()
+	secondBody := newControlledDuplexBody()
+	var calls int
+	base := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		body := firstBody
+		if calls > 1 {
+			body = secondBody
+		}
+		return &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: body, Request: request}, nil
+	})
+	config := testClusterConfig()
+	config.SendTimeout = 0
+	config.ReadTimeout = 0
+	cluster, err := newClusterWithTransport(config, NopClusterObserver{}, base, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cluster.Close)
+	request := httptest.NewRequest(http.MethodGet, "http://orders/socket", nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	first, err := cluster.RoundTripper().RoundTrip(request)
+	if err != nil {
+		t.Fatalf("first upgrade RoundTrip() error = %v", err)
+	}
+	if _, ok := first.Body.(io.ReadWriteCloser); !ok {
+		t.Fatalf("upgrade body type = %T, want io.ReadWriteCloser", first.Body)
+	}
+	if _, err := first.Body.(io.Writer).Write([]byte("frame")); err != nil {
+		t.Fatalf("upgrade body Write() error = %v", err)
+	}
+	if _, err := cluster.RoundTripper().RoundTrip(request); !errors.Is(err, ErrClusterOverloaded) {
+		t.Fatalf("second upgrade RoundTrip() error = %v, want ErrClusterOverloaded", err)
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatalf("close first upgrade body: %v", err)
+	}
+	second, err := cluster.RoundTripper().RoundTrip(request)
+	if err != nil {
+		t.Fatalf("third upgrade RoundTrip() error = %v, want success after tunnel close", err)
+	}
+	_ = second.Body.Close()
+}
+
 func TestClusterAdmissionRejectsOverloadUntilBodyCloses(t *testing.T) {
 	firstBody := newControlledBody()
 	isFirst := true

@@ -351,6 +351,375 @@ func TestProductionConfigLoadsWithExplicitEtcdEndpoint(t *testing.T) {
 	if cfg.Apisix.DataEncryption.EnableEncryptFields || len(cfg.Apisix.DataEncryption.Keyring) != 0 {
 		t.Fatalf("production data encryption = %#v, want disabled with empty keyring", cfg.Apisix.DataEncryption)
 	}
+	if got, want := cfg.Deployment.Profile, HTTPDataPlaneV1Profile; got != want {
+		t.Fatalf("production deployment profile = %q, want %q", got, want)
+	}
+	if cfg.Apisix.EnableAdmin {
+		t.Fatal("production admin API is enabled, want explicit disablement")
+	}
+	if !cfg.Apisix.Ssl.Enable || len(cfg.Apisix.Ssl.Listen) != 1 {
+		t.Fatalf("production SSL state = %#v, want one enabled HTTP-only listener", cfg.Apisix.Ssl)
+	}
+	for index, listener := range cfg.Apisix.Ssl.Listen {
+		if listener.EnableQuic || listener.EnableHttp3 {
+			t.Fatalf("production SSL listener %d enables QUIC/HTTP3: %#v", index, listener)
+		}
+	}
+	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
+		t.Fatalf("production client max body size = %d, want %d", got, want)
+	}
+}
+
+func TestDefaultConfigDisablesAdmin(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	defaultPath := repositoryPath(t, "conf", "config-default.yaml")
+	cfg, err := loadConfigFiles(defaultPath, "")
+	if err != nil {
+		t.Fatalf("loadConfigFiles() error = %v", err)
+	}
+	if cfg.Apisix.EnableAdmin {
+		t.Fatal("default config admin API is enabled, want startup-safe disabled default")
+	}
+}
+
+func TestProductionProfileAcceptsValidConfig(t *testing.T) {
+	if err := validateRuntimeConfig(validHTTPDataPlaneV1Config()); err != nil {
+		t.Fatalf("validateRuntimeConfig() error = %v, want valid %s profile", err, HTTPDataPlaneV1Profile)
+	}
+}
+
+func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*Config)
+	}{
+		{
+			name:  "admin API",
+			field: "apisix.enable_admin",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.EnableAdmin = true
+			},
+		},
+		{
+			name:  "service discovery",
+			field: "discovery",
+			mutate: func(cfg *Config) {
+				cfg.Discovery = Discovery{"dns": map[string]any{"servers": []string{"127.0.0.1:53"}}}
+			},
+		},
+		{
+			name:  "external plugin command",
+			field: "ext-plugin.cmd",
+			mutate: func(cfg *Config) {
+				cfg.ExtPlugin.Cmd = []string{"/usr/local/bin/plugin"}
+			},
+		},
+		{
+			name:  "WASM plugin",
+			field: "wasm.plugins",
+			mutate: func(cfg *Config) {
+				cfg.Wasm.Plugins = []WasmPlugin{{Name: "logger", File: "logger.wasm"}}
+			},
+		},
+		{
+			name:  "XRPC protocol",
+			field: "xrpc.protocols",
+			mutate: func(cfg *Config) {
+				cfg.XRPC.Protocols = []XRPCProtocol{{Name: "pingpong"}}
+			},
+		},
+		{
+			name:  "QUIC",
+			field: "apisix.ssl.listen[0].enable_quic",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.Ssl.Listen[0].EnableQuic = true
+			},
+		},
+		{
+			name:  "HTTP3",
+			field: "apisix.ssl.listen[0].enable_http3",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.Ssl.Listen[0].EnableHttp3 = true
+			},
+		},
+	}
+
+	for _, profile := range []struct {
+		name  string
+		value string
+	}{
+		{name: "compatibility", value: ""},
+		{name: "http-data-plane-v1", value: HTTPDataPlaneV1Profile},
+	} {
+		for _, test := range tests {
+			t.Run(profile.name+"/"+test.name, func(t *testing.T) {
+				cfg := validHTTPDataPlaneV1Config()
+				cfg.Deployment.Profile = profile.value
+				test.mutate(cfg)
+
+				err := validateRuntimeConfig(cfg)
+				if err == nil {
+					t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
+				}
+				if !strings.Contains(err.Error(), test.field) {
+					t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
+				}
+				if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
+					t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+				}
+				if strings.Contains(err.Error(), "logger.wasm") ||
+					strings.Contains(err.Error(), "/usr/local/bin/plugin") {
+					t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
+				}
+			})
+		}
+	}
+}
+
+func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*Config)
+	}{
+		{
+			name:  "unknown profile",
+			field: "deployment.profile",
+			mutate: func(cfg *Config) {
+				cfg.Deployment.Profile = "future-profile"
+			},
+		},
+		{
+			name:  "debug",
+			field: "debug",
+			mutate: func(cfg *Config) {
+				cfg.Debug = true
+			},
+		},
+		{
+			name:  "role",
+			field: "deployment.role",
+			mutate: func(cfg *Config) {
+				cfg.Deployment.Role = "control_plane"
+			},
+		},
+		{
+			name:  "provider",
+			field: "deployment.role_data_plane.config_provider",
+			mutate: func(cfg *Config) {
+				cfg.Deployment.RoleDataPlane.ConfigProvider = "yaml"
+			},
+		},
+		{
+			name:  "insecure etcd endpoint",
+			field: "deployment.etcd.host[0]",
+			mutate: func(cfg *Config) {
+				cfg.Deployment.Etcd.Host[0] = "http://etcd.example:2379"
+			},
+		},
+		{
+			name:  "missing etcd TLS verification",
+			field: "deployment.etcd.tls.verify",
+			mutate: func(cfg *Config) {
+				cfg.Deployment.Etcd.TLS.Verify = nil
+			},
+		},
+		{
+			name:  "disabled etcd TLS verification",
+			field: "deployment.etcd.tls.verify",
+			mutate: func(cfg *Config) {
+				verify := false
+				cfg.Deployment.Etcd.TLS.Verify = &verify
+			},
+		},
+		{
+			name:  "client body size",
+			field: "nginx_config.http.client_max_body_size",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.ClientMaxBodySize = 0
+			},
+		},
+		{
+			name:  "proxy mode",
+			field: "apisix.proxy_mode",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.ProxyMode = "http&stream"
+			},
+		},
+		{
+			name:  "TCP stream listener",
+			field: "apisix.stream_proxy.tcp",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.StreamProxy.Tcp = []TcpListen{{Addr: ":9100"}}
+			},
+		},
+		{
+			name:  "UDP stream listener",
+			field: "apisix.stream_proxy.udp",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.StreamProxy.Udp = []string{"9200"}
+			},
+		},
+		{
+			name:  "stream plugins",
+			field: "stream_plugins",
+			mutate: func(cfg *Config) {
+				cfg.StreamPlugins = []string{"mqtt-proxy"}
+			},
+		},
+		{
+			name:  "trusted addresses empty",
+			field: "apisix.trusted_addresses",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.TrustedAddresses = nil
+			},
+		},
+		{
+			name:  "trusted address invalid",
+			field: "apisix.trusted_addresses[0]",
+			mutate: func(cfg *Config) {
+				cfg.Apisix.TrustedAddresses = []string{"10.0.0.0"}
+			},
+		},
+		{
+			name:  "plugin order",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
+			},
+		},
+		{
+			name:  "plugin local state",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins = append(cfg.Plugins, "file-logger")
+			},
+		},
+		{
+			name:  "missing plugin",
+			field: "plugins",
+			mutate: func(cfg *Config) {
+				cfg.Plugins = cfg.Plugins[:len(cfg.Plugins)-1]
+			},
+		},
+		{
+			name:  "HTTP access log enabled",
+			field: "nginx_config.http.enable_access_log",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.EnableAccessLog = true
+			},
+		},
+		{
+			name:  "HTTP access log path",
+			field: "nginx_config.http.access_log",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.AccessLog = "/var/log/apisix/access.log"
+			},
+		},
+		{
+			name:  "HTTP access log buffer",
+			field: "nginx_config.http.access_log_buffer",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.AccessLogBuffer = 1
+			},
+		},
+		{
+			name:  "HTTP access log format",
+			field: "nginx_config.http.access_log_format",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.AccessLogFormat = "$request"
+			},
+		},
+		{
+			name:  "HTTP access log format escape",
+			field: "nginx_config.http.access_log_format_escape",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.AccessLogFormatEscape = "json"
+			},
+		},
+		{
+			name:  "stream access log enabled",
+			field: "nginx_config.stream.enable_access_log",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.Stream.EnableAccessLog = true
+			},
+		},
+		{
+			name:  "stream access log path",
+			field: "nginx_config.stream.access_log",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.Stream.AccessLog = "/var/log/apisix/stream.log"
+			},
+		},
+		{
+			name:  "stream access log format",
+			field: "nginx_config.stream.access_log_format",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.Stream.AccessLogFormat = "$protocol"
+			},
+		},
+		{
+			name:  "stream access log format escape",
+			field: "nginx_config.stream.access_log_format_escape",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.Stream.AccessLogFormatEscape = "json"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validHTTPDataPlaneV1Config()
+			test.mutate(cfg)
+
+			err := validateRuntimeConfig(cfg)
+			if err == nil {
+				t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
+			}
+			if !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
+			}
+			if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
+				t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+			}
+			if strings.Contains(err.Error(), "/var/log/apisix") || strings.Contains(err.Error(), "$request") {
+				t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
+			}
+		})
+	}
+}
+
+func validHTTPDataPlaneV1Config() *Config {
+	verify := true
+	return &Config{
+		Apisix: Apisix{
+			NodeListen:  []NodeListen{{Ip: "0.0.0.0", Port: 9080}},
+			ProxyMode:   "http",
+			EnableAdmin: false,
+			Ssl: Ssl{
+				Enable: true,
+				Listen: []Listen{{Ip: "0.0.0.0", Port: 9443, EnableHttp2: true}},
+			},
+			TrustedAddresses: []string{"10.0.0.0/8"},
+		},
+		NginxConfig: NginxConfig{HTTP: NginxHTTP{ClientMaxBodySize: 10 * 1024 * 1024}},
+		Plugins:     []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"},
+		Proxy:       Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
+		Deployment: Deployment{
+			Profile:          HTTPDataPlaneV1Profile,
+			Role:             "data_plane",
+			RoleDataPlane:    RoleConfig{ConfigProvider: "etcd"},
+			RoleControlPlane: RoleConfig{ConfigProvider: "etcd"},
+			Etcd: Etcd{
+				Host:   []string{"https://etcd.example:2379"},
+				Prefix: "/apisix",
+				TLS:    EtcdTLS{Verify: &verify},
+			},
+		},
+	}
 }
 
 func TestProductionDockerfileContract(t *testing.T) {

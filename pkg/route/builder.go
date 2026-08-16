@@ -749,6 +749,9 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateUnsupportedUpstreamDiscovery(resolvedUpstream, upstreamProvenance); err != nil {
+		return nil, err
+	}
 	handler, routeTerminals, err := b.buildReverseHandlerWithTerminals(r, service, resolvedUpstream)
 	if err != nil {
 		logger.Errorf("build reverse handler fail: %s", err)
@@ -780,7 +783,43 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ensureRouteLifecycle(plan.Install(pipeline, handler)), nil
+	websocketEnabled := r.EnableWebsocket || service.EnableWebsocket
+	ordinaryHandler := plan.Install(pipeline, requireWebsocketEnablement(handler, websocketEnabled))
+	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(
+		pipeline, plan, handler, websocketEnabled,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return ensureRouteLifecycle(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if isWebsocketUpgradeRequest(request) {
+			transparentUpgradeHandler.ServeHTTP(w, request)
+			return
+		}
+		ordinaryHandler.ServeHTTP(w, request)
+	})), nil
+}
+
+func buildTransparentUpgradeHandler(
+	pipeline plugin.RequestPipeline,
+	plan plugin.ResponsePlan,
+	terminal http.Handler,
+	enabled bool,
+) (http.Handler, error) {
+	terminals := plan.RouteTerminals()
+	if len(terminals) == 0 {
+		return pipeline.Then(requireWebsocketEnablement(terminal, enabled)), nil
+	}
+	streaming, err := plugin.NewStreamingResponseExecutor(nil)
+	if err != nil {
+		return nil, err
+	}
+	streaming, err = streaming.WithRouteTerminals(terminals)
+	if err != nil {
+		return nil, err
+	}
+	terminalOnly := streaming.Then(terminal)
+	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {
@@ -810,6 +849,33 @@ func ensureRouteLifecycle(next http.Handler) http.Handler {
 		request, _ := ctx.EnsureRequestLifecycle(r, time.Now())
 		next.ServeHTTP(w, request)
 	})
+}
+
+const websocketDisabledMessage = "websocket upgrade is disabled"
+
+func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !enabled && isWebsocketUpgradeRequest(r) {
+			ctx.SetRequestResponseSource(r, ctx.ResponseSourceAPISIX)
+			_ = util.WriteJSONMessage(w, http.StatusBadRequest, websocketDisabledMessage)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isWebsocketUpgradeRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, value := range r.Header.Values("Connection") {
+		for token := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
+			}
+		}
+	}
+	return false
 }
 
 func (b *Builder) resolveConsumerBindings(
@@ -1175,6 +1241,10 @@ type pluginResourceContextSetter interface {
 
 type pluginEnabledCheckerSetter interface {
 	SetPluginEnabledChecker(func(string) bool)
+}
+
+type pluginPreMaterializationValidator interface {
+	ValidatePreMaterialization() error
 }
 
 type pluginInitOptions struct {
@@ -2163,6 +2233,15 @@ func (b *Builder) initPluginBindingsStrict(
 		if err != nil {
 			return nil, sourceError(fmt.Errorf("parse plugin %s config: %w", name, err))
 		}
+		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
+			checker := b.enabledPlugins.Contains
+			setter.SetPluginEnabledChecker(checker)
+		}
+		if validator, ok := p.(pluginPreMaterializationValidator); ok {
+			if err := validator.ValidatePreMaterialization(); err != nil {
+				return nil, sourceError(fmt.Errorf("validate plugin %s before secret materialization: %w", name, err))
+			}
+		}
 		if err := plugin.MaterializePluginSecrets(p); err != nil {
 			return nil, sourceError(fmt.Errorf("materialize plugin %s secrets: %w", name, err))
 		}
@@ -2188,11 +2267,6 @@ func (b *Builder) initPluginBindingsStrict(
 			}
 			setter.SetPriority(*metadata.priority)
 		}
-		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
-			checker := b.enabledPlugins.Contains
-			setter.SetPluginEnabledChecker(checker)
-		}
-
 		if err := p.PostInit(); err != nil {
 			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}
@@ -2424,10 +2498,10 @@ func resolveRouteUpstream(
 	if r.UpstreamID != "" {
 		upstream, err := store.GetUpstream(r.UpstreamID)
 		if err != nil {
-			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID},
-				fmt.Errorf("get upstream fail: %s", err)
+			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID},
+				fmt.Errorf("get upstream %q fail: %w", r.UpstreamID, err)
 		}
-		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID}, nil
 	}
 	if inlineUpstreamConfigured(service.Upstream) {
 		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
@@ -2435,10 +2509,17 @@ func resolveRouteUpstream(
 	if service.UpstreamID != "" {
 		upstream, err := store.GetUpstream(service.UpstreamID)
 		if err != nil {
-			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID},
-				fmt.Errorf("get upstream fail: %s", err)
+			return resource.Upstream{}, plugin.ResourceProvenance{
+					Kind: plugin.ResourceUpstream,
+					ID:   service.UpstreamID,
+				},
+				fmt.Errorf(
+					"get upstream %q fail: %w",
+					service.UpstreamID,
+					err,
+				)
 		}
-		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
+		return upstream, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID}, nil
 	}
 	return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 }
@@ -2448,7 +2529,32 @@ func inlineUpstreamConfigured(upstream resource.Upstream) bool {
 		upstream.Type != "" || upstream.Checks != nil || upstream.HashOn != "" ||
 		upstream.Key != "" || upstream.PassHost != "" || upstream.UpstreamHost != "" ||
 		upstream.Name != "" || upstream.Desc != "" || upstream.RetriesConfigured() ||
-		upstream.Timeout != (resource.Timeout{})
+		upstream.Timeout != (resource.Timeout{}) || upstream.DiscoveryType != "" ||
+		upstream.ServiceName != ""
+}
+
+func validateUnsupportedUpstreamDiscovery(
+	upstream resource.Upstream,
+	provenance plugin.ResourceProvenance,
+) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "discovery_type", value: upstream.DiscoveryType},
+		{name: "service_name", value: upstream.ServiceName},
+	} {
+		if field.value == "" {
+			continue
+		}
+		return fmt.Errorf(
+			"unsupported upstream field %q from %s %q: dynamic discovery is not supported",
+			field.name,
+			provenance.Kind,
+			provenance.ID,
+		)
+	}
+	return nil
 }
 
 type routeProtocolTerminals struct {
@@ -2626,14 +2732,24 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	resolved ...resource.Upstream,
 ) (http.Handler, routeProtocolTerminals, error) {
 	var upstream resource.Upstream
+	upstreamProvenance := plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}
 	if len(resolved) > 0 {
 		upstream = resolved[0]
+		switch {
+		case r.UpstreamID != "":
+			upstreamProvenance = plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID}
+		case service.UpstreamID != "":
+			upstreamProvenance = plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: service.UpstreamID}
+		}
 	} else {
 		var err error
-		upstream, _, err = resolveRouteUpstream(r, service)
+		upstream, upstreamProvenance, err = resolveRouteUpstream(r, service)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
+	}
+	if err := validateUnsupportedUpstreamDiscovery(upstream, upstreamProvenance); err != nil {
+		return nil, routeProtocolTerminals{}, err
 	}
 	if err := validateHTTPUpstreamType(upstream); err != nil {
 		return nil, routeProtocolTerminals{}, err
@@ -2752,7 +2868,6 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	} else {
 		transport = pxy.NewRetryTransport(pxy.NewTransport(transportOption))
 	}
-
 	director := func(req *http.Request) {
 		// 1. basic
 		// proxyMethod := proxyHTTP.GetMethod()
@@ -2839,6 +2954,15 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 }
 
 func validateHTTPUpstreamType(upstream resource.Upstream) error {
+	if appconfig.GlobalConfig != nil &&
+		appconfig.GlobalConfig.Deployment.Profile == appconfig.HTTPDataPlaneV1Profile &&
+		strings.EqualFold(upstream.Scheme, "kafka") {
+		return fmt.Errorf(
+			"unsupported upstream scheme %q for %s profile: Kafka is outside the HTTP reverse-proxy contract",
+			upstream.Scheme,
+			appconfig.HTTPDataPlaneV1Profile,
+		)
+	}
 	switch strings.ToLower(upstream.Scheme) {
 	case "", "http", "https", "grpc", "grpcs":
 		if upstream.Type != "" && upstream.Type != "roundrobin" {
@@ -3445,9 +3569,20 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		logger.Errorf("proxy request %s %s failed: %v", r.Method, r.URL.RequestURI(), err)
+		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
+}
+
+func proxyFailureLogPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "/"
+	}
+	path := r.URL.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 func pinDecodedRoutePath(next http.Handler) http.Handler {

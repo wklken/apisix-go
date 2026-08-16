@@ -68,13 +68,24 @@ func addLDAPConsumer(t *testing.T, username, userDN string) {
 }
 
 func newTestPlugin(t *testing.T, authenticate ldapAuthenticator) *Plugin {
+	return newTestPluginWithConfig(t, nil, authenticate)
+}
+
+func newTestPluginWithConfig(t *testing.T, overrides map[string]any, authenticate ldapAuthenticator) *Plugin {
 	t.Helper()
 
+	config := Config{
+		BaseDN:  "dc=example,dc=org",
+		LDAPURI: "ldap://127.0.0.1:389",
+	}
+	if overrides != nil {
+		if err := util.Parse(overrides, &config); err != nil {
+			t.Fatalf("parse config: %v", err)
+		}
+	}
+
 	p := &Plugin{
-		config: Config{
-			BaseDN:  "dc=example,dc=org",
-			LDAPURI: "ldap://127.0.0.1:389",
-		},
+		config:       config,
 		authenticate: authenticate,
 	}
 	if err := p.Init(); err != nil {
@@ -85,6 +96,31 @@ func newTestPlugin(t *testing.T, authenticate ldapAuthenticator) *Plugin {
 	}
 
 	return p
+}
+
+func TestLDAPSchemaSupportsHideCredentialsAndDefaultsFalse(t *testing.T) {
+	p := newTestPlugin(t, nil)
+	config := map[string]any{
+		"base_dn":          "dc=example,dc=org",
+		"ldap_uri":         "ldap://127.0.0.1:389",
+		"hide_credentials": true,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("hide_credentials should validate: %v", err)
+	}
+
+	config["hide_credentials"] = "true"
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("hide_credentials should reject non-boolean values")
+	}
+
+	encoded, err := json.Marshal(p.Config())
+	if err != nil {
+		t.Fatalf("marshal default config: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"hide_credentials":false`) {
+		t.Fatalf("default config = %s, want hide_credentials=false", encoded)
+	}
 }
 
 func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
@@ -108,6 +144,50 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerPreservesAuthorizationHeaderByDefault(t *testing.T) {
+	addLDAPConsumer(t, "ldap-default-visible-user", "cn=default-visible,dc=example,dc=org")
+	p := newTestPlugin(t, func(username, password string, cfg Config) error {
+		return nil
+	})
+	req := ldapRequest("default-visible", "secret")
+	wantAuthorization := req.Header.Get("Authorization")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != wantAuthorization {
+			t.Fatalf("Authorization header = %q, want preserved value %q", got, wantAuthorization)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerHideCredentialsRemovesAuthorizationHeaderAfterSuccessfulLDAPAuth(t *testing.T) {
+	addLDAPConsumer(t, "ldap-hidden-user", "cn=hidden,dc=example,dc=org")
+	p := newTestPluginWithConfig(
+		t,
+		map[string]any{"hide_credentials": true},
+		func(username, password string, cfg Config) error {
+			return nil
+		},
+	)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization header = %q, want removed", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, ldapRequest("hidden", "secret"))
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
@@ -157,6 +237,28 @@ func TestHandlerRejectsInvalidAuthorizationHeader(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid authorization in request") {
 		t.Fatalf("body = %q, want invalid authorization message", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsMalformedAuthorizationWithHideCredentials(t *testing.T) {
+	p := newTestPluginWithConfig(
+		t,
+		map[string]any{"hide_credentials": true},
+		func(username, password string, cfg Config) error {
+			t.Fatal("LDAP authenticator should not be called")
+			return nil
+		},
+	)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("malformed authorization reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
 	}
 }
 
@@ -236,6 +338,25 @@ func TestHandlerRejectsFailedLDAPBind(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid user authorization") {
 		t.Fatalf("body = %q, want invalid user authorization message", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsFailedLDAPBindWithHideCredentials(t *testing.T) {
+	p := newTestPluginWithConfig(
+		t,
+		map[string]any{"hide_credentials": true},
+		func(username, password string, cfg Config) error {
+			return errors.New("invalid credentials")
+		},
+	)
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("failed LDAP bind reached downstream")
+	})).ServeHTTP(rr, ldapRequest("hidden-failure", "wrong"))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
 	}
 }
 

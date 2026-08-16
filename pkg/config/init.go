@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -104,17 +105,17 @@ func load(v *viper.Viper) (*Config, error) {
 
 func validateRuntimeConfig(cfg *Config) error {
 	if len(cfg.Plugins) == 0 {
-		return fmt.Errorf("plugins must contain at least one HTTP plugin")
+		return profileAwareRuntimeError(cfg, fmt.Errorf("plugins must contain at least one HTTP plugin"))
 	}
 	if len(cfg.Apisix.NodeListen) == 0 {
-		return fmt.Errorf("apisix.node_listen must contain at least one listener")
+		return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen must contain at least one listener"))
 	}
 	for index, listener := range cfg.Apisix.NodeListen {
 		if listener.Port < 1 || listener.Port > 65535 {
-			return fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port)
+			return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port))
 		}
 		if listener.Ip != "" && net.ParseIP(listener.Ip) == nil {
-			return fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip)
+			return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip))
 		}
 	}
 	for _, limit := range []struct {
@@ -127,34 +128,172 @@ func validateRuntimeConfig(cfg *Config) error {
 		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
 	} {
 		if limit.value <= 0 {
-			return fmt.Errorf("%s must be positive, got %d", limit.field, limit.value)
+			return profileAwareRuntimeError(cfg, fmt.Errorf("%s must be positive, got %d", limit.field, limit.value))
 		}
 	}
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize < 0 {
-		return fmt.Errorf(
+		return profileAwareRuntimeError(cfg, fmt.Errorf(
 			"nginx_config.http.client_max_body_size must be non-negative, got %d",
 			cfg.NginxConfig.HTTP.ClientMaxBodySize,
-		)
+		))
 	}
 
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
-		return err
+		return profileAwareRuntimeError(cfg, err)
 	}
 	if provider == "etcd" {
 		if len(cfg.Deployment.Etcd.Host) == 0 {
-			return fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider")
+			return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider"))
 		}
 		for index, endpoint := range cfg.Deployment.Etcd.Host {
 			if strings.TrimSpace(endpoint) == "" {
-				return fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index)
+				return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index))
 			}
 		}
 		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
-			return fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider")
+			return profileAwareRuntimeError(cfg, fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider"))
+		}
+	}
+	if err := validateUnsupportedRuntimeConfig(cfg); err != nil {
+		return err
+	}
+
+	switch cfg.Deployment.Profile {
+	case "":
+		return nil
+	case HTTPDataPlaneV1Profile:
+		return validateHTTPDataPlaneV1Profile(cfg)
+	default:
+		return fmt.Errorf("deployment.profile must be empty or %s", HTTPDataPlaneV1Profile)
+	}
+}
+
+func profileAwareRuntimeError(cfg *Config, err error) error {
+	if cfg != nil && cfg.Deployment.Profile == HTTPDataPlaneV1Profile {
+		return fmt.Errorf("%s: %w", HTTPDataPlaneV1Profile, err)
+	}
+	return err
+}
+
+func validateUnsupportedRuntimeConfig(cfg *Config) error {
+	for _, unsupported := range []struct {
+		field    string
+		isActive bool
+	}{
+		{field: "apisix.enable_admin", isActive: cfg.Apisix.EnableAdmin},
+		{field: "discovery", isActive: len(cfg.Discovery) > 0},
+		{field: "ext-plugin.cmd", isActive: len(cfg.ExtPlugin.Cmd) > 0},
+		{field: "wasm.plugins", isActive: len(cfg.Wasm.Plugins) > 0},
+		{field: "xrpc.protocols", isActive: len(cfg.XRPC.Protocols) > 0},
+	} {
+		if unsupported.isActive {
+			return fmt.Errorf("%s is unsupported; %s does not permit this runtime feature", unsupported.field, HTTPDataPlaneV1Profile)
+		}
+	}
+	for index, listener := range cfg.Apisix.Ssl.Listen {
+		if listener.EnableQuic {
+			return fmt.Errorf("apisix.ssl.listen[%d].enable_quic is unsupported; %s does not permit this runtime feature", index, HTTPDataPlaneV1Profile)
+		}
+		if listener.EnableHttp3 {
+			return fmt.Errorf("apisix.ssl.listen[%d].enable_http3 is unsupported; %s does not permit this runtime feature", index, HTTPDataPlaneV1Profile)
 		}
 	}
 	return nil
+}
+
+func validateHTTPDataPlaneV1Profile(cfg *Config) error {
+	const profile = HTTPDataPlaneV1Profile
+	if cfg.Debug {
+		return profileFieldError(profile, "debug", "must be false")
+	}
+	if cfg.Deployment.Role != "data_plane" {
+		return profileFieldError(profile, "deployment.role", "must be data_plane")
+	}
+	provider, err := EffectiveConfigProvider(cfg)
+	if err != nil || provider != "etcd" {
+		return profileFieldError(profile, "deployment.role_data_plane.config_provider", "must resolve to etcd")
+	}
+	for index, endpoint := range cfg.Deployment.Etcd.Host {
+		parsed, parseErr := url.Parse(endpoint)
+		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return profileFieldError(profile, fmt.Sprintf("deployment.etcd.host[%d]", index), "must use an HTTPS endpoint")
+		}
+	}
+	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
+		return profileFieldError(profile, "deployment.etcd.tls.verify", "must be explicitly true")
+	}
+	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
+		return profileFieldError(profile, "nginx_config.http.client_max_body_size", "must be positive")
+	}
+	if cfg.Apisix.EnableAdmin {
+		return profileFieldError(profile, "apisix.enable_admin", "must be false")
+	}
+	if cfg.Apisix.ProxyMode != "http" {
+		return profileFieldError(profile, "apisix.proxy_mode", "must be http")
+	}
+	if len(cfg.Apisix.StreamProxy.Tcp) > 0 {
+		return profileFieldError(profile, "apisix.stream_proxy.tcp", "must be empty")
+	}
+	if len(cfg.Apisix.StreamProxy.Udp) > 0 {
+		return profileFieldError(profile, "apisix.stream_proxy.udp", "must be empty")
+	}
+	if len(cfg.StreamPlugins) > 0 {
+		return profileFieldError(profile, "stream_plugins", "must be empty")
+	}
+	if len(cfg.Apisix.TrustedAddresses) == 0 {
+		return profileFieldError(profile, "apisix.trusted_addresses", "must contain at least one CIDR")
+	}
+	for index, address := range cfg.Apisix.TrustedAddresses {
+		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
+			return profileFieldError(profile, fmt.Sprintf("apisix.trusted_addresses[%d]", index), "must be a valid CIDR")
+		}
+	}
+	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
+	if !slices.Equal(cfg.Plugins, wantPlugins) {
+		return profileFieldError(profile, "plugins", "must use the exact HTTP plugin allowlist")
+	}
+	if err := validateProcessAccessLogs(cfg, profile); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProcessAccessLogs(cfg *Config, profile string) error {
+	http := cfg.NginxConfig.HTTP
+	for _, field := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "nginx_config.http.enable_access_log", valid: !http.EnableAccessLog},
+		{name: "nginx_config.http.access_log", valid: http.AccessLog == ""},
+		{name: "nginx_config.http.access_log_buffer", valid: http.AccessLogBuffer == 0},
+		{name: "nginx_config.http.access_log_format", valid: http.AccessLogFormat == ""},
+		{name: "nginx_config.http.access_log_format_escape", valid: http.AccessLogFormatEscape == ""},
+	} {
+		if !field.valid {
+			return profileFieldError(profile, field.name, "must remain unset")
+		}
+	}
+	stream := cfg.NginxConfig.Stream
+	for _, field := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "nginx_config.stream.enable_access_log", valid: !stream.EnableAccessLog},
+		{name: "nginx_config.stream.access_log", valid: stream.AccessLog == ""},
+		{name: "nginx_config.stream.access_log_format", valid: stream.AccessLogFormat == ""},
+		{name: "nginx_config.stream.access_log_format_escape", valid: stream.AccessLogFormatEscape == ""},
+	} {
+		if !field.valid {
+			return profileFieldError(profile, field.name, "must remain unset")
+		}
+	}
+	return nil
+}
+
+func profileFieldError(profile, field, requirement string) error {
+	return fmt.Errorf("%s: %s %s", profile, field, requirement)
 }
 
 func EffectiveConfigProvider(cfg *Config) (string, error) {

@@ -29,6 +29,8 @@ type Config struct {
 	Deployment Deployment                `mapstructure:"deployment"`
 }
 
+const HTTPDataPlaneV1Profile = "http-data-plane-v1"
+
 // section: apisix
 
 type Apisix struct {
@@ -294,6 +296,7 @@ type PluginAttr map[string]any
 
 type Deployment struct {
 	// TODO: add validation here
+	Profile          string                `mapstructure:"profile"`
 	Role             string                `mapstructure:"role"`
 	RoleTraditional  RoleTraditionalConfig `mapstructure:"role_traditional"`
 	RoleDataPlane    RoleConfig            `mapstructure:"role_data_plane"`

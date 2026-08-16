@@ -21,9 +21,11 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -106,6 +108,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -483,7 +488,7 @@ func TestHandlerRouteQuotaRemainsSharedAcrossAuthenticatedConsumers(t *testing.T
 	}
 }
 
-func TestPostInitResolvesEnvironmentVariableKey(t *testing.T) {
+func TestMaterializeSecretsRedactsEnvironmentKeyAndStopsOwner(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_KEY", "remote_addr")
 
 	p := newTestPlugin(t, Config{
@@ -491,12 +496,29 @@ func TestPostInitResolvesEnvironmentVariableKey(t *testing.T) {
 		TimeWindow: 60,
 		Key:        "$ENV://LIMIT_COUNT_KEY",
 	})
-	if p.config.Key != "remote_addr" {
-		t.Fatalf("resolved key = %q, want remote_addr", p.config.Key)
+	if !strings.Contains(p.config.Key, "$ENV://LIMIT_COUNT_KEY#sha256:") ||
+		strings.Contains(p.config.Key, "remote_addr") {
+		t.Fatalf("key = %q, want safe environment descriptor", p.config.Key)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "192.0.2.10:1234"
+	if got := p.resolveKey(request); got != "192.0.2.10" {
+		t.Fatalf("resolveKey() = %q, want materialized remote_addr behavior", got)
+	}
+	owner := p.keySecret
+	if owner == nil {
+		t.Fatal("referenced key owner is not retained by the plugin generation")
+	}
+	p.Stop()
+	if p.keySecret != nil {
+		t.Fatal("Stop() retained the referenced key owner")
+	}
+	if got := owner.Bytes(); got != nil {
+		t.Fatalf("Stop() left referenced key bytes = %q, want destroyed handle", got)
 	}
 }
 
-func TestPostInitResolvesRedisHostEnvironmentReference(t *testing.T) {
+func TestMaterializeSecretsRedactsRedisHostAndBuildsResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_HOST", "127.0.0.2")
 
 	p := newTestPlugin(t, Config{
@@ -505,15 +527,34 @@ func TestPostInitResolvesRedisHostEnvironmentReference(t *testing.T) {
 		Policy:     "redis",
 		RedisHost:  "$ENV://LIMIT_COUNT_REDIS_HOST",
 	})
-	if p.config.Redis.RedisHost != "127.0.0.2" {
-		t.Fatalf("resolved Redis host = %q, want 127.0.0.2", p.config.Redis.RedisHost)
+	if !strings.Contains(p.config.Redis.RedisHost, "$ENV://LIMIT_COUNT_REDIS_HOST#sha256:") ||
+		strings.Contains(p.config.Redis.RedisHost, "127.0.0.2") {
+		t.Fatalf("Redis host = %q, want safe environment descriptor", p.config.Redis.RedisHost)
 	}
-	if options := p.redisConnConfig().Options(); options.Addr != "127.0.0.2:6379" {
+	if p.config.RedisHost != p.config.Redis.RedisHost {
+		t.Fatalf("root Redis host = %q, want canonical descriptor %q", p.config.RedisHost, p.config.Redis.RedisHost)
+	}
+	client, err := p.redisBackendClient()
+	if err != nil {
+		t.Fatalf("redisBackendClient() error = %v", err)
+	}
+	if options := client.(*redis.Client).Options(); options.Addr != "127.0.0.2:6379" {
 		t.Fatalf("Redis address = %q, want 127.0.0.2:6379", options.Addr)
+	}
+	owner := p.redisHostSecret
+	if owner == nil {
+		t.Fatal("Redis host owner is not retained by the plugin generation")
+	}
+	p.Stop()
+	if p.redisHostSecret != nil {
+		t.Fatal("Stop() retained the Redis host owner")
+	}
+	if got := owner.Bytes(); got != nil {
+		t.Fatalf("Stop() left Redis host bytes = %q, want destroyed handle", got)
 	}
 }
 
-func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
+func TestMaterializeSecretsRedactsRedisClusterNodesAndBuildsResolvedClient(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_0", "127.0.0.1:5000")
 	t.Setenv("LIMIT_COUNT_REDIS_NODE_1", "127.0.0.1:5001")
 
@@ -524,12 +565,39 @@ func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
 		RedisClusterNodes: []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"},
 		RedisClusterName:  "redis-cluster-1",
 	})
-	want := []string{"127.0.0.1:5000", "127.0.0.1:5001"}
-	if !slices.Equal(p.config.RedisCluster.RedisClusterNodes, want) {
-		t.Fatalf("resolved Redis cluster nodes = %#v, want %#v", p.config.RedisCluster.RedisClusterNodes, want)
+	for i, reference := range []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"} {
+		if !strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], reference+"#sha256:") ||
+			strings.Contains(p.config.RedisCluster.RedisClusterNodes[i], "127.0.0.1") {
+			t.Fatalf("Redis cluster node %d = %q, want safe descriptor", i, p.config.RedisCluster.RedisClusterNodes[i])
+		}
 	}
-	if options := p.redisClusterConnConfig().ClusterOptions(); !slices.Equal(options.Addrs, want) {
+	if !slices.Equal(p.config.RedisClusterNodes, p.config.RedisCluster.RedisClusterNodes) {
+		t.Fatalf(
+			"root Redis cluster nodes = %#v, want canonical descriptors %#v",
+			p.config.RedisClusterNodes,
+			p.config.RedisCluster.RedisClusterNodes,
+		)
+	}
+	client, err := p.redisBackendClient()
+	if err != nil {
+		t.Fatalf("redisBackendClient() error = %v", err)
+	}
+	want := []string{"127.0.0.1:5000", "127.0.0.1:5001"}
+	if options := client.(*redis.ClusterClient).Options(); !slices.Equal(options.Addrs, want) {
 		t.Fatalf("Redis cluster addresses = %#v, want %#v", options.Addrs, want)
+	}
+	owners := append([]*store.ResolvedSecret(nil), p.redisClusterNodeSecrets...)
+	if len(owners) != 2 {
+		t.Fatal("Redis cluster node owners are not retained by the plugin generation")
+	}
+	p.Stop()
+	if p.redisClusterNodeSecrets != nil {
+		t.Fatal("Stop() retained Redis cluster node owners")
+	}
+	for i, owner := range owners {
+		if got := owner.Bytes(); got != nil {
+			t.Fatalf("Stop() left Redis cluster node %d bytes = %q, want destroyed handle", i, got)
+		}
 	}
 }
 

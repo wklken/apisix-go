@@ -531,15 +531,9 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 	}
 
 	if cachedToken.refreshToken != "" && now.Before(cachedToken.refreshTokenExpiresAt) {
-		clientSecret := p.clientSecret.Bytes()
-		if len(clientSecret) == 0 {
-			return "", errors.New("credential unavailable")
-		}
-		defer clear(clientSecret)
 		form := url.Values{}
 		form.Set("grant_type", "refresh_token")
 		form.Set("client_id", p.config.ClientID)
-		form.Set("client_secret", string(clientSecret))
 		form.Set("refresh_token", cachedToken.refreshToken)
 
 		refreshed, err := p.requestServiceAccountToken(endpoint, form)
@@ -551,15 +545,9 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 		}
 	}
 
-	clientSecret := p.clientSecret.Bytes()
-	if len(clientSecret) == 0 && p.config.ClientSecret != "" {
-		return "", errors.New("credential unavailable")
-	}
-	defer clear(clientSecret)
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", p.config.ClientID)
-	form.Set("client_secret", string(clientSecret))
 
 	response, err := p.requestServiceAccountToken(endpoint, form)
 	if err != nil {
@@ -573,23 +561,49 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 }
 
 func (p *Plugin) requestServiceAccountToken(endpoint string, form url.Values) (tokenEndpointResponse, error) {
-	resp, err := p.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(form.Encode()).
-		Post(endpoint)
+	var response tokenEndpointResponse
+	err := p.withClientSecret(func(clientSecret string) error {
+		requestForm := cloneForm(form)
+		requestForm.Set("client_secret", clientSecret)
+		resp, err := p.client.R().
+			SetHeader("Content-Type", "application/x-www-form-urlencoded").
+			SetBody(requestForm.Encode()).
+			Post(endpoint)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode() != http.StatusOK {
+			return fmt.Errorf("token endpoint returned %d", resp.StatusCode())
+		}
+		return json.Unmarshal(resp.Body(), &response)
+	})
 	if err != nil {
 		return tokenEndpointResponse{}, err
 	}
-	if resp.StatusCode() != http.StatusOK {
-		return tokenEndpointResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode())
-	}
-
-	var response tokenEndpointResponse
-	if err := json.Unmarshal(resp.Body(), &response); err != nil {
-		return tokenEndpointResponse{}, err
-	}
-
 	return response, nil
+}
+
+func (p *Plugin) withClientSecret(call func(string) error) error {
+	if p.clientSecret == nil {
+		if p.config.ClientSecret != "" {
+			return errors.New("credential unavailable")
+		}
+		return call("")
+	}
+	clientSecret := p.clientSecret.Bytes()
+	if len(clientSecret) == 0 {
+		return errors.New("credential unavailable")
+	}
+	defer clear(clientSecret)
+	return call(string(clientSecret))
+}
+
+func cloneForm(form url.Values) url.Values {
+	cloned := make(url.Values, len(form)+1)
+	for key, values := range form {
+		cloned[key] = append([]string(nil), values...)
+	}
+	return cloned
 }
 
 func (p *Plugin) cacheServiceAccountToken(cacheKey string, response tokenEndpointResponse, previous tokenCache) string {
@@ -829,22 +843,21 @@ func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.
 	}
 
 	form := url.Values{}
-	clientSecret := p.clientSecret.Bytes()
-	if len(clientSecret) == 0 && p.config.ClientSecret != "" {
-		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Accessing token endpoint URL failed.")
-		return
-	}
-	defer clear(clientSecret)
 	form.Set("grant_type", "password")
 	form.Set("client_id", p.config.ClientID)
-	form.Set("client_secret", string(clientSecret))
 	form.Set("username", username)
 	form.Set("password", password)
 
-	resp, err := p.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(form.Encode()).
-		Post(endpoint)
+	var resp *resty.Response
+	err = p.withClientSecret(func(clientSecret string) error {
+		requestForm := cloneForm(form)
+		requestForm.Set("client_secret", clientSecret)
+		resp, err = p.client.R().
+			SetHeader("Content-Type", "application/x-www-form-urlencoded").
+			SetBody(requestForm.Encode()).
+			Post(endpoint)
+		return err
+	})
 	if err != nil {
 		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Accessing token endpoint URL failed.")
 		return

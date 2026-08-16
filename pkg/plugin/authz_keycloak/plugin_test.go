@@ -378,6 +378,48 @@ func TestLazyLoadRefreshesExpiredServiceAccountToken(t *testing.T) {
 	}
 }
 
+func TestServiceAccountRefreshWithoutClientSecretFallsBackToClientCredentials(t *testing.T) {
+	var forms []url.Values
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		forms = append(forms, r.PostForm)
+		if got := r.PostForm.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret = %q, want optional empty value", got)
+		}
+		switch r.PostForm.Get("grant_type") {
+		case "refresh_token":
+			_, _ = w.Write([]byte(`{"refresh_token":"refresh-a","refresh_expires_in":3600}`))
+		case "client_credentials":
+			_, _ = w.Write([]byte(`{"access_token":"service-token","expires_in":300}`))
+		default:
+			t.Fatalf("unexpected grant_type %q", r.PostForm.Get("grant_type"))
+		}
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL,
+		ClientID:      "apisix",
+	})
+	p.serviceAccountToken = tokenCache{
+		value:                 "expired-token",
+		expiresAt:             time.Now().Add(-time.Second),
+		refreshToken:          "refresh-a",
+		refreshTokenExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	token, err := p.serviceAccountAccessToken()
+	if err != nil || token != "service-token" {
+		t.Fatalf("serviceAccountAccessToken() = %q, %v; want service-token, nil", token, err)
+	}
+	if len(forms) != 2 || forms[0].Get("grant_type") != "refresh_token" ||
+		forms[1].Get("grant_type") != "client_credentials" {
+		t.Fatalf("grant forms = %#v, want refresh_token then client_credentials", forms)
+	}
+}
+
 func TestCacheServiceAccountTokenKeepsExistingRefreshToken(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		TokenEndpoint: "http://keycloak.example.com/token",

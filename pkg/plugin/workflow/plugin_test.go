@@ -9,9 +9,19 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type recordingWorkflowStopper struct {
+	name  string
+	order *[]string
+}
+
+func (s recordingWorkflowStopper) Stop() {
+	*s.order = append(*s.order, s.name)
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -19,6 +29,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -64,6 +77,9 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 			}}}}}}
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
+			}
+			if err := base.MaterializePluginSecrets(p); err != nil {
+				t.Fatalf("MaterializePluginSecrets() error = %v", err)
 			}
 			p.SetPluginEnabledChecker(func(name string) bool { return name != actionName })
 
@@ -116,6 +132,9 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	if err := withEnabled.Init(); err != nil {
 		t.Fatalf("enabled Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(withEnabled); err != nil {
+		t.Fatalf("enabled MaterializePluginSecrets() error = %v", err)
+	}
 	withEnabled.SetPluginEnabledChecker(func(string) bool { return true })
 	if err := withEnabled.PostInit(); err != nil {
 		t.Fatalf("enabled PostInit() error = %v", err)
@@ -127,6 +146,9 @@ func TestWorkflowRejectsDisabledNestedPluginBeforeConstruction(t *testing.T) {
 	}}}}}}
 	if err := returns.Init(); err != nil {
 		t.Fatalf("return Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(returns); err != nil {
+		t.Fatalf("return MaterializePluginSecrets() error = %v", err)
 	}
 	returns.SetPluginEnabledChecker(func(string) bool { return false })
 	if err := returns.PostInit(); err != nil {
@@ -263,10 +285,84 @@ func TestPostInitRejectsUnsupportedAction(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 
 	err := p.PostInit()
 	if err == nil || !strings.Contains(err.Error(), "unsupported workflow action") {
 		t.Fatalf("PostInit() error = %v, want unsupported workflow action error", err)
+	}
+}
+
+func TestPostInitFailureRollsBackChildrenInReverseOrder(t *testing.T) {
+	var order []string
+	p := &Plugin{
+		config: Config{Rules: []Rule{{Actions: []Action{{Name: "unsupported-action"}}}}},
+		childStoppers: []workflowChildStopper{
+			recordingWorkflowStopper{name: "first", order: &order},
+			recordingWorkflowStopper{name: "second", order: &order},
+		},
+	}
+
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want later initialization failure")
+	}
+	if got := strings.Join(order, ","); got != "second,first" {
+		t.Fatalf("rollback order = %q, want second,first", got)
+	}
+	if p.childStoppers != nil || p.children != nil {
+		t.Fatalf("rollback retained child state: stoppers=%v children=%v", p.childStoppers, p.children)
+	}
+}
+
+func TestMaterializeFailureRollsBackEarlierChildOwner(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{Actions: []Action{
+		{
+			Name: "limit-count",
+			Config: map[string]any{
+				"count":       1,
+				"time_window": 60,
+				"key":         "remote_addr",
+			},
+		},
+		{
+			Name: "limit-req",
+			Config: map[string]any{
+				"rate":  1,
+				"burst": 0,
+				"key":   "$ENV://WORKFLOW_UNOWNED_KEY",
+			},
+		},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err == nil {
+		t.Fatal("MaterializeSecrets() error = nil, want second child materialization failure")
+	}
+	if p.childStoppers != nil || p.children != nil {
+		t.Fatalf("materialization rollback retained child state: stoppers=%v children=%v", p.childStoppers, p.children)
+	}
+}
+
+func TestStopRetiresChildrenInReverseOrderAndIsIdempotent(t *testing.T) {
+	var order []string
+	p := &Plugin{
+		children: map[actionPosition]workflowChild{},
+		childStoppers: []workflowChildStopper{
+			recordingWorkflowStopper{name: "first", order: &order},
+			recordingWorkflowStopper{name: "second", order: &order},
+		},
+	}
+
+	p.Stop()
+	p.Stop()
+	if got := strings.Join(order, ","); got != "second,first" {
+		t.Fatalf("Stop order = %q, want second,first exactly once", got)
+	}
+	if p.childStoppers != nil || p.children != nil {
+		t.Fatalf("Stop retained child state: stoppers=%v children=%v", p.childStoppers, p.children)
 	}
 }
 
@@ -278,6 +374,9 @@ func TestPostInitRejectsInvalidReturnCode(t *testing.T) {
 	}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 
 	err := p.PostInit()
@@ -297,6 +396,9 @@ func TestPostInitRejectsInvalidLimitCountAction(t *testing.T) {
 	}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 
 	err := p.PostInit()
@@ -320,6 +422,9 @@ func TestPostInitRejectsLimitCountGroup(t *testing.T) {
 	}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 
 	err := p.PostInit()
@@ -370,6 +475,61 @@ func TestHandlerRunsLimitCountAction(t *testing.T) {
 	handler.ServeHTTP(secondRecorder, second)
 	if secondRecorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestMaterializeSecretsOwnsNestedLimitCountReferenceBeforePostInit(t *testing.T) {
+	t.Setenv("WORKFLOW_LIMIT_COUNT_KEY", "remote_addr")
+	var cfg Config
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"actions": []any{[]any{
+				"limit-count",
+				map[string]any{
+					"count":         1,
+					"time_window":   60,
+					"key":           "$ENV://WORKFLOW_LIMIT_COUNT_KEY",
+					"rejected_code": http.StatusTooManyRequests,
+				},
+			}},
+		}},
+	}, &cfg); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	key, _ := p.config.Rules[0].Actions[0].Config["key"].(string)
+	if !strings.Contains(key, "$ENV://WORKFLOW_LIMIT_COUNT_KEY#sha256:") || strings.Contains(key, "remote_addr") {
+		t.Fatalf("nested limit-count key = %q, want safe environment descriptor", key)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+	if got := request(); got != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", got, http.StatusNoContent)
+	}
+	if got := request(); got != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want nested materialized key quota rejection", got)
+	}
+	p.Stop()
+	if p.config.Rules[0].Actions[0].limitCount != nil {
+		t.Fatal("Stop() retained nested limit-count runtime child")
 	}
 }
 
@@ -570,8 +730,8 @@ func TestUnownedSecretReferenceRejectsNestedWorkflowPlugin(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "unowned secret reference") || !strings.Contains(err.Error(), "key") {
-		t.Fatalf("PostInit() error = %v, want nested workflow secret rejection", err)
+	err := base.MaterializePluginSecrets(p)
+	if err == nil || err.Error() != "materialize plugin secrets: credential unavailable" {
+		t.Fatalf("MaterializePluginSecrets() error = %v, want redacted nested secret rejection", err)
 	}
 }

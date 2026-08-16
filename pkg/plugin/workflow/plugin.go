@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"net/http"
+	"slices"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -20,6 +21,23 @@ type Plugin struct {
 	base.BasePlugin
 	config         Config
 	enabledChecker func(string) bool
+	childStoppers  []workflowChildStopper
+	children       map[actionPosition]workflowChild
+}
+
+type actionPosition struct {
+	rule   int
+	action int
+}
+
+type workflowChild interface {
+	Init() error
+	PostInit() error
+	Config() any
+}
+
+type workflowChildStopper interface {
+	Stop()
 }
 
 const (
@@ -126,7 +144,93 @@ func (p *Plugin) SetPluginEnabledChecker(checker func(string) bool) {
 	p.enabledChecker = checker
 }
 
+func (p *Plugin) MaterializeSecrets() error {
+	p.stopChildren()
+	p.children = make(map[actionPosition]workflowChild)
+	committed := false
+	defer func() {
+		if !committed {
+			p.stopChildren()
+		}
+	}()
+	for ruleIndex := range p.config.Rules {
+		for actionIndex := range p.config.Rules[ruleIndex].Actions {
+			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
+			position := actionPosition{rule: ruleIndex, action: actionIndex}
+			switch action.Name {
+			case "limit-req":
+				child := &limit_req.Plugin{}
+				if err := p.materializeChild(action, child); err != nil {
+					return err
+				}
+				p.children[position] = child
+			case "limit-conn":
+				child := &limit_conn.Plugin{}
+				if err := p.materializeChild(action, child); err != nil {
+					return err
+				}
+				p.children[position] = child
+			case "limit-count":
+				child := &limit_count.Plugin{}
+				if err := p.materializeChild(action, child); err != nil {
+					return err
+				}
+				p.children[position] = child
+			}
+		}
+	}
+	committed = true
+	return nil
+}
+
+func (p *Plugin) materializeChild(action *Action, child workflowChild) error {
+	if err := child.Init(); err != nil {
+		return err
+	}
+	if err := util.Parse(action.Config, child.Config()); err != nil {
+		return err
+	}
+	if err := base.MaterializePluginSecrets(child); err != nil {
+		return err
+	}
+	if stopper, ok := child.(workflowChildStopper); ok {
+		p.childStoppers = append(p.childStoppers, stopper)
+	}
+	encoded, err := json.Marshal(child.Config())
+	if err != nil {
+		return err
+	}
+	var redacted map[string]any
+	if err := json.Unmarshal(encoded, &redacted); err != nil {
+		return err
+	}
+	syncActionConfig(action.Config, redacted)
+	return nil
+}
+
+func syncActionConfig(config map[string]any, materialized map[string]any) {
+	for key, value := range config {
+		materializedValue, ok := materialized[key]
+		if !ok {
+			continue
+		}
+		configMap, configIsMap := value.(map[string]any)
+		materializedMap, materializedIsMap := materializedValue.(map[string]any)
+		if configIsMap && materializedIsMap {
+			syncActionConfig(configMap, materializedMap)
+			continue
+		}
+		config[key] = materializedValue
+	}
+}
+
 func (p *Plugin) PostInit() error {
+	committed := false
+	defer func() {
+		if !committed {
+			p.stopChildren()
+		}
+	}()
 	for ruleIndex := range p.config.Rules {
 		rule := &p.config.Rules[ruleIndex]
 		if len(rule.Case) > 0 {
@@ -138,71 +242,51 @@ func (p *Plugin) PostInit() error {
 		}
 		for actionIndex := range p.config.Rules[ruleIndex].Actions {
 			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
+			child := p.children[actionPosition{rule: ruleIndex, action: actionIndex}]
 			switch action.Name {
 			case "limit-req":
 				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
 					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
 				}
-				plugin := &limit_req.Plugin{}
-				if err := plugin.Init(); err != nil {
+				action.limitReq, _ = child.(*limit_req.Plugin)
+				if action.limitReq == nil {
+					return fmt.Errorf("workflow action plugin %q was not materialized", action.Name)
+				}
+				if err := action.limitReq.PostInit(); err != nil {
 					return err
 				}
-				if err := util.Parse(action.Config, plugin.Config()); err != nil {
-					return err
-				}
-				if err := base.MaterializePluginSecrets(plugin); err != nil {
-					return err
-				}
-				if err := plugin.PostInit(); err != nil {
-					return err
-				}
-				action.limitReq = plugin
 			case "limit-conn":
 				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
 					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
 				}
-				plugin := &limit_conn.Plugin{}
-				if err := plugin.Init(); err != nil {
+				action.limitConn, _ = child.(*limit_conn.Plugin)
+				if action.limitConn == nil {
+					return fmt.Errorf("workflow action plugin %q was not materialized", action.Name)
+				}
+				if err := action.limitConn.PostInit(); err != nil {
 					return err
 				}
-				if err := util.Parse(action.Config, plugin.Config()); err != nil {
-					return err
-				}
-				if err := base.MaterializePluginSecrets(plugin); err != nil {
-					return err
-				}
-				if err := plugin.PostInit(); err != nil {
-					return err
-				}
-				action.limitConn = plugin
 			case "limit-count":
 				if p.enabledChecker != nil && !p.enabledChecker(action.Name) {
 					return fmt.Errorf("workflow action plugin %q is disabled", action.Name)
 				}
-				plugin := &limit_count.Plugin{}
-				if err := plugin.Init(); err != nil {
-					return err
+				action.limitCount, _ = child.(*limit_count.Plugin)
+				if action.limitCount == nil {
+					return fmt.Errorf("workflow action plugin %q was not materialized", action.Name)
 				}
 				if _, ok := action.Config["group"]; ok {
 					return fmt.Errorf("workflow rule %d limit-count action group is not supported", ruleIndex)
 				}
-				compiledSchema, err := util.CompileSchema(plugin.GetSchema())
+				compiledSchema, err := util.CompileSchema(action.limitCount.GetSchema())
 				if err != nil {
 					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
 				}
 				if err := compiledSchema.Validate(action.Config); err != nil {
 					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
 				}
-				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+				if err := action.limitCount.PostInit(); err != nil {
 					return err
 				}
-				if err := base.MaterializePluginSecrets(plugin); err != nil {
-					return err
-				}
-				if err := plugin.PostInit(); err != nil {
-					return err
-				}
-				action.limitCount = plugin
 			case "return":
 				if action.Return.Code < http.StatusContinue || action.Return.Code > 599 {
 					return fmt.Errorf(
@@ -215,7 +299,29 @@ func (p *Plugin) PostInit() error {
 			}
 		}
 	}
+	committed = true
 	return nil
+}
+
+func (p *Plugin) stopChildren() {
+	stoppers := p.childStoppers
+	p.childStoppers = nil
+	p.children = nil
+	for ruleIndex := range p.config.Rules {
+		for actionIndex := range p.config.Rules[ruleIndex].Actions {
+			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
+			action.limitReq = nil
+			action.limitConn = nil
+			action.limitCount = nil
+		}
+	}
+	for _, stopper := range slices.Backward(stoppers) {
+		stopper.Stop()
+	}
+}
+
+func (p *Plugin) Stop() {
+	p.stopChildren()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

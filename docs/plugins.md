@@ -41,6 +41,8 @@ these HTTP plugins, in this order: `request-id`, `cors`, `key-auth`,
 `jwt-auth`, `basic-auth`, `prometheus`. It leaves `stream_plugins` and TCP/UDP
 stream listeners empty, disables Admin, and excludes discovery, external
 plugin commands, WASM, XRPC, QUIC, HTTP/3, and process access-log claims.
+Kafka PubSub and upstreams with `scheme: kafka` are also excluded from this
+profile; the Kafka owner remains supported in empty compatibility mode.
 Frontend HTTPS serving is supported by the Go TLS boundary; direct Internet
 exposure still needs frontend TLS or a trusted TLS-terminating ingress.
 

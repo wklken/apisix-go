@@ -35,6 +35,8 @@ TCP/UDP stream listeners and `stream_plugins`, at least one valid
 Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
 be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
 `request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`.
+The profile also excludes Kafka PubSub and upstreams with `scheme: kafka`;
+those remain available only in the empty compatibility profile.
 
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
@@ -71,6 +73,7 @@ state. The image healthcheck uses `/readyz`.
 - An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
 - Route-level `script` and non-empty `filter_func` are rejected because the Go data plane does not execute Lua route logic; they are never silently discarded.
 - HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
+- `http-data-plane-v1` rejects `scheme: kafka` upstreams because Kafka PubSub is a separate compatibility subsystem; the empty compatibility profile retains the Kafka owner.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.
@@ -139,8 +142,10 @@ runtime features called out below is rejected rather than silently ignored:
 - WebSocket upgrades require effective route or service
   `enable_websocket: true`. Every WebSocket upgrade attempt skips response
   callbacks; request, authentication, access, before-proxy, and log phases
-  still run. Successful tunnels retain cluster admission and timeout limits,
-  and retired route generations close them during generation shutdown.
+  still run. For `http-data-plane-v1`, the admission and timeout guarantee
+  applies only to profile-allowed HTTP reverse-proxy tunnels; retired route
+  generations close them during generation shutdown. Kafka PubSub compatibility
+  routes are outside this profile contract.
 - Zipkin is v2-only. OTel rejects `set_ngx_var: true` and any non-zero
   `inactive_timeout`; collector `request_timeout` remains supported.
 - `SIGHUP` performs graceful shutdown and returns an unsupported-reload error;

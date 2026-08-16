@@ -57,6 +57,9 @@ The merged configuration must satisfy all of the following:
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
   zero.
+- Kafka PubSub and upstreams with `scheme: kafka` are excluded from this
+  profile and fail route compilation; Kafka remains available only in the
+  empty compatibility profile.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
 the etcd endpoint empty so an operator must supply a real endpoint through an
@@ -107,7 +110,9 @@ Route and upstream discovery fields are retained by the resource decoder for
 compatibility, but HTTP and stream compilation rejects discovery types or
 service references that require an unsupported discovery runtime. The profile
 also excludes general stream-plugin chaining, stream metrics, Lua/OpenResty
-runtime behavior, external plugin runners, and process access-log claims.
+runtime behavior, Kafka PubSub/upstream `scheme: kafka`, external plugin
+runners, and process access-log claims. The Kafka owner remains a supported
+compatibility-mode subsystem outside this candidate profile.
 
 The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
@@ -118,7 +123,9 @@ The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 An HTTP WebSocket upgrade is admitted only when the effective route or service
 sets `enable_websocket: true`. Every WebSocket upgrade attempt skips response
 callbacks; request, authentication, access, before-proxy, and log phases still
-run. Successful tunnels remain subject to cluster admission and timeout limits.
+run. For this profile, successful HTTP reverse-proxy tunnels remain subject to
+cluster admission and timeout limits; Kafka PubSub compatibility tunnels are
+outside the profile contract.
 When a route generation retires, its WebSocket connections are closed as part
 of generation shutdown.
 

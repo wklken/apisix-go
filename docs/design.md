@@ -61,7 +61,9 @@ HTTP-only contract: it uses the six-plugin allowlist
 `request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`,
 disables Admin and stream listeners/plugins, requires data-plane etcd over
 verified HTTPS, a trusted source CIDR, a positive request-body limit, and no
-process access-log claims. Its full operator contract is in
+process access-log claims. It excludes Kafka PubSub and upstreams with
+`scheme: kafka`; the Kafka owner remains available in empty compatibility mode.
+Its full operator contract is in
 [`production-profile.md`](production-profile.md); it is awaiting release and
 operations qualification and does not change the repository-wide not-ready
 status.
@@ -78,12 +80,14 @@ are configured.
 WebSocket upgrades are admitted only when the effective route or service sets
 `enable_websocket: true`. Every WebSocket upgrade attempt skips response
 callbacks while request, authentication, access, before-proxy, and log phases
-run. A successful tunnel remains subject to cluster admission and timeout
-limits. Retiring a route generation closes its WebSocket connections. `SIGHUP` drains
-the server and returns an unsupported-reload error, so configuration changes
-require a new process rather than an in-process reload. Zipkin is v2-only, and
-OTel rejects `set_ngx_var` and non-zero `inactive_timeout` while retaining
-collector `request_timeout`.
+run. For the candidate profile, a successful profile-allowed HTTP
+reverse-proxy tunnel remains subject to cluster admission and timeout limits;
+Kafka PubSub compatibility tunnels are outside that contract. Retiring a route
+generation closes its WebSocket connections. `SIGHUP` drains the server and
+returns an unsupported-reload error, so configuration changes require a new
+process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
+`set_ngx_var` and non-zero `inactive_timeout` while retaining collector
+`request_timeout`.
 
 ## APISIX 3.17 Protocol Bridge Design
 
@@ -170,7 +174,9 @@ real broker or external service to the default test suite.
 #### Contract decision
 
 The APISIX plugin is an upstream Kafka consumer bridge, not a REST producer
-facade. The official Go scope is therefore:
+facade. The following Kafka owner is available in compatibility mode; it is
+outside the `http-data-plane-v1` candidate profile. Its official Go scope is
+therefore:
 
 - support `scheme: kafka` upstream nodes and the APISIX WebSocket PubSub
   protobuf protocol;

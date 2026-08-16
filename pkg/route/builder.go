@@ -2950,6 +2950,15 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 }
 
 func validateHTTPUpstreamType(upstream resource.Upstream) error {
+	if appconfig.GlobalConfig != nil &&
+		appconfig.GlobalConfig.Deployment.Profile == appconfig.HTTPDataPlaneV1Profile &&
+		strings.EqualFold(upstream.Scheme, "kafka") {
+		return fmt.Errorf(
+			"unsupported upstream scheme %q for %s profile: Kafka is outside the HTTP reverse-proxy contract",
+			upstream.Scheme,
+			appconfig.HTTPDataPlaneV1Profile,
+		)
+	}
 	switch strings.ToLower(upstream.Scheme) {
 	case "", "http", "https", "grpc", "grpcs":
 		if upstream.Type != "" && upstream.Type != "roundrobin" {

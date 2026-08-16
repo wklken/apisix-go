@@ -36,16 +36,34 @@ scripts/container_smoke_test.sh`; run the real smoke only on a host with
 Docker.
 
 `.github/workflows/security-release-gates.yml` runs the focused race suite and
-the pinned `govulncheck` scanner, then builds the image once and reuses it for
-the container smoke, CycloneDX SBOM, and Trivy scan. It uploads
+the pinned `govulncheck` scanner. Its read-only `container-evidence` job builds
+and loads one `linux/amd64` image, reuses it for the non-root container smoke,
+CycloneDX SBOM, and fail-closed Trivy scan, then uploads
 `sbom.cdx.json`, `trivy.json`, `apisix-image.tar.gz`, and
-`rollback-metadata.json`. The rollback file binds the source ref and commit to
-the immutable image ID and artifact checksums. Before rollback, operators
-download the evidence bundle, verify every recorded checksum, run
+`rollback-metadata.json`. A separate guarded `publish-image` job downloads and
+checks that exact archive; only it has registry, OIDC, and attestation write
+permissions, references the protected `production-release` environment, and
+pushes/signs/attests the captured immutable registry digest. The reusable
+workflow and its final caller both grant `attestations: write` where required;
+PR/master and RC paths remain read-only.
+
+Each qualification workflow resolves its selected ref once and all jobs use
+that immutable commit. RC and final runs build separate, digest-bound artifacts
+and each reruns the complete gate set; RC evidence is not relabeled or mixed
+with final-release evidence. The final workflow verifies all evidence identities,
+creates a checksum manifest, and attaches the evidence bundle and checksum to
+the GitHub release so the qualification record does not expire with Actions
+artifact retention.
+
+The rollback file binds the selected source ref and actual `git rev-parse HEAD`
+to the immutable image identity and artifact checksums. Before rollback,
+operators download the evidence bundle, verify every recorded checksum, run
 `gzip -dc apisix-image.tar.gz | docker load`, confirm the loaded image ID, and
-redeploy the restored tag through the existing deployment process. The
-metadata is evidence, not a new deployment controller. Local deterministic
-checks are:
+redeploy the previous digest through the existing deployment process. The
+metadata is evidence, not a new deployment controller. The canonical soak
+stores real JSON from `go test -json ... | tee
+.cache/release-evidence/proxy-soak.json`; `.cache/telemetry` is optional and is
+not evidence unless a producer populated it. Local deterministic checks are:
 
 ```bash
 bash scripts/container_smoke_test.sh
@@ -64,9 +82,12 @@ verified HTTPS, a trusted source CIDR, a positive request-body limit, and no
 process access-log claims. It excludes Kafka PubSub and upstreams with
 `scheme: kafka`; the Kafka owner remains available in empty compatibility mode.
 Its full operator contract is in
-[`production-profile.md`](production-profile.md); it is awaiting release and
-operations qualification and does not change the repository-wide not-ready
-status.
+[`production-profile.md`](production-profile.md) and the
+[`production release runbook`](runbooks/production-release.md); it is awaiting
+post-merge RC/final release and operations evidence and does not change the
+repository-wide not-ready status. The first release has no previous immutable
+digest, so rollback qualification remains open until a distinct older
+published digest is exercised.
 
 NGINX HTTP and stream process access-log settings are unsupported in both the
 compatibility and candidate profiles: any explicitly non-zero boolean or

@@ -917,6 +917,24 @@ func TestEtcdTLSIsNotEnabledForHTTPEndpoints(t *testing.T) {
 	}
 }
 
+func TestEtcdHealthCheckIntervalMapping(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config int
+		want   time.Duration
+	}{
+		{name: "default", config: 0, want: 10 * time.Second},
+		{name: "negative default", config: -1, want: 10 * time.Second},
+		{name: "configured", config: 7, want: 7 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := etcdHealthCheckInterval(test.config); got != test.want {
+				t.Fatalf("etcdHealthCheckInterval(%d) = %s, want %s", test.config, got, test.want)
+			}
+		})
+	}
+}
+
 func TestStandaloneConfigProviderSelection(t *testing.T) {
 	tests := []struct {
 		name     string

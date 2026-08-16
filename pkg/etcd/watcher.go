@@ -16,9 +16,13 @@ import (
 )
 
 type (
-	watchOpenFunc func(context.Context, int64) clientv3.WatchChan
-	snapshotFunc  func(context.Context) (*clientv3.GetResponse, error)
+	watchOpenFunc   func(context.Context, int64) clientv3.WatchChan
+	snapshotFunc    func(context.Context) (*clientv3.GetResponse, error)
+	healthCheckFunc func(context.Context) error
+	getFunc         func(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error)
 )
+
+const defaultHealthCheckInterval = 10 * time.Second
 
 type ConfigClient struct {
 	client *clientv3.Client
@@ -26,10 +30,12 @@ type ConfigClient struct {
 	// add a channel, receive the etcd change events
 	events chan *store.Event
 
-	closeOnce      sync.Once
-	closeErr       error
-	requestTimeout time.Duration
-	startupRetry   int
+	closeOnce           sync.Once
+	closeErr            error
+	requestTimeout      time.Duration
+	startupRetry        int
+	healthCheck         healthCheckFunc
+	healthCheckInterval time.Duration
 
 	openWatch    watchOpenFunc
 	loadSnapshot snapshotFunc
@@ -38,10 +44,12 @@ type ConfigClient struct {
 }
 
 type ClientOptions struct {
-	DialTimeout    time.Duration
-	RequestTimeout time.Duration
-	StartupRetry   int
-	TLS            *tls.Config
+	DialTimeout         time.Duration
+	RequestTimeout      time.Duration
+	StartupRetry        int
+	HealthCheck         func(context.Context) error
+	HealthCheckInterval time.Duration
+	TLS                 *tls.Config
 }
 
 func NewConfigClient(
@@ -71,6 +79,9 @@ func NewConfigClientWithOptions(
 	if options.StartupRetry < 0 {
 		options.StartupRetry = 0
 	}
+	if options.HealthCheckInterval <= 0 {
+		options.HealthCheckInterval = defaultHealthCheckInterval
+	}
 	config := clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: options.DialTimeout,
@@ -85,12 +96,14 @@ func NewConfigClientWithOptions(
 	}
 
 	configClient := &ConfigClient{
-		client:         client,
-		prefix:         prefix,
-		events:         events,
-		requestTimeout: options.RequestTimeout,
-		startupRetry:   options.StartupRetry,
-		knownKeys:      make(map[string]struct{}),
+		client:              client,
+		prefix:              prefix,
+		events:              events,
+		requestTimeout:      options.RequestTimeout,
+		startupRetry:        options.StartupRetry,
+		healthCheck:         options.HealthCheck,
+		healthCheckInterval: options.HealthCheckInterval,
+		knownKeys:           make(map[string]struct{}),
 	}
 	configClient.openWatch = func(ctx context.Context, revision int64) clientv3.WatchChan {
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
@@ -102,7 +115,17 @@ func NewConfigClientWithOptions(
 	configClient.loadSnapshot = func(ctx context.Context) (*clientv3.GetResponse, error) {
 		return client.Get(ctx, prefix, clientv3.WithPrefix())
 	}
+	if configClient.healthCheck == nil {
+		configClient.healthCheck = newHealthCheck(client.Get, prefix)
+	}
 	return configClient, nil
+}
+
+func newHealthCheck(get getFunc, prefix string) healthCheckFunc {
+	return func(ctx context.Context) error {
+		_, err := get(ctx, prefix)
+		return err
+	}
 }
 
 func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Config, error) {
@@ -157,26 +180,79 @@ func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
 	return c.applySnapshot(ctx, response)
 }
 
+func (c *ConfigClient) monitorHealth(ctx context.Context) {
+	if c.healthCheck == nil {
+		return
+	}
+	interval := c.healthCheckInterval
+	if interval <= 0 {
+		interval = defaultHealthCheckInterval
+	}
+	check := func() {
+		requestTimeout := c.requestTimeout
+		if requestTimeout <= 0 {
+			requestTimeout = 5 * time.Second
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+		err := c.healthCheck(checkCtx)
+		cancel()
+		if ctx.Err() == nil {
+			metrics.RecordEtcdReachable(err == nil)
+		}
+	}
+	check()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			check()
+		}
+	}
+}
+
 func (c *ConfigClient) Watch(ctx context.Context) {
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		c.monitorHealth(monitorCtx)
+	}()
+	defer func() {
+		stopMonitor()
+		<-monitorDone
+	}()
+
 	revision := c.lastRevision + 1
 	retry := 0
 	for ctx.Err() == nil {
 		stream := c.openWatch(ctx, revision)
 		markUnreachable := true
-		for response := range stream {
-			if err := response.Err(); err != nil {
-				metrics.RecordEtcdReachable(false)
-				logger.Errorf("etcd watch canceled: %v", err)
-				break
-			}
-			metrics.RecordEtcdReachable(true)
-			if err := c.applyWatchResponse(ctx, response); err != nil {
-				if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
+	watchLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case response, ok := <-stream:
+				if !ok {
+					break watchLoop
 				}
-				markUnreachable = false
-				logger.Errorf("apply etcd watch response: %v", err)
-				break
+				if err := response.Err(); err != nil {
+					metrics.RecordEtcdReachable(false)
+					logger.Errorf("etcd watch canceled: %v", err)
+					break watchLoop
+				}
+				metrics.RecordEtcdReachable(true)
+				if err := c.applyWatchResponse(ctx, response); err != nil {
+					if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
+					markUnreachable = false
+					logger.Errorf("apply etcd watch response: %v", err)
+					break watchLoop
+				}
 			}
 		}
 		if ctx.Err() != nil {

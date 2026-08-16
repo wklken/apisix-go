@@ -1104,10 +1104,11 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		prefix,
 		s.events,
 		etcd.ClientOptions{
-			DialTimeout:    requestTimeout,
-			RequestTimeout: requestTimeout,
-			StartupRetry:   etcdConfig.StartupRetry,
-			TLS:            tlsConfig,
+			DialTimeout:         requestTimeout,
+			RequestTimeout:      requestTimeout,
+			HealthCheckInterval: etcdHealthCheckInterval(etcdConfig.HealthCheckTimeout),
+			StartupRetry:        etcdConfig.StartupRetry,
+			TLS:                 tlsConfig,
 		},
 	)
 	if err != nil {
@@ -1142,6 +1143,13 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	logger.Info("watch etcd")
 	producer.Start()
 	return nil
+}
+
+func etcdHealthCheckInterval(timeout int) time.Duration {
+	if timeout <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(timeout) * time.Second
 }
 
 func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) error {

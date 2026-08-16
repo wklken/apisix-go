@@ -49,7 +49,10 @@ exposure still needs frontend TLS or a trusted TLS-terminating ingress.
 This profile narrows the deployable contract; it does not change the plugin
 parity counts or the individual status rows below. It is a candidate awaiting
 release and operations qualification. See the [operator contract](production-profile.md)
-for state ownership, readiness, WebSocket, SIGHUP, and remaining exclusions.
+and [production release runbook](runbooks/production-release.md) for state
+ownership, readiness, WebSocket, SIGHUP, release evidence, and remaining
+exclusions. Workflow inspection and plugin parity counts do not qualify the
+profile or the repository for production.
 Its observability boundary excludes stream metrics because stream activation is
 rejected, does not allowlist `skywalking`, and accepts only the validated OTel
 subset; unsupported OTel `set_ngx_var: true` and non-zero `inactive_timeout`

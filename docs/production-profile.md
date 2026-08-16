@@ -4,7 +4,10 @@
 `apisix-go` as an HTTP data plane behind a separately managed control plane and
 ingress boundary. It is a candidate awaiting release and operations
 qualification. The repository-wide warning still applies: apisix-go is under
-active development and is not ready for production use.
+active development and is not ready for production use. The executable
+operator procedure is the [production release runbook](runbooks/production-release.md);
+it does not turn a workflow definition or local test into qualification
+evidence.
 
 ## Selection
 
@@ -169,4 +172,9 @@ still requires the later release and operations qualification work: provenance
 and artifact verification, real deployment/ingress validation, operational
 runbooks, rollback evidence, and environment-specific capacity and failure
 testing. Until those gates are complete, keep the global not-ready warning and
-do not advertise `http-data-plane-v1` as production qualified.
+do not advertise `http-data-plane-v1` as production qualified. The first
+release also has no previous immutable digest, so rollback qualification cannot
+be claimed until a distinct older published digest exists and is exercised.
+The final workflow must retain the protected `production-release` reviewers and
+wait timer; the current environment's protected-branch-only tag policy must be
+updated by an operator to permit the intended `v*` tag before publication.

@@ -211,6 +211,13 @@ func (p *Plugin) PostInit() error {
 
 	p.applyDefaults()
 
+	metadata := base.LoadPluginMetadata[pluginMetadata](name)
+	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
+	if err != nil {
+		return err
+	}
+	p.LogFormat = logFormat
+
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Scheme)
 	configUID.Add(p.config.CLSHost)
@@ -233,12 +240,6 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
-	if len(p.config.LogFormat) > 0 {
-		p.LogFormat = p.config.LogFormat
-	} else {
-		p.LogFormat = metadata.LogFormat
-	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}

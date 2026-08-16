@@ -143,6 +143,9 @@ func validateRuntimeConfig(cfg *Config) error {
 			cfg.NginxConfig.HTTP.ClientMaxBodySize,
 		))
 	}
+	if err := validateProcessAccessLogs(cfg); err != nil {
+		return profileAwareRuntimeError(cfg, err)
+	}
 
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
@@ -288,40 +291,28 @@ func validateHTTPDataPlaneV1Profile(cfg *Config) error {
 	if !slices.Equal(cfg.Plugins, wantPlugins) {
 		return profileFieldError(profile, "plugins", "must use the exact HTTP plugin allowlist")
 	}
-	if err := validateProcessAccessLogs(cfg, profile); err != nil {
-		return err
-	}
 	return nil
 }
 
-func validateProcessAccessLogs(cfg *Config, profile string) error {
+func validateProcessAccessLogs(cfg *Config) error {
 	http := cfg.NginxConfig.HTTP
-	for _, field := range []struct {
-		name  string
-		valid bool
-	}{
-		{name: "nginx_config.http.enable_access_log", valid: !http.EnableAccessLog},
-		{name: "nginx_config.http.access_log", valid: http.AccessLog == ""},
-		{name: "nginx_config.http.access_log_buffer", valid: http.AccessLogBuffer == 0},
-		{name: "nginx_config.http.access_log_format", valid: http.AccessLogFormat == ""},
-		{name: "nginx_config.http.access_log_format_escape", valid: http.AccessLogFormatEscape == ""},
-	} {
-		if !field.valid {
-			return profileFieldError(profile, field.name, "must remain unset")
-		}
-	}
 	stream := cfg.NginxConfig.Stream
 	for _, field := range []struct {
-		name  string
-		valid bool
+		name   string
+		active bool
 	}{
-		{name: "nginx_config.stream.enable_access_log", valid: !stream.EnableAccessLog},
-		{name: "nginx_config.stream.access_log", valid: stream.AccessLog == ""},
-		{name: "nginx_config.stream.access_log_format", valid: stream.AccessLogFormat == ""},
-		{name: "nginx_config.stream.access_log_format_escape", valid: stream.AccessLogFormatEscape == ""},
+		{name: "nginx_config.http.enable_access_log", active: http.EnableAccessLog},
+		{name: "nginx_config.http.access_log", active: http.AccessLog != ""},
+		{name: "nginx_config.http.access_log_buffer", active: http.AccessLogBuffer != 0},
+		{name: "nginx_config.http.access_log_format", active: http.AccessLogFormat != ""},
+		{name: "nginx_config.http.access_log_format_escape", active: http.AccessLogFormatEscape != ""},
+		{name: "nginx_config.stream.enable_access_log", active: stream.EnableAccessLog},
+		{name: "nginx_config.stream.access_log", active: stream.AccessLog != ""},
+		{name: "nginx_config.stream.access_log_format", active: stream.AccessLogFormat != ""},
+		{name: "nginx_config.stream.access_log_format_escape", active: stream.AccessLogFormatEscape != ""},
 	} {
-		if !field.valid {
-			return profileFieldError(profile, field.name, "must remain unset")
+		if field.active {
+			return fmt.Errorf("%s is unsupported by the Go data plane", field.name)
 		}
 	}
 	return nil

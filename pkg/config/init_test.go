@@ -215,6 +215,107 @@ func TestLoadConfigFilesClientMaxBodySizeValidation(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFilesRejectsProcessAccessLogFields(t *testing.T) {
+	previous := &Config{Debug: true}
+	GlobalConfig = previous
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	tests := []struct {
+		name     string
+		override string
+		want     string
+	}{
+		{
+			name:     "HTTP access log enabled",
+			override: "nginx_config:\n  http:\n    enable_access_log: true\n",
+			want:     "nginx_config.http.enable_access_log",
+		},
+		{
+			name:     "HTTP access log path",
+			override: "nginx_config:\n  http:\n    access_log: /var/log/apisix/access.log\n",
+			want:     "nginx_config.http.access_log",
+		},
+		{
+			name:     "HTTP access log buffer",
+			override: "nginx_config:\n  http:\n    access_log_buffer: 1\n",
+			want:     "nginx_config.http.access_log_buffer",
+		},
+		{
+			name:     "HTTP access log format",
+			override: "nginx_config:\n  http:\n    access_log_format: '$request'\n",
+			want:     "nginx_config.http.access_log_format",
+		},
+		{
+			name:     "HTTP access log format escape",
+			override: "nginx_config:\n  http:\n    access_log_format_escape: json\n",
+			want:     "nginx_config.http.access_log_format_escape",
+		},
+		{
+			name:     "stream access log enabled",
+			override: "nginx_config:\n  stream:\n    enable_access_log: true\n",
+			want:     "nginx_config.stream.enable_access_log",
+		},
+		{
+			name:     "stream access log path",
+			override: "nginx_config:\n  stream:\n    access_log: /var/log/apisix/stream.log\n",
+			want:     "nginx_config.stream.access_log",
+		},
+		{
+			name:     "stream access log format",
+			override: "nginx_config:\n  stream:\n    access_log_format: '$protocol'\n",
+			want:     "nginx_config.stream.access_log_format",
+		},
+		{
+			name:     "stream access log format escape",
+			override: "nginx_config:\n  stream:\n    access_log_format_escape: json\n",
+			want:     "nginx_config.stream.access_log_format_escape",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			GlobalConfig = previous
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			override := writeConfigFile(t, "override.yaml", test.override)
+
+			_, err := loadConfigFiles(base, override)
+			wantError := test.want + " is unsupported by the Go data plane"
+			if err == nil || err.Error() != wantError {
+				t.Fatalf("loadConfigFiles() error = %v, want %q", err, wantError)
+			}
+			if GlobalConfig != previous {
+				t.Fatal("GlobalConfig changed before process access-log validation")
+			}
+		})
+	}
+}
+
+func TestLoadConfigFilesAcceptsExplicitZeroProcessAccessLogValues(t *testing.T) {
+	previous := &Config{Debug: true}
+	GlobalConfig = previous
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+	override := writeConfigFile(t, "override.yaml", `
+nginx_config:
+  http:
+    enable_access_log: false
+    access_log: ""
+    access_log_buffer: 0
+    access_log_format: ""
+    access_log_format_escape: ""
+  stream:
+    enable_access_log: false
+    access_log: ""
+    access_log_format: ""
+    access_log_format_escape: ""
+`)
+
+	if _, err := loadConfigFiles(base, override); err != nil {
+		t.Fatalf("loadConfigFiles() error = %v, want explicit zero process access-log values to remain valid", err)
+	}
+}
+
 func TestApisixListenAddressesDefaultsToLegacyAddress(t *testing.T) {
 	if got, want := (Apisix{}).ListenAddresses(), []string{":8080"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)

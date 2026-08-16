@@ -39,7 +39,9 @@ func TestWorkflowRouteChainAllowsNonMatchingRequest(t *testing.T) {
 }
 
 func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *testing.T) {
-	metrics.Init()
+	if err := metrics.Init(); err != nil {
+		t.Fatalf("metrics.Init() error = %v", err)
+	}
 	ensureRouteStore(t)
 	consumer := map[string]any{
 		"username": "restricted-basic-user",

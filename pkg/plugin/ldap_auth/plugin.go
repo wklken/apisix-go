@@ -59,6 +59,10 @@ const schema = `
       "default": "ldap",
       "minLength": 1,
       "maxLength": 128
+    },
+    "hide_credentials": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": ["base_dn", "ldap_uri"]
@@ -66,12 +70,13 @@ const schema = `
 `
 
 type Config struct {
-	BaseDN    string `json:"base_dn"`
-	LDAPURI   string `json:"ldap_uri"`
-	UseTLS    bool   `json:"use_tls,omitempty"`
-	TLSVerify bool   `json:"tls_verify,omitempty"`
-	UID       string `json:"uid,omitempty"`
-	Realm     string `json:"realm,omitempty"`
+	BaseDN          string `json:"base_dn"`
+	LDAPURI         string `json:"ldap_uri"`
+	UseTLS          bool   `json:"use_tls,omitempty"`
+	TLSVerify       bool   `json:"tls_verify,omitempty"`
+	UID             string `json:"uid,omitempty"`
+	Realm           string `json:"realm,omitempty"`
+	HideCredentials *bool  `json:"hide_credentials,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -83,6 +88,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.HideCredentials == nil {
+		hideCredentials := false
+		p.config.HideCredentials = &hideCredentials
+	}
 	if p.config.UID == "" {
 		p.config.UID = "cn"
 	}
@@ -129,6 +138,9 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		p.recordAuthDiagnostic(r, err.Error())
 		p.writeAuthError(w, http.StatusUnauthorized, "Invalid authorization in request")
 		return base.StopRequest(r)
+	}
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
 	}
 
 	if err := p.authenticate(user.username, user.password, p.config); err != nil {

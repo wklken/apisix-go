@@ -159,6 +159,8 @@ of generation shutdown.
 - `/readyz` remains HTTP 503 until configuration has been applied and the
   configured etcd provider is reachable; it then returns HTTP 200 with the
   config-apply and provider-reachability state.
+- The container image HEALTHCHECK curls `/livez`. Kubernetes liveness should
+  use `/livez` and readiness `/readyz`. Do not point both probes at `/readyz`.
 - A configuration or route startup failure is returned to the process entrypoint
   instead of producing a silently degraded profile.
 - `SIGHUP` performs graceful shutdown and returns an unsupported-reload error.

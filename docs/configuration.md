@@ -52,7 +52,9 @@ no request-logging egress claim.
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
 reachable, then returns HTTP 200 with the config-apply and etcd-reachability
-state. The image healthcheck uses `/readyz`.
+state. The image HEALTHCHECK uses `/livez` (process liveness). Orchestrators must
+probe `/readyz` separately for config-apply and etcd reachability; do not use
+the Docker HEALTHCHECK as Kubernetes liveness *and* readiness.
 
 The production release contract requires a bounded periodic etcd reachability
 probe in addition to the watch loop. During a verified recovery test, etcd loss
@@ -84,8 +86,14 @@ for the evidence and operator-supplied deployment step.
 
 ## HTTP upstream proxy behavior
 
-- A route timeout overrides the corresponding upstream timeout; zero inherits from the upstream.
-- `connect` limits TCP connection establishment. `send` and `read` are inactivity limits which reset when body I/O makes progress. `read` also limits the wait for response headers.
+- A route timeout overrides the corresponding upstream timeout; a non-positive
+  field inherits from the upstream. After that overlay, any still omitted or
+  non-positive `connect` / `send` / `read` becomes 60 seconds (APISIX/NGINX
+  omitted default). There is no unlimited timeout via `0`.
+- `connect` limits TCP connection establishment. `send` and `read` are
+  inactivity limits which reset when body I/O makes progress. `read` also
+  limits the wait for response headers. Long-idle WebSocket or gRPC streams
+  must set an explicit `timeout` larger than 60s, same as APISIX.
 - `tls.verify: true` validates an HTTPS upstream certificate. Omitted or false preserves APISIX-compatible insecure verification behavior.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.

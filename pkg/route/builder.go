@@ -783,9 +783,11 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	handler = requireWebsocketEnablement(handler, r.EnableWebsocket || service.EnableWebsocket)
-	ordinaryHandler := plan.Install(pipeline, handler)
-	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(pipeline, plan, handler)
+	websocketEnabled := r.EnableWebsocket || service.EnableWebsocket
+	ordinaryHandler := plan.Install(pipeline, requireWebsocketEnablement(handler, websocketEnabled))
+	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(
+		pipeline, plan, handler, websocketEnabled,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -802,10 +804,11 @@ func buildTransparentUpgradeHandler(
 	pipeline plugin.RequestPipeline,
 	plan plugin.ResponsePlan,
 	terminal http.Handler,
+	enabled bool,
 ) (http.Handler, error) {
 	terminals := plan.RouteTerminals()
 	if len(terminals) == 0 {
-		return pipeline.Then(terminal), nil
+		return pipeline.Then(requireWebsocketEnablement(terminal, enabled)), nil
 	}
 	streaming, err := plugin.NewStreamingResponseExecutor(nil)
 	if err != nil {
@@ -815,7 +818,8 @@ func buildTransparentUpgradeHandler(
 	if err != nil {
 		return nil, err
 	}
-	return pipeline.Then(streaming.Then(terminal)), nil
+	terminalOnly := streaming.Then(terminal)
+	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {

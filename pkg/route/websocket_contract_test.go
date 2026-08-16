@@ -169,6 +169,40 @@ func TestWebsocketUpgradeDisabledReturnsStableAPISIXJSON(t *testing.T) {
 	}
 }
 
+func TestKafkaRouteDisabledWebsocketUpgradeIsRejectedBeforeExclusiveTerminal(t *testing.T) {
+	handler := buildWebsocketHandler(t, resource.Route{
+		ID:              "websocket-kafka-route-disabled",
+		EnableWebsocket: false,
+		Upstream: resource.Upstream{
+			Scheme: "kafka",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
+		},
+	})
+	gateway := httptest.NewServer(handler)
+	t.Cleanup(gateway.Close)
+
+	connection, response, err := dialWebsocket(t, gateway.URL)
+	if err == nil {
+		_ = connection.Close()
+		t.Fatal("Kafka websocket dial error = nil, want APISIX-owned rejection")
+	}
+	if response == nil {
+		t.Fatalf("Kafka websocket dial response = nil, want 400 response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Kafka websocket dial status = %d, want %d", response.StatusCode, http.StatusBadRequest)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		t.Fatalf("read Kafka rejection body: %v", readErr)
+	}
+	wantBody := util.BuildMessageResponse(websocketDisabledMessage)
+	if string(body) != wantBody {
+		t.Fatalf("Kafka rejection body = %q, want %q", body, wantBody)
+	}
+}
+
 func TestRouteEnabledWebsocketUpgradeUsesReverseProxyHijack(t *testing.T) {
 	backend := newWebsocketBackend(t)
 	handler := buildWebsocketHandler(t, resource.Route{
@@ -261,6 +295,7 @@ func TestTransparentUpgradeSkipsDynamicConsumerHeaderHook(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			t.Fatal("ordinary terminal reached")
 		}),
+		true,
 	)
 	if err != nil {
 		t.Fatalf("buildTransparentUpgradeHandler() error = %v", err)

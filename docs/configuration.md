@@ -38,6 +38,14 @@ be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
 The profile also excludes Kafka PubSub and upstreams with `scheme: kafka`;
 those remain available only in the empty compatibility profile.
 
+NGINX HTTP and stream process access-log settings are unsupported in every
+profile, not only in `http-data-plane-v1`: any explicitly non-zero boolean or
+numeric value, or non-empty string value, fails configuration load. Route/plugin
+loggers are the supported compatibility/general-plugin request-logging
+mechanism, whose output is owned by the Go request pipeline. The exact
+six-plugin `http-data-plane-v1` allowlist contains no request logger and makes
+no request-logging egress claim.
+
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
 reachable, then returns HTTP 200 with the config-apply and etcd-reachability
@@ -50,7 +58,7 @@ state. The image healthcheck uses `/readyz`.
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
 | `deployment.profile` | Empty selects compatibility mode; `http-data-plane-v1` enables the strict candidate HTTP data-plane contract documented in [`production-profile.md`](production-profile.md). Other values are rejected. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
-| `plugins`, `stream_plugins`, and `plugin_attr` | Control the existing plugin registration, stream plugin selection, and plugin-specific settings. |
+| `plugins`, `stream_plugins`, and `plugin_attr` | Control the existing plugin registration, stream plugin selection, and plugin-specific settings. For Prometheus, `plugin_attr.prometheus.max_http_series` sets the independent `http_status`, `http_latency`, and `bandwidth` admitted-tuple budgets; it defaults to `10000` and accepts only integers from `100` through `100000`. Invalid explicit values fail startup. After a family is full, existing tuples continue unchanged and unseen tuples preserve bounded family labels (`code` for status, `type` for latency/bandwidth, plus `request_type` and status `response_source`) while replacing dynamic labels with `__overflow__`; each overflow increments `<metric_prefix>http_metric_series_overflow_total{metric}`. With the default `metric_prefix: apisix_`, this is `apisix_http_metric_series_overflow_total{metric}`. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
 | `nginx_config.http.keepalive_timeout` | Maps to `http.Server.IdleTimeout`. |

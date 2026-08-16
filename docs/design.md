@@ -68,6 +68,29 @@ Its full operator contract is in
 operations qualification and does not change the repository-wide not-ready
 status.
 
+NGINX HTTP and stream process access-log settings are unsupported in both the
+compatibility and candidate profiles: any explicitly non-zero boolean or
+numeric value, or non-empty string value, fails during configuration load.
+Route/plugin loggers are the supported compatibility/general-plugin request-
+logging mechanism. The exact six-plugin `http-data-plane-v1` allowlist contains
+no request logger and makes no request-logging egress claim. Elasticsearch,
+ClickHouse, and Tencent CLS loggers require a non-empty effective flat-string
+`log_format` from effective resource/plugin configuration or plugin metadata
+before acquiring clients or creating processors; effective resource/plugin
+configuration wins over plugin metadata.
+
+Prometheus admits HTTP `http_status`, `http_latency`, and `bandwidth` tuples
+through three independent budgets. `plugin_attr.prometheus.max_http_series`
+defaults to `10000` and accepts integers from `100` through `100000`. Existing
+tuples remain unchanged across route reloads; after a family reaches its limit,
+unseen tuples retain bounded family labels (`code` for status, `type` for
+latency/bandwidth, plus `request_type` and status `response_source`) and
+replace dynamic labels with `__overflow__`, incrementing
+`<metric_prefix>http_metric_series_overflow_total{metric}`. With the default
+`metric_prefix: apisix_`, this is
+`apisix_http_metric_series_overflow_total{metric}`. Budgets and their admitted
+series are initialized once for the process and are not reset by route reload.
+
 The loader retains recognized compatibility fields, but explicit activation of
 unsupported Admin, top-level discovery, external-plugin commands, WASM, XRPC,
 QUIC, or HTTP/3 fails closed. Route/upstream discovery fields remain decodable

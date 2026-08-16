@@ -57,6 +57,24 @@ The merged configuration must satisfy all of the following:
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
   zero.
+- Process-level NGINX HTTP/stream access-log settings are rejected when
+  explicitly non-zero or non-empty in every profile. The compatibility/general
+  plugin contract uses route/plugin loggers; Elasticsearch, ClickHouse, and
+  Tencent CLS require a non-empty effective flat-string `log_format` from
+  effective resource/plugin configuration or plugin metadata before creating a
+  client or batch processor; effective resource/plugin configuration wins over
+  plugin metadata. The exact six-plugin candidate allowlist contains no
+  request logger and makes no request-logging egress claim.
+- Prometheus `http_status`, `http_latency`, and `bandwidth` each have an
+  independent admitted-tuple budget controlled by
+  `plugin_attr.prometheus.max_http_series` (default `10000`, integer range
+  `100`..`100000`). Existing tuples remain unchanged; after a family is full,
+  unseen tuples preserve bounded control labels, replace dynamic labels with
+  `__overflow__`, and increment
+  `<metric_prefix>http_metric_series_overflow_total{metric}`. With the default
+  `metric_prefix: apisix_`, this is
+  `apisix_http_metric_series_overflow_total{metric}`. These series are not
+  reset during route reload.
 - Kafka PubSub and upstreams with `scheme: kafka` are excluded from this
   profile and fail route compilation; Kafka remains available only in the
   empty compatibility profile.
@@ -116,7 +134,10 @@ compatibility-mode subsystem outside this candidate profile.
 
 The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
-`request_timeout` remains supported.
+`request_timeout` remains supported. SkyWalking is not in the profile
+allowlist, and its multi-span behavior is not production-qualified. Stream
+metrics are excluded because the profile rejects stream activation; registered
+stream capabilities remain outside this candidate contract.
 
 ## WebSocket boundary
 

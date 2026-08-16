@@ -36,7 +36,7 @@ COPY --from=builder /apisix /usr/bin/apisix
 USER 10001:10001
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=12 \
-    CMD curl --fail --silent --show-error --output /dev/null http://127.0.0.1:9080/readyz || exit 1
+    CMD curl --fail --silent --show-error --output /dev/null http://127.0.0.1:9080/livez || exit 1
 
 ENTRYPOINT ["/usr/bin/apisix"]
 CMD ["-c", "/usr/local/apisix/conf/config-production.yaml"]

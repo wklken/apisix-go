@@ -540,8 +540,8 @@ deployment:                    # Deployment configurations
     watch_timeout: 50             # The timeout when watch etcd
     # resync_delay: 5             # Set resync time in seconds after a sync failure.
                                   # The actual resync time would be resync_delay plus 50% random jitter.
-    # health_check_timeout: 10    # Set timeout in seconds for etcd health check.
-                                  # Default to 10 if not set or a negative value is provided.
+    # health_check_timeout: 10    # Set the interval in seconds between etcd reachability checks.
+                                  # Default to 10 if not set or a non-positive value is provided.
     startup_retry: 2              # Set the number of retries to etcd on startup. Default to 2.
     # user: root                  # Set the root username for etcd.
     # password: 5tHkHhYkjr6cQ     # Set the root password for etcd.

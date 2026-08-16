@@ -18,12 +18,19 @@ jobs:
     name: Release Lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -38,12 +45,19 @@ jobs:
     name: Release Build And Unit Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -58,12 +72,19 @@ jobs:
     name: Release Integration Suite
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -72,8 +93,22 @@ jobs:
         run: make test-integration
 
   security-release-gates:
-    name: Release Security And Container Gates
+    name: Release Security And Operational Qualification
+    needs:
+      - lint
+      - build-and-unit
+      - integration
     uses: ./.github/workflows/security-release-gates.yml
+    with:
+      publish-image: true
+      run-operational: true
+      source-ref: ${{ github.ref }}
+      source-commit: ${{ github.sha }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
 
   release:
     name: Publish Release
@@ -83,17 +118,159 @@ jobs:
       - integration
       - security-release-gates
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
-    environment: ${{ github.ref_type == 'tag' && 'production-release' || '' }}
+      id-token: write
+      attestations: write
+    environment: production-release
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
+
+      - name: Validate and record published container reference
+        env:
+          IMAGE_REFERENCE: ${{ needs.security-release-gates.outputs.image-reference }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_REFERENCE" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$IMAGE_REFERENCE" > "$RUNNER_TEMP/container-image.txt"
+
+      - name: Download qualified image evidence
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: qualified-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-evidence/qualified-image
+
+      - name: Download etcd recovery evidence
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: etcd-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-evidence/etcd-recovery
+
+      - name: Download proxy soak evidence
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: proxy-soak-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-evidence/proxy-soak
+
+      - name: Download publication evidence
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-publication-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-evidence/publication
+
+      - name: Validate and bundle durable release evidence
+        env:
+          IMAGE_REFERENCE: ${{ needs.security-release-gates.outputs.image-reference }}
+        run: |
+          set -euo pipefail
+          evidence_root="$RUNNER_TEMP/release-evidence"
+          (
+            cd "$evidence_root/qualified-image"
+            sha256sum -c apisix-image.tar.gz.sha256
+          )
+          IFS= read -r source_commit < "$evidence_root/qualified-image/source-commit.txt"
+          IFS= read -r publication_reference < "$evidence_root/publication/container-image.txt"
+          IFS= read -r publication_commit < "$evidence_root/publication/publication-source-commit.txt"
+          [[ "$source_commit" == "$GITHUB_SHA" ]]
+          [[ "$publication_commit" == "$GITHUB_SHA" ]]
+          [[ "$publication_reference" == "$IMAGE_REFERENCE" ]]
+          jq -e \
+            --arg ref "$IMAGE_REFERENCE" \
+            --arg digest "${IMAGE_REFERENCE##*@}" \
+            --arg commit "$GITHUB_SHA" '
+            .image_reference == $ref and
+            .image_digest == $digest and
+            .source.commit == $commit
+          ' "$evidence_root/publication/release-metadata.json" >/dev/null
+          test -s "$evidence_root/proxy-soak/proxy-soak.json"
+          test -n "$(find "$evidence_root/etcd-recovery" -type f -print -quit)"
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+          jq --null-input \
+            --arg generated_at "$generated_at" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg run_url "$run_url" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg image_reference "$IMAGE_REFERENCE" \
+            --arg runner_os "$RUNNER_OS" \
+            --arg runner_arch "$RUNNER_ARCH" \
+            --arg runner_name "$RUNNER_NAME" \
+            --arg runner_image_os "${ImageOS:-unknown}" \
+            --arg runner_image_version "${ImageVersion:-unknown}" '
+            {
+              schema_version: 1,
+              generated_at: $generated_at,
+              workflow: {
+                run_id: $run_id,
+                run_attempt: $run_attempt,
+                url: $run_url
+              },
+              source: {
+                repository: $repository,
+                ref: $source_ref,
+                commit: $source_commit
+              },
+              image_reference: $image_reference,
+              runner: {
+                os: $runner_os,
+                arch: $runner_arch,
+                name: $runner_name,
+                image_os: $runner_image_os,
+                image_version: $runner_image_version
+              },
+              commands: [
+                "make lint",
+                "make build",
+                "make test-cover",
+                "make test-integration",
+                "go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1",
+                "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...",
+                "bash scripts/container_smoke.sh",
+                "bash scripts/etcd_recovery_smoke.sh <immutable-image-id>",
+                "APISIX_GO_RUN_SOAK=1 APISIX_GO_SOAK_DURATION=30m go test -json ./pkg/route -run ^TestProxyRuntimeSoak$ -count=1 -timeout=40m",
+                "docker push <qualified-tag>",
+                "cosign sign --yes <digest-qualified-reference>"
+              ],
+              actions: {
+                sbom: "anchore/sbom-action@v0.24.0",
+                vulnerability_scan: "aquasecurity/trivy-action@v0.36.0",
+                image_attestation: "actions/attest-build-provenance@v4.2.2",
+                evidence_attestation: "actions/attest-build-provenance@v4.2.2"
+              }
+            }
+          ' > "$evidence_root/qualification-context.json"
+          manifest="$RUNNER_TEMP/release-evidence-manifest.sha256"
+          (
+            cd "$evidence_root"
+            find . -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > "$manifest"
+          )
+          mv "$manifest" "$evidence_root/MANIFEST.sha256"
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/release-evidence.tar.gz" release-evidence
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum release-evidence.tar.gz > release-evidence.tar.gz.sha256
+          )
+
+      - name: Attest durable release evidence bundle
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-evidence.tar.gz
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -106,3 +283,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload published container reference
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/container-image.txt" \
+            "$RUNNER_TEMP/release-evidence.tar.gz" \
+            "$RUNNER_TEMP/release-evidence.tar.gz.sha256"

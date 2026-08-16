@@ -110,10 +110,28 @@ Process-local state still diverges across replicas: local rate limiting, CAS/Din
 
 ### Release supply chain and operations
 
-1. Add image signing and verifiable provenance (for example, Sigstore/cosign plus a documented identity policy).
-2. Run security release gates for release candidates, not only selected CI paths.
-3. Add reproducible container build/run smoke, SBOM/vulnerability evidence, etcd disconnect/recovery fault injection, soak testing, and a standalone rollback/runbook contract.
-4. Verify the production image in a clean Docker environment. Docker was unavailable in the implementation environment for this branch.
+The release qualification mechanism and operator procedure are tracked in the
+[release provenance and operational qualification plan](superpowers/plans/2026-08-16-release-provenance-and-operational-qualification.md)
+and the [production release runbook](runbooks/production-release.md). They do
+not close this ledger. The following items remain open until a post-merge RC
+has passed against its own immutable image and the final release has
+independently passed and retained all evidence for the final immutable image:
+
+1. Complete image signing and verifiable provenance with the documented
+   Sigstore/cosign and GitHub attestation identity policy.
+2. Run the same security, container, recovery, and JSON soak gates for release
+   candidates, not only selected CI paths.
+3. Verify the production image in a clean Docker environment, including
+   verified-TLS etcd disconnect/recovery and an operator-supplied deployment
+   rollout. Docker was unavailable in the implementation environment for this
+   branch.
+4. Exercise immutable rollback using a distinct older published digest. The
+   first release has no previous digest, so rollback qualification remains a
+   bootstrap prerequisite rather than an implied result.
+5. Before a tag-triggered final release, have an operator allow the intended
+   `v*` tag policy in the existing `production-release` environment. Retain
+   required reviewers and the wait timer; this ledger does not authorize a
+   settings bypass.
 
 ### Explicit production exclusions
 

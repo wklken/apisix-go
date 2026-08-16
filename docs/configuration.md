@@ -26,7 +26,10 @@ etcd TLS verification is enabled, and no admin or data-encryption key material
 is embedded in the image defaults. The selected `deployment.profile:
 http-data-plane-v1` is a conservative candidate profile; it still awaits the
 release and operations qualification described in
-[`production-profile.md`](production-profile.md).
+[`production-profile.md`](production-profile.md) and the
+[`production release runbook`](runbooks/production-release.md). The release
+workflow and metadata checks define a qualification path; they do not by
+themselves qualify an image or deployment.
 
 The profile requires `debug: false`, an HTTP-only `apisix.proxy_mode`, empty
 TCP/UDP stream listeners and `stream_plugins`, at least one valid
@@ -51,6 +54,13 @@ no request-logging egress claim.
 reachable, then returns HTTP 200 with the config-apply and etcd-reachability
 state. The image healthcheck uses `/readyz`.
 
+The production release contract requires a bounded periodic etcd reachability
+probe in addition to the watch loop. During a verified recovery test, etcd loss
+must make `/readyz` return 503 while `/livez` and the last successfully applied
+route continue serving; readiness must return to 200 after recovery and a
+newer revision must apply. See the [production release runbook](runbooks/production-release.md)
+for the evidence and operator-supplied deployment step.
+
 ## Applied by the Go runtime
 
 | Configuration | Go behavior |
@@ -65,6 +75,7 @@ state. The image healthcheck uses `/readyz`.
 | `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. |
 | `nginx_config.http.send_timeout` | Must remain zero. A non-zero value fails startup because Go `net/http` cannot reproduce NGINX write-idle timeout semantics without imposing an absolute response deadline. |
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
+| `deployment.etcd.health_check_timeout` | Sets the interval in seconds between independent etcd reachability probes. It defaults to 10 seconds when omitted or non-positive. Each probe is separately bounded by `deployment.etcd.timeout`; this field is an interval, not a request deadline. |
 | `deployment.role: data_plane` with `role_data_plane.config_provider: yaml` or `json` | Loads resource snapshots from `conf/apisix.yaml` or `conf/apisix.json`, watches the file, and applies additions, updates, and removals through the local store. |
 | `proxy.max_idle_conns` | Global maximum number of idle (keep-alive) connections kept open across all upstream hosts. Default 1024; zero selects the default. |
 | `proxy.max_idle_conns_per_host` | Maximum number of idle connections kept open per upstream host. Default 250; zero selects the default. |
@@ -145,8 +156,9 @@ runtime features called out below is rejected rather than silently ignored:
   discovery providers (`dns`, Eureka, Nacos, Consul, and Kubernetes). Top-level
   discovery activation fails startup; route/upstream discovery compatibility
   fields are preserved and rejected at route compilation.
-- etcd watch resync/health-check timing and exact APISIX/OpenResty lifecycle
-  semantics.
+- Exact APISIX/OpenResty etcd watch resync and lifecycle semantics. The
+  production profile uses its bounded reachability probe for readiness and
+  does not claim OpenResty timing parity.
 - WebSocket upgrades require effective route or service
   `enable_websocket: true`. Every WebSocket upgrade attempt skips response
   callbacks; request, authentication, access, before-proxy, and log phases

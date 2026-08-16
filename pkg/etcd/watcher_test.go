@@ -525,6 +525,61 @@ func TestNewConfigClientWithOptionsAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestNewConfigClientHealthCheckDefaultsAndInjection(t *testing.T) {
+	defaultClient, err := NewConfigClientWithOptions(
+		[]string{"http://127.0.0.1:2379"}, "", "", "/apisix", nil, ClientOptions{},
+	)
+	if err != nil {
+		t.Fatalf("NewConfigClientWithOptions() error = %v", err)
+	}
+	t.Cleanup(func() { _ = defaultClient.Close() })
+	if defaultClient.healthCheckInterval != 10*time.Second {
+		t.Fatalf("healthCheckInterval = %s, want default 10s", defaultClient.healthCheckInterval)
+	}
+	if defaultClient.healthCheck == nil {
+		t.Fatal("healthCheck = nil, want production probe")
+	}
+
+	probe := func(context.Context) error { return nil }
+	configuredClient, err := NewConfigClientWithOptions(
+		[]string{"http://127.0.0.1:2379"}, "", "", "/apisix", nil,
+		ClientOptions{HealthCheck: probe, HealthCheckInterval: 25 * time.Millisecond},
+	)
+	if err != nil {
+		t.Fatalf("NewConfigClientWithOptions() with health check error = %v", err)
+	}
+	t.Cleanup(func() { _ = configuredClient.Close() })
+	if configuredClient.healthCheckInterval != 25*time.Millisecond {
+		t.Fatalf("healthCheckInterval = %s, want 25ms", configuredClient.healthCheckInterval)
+	}
+	if configuredClient.healthCheck == nil {
+		t.Fatal("healthCheck = nil after injection")
+	}
+}
+
+func TestProductionHealthCheckUsesSingleKeyGet(t *testing.T) {
+	var gotKey string
+	var gotOptions int
+	check := newHealthCheck(
+		func(_ context.Context, key string, options ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+			gotKey = key
+			gotOptions = len(options)
+			return &clientv3.GetResponse{}, nil
+		},
+		"/apisix",
+	)
+
+	if err := check(context.Background()); err != nil {
+		t.Fatalf("health check error = %v", err)
+	}
+	if gotKey != "/apisix" {
+		t.Fatalf("health check key = %q, want /apisix", gotKey)
+	}
+	if gotOptions != 0 {
+		t.Fatalf("health check options = %d, want no range options", gotOptions)
+	}
+}
+
 func TestFetchAllApplySnapshotBoundedWhenEventsUnconsumed(t *testing.T) {
 	client := &ConfigClient{
 		prefix:         "/apisix",

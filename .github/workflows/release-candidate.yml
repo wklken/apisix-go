@@ -16,22 +16,51 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-candidate-${{ github.ref }}
+  group: release-candidate-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  resolve-source:
+    name: Resolve RC Source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Checkout selected source ref once
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Record immutable source commit
+        id: source
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'checked-out commit=%s\n' "$commit"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
   lint:
     name: RC Lint
+    needs: resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -44,16 +73,22 @@ jobs:
 
   build-and-unit:
     name: RC Build And Unit Coverage
+    needs: resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -66,8 +101,11 @@ jobs:
 
   integration-smoke:
     name: RC Integration Smoke (${{ matrix.case.name }})
+    needs: resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -81,13 +119,16 @@ jobs:
           - name: uri-blocker
             pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -95,23 +136,46 @@ jobs:
       - name: Run focused standalone smoke case
         run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
 
-  package-validation:
-    name: RC Package Validation
+  security-release-gates:
+    name: RC Security And Operational Qualification
     needs:
+      - resolve-source
       - lint
       - build-and-unit
       - integration-smoke
+    uses: ./.github/workflows/security-release-gates.yml
+    with:
+      publish-image: false
+      run-operational: true
+      source-ref: ${{ inputs.ref || github.ref }}
+      source-commit: ${{ needs.resolve-source.outputs.commit }}
+    permissions:
+      contents: read
+
+  package-validation:
+    name: RC Package Validation
+    needs:
+      - resolve-source
+      - lint
+      - build-and-unit
+      - integration-smoke
+      - security-release-gates
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true

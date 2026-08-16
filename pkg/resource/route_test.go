@@ -74,7 +74,11 @@ func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
 		t.Fatalf("omitted status unmarshal error = %v", err)
 	}
 	if omitted.StatusConfigured() || omitted.Disabled() {
-		t.Fatalf("omitted status configured=%v disabled=%v, want both false", omitted.StatusConfigured(), omitted.Disabled())
+		t.Fatalf(
+			"omitted status configured=%v disabled=%v, want both false",
+			omitted.StatusConfigured(),
+			omitted.Disabled(),
+		)
 	}
 
 	var enabled Route
@@ -82,7 +86,12 @@ func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
 		t.Fatalf("status=1 unmarshal error = %v", err)
 	}
 	if !enabled.StatusConfigured() || enabled.Disabled() || enabled.Status != 1 {
-		t.Fatalf("status=1 configured=%v disabled=%v status=%d", enabled.StatusConfigured(), enabled.Disabled(), enabled.Status)
+		t.Fatalf(
+			"status=1 configured=%v disabled=%v status=%d",
+			enabled.StatusConfigured(),
+			enabled.Disabled(),
+			enabled.Status,
+		)
 	}
 
 	var disabled Route
@@ -90,7 +99,12 @@ func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
 		t.Fatalf("status=0 unmarshal error = %v", err)
 	}
 	if !disabled.StatusConfigured() || !disabled.Disabled() || disabled.Status != 0 {
-		t.Fatalf("status=0 configured=%v disabled=%v status=%d", disabled.StatusConfigured(), disabled.Disabled(), disabled.Status)
+		t.Fatalf(
+			"status=0 configured=%v disabled=%v status=%d",
+			disabled.StatusConfigured(),
+			disabled.Disabled(),
+			disabled.Status,
+		)
 	}
 }
 

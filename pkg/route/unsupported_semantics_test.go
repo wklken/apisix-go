@@ -97,7 +97,11 @@ func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
 	ensureRouteStore(t)
 	setHTTPPluginAllowlist(t)
 	const routeID = "nested-numeric-vars"
-	putRouteResource(t, routeID, []byte(`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`))
+	putRouteResource(
+		t,
+		routeID,
+		[]byte(`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`),
+	)
 
 	builder := NewBuilder(nil)
 	t.Cleanup(builder.Stop)
@@ -146,7 +150,11 @@ func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
 		t.Fatalf("valid BuildStrict() = (%T, %v)", lastGood, err)
 	}
 
-	putRouteResource(t, routeID, []byte(`{"id":"vars-last-good","uri":"/vars-last-good","vars":[["http_user","==","ios"]]}`))
+	putRouteResource(
+		t,
+		routeID,
+		[]byte(`{"id":"vars-last-good","uri":"/vars-last-good","vars":[["http_user","==","ios"]]}`),
+	)
 	invalidBuilder := NewBuilder(nil)
 	t.Cleanup(invalidBuilder.Stop)
 	handler, err := invalidBuilder.BuildStrict()

@@ -554,6 +554,9 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 		return cmp.Compare(left.Priority, right.Priority)
 	})
 	for _, routeResource := range routes {
+		if routeResource.Disabled() {
+			continue
+		}
 		handler, buildErr := b.buildHandlerStrict(routeResource)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
@@ -840,7 +843,11 @@ func validateRouteSemantics(routeResource resource.Route) error {
 		}
 	}
 	if routeResource.StatusConfigured() && routeResource.Status != 0 && routeResource.Status != 1 {
-		return fmt.Errorf("route %q status %d is unsupported by the Go data plane", routeResource.ID, routeResource.Status)
+		return fmt.Errorf(
+			"route %q status %d is unsupported by the Go data plane",
+			routeResource.ID,
+			routeResource.Status,
+		)
 	}
 	return nil
 }

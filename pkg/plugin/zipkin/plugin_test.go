@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -165,16 +166,44 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 }
 
 func TestPostInitSetsZipkinDefaults(t *testing.T) {
-	p := newTestPlugin(t, Config{
+	for _, spanVersion := range []int{0, 2} {
+		t.Run(fmt.Sprintf("span_version_%d", spanVersion), func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				Endpoint:    "http://127.0.0.1:9411/api/v2/spans",
+				SampleRatio: 1,
+				SpanVersion: spanVersion,
+			})
+
+			if p.config.ServiceName != "APISIX" {
+				t.Fatalf("service_name = %q, want APISIX", p.config.ServiceName)
+			}
+			if p.config.SpanVersion != 2 {
+				t.Fatalf("span_version = %d, want 2", p.config.SpanVersion)
+			}
+		})
+	}
+}
+
+func TestPostInitRejectsUnsupportedZipkinSpanVersionBeforeAllocation(t *testing.T) {
+	p := &Plugin{config: Config{
 		Endpoint:    "http://127.0.0.1:9411/api/v2/spans",
 		SampleRatio: 1,
-	})
-
-	if p.config.ServiceName != "APISIX" {
-		t.Fatalf("service_name = %q, want APISIX", p.config.ServiceName)
+		SpanVersion: 1,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
 	}
-	if p.config.SpanVersion != 2 {
-		t.Fatalf("span_version = %d, want 2", p.config.SpanVersion)
+
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want unsupported span version rejection")
+	}
+	const want = "zipkin span_version 1 is unsupported; only v2 is emitted"
+	if err.Error() != want {
+		t.Fatalf("PostInit() error = %q, want %q", err, want)
+	}
+	if p.client != nil || p.processor != nil || p.clientRelease != nil {
+		t.Fatalf("PostInit() allocated Zipkin resources before rejecting span version: client=%v processor=%v release=%v", p.client != nil, p.processor != nil, p.clientRelease != nil)
 	}
 }
 

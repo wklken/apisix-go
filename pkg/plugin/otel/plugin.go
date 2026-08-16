@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -181,6 +182,9 @@ func (p *Plugin) PostInit() error {
 	var err error
 	p.tracerProvider, err = newTracerProvider(p.config.Sampler, metadata, configured)
 	if err != nil {
+		if errors.Is(err, errUnsupportedMetadata) {
+			return err
+		}
 		p.tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSampler(buildSampler(p.config.Sampler)))
 	}
 	return err
@@ -236,6 +240,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func captureHTTPSpanAttributes(r *http.Request) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
+		attribute.String("http.method", r.Method),
 		attribute.String("http.target", r.URL.RequestURI()),
 		attribute.String("net.host.name", requestHost(r.Host)),
 	}

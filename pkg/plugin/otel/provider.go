@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,6 +17,20 @@ import (
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+var errUnsupportedMetadata = errors.New("unsupported OpenTelemetry metadata")
+
+type unsupportedMetadataError struct {
+	message string
+}
+
+func (e unsupportedMetadataError) Error() string {
+	return e.message
+}
+
+func (e unsupportedMetadataError) Is(target error) bool {
+	return target == errUnsupportedMetadata
+}
 
 func buildSampler(conf SamplerConfig) sdktrace.Sampler {
 	switch conf.Name {
@@ -79,6 +94,10 @@ func newTracerProvider(
 	metadata Metadata,
 	metadataConfigured bool,
 ) (*sdktrace.TracerProvider, error) {
+	if err := validateMetadata(metadata); err != nil {
+		return nil, err
+	}
+
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(buildSampler(sampler)),
 		sdktrace.WithResource(otelResource(metadata.Resource)),
@@ -126,16 +145,20 @@ func batchSpanProcessorOptions(config BatchSpanProcessorConfig) []sdktrace.Batch
 	if config.BatchTimeout > 0 {
 		options = append(options, sdktrace.WithBatchTimeout(time.Duration(config.BatchTimeout*float64(time.Second))))
 	}
-	if config.InactiveTimeout > 0 {
-		options = append(
-			options,
-			sdktrace.WithExportTimeout(time.Duration(config.InactiveTimeout*float64(time.Second))),
-		)
-	}
 	if config.MaxExportBatchSize > 0 {
 		options = append(options, sdktrace.WithMaxExportBatchSize(config.MaxExportBatchSize))
 	}
 	return options
+}
+
+func validateMetadata(metadata Metadata) error {
+	if metadata.SetNgxVar {
+		return unsupportedMetadataError{message: "opentelemetry set_ngx_var is unsupported by the Go data plane"}
+	}
+	if metadata.BatchSpanProcessor.InactiveTimeout != 0 {
+		return unsupportedMetadataError{message: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane"}
+	}
+	return nil
 }
 
 func otelResource(configured map[string]any) *sdkresource.Resource {

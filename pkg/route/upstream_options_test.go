@@ -25,10 +25,48 @@ func TestResolveUpstreamTimeoutsUsesPerFieldRouteOverrides(t *testing.T) {
 	}
 }
 
-func TestResolveUpstreamTimeoutsKeepsExistingDefaults(t *testing.T) {
+func TestResolveUpstreamTimeoutsAppliesAPISIXDefaultsWhenOmitted(t *testing.T) {
 	got := resolveUpstreamTimeouts(resource.Timeout{}, resource.Timeout{})
-	if got.connect != proxy.DefaultDialTimeout || got.send != 0 || got.read != 0 || got.responseHeader != 0 {
-		t.Fatalf("default upstream timeouts = %#v", got)
+	want := upstreamTimeouts{
+		connect:        60 * time.Second,
+		send:           60 * time.Second,
+		read:           60 * time.Second,
+		responseHeader: 60 * time.Second,
+	}
+	if got != want {
+		t.Fatalf("omitted timeouts = %#v, want APISIX 60s defaults %#v", got, want)
+	}
+}
+
+func TestResolveUpstreamTimeoutsKeepsExplicitPositiveValues(t *testing.T) {
+	got := resolveUpstreamTimeouts(
+		resource.Timeout{},
+		resource.Timeout{Connect: 2, Send: 3, Read: 4},
+	)
+	want := upstreamTimeouts{
+		connect:        2 * time.Second,
+		send:           3 * time.Second,
+		read:           4 * time.Second,
+		responseHeader: 4 * time.Second,
+	}
+	if got != want {
+		t.Fatalf("explicit timeouts = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolveUpstreamTimeoutsDefaultsOnlyUnresolvedFields(t *testing.T) {
+	got := resolveUpstreamTimeouts(
+		resource.Timeout{Connect: 1},
+		resource.Timeout{},
+	)
+	want := upstreamTimeouts{
+		connect:        time.Second,
+		send:           60 * time.Second,
+		read:           60 * time.Second,
+		responseHeader: 60 * time.Second,
+	}
+	if got != want {
+		t.Fatalf("partial timeouts = %#v, want %#v", got, want)
 	}
 }
 

@@ -732,7 +732,7 @@ func TestProductionDockerfileContract(t *testing.T) {
 		"COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml " +
 			"conf/config-production.yaml /usr/local/apisix/conf/",
 		"USER 10001:10001",
-		"/readyz",
+		"http://127.0.0.1:9080/livez",
 		"CMD [\"-c\", \"/usr/local/apisix/conf/config-production.yaml\"]",
 	} {
 		if !strings.Contains(dockerfile, want) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,6 +88,27 @@ func TestSnapshotDefaultLogFieldsPreservesResolvedUpstream(t *testing.T) {
 	fields := snapshotDefaultLogFields(snapshot)
 	if fields["upstream"] != "127.0.0.1:1982" {
 		t.Fatalf("upstream = %#v, want resolved address", fields["upstream"])
+	}
+}
+
+func TestSnapshotDefaultLogFieldsBoundsHostnameResolution(t *testing.T) {
+	original := fileLoggerLookupIP
+	fileLoggerLookupIP = func(ctx context.Context, _ string) ([]net.IPAddr, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { fileLoggerLookupIP = original })
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{APISIXVars: map[string]any{
+		"$balancer_ip":   "upstream.example",
+		"$balancer_port": "1982",
+	}}}
+	started := time.Now()
+	fields := snapshotDefaultLogFields(snapshot)
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("hostname resolution blocked field worker for %s", elapsed)
+	}
+	if fields["upstream"] != "upstream.example:1982" {
+		t.Fatalf("upstream = %#v, want unresolved fallback", fields["upstream"])
 	}
 }
 

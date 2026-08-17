@@ -53,3 +53,82 @@ func TestCloneLogSnapshotForPolicyIsFreshAndBounded(t *testing.T) {
 		t.Fatalf("zero policy retained body: request=%q response=%q", zero.Request.Body, zero.Response.Body)
 	}
 }
+
+func TestCloneLogSnapshotForPolicyKeepsEveryMutableViewPrivate(t *testing.T) {
+	snapshot := LogSnapshot{
+		Request:  LogSnapshot{}.Request,
+		Response: LogSnapshot{}.Response,
+	}
+	snapshot.Request.Header = http.Header{"X-Request": {"one"}}
+	snapshot.Request.Query = map[string][]string{"q": {"one"}}
+	snapshot.Request.Body = []byte("request-body")
+	snapshot.Request.APISIXVars = map[string]any{
+		"$nested": map[string]any{"key": "one"},
+	}
+	snapshot.Request.RequestVars = map[string]any{
+		"$list": []any{"one"},
+	}
+	snapshot.Response.Header = http.Header{"X-Response": {"one"}}
+	snapshot.Response.Trailer = http.Header{"X-Trailer": {"one"}}
+	snapshot.Response.Body = []byte("response-body")
+
+	clone := CloneLogSnapshotForPolicy(snapshot, LogCapturePolicy{
+		RequestBodyBytes: 4, ResponseBodyBytes: 5,
+	})
+	clone.Request.Header.Set("X-Request", "two")
+	clone.Request.Query.Set("q", "two")
+	clone.Request.Body[0] = 'R'
+	clone.Request.APISIXVars["$nested"].(map[string]any)["key"] = "two"
+	clone.Request.RequestVars["$list"].([]any)[0] = "two"
+	clone.Response.Header.Set("X-Response", "two")
+	clone.Response.Trailer.Set("X-Trailer", "two")
+	clone.Response.Body[0] = 'R'
+
+	if snapshot.Request.Header.Get("X-Request") != "one" || snapshot.Request.Query.Get("q") != "one" ||
+		string(snapshot.Request.Body) != "request-body" ||
+		snapshot.Request.APISIXVars["$nested"].(map[string]any)["key"] != "one" ||
+		snapshot.Request.RequestVars["$list"].([]any)[0] != "one" ||
+		snapshot.Response.Header.Get("X-Response") != "one" ||
+		snapshot.Response.Trailer.Get("X-Trailer") != "one" ||
+		string(snapshot.Response.Body) != "response-body" {
+		t.Fatalf("policy clone aliases source snapshot: %#v", snapshot)
+	}
+	if got := string(clone.Request.Body); got != "Requ" || !clone.Request.BodyTruncated {
+		t.Fatalf("request body after isolated mutation = %q/truncated=%t", got, clone.Request.BodyTruncated)
+	}
+	if got := string(clone.Response.Body); got != "Respo" || !clone.Response.BodyTruncated {
+		t.Fatalf("response body after isolated mutation = %q/truncated=%t", got, clone.Response.BodyTruncated)
+	}
+}
+
+func TestBuildLogSnapshotFromOwnedInputsKeepsResponseCaptureDetached(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	request, _ = ctx.EnsureRequestLifecycle(request, time.Now())
+	recorder := httptest.NewRecorder()
+	writer, capture := CaptureResponseOutcomeController(recorder)
+	if err := capture.EnableBodyCapture(32); err != nil {
+		t.Fatalf("EnableBodyCapture() error = %v", err)
+	}
+	writer.Header().Set("X-Trace", "one")
+	if _, err := writer.Write([]byte("response")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	detached := capture.Snapshot()
+	snapshot := BuildLogSnapshotFromOwnedInputs(
+		request,
+		detached,
+		[]byte("request"),
+		false,
+		ctx.ResponseOutcome{Status: http.StatusOK},
+		ctx.ResponseSourceUpstream,
+		time.Time{},
+		time.Time{},
+	)
+	if err := capture.EnableBodyCapture(0); err != nil {
+		t.Fatalf("reset body capture error = %v", err)
+	}
+	recorder.Header().Set("X-Trace", "mutated")
+	if snapshot.Response.Header.Get("X-Trace") != "one" || string(snapshot.Response.Body) != "response" {
+		t.Fatalf("owned response snapshot changed after capture mutation: %#v", snapshot.Response)
+	}
+}

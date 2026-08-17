@@ -330,22 +330,24 @@ func (e LogExecutor) runComposite(
 	if capture, ok := base.ResponseCaptureFromRequest(request); ok {
 		response = capture.Snapshot()
 	}
-	snapshotRequest := request.Clone(request.Context())
-	snapshotRequest.Body = http.NoBody
-	snapshot := base.BuildLogSnapshot(
-		snapshotRequest,
+	var requestBody []byte
+	var requestBodyTruncated bool
+	if state != nil {
+		state.mu.RLock()
+		requestBody = append([]byte(nil), state.requestBody...)
+		requestBodyTruncated = state.truncated
+		state.mu.RUnlock()
+	}
+	snapshot := base.BuildLogSnapshotFromOwnedInputs(
+		request,
 		response,
+		requestBody,
+		requestBodyTruncated,
 		outcome,
 		source,
 		lifecycle.StartedAt(),
 		lifecycle.FinishedAt(),
 	)
-	if state != nil {
-		state.mu.RLock()
-		snapshot.Request.Body = append([]byte(nil), state.requestBody...)
-		snapshot.Request.BodyTruncated = state.truncated
-		state.mu.RUnlock()
-	}
 	bindings := append([]LogBinding(nil), e.bindings...)
 	if state != nil {
 		state.mu.RLock()
@@ -362,10 +364,8 @@ func (e LogExecutor) runComposite(
 		return b.Plugin.GetPriority() - a.Plugin.GetPriority()
 	})
 	selectedSanitizers := make([]bool, len(bindings))
-	preSanitizedSnapshot := base.CloneLogSnapshotForPolicy(snapshot, base.LogCapturePolicy{
-		RequestBodyBytes:  base.MAX_REQ_BODY,
-		ResponseBodyBytes: base.MAX_RESP_BODY,
-	})
+	var preSanitizedSnapshot base.LogSnapshot
+	var hasPreSanitizedSnapshot bool
 	for index, binding := range bindings {
 		if binding.Plugin == nil {
 			continue
@@ -378,6 +378,13 @@ func (e LogExecutor) runComposite(
 		selector, ok := binding.Plugin.(base.LogSnapshotSanitizerSelectorPlugin)
 		if !ok {
 			continue
+		}
+		if !hasPreSanitizedSnapshot {
+			preSanitizedSnapshot = base.CloneLogSnapshotForPolicy(snapshot, base.LogCapturePolicy{
+				RequestBodyBytes:  base.MAX_REQ_BODY,
+				ResponseBodyBytes: base.MAX_RESP_BODY,
+			})
+			hasPreSanitizedSnapshot = true
 		}
 		if err := runLogCallback(func() error {
 			selectedSanitizers[index] = selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot)

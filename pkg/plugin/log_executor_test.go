@@ -45,6 +45,12 @@ type logSanitizerTestPlugin struct {
 	err   error
 }
 
+type logSanitizerSelectorTestPlugin struct {
+	logSanitizerTestPlugin
+	selectSnapshot func(base.LogSnapshot) bool
+	selectorSeen   *[]string
+}
+
 func (p *logSanitizerTestPlugin) Init() error                            { return nil }
 func (p *logSanitizerTestPlugin) PostInit() error                        { return nil }
 func (p *logSanitizerTestPlugin) Config() any                            { return nil }
@@ -58,6 +64,16 @@ func (p *logSanitizerTestPlugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot)
 	snapshot.Request.Header.Set("Authorization", "[REDACTED]")
 	snapshot.Request.Body = []byte("masked")
 	return p.err
+}
+
+func (p *logSanitizerSelectorTestPlugin) ShouldSanitizeLogSnapshot(snapshot base.LogSnapshot) bool {
+	if p.selectorSeen != nil {
+		*p.selectorSeen = append(*p.selectorSeen, string(snapshot.Request.Body))
+	}
+	if p.selectSnapshot != nil {
+		return p.selectSnapshot(snapshot)
+	}
+	return true
 }
 
 func (*logExecutorNoCallbackPlugin) Init() error                            { return nil }
@@ -220,6 +236,59 @@ func TestLogSnapshotSanitizerErrorStopsRawSnapshotConsumers(t *testing.T) {
 	}
 	if len(loggerPlugin.seen) != 0 {
 		t.Fatalf("logger saw raw snapshot after sanitizer error: %#v", loggerPlugin.seen)
+	}
+}
+
+func TestLogSnapshotSanitizerSelectorsSharePreSanitizedState(t *testing.T) {
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodPost, "/", strings.NewReader("secret-body")),
+		time.Unix(1, 0),
+	)
+	seen := []string{}
+	order := []string{}
+	first := &logSanitizerSelectorTestPlugin{
+		logSanitizerTestPlugin: logSanitizerTestPlugin{order: &order},
+		selectorSeen:           &seen,
+	}
+	first.Name = "first"
+	first.SetPriority(20)
+	first.selectSnapshot = func(snapshot base.LogSnapshot) bool {
+		return true
+	}
+	second := &logSanitizerSelectorTestPlugin{
+		logSanitizerTestPlugin: logSanitizerTestPlugin{order: &order},
+		selectorSeen:           &seen,
+	}
+	second.Name = "second"
+	second.SetPriority(10)
+	second.selectSnapshot = func(snapshot base.LogSnapshot) bool {
+		return string(snapshot.Request.Body) == "secret-body"
+	}
+	logger := newLogExecutorTestPlugin("logger", 1, &order)
+	executor, err := NewLogExecutor([]LogBinding{
+		{Plugin: first, Scope: ScopeRoute, Policy: first.LogCapturePolicy()},
+		{Plugin: second, Scope: ScopeRoute, Policy: second.LogCapturePolicy()},
+		{Plugin: logger, Scope: ScopeRoute, Policy: base.LogCapturePolicy{RequestBodyBytes: 11}},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExecutor() error = %v", err)
+	}
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	lifecycle.Complete(ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK}, time.Unix(2, 0))
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if !reflect.DeepEqual(seen, []string{"secret-body", "secret-body"}) {
+		t.Fatalf("selector snapshots = %q, want two original snapshots", seen)
+	}
+	if len(logger.seen) != 1 || string(logger.seen[0].Request.Body) != "masked" {
+		t.Fatalf("logger snapshot after selected sanitizers = %#v", logger.seen)
 	}
 }
 

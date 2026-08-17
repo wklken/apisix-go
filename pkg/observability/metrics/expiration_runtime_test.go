@@ -52,10 +52,10 @@ func TestExpirationRuntimeScanDeletesAtMostBatchPerFamily(t *testing.T) {
 
 	runtime.scan(now.Add(time.Minute))
 
-	if got := expiring.entryCount(); got != 44 {
+	if got := metricSeriesEntryCount(expiring); got != 44 {
 		t.Fatalf("expiring entryCount() = %d, want 44 after one 256-entry batch", got)
 	}
-	if got := disabled.entryCount(); got != 1 {
+	if got := metricSeriesEntryCount(disabled); got != 1 {
 		t.Fatalf("disabled entryCount() = %d, want 1", got)
 	}
 }

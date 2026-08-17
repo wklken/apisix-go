@@ -72,21 +72,23 @@ func (t *metricSeriesTracker) withSeries(labels []string, update func([]string))
 	}
 
 	t.mu.Lock()
+	entry, exists := t.entries[key]
+	if !exists && len(t.entries) >= t.limit {
+		t.mu.Unlock()
+		t.recordOverflow(update)
+		return
+	}
 	defer t.mu.Unlock()
-	if entry, ok := t.entries[key]; ok {
+	if exists {
 		entry.lastSeen.Store(observedAt)
 		update(entry.labels)
 		return
 	}
-	if len(t.entries) < t.limit {
-		storedLabels := append([]string(nil), labels...)
-		entry := &metricSeriesEntry{labels: storedLabels}
-		entry.lastSeen.Store(observedAt)
-		t.entries[key] = entry
-		update(storedLabels)
-		return
-	}
-	t.recordOverflow(update)
+	storedLabels := append([]string(nil), labels...)
+	entry = &metricSeriesEntry{labels: storedLabels}
+	entry.lastSeen.Store(observedAt)
+	t.entries[key] = entry
+	update(storedLabels)
 }
 
 func (t *metricSeriesTracker) updateExisting(
@@ -133,24 +135,26 @@ func (t *metricSeriesTracker) acquireNew(
 	increment func([]string),
 ) *metricSeriesEntry {
 	t.mu.Lock()
+	entry, exists := t.entries[key]
+	if !exists && len(t.entries) >= t.limit {
+		t.mu.Unlock()
+		t.recordOverflow(increment)
+		return nil
+	}
 	defer t.mu.Unlock()
-	if entry, ok := t.entries[key]; ok {
+	if exists {
 		entry.lastSeen.Store(observedAt)
 		entry.inFlight.Add(1)
 		increment(entry.labels)
 		return entry
 	}
-	if len(t.entries) < t.limit {
-		storedLabels := append([]string(nil), labels...)
-		entry := &metricSeriesEntry{labels: storedLabels}
-		entry.lastSeen.Store(observedAt)
-		entry.inFlight.Store(1)
-		t.entries[key] = entry
-		increment(storedLabels)
-		return entry
-	}
-	t.recordOverflow(increment)
-	return nil
+	storedLabels := append([]string(nil), labels...)
+	entry = &metricSeriesEntry{labels: storedLabels}
+	entry.lastSeen.Store(observedAt)
+	entry.inFlight.Store(1)
+	t.entries[key] = entry
+	increment(storedLabels)
+	return entry
 }
 
 func (t *metricSeriesTracker) acquireExisting(
@@ -239,15 +243,6 @@ func (t *metricSeriesTracker) deleteExpired(candidates []metricSeriesCandidate, 
 		deleted++
 	}
 	return deleted
-}
-
-func (t *metricSeriesTracker) entryCount() int {
-	if t == nil {
-		return 0
-	}
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.entries)
 }
 
 func metricSeriesTupleKey(values []string) string {

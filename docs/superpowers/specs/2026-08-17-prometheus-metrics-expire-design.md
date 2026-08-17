@@ -97,7 +97,7 @@ The scan interval is calculated once at startup as:
 clamp(minimum positive family expiration / 2, 1 second, 1 minute)
 ```
 
-Thus an idle series is normally deleted between `expire` and `expire + scan interval` after its last update. Expiration uses `lastSeen <= now - expire`; it does not promise deletion at an exact wall-clock instant.
+Without an expired backlog, an idle series is normally deleted between `expire` and `expire + scan interval` after its last update. Expiration uses `lastSeen <= now - expire`; it does not promise deletion at an exact wall-clock instant. Because each family deletes at most 256 entries per scan, a larger backlog drains over subsequent intervals without a fixed one-interval upper bound.
 
 To bound request-path disruption, a scan first finds candidates while holding a family read lock, then obtains the write lock and deletes at most 256 revalidated entries from that family per tick. Existing-series observations remain concurrent during candidate discovery. New admissions can pause during the bounded map walk, while actual metric updates are blocked only during the bounded delete phase.
 

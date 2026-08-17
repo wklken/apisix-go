@@ -47,7 +47,7 @@ func TestRecordHTTPRequestUsesCanonicalOverflowForHTTPAndLLMFamilies(t *testing.
 		llmPromptMetric:   llmPromptSeries,
 		llmCompleteMetric: llmCompletionSeries,
 	} {
-		if got := tracker.entryCount(); got != 1 {
+		if got := metricSeriesEntryCount(tracker); got != 1 {
 			t.Fatalf("%s entryCount() = %d, want 1", name, got)
 		}
 	}

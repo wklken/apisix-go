@@ -174,8 +174,10 @@ func TestServerShutdownRejectsLatePrometheusExpirationRetention(t *testing.T) {
 	}
 
 	stopCalls := 0
-	err := server.retainPrometheusExpiration(func(context.Context) error {
+	deadlineSeen := false
+	err := server.retainPrometheusExpiration(func(ctx context.Context) error {
 		stopCalls++
+		_, deadlineSeen = ctx.Deadline()
 		return nil
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -183,6 +185,9 @@ func TestServerShutdownRejectsLatePrometheusExpirationRetention(t *testing.T) {
 	}
 	if stopCalls != 1 {
 		t.Fatalf("late expiration stop calls = %d, want 1", stopCalls)
+	}
+	if deadlineSeen {
+		t.Fatal("late expiration cleanup used a bounded wait and could lose the stop handle on timeout")
 	}
 	if server.stopPrometheusExpiration != nil {
 		t.Fatal("late expiration handle was retained after shutdown began")

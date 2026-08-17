@@ -533,7 +533,7 @@ Replace the current Prometheus paragraph with exact statements that:
 - both capacity settings apply independently per family and accept integers from 100 through 100000;
 - the seven nested expiration settings use whole seconds and zero disables them;
 - expiration is idle since the last observation, not since the last scrape;
-- deletion may occur up to one scan interval late;
+- without an expired backlog, deletion normally occurs by the next scan; each family drains larger backlogs in 256-entry batches over later scans;
 - recreated counters and histograms restart at zero;
 - overflow uses one all-`__overflow__` child per family;
 - configuration changes require restart.

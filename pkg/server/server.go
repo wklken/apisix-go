@@ -773,9 +773,7 @@ func (s *Server) retainPrometheusExpiration(stop func(context.Context) error) er
 	}
 	s.lifecycleMu.Unlock()
 
-	stopCtx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
-	stopErr := stop(stopCtx)
-	cancel()
+	stopErr := stop(context.Background())
 	return errors.Join(context.Canceled, stopErr)
 }
 

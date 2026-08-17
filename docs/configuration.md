@@ -115,8 +115,10 @@ The seven families accept an APISIX-compatible
 whole number of idle seconds; missing or `0` disables expiration for that
 family. Activity means a successful metric observation, not a Prometheus
 scrape. The cleanup interval is half the smallest enabled expiration, clamped
-between one second and one minute, so deletion can occur up to one cleanup
-interval after the configured idle period.
+between one second and one minute. Without an expired backlog, deletion normally
+occurs by the next scan after the configured idle period. Cleanup deletes at
+most 256 entries from each family per scan, so larger backlogs drain over later
+scan intervals.
 
 Each family stores at most its configured number of exact label tuples. Once
 full, an unseen tuple is written to one synthetic child with every label set to

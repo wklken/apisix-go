@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestMetricSeriesTrackerBoundsVectorChildrenAndReusesExistingSeries(t *testi
 	record("route-a", "200")
 	record("route-c", "202")
 
-	if got := tracker.entryCount(); got != 2 {
+	if got := metricSeriesEntryCount(tracker); got != 2 {
 		t.Fatalf("entryCount() = %d, want 2", got)
 	}
 	if got := gatheredMetricCountFromRegistry(t, registry); got != 3 {
@@ -67,7 +68,7 @@ func TestMetricSeriesTrackerExpirationDeletesVectorChildAndReleasesCapacity(t *t
 	if got := tracker.expireSeries(now, 256); got != 1 {
 		t.Fatalf("expireSeries() = %d, want 1", got)
 	}
-	if got := tracker.entryCount(); got != 0 {
+	if got := metricSeriesEntryCount(tracker); got != 0 {
 		t.Fatalf("entryCount() after expiration = %d, want 0", got)
 	}
 	if got := gatheredMetricCountFromRegistry(t, registry); got != 0 {
@@ -132,7 +133,7 @@ func TestMetricSeriesTrackerDisablesExpirationAtZero(t *testing.T) {
 	if deleteCalls != 0 {
 		t.Fatalf("delete callback calls = %d, want 0", deleteCalls)
 	}
-	if got := tracker.entryCount(); got != 1 {
+	if got := metricSeriesEntryCount(tracker); got != 1 {
 		t.Fatalf("entryCount() = %d, want 1", got)
 	}
 }
@@ -178,7 +179,7 @@ func TestMetricSeriesTrackerTupleKeyDoesNotCollide(t *testing.T) {
 	tracker := newMetricSeriesTracker(2, 2, 0, nil, func(...string) bool { return true })
 	tracker.withSeries([]string{"a", "bc"}, func([]string) {})
 	tracker.withSeries([]string{"ab", "c"}, func([]string) {})
-	if got := tracker.entryCount(); got != 2 {
+	if got := metricSeriesEntryCount(tracker); got != 2 {
 		t.Fatalf("entryCount() = %d, want collision-free two entries", got)
 	}
 }
@@ -208,11 +209,170 @@ func TestMetricSeriesTrackerConcurrentUpdatesAndExpirationStayBounded(t *testing
 	}
 	wait.Wait()
 
-	if got := tracker.entryCount(); got > 10 {
+	if got := metricSeriesEntryCount(tracker); got > 10 {
 		t.Fatalf("entryCount() = %d, want at most 10", got)
 	}
 	if got := gatheredMetricCountFromRegistry(t, registry); got > 11 {
 		t.Fatalf("gathered children = %d, want at most 11", got)
+	}
+}
+
+func TestMetricSeriesTrackerConcurrentRefreshAndExpirationKeepTrackedChild(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	vector := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_metric_series_refresh_expiration_total"},
+		[]string{"route"},
+	)
+	registry.MustRegister(vector)
+	tracker := newMetricSeriesTracker(1, 1, time.Second, nil, vector.DeleteLabelValues)
+	var clock atomic.Int64
+	clock.Store(time.Second.Nanoseconds())
+	tracker.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	record := func() {
+		tracker.withSeries([]string{"route-a"}, func(actual []string) {
+			vector.WithLabelValues(actual...).Inc()
+		})
+	}
+	record()
+
+	for range 100 {
+		scanAt := time.Unix(0, clock.Add(time.Second.Nanoseconds()))
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			record()
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			tracker.expireSeries(scanAt, 1)
+		}()
+		close(start)
+		wait.Wait()
+
+		if got := metricSeriesEntryCount(tracker); got != 1 {
+			t.Fatalf("entry count after refresh/expiration race = %d, want 1", got)
+		}
+		if got := gatheredMetricCountFromRegistry(t, registry); got != 1 {
+			t.Fatalf("vector children after refresh/expiration race = %d, want 1", got)
+		}
+	}
+}
+
+func TestMetricSeriesTrackerConcurrentReleaseAndExpirationKeepTrackedGaugeChild(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	vector := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_metric_series_release_expiration"},
+		[]string{"route"},
+	)
+	registry.MustRegister(vector)
+	tracker := newMetricSeriesTracker(1, 1, time.Second, nil, vector.DeleteLabelValues)
+	var clock atomic.Int64
+	clock.Store(time.Second.Nanoseconds())
+	tracker.now = func() time.Time { return time.Unix(0, clock.Load()) }
+
+	for range 100 {
+		release := tracker.acquireSeries(
+			[]string{"route-a"},
+			func(actual []string) { vector.WithLabelValues(actual...).Inc() },
+			func(actual []string) { vector.WithLabelValues(actual...).Dec() },
+		)
+		scanAt := time.Unix(0, clock.Add(time.Second.Nanoseconds()))
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			release()
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			tracker.expireSeries(scanAt, 1)
+		}()
+		close(start)
+		wait.Wait()
+
+		if got := metricSeriesEntryCount(tracker); got != 1 {
+			t.Fatalf("entry count after release/expiration race = %d, want 1", got)
+		}
+		if got := gatheredMetricCountFromRegistry(t, registry); got != 1 {
+			t.Fatalf("vector children after release/expiration race = %d, want 1", got)
+		}
+		if got := gaugeValue(t, vector.WithLabelValues("route-a")); got != 0 {
+			t.Fatalf("gauge after release/expiration race = %v, want 0", got)
+		}
+	}
+}
+
+func TestMetricSeriesTrackerOverflowUpdateDoesNotBlockExistingSeries(t *testing.T) {
+	tracker := newMetricSeriesTracker(1, 1, 0, nil, nil)
+	tracker.withSeries([]string{"route-a"}, func([]string) {})
+
+	overflowStarted := make(chan struct{})
+	releaseOverflow := make(chan struct{})
+	overflowDone := make(chan struct{})
+	go func() {
+		defer close(overflowDone)
+		tracker.withSeries([]string{"route-b"}, func([]string) {
+			close(overflowStarted)
+			<-releaseOverflow
+		})
+	}()
+	<-overflowStarted
+
+	existingDone := make(chan struct{})
+	go tracker.withSeries([]string{"route-a"}, func([]string) { close(existingDone) })
+	select {
+	case <-existingDone:
+		close(releaseOverflow)
+		<-overflowDone
+	case <-time.After(time.Second):
+		close(releaseOverflow)
+		<-overflowDone
+		<-existingDone
+		t.Fatal("overflow metric update held the tracker lock and blocked an existing series")
+	}
+}
+
+func TestMetricSeriesTrackerOverflowAcquireDoesNotBlockExistingSeries(t *testing.T) {
+	tracker := newMetricSeriesTracker(1, 1, 0, nil, nil)
+	firstRelease := tracker.acquireSeries([]string{"route-a"}, func([]string) {}, func([]string) {})
+	firstRelease()
+
+	overflowStarted := make(chan struct{})
+	releaseOverflow := make(chan struct{})
+	overflowRelease := make(chan func(), 1)
+	go func() {
+		overflowRelease <- tracker.acquireSeries(
+			[]string{"route-b"},
+			func([]string) {
+				close(overflowStarted)
+				<-releaseOverflow
+			},
+			func([]string) {},
+		)
+	}()
+	<-overflowStarted
+
+	existingRelease := make(chan func(), 1)
+	go func() {
+		existingRelease <- tracker.acquireSeries([]string{"route-a"}, func([]string) {}, func([]string) {})
+	}()
+	select {
+	case release := <-existingRelease:
+		release()
+		close(releaseOverflow)
+		(<-overflowRelease)()
+	case <-time.After(time.Second):
+		close(releaseOverflow)
+		(<-overflowRelease)()
+		(<-existingRelease)()
+		t.Fatal("overflow gauge acquire held the tracker lock and blocked an existing series")
 	}
 }
 
@@ -227,4 +387,13 @@ func gatheredMetricCountFromRegistry(t *testing.T, registry *prometheus.Registry
 		count += len(family.Metric)
 	}
 	return count
+}
+
+func metricSeriesEntryCount(tracker *metricSeriesTracker) int {
+	if tracker == nil {
+		return 0
+	}
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
+	return len(tracker.entries)
 }

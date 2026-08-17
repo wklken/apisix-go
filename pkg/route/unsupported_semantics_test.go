@@ -50,6 +50,20 @@ func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 			wantErr: "remote_addrs",
 			routeID: "unsupported-remote-addrs-route",
 		},
+		{
+			name:    "remote_addr",
+			field:   "remote_addr",
+			value:   `"10.0.0.1"`,
+			wantErr: "remote_addr",
+			routeID: "unsupported-remote-addr-route",
+		},
+		{
+			name:    "script_id",
+			field:   "script_id",
+			value:   `"script-1"`,
+			wantErr: "script_id",
+			routeID: "unsupported-script-id-route",
+		},
 	}
 
 	for _, test := range tests {
@@ -76,6 +90,31 @@ func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 				t.Fatalf("BuildStrict() error = %q, want route ID %q and field %q", err, test.routeID, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestProgrammaticSingularFieldsUseValuePresence(t *testing.T) {
+	hostRoute := resource.Route{ID: "programmatic-host-route", Host: "api.example.com"}
+	if !hostRoute.HostConfigured() {
+		t.Fatal("HostConfigured() = false, want non-empty programmatic host to be configured")
+	}
+	if hosts := hostRoute.EffectiveHosts(); len(hosts) != 1 || hosts[0] != hostRoute.Host {
+		t.Fatalf("EffectiveHosts() = %#v, want [%q]", hosts, hostRoute.Host)
+	}
+	if err := validateRouteSemantics(hostRoute); err != nil {
+		t.Fatalf("validateRouteSemantics() error = %v, want programmatic host accepted", err)
+	}
+
+	remoteRoute := resource.Route{ID: "programmatic-remote-addr-route", RemoteAddr: "10.0.0.1"}
+	if !remoteRoute.RemoteAddrConfigured() {
+		t.Fatal("RemoteAddrConfigured() = false, want non-empty programmatic remote_addr to be configured")
+	}
+	err := validateRouteSemantics(remoteRoute)
+	if err == nil {
+		t.Fatal("validateRouteSemantics() error = nil, want programmatic remote_addr rejection")
+	}
+	if !strings.Contains(err.Error(), remoteRoute.ID) || !strings.Contains(err.Error(), "remote_addr") {
+		t.Fatalf("validateRouteSemantics() error = %q, want route ID %q and field remote_addr", err, remoteRoute.ID)
 	}
 }
 

@@ -231,12 +231,14 @@ type Route struct {
 	Uri         string                  `json:"uri,omitempty"`
 	Uris        []string                `json:"uris,omitempty"`
 	Methods     []string                `json:"methods,omitempty"`
+	Host        string                  `json:"host,omitempty"`
 	Hosts       []string                `json:"hosts,omitempty"`
 	Plugins     map[string]PluginConfig `json:"plugins,omitempty"`
 	Priority    int                     `json:"priority,omitempty"`
 	Name        string                  `json:"name,omitempty"`
 	Desc        string                  `json:"desc,omitempty"`
 	Labels      map[string]any          `json:"labels,omitempty"`
+	RemoteAddr  string                  `json:"remote_addr,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        json.RawMessage         `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
@@ -247,25 +249,44 @@ type Route struct {
 	Upstream        Upstream        `json:"upstream"`
 	Timeout         Timeout         `json:"timeout"`
 	Script          json.RawMessage `json:"script,omitempty"`
+	ScriptID        json.RawMessage `json:"script_id,omitempty"`
 	FilterFunc      string          `json:"filter_func,omitempty"`
 
-	CreateTime int64 `json:"create_time,omitempty"`
-	UpdateTime int64 `json:"update_time,omitempty"`
-	Status     int   `json:"status,omitempty"`
-	statusSet  bool
+	CreateTime    int64 `json:"create_time,omitempty"`
+	UpdateTime    int64 `json:"update_time,omitempty"`
+	Status        int   `json:"status,omitempty"`
+	statusSet     bool
+	hostSet       bool
+	hostsSet      bool
+	remoteAddrSet bool
 }
 
 func (r *Route) UnmarshalJSON(data []byte) error {
 	type routeJSON Route
 	aux := struct {
 		routeJSON
-		Status *int `json:"status"`
+		Status     *int    `json:"status"`
+		Host       *string `json:"host"`
+		RemoteAddr *string `json:"remote_addr"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
 	*r = Route(aux.routeJSON)
 	r.statusSet = aux.Status != nil
+	_, r.hostSet = fields["host"]
+	_, r.hostsSet = fields["hosts"]
+	r.remoteAddrSet = aux.RemoteAddr != nil
+	if aux.Host != nil {
+		r.Host = *aux.Host
+	}
+	if aux.RemoteAddr != nil {
+		r.RemoteAddr = *aux.RemoteAddr
+	}
 	if aux.Status != nil {
 		r.Status = *aux.Status
 	} else {
@@ -280,6 +301,25 @@ func (r Route) StatusConfigured() bool {
 
 func (r Route) Disabled() bool {
 	return r.statusSet && r.Status == 0
+}
+
+func (r Route) HostConfigured() bool {
+	return r.hostSet || r.Host != ""
+}
+
+func (r Route) HostsConfigured() bool {
+	return r.hostsSet || r.Hosts != nil
+}
+
+func (r Route) RemoteAddrConfigured() bool {
+	return r.remoteAddrSet || r.RemoteAddr != ""
+}
+
+func (r Route) EffectiveHosts() []string {
+	if r.HostConfigured() {
+		return []string{r.Host}
+	}
+	return r.Hosts
 }
 
 // StreamRoute describes the APISIX L4 route fields used by the Go stream

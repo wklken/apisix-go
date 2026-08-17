@@ -44,7 +44,11 @@ The merged configuration must satisfy all of the following:
   `apisix.stream_proxy.udp` are empty; `stream_plugins` is empty.
 - `apisix.enable_admin: false`.
 - `apisix.trusted_addresses` contains at least one syntactically valid CIDR.
-- `nginx_config.http.client_max_body_size` is positive.
+- `nginx_config.http.client_max_body_size` is positive and
+  `nginx_config.http.client_body_timeout` is mandatory and positive. The checked-in
+  `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
+  Go applies it together with the header timeout as `net/http`'s combined
+  `ReadTimeout`, because `net/http` has no body-only server deadline.
 - The ordered HTTP plugin list is exactly:
 
   ```yaml
@@ -101,6 +105,18 @@ certificate/SNI configuration. Frontend HTTPS serving is supported, while
 QUIC/HTTP/3 and stream TLS/mTLS remain outside this profile. The external TLS
 boundary, certificate rotation procedure, ingress policy, and Internet-facing
 network controls remain operator responsibilities.
+
+## External ingress request-log qualification
+
+The exact six-plugin allowlist contains no in-process request logger. A
+deployment that relies on an external TLS-terminating ingress must therefore
+provide a redacted request-log evidence bundle before this profile can be
+qualified. The bundle must demonstrate a request ID, method, normalized path
+without query-string secrets, status, latency, upstream identity, retention
+owner, and trace correlation for representative successful, rejected, and
+failed requests. These are ingress evidence requirements; the Go runtime does
+not claim to emit those fields, and this document does not mutate or verify the
+external logging system.
 
 ## State ownership
 
@@ -167,23 +183,35 @@ of generation shutdown.
   It is not an in-process reload; start a new process with the new merged
   configuration after the old generation has drained.
 
-## Operator authentication and TLS defaults
+## Candidate authentication and TLS admission
 
-These defaults match Apache APISIX 3.17. They are not Go bypasses, and they
-remain in effect on the exact six-plugin allowlist. Production operators must
-set them explicitly:
+When `deployment.profile` is `http-data-plane-v1`, route compilation rejects
+unsafe effective configuration before constructing the handler. The policy
+checks route/plugin-config/service winners and global rules; shadowed entries
+do not become an independent requirement.
 
-- `jwt-auth.claims_to_verify` must include `exp`. Tokens without `exp` never
-  expire when the field is omitted.
-- HTTPS and gRPCS upstreams set `tls.verify: true`. Omitted or false skips
-  upstream certificate verification.
-- `key-auth`, `jwt-auth`, and `basic-auth` set `hide_credentials: true` so
-  validated credentials are not forwarded upstream.
+- Enabled `key-auth`, `jwt-auth`, and `basic-auth` configurations must set
+  `hide_credentials: true` so validated credentials are not forwarded
+  upstream. An explicitly disabled auth configuration (`_meta.disable: true`)
+  is inert.
+- `jwt-auth` must include literal `exp` in `claims_to_verify`; omitting it is
+  rejected rather than accepted as a non-expiring-token default.
+- After inline, ID, or service upstream resolution, HTTPS and gRPCS upstreams
+  must set `tls.verify: true`; omitted or false is rejected in this profile.
 
-Do not enable request loggers, `sls-logger`, stream, or `gm` under this
-profile. Strip route `vars`, `remote_addrs`, and disabled (`status: 0`)
-routes before migration; the data plane now rejects or skips those fields
-instead of approximating them.
+The empty compatibility profile retains APISIX-compatible authentication and
+upstream-TLS defaults, including omitted or false `hide_credentials` and
+`tls.verify`; this candidate policy does not change compatibility mode.
+
+Route compilation also fails closed for configured `remote_addr`, non-empty
+`remote_addrs` or `vars`, non-null `script_id`, `script`, and non-empty
+`filter_func`. A singular `host` is supported by the same exact/wildcard
+dispatcher as a one-element `hosts`; `host` and `hosts` cannot both be set.
+Do not enable request loggers, `sls-logger`, stream, or `gm` under this profile.
+Strip unsupported route fields before migration. Keep `status: 0` only for
+routes that are intentionally disabled; those routes are accepted but omitted
+from the HTTP route table. The data plane rejects unsupported semantics instead
+of approximating them.
 
 ## Qualification status
 
@@ -195,6 +223,11 @@ testing. Until those gates are complete, keep the global not-ready warning and
 do not advertise `http-data-plane-v1` as production qualified. The first
 release also has no previous immutable digest, so rollback qualification cannot
 be claimed until a distinct older published digest exists and is exercised.
+The independent plugin-status workflow must create a check on every pull
+request so it can remain required without path-filtered PRs staying pending.
+Its exact selector pass is not release qualification evidence; `master` push
+triggers remain scoped to the status matrix, manifests, selector test, and
+workflow paths.
 The final workflow must retain the protected `production-release` reviewers and
 wait timer; the current environment's protected-branch-only tag policy must be
 updated by an operator to permit the intended `v*` tag before publication.

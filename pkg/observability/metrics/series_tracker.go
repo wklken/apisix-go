@@ -10,6 +10,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const overflowLabel = "__overflow__"
+
 type metricSeriesEntry struct {
 	labels   []string
 	lastSeen atomic.Int64
@@ -118,14 +120,25 @@ func (t *metricSeriesTracker) acquireSeries(
 	if entry := t.acquireExisting(key, observedAt, increment); entry != nil {
 		return t.releaseFunc(entry, decrement)
 	}
+	if entry := t.acquireNew(key, labels, observedAt, increment); entry != nil {
+		return t.releaseFunc(entry, decrement)
+	}
+	return func() { decrement(t.overflowLabels) }
+}
 
+func (t *metricSeriesTracker) acquireNew(
+	key string,
+	labels []string,
+	observedAt int64,
+	increment func([]string),
+) *metricSeriesEntry {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if entry, ok := t.entries[key]; ok {
 		entry.lastSeen.Store(observedAt)
 		entry.inFlight.Add(1)
 		increment(entry.labels)
-		t.mu.Unlock()
-		return t.releaseFunc(entry, decrement)
+		return entry
 	}
 	if len(t.entries) < t.limit {
 		storedLabels := append([]string(nil), labels...)
@@ -134,12 +147,10 @@ func (t *metricSeriesTracker) acquireSeries(
 		entry.inFlight.Store(1)
 		t.entries[key] = entry
 		increment(storedLabels)
-		t.mu.Unlock()
-		return t.releaseFunc(entry, decrement)
+		return entry
 	}
 	t.recordOverflow(increment)
-	t.mu.Unlock()
-	return func() { decrement(t.overflowLabels) }
+	return nil
 }
 
 func (t *metricSeriesTracker) acquireExisting(
@@ -247,4 +258,24 @@ func metricSeriesTupleKey(values []string) string {
 		builder.WriteString(value)
 	}
 	return builder.String()
+}
+
+func newLLMMetricSeriesOverflow(prefix string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: prefix + "llm_metric_series_overflow_total",
+			Help: "LLM metric series observations rejected by the family cardinality budget",
+		},
+		[]string{"metric"},
+	)
+}
+
+func newHTTPMetricSeriesOverflow(prefix string) *prometheus.CounterVec {
+	return prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: prefix + "http_metric_series_overflow_total",
+			Help: "HTTP metric series observations rejected by the family cardinality budget",
+		},
+		[]string{"metric"},
+	)
 }

@@ -45,10 +45,15 @@ var (
 	ProxyRetry            *prometheus.CounterVec
 	ProxyHealth           *prometheus.GaugeVec
 	prometheusExtraLabels map[string][]prometheusExtraLabel
-	httpStatusBudget      *httpSeriesBudget
-	httpLatencyBudget     *httpSeriesBudget
-	bandwidthBudget       *httpSeriesBudget
+	httpStatusSeries      *metricSeriesTracker
+	httpLatencySeries     *metricSeriesTracker
+	bandwidthSeries       *metricSeriesTracker
+	llmLatencySeries      *metricSeriesTracker
+	llmPromptSeries       *metricSeriesTracker
+	llmCompletionSeries   *metricSeriesTracker
+	llmActiveSeries       *metricSeriesTracker
 	httpSeriesOverflow    *prometheus.CounterVec
+	llmSeriesOverflow     *prometheus.CounterVec
 )
 
 const (
@@ -185,82 +190,88 @@ func initMetrics() error {
 	)
 
 	// pkg/plugin/request_context/plugin.go
+	httpStatusLabels := metricLabelNames(httpStatusMetric, []string{
+		"code",
+		"route",
+		"matched_uri",
+		"matched_host",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+		"response_source",
+	})
 	HttpStatus = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "http_status",
 			Help: "HTTP status codes per service in APISIX",
-		}, metricLabelNames(httpStatusMetric, []string{
-			"code",
-			"route",
-			"matched_uri",
-			"matched_host",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-			"response_source",
-		}),
+		}, httpStatusLabels,
 	)
 
+	httpLatencyLabels := metricLabelNames(httpLatencyMetric, []string{
+		"type",
+		"route",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	})
 	HttpLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    metricConfig.MetricPrefix + "http_latency",
 			Help:    "HTTP request latency in milliseconds per service in APISIX",
 			Buckets: metricConfig.Buckets,
-		}, metricLabelNames(httpLatencyMetric, []string{
-			"type",
-			"route",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-		}),
+		}, httpLatencyLabels,
 	)
 
+	bandwidthLabels := metricLabelNames(bandwidthMetric, []string{
+		"type",
+		"route",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	})
 	Bandwidth = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "bandwidth",
 			Help: "Total bandwidth in bytes consumed per service in APISIX",
-		}, metricLabelNames(bandwidthMetric, []string{
-			"type",
-			"route",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-		}),
+		}, bandwidthLabels,
 	)
 
 	llmLabels := []string{
 		"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
 	}
+	llmLatencyLabels := metricLabelNames(llmLatencyMetric, llmLabels)
 	LLMLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    metricConfig.MetricPrefix + "llm_latency",
 			Help:    "LLM request latency in milliseconds",
 			Buckets: metricConfig.LLMBuckets,
 		},
-		metricLabelNames(llmLatencyMetric, llmLabels),
+		llmLatencyLabels,
 	)
+	llmPromptLabels := metricLabelNames(llmPromptMetric, llmLabels)
 	LLMPromptTokens = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "llm_prompt_tokens",
 			Help: "LLM service consumed prompt tokens",
 		},
-		metricLabelNames(llmPromptMetric, llmLabels),
+		llmPromptLabels,
 	)
+	llmCompletionLabels := metricLabelNames(llmCompleteMetric, llmLabels)
 	LLMCompletionTokens = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "llm_completion_tokens",
 			Help: "LLM service consumed completion tokens",
 		},
-		metricLabelNames(llmCompleteMetric, llmLabels),
+		llmCompletionLabels,
 	)
 
 	BatchProcessEntries = prometheus.NewGaugeVec(
@@ -276,14 +287,15 @@ func initMetrics() error {
 
 	initLoggerBatchMetrics(metricConfig.MetricPrefix)
 
+	llmActiveLabels := metricLabelNames(llmActiveMetric, []string{
+		"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+		"request_type", "request_llm_model", "llm_model",
+	})
 	LLMActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "llm_active_connections",
 			Help: "Number of active connections to LLM service",
-		}, metricLabelNames(llmActiveMetric, []string{
-			"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
-			"request_type", "request_llm_model", "llm_model",
-		}),
+		}, llmActiveLabels,
 	)
 
 	AISafetyOutcomes = newAISafetyOutcomeVector(nil, metricConfig.MetricPrefix)
@@ -321,23 +333,55 @@ func initMetrics() error {
 	requestPanics = newRequestPanicMetrics(nil, metricConfig.MetricPrefix)
 	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
 	httpSeriesOverflow = newHTTPMetricSeriesOverflow(metricConfig.MetricPrefix)
-	httpStatusBudget = newHTTPSeriesBudgetWithTail(
+	llmSeriesOverflow = newLLMMetricSeriesOverflow(metricConfig.MetricPrefix)
+	httpStatusSeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(httpStatusLabels),
+		metricConfig.Expires[httpStatusMetric],
 		httpSeriesOverflow.WithLabelValues(httpStatusMetric),
-		[]int{1, 2, 3, 4, 5, 6, 8, 9},
-		11,
+		HttpStatus.DeleteLabelValues,
 	)
-	httpLatencyBudget = newHTTPSeriesBudgetWithTail(
+	httpLatencySeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(httpLatencyLabels),
+		metricConfig.Expires[httpLatencyMetric],
 		httpSeriesOverflow.WithLabelValues(httpLatencyMetric),
-		[]int{1, 2, 3, 4, 6, 7},
-		8,
+		HttpLatency.DeleteLabelValues,
 	)
-	bandwidthBudget = newHTTPSeriesBudgetWithTail(
+	bandwidthSeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(bandwidthLabels),
+		metricConfig.Expires[bandwidthMetric],
 		httpSeriesOverflow.WithLabelValues(bandwidthMetric),
-		[]int{1, 2, 3, 4, 6, 7},
-		8,
+		Bandwidth.DeleteLabelValues,
+	)
+	llmLatencySeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmLatencyLabels),
+		metricConfig.Expires[llmLatencyMetric],
+		llmSeriesOverflow.WithLabelValues(llmLatencyMetric),
+		LLMLatency.DeleteLabelValues,
+	)
+	llmPromptSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmPromptLabels),
+		metricConfig.Expires[llmPromptMetric],
+		llmSeriesOverflow.WithLabelValues(llmPromptMetric),
+		LLMPromptTokens.DeleteLabelValues,
+	)
+	llmCompletionSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmCompletionLabels),
+		metricConfig.Expires[llmCompleteMetric],
+		llmSeriesOverflow.WithLabelValues(llmCompleteMetric),
+		LLMCompletionTokens.DeleteLabelValues,
+	)
+	llmActiveSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmActiveLabels),
+		metricConfig.Expires[llmActiveMetric],
+		llmSeriesOverflow.WithLabelValues(llmActiveMetric),
+		LLMActiveConnections.DeleteLabelValues,
 	)
 
 	hostName, err := os.Hostname()
@@ -356,6 +400,7 @@ func initMetrics() error {
 		HttpLatency,
 		Bandwidth,
 		httpSeriesOverflow,
+		llmSeriesOverflow,
 		BatchProcessEntries,
 		LoggerBatchPendingEntries,
 		LoggerBatchEvents,
@@ -395,9 +440,11 @@ func BeginLLMRequest(r *http.Request) func() {
 		requestVarString(r, "$llm_model"),
 	}
 	labels = appendExtraLabelValues(llmActiveMetric, r, HTTPRequestMetrics{}, labels)
-	gauge := LLMActiveConnections.WithLabelValues(labels...)
-	gauge.Inc()
-	return gauge.Dec
+	return llmActiveSeries.acquireSeries(
+		labels,
+		func(actual []string) { LLMActiveConnections.WithLabelValues(actual...).Inc() },
+		func(actual []string) { LLMActiveConnections.WithLabelValues(actual...).Dec() },
+	)
 }
 
 func HTTPRequestMetricsEnabled() bool {
@@ -434,12 +481,14 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		responseSource(r, entry.UpstreamLatency),
 	}
 	statusLabels = appendExtraLabelValues(httpStatusMetric, r, entry, statusLabels)
-	statusLabels = admitHTTPMetricLabels(httpStatusMetric, statusLabels)
-	HttpStatus.WithLabelValues(statusLabels...).Inc()
+	httpStatusSeries.withSeries(statusLabels, func(actual []string) {
+		HttpStatus.WithLabelValues(actual...).Inc()
+	})
 
 	requestLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"request"}, common...))
-	requestLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, requestLatencyLabels)
-	HttpLatency.WithLabelValues(requestLatencyLabels...).Observe(float64(entry.RequestLatency))
+	httpLatencySeries.withSeries(requestLatencyLabels, func(actual []string) {
+		HttpLatency.WithLabelValues(actual...).Observe(float64(entry.RequestLatency))
+	})
 	if entry.UpstreamLatency > 0 {
 		upstreamLatencyLabels := appendExtraLabelValues(
 			httpLatencyMetric,
@@ -447,35 +496,26 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 			entry,
 			append([]string{"upstream"}, common...),
 		)
-		upstreamLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, upstreamLatencyLabels)
-		HttpLatency.WithLabelValues(upstreamLatencyLabels...).Observe(float64(entry.UpstreamLatency))
+		httpLatencySeries.withSeries(upstreamLatencyLabels, func(actual []string) {
+			HttpLatency.WithLabelValues(actual...).Observe(float64(entry.UpstreamLatency))
+		})
 	}
 	apisixLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))
-	apisixLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, apisixLatencyLabels)
-	HttpLatency.WithLabelValues(apisixLatencyLabels...).
-		Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	httpLatencySeries.withSeries(apisixLatencyLabels, func(actual []string) {
+		HttpLatency.WithLabelValues(actual...).
+			Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	})
 
 	ingressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))
-	ingressLabels = admitHTTPMetricLabels(bandwidthMetric, ingressLabels)
-	Bandwidth.WithLabelValues(ingressLabels...).Add(float64(entry.IngressBytes))
+	bandwidthSeries.withSeries(ingressLabels, func(actual []string) {
+		Bandwidth.WithLabelValues(actual...).Add(float64(entry.IngressBytes))
+	})
 	egressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"egress"}, common...))
-	egressLabels = admitHTTPMetricLabels(bandwidthMetric, egressLabels)
-	Bandwidth.WithLabelValues(egressLabels...).Add(float64(entry.EgressBytes))
+	bandwidthSeries.withSeries(egressLabels, func(actual []string) {
+		Bandwidth.WithLabelValues(actual...).Add(float64(entry.EgressBytes))
+	})
 
 	recordLLMMetrics(r, entry)
-}
-
-func admitHTTPMetricLabels(metricName string, labels []string) []string {
-	switch metricName {
-	case httpStatusMetric:
-		return httpStatusBudget.admit(labels)
-	case httpLatencyMetric:
-		return httpLatencyBudget.admit(labels)
-	case bandwidthMetric:
-		return bandwidthBudget.admit(labels)
-	default:
-		return labels
-	}
 }
 
 func normalizedHTTPStatus(status int) string {
@@ -500,15 +540,22 @@ func recordLLMMetrics(r *http.Request, entry HTTPRequestMetrics) {
 		requestVarString(r, "$llm_model"),
 	}
 	if firstToken, ok := requestVarFloat64(r, "$llm_time_to_first_token"); ok && firstToken != 0 {
-		LLMLatency.WithLabelValues(appendExtraLabelValues(llmLatencyMetric, r, entry, labels)...).Observe(firstToken)
+		llmLatencyLabels := appendExtraLabelValues(llmLatencyMetric, r, entry, labels)
+		llmLatencySeries.withSeries(llmLatencyLabels, func(actual []string) {
+			LLMLatency.WithLabelValues(actual...).Observe(firstToken)
+		})
 	}
 	if promptTokens, ok := requestVarFloat64(r, "$llm_prompt_tokens"); ok {
-		LLMPromptTokens.WithLabelValues(appendExtraLabelValues(llmPromptMetric, r, entry, labels)...).Add(promptTokens)
+		llmPromptLabels := appendExtraLabelValues(llmPromptMetric, r, entry, labels)
+		llmPromptSeries.withSeries(llmPromptLabels, func(actual []string) {
+			LLMPromptTokens.WithLabelValues(actual...).Add(promptTokens)
+		})
 	}
 	if completionTokens, ok := requestVarFloat64(r, "$llm_completion_tokens"); ok {
-		LLMCompletionTokens.WithLabelValues(appendExtraLabelValues(llmCompleteMetric, r, entry, labels)...).Add(
-			completionTokens,
-		)
+		llmCompletionLabels := appendExtraLabelValues(llmCompleteMetric, r, entry, labels)
+		llmCompletionSeries.withSeries(llmCompletionLabels, func(actual []string) {
+			LLMCompletionTokens.WithLabelValues(actual...).Add(completionTokens)
+		})
 	}
 }
 

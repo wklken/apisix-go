@@ -313,10 +313,19 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		llmCompletionTokens  *prometheus.CounterVec
 		llmActiveConnections *prometheus.GaugeVec
 		extraLabels          map[string][]prometheusExtraLabel
+		httpStatusSeries     *metricSeriesTracker
+		httpLatencySeries    *metricSeriesTracker
+		bandwidthSeries      *metricSeriesTracker
+		llmLatencySeries     *metricSeriesTracker
+		llmPromptSeries      *metricSeriesTracker
+		llmCompletionSeries  *metricSeriesTracker
+		llmActiveSeries      *metricSeriesTracker
 	}{
 		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision,
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries, LoggerBatchPendingEntries, LoggerBatchEvents,
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections, prometheusExtraLabels,
+		httpStatusSeries, httpLatencySeries, bandwidthSeries,
+		llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries,
 	}
 	restore := func() {
 		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision = old.connections, old.requests, old.etcdReachable, old.hostInfo, old.etcdRevision
@@ -324,6 +333,9 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		LoggerBatchPendingEntries, LoggerBatchEvents = old.loggerBatchPending, old.loggerBatchEvents
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections = old.llmLatency, old.llmPromptTokens, old.llmCompletionTokens, old.llmActiveConnections
 		prometheusExtraLabels = old.extraLabels
+		httpStatusSeries, httpLatencySeries, bandwidthSeries = old.httpStatusSeries, old.httpLatencySeries, old.bandwidthSeries
+		llmLatencySeries, llmPromptSeries = old.llmLatencySeries, old.llmPromptSeries
+		llmCompletionSeries, llmActiveSeries = old.llmCompletionSeries, old.llmActiveSeries
 	}
 	t.Cleanup(restore)
 
@@ -370,6 +382,8 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		prometheus.CounterOpts{Name: prefix + "llm_completion_tokens"},
 		llmLabels,
 	)
+	httpStatusSeries, httpLatencySeries, bandwidthSeries = nil, nil, nil
+	llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries = nil, nil, nil, nil
 	return restore
 }
 

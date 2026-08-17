@@ -56,10 +56,7 @@ func expirationScanInterval(trackers []*metricSeriesTracker) time.Duration {
 		if tracker == nil || tracker.expire <= 0 {
 			continue
 		}
-		candidate := tracker.expire / 2
-		if candidate < minExpirationScanInterval {
-			candidate = minExpirationScanInterval
-		}
+		candidate := max(tracker.expire/2, minExpirationScanInterval)
 		if interval == 0 || candidate < interval {
 			interval = candidate
 		}

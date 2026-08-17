@@ -179,9 +179,9 @@ set them explicitly:
   validated credentials are not forwarded upstream.
 
 Do not enable request loggers, `sls-logger`, stream, or `gm` under this
-profile. Strip route `vars`, `remote_addrs`, and disabled (`status: 0`)
-routes before migration; the data plane now rejects or skips those fields
-instead of approximating them.
+profile. Strip route `vars`, `remote_addr`, `remote_addrs`, and disabled
+(`status: 0`) routes before migration; the data plane now rejects or skips
+those fields instead of approximating them.
 
 ## Qualification status
 

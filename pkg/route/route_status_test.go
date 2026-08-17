@@ -69,3 +69,19 @@ func TestBuildStrictRejectsUnknownRouteStatus(t *testing.T) {
 		t.Fatalf("BuildStrict() error = %q, want route ID and status", err)
 	}
 }
+
+func TestBuildStrictRejectsNullRouteStatus(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	putRouteResource(t, "null-status-route", []byte(`{"id":"null-status-route","uri":"/null-status","status":null}`))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want null status rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), "null-status-route") || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("BuildStrict() error = %q, want route ID and status", err)
+	}
+}

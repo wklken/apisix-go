@@ -50,6 +50,27 @@ func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 			wantErr: "remote_addrs",
 			routeID: "unsupported-remote-addrs-route",
 		},
+		{
+			name:    "remote_addr",
+			field:   "remote_addr",
+			value:   `"10.0.0.1"`,
+			wantErr: "remote_addr",
+			routeID: "unsupported-remote-addr-route",
+		},
+		{
+			name:    "blank remote_addrs entry",
+			field:   "remote_addrs",
+			value:   `[""]`,
+			wantErr: "remote_addrs",
+			routeID: "blank-remote-addrs-route",
+		},
+		{
+			name:    "null remote_addrs entry",
+			field:   "remote_addrs",
+			value:   `[null]`,
+			wantErr: "remote_addrs",
+			routeID: "null-remote-addrs-route",
+		},
 	}
 
 	for _, test := range tests {
@@ -164,6 +185,41 @@ func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	lastGood.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/vars-last-good", nil))
+	if response.Code == http.StatusNotFound {
+		t.Fatalf("last-good handler status = %d, want the previously compiled route", response.Code)
+	}
+}
+
+func TestBuildStrictRejectsRemoteAddrAndKeepsLastGoodHandler(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	const routeID = "remote-addr-last-good"
+	putRouteResource(t, routeID, []byte(`{"id":"remote-addr-last-good","uri":"/remote-addr-last-good"}`))
+
+	validBuilder := NewBuilder(nil)
+	t.Cleanup(validBuilder.Stop)
+	lastGood, err := validBuilder.BuildStrict()
+	if err != nil || lastGood == nil {
+		t.Fatalf("valid BuildStrict() = (%T, %v)", lastGood, err)
+	}
+
+	putRouteResource(
+		t,
+		routeID,
+		[]byte(`{"id":"remote-addr-last-good","uri":"/remote-addr-last-good","remote_addr":"10.0.0.1"}`),
+	)
+	invalidBuilder := NewBuilder(nil)
+	t.Cleanup(invalidBuilder.Stop)
+	handler, err := invalidBuilder.BuildStrict()
+	if err == nil || handler != nil {
+		t.Fatalf("invalid BuildStrict() = (%T, %v), want remote_addr rejection", handler, err)
+	}
+	if !strings.Contains(err.Error(), routeID) || !strings.Contains(err.Error(), "remote_addr") {
+		t.Fatalf("BuildStrict() error = %q, want route ID and remote_addr", err)
+	}
+
+	response := httptest.NewRecorder()
+	lastGood.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/remote-addr-last-good", nil))
 	if response.Code == http.StatusNotFound {
 		t.Fatalf("last-good handler status = %d, want the previously compiled route", response.Code)
 	}

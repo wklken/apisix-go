@@ -837,10 +837,11 @@ func validateRouteSemantics(routeResource resource.Route) error {
 		!bytes.Equal(vars, []byte("[]")) {
 		return fmt.Errorf("route %q vars is unsupported by the Go data plane", routeResource.ID)
 	}
-	for _, addr := range routeResource.RemoteAddrs {
-		if strings.TrimSpace(addr) != "" {
-			return fmt.Errorf("route %q remote_addrs is unsupported by the Go data plane", routeResource.ID)
-		}
+	if strings.TrimSpace(routeResource.RemoteAddr) != "" {
+		return fmt.Errorf("route %q remote_addr is unsupported by the Go data plane", routeResource.ID)
+	}
+	if len(routeResource.RemoteAddrs) > 0 {
+		return fmt.Errorf("route %q remote_addrs is unsupported by the Go data plane", routeResource.ID)
 	}
 	if routeResource.StatusConfigured() && routeResource.Status != 0 && routeResource.Status != 1 {
 		return fmt.Errorf(

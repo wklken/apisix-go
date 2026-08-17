@@ -91,14 +91,14 @@ for the evidence and operator-supplied deployment step.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
 - An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
 - Route-level `script` and non-empty `filter_func` are rejected because the Go data plane does not execute Lua route logic; they are never silently discarded.
-- Route-level `vars` and non-empty `remote_addrs` are rejected during route
-  compilation. The Go matcher uses URI, host, and method only; those APISIX ACL
-  fields are never silently ignored. Empty `vars` (`[]` or `null`) and empty
-  `remote_addrs` remain accepted.
+- Route-level `vars`, non-empty `remote_addr`, and any non-empty `remote_addrs`
+  array are rejected during route compilation. The Go matcher uses URI, host,
+  and method only; those APISIX ACL fields are never silently ignored. Empty
+  `vars` (`[]` or `null`) and empty `remote_addrs` arrays remain accepted.
 - Explicit route `status: 0` is omitted from the HTTP route table. Omitted
   `status` and `status: 1` stay enabled. Any other explicit `status` fails
-  compilation. This is independent of SSL `status`, which already skips
-  `status == 0`.
+  compilation, and explicit `status: null` fails resource decoding. This is
+  independent of SSL `status`, which already skips `status == 0`.
 - HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
 - `http-data-plane-v1` rejects `scheme: kafka` upstreams because Kafka PubSub is a separate compatibility subsystem; the empty compatibility profile retains the Kafka owner.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.

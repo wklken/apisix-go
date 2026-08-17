@@ -68,6 +68,35 @@ func TestRouteUnmarshalPreservesNestedVarsThatAreNotStringTriples(t *testing.T) 
 	}
 }
 
+func TestRouteUnmarshalPreservesRemoteAddr(t *testing.T) {
+	var route Route
+	if err := appjson.Unmarshal(
+		[]byte(`{"id":"single-remote","uri":"/single-remote","remote_addr":"10.0.0.1"}`),
+		&route,
+	); err != nil {
+		t.Fatalf("unmarshal route: %v", err)
+	}
+
+	encoded, err := appjson.Marshal(route)
+	if err != nil {
+		t.Fatalf("marshal route: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"remote_addr":"10.0.0.1"`)) {
+		t.Fatalf("expected remote_addr to survive decoding, got %s", encoded)
+	}
+}
+
+func TestRouteUnmarshalRejectsNullStatus(t *testing.T) {
+	var route Route
+	err := appjson.Unmarshal([]byte(`{"id":"null-status","uri":"/null-status","status":null}`), &route)
+	if err == nil {
+		t.Fatal("expected null status to be rejected")
+	}
+	if !strings.Contains(err.Error(), "status") {
+		t.Fatalf("expected status error, got %v", err)
+	}
+}
+
 func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
 	var omitted Route
 	if err := appjson.Unmarshal([]byte(`{"id":"omitted","uri":"/omitted"}`), &omitted); err != nil {

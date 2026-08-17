@@ -10,7 +10,7 @@
 
 剩下的阻断：
 
-1. **代码 P0（001–003）**：**CLOSED**。路由 `vars` / `remote_addrs` 在 `validateRouteSemantics` 编译期 fail-closed；显式 `status: 0` 由 `Disabled()` 从 HTTP 路由表跳过。
+1. **代码 P0（001–003）**：**CLOSED**。路由 `vars` / `remote_addr` / `remote_addrs` 在 `validateRouteSemantics` 编译期 fail-closed；显式 `status: 0` 由 `Disabled()` 从 HTTP 路由表跳过，`status: null` 在解码期被拒绝。
 2. **发布资格 P0（004）**：**OPEN**。没有针对本 HEAD 的已签名 digest、RC/final 证据和可回滚旧 digest。
 
 ## 1. 执行摘要
@@ -23,12 +23,14 @@
 
 | 领域 | 状态 | 产出 |
 | --- | --- | --- |
-| 8 月 15 日 P0 001–010 + PR-015/016 | 完成 | [P0 ledger](e669411e-85fe-481e-a394-e715ec4de2cc)：9 CLOSED / 3 PARTIAL / 0 OPEN |
-| 8 月 15 日 P1 残留 + #116–#120 | 完成 | [P1 leftovers](b774b925-3fa0-4ce4-838e-17cc194a1e74) |
-| 安全残留 | 完成 | [Security](bb976cde-403e-4b6a-8efb-9fb9441ad9cb)：无 P0 认证绕过 |
-| 运维 / 发布 / HA | 完成 | [Ops](a23c2722-86ae-4d74-9b4f-adfd5c3fcac3)：代码/profile 就绪，证据未就绪 |
-| 正确性 / 静默失效 | 完成 | [Correctness](b7801cb1-746c-4e71-8d17-785c4a361449) |
-| 插件/profile 诚实性 | 完成 | [Parity](2dd4ed4e-e8ff-4862-aada-37078782e5b1) |
+| 8 月 15 日 P0 001–010 + PR-015/016 | 完成 | P0 ledger：9 CLOSED / 3 PARTIAL / 0 OPEN |
+| 8 月 15 日 P1 残留 + #116–#120 | 完成 | P1 leftovers |
+| 安全残留 | 完成 | Security：无 P0 认证绕过 |
+| 运维 / 发布 / HA | 完成 | Ops：代码/profile 就绪，证据未就绪 |
+| 正确性 / 静默失效 | 完成 | Correctness |
+| 插件/profile 诚实性 | 完成 | Parity |
+
+上述标签是审查期间的内部工作流分类，不是仓库外部链接；可审计证据以本仓库源码、测试、提交和 PR 为准。
 
 分级：
 
@@ -63,7 +65,7 @@
 
 ### 原 P1 运行时残留
 
-[P1 leftovers](b774b925-3fa0-4ce4-838e-17cc194a1e74) 在 `http-data-plane-v1` 上关闭：全局 413、强制密钥物化、wolf-rbac/OIDC/basic-auth/ldap hide、discovery/`enable_websocket`/Admin/QUIC/WASM fail-closed、SIGHUP 诚实、consumer 头剥离、代理错误不打 query、process access log 拒绝、HTTP 指标基数预算、es/clickhouse/cls 强制 `log_format`、OTel 不再把 `inactive_timeout` 映射成 exporter timeout。
+P1 leftovers 在 `http-data-plane-v1` 上关闭：全局 413、强制密钥物化、wolf-rbac/OIDC/basic-auth/ldap hide、discovery/`enable_websocket`/Admin/QUIC/WASM fail-closed、SIGHUP 诚实、consumer 头剥离、代理错误不打 query、process access log 拒绝、HTTP 指标基数预算、es/clickhouse/cls 强制 `log_format`、OTel 不再把 `inactive_timeout` 映射成 exporter timeout。
 
 仍 OPEN/延期：stream 指标、SkyWalking 单 span、进程内 limit/session/cache（profile 不允许这些插件）。
 
@@ -73,27 +75,27 @@
 
 ### PR-2026-08-16-001：路由 `vars` 被解析后忽略 — **CLOSED**
 
-**来源**：[Correctness](b7801cb1-746c-4e71-8d17-785c4a361449)，主会话复核。
+**来源**：Correctness，主会话复核。
 
 `resource.Route.Vars` 现为 raw JSON。`pkg/route.validateRouteSemantics` 对非空路由 `vars` fail-closed（`null` / `[]` 仍接受）。插件级 `vars`（traffic-split 等）不受影响。`BuildStrict` 失败时保留 last-good mux。
 
 **验收**：compile 对非空路由 `vars` fail closed；standalone/etcd 加载失败并保留 last-good。负向测试在 `pkg/route/unsupported_semantics_test.go`。
 
-### PR-2026-08-16-002：`remote_addrs` 被解析后忽略 — **CLOSED**
+### PR-2026-08-16-002：`remote_addr` / `remote_addrs` 被解析后忽略 — **CLOSED**
 
-`validateRouteSemantics` 拒绝任何非空白 `remote_addrs` 项。不实现 CIDR ACL。
+`resource.Route` 保留 singular `remote_addr`，`validateRouteSemantics` 拒绝非空 `remote_addr` 和任何非空 `remote_addrs` 数组。不实现 CIDR ACL。
 
-**验收**：非空 `remote_addrs` fail closed；负向测试与 `vars` 同表。
+**验收**：非空 `remote_addr` / `remote_addrs` fail closed；负向测试与 `vars` 同表，并覆盖空字符串和 null 数组元素。
 
 ### PR-2026-08-16-003：`status: 0` 不停用路由 — **CLOSED**
 
-SSL `status == 0` 仍由 `pkg/store/getter.go` 跳过。路由用 `StatusConfigured()` / `Disabled()` 区分缺省与显式 0。`BuildStrict` 对 `Disabled()` 跳过注册；非法显式 status（非 0/1）由 `validateRouteSemantics` 拒绝。
+SSL `status == 0` 仍由 `pkg/store/getter.go` 跳过。路由用 `StatusConfigured()` / `Disabled()` 区分缺省与显式 0。`BuildStrict` 对 `Disabled()` 跳过注册；`status: null` 和非整数值在解码期拒绝，其他非法显式 status（非 0/1）由 `validateRouteSemantics` 拒绝。
 
 **验收**：显式 `status: 0` 不进入路由表；缺省与 `status: 1` 仍启用。回归在 `pkg/route/route_status_test.go`。
 
 ### PR-2026-08-16-004：本 HEAD 没有合格发布证据 — **OPEN**
 
-**来源**：[Ops](a23c2722-86ae-4d74-9b4f-adfd5c3fcac3)、[P1 leftovers](b774b925-3fa0-4ce4-838e-17cc194a1e74)。
+**来源**：Ops、P1 leftovers。
 
 工作流已有 keyless cosign、`attest-build-provenance`、RC operational gates、etcd recovery harness。本提交没有 `v*` tag、没有 GHCR 已签名 digest、没有保留的 SBOM/Trivy/soak/recovery 证据包。首次发布没有旧 digest，回滚无法验收。`production-release` 环境仍需放行 `v*` tag（保留 reviewer / wait timer）。
 
@@ -113,8 +115,8 @@ jwt-auth 无 `exp` 不过期、上游 HTTPS 默认不校验证书、`hide_creden
 
 ### 6.1 兼容模式（空 profile）
 
-- 默认 access-log denylist 不含 key-auth 默认头 `apikey`，也不打码 query token。[Security](bb976cde-403e-4b6a-8efb-9fb9441ad9cb) P1-1。profile 六插件无 logger，故候选 profile 不触发。
-- `gm` 仍是 pass-through，`PostInit` 成功。[Parity](2dd4ed4e-e8ff-4862-aada-37078782e5b1)。profile 进不去。
+- 默认 access-log denylist 不含 key-auth 默认头 `apikey`，也不打码 query token。Security P1-1。profile 六插件无 logger，故候选 profile 不触发。
+- `gm` 仍是 pass-through，`PostInit` 成功。Parity。profile 进不去。
 - CLI 默认 `-c conf/config-default.yaml`：`debug: true`、loopback etcd、完整 allowlist。镜像 CMD 已改生产文件。
 - 镜像仍 COPY 兼容配置；覆盖 `CMD`/`-c` 会离开生产 profile。
 
@@ -149,7 +151,7 @@ jwt-auth 无 `exp` 不过期、上游 HTTPS 默认不校验证书、`hide_creden
 
 1. 只用 `deployment.profile: http-data-plane-v1` + 镜像默认 `config-production.yaml`；不要用 `config-default.yaml` 当生产。
 2. 提供 `https://` etcd 且 `tls.verify: true`。干净 `docker run` 在补 host 之前应 fail-closed。
-3. 迁移配置先剥掉 `vars` / `remote_addrs` / 显式 `status: 0`；数据面现在会拒绝或跳过这些字段，而不是静默忽略。
+3. 迁移配置先剥掉 `vars` / `remote_addr` / `remote_addrs` / 显式 `status: 0`；数据面现在会拒绝或跳过这些字段，而不是静默忽略。
 4. jwt 配 `claims_to_verify: ["exp"]`；上游 HTTPS 配 `tls.verify: true`；认证插件配 `hide_credentials: true`。
 5. 不要启用 logger / sls-logger / stream / `gm`。
 6. K8s：liveness `/livez`，readiness `/readyz`。不要把 Docker HEALTHCHECK 当 liveness。

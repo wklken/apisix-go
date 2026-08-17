@@ -237,6 +237,7 @@ type Route struct {
 	Name        string                  `json:"name,omitempty"`
 	Desc        string                  `json:"desc,omitempty"`
 	Labels      map[string]any          `json:"labels,omitempty"`
+	RemoteAddr  string                  `json:"remote_addr,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        json.RawMessage         `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
@@ -259,18 +260,24 @@ func (r *Route) UnmarshalJSON(data []byte) error {
 	type routeJSON Route
 	aux := struct {
 		routeJSON
-		Status *int `json:"status"`
+		Status json.RawMessage `json:"status"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	*r = Route(aux.routeJSON)
-	r.statusSet = aux.Status != nil
-	if aux.Status != nil {
-		r.Status = *aux.Status
-	} else {
+	if len(aux.Status) == 0 {
+		r.statusSet = false
 		r.Status = 0
+		return nil
 	}
+	if strings.TrimSpace(string(aux.Status)) == "null" {
+		return fmt.Errorf("unmarshal field `status` fail: null is not allowed")
+	}
+	if err := json.Unmarshal(aux.Status, &r.Status); err != nil {
+		return fmt.Errorf("unmarshal field `status` fail, %w", err)
+	}
+	r.statusSet = true
 	return nil
 }
 

@@ -52,14 +52,27 @@ var (
 )
 
 const (
-	httpStatusMetric  = "http_status"
-	httpLatencyMetric = "http_latency"
-	bandwidthMetric   = "bandwidth"
-	llmLatencyMetric  = "llm_latency"
-	llmPromptMetric   = "llm_prompt_tokens"
-	llmCompleteMetric = "llm_completion_tokens"
-	llmActiveMetric   = "llm_active_connections"
+	httpStatusMetric       = "http_status"
+	httpLatencyMetric      = "http_latency"
+	bandwidthMetric        = "bandwidth"
+	llmLatencyMetric       = "llm_latency"
+	llmPromptMetric        = "llm_prompt_tokens"
+	llmCompleteMetric      = "llm_completion_tokens"
+	llmActiveMetric        = "llm_active_connections"
+	defaultMaxMetricSeries = 10000
+	minMetricSeries        = 100
+	maxMetricSeries        = 100000
 )
+
+var expirableMetricNames = [...]string{
+	httpStatusMetric,
+	httpLatencyMetric,
+	bandwidthMetric,
+	llmLatencyMetric,
+	llmPromptMetric,
+	llmCompleteMetric,
+	llmActiveMetric,
+}
 
 type prometheusExtraLabel struct {
 	Name     string
@@ -614,6 +627,8 @@ type prometheusMetricConfig struct {
 	LLMBuckets    []float64
 	ExtraLabels   map[string][]prometheusExtraLabel
 	MaxHTTPSeries int
+	MaxLLMSeries  int
+	Expires       map[string]time.Duration
 }
 
 func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, error) {
@@ -621,17 +636,25 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 		MetricPrefix:  "apisix_",
 		Buckets:       append([]float64(nil), defaultLatencyBuckets...),
 		LLMBuckets:    append([]float64(nil), defaultLatencyBuckets...),
-		MaxHTTPSeries: defaultMaxHTTPSeries,
+		MaxHTTPSeries: defaultMaxMetricSeries,
+		MaxLLMSeries:  defaultMaxMetricSeries,
 	}
 	if attr == nil {
 		return cfg, nil
 	}
 	if raw, ok := attr["max_http_series"]; ok {
-		limit, err := parseMaxHTTPSeries(raw)
+		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_http_series")
 		if err != nil {
 			return cfg, err
 		}
 		cfg.MaxHTTPSeries = limit
+	}
+	if raw, ok := attr["max_llm_series"]; ok {
+		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_llm_series")
+		if err != nil {
+			return cfg, err
+		}
+		cfg.MaxLLMSeries = limit
 	}
 
 	if v, ok := attr["metric_prefix"].(string); ok && v != "" {
@@ -644,68 +667,106 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 		cfg.LLMBuckets = buckets
 	}
 	cfg.ExtraLabels = parseExtraLabels(attr["metrics"])
+	expires, err := parseMetricExpires(attr["metrics"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Expires = expires
 	return cfg, nil
 }
 
-func parseMaxHTTPSeries(raw any) (int, error) {
-	const fieldName = "plugin_attr.prometheus.max_http_series"
-	var value int64
-	switch typed := raw.(type) {
-	case int:
-		value = int64(typed)
-	case int8:
-		value = int64(typed)
-	case int16:
-		value = int64(typed)
-	case int32:
-		value = int64(typed)
-	case int64:
-		value = typed
-	case uint:
-		if uint64(typed) > uint64(maxInt()) {
-			return 0, fmt.Errorf(
-				"%s must be an integer between %d and %d, got %T",
-				fieldName,
-				minHTTPSeries,
-				maxHTTPSeries,
-				raw,
-			)
-		}
-		value = int64(typed)
-	case uint8:
-		value = int64(typed)
-	case uint16:
-		value = int64(typed)
-	case uint32:
-		value = int64(typed)
-	case uint64:
-		if typed > uint64(maxInt()) {
-			return 0, fmt.Errorf(
-				"%s must be an integer between %d and %d, got %T",
-				fieldName,
-				minHTTPSeries,
-				maxHTTPSeries,
-				raw,
-			)
-		}
-		value = int64(typed)
-	default:
+func parseSeriesLimit(raw any, fieldName string) (int, error) {
+	value, ok := strictInt64(raw)
+	if !ok {
 		return 0, fmt.Errorf(
 			"%s must be an integer between %d and %d, got %T",
 			fieldName,
-			minHTTPSeries,
-			maxHTTPSeries,
+			minMetricSeries,
+			maxMetricSeries,
 			raw,
 		)
 	}
-	if value < minHTTPSeries || value > maxHTTPSeries {
-		return 0, fmt.Errorf("%s must be between %d and %d, got %d", fieldName, minHTTPSeries, maxHTTPSeries, value)
+	if value < minMetricSeries || value > maxMetricSeries {
+		return 0, fmt.Errorf(
+			"%s must be between %d and %d, got %d",
+			fieldName,
+			minMetricSeries,
+			maxMetricSeries,
+			value,
+		)
 	}
 	return int(value), nil
 }
 
-func maxInt() int {
-	return int(^uint(0) >> 1)
+func parseMetricExpires(raw any) (map[string]time.Duration, error) {
+	metricConfigs, ok := raw.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+
+	var result map[string]time.Duration
+	const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+	for _, metricName := range expirableMetricNames {
+		metricConfig, ok := metricConfigs[metricName].(map[string]any)
+		if !ok {
+			continue
+		}
+		rawExpire, exists := metricConfig["expire"]
+		if !exists {
+			continue
+		}
+		seconds, valid := strictInt64(rawExpire)
+		fieldName := "plugin_attr.prometheus.metrics." + metricName + ".expire"
+		if !valid || seconds < 0 || seconds > maxSeconds {
+			return nil, fmt.Errorf(
+				"%s must be a non-negative integer number of seconds, got %v (%T)",
+				fieldName,
+				rawExpire,
+				rawExpire,
+			)
+		}
+		if seconds == 0 {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]time.Duration)
+		}
+		result[metricName] = time.Duration(seconds) * time.Second
+	}
+	return result, nil
+}
+
+func strictInt64(raw any) (int64, bool) {
+	switch typed := raw.(type) {
+	case int:
+		return int64(typed), true
+	case int8:
+		return int64(typed), true
+	case int16:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint:
+		if uint64(typed) > uint64(1<<63-1) {
+			return 0, false
+		}
+		return int64(typed), true
+	case uint8:
+		return int64(typed), true
+	case uint16:
+		return int64(typed), true
+	case uint32:
+		return int64(typed), true
+	case uint64:
+		if typed > uint64(1<<63-1) {
+			return 0, false
+		}
+		return int64(typed), true
+	default:
+		return 0, false
+	}
 }
 
 func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
@@ -715,15 +776,7 @@ func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
 	}
 
 	result := make(map[string][]prometheusExtraLabel)
-	for _, metricName := range []string{
-		httpStatusMetric,
-		httpLatencyMetric,
-		bandwidthMetric,
-		llmLatencyMetric,
-		llmPromptMetric,
-		llmCompleteMetric,
-		llmActiveMetric,
-	} {
+	for _, metricName := range expirableMetricNames {
 		metricConfig, ok := metricConfigs[metricName].(map[string]any)
 		if !ok {
 			continue

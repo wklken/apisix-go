@@ -146,15 +146,15 @@ func TestPrometheusMetricConfigHTTPSeriesLimit(t *testing.T) {
 		want    int
 		wantErr bool
 	}{
-		{name: "default", want: defaultMaxHTTPSeries},
-		{name: "minimum", raw: minHTTPSeries, want: minHTTPSeries},
-		{name: "maximum", raw: maxHTTPSeries, want: maxHTTPSeries},
+		{name: "default", want: defaultMaxMetricSeries},
+		{name: "minimum", raw: minMetricSeries, want: minMetricSeries},
+		{name: "maximum", raw: maxMetricSeries, want: maxMetricSeries},
 		{name: "int64", raw: int64(250), want: 250},
 		{name: "invalid string", raw: "1000", wantErr: true},
 		{name: "invalid bool", raw: true, wantErr: true},
 		{name: "invalid fractional", raw: 100.5, wantErr: true},
-		{name: "below minimum", raw: minHTTPSeries - 1, wantErr: true},
-		{name: "above maximum", raw: maxHTTPSeries + 1, wantErr: true},
+		{name: "below minimum", raw: minMetricSeries - 1, wantErr: true},
+		{name: "above maximum", raw: maxMetricSeries + 1, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

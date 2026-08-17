@@ -9,10 +9,7 @@ import (
 )
 
 const (
-	defaultMaxHTTPSeries = 10000
-	minHTTPSeries        = 100
-	maxHTTPSeries        = 100000
-	overflowLabel        = "__overflow__"
+	overflowLabel = "__overflow__"
 )
 
 // httpSeriesBudget admits complete HTTP metric tuples up to a fixed family

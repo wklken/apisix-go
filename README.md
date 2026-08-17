@@ -1,5 +1,7 @@
 # apisix-go
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/wklken/apisix-go/actions/workflows/unit-test.yml/badge.svg)](https://github.com/wklken/apisix-go/actions/workflows/unit-test.yml)
 [![License](https://img.shields.io/github/license/wklken/apisix-go)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/wklken/apisix-go?style=social)](https://github.com/wklken/apisix-go)

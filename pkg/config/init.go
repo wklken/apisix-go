@@ -260,6 +260,9 @@ func validateHTTPDataPlaneV1Profile(cfg *Config) error {
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
 		return profileFieldError(profile, "nginx_config.http.client_max_body_size", "must be positive")
 	}
+	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
+		return profileFieldError(profile, "nginx_config.http.client_body_timeout", "must be positive")
+	}
 	if cfg.Apisix.EnableAdmin {
 		return profileFieldError(profile, "apisix.enable_admin", "must be false")
 	}

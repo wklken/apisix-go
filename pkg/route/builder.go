@@ -569,7 +569,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 			if registerErr := registrar.registerRouteWithHosts(
 				routeResource.Methods,
 				uri,
-				routeResource.Hosts,
+				routeResource.EffectiveHosts(),
 				handler,
 			); registerErr != nil {
 				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
@@ -587,6 +587,9 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 }
 
 func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, ""); err != nil {
+		return nil, err
+	}
 	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, pluginRouteContext{})
 	if err != nil {
 		return nil, err
@@ -695,6 +698,12 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		service.Plugins,
 		r.ServiceID,
 	)
+	if err := validateHTTPDataPlaneMaterializedPluginSources(
+		append(localSources, serviceSources...),
+		r.ID,
+	); err != nil {
+		return nil, err
+	}
 
 	// add a context plugin, set the default vars
 	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
@@ -730,6 +739,9 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		logger.Errorf("list global rules fail: %s", err)
 		return nil, err
 	}
+	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, r.ID); err != nil {
+		return nil, err
+	}
 	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
 	if err != nil {
 		return nil, err
@@ -751,6 +763,12 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	resolvedUpstream, upstreamProvenance, err := resolveRouteUpstream(r, service)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateHTTPDataPlaneUpstreamPolicy(
+		resolvedUpstream,
+		fmt.Sprintf("%s %q for route %q", upstreamProvenance.Kind, upstreamProvenance.ID, r.ID),
+	); err != nil {
+		return nil, fmt.Errorf("route %q: %w", r.ID, err)
 	}
 	if err := validateUnsupportedUpstreamDiscovery(resolvedUpstream, upstreamProvenance); err != nil {
 		return nil, err
@@ -826,6 +844,21 @@ func buildTransparentUpgradeHandler(
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {
+	if routeResource.HostConfigured() && routeResource.HostsConfigured() {
+		return fmt.Errorf("route %q host and hosts cannot both be configured", routeResource.ID)
+	}
+	if routeResource.HostConfigured() && strings.TrimSpace(routeResource.Host) == "" {
+		return fmt.Errorf("route %q host must not be empty", routeResource.ID)
+	}
+	if routeResource.RemoteAddrConfigured() {
+		return fmt.Errorf("route %q remote_addr is unsupported by the Go data plane", routeResource.ID)
+	}
+	if scriptID := bytes.TrimSpace(
+		routeResource.ScriptID,
+	); len(scriptID) > 0 &&
+		!bytes.Equal(scriptID, []byte("null")) {
+		return fmt.Errorf("route %q script_id is unsupported by the Go data plane", routeResource.ID)
+	}
 	if script := bytes.TrimSpace(routeResource.Script); len(script) > 0 && !bytes.Equal(script, []byte("null")) {
 		return fmt.Errorf("route %q script is unsupported by the Go data plane", routeResource.ID)
 	}

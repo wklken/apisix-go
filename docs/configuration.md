@@ -33,11 +33,19 @@ themselves qualify an image or deployment.
 
 The profile requires `debug: false`, an HTTP-only `apisix.proxy_mode`, empty
 TCP/UDP stream listeners and `stream_plugins`, at least one valid
-`apisix.trusted_addresses` CIDR, a positive
-`nginx_config.http.client_max_body_size`, and no process access-log settings.
+`apisix.trusted_addresses` CIDR, positive
+`nginx_config.http.client_max_body_size` and `client_body_timeout` values, and
+no process access-log settings. The checked-in production override uses a
+60-second `client_body_timeout`.
 Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
 be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
 `request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`.
+In this candidate profile, enabled effective `key-auth`, `basic-auth`, and
+`jwt-auth` configurations must set `hide_credentials: true`; `jwt-auth` must
+also include literal `exp` in `claims_to_verify`. Effective HTTPS and gRPCS
+upstreams must set `tls.verify: true` after inline, ID, or service resolution.
+Disabled auth configurations remain inert. The empty compatibility profile
+retains the APISIX-compatible defaults for these dynamic fields.
 The profile also excludes Kafka PubSub and upstreams with `scheme: kafka`;
 those remain available only in the empty compatibility profile.
 
@@ -63,6 +71,14 @@ route continue serving; readiness must return to 200 after recovery and a
 newer revision must apply. See the [production release runbook](runbooks/production-release.md)
 for the evidence and operator-supplied deployment step.
 
+Plugin support status is verified by a separate read-only `Plugin Status
+Contract` workflow. It creates the same check on every pull request so it can
+be required without path-filtered PRs remaining pending, and runs the exact
+`TestSupportedPluginManifestSelection` gate. Pushes to `master` are limited to
+changes in `docs/plugins.md`, plugin manifests, the selector test, or the
+workflow itself. This keeps the status matrix independent from the broad CI
+path, which intentionally ignores Markdown-only changes.
+
 ## Applied by the Go runtime
 
 | Configuration | Go behavior |
@@ -74,7 +90,7 @@ for the evidence and operator-supplied deployment step.
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
 | `nginx_config.http.keepalive_timeout` | Maps to `http.Server.IdleTimeout`. |
-| `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. |
+| `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. `http-data-plane-v1` requires `client_body_timeout` to be positive; the checked-in production value is 60 seconds. |
 | `nginx_config.http.send_timeout` | Must remain zero. A non-zero value fails startup because Go `net/http` cannot reproduce NGINX write-idle timeout semantics without imposing an absolute response deadline. |
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
 | `deployment.etcd.health_check_timeout` | Sets the interval in seconds between independent etcd reachability probes. It defaults to 10 seconds when omitted or non-positive. Each probe is separately bounded by `deployment.etcd.timeout`; this field is an interval, not a request deadline. |
@@ -94,15 +110,23 @@ for the evidence and operator-supplied deployment step.
   inactivity limits which reset when body I/O makes progress. `read` also
   limits the wait for response headers. Long-idle WebSocket or gRPC streams
   must set an explicit `timeout` larger than 60s, same as APISIX.
-- `tls.verify: true` validates an HTTPS upstream certificate. Omitted or false preserves APISIX-compatible insecure verification behavior.
+- `tls.verify: true` validates an HTTPS upstream certificate. In the empty
+  compatibility profile, omitted or false preserves APISIX-compatible insecure
+  verification behavior; `http-data-plane-v1` rejects an effective HTTPS or
+  gRPCS upstream unless `tls.verify: true`.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
 - An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
-- Route-level `script` and non-empty `filter_func` are rejected because the Go data plane does not execute Lua route logic; they are never silently discarded.
-- Route-level `vars` and non-empty `remote_addrs` are rejected during route
-  compilation. The Go matcher uses URI, host, and method only; those APISIX ACL
-  fields are never silently ignored. Empty `vars` (`[]` or `null`) and empty
-  `remote_addrs` remain accepted.
+- A singular route `host` uses the same exact and wildcard dispatcher as a
+  one-element `hosts` list. Simultaneous `host` and `hosts`, or a blank
+  singular `host`, is rejected; a request with the wrong host receives 404.
+- Route `remote_addr` (when configured, including an explicit blank), non-empty
+  `remote_addrs`, non-empty `vars`, non-null `script_id`, `script`, and
+  non-empty `filter_func` are rejected during route compilation because the Go
+  data plane does not implement those APISIX ACL or Lua semantics. They are
+  never silently discarded. Empty `vars` (`[]` or `null`) and empty
+  `remote_addrs` remain accepted. The Go matcher uses URI, host, and method
+  only.
 - Explicit route `status: 0` is omitted from the HTTP route table. Omitted
   `status` and `status: 1` stay enabled. Any other explicit `status` fails
   compilation. This is independent of SSL `status`, which already skips

@@ -1,0 +1,33 @@
+name: Plugin Status Contract
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/plugins.md
+      - t/plugin/*.yaml
+      - t/plugin/coverage_test.go
+      - .github/workflows/plugin-status.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-status:
+    name: Plugin Status Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify supported plugin manifest selection
+        run: go test ./t/plugin -run '^TestSupportedPluginManifestSelection$' -count=1

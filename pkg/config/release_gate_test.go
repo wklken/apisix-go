@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const validRuntimeConfig = `
@@ -296,7 +297,7 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	}
 }
 
-func TestProductionConfigLoadsWithExplicitEtcdEndpoint(t *testing.T) {
+func TestProductionConfigFilePassesReleaseGate(t *testing.T) {
 	previous := GlobalConfig
 	t.Cleanup(func() { GlobalConfig = previous })
 	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "https://etcd.example:2379")
@@ -367,6 +368,9 @@ func TestProductionConfigLoadsWithExplicitEtcdEndpoint(t *testing.T) {
 	}
 	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
 		t.Fatalf("production client max body size = %d, want %d", got, want)
+	}
+	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
+		t.Fatalf("production client body timeout = %s, want %s", got, want)
 	}
 }
 
@@ -543,6 +547,13 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 			},
 		},
 		{
+			name:  "client body timeout",
+			field: "nginx_config.http.client_body_timeout",
+			mutate: func(cfg *Config) {
+				cfg.NginxConfig.HTTP.ClientBodyTimeout = 0
+			},
+		},
+		{
 			name:  "proxy mode",
 			field: "apisix.proxy_mode",
 			mutate: func(cfg *Config) {
@@ -705,9 +716,12 @@ func validHTTPDataPlaneV1Config() *Config {
 			},
 			TrustedAddresses: []string{"10.0.0.0/8"},
 		},
-		NginxConfig: NginxConfig{HTTP: NginxHTTP{ClientMaxBodySize: 10 * 1024 * 1024}},
-		Plugins:     []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"},
-		Proxy:       Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
+		NginxConfig: NginxConfig{HTTP: NginxHTTP{
+			ClientBodyTimeout: 60 * time.Second,
+			ClientMaxBodySize: 10 * 1024 * 1024,
+		}},
+		Plugins: []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"},
+		Proxy:   Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
 		Deployment: Deployment{
 			Profile:          HTTPDataPlaneV1Profile,
 			Role:             "data_plane",

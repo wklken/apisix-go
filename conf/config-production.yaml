@@ -36,6 +36,7 @@ nginx_config:
     access_log_buffer: 0
     access_log_format: ""
     access_log_format_escape: ""
+    client_body_timeout: 60s
     client_max_body_size: 10485760
   stream:
     enable_access_log: false

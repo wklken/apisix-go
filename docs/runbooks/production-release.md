@@ -33,7 +33,9 @@ Before an operator starts, obtain:
   running repository scripts. Do not substitute a branch head, mutable tag,
   drifted harness checkout, or unrecorded local build for that identity;
 - an environment-specific deployment procedure and an authenticated probe
-  credential for one route in the six-plugin allowlist.
+  credential for one route in the six-plugin allowlist;
+- an external ingress request-log evidence owner and a redacted evidence bundle
+  plan covering representative successful, rejected, and failed requests.
 
 The final workflow must use the protected `production-release` environment.
 The repository currently permits only protected branches in that environment,
@@ -42,12 +44,21 @@ operator must explicitly allow the intended `v*` tag policy in that environment
 without removing its required reviewers or wait timer. This runbook and the
 implementation do not mutate repository settings or bypass those protections.
 
+Before RC or final qualification, the release owner must verify that `master`
+remains protected, the required CI, security, and independent plugin-status
+checks are enforced, and no self-approval is permitted. The
+`production-release` environment must retain its required reviewers and wait
+timer while allowing only the explicitly approved `v*` tag policy. These are
+repository and environment prerequisites to verify externally; this runbook
+does not change them.
+
 ## Gate and evidence contract
 
-Each RC/final run resolves its selected ref once and every job uses the same
-immutable commit. RC and final runs build different artifacts and must each
-pass the full gates; RC evidence qualifies only the RC image and is never
-relabeled as final evidence. A read-only `container-evidence` job builds and loads one
+The post-merge RC and the independent final must qualify the same recorded
+source revision. Each RC/final run resolves its selected ref once and every job
+uses the same immutable commit. RC and final runs build different artifacts and
+must each pass the full gates; RC evidence qualifies only the RC image and is
+never relabeled as final evidence. A read-only `container-evidence` job builds and loads one
 `linux/amd64` image, runs the non-root container smoke, creates the SBOM,
 rejects HIGH/CRITICAL Trivy findings, and archives the exact image. A separate
 guarded `publish-image` job alone has registry write, OIDC, and attestation
@@ -72,6 +83,7 @@ The operational gates are:
      go test -json ./pkg/route -run '^TestProxyRuntimeSoak$' -count=1 -timeout=40m \
      | tee .cache/release-evidence/proxy-soak.json
    ```
+5. the external ingress request-log evidence bundle described below.
 
 `.cache/telemetry` is optional and reserved for a producer; do not describe it
 as populated unless a workflow step actually creates it. The final workflow
@@ -267,6 +279,25 @@ from the allowlisted authenticated route. Record the image digest, replica or
 deployment identity, timestamps, response status, and evidence links for each
 step. Do not infer qualification from workflow YAML inspection alone.
 
+## External ingress request-log evidence
+
+The exact six-plugin profile has no in-process request logger. Before RC/final
+qualification, the external ingress owner must export a redacted evidence
+bundle for representative successful, rejected, and failed requests. Each
+sample or its correlated record must demonstrate:
+
+- a redacted request ID and trace correlation;
+- the HTTP method and normalized path with query-string secrets removed;
+- response status and latency;
+- the selected upstream identity; and
+- the retention owner, retention period, and evidence location.
+
+The bundle must identify the ingress configuration and collection time, and
+the release evidence must retain the redaction check and the query/export
+procedure used to produce it. This is external ingress evidence, not a claim
+that the Go runtime emits these fields; container logs or process access-log
+settings alone cannot satisfy this gate.
+
 ## Environment capacity and failure qualification
 
 Repository gates do not establish production capacity for an operator's
@@ -404,7 +435,10 @@ durable release-asset links.
 Keep the profile and ledger wording as candidate/not-ready until a post-merge
 RC has passed for its own digest and all final-release gates, clean-host
 acceptance, deployment probes, environment-specific capacity/failure evidence,
-and verified rollback evidence exist for the final digest. Never combine RC
-and final evidence as though independently built images had one identity. A
-successful local shell test, workflow definition, or attached artifact is not
-by itself a production qualification claim.
+external ingress request-log evidence, and verified rollback evidence exist for
+the final digest. The protected `master` policy, required CI/security/plugin-
+status checks, protected `production-release` reviewers/wait timer, approved
+`v*` tag policy, and no-self-approval rule must also remain in force. Never
+combine RC and final evidence as though independently built images had one
+identity. A successful local shell test, workflow definition, or attached
+artifact is not by itself a production qualification claim.

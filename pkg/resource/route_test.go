@@ -68,6 +68,74 @@ func TestRouteUnmarshalPreservesNestedVarsThatAreNotStringTriples(t *testing.T) 
 	}
 }
 
+func TestRouteUnmarshalPreservesSingularMatchingFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		payload       string
+		wantHost      bool
+		wantHosts     []string
+		wantRemote    bool
+		wantRemoteVal string
+		wantScriptID  string
+	}{
+		{
+			name:      "singular host",
+			payload:   `{"id":"singular-host","uri":"/host","host":"api.example.com"}`,
+			wantHost:  true,
+			wantHosts: []string{"api.example.com"},
+		},
+		{
+			name:      "null singular host remains configured",
+			payload:   `{"id":"null-singular-host","uri":"/host","host":null}`,
+			wantHost:  true,
+			wantHosts: []string{""},
+		},
+		{
+			name:          "singular remote",
+			payload:       `{"id":"singular-remote","uri":"/remote","remote_addr":"10.0.0.1"}`,
+			wantRemote:    true,
+			wantRemoteVal: "10.0.0.1",
+		},
+		{
+			name:         "script reference",
+			payload:      `{"id":"script-reference","uri":"/script","script_id":"script-1"}`,
+			wantScriptID: `"script-1"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var route Route
+			if err := appjson.Unmarshal([]byte(test.payload), &route); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if got := route.HostConfigured(); got != test.wantHost {
+				t.Fatalf("HostConfigured() = %v, want %v", got, test.wantHost)
+			}
+			if got := route.EffectiveHosts(); !reflect.DeepEqual(got, test.wantHosts) {
+				t.Fatalf("EffectiveHosts() = %#v, want %#v", got, test.wantHosts)
+			}
+			if got := route.RemoteAddrConfigured(); got != test.wantRemote {
+				t.Fatalf("RemoteAddrConfigured() = %v, want %v", got, test.wantRemote)
+			}
+			if test.wantRemote && route.RemoteAddr != test.wantRemoteVal {
+				t.Fatalf("RemoteAddr = %q, want %q", route.RemoteAddr, test.wantRemoteVal)
+			}
+			if test.wantScriptID != "" && string(route.ScriptID) != test.wantScriptID {
+				t.Fatalf("ScriptID = %q, want %q", route.ScriptID, test.wantScriptID)
+			}
+		})
+	}
+}
+
+func TestRouteUnmarshalRejectsNonStringHost(t *testing.T) {
+	var route Route
+	err := appjson.Unmarshal([]byte(`{"id":"invalid-host","uri":"/host","host":42}`), &route)
+	if err == nil {
+		t.Fatal("json.Unmarshal() error = nil, want non-string host rejection")
+	}
+}
+
 func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
 	var omitted Route
 	if err := appjson.Unmarshal([]byte(`{"id":"omitted","uri":"/omitted"}`), &omitted); err != nil {

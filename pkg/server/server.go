@@ -141,8 +141,9 @@ type Server struct {
 	listenerMu sync.Mutex
 	listeners  []net.Listener
 
-	prometheusServer *http.Server
-	otelShutdown     func(context.Context) error
+	prometheusServer         *http.Server
+	stopPrometheusExpiration func(context.Context) error
+	otelShutdown             func(context.Context) error
 }
 
 const startupCleanupTimeout = time.Second
@@ -552,6 +553,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if err := metrics.Init(); err != nil {
 		return fmt.Errorf("initialize prometheus metrics: %w", err)
 	}
+	if err := s.startPrometheusExpiration(ctx); err != nil {
+		return err
+	}
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
 		s.storage.AddEventUpdateHook(
@@ -706,6 +710,9 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 			return fmt.Errorf("stop HTTP server: %w", err), false
 		}
 	}
+	if err := s.stopPrometheusExpirationRuntime(ctx); err != nil {
+		return err, false
+	}
 
 	producerErr, lifecycleComplete := s.stopProducerAndScheduler(ctx)
 	if !lifecycleComplete {
@@ -743,6 +750,52 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 		}
 	}
 	return errors.Join(errs...), true
+}
+
+func (s *Server) startPrometheusExpiration(ctx context.Context) error {
+	stop, err := metrics.StartExpiration(ctx)
+	if err != nil {
+		return fmt.Errorf("start prometheus metric expiration: %w", err)
+	}
+	return s.retainPrometheusExpiration(stop)
+}
+
+func (s *Server) retainPrometheusExpiration(stop func(context.Context) error) error {
+	if stop == nil {
+		return nil
+	}
+
+	s.lifecycleMu.Lock()
+	if !s.shutdownRequested {
+		s.stopPrometheusExpiration = stop
+		s.lifecycleMu.Unlock()
+		return nil
+	}
+	s.lifecycleMu.Unlock()
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), startupCleanupTimeout)
+	stopErr := stop(stopCtx)
+	cancel()
+	return errors.Join(context.Canceled, stopErr)
+}
+
+func (s *Server) stopPrometheusExpirationRuntime(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	s.shutdownRequested = true
+	stop := s.stopPrometheusExpiration
+	s.lifecycleMu.Unlock()
+	if stop == nil {
+		return nil
+	}
+	if err := stop(ctx); err != nil {
+		return fmt.Errorf("stop prometheus metric expiration: %w", err)
+	}
+	s.lifecycleMu.Lock()
+	if s.stopPrometheusExpiration != nil {
+		s.stopPrometheusExpiration = nil
+	}
+	s.lifecycleMu.Unlock()
+	return nil
 }
 
 func (s *Server) stopProducerAndScheduler(ctx context.Context) (error, bool) {

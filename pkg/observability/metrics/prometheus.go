@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -54,6 +55,7 @@ var (
 	llmActiveSeries       *metricSeriesTracker
 	httpSeriesOverflow    *prometheus.CounterVec
 	llmSeriesOverflow     *prometheus.CounterVec
+	metricExpiration      *expirationRuntime
 )
 
 const (
@@ -138,6 +140,13 @@ func Init() error {
 		initErr = initMetrics()
 	})
 	return initErr
+}
+
+func StartExpiration(ctx context.Context) (func(context.Context) error, error) {
+	if metricExpiration == nil {
+		return nil, nil
+	}
+	return metricExpiration.Start(ctx)
 }
 
 func initMetrics() error {
@@ -382,6 +391,15 @@ func initMetrics() error {
 		metricConfig.Expires[llmActiveMetric],
 		llmSeriesOverflow.WithLabelValues(llmActiveMetric),
 		LLMActiveConnections.DeleteLabelValues,
+	)
+	metricExpiration = newExpirationRuntime(
+		httpStatusSeries,
+		httpLatencySeries,
+		bandwidthSeries,
+		llmLatencySeries,
+		llmPromptSeries,
+		llmCompletionSeries,
+		llmActiveSeries,
 	)
 
 	hostName, err := os.Hostname()

@@ -87,6 +87,108 @@ func TestServerShutdownClosesClusterRegistry(t *testing.T) {
 	}
 }
 
+func TestServerShutdownStopsPrometheusExpiration(t *testing.T) {
+	stopCalls := 0
+	server := &Server{
+		stopPrometheusExpiration: func(context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("expiration stop calls = %d, want 1", stopCalls)
+	}
+	if server.stopPrometheusExpiration != nil {
+		t.Fatal("successful Shutdown() retained expiration stop callback")
+	}
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown() error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("second Shutdown() expiration stop calls = %d, want 1", stopCalls)
+	}
+}
+
+func TestServerShutdownRetriesPrometheusExpirationWait(t *testing.T) {
+	release := make(chan struct{})
+	stopCalls := 0
+	server := &Server{
+		stopPrometheusExpiration: func(ctx context.Context) error {
+			stopCalls++
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+
+	firstCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := server.Shutdown(firstCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Shutdown() error = %v, want context.Canceled", err)
+	}
+	if server.shutdownComplete {
+		t.Fatal("timed-out expiration wait marked shutdown complete")
+	}
+	if server.stopPrometheusExpiration == nil {
+		t.Fatal("timed-out expiration wait cleared stop callback")
+	}
+
+	close(release)
+	if err := server.Shutdown(context.Background()); err != nil {
+		t.Fatalf("retry Shutdown() error = %v", err)
+	}
+	if stopCalls != 2 {
+		t.Fatalf("expiration stop calls = %d, want 2", stopCalls)
+	}
+}
+
+func TestStartFailureCleanupStopsPrometheusExpiration(t *testing.T) {
+	stopCalls := 0
+	server := &Server{
+		stopPrometheusExpiration: func(context.Context) error {
+			stopCalls++
+			return nil
+		},
+	}
+
+	if err := server.cleanupAfterStart(); err != nil {
+		t.Fatalf("cleanupAfterStart() error = %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("expiration stop calls = %d, want 1", stopCalls)
+	}
+}
+
+func TestServerShutdownRejectsLatePrometheusExpirationRetention(t *testing.T) {
+	server := &Server{}
+	if err := server.stopPrometheusExpirationRuntime(context.Background()); err != nil {
+		t.Fatalf("stopPrometheusExpirationRuntime() error = %v", err)
+	}
+
+	stopCalls := 0
+	err := server.retainPrometheusExpiration(func(context.Context) error {
+		stopCalls++
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("retainPrometheusExpiration() error = %v, want context.Canceled", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("late expiration stop calls = %d, want 1", stopCalls)
+	}
+	if server.stopPrometheusExpiration != nil {
+		t.Fatal("late expiration handle was retained after shutdown began")
+	}
+}
+
 type fakeConfigProducer struct {
 	mu       sync.Mutex
 	stopped  int

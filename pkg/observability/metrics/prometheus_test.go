@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -609,7 +610,12 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	t.Cleanup(func() { config.GlobalConfig = previous })
 	config.GlobalConfig = &config.Config{
 		PluginAttr: map[string]map[string]any{
-			"prometheus": {"metric_prefix": "unit_"},
+			"prometheus": {
+				"metric_prefix": "unit_",
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{"expire": 1},
+				},
+			},
 		},
 	}
 
@@ -629,8 +635,22 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	if LLMLatency == nil || LLMPromptTokens == nil || LLMCompletionTokens == nil {
 		t.Fatal("Init() did not install all LLM metric vectors")
 	}
+	if httpStatusSeries == nil || httpLatencySeries == nil || bandwidthSeries == nil ||
+		llmLatencySeries == nil || llmPromptSeries == nil || llmCompletionSeries == nil || llmActiveSeries == nil {
+		t.Fatal("Init() did not install all metric series trackers")
+	}
 	if requestPanics == nil {
 		t.Fatal("Init() did not install request panic metric")
+	}
+	stop, err := StartExpiration(context.Background())
+	if err != nil {
+		t.Fatalf("StartExpiration() error = %v", err)
+	}
+	if stop == nil {
+		t.Fatal("StartExpiration() stop = nil with enabled expiration")
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("stop expiration error = %v", err)
 	}
 }
 

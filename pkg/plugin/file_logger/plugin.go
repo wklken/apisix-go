@@ -118,7 +118,7 @@ type Plugin struct {
 	config Config
 
 	logger         *zap.Logger
-	writer         *appendFileWriteSyncer
+	writer         *bufferedFileWriteSyncer
 	lease          *fileWriterLease
 	BatchProcessor *logger_batch.Processor
 
@@ -314,10 +314,12 @@ func (p *Plugin) enqueueHandler(fields map[string]any) {
 	for time.Now().Before(deadline) {
 		stats := p.BatchProcessor.Stats()
 		if stats.Pending == 0 && stats.Processing == 0 && stats.Buffered == 0 {
+			_ = p.logger.Sync()
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
+	_ = p.logger.Sync()
 }
 
 func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {

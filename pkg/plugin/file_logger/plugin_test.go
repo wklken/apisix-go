@@ -3,11 +3,14 @@ package file_logger
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +180,61 @@ func TestAppendFileWriteSyncerFileModes(t *testing.T) {
 			t.Fatalf("existing file mode = %o, want 640", got)
 		}
 	})
+}
+
+func TestBufferedWriterDefersWriteUntilSync(t *testing.T) {
+	path := t.TempDir() + "/buffered.log"
+	lease, err := sharedFileWriters.acquire(path)
+	if err != nil {
+		t.Fatalf("acquire() error = %v", err)
+	}
+	t.Cleanup(lease.release)
+
+	if _, err := lease.writer.Write([]byte("buffered entry")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if content := readLogFile(t, path); content != "" {
+		t.Fatalf("log content before Sync() = %q, want empty", content)
+	}
+
+	if err := lease.writer.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if content := readLogFile(t, path); content != "buffered entry" {
+		t.Fatalf("log content after Sync() = %q, want buffered entry", content)
+	}
+}
+
+func TestBufferedWriterRecoversAfterTransientSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "access.log")
+	lease, err := sharedFileWriters.acquire(path)
+	if err != nil {
+		t.Fatalf("acquire() error = %v", err)
+	}
+	t.Cleanup(lease.release)
+
+	if _, err := lease.writer.Write([]byte("lost entry")); err != nil {
+		t.Fatalf("Write(lost entry) error = %v", err)
+	}
+	// Use the zap buffer directly to model its background flush loop: that
+	// failure is not returned through the wrapper and leaves bufio's error
+	// sticky until the next Write observes it.
+	if err := lease.writer.buffer.Sync(); err == nil {
+		t.Fatal("background Sync() error = nil, want missing parent error")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	if _, err := lease.writer.Write([]byte("recovered entry")); err != nil {
+		t.Fatalf("Write(recovered entry) error = %v", err)
+	}
+	if err := lease.writer.Sync(); err != nil {
+		t.Fatalf("Sync(recovered entry) error = %v", err)
+	}
+	if content := readLogFile(t, path); content != "recovered entry" {
+		t.Fatalf("recovered log content = %q, want recovered entry", content)
+	}
 }
 
 var testSensitiveFileLoggerHeaders = []string{
@@ -535,6 +593,52 @@ func TestFlushAndReopenMovesWritesToCurrentPath(t *testing.T) {
 	}
 }
 
+func TestFlushAndReopenFlushesBufferedBytesBeforeReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/access.log"
+	rotated := dir + "/access.log.old"
+	p := newTestPlugin(t, Config{Path: path})
+
+	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/before"}}, 1); err != nil {
+		t.Fatalf("sendBatch(before) error = %v", err)
+	}
+	if err := p.logger.Sync(); err != nil {
+		t.Fatalf("Sync(before) error = %v", err)
+	}
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatalf("rename current log: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("recreate current log: %v", err)
+	}
+
+	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/buffered"}}, 1); err != nil {
+		t.Fatalf("sendBatch(buffered) error = %v", err)
+	}
+	if err := FlushAndReopen(path); err != nil {
+		t.Fatalf("FlushAndReopen() error = %v", err)
+	}
+
+	rotatedContent := readLogFile(t, rotated)
+	if !strings.Contains(rotatedContent, `"path":"/before"`) ||
+		!strings.Contains(rotatedContent, `"path":"/buffered"`) {
+		t.Fatalf("rotated log content = %q, want pre-reopen entries", rotatedContent)
+	}
+	if content := readLogFile(t, path); content != "" {
+		t.Fatalf("current log content after reopen = %q, want empty", content)
+	}
+
+	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/after"}}, 1); err != nil {
+		t.Fatalf("sendBatch(after) error = %v", err)
+	}
+	if err := p.logger.Sync(); err != nil {
+		t.Fatalf("Sync(after) error = %v", err)
+	}
+	if content := readLogFile(t, path); !strings.Contains(content, `"path":"/after"`) {
+		t.Fatalf("current log content = %q, want post-reopen entry", content)
+	}
+}
+
 func TestFlushAndReopenAcceptsRegisteredMissingPath(t *testing.T) {
 	path := t.TempDir() + "/missing.log"
 	p := newTestPlugin(t, Config{
@@ -570,6 +674,36 @@ func TestFinalLeaseReleaseRemovesRegisteredWriter(t *testing.T) {
 	}
 	if sharedFileWriters.signalWatcherRunning() {
 		t.Fatal("SIGUSR1 watcher remains after final lease release")
+	}
+}
+
+func TestFinalLeaseReleaseFlushesBufferedBytes(t *testing.T) {
+	path := t.TempDir() + "/released.log"
+	lease, err := sharedFileWriters.acquire(path)
+	if err != nil {
+		t.Fatalf("acquire() error = %v", err)
+	}
+	writer := lease.writer
+	key, err := canonicalWriterPath(path)
+	if err != nil {
+		t.Fatalf("canonicalWriterPath() error = %v", err)
+	}
+	if _, err := writer.Write([]byte("released entry")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	lease.release()
+
+	content := readLogFile(t, path)
+	if content != "released entry" {
+		t.Fatalf("released log content = %q, want released entry", content)
+	}
+	if sharedFileWriters.has(key) {
+		t.Fatal("writer remains registered after final lease release")
+	}
+	_, err = writer.Write([]byte("late entry"))
+	if !errors.Is(err, errFileLoggerWriterStopped) {
+		t.Fatalf("Write() after release error = %v, want %v", err, errFileLoggerWriterStopped)
 	}
 }
 

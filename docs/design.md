@@ -695,11 +695,14 @@ combined with ordinary `body` or `filters`.
 
 ## Logger Batch Resource Ownership
 
-All network and broker loggers that use the shared batch processor inherit a
-central resource contract. An unset `max_pending_entries` is bounded at 10,000,
-and a new entry is rejected when the number of buffered, queued, active, and
-retrying entries is already at that limit. The request logging path never waits
-for a delivery worker; rejection is the overload policy.
+All sinks that use the shared batch processor, including `file-logger`, inherit
+a central resource contract. An unset `max_pending_entries` is bounded at
+10,000, and a new entry is rejected when the number of buffered, queued, active,
+and retrying entries is already at that limit. The detached production
+`RunLogPhase` path never waits for a delivery worker; rejection is the overload
+policy. The legacy direct `Handler` compatibility path is the explicit
+exception: it flushes and waits briefly so callers can read the file when
+`ServeHTTP` returns.
 
 Flushes are consumed by one delivery worker per processor by default rather
 than starting one goroutine per batch. Each delivery attempt has a 10-second
@@ -723,3 +726,12 @@ returned, asynchronously when an uncooperative callback outlives `Stop()`.
 and shutdown outcomes. Dynamic gauges are refcounted across overlapping route
 generations and are deleted only after the final processor owner closes; event
 counters use the stable plugin identifier and a bounded outcome label.
+
+`file-logger` has a second, byte-oriented buffer after the entry queue: zap
+encodes delivered entries into one 64 KiB `BufferedWriteSyncer` shared by every
+plugin lease for the same canonical path. It flushes at least once per second;
+explicit sync, signal-driven reopen, and orderly final lease release also flush
+the buffer. Reopen serializes the flush-to-old-descriptor boundary before later
+writes use the current path. A process crash can lose bytes still in this
+one-second application buffer. Byte-based queue admission and durable write
+retry/error propagation remain separate work.

@@ -238,7 +238,7 @@ type Route struct {
 	Desc        string                  `json:"desc,omitempty"`
 	Labels      map[string]any          `json:"labels,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
-	Vars        [][]string              `json:"vars,omitempty"`
+	Vars        json.RawMessage         `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail
 	PluginConfigID  string          `json:"plugin_config_id,omitempty"`
 	ServiceID       string          `json:"service_id,omitempty"`
@@ -252,6 +252,34 @@ type Route struct {
 	CreateTime int64 `json:"create_time,omitempty"`
 	UpdateTime int64 `json:"update_time,omitempty"`
 	Status     int   `json:"status,omitempty"`
+	statusSet  bool
+}
+
+func (r *Route) UnmarshalJSON(data []byte) error {
+	type routeJSON Route
+	aux := struct {
+		routeJSON
+		Status *int `json:"status"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = Route(aux.routeJSON)
+	r.statusSet = aux.Status != nil
+	if aux.Status != nil {
+		r.Status = *aux.Status
+	} else {
+		r.Status = 0
+	}
+	return nil
+}
+
+func (r Route) StatusConfigured() bool {
+	return r.statusSet
+}
+
+func (r Route) Disabled() bool {
+	return r.statusSet && r.Status == 0
 }
 
 // StreamRoute describes the APISIX L4 route fields used by the Go stream

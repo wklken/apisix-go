@@ -1,10 +1,13 @@
 package resource
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+
+	appjson "github.com/wklken/apisix-go/pkg/json"
 )
 
 func TestRouteUnmarshalPreservesLabels(t *testing.T) {
@@ -33,6 +36,75 @@ func TestRouteUnmarshalPreservesScriptPresence(t *testing.T) {
 
 	if got, want := string(route.Script), `"return true"`; got != want {
 		t.Fatalf("Route.Script = %q, want raw JSON %q", got, want)
+	}
+}
+
+func TestRouteUnmarshalPreservesVarsPresence(t *testing.T) {
+	var route Route
+	payload := []byte(`{
+		"id": "vars-route",
+		"uri": "/vars",
+		"vars": [["http_user", "==", "ios"]]
+	}`)
+	if err := appjson.Unmarshal(payload, &route); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(bytes.TrimSpace(route.Vars)) == 0 {
+		t.Fatal("Route.Vars is empty, want preserved raw JSON")
+	}
+	if !bytes.Contains(route.Vars, []byte("http_user")) {
+		t.Fatalf("Route.Vars = %s, want http_user clause", route.Vars)
+	}
+}
+
+func TestRouteUnmarshalPreservesNestedVarsThatAreNotStringTriples(t *testing.T) {
+	var route Route
+	payload := []byte(`{"id":"nested-vars","uri":"/nested","vars":[["arg_age","==",18]]}`)
+	if err := appjson.Unmarshal(payload, &route); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, want nested vars retained as raw JSON", err)
+	}
+	if !bytes.Contains(route.Vars, []byte("18")) {
+		t.Fatalf("Route.Vars = %s, want numeric operand preserved", route.Vars)
+	}
+}
+
+func TestRouteUnmarshalDistinguishesOmittedAndExplicitStatus(t *testing.T) {
+	var omitted Route
+	if err := appjson.Unmarshal([]byte(`{"id":"omitted","uri":"/omitted"}`), &omitted); err != nil {
+		t.Fatalf("omitted status unmarshal error = %v", err)
+	}
+	if omitted.StatusConfigured() || omitted.Disabled() {
+		t.Fatalf(
+			"omitted status configured=%v disabled=%v, want both false",
+			omitted.StatusConfigured(),
+			omitted.Disabled(),
+		)
+	}
+
+	var enabled Route
+	if err := appjson.Unmarshal([]byte(`{"id":"enabled","uri":"/enabled","status":1}`), &enabled); err != nil {
+		t.Fatalf("status=1 unmarshal error = %v", err)
+	}
+	if !enabled.StatusConfigured() || enabled.Disabled() || enabled.Status != 1 {
+		t.Fatalf(
+			"status=1 configured=%v disabled=%v status=%d",
+			enabled.StatusConfigured(),
+			enabled.Disabled(),
+			enabled.Status,
+		)
+	}
+
+	var disabled Route
+	if err := appjson.Unmarshal([]byte(`{"id":"disabled","uri":"/disabled","status":0}`), &disabled); err != nil {
+		t.Fatalf("status=0 unmarshal error = %v", err)
+	}
+	if !disabled.StatusConfigured() || !disabled.Disabled() || disabled.Status != 0 {
+		t.Fatalf(
+			"status=0 configured=%v disabled=%v status=%d",
+			disabled.StatusConfigured(),
+			disabled.Disabled(),
+			disabled.Status,
+		)
 	}
 }
 

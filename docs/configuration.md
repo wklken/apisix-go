@@ -86,7 +86,7 @@ path, which intentionally ignores Markdown-only changes.
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
 | `deployment.profile` | Empty selects compatibility mode; `http-data-plane-v1` enables the strict candidate HTTP data-plane contract documented in [`production-profile.md`](production-profile.md). Other values are rejected. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
-| `plugins`, `stream_plugins`, and `plugin_attr` | Control the existing plugin registration, stream plugin selection, and plugin-specific settings. For Prometheus, `plugin_attr.prometheus.max_http_series` sets the independent `http_status`, `http_latency`, and `bandwidth` admitted-tuple budgets; it defaults to `10000` and accepts only integers from `100` through `100000`. Invalid explicit values fail startup. After a family is full, existing tuples continue unchanged and unseen tuples preserve bounded family labels (`code` for status, `type` for latency/bandwidth, plus `request_type` and status `response_source`) while replacing dynamic labels with `__overflow__`; each overflow increments `<metric_prefix>http_metric_series_overflow_total{metric}`. With the default `metric_prefix: apisix_`, this is `apisix_http_metric_series_overflow_total{metric}`. |
+| `plugins`, `stream_plugins`, and `plugin_attr` | Control plugin registration, stream plugin selection, and plugin-specific settings. The Prometheus lifetime and cardinality contract is documented below. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
 | `nginx_config.http.keepalive_timeout` | Maps to `http.Server.IdleTimeout`. |
@@ -99,6 +99,40 @@ path, which intentionally ignores Markdown-only changes.
 | `proxy.max_idle_conns_per_host` | Maximum number of idle connections kept open per upstream host. Default 250; zero selects the default. |
 | `proxy.max_conns_per_host` | Maximum number of concurrent connections per upstream host. Default 1024; zero selects the default. |
 | `proxy.max_in_flight` | Maximum number of concurrently active upstream response bodies per cluster. Default 1024; zero selects the default. Negative values are rejected at configuration load. |
+
+### Prometheus metric lifetime and cardinality
+
+`plugin_attr.prometheus.max_http_series` limits each of `http_status`,
+`http_latency`, and `bandwidth` independently.
+`plugin_attr.prometheus.max_llm_series` independently limits each of
+`llm_latency`, `llm_prompt_tokens`, `llm_completion_tokens`, and
+`llm_active_connections`. Both settings default to `10000`, accept only
+integers from `100` through `100000`, and fail startup when an explicit value
+is invalid.
+
+The seven families accept an APISIX-compatible
+`plugin_attr.prometheus.metrics.<family>.expire` value. It is a non-negative
+whole number of idle seconds; missing or `0` disables expiration for that
+family. Activity means a successful metric observation, not a Prometheus
+scrape. The cleanup interval is half the smallest enabled expiration, clamped
+between one second and one minute, so deletion can occur up to one cleanup
+interval after the configured idle period.
+
+Each family stores at most its configured number of exact label tuples. Once
+full, an unseen tuple is written to one synthetic child with every label set to
+`__overflow__`; the vector therefore has at most `limit + 1` children from this
+subsystem. HTTP overflow observations increment
+`<metric_prefix>http_metric_series_overflow_total{metric}`, and LLM overflow
+observations increment
+`<metric_prefix>llm_metric_series_overflow_total{metric}`. With the default
+prefix these names begin with `apisix_`.
+
+Expiration deletes both the exported vector child and its capacity entry.
+Recreated counters and histograms start again from zero. An
+`llm_active_connections` child remains pinned while any request using it is
+active and becomes eligible only after the last release plus another idle
+period. Expiration and capacity configuration is startup-only; restart the
+process to apply changes.
 
 ## HTTP upstream proxy behavior
 

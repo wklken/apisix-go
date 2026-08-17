@@ -2,6 +2,9 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+makefile="$repo_root/Makefile"
+dockerfile="$repo_root/Dockerfile"
+goreleaser="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
@@ -83,6 +86,27 @@ reject_job_pattern() {
 test -f "$workflow"
 test -f "$rc_workflow"
 test -f "$release_workflow"
+test -f "$makefile"
+test -f "$dockerfile"
+test -f "$goreleaser"
+
+# Every local and packaged binary must use the same path/symbol stripping
+# contract while retaining the four runtime build metadata values.
+require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$makefile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Version=\$\(VERSION\)' "$makefile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\(COMMIT\)' "$makefile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
+require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
+require_pattern '^    flags:[[:space:]]*\[[[:space:]]*-trimpath[[:space:]]*\][[:space:]]*$' "$goreleaser"
+require_pattern '^    ldflags:[[:space:]]*$' "$goreleaser"
+require_pattern '-s[[:space:]]+-w' "$goreleaser"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Version=\{\{[[:space:]]*\.Version[[:space:]]*\}\}' "$goreleaser"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\{\{[[:space:]]*\.Commit[[:space:]]*\}\}' "$goreleaser"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\{\{[[:space:]]*\.Date[[:space:]]*\}\}' "$goreleaser"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\{\{[[:space:]]*\.Env\.GOVERSION[[:space:]]*\}\}' "$goreleaser"
+require_job_pattern "$release_workflow" release 'GOVERSION=\$\(go version\).*GITHUB_ENV'
+require_job_pattern "$rc_workflow" package-validation 'GOVERSION=\$\(go version\).*GITHUB_ENV'
 
 # Reusable interface and permissions are checked in the workflow header, not
 # merely anywhere in the file.

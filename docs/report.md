@@ -103,8 +103,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Counterevidence：TTL 只控制命中有效期，当前没有周期性 aggregate-capacity eviction；引用计数只在 plugin 生命周期结束时释放整个 zone。
 - Proposed fix assessment：adjust。容量计算不能只看 body，需要把 header、vary index、覆盖旧 entry 和并发写入纳入同一锁内的 accounting。
 - Best-fit solution：zone 保存解析后的 capacity/current bytes，并采用明确的 LRU/最旧淘汰合同；同时为 proxy-cache 和 graphql-proxy-cache 加共享 zone 容量测试。
-- Remediation：已在共享 memory zone 锁内核算 key、body、header、entry metadata、Vary index 与 loaded metadata；写入后按 `storedAt` 淘汰最旧 entry，单条超限不会保留，覆盖写入会重新计算占用。proxy-cache 的 Vary entry 淘汰会同步清理索引签名，graphql-proxy-cache 通过相同 zone store 获得同一容量边界。
-- Verification：修复前新增测试分别观察到最旧 entry 未淘汰、GraphQL 第三次请求错误 HIT、Vary 第一变体第三次请求错误 HIT；修复后 `go test ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache -count=1`、相同包的 `-race` 运行及 scoped `golangci-lint` 全部通过。
+- Remediation：已在共享 memory zone 锁内核算 key、body、header、entry metadata、Vary index 与 loaded metadata；写入后按 `storedAt` 淘汰最旧 entry。候选 entry 在任何 entries/Vary mutation 前按最小完整表示做容量预检，单条超限或加上必需 Vary/loaded 元数据后超限都会直接拒绝并保留原缓存。proxy-cache 的 Vary entry 淘汰会同步清理索引签名，graphql-proxy-cache 通过相同 zone store 获得同一容量边界。
+- Verification：修复前新增测试分别观察到最旧 entry 未淘汰、GraphQL 第三次请求错误 HIT、Vary 第一变体第三次请求错误 HIT、真实 Handler 的超大响应清空旧 key，以及接近容量的 Vary overwrite 删除原 entry/index；修复后 `go test ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache -count=1`、相同包的 `-race` 运行、scoped `golangci-lint`、build 与最终独立复审全部通过。
 
 ### BUG-004：永久非法资源阻断 etcd watcher 恢复
 
@@ -144,7 +144,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Evidence：`pkg/plugin/limit_count/delayed_sync.go:35-49,81-139` 创建并保存状态；`:208-270` 只同步 delta；生产代码没有删除 `states` 的路径。队列容量不约束 `states`、`retry` 或 `retryNext` 的长期基数。
 - Proposed fix assessment：adjust。只应删除已经过窗口、无 local delta、无 in-flight 且不在 retry 集合的状态，并需要整体容量上限防止窗口内攻击。
 - Best-fit solution：增加安全清理和显式容量/eviction 指标；测试大量唯一 key 跨窗口后状态数回落，以及 in-flight/retry 状态不会被提前删除。
-- Remediation：delayed-sync 现在在周期 flush/retry 迁移后及新 key 分配前回收已过窗口的 idle state；dirty、in-flight、retry、retryNext 和仍在有效窗口的 state 均保留。live state 固定上限为 10,000，满载时新 key 使用现有 rejection 路径失败关闭。修复前新增测试无法编译，因为不存在 cleanup/capacity 合同；修复后 limit-count 全包测试、race 与 scoped lint 通过。
+- Remediation：delayed-sync 现在在周期 flush/retry 迁移后及新 key 分配前回收已过窗口的 idle state；dirty、in-flight、retry、retryNext 和仍在有效窗口的 state 均保留。首次 backend sync 失败会删除本次新建且仍未被使用的 placeholder，避免失败 key 永久占用容量。live state 固定上限为 10,000，满载时新 key 使用现有 rejection 路径失败关闭。修复前新增测试无法编译，因为不存在 cleanup/capacity 合同，且首次同步失败会留下 state；修复后 limit-count 全包测试、race 与 scoped lint 通过。
 
 ## 5. 对既有 finding 的补充
 
@@ -156,7 +156,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 
 Remediation：local JWT 验证现在必须拥有可信 issuer，并默认绑定 `client_id` audience；需要独立资源 audience 时通过非空 `claim_validator.audience.valid_audiences` 显式配置。相同 audience allowlist 也用于 introspection response，缺失或不匹配均失败关闭。
 
-Verification：覆盖 discovery 不可用、discovery 缺 issuer、默认 audience 错误、显式资源 audience、introspection 缺失/错误 audience；openid-connect 全包、manifest、28 个受影响 real-process case、scoped lint、build 和独立复审均通过。
+Verification：覆盖 discovery 不可用、discovery 缺 issuer、默认 audience 错误、显式资源 audience、空字符串 audience 配置、introspection 缺失/错误 audience；openid-connect 全包、manifest、28 个受影响 real-process case、scoped lint、build 和独立复审均通过。
 
 ### BUG-003 → Codex Security request-body finding
 

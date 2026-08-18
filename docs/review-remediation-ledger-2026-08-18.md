@@ -13,14 +13,14 @@
 | Finding ID | Verification verdict | Introduced by current PR | Scope | Status | Change/test evidence | Reason or next action |
 | --- | --- | --- | --- | --- | --- | --- |
 | BUG-001 | Partially correct | Not applicable | Authorized verified subclaim | fixed | Local ignored vendor state was regenerated and verified separately; tracked diff remained empty | No repository finding exists and no empty commit is created; retained for source-ledger completeness |
-| SEC-001 | Correct | Not applicable | Authorized | fixed | Local JWT and introspection regression tests, manifest validation, 28 affected integration cases, scoped lint, package tests, and build passed | Locally verified JWTs now require a verifiable issuer and expected audience; configured audiences also apply to introspection responses |
+| SEC-001 | Correct | Not applicable | Authorized | fixed | Local JWT, empty-audience, and introspection regression tests, manifest validation, 28 affected integration cases, scoped lint, package tests, and build passed | Locally verified JWTs require a verifiable issuer and non-empty expected audience; configured audiences also apply to introspection responses |
 | SEC-002 | Correct | Not applicable | Authorized | fixed | Default snapshot and legacy payload tests failed before the change, then all three logger packages and scoped lint passed | Loki, SLS, and Splunk default payloads omit sensitive request/response headers while preserving ordinary headers |
-| BUG-002 | Correct | Not applicable | Authorized | fixed | proxy-cache/graphql-proxy-cache tests and races, scoped lint, build | Shared memory zones enforce aggregate capacity with oldest-entry eviction |
+| BUG-002 | Correct | Not applicable | Authorized | fixed | proxy-cache/graphql-proxy-cache tests and races, real Handler and near-capacity Vary overwrite regressions, scoped lint, build, independent review | Shared memory zones enforce aggregate capacity and reject an impossible candidate before mutating entries or Vary metadata |
 | BUG-003 | Correct | Not applicable | Authorized | fixed | config/server/function-upstream tests, scoped lint, build | Positive 10 MiB/60 s defaults and bounded direct body reads |
 | BUG-004 | Correct | Not applicable | Authorized | fixed | store/etcd/metrics tests and races, scoped lint, build | Typed permanent validation quarantine preserves last-good state and watcher progress |
 | BUG-005 | Correct | Not applicable | Authorized | fixed | store/route/server/metrics tests and races, scoped lint, build | Write-boundary rejection plus explicit legacy snapshot quarantine |
 | BUG-006 | Correct | Not applicable | Authorized | fixed | resource/route tests, scoped lint, build | Scheme-aware builder owns omitted map-form ports |
-| BUG-007 | Correct | Not applicable | Authorized | fixed | limit-count tests and race, scoped lint, build | Expired idle state cleanup plus a 10,000 live-state fail-closed cap |
+| BUG-007 | Correct | Not applicable | Authorized | fixed | limit-count cleanup, failed-initial-sync, capacity tests and race, scoped lint, build | Expired idle cleanup, failed placeholder release, and a 10,000 live-state fail-closed cap |
 | SEC-003 | Correct | Not applicable | Authorized | fixed | data-encryption/config/strict-plugin tests, data/config race, scoped lint, build | Explicit context-bound `$encrypted://v2:` AES-GCM writes; bare `v2:` remains plaintext; legacy CBC decrypt-only migration |
 
 ## Changed Files
@@ -43,6 +43,7 @@
   - Covers request `Authorization`/`Cookie`, response `Set-Cookie`, and benign-header retention in both execution paths.
 - `BUG-002` through `BUG-007`: owning store, watcher, route, server, metrics, cache, config, resource, and limit-count packages
   - Each finding is isolated in its own commit and carries focused behavior/race coverage where concurrency is involved.
+  - Final independent review follow-ups cover production proxy-cache writes, Vary bookkeeping capacity, failed delayed-sync placeholders, and empty OIDC audiences.
 - `SEC-003`: `pkg/data_encryption`, strict encrypted-field plugin boundaries, standalone persistence tests, and encryption documentation
   - New writes use explicit random-nonce contextual `$encrypted://v2:` AES-GCM envelopes; bare `v2:` remains plaintext, and legacy CBC remains readable across key rotation and is rewrapped on write.
 

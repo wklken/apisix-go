@@ -203,7 +203,10 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SecretKey)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.SecretKey,
+		"tencent-cloud-cls.secret_key",
+	)
 	if err != nil {
 		return fmt.Errorf("tencent-cloud-cls secret_key: %w", err)
 	}

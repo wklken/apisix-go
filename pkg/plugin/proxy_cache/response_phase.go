@@ -284,21 +284,38 @@ func (p *Plugin) storeStateWithHeader(
 		deleteHeaderFold(entry.header, "Cache-Control")
 	}
 
-	storageKey := key
 	p.lock.Lock()
 	defer p.lock.Unlock()
+	storageKey := key
+	var storageSignature string
+	if len(varyHeaders) > 0 {
+		storageSignature = varySignatureFromHeader(varyHeaders, requestHeader)
+		storageKey = key + "::" + storageSignature
+	}
+	if !canStoreMemoryEntryWithVary(
+		p.memoryZone,
+		key,
+		storageKey,
+		entry,
+		varyHeaders,
+		storageSignature,
+	) {
+		return nil
+	}
 	if p.diskEnabled {
 		p.loadVaryIndexLocked(key)
 	}
 	if len(varyHeaders) > 0 {
-		signature := varySignatureFromHeader(varyHeaders, requestHeader)
-		storageKey = key + "::" + signature
-		p.updateVaryIndexLocked(key, varyHeaders, signature, entry.expiresAt)
+		p.updateVaryIndexLocked(key, varyHeaders, storageSignature, entry.expiresAt)
 		delete(p.entries, key)
 	} else if _, ok := p.vary[key]; ok {
 		p.purgeAllLocked(key)
 	}
 	p.entries[storageKey] = entry
+	if p.memoryZone != nil {
+		p.memoryZone.recalculateUsedBytesLocked()
+		p.memoryZone.enforceCapacityLocked()
+	}
 	index, hasIndex := p.vary[key]
 	if p.diskEnabled {
 		if err := p.persistEntryLocked(storageKey, entry); err != nil {

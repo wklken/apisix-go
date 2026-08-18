@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,8 @@ type memoryZone struct {
 	entries     map[string]cacheEntry
 	vary        map[string]varyIndex
 	loaded      map[string]bool
+	capacity    int64
+	usedBytes   int64
 	refs        int
 	fingerprint string
 }
@@ -152,7 +155,7 @@ func (s *MemoryZoneStore) Store(key string, entry SharedCacheEntry) {
 		return
 	}
 	s.zone.lock.Lock()
-	s.zone.entries[key] = localCacheEntry(entry)
+	s.zone.storeEntryLocked(key, localCacheEntry(entry))
 	s.zone.lock.Unlock()
 }
 
@@ -161,10 +164,130 @@ func (s *MemoryZoneStore) Delete(key string) bool {
 		return false
 	}
 	s.zone.lock.Lock()
-	_, found := s.zone.entries[key]
-	delete(s.zone.entries, key)
+	found := s.zone.deleteEntryLocked(key)
 	s.zone.lock.Unlock()
 	return found
+}
+
+func canStoreMemoryEntry(z *memoryZone, key string, entry cacheEntry) bool {
+	return z == nil || z.capacity <= 0 || memoryCacheEntryBytes(key, entry) <= z.capacity
+}
+
+func canStoreMemoryEntryWithVary(
+	z *memoryZone,
+	key string,
+	storageKey string,
+	entry cacheEntry,
+	varyHeaders []string,
+	signature string,
+) bool {
+	if z == nil || z.capacity <= 0 {
+		return true
+	}
+	requiredBytes := memoryCacheEntryBytes(storageKey, entry)
+	if len(varyHeaders) > 0 {
+		requiredBytes += memoryVaryIndexBytes(key, varyIndex{
+			headers:    varyHeaders,
+			signatures: []string{signature},
+		})
+		requiredBytes += memoryLoadedKeyBytes(key)
+	}
+	return requiredBytes <= z.capacity
+}
+
+func (z *memoryZone) storeEntryLocked(key string, entry cacheEntry) bool {
+	if !canStoreMemoryEntry(z, key, entry) {
+		return false
+	}
+	z.entries[key] = entry
+	z.recalculateUsedBytesLocked()
+	z.enforceCapacityLocked()
+	_, retained := z.entries[key]
+	return retained
+}
+
+func (z *memoryZone) deleteEntryLocked(key string) bool {
+	_, found := z.entries[key]
+	if !found {
+		return false
+	}
+	delete(z.entries, key)
+	z.removeVaryStorageKeyLocked(key)
+	z.recalculateUsedBytesLocked()
+	return true
+}
+
+func (z *memoryZone) enforceCapacityLocked() {
+	for z.capacity > 0 && z.usedBytes > z.capacity && len(z.entries) > 0 {
+		oldestKey := ""
+		var oldestStoredAt time.Time
+		for key, entry := range z.entries {
+			if oldestKey == "" || entry.storedAt.Before(oldestStoredAt) ||
+				(entry.storedAt.Equal(oldestStoredAt) && key < oldestKey) {
+				oldestKey = key
+				oldestStoredAt = entry.storedAt
+			}
+		}
+		delete(z.entries, oldestKey)
+		z.removeVaryStorageKeyLocked(oldestKey)
+		z.recalculateUsedBytesLocked()
+	}
+}
+
+func (z *memoryZone) removeVaryStorageKeyLocked(storageKey string) {
+	for key, index := range z.vary {
+		index.signatures = slices.DeleteFunc(index.signatures, func(signature string) bool {
+			return key+"::"+signature == storageKey
+		})
+		if len(index.signatures) == 0 {
+			delete(z.vary, key)
+			delete(z.loaded, key)
+			continue
+		}
+		z.vary[key] = index
+	}
+}
+
+func (z *memoryZone) recalculateUsedBytesLocked() {
+	var size int64
+	for key, entry := range z.entries {
+		size += memoryCacheEntryBytes(key, entry)
+	}
+	for key, index := range z.vary {
+		size += memoryVaryIndexBytes(key, index)
+	}
+	for key := range z.loaded {
+		size += memoryLoadedKeyBytes(key)
+	}
+	z.usedBytes = size
+}
+
+func memoryLoadedKeyBytes(key string) int64 {
+	return int64(16 + len(key))
+}
+
+func memoryCacheEntryBytes(key string, entry cacheEntry) int64 {
+	const metadataBytes = int64(64)
+	size := metadataBytes + int64(len(key)+len(entry.body))
+	for name, values := range entry.header {
+		size += int64(len(name))
+		for _, value := range values {
+			size += int64(len(value))
+		}
+	}
+	return size
+}
+
+func memoryVaryIndexBytes(key string, index varyIndex) int64 {
+	const metadataBytes = int64(32)
+	size := metadataBytes + int64(len(key))
+	for _, header := range index.headers {
+		size += int64(len(header))
+	}
+	for _, signature := range index.signatures {
+		size += int64(len(signature))
+	}
+	return size
 }
 
 func (s *MemoryZoneStore) Close() {
@@ -357,12 +480,27 @@ func acquireMemoryZone(name string) *memoryZone {
 			entries:     make(map[string]cacheEntry),
 			vary:        make(map[string]varyIndex),
 			loaded:      make(map[string]bool),
+			capacity:    memoryZoneCapacity(name),
 			fingerprint: fingerprint,
 		}
 		memoryZoneRegistry.zones[name] = zone
 	}
 	zone.refs++
 	return zone
+}
+
+func memoryZoneCapacity(name string) int64 {
+	for _, zone := range configuredZones() {
+		if zone.Name != name {
+			continue
+		}
+		capacity, err := parseDiskSize(zone.MemorySize)
+		if err == nil {
+			return capacity
+		}
+		return 0
+	}
+	return 0
 }
 
 func cacheZoneFingerprint(name string) string {

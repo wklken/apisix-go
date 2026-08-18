@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ type ConfigClient struct {
 	openWatch    watchOpenFunc
 	loadSnapshot snapshotFunc
 	knownKeys    map[string]struct{}
+	// quarantine keeps the latest rejected ModRevision for each full etcd key.
+	// It is intentionally internal: metrics expose only the bounded count.
+	quarantine   map[string]int64
 	lastRevision int64
 }
 
@@ -104,6 +108,7 @@ func NewConfigClientWithOptions(
 		healthCheck:         options.HealthCheck,
 		healthCheckInterval: options.HealthCheckInterval,
 		knownKeys:           make(map[string]struct{}),
+		quarantine:          make(map[string]int64),
 	}
 	configClient.openWatch = func(ctx context.Context, revision int64) clientv3.WatchChan {
 		opts := []clientv3.OpOption{clientv3.WithPrefix()}
@@ -291,6 +296,34 @@ func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType,
 	}
 }
 
+func cloneQuarantine(source map[string]int64) map[string]int64 {
+	clone := make(map[string]int64, len(source))
+	maps.Copy(clone, source)
+	return clone
+}
+
+func recordQuarantine(quarantine map[string]int64, key string, revision int64) {
+	if previous, ok := quarantine[key]; !ok || revision >= previous {
+		quarantine[key] = revision
+	}
+}
+
+func clearQuarantine(quarantine map[string]int64, key string, revision int64) {
+	if previous, ok := quarantine[key]; ok && revision >= previous {
+		delete(quarantine, key)
+	}
+}
+
+func resourceValidationError(err error) bool {
+	var validationErr *store.ResourceValidationError
+	return errors.As(err, &validationErr)
+}
+
+func (c *ConfigClient) commitQuarantine(quarantine map[string]int64) {
+	c.quarantine = quarantine
+	metrics.RecordConfigApplyQuarantine(len(quarantine))
+}
+
 func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
 	if response == nil || response.Header == nil {
 		err := errors.New("etcd snapshot is missing a response header")
@@ -298,6 +331,7 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 		return err
 	}
 	nextKeys := make(map[string]struct{}, len(response.Kvs))
+	nextQuarantine := cloneQuarantine(c.quarantine)
 	for _, kv := range response.Kvs {
 		if kv == nil {
 			err := errors.New("etcd snapshot contains a nil key-value")
@@ -317,13 +351,24 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 				metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 				return err
 			}
+			clearQuarantine(nextQuarantine, key, response.Header.Revision)
 		}
 	}
 	for _, kv := range response.Kvs {
+		revision := kv.ModRevision
+		if revision <= 0 {
+			revision = response.Header.Revision
+		}
 		if err := c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value); err != nil {
+			if resourceValidationError(err) {
+				recordQuarantine(nextQuarantine, string(kv.Key), revision)
+				logger.Errorf("quarantine invalid etcd resource key=%q revision=%d: %v", kv.Key, revision, err)
+				continue
+			}
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
+		clearQuarantine(nextQuarantine, string(kv.Key), revision)
 		metrics.RecordEtcdModifyIndex(string(kv.Key), kv.ModRevision)
 	}
 	for _, key := range keys {
@@ -334,6 +379,7 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = response.Header.Revision
+	c.commitQuarantine(nextQuarantine)
 	metrics.RecordEtcdAppliedRevision(c.lastRevision)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil
@@ -345,6 +391,7 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 		nextKeys[key] = struct{}{}
 	}
 	nextRevision := c.lastRevision
+	nextQuarantine := cloneQuarantine(c.quarantine)
 	for _, watched := range response.Events {
 		if watched == nil || watched.Kv == nil {
 			err := errors.New("etcd watch response contains a nil event")
@@ -352,7 +399,24 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 			return err
 		}
 		eventType := store.EventType(watched.Type)
+		revision := watched.Kv.ModRevision
+		if revision <= 0 {
+			revision = response.Header.Revision
+		}
 		if err := c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value); err != nil {
+			if resourceValidationError(err) {
+				recordQuarantine(nextQuarantine, string(watched.Kv.Key), revision)
+				logger.Errorf("quarantine invalid etcd resource key=%q revision=%d: %v", watched.Kv.Key, revision, err)
+				if revision > nextRevision {
+					nextRevision = revision
+				}
+				if eventType == store.EventTypeDelete {
+					delete(nextKeys, string(watched.Kv.Key))
+				} else {
+					nextKeys[string(watched.Kv.Key)] = struct{}{}
+				}
+				continue
+			}
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
@@ -360,8 +424,10 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 		key := string(watched.Kv.Key)
 		if eventType == store.EventTypeDelete {
 			delete(nextKeys, key)
+			clearQuarantine(nextQuarantine, key, revision)
 		} else {
 			nextKeys[key] = struct{}{}
+			clearQuarantine(nextQuarantine, key, revision)
 		}
 		if watched.Kv.ModRevision > nextRevision {
 			nextRevision = watched.Kv.ModRevision
@@ -372,6 +438,7 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = nextRevision
+	c.commitQuarantine(nextQuarantine)
 	metrics.RecordEtcdAppliedRevision(c.lastRevision)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 	return nil

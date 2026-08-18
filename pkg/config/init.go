@@ -17,7 +17,11 @@ import (
 
 var GlobalConfig *Config
 
-const DefaultConfigFile = "conf/config-default.yaml"
+const (
+	DefaultConfigFile        = "conf/config-default.yaml"
+	defaultClientMaxBodySize = int64(10 * 1024 * 1024)
+	defaultClientBodyTimeout = 60 * time.Second
+)
 
 func Load(overridePath string) (*Config, error) {
 	return loadConfigFiles(DefaultConfigFile, overridePath)
@@ -64,6 +68,8 @@ func sameConfigPath(first, second string) bool {
 }
 
 func load(v *viper.Viper) (*Config, error) {
+	v.SetDefault("nginx_config.http.client_max_body_size", defaultClientMaxBodySize)
+	v.SetDefault("nginx_config.http.client_body_timeout", defaultClientBodyTimeout)
 	rawPlugins := v.Get("plugins")
 
 	var cfg Config
@@ -137,10 +143,16 @@ func validateRuntimeConfig(cfg *Config) error {
 			return profileAwareRuntimeError(cfg, fmt.Errorf("%s must be positive, got %d", limit.field, limit.value))
 		}
 	}
-	if cfg.NginxConfig.HTTP.ClientMaxBodySize < 0 {
+	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
 		return profileAwareRuntimeError(cfg, fmt.Errorf(
-			"nginx_config.http.client_max_body_size must be non-negative, got %d",
+			"nginx_config.http.client_max_body_size must be positive, got %d",
 			cfg.NginxConfig.HTTP.ClientMaxBodySize,
+		))
+	}
+	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
+		return profileAwareRuntimeError(cfg, fmt.Errorf(
+			"nginx_config.http.client_body_timeout must be positive, got %s",
+			cfg.NginxConfig.HTTP.ClientBodyTimeout,
 		))
 	}
 	if err := validateProcessAccessLogs(cfg); err != nil {

@@ -449,6 +449,10 @@ type Builder struct {
 	// populated at Build() start and cleared before Build() returns so no
 	// request path reads across a generation boundary.
 	snapshot *store.ConfigSnapshot
+	// snapshotQuarantineCount is published by the server owner only after a
+	// successful handler installation, keeping standalone Builder callers free
+	// of global readiness side effects.
+	snapshotQuarantineCount int
 	// compiledSchemas caches plugin schema compilation for the duration of one
 	// Build; plugin schemas are constants, so repeated plugin instances never
 	// recompile the same schema.
@@ -539,6 +543,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get config snapshot: %w", err)
 	}
+	b.snapshotQuarantineCount = len(snapshot.QuarantinedResources())
 	b.snapshot = snapshot
 	b.compiledSchemas = make(map[string]*util.CompiledSchema)
 	defer func() {
@@ -584,6 +589,13 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	registerExtraRoutes(mux)
 	b.configureGlobalErrorLogObserver()
 	return mux, nil
+}
+
+// QuarantinedResourceCount reports the number of malformed legacy route or
+// global-rule rows in the last BuildStrict snapshot. The server records this
+// value after installing the returned handler.
+func (b *Builder) QuarantinedResourceCount() int {
+	return b.snapshotQuarantineCount
 }
 
 func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {

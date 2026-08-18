@@ -243,6 +243,206 @@ func TestApplyWatchResponseMutatesKnownKeysAndRevision(t *testing.T) {
 	}
 }
 
+func TestApplyWatchResponseQuarantinesInvalidResourceAndAdvances(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_quarantine_failures_total"})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_ready"})
+	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_count"})
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	storage, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:    "/apisix",
+		events:    events,
+		knownKeys: map[string]struct{}{},
+	}
+	err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 14},
+		Events: []*clientv3.Event{
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/ssls/bad"),
+					Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+					ModRevision: 12,
+				},
+			},
+			{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key:         []byte("/apisix/routes/good"),
+					Value:       []byte(`{"id":"good"}`),
+					ModRevision: 13,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyWatchResponse() error = %v, want invalid resource quarantined", err)
+	}
+	if client.lastRevision != 14 {
+		t.Fatalf("lastRevision = %d, want header revision 14", client.lastRevision)
+	}
+	if _, ok := client.knownKeys["/apisix/ssls/bad"]; !ok {
+		t.Fatal("knownKeys does not retain the current invalid etcd key")
+	}
+	if _, ok := client.knownKeys["/apisix/routes/good"]; !ok {
+		t.Fatal("knownKeys does not retain the unrelated valid key")
+	}
+	if got := client.quarantine["/apisix/ssls/bad"]; got != 12 {
+		t.Fatalf("quarantine revision = %d, want 12", got)
+	}
+	if got := watcherConfigApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 1 {
+		t.Fatalf("quarantine gauge = %v, want 1", got)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
+		t.Fatalf("durable unrelated route = %q, %v; want stored", value, err)
+	}
+	if value, err := storage.GetFromBucket("ssls", []byte("bad")); err != nil || value != nil {
+		t.Fatalf("durable invalid SSL = %q, %v; want absent", value, err)
+	}
+
+	if err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 15},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key:         []byte("/apisix/ssls/bad"),
+				Value:       []byte(`{"id":"bad","status":0}`),
+				ModRevision: 15,
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("applyWatchResponse(valid replacement) error = %v", err)
+	}
+	if len(client.quarantine) != 0 {
+		t.Fatalf("quarantine after valid replacement = %v, want empty", client.quarantine)
+	}
+
+	if err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 16},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key:         []byte("/apisix/ssls/bad"),
+				Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+				ModRevision: 16,
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("applyWatchResponse(second invalid) error = %v", err)
+	}
+	if err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 17},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.DELETE,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/ssls/bad"), ModRevision: 17},
+		}},
+	}); err != nil {
+		t.Fatalf("applyWatchResponse(delete) error = %v", err)
+	}
+	if len(client.quarantine) != 0 {
+		t.Fatalf("quarantine after delete = %v, want empty", client.quarantine)
+	}
+}
+
+func TestApplySnapshotQuarantineClearsOnReplacementAndDelete(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined
+	metrics.ConfigApplyFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "test_snapshot_quarantine_failures_total"},
+	)
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_snapshot_quarantine_ready"})
+	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_snapshot_quarantine_count"})
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	_, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:    "/apisix",
+		events:    events,
+		knownKeys: map[string]struct{}{},
+	}
+	invalid := &mvccpb.KeyValue{
+		Key:         []byte("/apisix/consumers/alice"),
+		Value:       []byte(`{"username":"alice","plugins":{"basic-auth":{"username":"alice"}}}`),
+		ModRevision: 2,
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 2},
+		Kvs:    []*mvccpb.KeyValue{invalid},
+	}); err != nil {
+		t.Fatalf("applySnapshot(invalid) error = %v, want quarantine", err)
+	}
+	if got := client.quarantine["/apisix/consumers/alice"]; got != 2 {
+		t.Fatalf("snapshot quarantine revision = %d, want 2", got)
+	}
+	if got := watcherConfigApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 1 {
+		t.Fatalf("snapshot quarantine gauge = %v, want 1", got)
+	}
+
+	valid := &mvccpb.KeyValue{
+		Key:         invalid.Key,
+		Value:       []byte(`{"username":"alice","plugins":{}}`),
+		ModRevision: 3,
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 3},
+		Kvs:    []*mvccpb.KeyValue{valid},
+	}); err != nil {
+		t.Fatalf("applySnapshot(valid replacement) error = %v", err)
+	}
+	if len(client.quarantine) != 0 {
+		t.Fatalf("quarantine after valid replacement = %v, want empty", client.quarantine)
+	}
+	if got := watcherConfigApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 0 {
+		t.Fatalf("quarantine gauge after replacement = %v, want 0", got)
+	}
+
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 4},
+	}); err != nil {
+		t.Fatalf("applySnapshot(delete) error = %v", err)
+	}
+	if _, ok := client.quarantine["/apisix/consumers/alice"]; ok {
+		t.Fatal("delete did not clear resource quarantine")
+	}
+}
+
+func TestApplyWatchResponseDoesNotQuarantineTransientStoreFailure(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	if err := storage.Stop(); err != nil {
+		t.Fatalf("stop watcher store: %v", err)
+	}
+	client := &ConfigClient{
+		prefix:       "/apisix",
+		events:       events,
+		knownKeys:    map[string]struct{}{},
+		lastRevision: 10,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := client.applyWatchResponse(ctx, clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 11},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/routes/good"), Value: []byte(`{"id":"good"}`), ModRevision: 11},
+		}},
+	})
+	if err == nil {
+		t.Fatal("applyWatchResponse() error = nil, want transient store failure")
+	}
+	var validationErr *store.ResourceValidationError
+	if errors.As(err, &validationErr) {
+		t.Fatalf("transient store error was quarantined as validation: %v", err)
+	}
+	if client.lastRevision != 10 {
+		t.Fatalf("lastRevision = %d, want unchanged 10", client.lastRevision)
+	}
+}
+
 func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) {
 	storage, events := newWatcherStore(t)
 	client := &ConfigClient{
@@ -272,14 +472,17 @@ func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) 
 			},
 		},
 	})
-	if err == nil {
-		t.Fatal("applyWatchResponse() error = nil, want second event failure")
+	if err != nil {
+		t.Fatalf("applyWatchResponse() error = %v, want invalid resource quarantined", err)
 	}
-	if client.lastRevision != 10 {
-		t.Fatalf("lastRevision = %d, want unchanged 10", client.lastRevision)
+	if client.lastRevision != 14 {
+		t.Fatalf("lastRevision = %d, want header revision 14", client.lastRevision)
 	}
-	if _, ok := client.knownKeys["/apisix/routes/good"]; ok {
-		t.Fatal("knownKeys committed partial batch")
+	if _, ok := client.knownKeys["/apisix/routes/good"]; !ok {
+		t.Fatal("knownKeys did not commit the valid event")
+	}
+	if got := client.quarantine["/apisix/ssls/bad"]; got != 13 {
+		t.Fatalf("quarantine revision = %d, want 13", got)
 	}
 	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
 		t.Fatalf("durable first event = %q, %v; want acknowledged partial event", value, err)
@@ -287,14 +490,19 @@ func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) 
 }
 
 func TestProviderBatchFailureStaysUnreadyAfterQueuedRouteSuccess(t *testing.T) {
-	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	oldFailures, oldReady, oldQuarantine := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined
 	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "test_provider_batch_failure_failures_total",
 	})
 	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "test_provider_batch_failure_ready",
 	})
-	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
+	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_provider_batch_failure_quarantine",
+	})
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
 
 	_, events := newWatcherStore(t)
 	client := &ConfigClient{
@@ -324,13 +532,14 @@ func TestProviderBatchFailureStaysUnreadyAfterQueuedRouteSuccess(t *testing.T) {
 			},
 		},
 	})
-	if err == nil {
-		t.Fatal("applyWatchResponse() error = nil, want provider batch failure")
+	if err != nil {
+		t.Fatalf("applyWatchResponse() error = %v, want provider progress with quarantine", err)
 	}
 
-	// The route event was already durably acknowledged and can publish after
-	// the provider batch reports its later failure.
+	// The route event was already durably acknowledged and can publish while
+	// the invalid resource keeps provider readiness degraded.
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	metrics.RecordConfigApplyQuarantine(1)
 	if got := watcherConfigApplyReadyValue(t, metrics.ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after delayed route success = %v, want 0", got)
 	}
@@ -359,17 +568,17 @@ func TestApplySnapshotStagesStateUntilEveryEventAcknowledges(t *testing.T) {
 			},
 		},
 	})
-	if err == nil {
-		t.Fatal("applySnapshot() error = nil, want second event failure")
+	if err != nil {
+		t.Fatalf("applySnapshot() error = %v, want invalid resource quarantined", err)
 	}
-	if client.lastRevision != 10 {
-		t.Fatalf("lastRevision = %d, want unchanged 10", client.lastRevision)
+	if client.lastRevision != 14 {
+		t.Fatalf("lastRevision = %d, want snapshot revision 14", client.lastRevision)
 	}
-	if len(client.knownKeys) != 1 {
-		t.Fatalf("knownKeys = %v, want only previous key", client.knownKeys)
+	if len(client.knownKeys) != 2 {
+		t.Fatalf("knownKeys = %v, want current snapshot keys", client.knownKeys)
 	}
-	if _, ok := client.knownKeys["/apisix/routes/old"]; !ok {
-		t.Fatal("knownKeys lost previous key after failed snapshot")
+	if _, ok := client.quarantine["/apisix/ssls/bad"]; !ok {
+		t.Fatal("snapshot did not retain invalid resource quarantine")
 	}
 	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
 		t.Fatalf("durable first snapshot event = %q, %v; want acknowledged partial event", value, err)
@@ -665,6 +874,15 @@ func watcherConfigApplyReadyValue(t *testing.T, gauge prometheus.Gauge) float64 
 	metric := &dto.Metric{}
 	if err := gauge.Write(metric); err != nil {
 		t.Fatalf("write config-apply ready gauge: %v", err)
+	}
+	return metric.GetGauge().GetValue()
+}
+
+func watcherConfigApplyGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatalf("write config-apply quarantine gauge: %v", err)
 	}
 	return metric.GetGauge().GetValue()
 }

@@ -189,7 +189,7 @@ func TestLoadConfigFilesClientMaxBodySizeValidation(t *testing.T) {
 		wantError bool
 	}{
 		{name: "negative", value: "-1", wantError: true},
-		{name: "zero remains unlimited", value: "0"},
+		{name: "zero", value: "0", wantError: true},
 		{name: "positive", value: "1024"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -210,6 +210,50 @@ func TestLoadConfigFilesClientMaxBodySizeValidation(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("loadConfigFiles() error = %v, want compatibility for %s", err, test.value)
+			}
+		})
+	}
+}
+
+func TestLoadAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader("debug: false\n")); err != nil {
+		t.Fatalf("ReadConfig() error = %v", err)
+	}
+
+	cfg, err := load(v)
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
+		t.Fatalf("client_max_body_size = %d, want %d", got, want)
+	}
+	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
+		t.Fatalf("client_body_timeout = %s, want %s", got, want)
+	}
+}
+
+func TestLoadConfigFilesRejectsNonPositiveClientBodyTimeout(t *testing.T) {
+	previous := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, value := range []string{"0s", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			GlobalConfig = previous
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			override := writeConfigFile(
+				t,
+				"override.yaml",
+				"nginx_config:\n  http:\n    client_body_timeout: "+value+"\n",
+			)
+
+			_, err := loadConfigFiles(base, override)
+			if err == nil || !strings.Contains(err.Error(), "nginx_config.http.client_body_timeout") {
+				t.Fatalf("loadConfigFiles() error = %v, want client_body_timeout rejection", err)
+			}
+			if GlobalConfig != previous {
+				t.Fatal("GlobalConfig changed before client_body_timeout validation")
 			}
 		})
 	}

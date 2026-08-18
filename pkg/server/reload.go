@@ -175,6 +175,7 @@ func (s *Server) reload(ctx context.Context) (reloadErr error) {
 		return reloadErr
 	}
 	s.routes.Replace(handler, builder.Stop)
+	recordRouteBuildQuarantine(builder)
 	installed = true
 
 	logger.Info("reload done")

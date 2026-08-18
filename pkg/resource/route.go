@@ -156,7 +156,6 @@ func (s Upstream) RetriesConfigured() bool {
 }
 
 func parseNodeAddress(address string) (string, int) {
-	const defaultPort = 80
 	if _, portText, err := net.SplitHostPort(address); err == nil {
 		if port, parseErr := strconv.Atoi(portText); parseErr == nil {
 			host, _, _ := net.SplitHostPort(address)
@@ -164,7 +163,7 @@ func parseNodeAddress(address string) (string, int) {
 		}
 	}
 	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
-		return address, defaultPort
+		return address, 0
 	}
 	if strings.Count(address, ":") == 1 {
 		host, portText, _ := strings.Cut(address, ":")
@@ -172,7 +171,7 @@ func parseNodeAddress(address string) (string, int) {
 			return host, port
 		}
 	}
-	return address, defaultPort
+	return address, 0
 }
 
 type Timeout struct {

@@ -199,7 +199,14 @@
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
                 "token_signing_alg_values_expected": "RS256",
                 "set_id_token_header": false,
-                "set_userinfo_header": false
+                "set_userinfo_header": false,
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -279,7 +286,14 @@
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
                 "token_signing_alg_values_expected": "RS256",
                 "set_id_token_header": false,
-                "set_userinfo_header": false
+                "set_userinfo_header": false,
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -1934,7 +1948,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2005,7 +2026,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2076,7 +2104,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2147,7 +2182,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2220,7 +2262,14 @@
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
                 "token_signing_alg_values_expected": "RS256",
                 "set_access_token_header": false,
-                "access_token_in_authorization_header": true
+                "access_token_in_authorization_header": true,
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2293,7 +2342,14 @@
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
                 "token_signing_alg_values_expected": "RS256",
                 "set_access_token_header": false,
-                "access_token_in_authorization_header": true
+                "access_token_in_authorization_header": true,
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -2445,7 +2501,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -4036,7 +4099,14 @@
                 "session": {
                   "secret": "0123456789abcdef"
                 },
-                "client_secret": "integration-secret"
+                "client_secret": "integration-secret",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -4111,7 +4181,14 @@
                 "session": {
                   "secret": "0123456789abcdef"
                 },
-                "client_secret": "integration-secret"
+                "client_secret": "integration-secret",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -4239,7 +4316,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApKJGLzwwYx+YS4wnhXxq\nVhuT4dcUe1h6MdLAl0n+7WKhN4WODkBR8Rz8Flcu70NI4xZOIv4ICUyBXmIIJdCw\n5jgOIBjjZpEF1FOkQIBIF6tFhEo86sCgfjNWE53rJVSJ/453nDcy2jBiOf7vA82X\nCVevdTT0glaHEYCftu82+6hT2kd7u0e/BZATU1VyJh5CpW4BksrhmGkMUv9NFCaa\nvQiEaFj+Had/LooAb3LzDdi/n0Kad+ZDT9y2i76VAWc7j0nnC56zhDX8Nw5KesJr\nYqivjlHaqmr772gwDVaGA2w74vzl27b4tKNG+GWeT2tXCFRorEmczgMjwoXcTscC\nUwIDAQAB\n-----END PUBLIC KEY-----\n",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -10257,6 +10341,11 @@
                 "claim_validator": {
                   "audience": {
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10333,6 +10422,11 @@
                 "claim_validator": {
                   "audience": {
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10410,6 +10504,11 @@
                   "audience": {
                     "claim": "missing-aud",
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10442,7 +10541,7 @@
           "input": {
             "path": "/oidc/openid-connect7/3",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6NDEwMjQ0NDgwMH0.C9K-IFMxlTFroLfD0t71PHKGgjM29FBMuHSac7uK2VVvb1JsBPwUSxaVZKL1acw1zqtQcecG_86hQJ6WAASY0cifho5kBy5HkEup4iq8c23G3BpNiX9OyYZMQd78EhdLbLip8UHO2tfUxFbSHH2gd9df3T3-zf4F1IYWuCJErHlTLnFH9mX9WZqvjNbTQ2zfJTnEvb5Iqf_bwsgi3hUrALeWfZuybVrOwf-9zRolyFbgPTy_8BcnPJr8OgTEBTdtHiOFcdyS-ZjRH7ZdFsg1y0lkSc0r7r7y2xJ9cJqW-8EZHFyPdPe2mALoq3FxH_O_AXgyjnPgC--m2IPzys8xZQ"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.eLKbqrkMfto5CSV2J9ds5fpF1HA6ER8k15PkluB53qzOV6xmbVfVhzkj5dWkuqa1a5H52abXFpOI343jIr2ixmSfPvgSkpHDStXfuhBBule-T_9wicA_t_EX9o1bw0zZ72ahnoXuNfunhfIpONPMhwImS6dUlEHg1KM8Vpanu1sBMBspnR61hTWdwX-HQPupomhzoZZQesPDH0Lqx7vVQi9en5EL-1J5-lNsPYWnRl6t76M93Ojt0Tv69mX293kdWbE64utWQ6Zvs5SVtFaJuHVdtOWiuqDlLZevTewk141k_yTr6NtDsHLt9U8h3CA-Shvp7wnPNMAAaNlL_eMl5w"
             }
           },
           "output": {
@@ -10475,6 +10574,11 @@
                   "audience": {
                     "claim": "missing-aud",
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10507,7 +10611,7 @@
           "input": {
             "path": "/oidc/openid-connect7/4",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6NDEwMjQ0NDgwMH0.C9K-IFMxlTFroLfD0t71PHKGgjM29FBMuHSac7uK2VVvb1JsBPwUSxaVZKL1acw1zqtQcecG_86hQJ6WAASY0cifho5kBy5HkEup4iq8c23G3BpNiX9OyYZMQd78EhdLbLip8UHO2tfUxFbSHH2gd9df3T3-zf4F1IYWuCJErHlTLnFH9mX9WZqvjNbTQ2zfJTnEvb5Iqf_bwsgi3hUrALeWfZuybVrOwf-9zRolyFbgPTy_8BcnPJr8OgTEBTdtHiOFcdyS-ZjRH7ZdFsg1y0lkSc0r7r7y2xJ9cJqW-8EZHFyPdPe2mALoq3FxH_O_AXgyjnPgC--m2IPzys8xZQ"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.eLKbqrkMfto5CSV2J9ds5fpF1HA6ER8k15PkluB53qzOV6xmbVfVhzkj5dWkuqa1a5H52abXFpOI343jIr2ixmSfPvgSkpHDStXfuhBBule-T_9wicA_t_EX9o1bw0zZ72ahnoXuNfunhfIpONPMhwImS6dUlEHg1KM8Vpanu1sBMBspnR61hTWdwX-HQPupomhzoZZQesPDH0Lqx7vVQi9en5EL-1J5-lNsPYWnRl6t76M93Ojt0Tv69mX293kdWbE64utWQ6Zvs5SVtFaJuHVdtOWiuqDlLZevTewk141k_yTr6NtDsHLt9U8h3CA-Shvp7wnPNMAAaNlL_eMl5w"
             }
           },
           "output": {
@@ -10543,6 +10647,11 @@
                   "audience": {
                     "claim": "client-audience",
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10574,7 +10683,7 @@
               },
               "headers": {
                 "X-Access-Token": {
-                  "equals": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImV4cCI6NDEwMjQ0NDgwMH0.ROtSMxSHsDYU99ACCjtoXfHHQzkOnPWpynR5VZpV4Fb4zk4iztYQqBTHSLAu-lYyK85uTGImLjq2rHkhWmTqxY7vEsRu5Qbekr--U__zR2xRdW2juZnNy9rrnHYwUH_2mV0r8vveTclRplbc3mIHr4K3oUJIGJgjqF18o-0MyOXeId2nAA9rPB9t5Iiwrb4-LRNRW_juuFLM5QNNDD15eR8YjvgWA7Yr6I1-FGNVl8hA00Cc8Fbxi3BDE_dk6DxKz_N9eWOUxxS2rrL7SkoA4CqBJyBHCIOx5o_TtvwEeqh0-9Zi_KHvWPZhUD6tluiBak00Ea1JokARSetQZR0c6g"
+                  "equals": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.AGEshmsutnHQcXcCL-JAuh4i2ZC1uuHrSrnG0v4LdgWggKL1OcM-8-o4Grh9YnZY6gwLUHZQVtNVctnNuaykKeGqk6q3YG8BW9JRlU3NQ-qgpn3tma2JdVoH0e3LZhRs1Y5uFSL9Uf-XwEB065nhcUaIajC-mm73M9Q9IJLb-c0dhobN5nQerEGWdXWjJpmf-Af620aEAqNQRkbiINBaEhBRTzAd8bYYRdg-Cf5K8yVFKF7BLDN2Z8JHoMF94xFtZXqNAybXN1rhf4O_B_glSFm35fflK2-uExd0xCEhkGbqYBvbsa0UWSTiPJxgRS5nRLnYjABtF9YShWQmTZhhXg"
                 }
               }
             }
@@ -10587,7 +10696,7 @@
           "input": {
             "path": "/oidc/openid-connect7/5",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImV4cCI6NDEwMjQ0NDgwMH0.ROtSMxSHsDYU99ACCjtoXfHHQzkOnPWpynR5VZpV4Fb4zk4iztYQqBTHSLAu-lYyK85uTGImLjq2rHkhWmTqxY7vEsRu5Qbekr--U__zR2xRdW2juZnNy9rrnHYwUH_2mV0r8vveTclRplbc3mIHr4K3oUJIGJgjqF18o-0MyOXeId2nAA9rPB9t5Iiwrb4-LRNRW_juuFLM5QNNDD15eR8YjvgWA7Yr6I1-FGNVl8hA00Cc8Fbxi3BDE_dk6DxKz_N9eWOUxxS2rrL7SkoA4CqBJyBHCIOx5o_TtvwEeqh0-9Zi_KHvWPZhUD6tluiBak00Ea1JokARSetQZR0c6g"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.AGEshmsutnHQcXcCL-JAuh4i2ZC1uuHrSrnG0v4LdgWggKL1OcM-8-o4Grh9YnZY6gwLUHZQVtNVctnNuaykKeGqk6q3YG8BW9JRlU3NQ-qgpn3tma2JdVoH0e3LZhRs1Y5uFSL9Uf-XwEB065nhcUaIajC-mm73M9Q9IJLb-c0dhobN5nQerEGWdXWjJpmf-Af620aEAqNQRkbiINBaEhBRTzAd8bYYRdg-Cf5K8yVFKF7BLDN2Z8JHoMF94xFtZXqNAybXN1rhf4O_B_glSFm35fflK2-uExd0xCEhkGbqYBvbsa0UWSTiPJxgRS5nRLnYjABtF9YShWQmTZhhXg"
             }
           },
           "output": {
@@ -10620,6 +10729,11 @@
                   "audience": {
                     "claim": "client-audience",
                     "required": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10651,7 +10765,7 @@
               },
               "headers": {
                 "X-Access-Token": {
-                  "equals": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImV4cCI6NDEwMjQ0NDgwMH0.ROtSMxSHsDYU99ACCjtoXfHHQzkOnPWpynR5VZpV4Fb4zk4iztYQqBTHSLAu-lYyK85uTGImLjq2rHkhWmTqxY7vEsRu5Qbekr--U__zR2xRdW2juZnNy9rrnHYwUH_2mV0r8vveTclRplbc3mIHr4K3oUJIGJgjqF18o-0MyOXeId2nAA9rPB9t5Iiwrb4-LRNRW_juuFLM5QNNDD15eR8YjvgWA7Yr6I1-FGNVl8hA00Cc8Fbxi3BDE_dk6DxKz_N9eWOUxxS2rrL7SkoA4CqBJyBHCIOx5o_TtvwEeqh0-9Zi_KHvWPZhUD6tluiBak00Ea1JokARSetQZR0c6g"
+                  "equals": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.AGEshmsutnHQcXcCL-JAuh4i2ZC1uuHrSrnG0v4LdgWggKL1OcM-8-o4Grh9YnZY6gwLUHZQVtNVctnNuaykKeGqk6q3YG8BW9JRlU3NQ-qgpn3tma2JdVoH0e3LZhRs1Y5uFSL9Uf-XwEB065nhcUaIajC-mm73M9Q9IJLb-c0dhobN5nQerEGWdXWjJpmf-Af620aEAqNQRkbiINBaEhBRTzAd8bYYRdg-Cf5K8yVFKF7BLDN2Z8JHoMF94xFtZXqNAybXN1rhf4O_B_glSFm35fflK2-uExd0xCEhkGbqYBvbsa0UWSTiPJxgRS5nRLnYjABtF9YShWQmTZhhXg"
                 }
               }
             }
@@ -10664,7 +10778,7 @@
           "input": {
             "path": "/oidc/openid-connect7/6",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImV4cCI6NDEwMjQ0NDgwMH0.ROtSMxSHsDYU99ACCjtoXfHHQzkOnPWpynR5VZpV4Fb4zk4iztYQqBTHSLAu-lYyK85uTGImLjq2rHkhWmTqxY7vEsRu5Qbekr--U__zR2xRdW2juZnNy9rrnHYwUH_2mV0r8vveTclRplbc3mIHr4K3oUJIGJgjqF18o-0MyOXeId2nAA9rPB9t5Iiwrb4-LRNRW_juuFLM5QNNDD15eR8YjvgWA7Yr6I1-FGNVl8hA00Cc8Fbxi3BDE_dk6DxKz_N9eWOUxxS2rrL7SkoA4CqBJyBHCIOx5o_TtvwEeqh0-9Zi_KHvWPZhUD6tluiBak00Ea1JokARSetQZR0c6g"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImF1ZCI6ImludGVncmF0aW9uLWNsaWVudCIsImNsaWVudC1hdWRpZW5jZSI6ImludGVncmF0aW9uLWNsaWVudCIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.AGEshmsutnHQcXcCL-JAuh4i2ZC1uuHrSrnG0v4LdgWggKL1OcM-8-o4Grh9YnZY6gwLUHZQVtNVctnNuaykKeGqk6q3YG8BW9JRlU3NQ-qgpn3tma2JdVoH0e3LZhRs1Y5uFSL9Uf-XwEB065nhcUaIajC-mm73M9Q9IJLb-c0dhobN5nQerEGWdXWjJpmf-Af620aEAqNQRkbiINBaEhBRTzAd8bYYRdg-Cf5K8yVFKF7BLDN2Z8JHoMF94xFtZXqNAybXN1rhf4O_B_glSFm35fflK2-uExd0xCEhkGbqYBvbsa0UWSTiPJxgRS5nRLnYjABtF9YShWQmTZhhXg"
             }
           },
           "output": {
@@ -10697,6 +10811,11 @@
                   "audience": {
                     "required": true,
                     "match_with_client_id": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10774,6 +10893,11 @@
                   "audience": {
                     "required": true,
                     "match_with_client_id": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10851,6 +10975,11 @@
                   "audience": {
                     "required": true,
                     "match_with_client_id": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10883,11 +11012,14 @@
           "input": {
             "path": "/oidc/openid-connect7/9",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6NDEwMjQ0NDgwMH0.C9K-IFMxlTFroLfD0t71PHKGgjM29FBMuHSac7uK2VVvb1JsBPwUSxaVZKL1acw1zqtQcecG_86hQJ6WAASY0cifho5kBy5HkEup4iq8c23G3BpNiX9OyYZMQd78EhdLbLip8UHO2tfUxFbSHH2gd9df3T3-zf4F1IYWuCJErHlTLnFH9mX9WZqvjNbTQ2zfJTnEvb5Iqf_bwsgi3hUrALeWfZuybVrOwf-9zRolyFbgPTy_8BcnPJr8OgTEBTdtHiOFcdyS-ZjRH7ZdFsg1y0lkSc0r7r7y2xJ9cJqW-8EZHFyPdPe2mALoq3FxH_O_AXgyjnPgC--m2IPzys8xZQ"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.dECGdp1nqnCJQheHYUmSoOQc_dAKZ3hMTs-aGU46SvKaDBMMmYPLhynEyRAIUzauTHcROARet4rEEl_nZNPbexH4GVawZn8TT8XZ5WABB-Gzn7lk6XpVkQFLV-4ISVK-Mt1YhFLqfBxxD2rb9T372defqc64jn4ZBqTWSkEeRijzWORLBc5-1HI2KqBXUdh36ZIZeq_3NLBM865aQsHxjmLOKAEc4fWcCOoqeJlGr6PnT8gfx1euT3cM_0ZT7XWi2W2CGugobsAI24WKkP3jT9y-TahOlSp9uMTHHs6JXXsL64K8aA8pN5uTHYNhUoEL5rr30miPZCqexQ1Z4aBtsA"
             }
           },
           "output": {
-            "status": 403
+            "status": 401,
+            "body": {
+              "equals": "inactive token\n"
+            }
           }
         }
       ]
@@ -10916,6 +11048,11 @@
                   "audience": {
                     "required": true,
                     "match_with_client_id": true
+                  },
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
                   }
                 }
               }
@@ -10948,13 +11085,13 @@
           "input": {
             "path": "/oidc/openid-connect7/10",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImV4cCI6NDEwMjQ0NDgwMH0.C9K-IFMxlTFroLfD0t71PHKGgjM29FBMuHSac7uK2VVvb1JsBPwUSxaVZKL1acw1zqtQcecG_86hQJ6WAASY0cifho5kBy5HkEup4iq8c23G3BpNiX9OyYZMQd78EhdLbLip8UHO2tfUxFbSHH2gd9df3T3-zf4F1IYWuCJErHlTLnFH9mX9WZqvjNbTQ2zfJTnEvb5Iqf_bwsgi3hUrALeWfZuybVrOwf-9zRolyFbgPTy_8BcnPJr8OgTEBTdtHiOFcdyS-ZjRH7ZdFsg1y0lkSc0r7r7y2xJ9cJqW-8EZHFyPdPe2mALoq3FxH_O_AXgyjnPgC--m2IPzys8xZQ"
+              "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6ImludGVncmF0aW9uLWtleSJ9.eyJzdWIiOiJhbGljZSIsImlzcyI6Imh0dHBzOi8vaXNzdWVyLmV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.dECGdp1nqnCJQheHYUmSoOQc_dAKZ3hMTs-aGU46SvKaDBMMmYPLhynEyRAIUzauTHcROARet4rEEl_nZNPbexH4GVawZn8TT8XZ5WABB-Gzn7lk6XpVkQFLV-4ISVK-Mt1YhFLqfBxxD2rb9T372defqc64jn4ZBqTWSkEeRijzWORLBc5-1HI2KqBXUdh36ZIZeq_3NLBM865aQsHxjmLOKAEc4fWcCOoqeJlGr6PnT8gfx1euT3cM_0ZT7XWi2W2CGugobsAI24WKkP3jT9y-TahOlSp9uMTHHs6JXXsL64K8aA8pN5uTHYNhUoEL5rr30miPZCqexQ1Z4aBtsA"
             }
           },
           "output": {
-            "status": 403,
+            "status": 401,
             "body": {
-              "equals": "{\"error\":\"required audience claim not present\"}"
+              "equals": "inactive token\n"
             }
           }
         }
@@ -11634,7 +11771,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "$ENV://OIDC_PUBLIC_KEY",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -11708,7 +11852,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "$secret://vault/test1/key/public_key",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -11810,7 +11961,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "$secret://vault/test1/key/public_key",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -11912,7 +12070,14 @@
                 "discovery": "http://127.0.0.1:1/.well-known/openid-configuration",
                 "bearer_only": true,
                 "public_key": "$secret://vault/test1/key/public_key",
-                "token_signing_alg_values_expected": "RS256"
+                "token_signing_alg_values_expected": "RS256",
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
+                }
               }
             },
             "upstream": {
@@ -12025,6 +12190,13 @@
                   "required": [
                     "role"
                   ]
+                },
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
                 }
               }
             },
@@ -12100,6 +12272,13 @@
                   "required": [
                     "role"
                   ]
+                },
+                "claim_validator": {
+                  "issuer": {
+                    "valid_issuers": [
+                      "https://issuer.example.test"
+                    ]
+                  }
                 }
               }
             },

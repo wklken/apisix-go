@@ -83,6 +83,30 @@ var (
 	errStoreStopped    = errors.New("store is stopped")
 )
 
+// ResourceValidationError identifies a deterministic resource validation
+// failure. Configuration providers may quarantine this resource while
+// continuing to apply unrelated resources; storage and I/O errors must not
+// be wrapped with this type.
+type ResourceValidationError struct {
+	Bucket string
+	ID     string
+	Err    error
+}
+
+func (e *ResourceValidationError) Error() string {
+	if e == nil {
+		return "resource validation failed"
+	}
+	return fmt.Sprintf("validate %s/%s: %v", e.Bucket, e.ID, e.Err)
+}
+
+func (e *ResourceValidationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // Open constructs a store that owns its database file. It has no global side
 // effects; callers that also need the package-level getters must register
 // the store through GetStore.
@@ -244,6 +268,32 @@ func (s *Store) GetBucketData(bucketName string) ([][]byte, error) {
 	return data, nil
 }
 
+type bucketEntry struct {
+	id    string
+	value []byte
+}
+
+func (s *Store) getBucketEntries(bucketName string) ([]bucketEntry, error) {
+	entries := make([]bucketEntry, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(bucketName))
+		if bucket == nil {
+			return errBucketNotFound
+		}
+		return bucket.ForEach(func(id, value []byte) error {
+			entries = append(entries, bucketEntry{
+				id:    string(bytes.Clone(id)),
+				value: bytes.Clone(value),
+			})
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // get specific key from bucket
 func (s *Store) GetFromBucket(bucketName string, id []byte) ([]byte, error) {
 	var value []byte
@@ -394,9 +444,15 @@ func (s *Store) processEvent(event *Event) error {
 	}
 
 	bucketName, id := getTypeAndIDFromKey(event.Key)
-	if bytes.Equal(bucketName, []byte("ssls")) {
+	if event.Type == EventTypePut && bytes.Equal(bucketName, []byte("ssls")) {
 		if err := validateSSLCertificateEvent(event.Type, util.BytesToString(id), event.Value); err != nil {
-			return err
+			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
+		}
+	}
+	if event.Type == EventTypePut &&
+		(bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("global_rules"))) {
+		if err := validateConfigResourcePut(string(bucketName), util.BytesToString(id), event.Value); err != nil {
+			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
 		}
 	}
 
@@ -408,7 +464,11 @@ func (s *Store) processEvent(event *Event) error {
 			var err error
 			snapshot, err = s.prepareConsumerSnapshot(id, event.Value)
 			if err != nil {
-				return fmt.Errorf("store process the consumer fail: %w", err)
+				return &ResourceValidationError{
+					Bucket: string(bucketName),
+					ID:     string(id),
+					Err:    fmt.Errorf("store process the consumer fail: %w", err),
+				}
 			}
 		}
 

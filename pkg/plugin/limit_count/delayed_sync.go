@@ -11,6 +11,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 )
 
+const maxDelayedSyncStates = 10_000
+
 var errDelayedSyncRejected = errors.New("delayed-sync request rejected")
 
 type delayedSyncBackend interface {
@@ -44,6 +46,7 @@ type delayedSyncer struct {
 	states    map[string]*delayedSyncState
 	retry     map[string]struct{}
 	retryNext map[string]struct{}
+	maxStates int
 	stop      chan struct{}
 	done      chan struct{}
 	stopOnce  sync.Once
@@ -68,6 +71,7 @@ func newDelayedSyncer(
 		states:       make(map[string]*delayedSyncState),
 		retry:        make(map[string]struct{}),
 		retryNext:    make(map[string]struct{}),
+		maxStates:    maxDelayedSyncStates,
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 	}
@@ -87,9 +91,16 @@ func (s *delayedSyncer) incoming(
 	for {
 		s.mu.Lock()
 		state := s.states[key]
+		created := false
 		if state == nil {
+			s.cleanupExpiredLocked(now)
+			if len(s.states) >= s.stateCapacity() {
+				s.mu.Unlock()
+				return 0, s.window, errDelayedSyncRejected
+			}
 			state = &delayedSyncState{}
 			s.states[key] = state
+			created = true
 		}
 		if state.initialized && !now.Before(state.resetAt) {
 			if state.inFlight {
@@ -115,6 +126,13 @@ func (s *delayedSyncer) incoming(
 		if !state.initialized || !now.Before(state.resetAt) {
 			remoteRemaining, remoteReset, syncErr := s.backend.sync(ctx, key, 0, now)
 			if syncErr != nil {
+				if created {
+					if current, ok := s.states[key]; ok && current == state &&
+						!state.initialized && !state.inFlight && state.localDelta == 0 &&
+						state.remoteRemaining == 0 && state.reservationAt.IsZero() && state.resetAt.IsZero() {
+						delete(s.states, key)
+					}
+				}
 				s.mu.Unlock()
 				return 0, 0, syncErr
 			}
@@ -183,7 +201,7 @@ func (s *delayedSyncer) run() {
 	}
 }
 
-func (s *delayedSyncer) flushNow(ctx context.Context, _ time.Time) error {
+func (s *delayedSyncer) flushNow(ctx context.Context, now time.Time) error {
 	keys := s.drainQueue()
 
 	s.mu.Lock()
@@ -200,9 +218,32 @@ func (s *delayedSyncer) flushNow(ctx context.Context, _ time.Time) error {
 		s.retry[key] = struct{}{}
 	}
 	clear(s.retryNext)
+	s.cleanupExpiredLocked(now)
 	s.mu.Unlock()
 
 	return err
+}
+
+func (s *delayedSyncer) stateCapacity() int {
+	if s.maxStates > 0 {
+		return s.maxStates
+	}
+	return maxDelayedSyncStates
+}
+
+func (s *delayedSyncer) cleanupExpiredLocked(now time.Time) {
+	for key, state := range s.states {
+		if state == nil || !state.initialized || now.Before(state.resetAt) || state.localDelta != 0 || state.inFlight {
+			continue
+		}
+		if _, owned := s.retry[key]; owned {
+			continue
+		}
+		if _, owned := s.retryNext[key]; owned {
+			continue
+		}
+		delete(s.states, key)
+	}
 }
 
 func (s *delayedSyncer) flushAllDirty(ctx context.Context) error {

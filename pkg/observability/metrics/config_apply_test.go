@@ -172,3 +172,93 @@ func TestGetReadinessResetsWhenConfigMetricsAreReplaced(t *testing.T) {
 		t.Fatal("config apply readiness = true after collector replacement")
 	}
 }
+
+func TestConfigApplyQuarantineBlocksReadinessUntilCleared(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "test_quarantine_readiness_failures_total"},
+	)
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_count"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready before quarantine = %v, want 1", got)
+	}
+
+	RecordConfigApplyQuarantine(2)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 2 {
+		t.Fatalf("quarantine count = %v, want 2", got)
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready with quarantine = %v, want 0", got)
+	}
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("GetReadiness() remained ready while resources were quarantined")
+	}
+
+	RecordConfigApplyQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
+		t.Fatalf("quarantine count after clear = %v, want 0", got)
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready after quarantine clear = %v, want 1", got)
+	}
+}
+
+func TestConfigApplyQuarantineMetricHasNoLabels(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	gauge := newConfigApplyQuarantineMetric(registry, "apisix_")
+	gauge.Set(3)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error = %v", err)
+	}
+	if len(families) != 1 || len(families[0].GetMetric()) != 1 {
+		t.Fatalf(
+			"quarantine metric families = %d, samples = %d, want one each",
+			len(families),
+			len(families[0].GetMetric()),
+		)
+	}
+	if labels := families[0].GetMetric()[0].GetLabel(); len(labels) != 0 {
+		t.Fatalf("quarantine metric labels = %v, want none", labels)
+	}
+}
+
+func TestConfigApplyQuarantineAggregatesProviderAndStoreSources(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_quarantine_sources_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_count"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplyQuarantine(2)
+	RecordConfigApplyStoreQuarantine(3)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 5 {
+		t.Fatalf("aggregated quarantine count = %v, want 5", got)
+	}
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("readiness = true while provider and store quarantine remain")
+	}
+
+	RecordConfigApplyQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 3 {
+		t.Fatalf("count after provider quarantine clear = %v, want 3", got)
+	}
+	RecordConfigApplyStoreQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
+		t.Fatalf("count after store quarantine clear = %v, want 0", got)
+	}
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("readiness = false after both quarantine sources clear")
+	}
+}

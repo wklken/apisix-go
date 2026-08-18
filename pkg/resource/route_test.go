@@ -3,6 +3,7 @@ package resource
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -412,18 +413,68 @@ func TestParseNodeAddress(t *testing.T) {
 		wantHost string
 		wantPort int
 	}{
-		{address: "example.test", wantHost: "example.test", wantPort: 80},
+		{address: "example.test", wantHost: "example.test"},
 		{address: "example.test:8080", wantHost: "example.test", wantPort: 8080},
 		{address: "[2001:db8::1]:8443", wantHost: "2001:db8::1", wantPort: 8443},
-		{address: "[2001:db8::1]", wantHost: "[2001:db8::1]", wantPort: 80},
-		{address: "2001:db8::1", wantHost: "2001:db8::1", wantPort: 80},
-		{address: "example.test:not-a-port", wantHost: "example.test:not-a-port", wantPort: 80},
+		{address: "[2001:db8::1]", wantHost: "[2001:db8::1]"},
+		{address: "2001:db8::1", wantHost: "2001:db8::1"},
+		{address: "example.test:not-a-port", wantHost: "example.test:not-a-port"},
 	}
 	for _, test := range tests {
 		host, port := parseNodeAddress(test.address)
 		if host != test.wantHost || port != test.wantPort {
 			t.Fatalf("parseNodeAddress(%q) = %q/%d, want %q/%d", test.address, host, port, test.wantHost, test.wantPort)
 		}
+	}
+}
+
+func TestUpstreamUnmarshalPreservesOmittedNodePortAcrossFormsAndSchemes(t *testing.T) {
+	tests := []struct {
+		name     string
+		scheme   string
+		nodes    string
+		wantHost string
+		wantPort int
+	}{
+		{name: "http map hostname", scheme: "http", nodes: `{"backend.example":1}`, wantHost: "backend.example"},
+		{name: "https map ipv4", scheme: "https", nodes: `{"192.0.2.1":1}`, wantHost: "192.0.2.1"},
+		{name: "grpc map ipv6", scheme: "grpc", nodes: `{"[2001:db8::1]":1}`, wantHost: "[2001:db8::1]"},
+		{
+			name:     "grpcs list hostname",
+			scheme:   "grpcs",
+			nodes:    `[{"host":"backend.example","weight":1}]`,
+			wantHost: "backend.example",
+		},
+		{
+			name:     "https map explicit port",
+			scheme:   "https",
+			nodes:    `{"backend.example:8443":1}`,
+			wantHost: "backend.example",
+			wantPort: 8443,
+		},
+		{
+			name:     "grpcs list explicit port",
+			scheme:   "grpcs",
+			nodes:    `[{"host":"backend.example","port":9443,"weight":1}]`,
+			wantHost: "backend.example",
+			wantPort: 9443,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstream Upstream
+			raw := fmt.Sprintf(`{"scheme":%q,"nodes":%s}`, test.scheme, test.nodes)
+			if err := json.Unmarshal([]byte(raw), &upstream); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if len(upstream.Nodes) != 1 {
+				t.Fatalf("nodes = %#v, want one node", upstream.Nodes)
+			}
+			node := upstream.Nodes[0]
+			if node.Host != test.wantHost || node.Port != test.wantPort {
+				t.Fatalf("node = %q/%d, want %q/%d", node.Host, node.Port, test.wantHost, test.wantPort)
+			}
+		})
 	}
 }
 

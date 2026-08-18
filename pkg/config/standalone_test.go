@@ -482,6 +482,7 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	if err := json.Unmarshal(raw, &route); err != nil {
 		t.Fatalf("decode stored route: %v", err)
 	}
+	resolver := data_encryption.NewResolver(true, []string{key})
 	for field, plaintext := range map[string]string{
 		"redis_password":    "redis-plaintext",
 		"sentinel_password": "sentinel-plaintext",
@@ -490,7 +491,7 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 		if !ok {
 			t.Fatalf("%s = %T, want ciphertext string", field, route.Plugins["ai-rate-limiting"][field])
 		}
-		decrypted, err := data_encryption.Decrypt(ciphertext, []string{key})
+		decrypted, err := resolver.ResolveForContext(ciphertext, "ai-rate-limiting."+field)
 		if err != nil || decrypted != plaintext {
 			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
 		}
@@ -499,7 +500,7 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	if !ok {
 		t.Fatalf("loggly.customer_token = %T, want ciphertext string", route.Plugins["loggly"]["customer_token"])
 	}
-	if decrypted, err := data_encryption.Decrypt(logglyCiphertext, []string{key}); err != nil ||
+	if decrypted, err := resolver.ResolveForContext(logglyCiphertext, "loggly.customer_token"); err != nil ||
 		decrypted != "loggly-plaintext" {
 		t.Fatalf("Decrypt(loggly.customer_token) = (%q, %v), want loggly-plaintext", decrypted, err)
 	}
@@ -553,7 +554,10 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	if !ok {
 		t.Fatalf("stored master_apikey = %T, want ciphertext string", stored["master_apikey"])
 	}
-	if decrypted, err := data_encryption.Decrypt(ciphertext, []string{key}); err != nil ||
+	if decrypted, err := data_encryption.NewResolver(true, []string{key}).ResolveForContext(
+		ciphertext,
+		"azure-functions.master_apikey",
+	); err != nil ||
 		decrypted != ciphertextShapedPlaintext {
 		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want %q", decrypted, err, ciphertextShapedPlaintext)
 	}

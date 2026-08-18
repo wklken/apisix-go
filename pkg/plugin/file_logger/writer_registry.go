@@ -8,12 +8,21 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"go.uber.org/zap/zapcore"
 )
 
+const (
+	fileLoggerBufferSize    = 64 * 1024
+	fileLoggerFlushInterval = time.Second
+)
+
+var errFileLoggerWriterStopped = errors.New("file logger writer is stopped")
+
 type registeredFileWriter struct {
-	writer *appendFileWriteSyncer
+	writer *bufferedFileWriteSyncer
 	leases int
 }
 
@@ -28,8 +37,100 @@ type fileWriterRegistry struct {
 type fileWriterLease struct {
 	registry *fileWriterRegistry
 	path     string
-	writer   *appendFileWriteSyncer
+	writer   *bufferedFileWriteSyncer
 	once     sync.Once
+}
+
+// bufferedFileWriteSyncer owns the buffered sink for one canonical file path.
+// The wrapper lock serializes writes with explicit reopen and final stop
+// operations, while BufferedWriteSyncer serializes its periodic flushes with
+// its own lock.
+type bufferedFileWriteSyncer struct {
+	mu      sync.Mutex
+	raw     *appendFileWriteSyncer
+	buffer  *zapcore.BufferedWriteSyncer
+	stopped bool
+}
+
+func newBufferedFileWriteSyncer(path string) *bufferedFileWriteSyncer {
+	raw := &appendFileWriteSyncer{path: path}
+	return &bufferedFileWriteSyncer{
+		raw:    raw,
+		buffer: newFileLoggerBufferedWriteSyncer(raw),
+	}
+}
+
+func newFileLoggerBufferedWriteSyncer(raw *appendFileWriteSyncer) *zapcore.BufferedWriteSyncer {
+	return &zapcore.BufferedWriteSyncer{
+		WS:            raw,
+		Size:          fileLoggerBufferSize,
+		FlushInterval: fileLoggerFlushInterval,
+	}
+}
+
+// resetBufferLocked discards a buffer after a write or sync error. bufio.Writer
+// keeps its first underlying error forever, so retaining the old
+// BufferedWriteSyncer would make every later entry fail even after the file
+// becomes available again.
+func (w *bufferedFileWriteSyncer) resetBufferLocked() {
+	old := w.buffer
+	_ = old.Stop()
+	w.buffer = newFileLoggerBufferedWriteSyncer(w.raw)
+}
+
+func (w *bufferedFileWriteSyncer) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return 0, errFileLoggerWriterStopped
+	}
+	n, err := w.buffer.Write(data)
+	if err != nil {
+		w.resetBufferLocked()
+		// A sticky error or a failed flush of previously buffered bytes
+		// returns n == 0, so the current entry is safe to retry. Never retry
+		// after a partial write because that could duplicate its prefix.
+		if n == 0 {
+			return w.buffer.Write(data)
+		}
+	}
+	return n, err
+}
+
+func (w *bufferedFileWriteSyncer) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return nil
+	}
+	err := w.buffer.Sync()
+	if err != nil {
+		w.resetBufferLocked()
+	}
+	return err
+}
+
+func (w *bufferedFileWriteSyncer) Reopen() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return errFileLoggerWriterStopped
+	}
+	syncErr := w.buffer.Sync()
+	if syncErr != nil {
+		w.resetBufferLocked()
+	}
+	return errors.Join(syncErr, w.raw.Reopen())
+}
+
+func (w *bufferedFileWriteSyncer) Stop() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return nil
+	}
+	w.stopped = true
+	return errors.Join(w.buffer.Stop(), w.raw.Close())
 }
 
 var sharedFileWriters = &fileWriterRegistry{
@@ -53,7 +154,7 @@ func (r *fileWriterRegistry) acquire(path string) (*fileWriterLease, error) {
 	r.mu.Lock()
 	entry := r.writers[key]
 	if entry == nil {
-		entry = &registeredFileWriter{writer: &appendFileWriteSyncer{path: key}}
+		entry = &registeredFileWriter{writer: newBufferedFileWriteSyncer(key)}
 		r.writers[key] = entry
 	}
 	entry.leases++
@@ -98,7 +199,7 @@ func (l *fileWriterLease) release() {
 		return
 	}
 	l.once.Do(func() {
-		var closeWriter *appendFileWriteSyncer
+		var closeWriter *bufferedFileWriteSyncer
 		var watcherDone chan struct{}
 		l.registry.mu.Lock()
 		entry := l.registry.writers[l.path]
@@ -126,7 +227,7 @@ func (l *fileWriterLease) release() {
 			<-watcherDone
 		}
 		if closeWriter != nil {
-			_ = closeWriter.Close()
+			_ = closeWriter.Stop()
 		}
 	})
 }
@@ -149,7 +250,7 @@ func (r *fileWriterRegistry) flushAndReopen(path string) error {
 	if entry == nil {
 		return nil
 	}
-	err := errors.Join(entry.writer.Sync(), entry.writer.Reopen())
+	err := entry.writer.Reopen()
 	if err == nil {
 		logger.Info("reopen cached log file: " + path)
 	}

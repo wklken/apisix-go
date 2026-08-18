@@ -26,6 +26,48 @@ func TestLoggerBatchObserverIsNilSafeBeforeInit(t *testing.T) {
 	observer.Close()
 }
 
+func TestLoggerBatchObserverAcceptsFileLogger(t *testing.T) {
+	oldPending, oldEvents, oldBuffered := LoggerBatchPendingEntries, LoggerBatchEvents, BatchProcessEntries
+	LoggerBatchPendingEntries = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_file_logger_batch_pending"},
+		[]string{"plugin", "route_id", "server_addr"},
+	)
+	LoggerBatchEvents = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "test_file_logger_batch_events"},
+		[]string{"plugin", "outcome"},
+	)
+	BatchProcessEntries = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_file_logger_batch_buffered"},
+		[]string{"name", "route_id", "server_addr"},
+	)
+	t.Cleanup(func() {
+		LoggerBatchPendingEntries, LoggerBatchEvents, BatchProcessEntries = oldPending, oldEvents, oldBuffered
+	})
+
+	observer := AcquireLoggerBatchObserver("file-logger", "", "", "")
+	if !observer.AddEvent(LoggerBatchOutcomeDeliveryFailed) {
+		t.Fatal("file-logger delivery failure event was rejected")
+	}
+	observer.AddPending(3)
+
+	if got := metricGaugeValue(
+		t,
+		LoggerBatchPendingEntries.WithLabelValues("file-logger", "", ""),
+	); got != 3 {
+		t.Fatalf("file-logger pending gauge = %v, want 3", got)
+	}
+	if got := metricCounterValue(
+		t,
+		LoggerBatchEvents.WithLabelValues("file-logger", LoggerBatchOutcomeDeliveryFailed),
+	); got != 1 {
+		t.Fatalf("file-logger delivery failure counter = %v, want 1", got)
+	}
+	if observer.AddEvent("unknown") {
+		t.Fatal("unknown file-logger event was accepted")
+	}
+	observer.Close()
+}
+
 func TestLoggerBatchObserverAggregatesOverlappingGenerations(t *testing.T) {
 	oldPending, oldEvents, oldBuffered := LoggerBatchPendingEntries, LoggerBatchEvents, BatchProcessEntries
 	LoggerBatchPendingEntries = prometheus.NewGaugeVec(

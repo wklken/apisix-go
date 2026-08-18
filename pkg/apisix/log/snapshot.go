@@ -360,12 +360,50 @@ func snapshotAddressHost(address string) string {
 	return address
 }
 
-// BuildLogSnapshot copies all request and response data into one detached
-// value.  Request bodies are bounded to the same hard ceiling as logger
-// policies and are restored before returning to the request pipeline.
+// BuildSnapshot copies all request and response data into one detached value.
+// Request bodies are bounded to the same hard ceiling as logger policies and
+// are restored before returning to the request pipeline.
 func BuildSnapshot(
 	r *http.Request,
 	response ResponseSnapshot,
+	outcome apisixctx.ResponseOutcome,
+	source apisixctx.ResponseSource,
+	started time.Time,
+	finished time.Time,
+) LogSnapshot {
+	var requestBody []byte
+	var requestBodyTruncated bool
+	if r != nil {
+		requestBody, requestBodyTruncated = captureRequestBody(r)
+	}
+	return BuildSnapshotFromOwnedInputs(
+		r,
+		ResponseSnapshot{
+			Header:        cloneHeader(response.Header),
+			Trailer:       cloneHeader(response.Trailer),
+			Body:          append([]byte(nil), response.Body...),
+			BodyTruncated: response.BodyTruncated,
+		},
+		requestBody,
+		requestBodyTruncated,
+		outcome,
+		source,
+		started,
+		finished,
+	)
+}
+
+// BuildSnapshotFromOwnedInputs builds a snapshot from detached response data
+// and a captured request body. The response fields and requestBody ownership
+// are transferred to the returned snapshot; callers must not mutate or reuse
+// them afterwards. The request itself is read only for scalar metadata and
+// mutable request headers, query values, and context variables are cloned
+// exactly once. In particular, request.Body is never read.
+func BuildSnapshotFromOwnedInputs(
+	r *http.Request,
+	response ResponseSnapshot,
+	requestBody []byte,
+	requestBodyTruncated bool,
 	outcome apisixctx.ResponseOutcome,
 	source apisixctx.ResponseSource,
 	started time.Time,
@@ -376,12 +414,7 @@ func BuildSnapshot(
 		Source:   source,
 		Started:  started,
 		Finished: finished,
-		Response: ResponseLogSnapshot{
-			Header:        cloneHeader(response.Header),
-			Trailer:       cloneHeader(response.Trailer),
-			Body:          append([]byte(nil), response.Body...),
-			BodyTruncated: response.BodyTruncated,
-		},
+		Response: ResponseLogSnapshot(response),
 	}
 	if r == nil {
 		return snapshot
@@ -397,8 +430,9 @@ func BuildSnapshot(
 		ContentLength: r.ContentLength,
 		Header:        cloneHeader(r.Header),
 		Query:         cloneQuery(r.URL.Query()),
+		Body:          requestBody,
+		BodyTruncated: requestBodyTruncated,
 	}
-	request.Body, request.BodyTruncated = captureRequestBody(r)
 	remaining := snapshotValueBudget
 	request.APISIXVars = cloneSafeMap(apisixctx.GetApisixVars(r), &remaining)
 	if request.APISIXVars == nil {

@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | BUG-001 | Partially correct | Not applicable | Authorized verified subclaim | fixed | Local ignored vendor state was regenerated and verified separately; tracked diff remained empty | No repository finding exists and no empty commit is created; retained for source-ledger completeness |
 | SEC-001 | Correct | Not applicable | Authorized | fixed | Local JWT and introspection regression tests, manifest validation, 28 affected integration cases, scoped lint, package tests, and build passed | Locally verified JWTs now require a verifiable issuer and expected audience; configured audiences also apply to introspection responses |
-| SEC-002 | Correct | Not applicable | Authorized | pending | None | Next: logging-sanitization commit |
+| SEC-002 | Correct | Not applicable | Authorized | fixed | Default snapshot and legacy payload tests failed before the change, then all three logger packages and scoped lint passed | Loki, SLS, and Splunk default payloads omit sensitive request/response headers while preserving ordinary headers |
 | BUG-002 | Correct | Not applicable | Authorized | pending | None | Queued: cache-capacity commit |
 | BUG-003 | Correct | Not applicable | Authorized | pending | None | Queued: request-boundary commit |
 | BUG-004 | Correct | Not applicable | Authorized | pending | None | Queued: typed resource-quarantine commit |
@@ -37,6 +37,10 @@
   - Gives static-key fixtures an explicit trusted issuer and refreshes affected signed tokens so the integration corpus exercises the new issuer/audience contract.
 - `SEC-001`: `docs/plugins.md`
   - Documents the issuer and audience trust requirements for locally verified JWTs.
+- `SEC-002`: `pkg/plugin/loki_logger/plugin.go`, `pkg/plugin/sls_logger/plugin.go`, `pkg/plugin/splunk_hec_logging/plugin.go`
+  - Uses the shared access-log header sanitizer in each default snapshot and legacy payload builder; explicit custom log formats remain unchanged.
+- `SEC-002`: the corresponding three `plugin_test.go` files
+  - Covers request `Authorization`/`Cookie`, response `Set-Cookie`, and benign-header retention in both execution paths.
 
 ## Verification
 
@@ -51,8 +55,11 @@
 - Integration: the 28 static-key cases whose original fixtures used unreachable discovery without an issuer anchor passed as one selected `TestPluginIntegration/openid-connect/(...)` run.
 - Build: `source .envrc && make build && make clean` passed.
 - Independent review: the first pass found the 28 affected integration fixtures and missing introspection coverage; both were corrected and included in the final verification above. The follow-up review reported no Critical, Important, or Minor findings and concluded `Ready: yes`.
+- RED: `TestDefaultLogFieldsRedactSensitiveHeaders`, `TestDefaultAccessLogFieldsRedactSensitiveHeaders`, and `TestDefaultEventsRedactSensitiveHeaders` exposed `authorization` in the default payloads before SEC-002.
+- GREEN: `source .envrc && go test ./pkg/plugin/loki_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging -count=1` passed.
+- Lint: `source .envrc && golangci-lint run ./pkg/plugin/loki_logger/... ./pkg/plugin/sls_logger/... ./pkg/plugin/splunk_hec_logging/...` passed with 0 issues.
 - Not run: repository-wide tests, the full `t/plugin` integration suite, race tests, or a real external OIDC provider. The changed behavior has focused unit and selected real-process integration coverage and does not alter a concurrency path.
 
 ## Remaining Pending Work
 
-`SEC-002`, `BUG-002`, `BUG-003`, `BUG-004`, `BUG-005`, `BUG-006`, `BUG-007`, and `SEC-003` remain pending in the dependency-ordered implementation plan. `BUG-001` and `SEC-001` have no remaining implementation blocker.
+`BUG-002`, `BUG-003`, `BUG-004`, `BUG-005`, `BUG-006`, `BUG-007`, and `SEC-003` remain pending in the dependency-ordered implementation plan. `BUG-001`, `SEC-001`, and `SEC-002` have no remaining implementation blocker.

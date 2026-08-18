@@ -325,9 +325,9 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 }
 
 func slsSnapshotDefaultFields(snapshot base.LogSnapshot) map[string]any {
-	requestHeaders := base.CollapseHeaderValues(snapshot.Request.Header)
+	requestHeaders := base.CollapseAccessLogHeaderValues(snapshot.Request.Header)
 	requestHeaders["host"] = snapshot.Request.Host
-	responseHeaders := base.CollapseHeaderValues(snapshot.Response.Header)
+	responseHeaders := base.CollapseAccessLogHeaderValues(snapshot.Response.Header)
 	query := make(map[string]any, len(snapshot.Request.Query))
 	for name, values := range snapshot.Request.Query {
 		if len(values) == 1 {
@@ -354,7 +354,7 @@ func snapshotURI(snapshot base.LogSnapshot) string {
 }
 
 func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.Header) map[string]any {
-	requestHeaders := headerFields(r.Header)
+	requestHeaders := base.CollapseAccessLogHeaderValues(r.Header)
 	requestHeaders["host"] = r.Host
 	return map[string]any{
 		"client_ip": base.RemoteIP(r.RemoteAddr),
@@ -366,22 +366,9 @@ func defaultAccessLogFields(r *http.Request, status int, responseHeaders http.He
 		},
 		"response": map[string]any{
 			"status":  status,
-			"headers": headerFields(responseHeaders),
+			"headers": base.CollapseAccessLogHeaderValues(responseHeaders),
 		},
 	}
-}
-
-func headerFields(header http.Header) map[string]any {
-	fields := make(map[string]any, len(header))
-	for name, values := range header {
-		key := strings.ToLower(name)
-		if len(values) == 1 {
-			fields[key] = values[0]
-		} else {
-			fields[key] = append([]string(nil), values...)
-		}
-	}
-	return fields
 }
 
 func queryFields(r *http.Request) map[string]any {

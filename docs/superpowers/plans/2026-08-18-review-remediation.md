@@ -91,10 +91,10 @@ git commit -m "fix(openid-connect): require trusted JWT issuer and audience"
 - Consumes: `base.CollapseAccessLogHeaderValues(http.Header)`.
 - Produces: default snapshot and legacy payloads that omit request credentials and response cookies; explicit custom `log_format` remains caller-owned.
 
-- [ ] **Step 1: Add failing tests for Authorization/Cookie/Set-Cookie removal and benign-header retention in snapshot and legacy builders**
-- [ ] **Step 2: Run the named tests and observe exposed sensitive fields**
-- [ ] **Step 3: Replace default header normalization/cloning with `CollapseAccessLogHeaderValues`; keep query strings and custom formats unchanged**
-- [ ] **Step 4: Run all three logger packages, scoped lint, update the ledger, and commit**
+- [x] **Step 1: Add failing tests for Authorization/Cookie/Set-Cookie removal and benign-header retention in snapshot and legacy builders**
+- [x] **Step 2: Run the named tests and observe exposed sensitive fields**
+- [x] **Step 3: Replace default header normalization/cloning with `CollapseAccessLogHeaderValues`; keep query strings and custom formats unchanged**
+- [x] **Step 4: Run all three logger packages, scoped lint, update the ledger, and commit**
 
 Commit:
 

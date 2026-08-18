@@ -170,6 +170,9 @@ func (s *MemoryZoneStore) Delete(key string) bool {
 }
 
 func (z *memoryZone) storeEntryLocked(key string, entry cacheEntry) bool {
+	if z.capacity > 0 && memoryCacheEntryBytes(key, entry) > z.capacity {
+		return false
+	}
 	z.entries[key] = entry
 	z.recalculateUsedBytesLocked()
 	z.enforceCapacityLocked()

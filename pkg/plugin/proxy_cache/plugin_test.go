@@ -1959,6 +1959,40 @@ func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
 	if _, ok := store.Load("oversized"); ok {
 		t.Fatal("single entry larger than memory_size was retained")
 	}
+	if loaded, ok := store.Load("newest"); !ok || string(loaded.Body) != strings.Repeat("c", 80) {
+		t.Fatalf("newest entry after oversized store = %#v, found %t; want unchanged retained value", loaded, ok)
+	}
+}
+
+func TestMemoryZoneStoreRejectsOversizedOverwriteWithoutMutatingExistingEntry(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "bounded-memory-overwrite", MemorySize: "320B"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	store := AcquireMemoryZoneStore("bounded-memory-overwrite")
+	t.Cleanup(store.Close)
+	now := time.Now()
+	original := SharedCacheEntry{
+		Header:    http.Header{"X-Origin": {"original"}},
+		Body:      []byte("original-body"),
+		Status:    http.StatusOK,
+		StoredAt:  now,
+		TTL:       time.Minute,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	store.Store("newest", original)
+
+	oversized := original
+	oversized.Body = []byte(strings.Repeat("x", 512))
+	oversized.StoredAt = now.Add(time.Second)
+	store.Store("newest", oversized)
+
+	loaded, ok := store.Load("newest")
+	if !ok || loaded.Header.Get("X-Origin") != "original" || string(loaded.Body) != "original-body" {
+		t.Fatalf("oversized overwrite changed existing entry = %#v, found %t", loaded, ok)
+	}
 }
 
 func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {

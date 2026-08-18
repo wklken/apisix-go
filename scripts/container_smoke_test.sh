@@ -8,7 +8,7 @@ smoke="$repo_root/scripts/container_smoke.sh"
 require_pattern() {
     local pattern=$1
     local file=$2
-    if ! grep -Eq "$pattern" "$file"; then
+    if ! grep -Eq -- "$pattern" "$file"; then
         printf 'missing %q in %s\n' "$pattern" "$file" >&2
         return 1
     fi
@@ -16,6 +16,11 @@ require_pattern() {
 
 require_pattern '^FROM golang:1\.26\.6-alpine3\.24 AS builder$' "$dockerfile"
 require_pattern '^FROM alpine:3\.24\.1$' "$dockerfile"
+require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Version=\$\{VERSION\}' "$dockerfile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\{COMMIT\}' "$dockerfile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\{BUILD_TIME\}' "$dockerfile"
+require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\{GO_VERSION\}' "$dockerfile"
 require_pattern 'apk add --no-cache.*ca-certificates.*curl' "$dockerfile"
 require_pattern 'addgroup .*10001' "$dockerfile"
 require_pattern 'adduser .*10001' "$dockerfile"

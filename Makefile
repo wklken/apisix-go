@@ -49,7 +49,7 @@ lint:
 .PHONY: build
 build:
 	mkdir -p $(dir $(BINARY_PATH))
-	go build -ldflags "-X github.com/wklken/apisix-go/pkg/version.Version=$(VERSION) -X github.com/wklken/apisix-go/pkg/version.Commit=$(COMMIT) -X github.com/wklken/apisix-go/pkg/version.BuildTime=$(BUILD_TIME) -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=$(GO_VERSION)'" -o $(BINARY_PATH)
+	go build -trimpath -ldflags "-s -w -X github.com/wklken/apisix-go/pkg/version.Version=$(VERSION) -X github.com/wklken/apisix-go/pkg/version.Commit=$(COMMIT) -X github.com/wklken/apisix-go/pkg/version.BuildTime=$(BUILD_TIME) -X 'github.com/wklken/apisix-go/pkg/version.GoVersion=$(GO_VERSION)'" -o $(BINARY_PATH)
 
 .PHONY: docker-build
 docker-build:

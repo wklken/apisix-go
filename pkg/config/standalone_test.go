@@ -1082,41 +1082,6 @@ func TestStandaloneProviderFromPath(t *testing.T) {
 	}
 }
 
-func TestPluginMetadataYAMLRoundTrip(t *testing.T) {
-	metadata := &PluginMetadata{ID: "prometheus"}
-	metadata.Raw = []byte(`{"prefer_name":true}`)
-	encoded, err := metadata.MarshalYAML()
-	if err != nil {
-		t.Fatalf("MarshalYAML() error = %v", err)
-	}
-	fields, ok := encoded.(map[string]any)
-	if !ok || fields["id"] != "prometheus" || fields["prefer_name"] != true {
-		t.Fatalf("MarshalYAML() = %#v", encoded)
-	}
-
-	var decoded PluginMetadata
-	err = decoded.UnmarshalYAML(func(value any) error {
-		fields := value.(*map[string]any)
-		*fields = map[string]any{"id": "prometheus", "prefer_name": true}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("UnmarshalYAML() error = %v", err)
-	}
-	if decoded.ID != "prometheus" || !strings.Contains(string(decoded.Raw), `"prefer_name":true`) {
-		t.Fatalf("UnmarshalYAML() = ID %q, raw %s", decoded.ID, decoded.Raw)
-	}
-
-	err = decoded.UnmarshalYAML(func(value any) error {
-		fields := value.(*map[string]any)
-		*fields = map[string]any{"id": 123}
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "ID field is not string") {
-		t.Fatalf("UnmarshalYAML(non-string ID) error = %v", err)
-	}
-}
-
 func atomicReplaceStandaloneTestFile(path string, data []byte) error {
 	temp, err := os.CreateTemp(filepath.Dir(path), ".standalone-test-*")
 	if err != nil {

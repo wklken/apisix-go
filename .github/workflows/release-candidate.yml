@@ -180,6 +180,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Record Go version for GoReleaser
+        run: echo "GOVERSION=$(go version)" >> "$GITHUB_ENV"
+
       - name: Validate GoReleaser packaging in snapshot mode
         uses: goreleaser/goreleaser-action@v7
         with:

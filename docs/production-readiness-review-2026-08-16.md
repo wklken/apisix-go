@@ -168,9 +168,8 @@ config 不触发该要求。
 
 ### 6.3 运维
 
-- Docker HEALTHCHECK 打 `/livez`；编排应 `/livez` 存活、`/readyz` 就绪。etcd
-  抖动会把 readiness 标为 unhealthy，但不应把 Docker liveness probe 当作
-  readiness。
+- 镜像不内置 Docker healthcheck；编排必须显式配置 `/livez` 存活、`/readyz`
+  就绪。etcd 抖动会把 readiness 标为 unhealthy，但不应触发 liveness 重启。
 - Soak 测的是 commit 上的 `go test ./pkg/route`，不是已发布容器。
 - RC `publish-image: false`，没有签名 RC digest。
 - `SIGHUP` 是优雅退出 + 非零，不是 reload。
@@ -212,8 +211,7 @@ trace correlation。该 bundle 是外部 ingress 的资格证据，不是 Go run
    `client_body_timeout` 保持正值（镜像参考值 60s）。
 5. 不要启用 logger / sls-logger / stream / `gm`；为外部 ingress 留下脱敏
    request-log evidence。
-6. K8s：liveness `/livez`，readiness `/readyz`。不要把 Docker HEALTHCHECK 当
-   readiness。
+6. K8s：显式配置 liveness `/livez`，readiness `/readyz`；镜像不提供默认探针。
 7. 发布只认 `security-release-gates` 签过的 digest；不要把 RC 或 `master` 镜像当生产。
 
 ## 9. 判定 production ready 的条件

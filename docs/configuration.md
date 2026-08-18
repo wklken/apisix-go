@@ -60,9 +60,9 @@ no request-logging egress claim.
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
 reachable, then returns HTTP 200 with the config-apply and etcd-reachability
-state. The image HEALTHCHECK uses `/livez` (process liveness). Orchestrators must
-probe `/readyz` separately for config-apply and etcd reachability; do not use
-the Docker HEALTHCHECK as Kubernetes liveness *and* readiness.
+state. The image does not define a Docker healthcheck. Orchestrators must
+configure `/livez` for process liveness and `/readyz` for config-apply and etcd
+reachability.
 
 The production release contract requires a bounded periodic etcd reachability
 probe in addition to the watch loop. During a verified recovery test, etcd loss

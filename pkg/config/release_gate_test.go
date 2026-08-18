@@ -745,12 +745,17 @@ func TestProductionDockerfileContract(t *testing.T) {
 	for _, want := range []string{
 		"COPY --chown=apisix:apisix conf/config.yaml conf/config-default.yaml " +
 			"conf/config-production.yaml /usr/local/apisix/conf/",
+		"apk add --no-cache ca-certificates",
 		"USER 10001:10001",
-		"http://127.0.0.1:9080/livez",
 		"CMD [\"-c\", \"/usr/local/apisix/conf/config-production.yaml\"]",
 	} {
 		if !strings.Contains(dockerfile, want) {
 			t.Errorf("Dockerfile missing %q", want)
+		}
+	}
+	for _, reject := range []string{"curl", "HEALTHCHECK"} {
+		if strings.Contains(dockerfile, reject) {
+			t.Errorf("Dockerfile unexpectedly contains %q", reject)
 		}
 	}
 }

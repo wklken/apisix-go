@@ -169,8 +169,10 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 		t.Fatal("ai-proxy.auth.header.Authorization remained plaintext")
 	}
 	rewrapped, ok := header["X-Encrypted"].(string)
-	if !ok || !strings.HasPrefix(rewrapped, "v2:") || rewrapped == alreadyEncrypted {
-		t.Fatalf("legacy encrypted container leaf = %v, want v2 ciphertext", header["X-Encrypted"])
+	if !ok ||
+		!strings.HasPrefix(rewrapped, encryptedValuePrefix+v2CiphertextPrefix) ||
+		rewrapped == encryptedValuePrefix+alreadyEncrypted {
+		t.Fatalf("legacy encrypted container leaf = %v, want explicit v2 ciphertext", header["X-Encrypted"])
 	}
 	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
 	if fallbacks[0] == "old-secret-1" || fallbacks[1] == "old-secret-2" {
@@ -282,8 +284,8 @@ func TestEncryptPluginConfigsWritesV2ContextualCiphertext(t *testing.T) {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	ciphertext := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
-	if !strings.HasPrefix(ciphertext, "v2:") {
-		t.Fatalf("ciphertext = %q, want v2 envelope", ciphertext)
+	if !strings.HasPrefix(ciphertext, encryptedValuePrefix+v2CiphertextPrefix) {
+		t.Fatalf("ciphertext = %q, want explicit v2 envelope", ciphertext)
 	}
 	resolver := NewResolver(true, []string{key})
 	plaintext, err := resolver.ResolveForContext(ciphertext, "kafka-proxy.sasl.password")
@@ -295,6 +297,31 @@ func TestEncryptPluginConfigsWritesV2ContextualCiphertext(t *testing.T) {
 	}
 	if got := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"]; got != ciphertext {
 		t.Fatalf("second EncryptPluginConfigs() = %v, want ciphertext preserved", got)
+	}
+}
+
+func TestEncryptPluginConfigsTreatsBareV2AsPlaintext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": "v2:not-ciphertext"},
+		},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	persisted := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
+	if !strings.HasPrefix(persisted, encryptedValuePrefix+v2CiphertextPrefix) {
+		t.Fatalf("persisted password = %q, want explicit v2 wrapper", persisted)
+	}
+
+	plaintext, err := NewResolver(true, []string{key}).ResolveForContext(
+		persisted,
+		"kafka-proxy.sasl.password",
+	)
+	if err != nil || plaintext != "v2:not-ciphertext" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want v2:not-ciphertext", plaintext, err)
 	}
 }
 

@@ -214,29 +214,32 @@ func encryptValue(value any, keyring []string, context string) (any, error) {
 		if typed == "" {
 			return typed, nil
 		}
-		ciphertext := typed
-		prefixed := false
-		if stripped, ok := strings.CutPrefix(typed, encryptedValuePrefix); ok {
-			ciphertext = stripped
-			prefixed = true
-		}
-		if prefixed || strings.HasPrefix(ciphertext, v2CiphertextPrefix) {
+		ciphertext, prefixed := strings.CutPrefix(typed, encryptedValuePrefix)
+		if prefixed {
 			if ciphertext == "" {
 				return nil, ErrInvalidCiphertext
 			}
-			if _, err := decryptEncoded(ciphertext, keyring, context); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
-			}
 			if strings.HasPrefix(ciphertext, v2CiphertextPrefix) {
+				if _, err := decryptEncoded(ciphertext, keyring, context); err != nil {
+					return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
+				}
 				return typed, nil
 			}
 			plaintext, err := decryptLegacy(ciphertext, keyring)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
 			}
-			return EncryptForContext(plaintext, keyring[0], context)
+			ciphertext, err = EncryptForContext(plaintext, keyring[0], context)
+			if err != nil {
+				return nil, err
+			}
+			return encryptedValuePrefix + ciphertext, nil
 		}
-		return EncryptForContext(typed, keyring[0], context)
+		ciphertext, err := EncryptForContext(typed, keyring[0], context)
+		if err != nil {
+			return nil, err
+		}
+		return encryptedValuePrefix + ciphertext, nil
 	case map[string]any:
 		for key, child := range typed {
 			encrypted, err := encryptValue(child, keyring, context)

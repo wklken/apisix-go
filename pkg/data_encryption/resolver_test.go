@@ -84,6 +84,23 @@ func TestEncryptForContextProducesNondeterministicV2Ciphertext(t *testing.T) {
 	}
 }
 
+func TestResolverDecryptsExplicitV2Wrapper(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	context := "kafka-proxy.sasl.password"
+	ciphertext, err := EncryptForContext("access-token", key, context)
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+
+	plaintext, err := NewResolver(true, []string{key}).ResolveForContext(
+		encryptedValuePrefix+ciphertext,
+		context,
+	)
+	if err != nil || plaintext != "access-token" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want access-token", plaintext, err)
+	}
+}
+
 func TestResolverRejectsV2TamperingAndWrongContext(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	ciphertext, err := EncryptForContext("access-token", key, "kafka-proxy.sasl.password")

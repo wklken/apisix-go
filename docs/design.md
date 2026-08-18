@@ -605,11 +605,12 @@ Close()
 
 ### Existing contract
 
-New APISIX-Go data-encryption writes use a `v2:` envelope containing
+New APISIX-Go data-encryption writes use an explicit `$encrypted://v2:` envelope containing
 base64-encoded `nonce || ciphertext || tag`. AES-GCM authenticates both the
 value and its canonical `plugin-name.field-path`; wildcard registrations keep
 the registered `*` path rather than using a runtime array index. A random
 12-byte nonce makes repeated encryption of the same plaintext nondeterministic.
+The explicit wrapper keeps bare plaintext beginning with `v2:` unambiguous.
 
 Unversioned APISIX AES-128-CBC ciphertext remains a decrypt-only migration
 format. The configured `apisix.data_encryption.keyring` is ordered
@@ -652,7 +653,7 @@ configuration error before an outbound client is created.
 - Rotation: add the new key at index 0 and retain old keys until all stored
   values have been rewritten; no old-key deletion is performed automatically.
 - Write path: standalone registered fields are sealed with the newest key as
-  contextual v2 AES-GCM. Existing valid v2 values are preserved; an explicit
+  contextual v2 AES-GCM. Existing valid explicit v2 values are preserved; an explicit
   legacy CBC envelope is re-sealed with the newest key and canonical context.
 - Startup/runtime failure: a strict resolver error is returned to the owning
   config/route boundary; it must not be downgraded to a network request with an

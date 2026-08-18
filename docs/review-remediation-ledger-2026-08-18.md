@@ -21,7 +21,7 @@
 | BUG-005 | Correct | Not applicable | Authorized | fixed | store/route/server/metrics tests and races, scoped lint, build | Write-boundary rejection plus explicit legacy snapshot quarantine |
 | BUG-006 | Correct | Not applicable | Authorized | fixed | resource/route tests, scoped lint, build | Scheme-aware builder owns omitted map-form ports |
 | BUG-007 | Correct | Not applicable | Authorized | fixed | limit-count tests and race, scoped lint, build | Expired idle state cleanup plus a 10,000 live-state fail-closed cap |
-| SEC-003 | Correct | Not applicable | Authorized | fixed | data-encryption/config/strict-plugin tests, data/config race, scoped lint, build | Context-bound v2 AES-GCM writes; legacy CBC decrypt-only migration |
+| SEC-003 | Correct | Not applicable | Authorized | fixed | data-encryption/config/strict-plugin tests, data/config race, scoped lint, build | Explicit context-bound `$encrypted://v2:` AES-GCM writes; bare `v2:` remains plaintext; legacy CBC decrypt-only migration |
 
 ## Changed Files
 
@@ -44,7 +44,7 @@
 - `BUG-002` through `BUG-007`: owning store, watcher, route, server, metrics, cache, config, resource, and limit-count packages
   - Each finding is isolated in its own commit and carries focused behavior/race coverage where concurrency is involved.
 - `SEC-003`: `pkg/data_encryption`, strict encrypted-field plugin boundaries, standalone persistence tests, and encryption documentation
-  - New writes use random-nonce contextual AES-GCM; legacy CBC remains readable across key rotation and is rewrapped on write.
+  - New writes use explicit random-nonce contextual `$encrypted://v2:` AES-GCM envelopes; bare `v2:` remains plaintext, and legacy CBC remains readable across key rotation and is rewrapped on write.
 
 ## Verification
 

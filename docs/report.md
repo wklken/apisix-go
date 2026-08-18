@@ -170,9 +170,9 @@ Remediation：配置解码前为 `client_max_body_size` 和 `client_body_timeout
 
 两份报告结论一致：key 被重复用作 CBC IV、密文确定性、没有认证 tag。修复必须引入版本化 AEAD envelope、随机 nonce 和字段上下文认证；legacy CBC 只能作为只读迁移入口，不能无版本原地替换。
 
-Remediation：所有新写入改为 `v2:` AES-GCM envelope，使用随机 12-byte nonce，并以 canonical `plugin-name.field-path` 作为 AAD；wildcard 字段使用注册路径中的 `*`，不绑定运行时数组下标。严格插件边界全部改用 `ResolveForContext`，篡改或错误字段上下文失败关闭。unversioned CBC 只用于跨 keyring 解密；显式 legacy envelope 经过写路径时会用最新 key/context 重封装为 v2，已有合法 v2 保持不变。
+Remediation：所有新写入改为显式 `$encrypted://v2:` AES-GCM envelope，使用随机 12-byte nonce，并以 canonical `plugin-name.field-path` 作为 AAD；wildcard 字段使用注册路径中的 `*`，不绑定运行时数组下标。严格插件边界全部改用 `ResolveForContext`，篡改或错误字段上下文失败关闭。unversioned CBC 只用于跨 keyring 解密；显式 legacy envelope 经过写路径时会用最新 key/context 重封装为 v2，已有合法显式 v2 保持不变，bare `v2:` 值按明文处理以避免前缀碰撞。
 
-Verification：覆盖随机性、round-trip、tamper、wrong context、旧 key rotation、legacy rewrap、wildcard canonical context 和重复持久化；data-encryption、config 及 17 个严格插件包测试通过，且生产插件目录已无残留 `.Resolve(` 调用。
+Verification：覆盖随机性、round-trip、tamper、wrong context、旧 key rotation、legacy rewrap、bare `v2:` 明文、wildcard canonical context 和重复持久化；data-encryption、config 及 17 个严格插件包测试通过，且生产插件目录已无残留 `.Resolve(` 调用。
 
 ## 6. Codex Security 原有 17 项
 

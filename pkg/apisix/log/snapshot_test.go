@@ -50,6 +50,35 @@ func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotFromOwnedInputsUsesCapturedBodyWithoutReadingRequest(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/orders?q=one", nil)
+	request.Body = snapshotPanicBody{}
+	response := ResponseSnapshot{
+		Header:  http.Header{"X-Trace": {"one"}},
+		Trailer: http.Header{"X-Trailer": {"two"}},
+		Body:    []byte("response"),
+	}
+	capturedBody := []byte("captured-request")
+	snapshot := BuildSnapshotFromOwnedInputs(
+		request,
+		response,
+		capturedBody,
+		true,
+		ctx.ResponseOutcome{Status: http.StatusCreated},
+		ctx.ResponseSourceUpstream,
+		time.Unix(1, 0),
+		time.Unix(2, 0),
+	)
+	if got := string(snapshot.Request.Body); got != "captured-request" || !snapshot.Request.BodyTruncated {
+		t.Fatalf("captured request body = %q/truncated=%t", got, snapshot.Request.BodyTruncated)
+	}
+	if got := string(snapshot.Response.Body); got != "response" ||
+		snapshot.Response.Header.Get("X-Trace") != "one" ||
+		snapshot.Response.Trailer.Get("X-Trailer") != "two" {
+		t.Fatalf("owned response capture = %#v", snapshot.Response)
+	}
+}
+
 func TestBuildSnapshotPreservesEffectiveRealIP(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
 	request.RemoteAddr = "192.0.2.10:4321"
@@ -301,6 +330,11 @@ func TestValueFromSnapshotCoversFallbackVariableSemantics(t *testing.T) {
 }
 
 type snapshotErrorBody struct{}
+
+type snapshotPanicBody struct{}
+
+func (snapshotPanicBody) Read([]byte) (int, error) { panic("live request body read") }
+func (snapshotPanicBody) Close() error             { return nil }
 
 func (snapshotErrorBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 func (snapshotErrorBody) Close() error             { return nil }

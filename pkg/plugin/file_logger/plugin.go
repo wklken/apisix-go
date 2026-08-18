@@ -3,6 +3,7 @@ package file_logger
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -14,7 +15,6 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -117,10 +117,10 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	logger         *zap.Logger
-	writer         *appendFileWriteSyncer
-	lease          *fileWriterLease
-	BatchProcessor *logger_batch.Processor
+	logger    *zap.Logger
+	writer    *bufferedFileWriteSyncer
+	lease     *fileWriterLease
+	processor *fileLoggerProcessor
 
 	logFormat      map[string]any
 	logFormatExtra map[string]string
@@ -216,11 +216,8 @@ func (p *Plugin) PostInit() error {
 	p.lease = lease
 	p.writer = lease.writer
 	p.logger = zap.New(zapcore.NewCore(encoder, p.writer, cfg.Level))
-	p.BatchProcessor = base.NewBatchProcessor(
-		name,
-		base.BatchDefaults{PluginID: name, BatchMaxSize: 1},
-		"", "", p.sendBatch,
-	)
+	p.processor = newFileLoggerProcessor(p.writer)
+	p.processor.snapshotFields = p.buildSnapshotFields
 	return nil
 }
 
@@ -248,8 +245,8 @@ func (p *Plugin) Stop() {
 				p.lease.release()
 			}
 		}
-		if p.BatchProcessor != nil {
-			p.BatchProcessor.StopWithCleanup(cleanup)
+		if p.processor != nil {
+			p.processor.stopWithCleanup(cleanup)
 		} else {
 			cleanup()
 		}
@@ -304,19 +301,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 // enqueueHandler keeps the legacy direct Handler compatibility path
 // observable to callers that read the file immediately after ServeHTTP. The
-// detached log phase remains fully non-blocking and uses EnqueueLog directly.
+// detached log phase remains fully non-blocking and uses the file logger
+// processor directly.
 func (p *Plugin) enqueueHandler(fields map[string]any) {
-	if err := base.EnqueueLog(p.BatchProcessor, fields); err != nil {
+	if p.processor == nil {
 		return
 	}
-	p.BatchProcessor.Flush()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		stats := p.BatchProcessor.Stats()
-		if stats.Pending == 0 && stats.Processing == 0 && stats.Buffered == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	ack, err := p.processor.pushFieldsAndBarrier(fields)
+	if err != nil {
+		return
+	}
+	select {
+	case <-ack:
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
@@ -340,6 +337,13 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if !base.SnapshotExpressionMatches(snapshot, p.config.Match) {
 		return nil
 	}
+	if p.processor == nil {
+		return base.ErrLogQueueUnavailable
+	}
+	return p.processor.pushSnapshot(snapshot)
+}
+
+func (p *Plugin) buildSnapshotFields(snapshot base.LogSnapshot) map[string]any {
 	var fields map[string]any
 	requestBodyVisible := p.config.IncludeReqBody &&
 		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr)
@@ -385,7 +389,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
 	}
-	return base.EnqueueLog(p.BatchProcessor, fields)
+	return fields
 }
 
 func fileSnapshotValue(
@@ -416,15 +420,28 @@ func fileSnapshotValue(
 }
 
 func (p *Plugin) sendBatch(_ context.Context, entries []map[string]any, _ int) (int, error) {
-	if p.logger == nil {
+	if p.writer == nil {
 		return 0, fmt.Errorf("file logger is not initialized")
 	}
+	encoder := newFileLoggerEncoder()
+	var batch []byte
 	for _, entry := range entries {
-		fields := make([]zap.Field, 0, len(entry))
-		for key, value := range entry {
-			fields = append(fields, zap.Any(key, value))
+		line, err := encoder.encode(entry)
+		if err != nil {
+			return 0, err
 		}
-		p.logger.Info("", fields...)
+		batch = append(batch, line.Bytes()...)
+		line.Free()
+	}
+	if len(batch) == 0 {
+		return 0, nil
+	}
+	written, err := p.writer.Write(batch)
+	if err == nil && written != len(batch) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return 0, err
 	}
 	return 0, nil
 }
@@ -475,10 +492,12 @@ func resolvedSnapshotUpstream(snapshot base.LogSnapshot) string {
 		return ""
 	}
 	if net.ParseIP(host) == nil {
-		addresses, err := net.LookupIP(host)
+		lookupCtx, cancel := context.WithTimeout(context.Background(), fileLoggerBatchMaxDelay)
+		addresses, err := fileLoggerLookupIP(lookupCtx, host)
+		cancel()
 		if err == nil {
 			for _, address := range addresses {
-				if ipv4 := address.To4(); ipv4 != nil {
+				if ipv4 := address.IP.To4(); ipv4 != nil {
 					host = ipv4.String()
 					break
 				}
@@ -491,6 +510,8 @@ func resolvedSnapshotUpstream(snapshot base.LogSnapshot) string {
 	}
 	return net.JoinHostPort(host, port)
 }
+
+var fileLoggerLookupIP = net.DefaultResolver.LookupIPAddr
 
 func captureRequest(r *http.Request) requestSnapshot {
 	scheme := "http"

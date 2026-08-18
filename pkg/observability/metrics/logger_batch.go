@@ -61,6 +61,7 @@ var loggerBatchPluginIDs = map[string]struct{}{
 	"datadog":              {},
 	"elasticsearch-logger": {},
 	"error-log-logger":     {},
+	"file-logger":          {},
 	"google-cloud-logging": {},
 	"http-logger":          {},
 	"kafka-logger":         {},

@@ -99,18 +99,52 @@ func BuildLogSnapshot(
 	)
 }
 
+// BuildLogSnapshotFromOwnedInputs transfers detached response capture and a
+// previously captured request body into a canonical snapshot. The request is
+// inspected only for metadata; its live body is never read.
+func BuildLogSnapshotFromOwnedInputs(
+	r *http.Request,
+	response ResponseCaptureSnapshot,
+	requestBody []byte,
+	requestBodyTruncated bool,
+	outcome apisixctx.ResponseOutcome,
+	source apisixctx.ResponseSource,
+	started,
+	finished time.Time,
+) LogSnapshot {
+	return apisixlog.BuildSnapshotFromOwnedInputs(
+		r,
+		apisixlog.ResponseSnapshot{
+			Header:        response.Header,
+			Trailer:       response.Trailer,
+			Body:          response.Body,
+			BodyTruncated: response.BodyTruncated,
+		},
+		requestBody,
+		requestBodyTruncated,
+		outcome,
+		source,
+		started,
+		finished,
+	)
+}
+
 // CloneLogSnapshotForPolicy gives one callback a private bounded view. Every
 // invocation returns a fresh clone, including when both body limits are zero.
 func CloneLogSnapshotForPolicy(snapshot LogSnapshot, policy LogCapturePolicy) LogSnapshot {
+	requestBody := snapshot.Request.Body
+	responseBody := snapshot.Response.Body
+	snapshot.Request.Body = nil
+	snapshot.Response.Body = nil
 	clone := apisixlog.CloneSnapshot(snapshot)
 	clone.Request.Body, clone.Request.BodyTruncated = boundedBody(
-		clone.Request.Body,
-		clone.Request.BodyTruncated,
+		requestBody,
+		snapshot.Request.BodyTruncated,
 		policy.RequestBodyBytes,
 	)
 	clone.Response.Body, clone.Response.BodyTruncated = boundedBody(
-		clone.Response.Body,
-		clone.Response.BodyTruncated,
+		responseBody,
+		snapshot.Response.BodyTruncated,
 		policy.ResponseBodyBytes,
 	)
 	return clone

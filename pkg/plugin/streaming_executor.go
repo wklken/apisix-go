@@ -237,8 +237,12 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 }
 
 func dynamicHeaderBindingsForEffective(effective EffectiveBindingSet) []Binding {
-	bindings := make([]Binding, 0)
-	for _, binding := range effective.all() {
+	bindings := dynamicHeaderBindingsForPartition(nil, effective.global)
+	return dynamicHeaderBindingsForPartition(bindings, effective.merged)
+}
+
+func dynamicHeaderBindingsForPartition(bindings []Binding, partition []Binding) []Binding {
+	for _, binding := range partition {
 		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
 			continue
 		}

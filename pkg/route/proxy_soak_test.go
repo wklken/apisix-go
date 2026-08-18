@@ -123,6 +123,7 @@ func TestProxyRuntimeSoak(t *testing.T) {
 
 	var requests atomic.Int64
 	var errors atomic.Int64
+	var latency soakLatencyHistogram
 	stop := make(chan struct{})
 	var workersWG sync.WaitGroup
 	for range workers {
@@ -134,9 +135,11 @@ func TestProxyRuntimeSoak(t *testing.T) {
 				default:
 				}
 				requests.Add(1)
+				started := time.Now()
 				response, err := client.Get(server.URL + "/soak/target")
 				if err != nil {
 					errors.Add(1)
+					latency.Observe(time.Since(started))
 					continue
 				}
 				if _, err := io.Copy(io.Discard, response.Body); err != nil {
@@ -148,6 +151,7 @@ func TestProxyRuntimeSoak(t *testing.T) {
 				if response.StatusCode != http.StatusOK {
 					errors.Add(1)
 				}
+				latency.Observe(time.Since(started))
 			}
 		})
 	}
@@ -160,6 +164,13 @@ func TestProxyRuntimeSoak(t *testing.T) {
 	warmupGoroutines := runtime.NumGoroutine()
 	var warmupMem runtime.MemStats
 	runtime.ReadMemStats(&warmupMem)
+	warmupRequests := requests.Load()
+	warmupLatency := latency.Snapshot()
+	warmupRuntime, err := readSoakRuntimeMetrics()
+	if err != nil {
+		t.Fatalf("read warmup runtime metrics: %v", err)
+	}
+	measurementStarted := time.Now()
 	t.Logf(
 		"soak warmed after %s: requests=%d errors=%d goroutines=%d heap-in-use=%d",
 		warmup, requests.Load(), errors.Load(), warmupGoroutines, warmupMem.HeapInuse,
@@ -169,6 +180,46 @@ func TestProxyRuntimeSoak(t *testing.T) {
 
 	close(stop)
 	workersWG.Wait()
+
+	endLatency := latency.Snapshot()
+	endRuntime, err := readSoakRuntimeMetrics()
+	if err != nil {
+		t.Fatalf("read end runtime metrics: %v", err)
+	}
+	measurementRequests := requests.Load() - warmupRequests
+	measurementElapsed := time.Since(measurementStarted)
+	latencyDelta, err := endLatency.Delta(warmupLatency)
+	if err != nil {
+		t.Fatalf("calculate latency delta: %v", err)
+	}
+	runtimeDelta, err := endRuntime.Delta(warmupRuntime)
+	if err != nil {
+		t.Fatalf("calculate runtime metrics delta: %v", err)
+	}
+	var requestsPerSecond float64
+	var allocatedBytesPerRequest float64
+	if measurementElapsed > 0 {
+		requestsPerSecond = float64(measurementRequests) / measurementElapsed.Seconds()
+	}
+	if measurementRequests > 0 {
+		allocatedBytesPerRequest = float64(runtimeDelta.allocatedBytes) / float64(measurementRequests)
+	}
+	t.Logf(
+		"measurement requests=%d requests/second=%.2f p50=%s p95=%s p99=%s p999=%s allocated bytes=%d allocated bytes/request=%.2f GC CPU seconds=%.6f GC pause p99=%.6gs GC pause p999=%.6gs scheduler-other pause p99=%.6gs scheduler-other pause p999=%.6gs",
+		measurementRequests,
+		requestsPerSecond,
+		formatSoakLatency(latencyDelta.Quantile(0.50)),
+		formatSoakLatency(latencyDelta.Quantile(0.95)),
+		formatSoakLatency(latencyDelta.Quantile(0.99)),
+		formatSoakLatency(latencyDelta.Quantile(0.999)),
+		runtimeDelta.allocatedBytes,
+		allocatedBytesPerRequest,
+		runtimeDelta.gcCPUSeconds,
+		runtimeDelta.gcPause.Quantile(0.99),
+		runtimeDelta.gcPause.Quantile(0.999),
+		runtimeDelta.schedulerOtherPause.Quantile(0.99),
+		runtimeDelta.schedulerOtherPause.Quantile(0.999),
+	)
 
 	runtime.GC()
 	runtime.GC()

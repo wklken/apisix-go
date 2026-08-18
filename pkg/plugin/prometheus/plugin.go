@@ -2,11 +2,9 @@ package prometheus
 
 import (
 	"net/http"
-	"net/url"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -80,7 +78,6 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if !metrics.HTTPRequestMetricsEnabled() {
 		return nil
 	}
-	request := requestFromSnapshot(snapshot)
 	requestLatency := snapshot.Finished.Sub(snapshot.Started).Milliseconds()
 	if snapshot.Started.IsZero() || snapshot.Finished.IsZero() || requestLatency < 0 {
 		requestLatency = 0
@@ -103,7 +100,14 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if serviceName == "" {
 		serviceName = snapshotStringVar(snapshot.Request.APISIXVars, "$service_name")
 	}
-	metrics.RecordHTTPRequest(request, metrics.HTTPRequestMetrics{
+	metrics.RecordHTTPRequestContext(metrics.HTTPRequestMetricContext{
+		Method:         snapshot.Request.Method,
+		Host:           snapshot.Request.Host,
+		Path:           snapshot.Request.Path,
+		APISIXVars:     snapshot.Request.APISIXVars,
+		RequestVars:    snapshot.Request.RequestVars,
+		ResponseSource: snapshot.Source,
+	}, metrics.HTTPRequestMetrics{
 		Status: snapshot.Outcome.Status,
 		Route: metricResourceLabel(
 			routeID,
@@ -125,38 +129,6 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		EgressBytes:     snapshot.Outcome.Bytes,
 	})
 	return nil
-}
-
-func requestFromSnapshot(snapshot base.LogSnapshot) *http.Request {
-	requestURL, err := url.Parse(snapshot.Request.URL)
-	if err != nil || requestURL == nil {
-		requestURL, _ = url.Parse(snapshot.Request.URI)
-	}
-	if requestURL == nil {
-		requestURL = &url.URL{}
-	}
-	request := &http.Request{
-		Method:        snapshot.Request.Method,
-		URL:           requestURL,
-		Host:          snapshot.Request.Host,
-		RemoteAddr:    snapshot.Request.RemoteAddr,
-		Proto:         snapshot.Request.Proto,
-		Header:        snapshot.Request.Header.Clone(),
-		ContentLength: snapshot.Request.ContentLength,
-		Body:          http.NoBody,
-	}
-	request = apisixctx.WithApisixVars(request, nil)
-	request = apisixctx.WithRequestVars(request)
-	for key, value := range snapshot.Request.APISIXVars {
-		apisixctx.RegisterApisixVar(request, key, value)
-	}
-	for key, value := range snapshot.Request.RequestVars {
-		apisixctx.RegisterRequestVar(request, key, value)
-	}
-	if snapshot.Source != apisixctx.ResponseSourceUnknown {
-		apisixctx.RegisterRequestVar(request, "$response_source", string(snapshot.Source))
-	}
-	return request
 }
 
 func metricResourceLabel(id string, name string, preferName bool) string {

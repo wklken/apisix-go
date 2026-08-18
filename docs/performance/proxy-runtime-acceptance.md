@@ -4,7 +4,9 @@
 
 The corpus covers weighted selection and a loopback request through route matching, plugin middleware, upstream selection, retry/timeout transport wrappers, ReverseProxy, and response copying. It does not represent public-network or cross-region production RPS.
 
-The loopback benchmark corpus is exercised through the immutable baseline runner. The cached-environment harness (`perf(route): cache loopback benchmark environments`) keeps untimed setup flat so full-corpus runs complete in minutes instead of an hour. Accepted comparisons run on the Go 1.26.5 toolchain the repository currently declares.
+The loopback benchmark corpus is exercised through the immutable baseline runner. The cached-environment harness (`perf(route): cache loopback benchmark environments`) keeps untimed setup flat so full-corpus runs complete in minutes instead of an hour. Accepted comparisons run on the repository's declared Go 1.26 toolchain and record the exact patch version in benchmark metadata.
+
+The GC hot-path corpus adds focused `BenchmarkRequestPipelineHotPath` and `BenchmarkSnapshotMetricsFinalizer` rows. These rows isolate request-pipeline materialization and detached metrics finalization, but still include their test request and response fixtures. They are allocation-regression evidence, not production throughput claims.
 
 ## Comparative gates
 
@@ -25,6 +27,11 @@ The loopback benchmark corpus is exercised through the immutable baseline runner
 - The 30-minute, concurrency-256 soak produces zero unexpected errors.
 - Final goroutines are at most warmup baseline plus 32.
 - Heap in use after two final GCs is at most 25% above the warmed five-minute sample.
+- The measurement window reports request count and throughput plus bounded p50, p95, p99, and p999 latency estimates. Request latency uses fixed upper-bound buckets and stores no per-request samples.
+- The same window reports allocation bytes, allocation bytes per request, GC CPU seconds, and p99/p999 deltas for runtime GC and scheduler-other pause histograms. Runtime histograms are cumulative counters, so only the end-minus-warmup delta is interpreted.
+- Runtime allocation and pause deltas cover the entire single-process soak harness: its client workers, gateway, ten upstream test servers, and test machinery. Treat them as comparative harness evidence, never as gateway-only or production allocation figures.
+
+`APISIX_GO_SOAK_DURATION=5s` is a wiring smoke for the measurement path only. It is not stability or tail-latency acceptance evidence; the accepted stability run remains 30 minutes at concurrency 256.
 
 ## Evidence location
 

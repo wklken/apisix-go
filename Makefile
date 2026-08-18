@@ -11,9 +11,13 @@ GO_VERSION ?= $(shell go version)
 BENCHSTAT_VERSION ?= v0.0.0-20260709024250-82a0b07e230d
 BENCH_DIR ?= .cache/bench
 BENCHSTAT ?= $(CACHE_BIN)/benchstat
-BENCH_PACKAGES ?= ./pkg/json ./pkg/plugin/base ./pkg/proxy ./pkg/route
+BENCH_PACKAGES ?= ./pkg/json ./pkg/plugin ./pkg/plugin/base ./pkg/plugin/prometheus ./pkg/plugin/request_context ./pkg/proxy ./pkg/route
 BENCH_CORPUS_FILES ?= pkg/json/benchmark_test.go \
+	pkg/plugin/executor_benchmark_test.go \
 	pkg/plugin/base/logging_benchmark_test.go \
+	pkg/plugin/log_executor_benchmark_test.go \
+	pkg/plugin/prometheus/benchmark_test.go \
+	pkg/plugin/request_context/benchmark_test.go \
 	pkg/proxy/benchmark_test.go \
 	pkg/proxy/runtime_benchmark_test.go \
 	pkg/route/benchmark_test.go \

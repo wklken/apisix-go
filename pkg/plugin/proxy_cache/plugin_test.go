@@ -330,6 +330,92 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 	}
 }
 
+func TestHandlerMemoryZoneRejectsOversizedResponseWithoutEvictingSmallEntry(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "bounded-handler", MemorySize: "320B"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-handler", CacheTTL: 60})
+	calls := 0
+	largeBody := strings.Repeat("x", 512)
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("X-Origin", "upstream")
+		if r.URL.Path == "/large" {
+			_, _ = w.Write([]byte(largeBody))
+			return
+		}
+		_, _ = w.Write([]byte("small-body"))
+	}))
+
+	small := performRequest(t, handler, http.MethodGet, "/small", nil)
+	if small.Header().Get(cacheStatusHeader) != "MISS" || small.Body.String() != "small-body" {
+		t.Fatalf(
+			"initial small response = %q/%q, want MISS/small-body",
+			small.Header().Get(cacheStatusHeader),
+			small.Body.String(),
+		)
+	}
+	large := performRequest(t, handler, http.MethodGet, "/large", nil)
+	if large.Header().Get(cacheStatusHeader) != "MISS" || large.Body.String() != largeBody {
+		t.Fatalf(
+			"oversized response = %q/%q, want MISS/large body",
+			large.Header().Get(cacheStatusHeader),
+			large.Body.String(),
+		)
+	}
+	retained := performRequest(t, handler, http.MethodGet, "/small", nil)
+	if retained.Header().Get(cacheStatusHeader) != "HIT" || retained.Body.String() != "small-body" {
+		t.Fatalf(
+			"small response after oversized store = %q/%q, want HIT/small-body",
+			retained.Header().Get(cacheStatusHeader),
+			retained.Body.String(),
+		)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestStoreStateWithHeaderRejectsOversizedVaryOverwriteWithoutMutatingExistingEntry(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "bounded-store-state", MemorySize: "320B"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "bounded-store-state", CacheTTL: 60})
+	requestHeader := http.Header{"X-Variant": {"one"}}
+	smallState := base.ResponseState{
+		Header: http.Header{"Vary": {"X-Variant"}, "X-Origin": {"small"}},
+		Status: http.StatusOK,
+		Body:   []byte("small-body"),
+	}
+	if err := p.storeStateWithHeader(requestHeader, "same-key", smallState, time.Minute, false); err != nil {
+		t.Fatalf("storeStateWithHeader(small) error = %v", err)
+	}
+	oversizedState := smallState
+	oversizedState.Body = []byte(strings.Repeat("x", 512))
+	if err := p.storeStateWithHeader(requestHeader, "same-key", oversizedState, time.Minute, false); err != nil {
+		t.Fatalf("storeStateWithHeader(oversized) error = %v", err)
+	}
+
+	storageKey := "same-key::" + varySignatureFromHeader([]string{"x-variant"}, requestHeader)
+	p.lock.RLock()
+	entry, entryOK := p.entries[storageKey]
+	index, indexOK := p.vary["same-key"]
+	p.lock.RUnlock()
+	if !entryOK || entry.header.Get("X-Origin") != "small" || string(entry.body) != "small-body" {
+		t.Fatalf("oversized Vary overwrite changed existing entry = %#v, found %t", entry, entryOK)
+	}
+	if !indexOK || len(index.signatures) != 1 ||
+		index.signatures[0] != varySignatureFromHeader([]string{"x-variant"}, requestHeader) {
+		t.Fatalf("Vary index after oversized overwrite = %#v, want original signature", index)
+	}
+}
+
 func TestHandlerDoesNotStoreHEADMissUnderGETCacheKey(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

@@ -169,8 +169,12 @@ func (s *MemoryZoneStore) Delete(key string) bool {
 	return found
 }
 
+func canStoreMemoryEntry(z *memoryZone, key string, entry cacheEntry) bool {
+	return z == nil || z.capacity <= 0 || memoryCacheEntryBytes(key, entry) <= z.capacity
+}
+
 func (z *memoryZone) storeEntryLocked(key string, entry cacheEntry) bool {
-	if z.capacity > 0 && memoryCacheEntryBytes(key, entry) > z.capacity {
+	if !canStoreMemoryEntry(z, key, entry) {
 		return false
 	}
 	z.entries[key] = entry

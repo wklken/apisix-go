@@ -195,6 +195,31 @@ func TestDelayedSyncRejectsNewKeyAtStateCapacity(t *testing.T) {
 	}
 }
 
+func TestDelayedSyncRemovesNewStateAfterInitialBackendFailure(t *testing.T) {
+	backend := &recordingDelayedSyncBackend{
+		limit:    10,
+		reset:    time.Minute,
+		failures: 1,
+	}
+	syncer := newTestDelayedSyncer(backend, 1)
+	now := time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC)
+
+	if _, _, err := syncer.incoming(context.Background(), "failed", 1, now); err == nil {
+		t.Fatal("failed initial incoming() error = nil, want backend failure")
+	}
+	syncer.mu.Lock()
+	stateCount := len(syncer.states)
+	_, failedStatePresent := syncer.states["failed"]
+	syncer.mu.Unlock()
+	if stateCount != 0 || failedStatePresent {
+		t.Fatalf("states after failed initial sync = %d/%t, want no placeholder state", stateCount, failedStatePresent)
+	}
+
+	if _, _, err := syncer.incoming(context.Background(), "unrelated", 1, now); err != nil {
+		t.Fatalf("unrelated incoming() after backend recovery error = %v", err)
+	}
+}
+
 func newTestDelayedSyncer(backend delayedSyncBackend, maxStates int) *delayedSyncer {
 	return &delayedSyncer{
 		backend:   backend,

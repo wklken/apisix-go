@@ -91,6 +91,7 @@ func (s *delayedSyncer) incoming(
 	for {
 		s.mu.Lock()
 		state := s.states[key]
+		created := false
 		if state == nil {
 			s.cleanupExpiredLocked(now)
 			if len(s.states) >= s.stateCapacity() {
@@ -99,6 +100,7 @@ func (s *delayedSyncer) incoming(
 			}
 			state = &delayedSyncState{}
 			s.states[key] = state
+			created = true
 		}
 		if state.initialized && !now.Before(state.resetAt) {
 			if state.inFlight {
@@ -124,6 +126,13 @@ func (s *delayedSyncer) incoming(
 		if !state.initialized || !now.Before(state.resetAt) {
 			remoteRemaining, remoteReset, syncErr := s.backend.sync(ctx, key, 0, now)
 			if syncErr != nil {
+				if created {
+					if current, ok := s.states[key]; ok && current == state &&
+						!state.initialized && !state.inFlight && state.localDelta == 0 &&
+						state.remoteRemaining == 0 && state.reservationAt.IsZero() && state.resetAt.IsZero() {
+						delete(s.states, key)
+					}
+				}
 				s.mu.Unlock()
 				return 0, 0, syncErr
 			}

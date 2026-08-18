@@ -457,6 +457,55 @@ func TestStreamingExecutorRejectsDynamicConsumerBodyFilter(t *testing.T) {
 	}
 }
 
+func TestStreamingExecutorPostResolutionHookChecksBothBindingPartitions(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	newCORSBinding := func(name string, scope Scope, kind ResourceKind) Binding {
+		binding := pipelineBinding(
+			"cors",
+			newExecutorCORSPlugin(t, corsplugin.Config{AllowOrigins: "*"}),
+			scope,
+			1,
+		)
+		binding.Provenance = ResourceProvenance{Kind: kind, ID: name}
+		return binding
+	}
+	global := newCORSBinding("global", ScopeGlobal, ResourceGlobalRule)
+	route := newCORSBinding("route", ScopeRoute, ResourceRoute)
+	consumer := newCORSBinding("consumer", ScopeConsumer, ResourceConsumer)
+	group := newCORSBinding("group", ScopeConsumer, ResourceConsumerGroup)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	replacement, err := executor.PostResolutionHook(request, EffectiveBindingSet{
+		global: []Binding{global},
+		merged: []Binding{route, consumer, group},
+	})
+	if err != nil {
+		t.Fatalf("PostResolutionHook() error = %v", err)
+	}
+	dynamic := dynamicStreamingBindings(replacement)
+	if len(dynamic) != 2 || dynamic[0].Plugin != consumer.Plugin || dynamic[1].Plugin != group.Plugin {
+		t.Fatalf("dynamic header bindings = %#v, want consumer and group bindings", dynamic)
+	}
+
+	body := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	bodyBinding := checkedResponseBinding(t, "body-transformer", body, ScopeConsumer, "group-body")
+	bodyBinding.Provenance.Kind = ResourceConsumerGroup
+	_, err = executor.PostResolutionHook(request, EffectiveBindingSet{
+		global: []Binding{global},
+		merged: []Binding{route, bodyBinding},
+	})
+	if err == nil || !strings.Contains(err.Error(), "body-transformer") ||
+		!strings.Contains(err.Error(), "group-body") {
+		t.Fatalf("PostResolutionHook() error = %v, want dynamic body-filter provenance", err)
+	}
+}
+
 func TestStreamingExecutorAppliesDynamicConsumerHeaderFilterPerRequest(t *testing.T) {
 	for _, provenanceKind := range []ResourceKind{ResourceConsumer, ResourceConsumerGroup} {
 		t.Run(string(provenanceKind), func(t *testing.T) {

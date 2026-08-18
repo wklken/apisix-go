@@ -328,6 +328,18 @@ type HTTPRequestMetrics struct {
 	EgressBytes     int64
 }
 
+// HTTPRequestMetricContext contains the detached request fields needed to
+// resolve HTTP and LLM metric labels. The maps are borrowed only for the
+// duration of RecordHTTPRequestContext and are never retained.
+type HTTPRequestMetricContext struct {
+	Method         string
+	Host           string
+	Path           string
+	APISIXVars     map[string]any
+	RequestVars    map[string]any
+	ResponseSource apisixctx.ResponseSource
+}
+
 func Init() error {
 	initOnce.Do(func() {
 		initErr = initMetrics()
@@ -713,14 +725,24 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 	if !HTTPRequestMetricsEnabled() || r == nil {
 		return
 	}
+	RecordHTTPRequestContext(metricContextFromRequest(r), entry)
+}
+
+// RecordHTTPRequestContext records request metrics from detached request
+// metadata. It is synchronous so the context's borrowed maps may be released
+// immediately after this function returns.
+func RecordHTTPRequestContext(metricContext HTTPRequestMetricContext, entry HTTPRequestMetrics) {
+	if !HTTPRequestMetricsEnabled() {
+		return
+	}
 	common := []string{
 		entry.Route,
 		entry.Service,
 		entry.Consumer,
 		entry.Node,
-		requestVarString(r, "$request_type"),
-		requestVarString(r, "$request_llm_model"),
-		requestVarString(r, "$llm_model"),
+		metricContext.requestVarString("$request_type"),
+		metricContext.requestVarString("$request_llm_model"),
+		metricContext.requestVarString("$llm_model"),
 	}
 	statusLabels := []string{
 		normalizedHTTPStatus(entry.Status),
@@ -733,16 +755,16 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		common[4],
 		common[5],
 		common[6],
-		responseSource(r, entry.UpstreamLatency),
+		metricContext.responseSource(entry.UpstreamLatency),
 	}
-	statusLabels = appendExtraLabelValues(httpStatusMetric, r, entry, statusLabels)
+	statusLabels = appendExtraLabelValuesContext(httpStatusMetric, metricContext, entry, statusLabels)
 	httpStatusSeries.withSeries(statusLabels, func(actual []string) {
 		HttpStatus.WithLabelValues(actual...).Inc()
 	})
 
-	requestLatencyLabels := appendExtraLabelValues(
+	requestLatencyLabels := appendExtraLabelValuesContext(
 		httpLatencyMetric,
-		r,
+		metricContext,
 		entry,
 		append([]string{"request"}, common...),
 	)
@@ -750,9 +772,9 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		HttpLatency.WithLabelValues(actual...).Observe(float64(entry.RequestLatency))
 	})
 	if entry.UpstreamLatency > 0 {
-		upstreamLatencyLabels := appendExtraLabelValues(
+		upstreamLatencyLabels := appendExtraLabelValuesContext(
 			httpLatencyMetric,
-			r,
+			metricContext,
 			entry,
 			append([]string{"upstream"}, common...),
 		)
@@ -760,9 +782,9 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 			HttpLatency.WithLabelValues(actual...).Observe(float64(entry.UpstreamLatency))
 		})
 	}
-	apisixLatencyLabels := appendExtraLabelValues(
+	apisixLatencyLabels := appendExtraLabelValuesContext(
 		httpLatencyMetric,
-		r,
+		metricContext,
 		entry,
 		append([]string{"apisix"}, common...),
 	)
@@ -771,18 +793,18 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 			Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
 	})
 
-	ingressLabels := appendExtraLabelValues(
+	ingressLabels := appendExtraLabelValuesContext(
 		bandwidthMetric,
-		r,
+		metricContext,
 		entry,
 		append([]string{"ingress"}, common...),
 	)
 	bandwidthSeries.withSeries(ingressLabels, func(actual []string) {
 		Bandwidth.WithLabelValues(actual...).Add(float64(entry.IngressBytes))
 	})
-	egressLabels := appendExtraLabelValues(
+	egressLabels := appendExtraLabelValuesContext(
 		bandwidthMetric,
-		r,
+		metricContext,
 		entry,
 		append([]string{"egress"}, common...),
 	)
@@ -790,7 +812,7 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		Bandwidth.WithLabelValues(actual...).Add(float64(entry.EgressBytes))
 	})
 
-	recordLLMMetrics(r, entry)
+	recordLLMMetricsContext(metricContext, entry)
 }
 
 // RecordHTTPRequestTotal records the process-level HTTP request gauge. It is
@@ -810,34 +832,34 @@ func normalizedHTTPStatus(status int) string {
 	return strconv.Itoa(status)
 }
 
-func recordLLMMetrics(r *http.Request, entry HTTPRequestMetrics) {
-	requestType := requestVarString(r, "$request_type")
+func recordLLMMetricsContext(metricContext HTTPRequestMetricContext, entry HTTPRequestMetrics) {
+	requestType := metricContext.requestVarString("$request_type")
 	if requestType != "ai_stream" && requestType != "ai_chat" {
 		return
 	}
 	labels := []string{
-		contextVarString(r, "$route_id"),
-		contextVarString(r, "$service_id"),
+		metricContext.contextVarString("$route_id"),
+		metricContext.contextVarString("$service_id"),
 		entry.Consumer,
 		entry.Node,
 		requestType,
-		requestVarString(r, "$request_llm_model"),
-		requestVarString(r, "$llm_model"),
+		metricContext.requestVarString("$request_llm_model"),
+		metricContext.requestVarString("$llm_model"),
 	}
-	if firstToken, ok := requestVarFloat64(r, "$llm_time_to_first_token"); ok && firstToken != 0 {
-		llmLatencyLabels := appendExtraLabelValues(llmLatencyMetric, r, entry, labels)
+	if firstToken, ok := metricContext.requestVarFloat64("$llm_time_to_first_token"); ok && firstToken != 0 {
+		llmLatencyLabels := appendExtraLabelValuesContext(llmLatencyMetric, metricContext, entry, labels)
 		llmLatencySeries.withSeries(llmLatencyLabels, func(actual []string) {
 			LLMLatency.WithLabelValues(actual...).Observe(firstToken)
 		})
 	}
-	if promptTokens, ok := requestVarFloat64(r, "$llm_prompt_tokens"); ok {
-		llmPromptLabels := appendExtraLabelValues(llmPromptMetric, r, entry, labels)
+	if promptTokens, ok := metricContext.requestVarFloat64("$llm_prompt_tokens"); ok {
+		llmPromptLabels := appendExtraLabelValuesContext(llmPromptMetric, metricContext, entry, labels)
 		llmPromptSeries.withSeries(llmPromptLabels, func(actual []string) {
 			LLMPromptTokens.WithLabelValues(actual...).Add(promptTokens)
 		})
 	}
-	if completionTokens, ok := requestVarFloat64(r, "$llm_completion_tokens"); ok {
-		llmCompletionLabels := appendExtraLabelValues(llmCompleteMetric, r, entry, labels)
+	if completionTokens, ok := metricContext.requestVarFloat64("$llm_completion_tokens"); ok {
+		llmCompletionLabels := appendExtraLabelValuesContext(llmCompleteMetric, metricContext, entry, labels)
 		llmCompletionSeries.withSeries(llmCompletionLabels, func(actual []string) {
 			LLMCompletionTokens.WithLabelValues(actual...).Add(completionTokens)
 		})
@@ -858,14 +880,39 @@ func appendExtraLabelValues(
 	entry HTTPRequestMetrics,
 	base []string,
 ) []string {
+	return appendExtraLabelValuesContext(metricName, metricContextFromRequest(r), entry, base)
+}
+
+func appendExtraLabelValuesContext(
+	metricName string,
+	metricContext HTTPRequestMetricContext,
+	entry HTTPRequestMetrics,
+	base []string,
+) []string {
 	values := append([]string(nil), base...)
 	for _, label := range prometheusExtraLabels[metricName] {
-		values = append(values, prometheusVariable(r, entry, label.Variable))
+		values = append(values, metricContext.variable(entry, label.Variable))
 	}
 	return values
 }
 
-func prometheusVariable(r *http.Request, entry HTTPRequestMetrics, variable string) string {
+func metricContextFromRequest(r *http.Request) HTTPRequestMetricContext {
+	if r == nil {
+		return HTTPRequestMetricContext{}
+	}
+	metricContext := HTTPRequestMetricContext{
+		Method:      r.Method,
+		Host:        r.Host,
+		APISIXVars:  apisixctx.GetApisixVars(r),
+		RequestVars: apisixctx.GetRequestVars(r),
+	}
+	if r.URL != nil {
+		metricContext.Path = r.URL.Path
+	}
+	return metricContext
+}
+
+func (c HTTPRequestMetricContext) variable(entry HTTPRequestMetrics, variable string) string {
 	switch variable {
 	case "$status":
 		return normalizedHTTPStatus(entry.Status)
@@ -874,52 +921,71 @@ func prometheusVariable(r *http.Request, entry HTTPRequestMetrics, variable stri
 			return normalizedHTTPStatus(entry.Status)
 		}
 		return ""
+	case "$response_source":
+		if c.ResponseSource != "" && c.ResponseSource != apisixctx.ResponseSourceUnknown {
+			return string(c.ResponseSource)
+		}
 	}
-	if value := requestVarString(r, variable); value != "" {
+	if value := c.requestVarString(variable); value != "" {
 		return value
 	}
-	if value := apisixVarString(r, variable); value != "" {
+	if value := c.apisixVarString(variable); value != "" {
 		return value
 	}
 	switch variable {
 	case "$host":
-		return r.Host
+		return c.Host
 	case "$uri":
-		return r.URL.Path
+		return c.Path
 	case "$request_method":
-		return r.Method
+		return c.Method
 	case "$upstream_addr":
 		return entry.Node
 	}
 	return ""
 }
 
-func apisixVarString(r *http.Request, key string) string {
-	value := apisixctx.GetApisixVar(r, key)
-	if value == nil {
+func contextVarString(r *http.Request, key string) string {
+	return metricContextFromRequest(r).contextVarString(key)
+}
+
+func (c HTTPRequestMetricContext) apisixVarString(key string) string {
+	value, ok := c.APISIXVars[key]
+	if !ok || value == nil {
 		return ""
 	}
 	return fmt.Sprint(value)
 }
 
-func contextVarString(r *http.Request, key string) string {
-	if value := requestVarString(r, key); value != "" {
-		return value
+func (c HTTPRequestMetricContext) requestVarString(key string) string {
+	value, ok := c.RequestVars[key]
+	if !ok || value == nil {
+		return ""
 	}
-	return apisixVarString(r, key)
+	return fmt.Sprint(value)
 }
 
-func requestVarFloat64(r *http.Request, key string) (float64, bool) {
-	value := apisixctx.GetRequestVar(r, key)
-	if value == nil {
+func (c HTTPRequestMetricContext) contextVarString(key string) string {
+	if value := c.requestVarString(key); value != "" {
+		return value
+	}
+	return c.apisixVarString(key)
+}
+
+func (c HTTPRequestMetricContext) requestVarFloat64(key string) (float64, bool) {
+	value, ok := c.RequestVars[key]
+	if !ok || value == nil {
 		return 0, false
 	}
 	number, err := cast.ToFloat64E(value)
 	return number, err == nil
 }
 
-func responseSource(r *http.Request, upstreamLatency int64) string {
-	if source := requestVarString(r, "$response_source"); source != "" {
+func (c HTTPRequestMetricContext) responseSource(upstreamLatency int64) string {
+	if c.ResponseSource != "" && c.ResponseSource != apisixctx.ResponseSourceUnknown {
+		return string(c.ResponseSource)
+	}
+	if source := c.requestVarString("$response_source"); source != "" {
 		return source
 	}
 	if upstreamLatency > 0 {
@@ -939,11 +1005,7 @@ func apisixLatency(total int64, upstream int64) int64 {
 }
 
 func requestVarString(r *http.Request, key string) string {
-	value := apisixctx.GetRequestVar(r, key)
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprint(value)
+	return metricContextFromRequest(r).requestVarString(key)
 }
 
 func SetBatchProcessEntries(name string, routeID string, serverAddr string, count int) {

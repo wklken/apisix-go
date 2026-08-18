@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,6 +41,24 @@ func (t *executorTrace) values() []string {
 type executorLegacyPlugin struct {
 	base.BasePlugin
 	handler func(http.Handler) http.Handler
+}
+
+type constructionCountingPlugin struct {
+	base.BasePlugin
+	constructed atomic.Int64
+	served      atomic.Int64
+}
+
+func (p *constructionCountingPlugin) Init() error     { return nil }
+func (p *constructionCountingPlugin) PostInit() error { return nil }
+func (p *constructionCountingPlugin) Config() any     { return nil }
+
+func (p *constructionCountingPlugin) Handler(next http.Handler) http.Handler {
+	p.constructed.Add(1)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.served.Add(1)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (p *executorLegacyPlugin) Init() error     { return nil }
@@ -826,6 +845,124 @@ func TestRequestPipelineResolvesExactlyOnceWithoutAuthentication(t *testing.T) {
 		)
 	if resolverCalls != 1 || terminalCalls != 1 {
 		t.Fatalf("resolver/terminal calls = %d/%d, want 1/1", resolverCalls, terminalCalls)
+	}
+}
+
+func TestRequestPipelinePrebuildsStaticHandler(t *testing.T) {
+	plugin := &constructionCountingPlugin{}
+	plugin.Name = "construction-counting"
+	binding := BindPlugin(
+		"construction-counting",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "static"},
+	)
+	terminalCalls := 0
+	pipeline := NewRequestPipeline([]Binding{binding}, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: false}, nil
+	})
+	handler := pipeline.Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		terminalCalls++
+	}))
+	for range 2 {
+		handler.ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	}
+	if got := plugin.constructed.Load(); got != 1 {
+		t.Fatalf("handler constructions = %d, want 1", got)
+	}
+	if got := plugin.served.Load(); got != 2 {
+		t.Fatalf("handler requests = %d, want 2", got)
+	}
+	if terminalCalls != 2 {
+		t.Fatalf("terminal calls = %d, want 2", terminalCalls)
+	}
+}
+
+func TestRequestPipelineStaticHookPerRequest(t *testing.T) {
+	var hookCalls int
+	var replacements []*http.Request
+	var terminalRequests []*http.Request
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: false}, nil
+	})
+	handler := pipeline.ThenWithPostResolutionHook(
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			terminalRequests = append(terminalRequests, r)
+		}),
+		func(r *http.Request, _ EffectiveBindingSet) (*http.Request, error) {
+			hookCalls++
+			replacement := r.WithContext(context.WithValue(r.Context(), executorTraceKey{}, hookCalls))
+			replacements = append(replacements, replacement)
+			return replacement, nil
+		},
+	)
+	for range 2 {
+		handler.ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	}
+	if hookCalls != 2 {
+		t.Fatalf("hook calls = %d, want 2", hookCalls)
+	}
+	if len(terminalRequests) != len(replacements) {
+		t.Fatalf("terminal requests = %d, want hook replacements %d", len(terminalRequests), len(replacements))
+	}
+	for index := range replacements {
+		if terminalRequests[index] != replacements[index] {
+			t.Fatalf(
+				"terminal request %d = %p, want hook replacement %p",
+				index,
+				terminalRequests[index],
+				replacements[index],
+			)
+		}
+	}
+}
+
+func TestRequestPipelineResolvedEmptyUsesDynamicPath(t *testing.T) {
+	plugin := &constructionCountingPlugin{}
+	plugin.Name = "construction-counting"
+	binding := BindPlugin(
+		"construction-counting",
+		plugin,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "static"},
+	)
+	var terminalRequests []*http.Request
+	pipeline := NewRequestPipeline([]Binding{binding}, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true}, nil
+	})
+	handler := pipeline.ThenWithPostResolutionHook(
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			terminalRequests = append(terminalRequests, r)
+		}),
+		func(r *http.Request, _ EffectiveBindingSet) (*http.Request, error) {
+			return r.WithContext(context.WithValue(r.Context(), executorTraceKey{}, "replacement")), nil
+		},
+	)
+	for range 2 {
+		handler.ServeHTTP(
+			httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/", nil),
+		)
+	}
+	if got := plugin.constructed.Load(); got != 3 {
+		t.Fatalf("handler constructions = %d, want static build plus two dynamic builds", got)
+	}
+	if got := plugin.served.Load(); got != 2 {
+		t.Fatalf("handler requests = %d, want 2", got)
+	}
+	if len(terminalRequests) != 2 {
+		t.Fatalf("terminal requests = %d, want 2", len(terminalRequests))
+	}
+	for index, request := range terminalRequests {
+		if got := request.Context().Value(executorTraceKey{}); got != "replacement" {
+			t.Fatalf("terminal request %d context value = %v, want replacement", index, got)
+		}
 	}
 }
 

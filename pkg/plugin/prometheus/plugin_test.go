@@ -98,12 +98,13 @@ func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
 	apisixctx.RegisterRequestVar(request, "$request_type", "ai_chat")
 	apisixctx.RegisterRequestVar(request, "$request_llm_model", "gpt-request")
 	apisixctx.RegisterRequestVar(request, "$llm_model", "gpt-upstream")
+	apisixctx.RegisterRequestVar(request, "$response_source", "request-source")
 	started := time.Unix(1, 0)
 	snapshot := base.BuildLogSnapshot(
 		request,
 		base.ResponseCaptureSnapshot{},
 		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated, Bytes: 5},
-		apisixctx.ResponseSourceUpstream,
+		apisixctx.ResponseSourceCacheHit,
 		started,
 		started.Add(12*time.Millisecond),
 	)
@@ -117,7 +118,7 @@ func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
 	}
 	if got := counterValue(t, metrics.HttpStatus.WithLabelValues(
 		"201", "route-1", "/orders/:id", "api.example.com", "service-1", "alice", "10.0.0.8",
-		"ai_chat", "gpt-request", "gpt-upstream", "upstream",
+		"ai_chat", "gpt-request", "gpt-upstream", "cache_hit",
 	)); got != 1 {
 		t.Fatalf("http status count = %v, want 1", got)
 	}

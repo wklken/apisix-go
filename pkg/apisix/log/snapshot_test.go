@@ -30,6 +30,7 @@ func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 		time.Unix(1, 0), time.Unix(2, 0))
 
 	request.Header.Set("X-Trace", "mutated")
+	request.URL.Path = "/mutated"
 	response.Header.Set("X-Trace", "mutated")
 	response.Body[0] = 'X'
 	ctx.GetApisixVars(request)["$nested"].(map[string]any)["key"] = "mutated"
@@ -47,6 +48,9 @@ func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 	}
 	if snapshot.Request.ID != "request-1" || snapshot.NodeID != "node-1" {
 		t.Fatalf("snapshot correlation = request %q node %q", snapshot.Request.ID, snapshot.NodeID)
+	}
+	if snapshot.Request.Path != "/orders" {
+		t.Fatalf("snapshot path = %q, want /orders", snapshot.Request.Path)
 	}
 }
 

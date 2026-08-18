@@ -37,6 +37,7 @@ type RequestLogSnapshot struct {
 	Method        string
 	URI           string
 	URL           string
+	Path          string
 	Host          string
 	RemoteAddr    string
 	Scheme        string
@@ -423,6 +424,7 @@ func BuildSnapshotFromOwnedInputs(
 		Method:        r.Method,
 		URI:           r.URL.RequestURI(),
 		URL:           r.URL.String(),
+		Path:          r.URL.Path,
 		Host:          r.Host,
 		RemoteAddr:    r.RemoteAddr,
 		Scheme:        requestScheme(r),

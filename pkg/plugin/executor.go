@@ -128,6 +128,11 @@ type RequestPipeline struct {
 	logExecutor       *LogExecutor
 }
 
+type preparedStaticPipeline struct {
+	effective EffectiveBindingSet
+	handler   http.Handler
+}
+
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
 	return RequestPipeline{bindings: cloneBindings(bindings), resolve: resolve}
 }
@@ -173,9 +178,12 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 	if terminal == nil {
 		terminal = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	}
-	plainAfterAuthentication := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.runResolved(w, r, terminal, hook, nil)
-	})
+	staticEffective := mergeEffectiveBindingSet(p.bindings, nil)
+	preparedStatic := preparedStaticPipeline{
+		effective: staticEffective,
+		handler:   p.buildPostResolutionHandler(staticEffective, terminal, nil),
+	}
+	plainAfterAuthentication := p.buildPlainResolvedHandler(terminal, hook, &preparedStatic)
 	plainHandler := p.wrapAuthentication(plainAfterAuthentication)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := r
@@ -373,32 +381,80 @@ func (p RequestPipeline) runResolved(
 	hook PostResolutionHook,
 	execution *responseExecution,
 ) {
+	resolution, request, err := p.resolveRequest(r)
+	if err != nil {
+		p.writeResolutionFailure(w, r, execution, err)
+		return
+	}
+	p.runMaterializedResolved(w, r, request, resolution.Bindings, terminal, hook, execution)
+}
+
+func (p RequestPipeline) buildPlainResolvedHandler(
+	terminal http.Handler,
+	hook PostResolutionHook,
+	prepared *preparedStaticPipeline,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolution, request, err := p.resolveRequest(r)
+		if err != nil {
+			p.writeResolutionFailure(w, r, nil, err)
+			return
+		}
+		if !resolution.Resolved && len(resolution.Bindings) == 0 {
+			p.runPreparedStatic(w, r, request, hook, prepared)
+			return
+		}
+		p.runMaterializedResolved(w, r, request, resolution.Bindings, terminal, hook, nil)
+	})
+}
+
+func (p RequestPipeline) resolveRequest(r *http.Request) (ConsumerResolution, *http.Request, error) {
 	resolution := ConsumerResolution{Request: r}
 	var err error
 	if p.resolve != nil {
 		resolution, err = p.resolve(r)
 	}
 	if err != nil {
-		logger.Errorf("consumer binding resolution failed: %v", err)
-		markResponseInternalFailure(r)
-		if execution != nil {
-			execution.internalFailure = true
-		}
-		if responseFailureRequiresAbort(r) || execution != nil && execution.transparentCommitted {
-			panic(http.ErrAbortHandler)
-		}
-		if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
-			lifecycle.SetFinalRequest(r)
-		}
-		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
-		writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
-		return
+		return ConsumerResolution{}, r, err
 	}
 	request := resolution.Request
 	if request == nil {
 		request = r
 	}
-	effective := mergeEffectiveBindingSet(p.bindings, resolution.Bindings)
+	return resolution, request, nil
+}
+
+func (p RequestPipeline) writeResolutionFailure(
+	w http.ResponseWriter,
+	r *http.Request,
+	execution *responseExecution,
+	err error,
+) {
+	logger.Errorf("consumer binding resolution failed: %v", err)
+	markResponseInternalFailure(r)
+	if execution != nil {
+		execution.internalFailure = true
+	}
+	if responseFailureRequiresAbort(r) || execution != nil && execution.transparentCommitted {
+		panic(http.ErrAbortHandler)
+	}
+	if lifecycle := apisixctx.GetRequestLifecycle(r); lifecycle != nil {
+		lifecycle.SetFinalRequest(r)
+	}
+	apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
+	writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
+}
+
+func (p RequestPipeline) runMaterializedResolved(
+	w http.ResponseWriter,
+	original *http.Request,
+	request *http.Request,
+	resolved []Binding,
+	terminal http.Handler,
+	hook PostResolutionHook,
+	execution *responseExecution,
+) {
+	effective := mergeEffectiveBindingSet(p.bindings, resolved)
 	if p.logExecutor != nil {
 		materializedLogExecutor, logErr := NewLogExecutorFromBindings(effective.all())
 		if logErr != nil {
@@ -414,12 +470,12 @@ func (p RequestPipeline) runResolved(
 	if hook != nil {
 		replacement, hookErr := hook(request, effective)
 		if hookErr != nil {
-			markResponseInternalFailure(r)
+			markResponseInternalFailure(original)
 			markResponseInternalFailure(request)
 			if execution != nil {
 				execution.internalFailure = true
 			}
-			if responseFailureRequiresAbort(r) || responseFailureRequiresAbort(request) ||
+			if responseFailureRequiresAbort(original) || responseFailureRequiresAbort(request) ||
 				execution != nil && execution.transparentCommitted {
 				panic(http.ErrAbortHandler)
 			}
@@ -439,6 +495,38 @@ func (p RequestPipeline) runResolved(
 	}
 	inner := p.buildPostResolutionHandler(effective, terminal, execution)
 	inner.ServeHTTP(w, request)
+}
+
+func (p RequestPipeline) runPreparedStatic(
+	w http.ResponseWriter,
+	original *http.Request,
+	request *http.Request,
+	hook PostResolutionHook,
+	prepared *preparedStaticPipeline,
+) {
+	if hook != nil {
+		replacement, err := hook(request, prepared.effective)
+		if err != nil {
+			markResponseInternalFailure(original)
+			markResponseInternalFailure(request)
+			if responseFailureRequiresAbort(original) || responseFailureRequiresAbort(request) {
+				panic(http.ErrAbortHandler)
+			}
+			if lifecycle := apisixctx.GetRequestLifecycle(request); lifecycle != nil {
+				lifecycle.SetFinalRequest(request)
+			}
+			apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
+			writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		if replacement != nil {
+			request = replacement
+			if lifecycle := apisixctx.GetRequestLifecycle(request); lifecycle != nil {
+				lifecycle.SetFinalRequest(request)
+			}
+		}
+	}
+	prepared.handler.ServeHTTP(w, request)
 }
 
 func (p RequestPipeline) buildPostResolutionHandler(

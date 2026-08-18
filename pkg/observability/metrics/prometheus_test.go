@@ -15,6 +15,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestExporterLifecycleBindsServesAndReleasesListener(t *testing.T) {
@@ -441,12 +442,13 @@ func TestPrometheusExtraLabelValuesUseRequestAndBoundedHTTPVariables(t *testing.
 
 func TestPrometheusStatusVariablesUseDecimalLabels(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	metricContext := metricContextFromRequest(req)
 	entry := HTTPRequestMetrics{Status: http.StatusBadGateway, UpstreamLatency: 1}
 
-	if got := prometheusVariable(req, entry, "$status"); got != "502" {
+	if got := metricContext.variable(entry, "$status"); got != "502" {
 		t.Fatalf("status label = %q, want 502", got)
 	}
-	if got := prometheusVariable(req, entry, "$upstream_status"); got != "502" {
+	if got := metricContext.variable(entry, "$upstream_status"); got != "502" {
 		t.Fatalf("upstream status label = %q, want 502", got)
 	}
 }
@@ -698,18 +700,217 @@ func TestRecordHTTPRequestRecordsStatusLatencyBandwidthAndLLM(t *testing.T) {
 	}
 }
 
+func TestRecordHTTPRequestLiveAndDetachedContextsHaveIdenticalMetrics(t *testing.T) {
+	extras := map[string][]prometheusExtraLabel{
+		httpStatusMetric: {
+			{Name: "host", Variable: "$host"},
+			{Name: "uri", Variable: "$uri"},
+			{Name: "method", Variable: "$request_method"},
+			{Name: "request_tenant", Variable: "$request_tenant"},
+			{Name: "apisix_tenant", Variable: "$apisix_tenant"},
+		},
+		httpLatencyMetric: {
+			{Name: "host", Variable: "$host"},
+			{Name: "uri", Variable: "$uri"},
+			{Name: "method", Variable: "$request_method"},
+			{Name: "request_tenant", Variable: "$request_tenant"},
+			{Name: "apisix_tenant", Variable: "$apisix_tenant"},
+		},
+		bandwidthMetric: {
+			{Name: "host", Variable: "$host"},
+			{Name: "uri", Variable: "$uri"},
+			{Name: "method", Variable: "$request_method"},
+			{Name: "request_tenant", Variable: "$request_tenant"},
+			{Name: "apisix_tenant", Variable: "$apisix_tenant"},
+		},
+	}
+
+	request := apisixctx.WithApisixVars(
+		httptest.NewRequest(http.MethodPost, "https://api.example.test/orders/42?q=one", nil),
+		nil,
+	)
+	request = apisixctx.WithRequestVars(request)
+	apisixctx.RegisterApisixVar(request, "$route_id", "route-42")
+	apisixctx.RegisterApisixVar(request, "$service_id", "service-42")
+	apisixctx.RegisterApisixVar(request, "$apisix_tenant", "apisix-acme")
+	apisixctx.RegisterRequestVar(request, "$request_type", "ai_chat")
+	apisixctx.RegisterRequestVar(request, "$request_llm_model", "request-model")
+	apisixctx.RegisterRequestVar(request, "$llm_model", "response-model")
+	apisixctx.RegisterRequestVar(request, "$request_tenant", "request-acme")
+	apisixctx.RegisterRequestVar(request, "$response_source", "ai-proxy")
+	apisixctx.RegisterRequestVar(request, "$llm_time_to_first_token", 12.5)
+	apisixctx.RegisterRequestVar(request, "$llm_prompt_tokens", 7)
+	apisixctx.RegisterRequestVar(request, "$llm_completion_tokens", 3)
+	entry := HTTPRequestMetrics{
+		Status:          http.StatusCreated,
+		Route:           "route-42",
+		MatchedURI:      "/orders/:id",
+		MatchedHost:     "api.example.test",
+		Service:         "service-42",
+		Consumer:        "alice",
+		Node:            "10.0.0.8",
+		RequestLatency:  40,
+		UpstreamLatency: 25,
+		IngressBytes:    11,
+		EgressBytes:     13,
+	}
+	detachedContext := HTTPRequestMetricContext{
+		Method:      request.Method,
+		Host:        request.Host,
+		Path:        request.URL.Path,
+		APISIXVars:  apisixctx.GetApisixVars(request),
+		RequestVars: apisixctx.GetRequestVars(request),
+	}
+
+	record := func(t *testing.T, prefix string, useDetached bool) map[string]map[string]*dto.Metric {
+		t.Helper()
+		restore := installMetricVectorsWithExtras(t, prefix, extras)
+		if useDetached {
+			RecordHTTPRequestContext(detachedContext, entry)
+		} else {
+			RecordHTTPRequest(request, entry)
+		}
+		got := map[string]map[string]*dto.Metric{
+			httpStatusMetric:  collectMetricSnapshots(t, HttpStatus),
+			httpLatencyMetric: collectMetricSnapshots(t, HttpLatency),
+			bandwidthMetric:   collectMetricSnapshots(t, Bandwidth),
+			llmLatencyMetric:  collectMetricSnapshots(t, LLMLatency),
+			llmPromptMetric:   collectMetricSnapshots(t, LLMPromptTokens),
+			llmCompleteMetric: collectMetricSnapshots(t, LLMCompletionTokens),
+		}
+		restore()
+		return got
+	}
+
+	live := record(t, "test_live_detached_", false)
+	detachedMetrics := record(t, "test_detached_", true)
+	if len(live) != len(detachedMetrics) {
+		t.Fatalf("live and detached metric families = %d/%d, want equal", len(live), len(detachedMetrics))
+	}
+	for family, liveSamples := range live {
+		detachedSamples := detachedMetrics[family]
+		if len(liveSamples) != len(detachedSamples) {
+			t.Fatalf(
+				"%s live and detached sample counts = %d/%d, want equal",
+				family,
+				len(liveSamples),
+				len(detachedSamples),
+			)
+		}
+		for labels, liveMetric := range liveSamples {
+			detachedMetric := detachedSamples[labels]
+			if detachedMetric == nil || !proto.Equal(liveMetric, detachedMetric) {
+				t.Fatalf("%s labels %q differ between live and detached metrics", family, labels)
+			}
+		}
+	}
+}
+
+func installMetricVectorsWithExtras(
+	t *testing.T,
+	prefix string,
+	extraLabels map[string][]prometheusExtraLabel,
+) func() {
+	t.Helper()
+	restore := installMetricVectors(t, prefix)
+	prometheusExtraLabels = extraLabels
+	HttpStatus = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: prefix + "http_status"},
+		metricLabelNames(httpStatusMetric, []string{
+			"code", "route", "matched_uri", "matched_host", "service", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model", "response_source",
+		}),
+	)
+	commonLabels := []string{
+		"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+	}
+	HttpLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: prefix + "http_latency"},
+		metricLabelNames(httpLatencyMetric, commonLabels),
+	)
+	Bandwidth = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: prefix + "bandwidth"},
+		metricLabelNames(bandwidthMetric, commonLabels),
+	)
+	return restore
+}
+
+func collectMetricSnapshots(t *testing.T, collector prometheus.Collector) map[string]*dto.Metric {
+	t.Helper()
+	if collector == nil {
+		return nil
+	}
+	channel := make(chan prometheus.Metric)
+	go func() {
+		collector.Collect(channel)
+		close(channel)
+	}()
+	snapshots := make(map[string]*dto.Metric)
+	for metric := range channel {
+		decoded := &dto.Metric{}
+		if err := metric.Write(decoded); err != nil {
+			t.Fatalf("write metric: %v", err)
+		}
+		if decoded.Counter != nil {
+			decoded.Counter.CreatedTimestamp = nil
+		}
+		if decoded.Histogram != nil {
+			decoded.Histogram.CreatedTimestamp = nil
+		}
+		labels := make([]string, 0, len(decoded.Label))
+		for _, label := range decoded.Label {
+			labels = append(labels, label.GetName()+"="+label.GetValue())
+		}
+		key := strings.Join(labels, "\x00")
+		snapshots[key] = decoded
+	}
+	return snapshots
+}
+
 func TestResponseSourcePrecedence(t *testing.T) {
 	explicit := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodGet, "/", nil))
 	apisixctx.RegisterRequestVar(explicit, "$response_source", "ai-proxy")
-	if got := responseSource(explicit, 25); got != "ai-proxy" {
+	if got := metricContextFromRequest(explicit).responseSource(25); got != "ai-proxy" {
 		t.Fatalf("explicit response_source = %q, want ai-proxy", got)
 	}
 	plain := httptest.NewRequest(http.MethodGet, "/", nil)
-	if got := responseSource(plain, 0); got != "apisix" {
+	metricContext := metricContextFromRequest(plain)
+	if got := metricContext.responseSource(0); got != "apisix" {
 		t.Fatalf("no-upstream response_source = %q, want apisix", got)
 	}
-	if got := responseSource(plain, 5); got != "upstream" {
+	if got := metricContext.responseSource(5); got != "upstream" {
 		t.Fatalf("upstream response_source = %q, want upstream", got)
+	}
+}
+
+func TestDetachedResponseSourcePrecedence(t *testing.T) {
+	metricContext := HTTPRequestMetricContext{
+		RequestVars:    map[string]any{"$response_source": "request"},
+		ResponseSource: apisixctx.ResponseSourceCacheHit,
+	}
+	if got := metricContext.responseSource(25); got != string(apisixctx.ResponseSourceCacheHit) {
+		t.Fatalf("detached response_source = %q, want cache_hit", got)
+	}
+	extraLabel := metricContext.variable(HTTPRequestMetrics{}, "$response_source")
+	if extraLabel != string(apisixctx.ResponseSourceCacheHit) {
+		t.Fatalf("detached response_source extra label = %q, want cache_hit", extraLabel)
+	}
+	metricContext.ResponseSource = apisixctx.ResponseSourceUnknown
+	if got := metricContext.responseSource(25); got != "request" {
+		t.Fatalf("unknown detached response_source = %q, want request", got)
+	}
+	extraLabel = metricContext.variable(HTTPRequestMetrics{}, "$response_source")
+	if extraLabel != "request" {
+		t.Fatalf("unknown detached response_source extra label = %q, want request", extraLabel)
+	}
+}
+
+func TestRecordHTTPRequestIgnoresNilRequest(t *testing.T) {
+	installMetricVectors(t, "test_nil_request_")
+	RecordHTTPRequest(nil, HTTPRequestMetrics{Status: http.StatusNoContent})
+	status := HttpStatus.WithLabelValues("204", "", "", "", "", "", "", "", "", "", "apisix")
+	if got := counterValue(t, status); got != 0 {
+		t.Fatalf("nil request status count = %v, want 0", got)
 	}
 }
 
@@ -736,17 +937,18 @@ func TestRequestVarFloat64Conversions(t *testing.T) {
 	apisixctx.RegisterRequestVar(request, "$int", 7)
 	apisixctx.RegisterRequestVar(request, "$numeric", "3.5")
 	apisixctx.RegisterRequestVar(request, "$invalid", "not-a-number")
+	metricContext := metricContextFromRequest(request)
 
-	if got, ok := requestVarFloat64(request, "$int"); !ok || got != 7 {
+	if got, ok := metricContext.requestVarFloat64("$int"); !ok || got != 7 {
 		t.Fatalf("int var = %v/%t, want 7/true", got, ok)
 	}
-	if got, ok := requestVarFloat64(request, "$numeric"); !ok || got != 3.5 {
+	if got, ok := metricContext.requestVarFloat64("$numeric"); !ok || got != 3.5 {
 		t.Fatalf("numeric string var = %v/%t, want 3.5/true", got, ok)
 	}
-	if got, ok := requestVarFloat64(request, "$invalid"); ok || got != 0 {
+	if got, ok := metricContext.requestVarFloat64("$invalid"); ok || got != 0 {
 		t.Fatalf("invalid var = %v/%t, want 0/false", got, ok)
 	}
-	if got, ok := requestVarFloat64(request, "$absent"); ok || got != 0 {
+	if got, ok := metricContext.requestVarFloat64("$absent"); ok || got != 0 {
 		t.Fatalf("absent var = %v/%t, want 0/false", got, ok)
 	}
 }
@@ -890,6 +1092,7 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 func TestPrometheusVariableBoundedFallbacks(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "http://api.example.test/orders", nil)
 	request.Host = "api.example.test"
+	metricContext := metricContextFromRequest(request)
 	entry := HTTPRequestMetrics{Status: 201, Node: "10.0.0.8", UpstreamLatency: 25}
 
 	tests := map[string]string{
@@ -902,13 +1105,13 @@ func TestPrometheusVariableBoundedFallbacks(t *testing.T) {
 		"$unknown_variable": "",
 	}
 	for variable, want := range tests {
-		if got := prometheusVariable(request, entry, variable); got != want {
+		if got := metricContext.variable(entry, variable); got != want {
 			t.Fatalf("prometheusVariable(%q) = %q, want %q", variable, got, want)
 		}
 	}
 
 	noUpstream := HTTPRequestMetrics{Status: 201, Node: "10.0.0.8"}
-	if got := prometheusVariable(request, noUpstream, "$upstream_status"); got != "" {
+	if got := metricContext.variable(noUpstream, "$upstream_status"); got != "" {
 		t.Fatalf("$upstream_status without upstream = %q, want empty", got)
 	}
 }

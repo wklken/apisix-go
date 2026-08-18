@@ -35,10 +35,13 @@ func (p *Plugin) validateConfiguredClaims(claims map[string]any) (int, string) {
 	}
 
 	value := claims[audience.claim]
-	if audience.required && value == nil {
+	if (audience.required || audience.matchWithClientID || len(audience.validAudiences) > 0) && value == nil {
 		return http.StatusForbidden, `{"error":"required audience claim not present"}`
 	}
 	if audience.matchWithClientID && value != nil && !audienceMatchesClientID(value, p.config.ClientID) {
+		return http.StatusForbidden, `{"error":"mismatched audience"}`
+	}
+	if len(audience.validAudiences) > 0 && value != nil && !audienceMatches(value, audience.validAudiences) {
 		return http.StatusForbidden, `{"error":"mismatched audience"}`
 	}
 	return 0, ""
@@ -48,6 +51,7 @@ type audienceClaimValidator struct {
 	claim             string
 	required          bool
 	matchWithClientID bool
+	validAudiences    []string
 }
 
 func (p *Plugin) audienceClaimValidator() (audienceClaimValidator, bool) {
@@ -62,23 +66,66 @@ func (p *Plugin) audienceClaimValidator() (audienceClaimValidator, bool) {
 	}
 	validator.required, _ = raw["required"].(bool)
 	validator.matchWithClientID, _ = raw["match_with_client_id"].(bool)
+	switch values := raw["valid_audiences"].(type) {
+	case []string:
+		validator.validAudiences = append([]string(nil), values...)
+	case []any:
+		for _, value := range values {
+			if audience, ok := value.(string); ok {
+				validator.validAudiences = append(validator.validAudiences, audience)
+			}
+		}
+	}
 	return validator, true
 }
 
 func audienceMatchesClientID(value any, clientID string) bool {
+	return audienceMatches(value, []string{clientID})
+}
+
+func audienceMatches(value any, expected []string) bool {
 	switch typed := value.(type) {
 	case string:
-		return typed == clientID
+		return slices.Contains(expected, typed)
 	case []any:
-		if slices.ContainsFunc(typed, func(item any) bool { return item == clientID }) {
+		if slices.ContainsFunc(typed, func(item any) bool {
+			audience, ok := item.(string)
+			return ok && slices.Contains(expected, audience)
+		}) {
 			return true
 		}
 	case []string:
-		if slices.Contains(typed, clientID) {
+		if slices.ContainsFunc(typed, func(audience string) bool { return slices.Contains(expected, audience) }) {
 			return true
 		}
 	}
 	return false
+}
+
+func (p *Plugin) localJWTAudienceValid(claims map[string]any) bool {
+	validator, configured := p.audienceClaimValidator()
+	if !configured {
+		return audienceMatchesClientID(claims["aud"], p.config.ClientID)
+	}
+
+	value := claims[validator.claim]
+	constrained := false
+	if validator.matchWithClientID {
+		constrained = true
+		if !audienceMatchesClientID(value, p.config.ClientID) {
+			return false
+		}
+	}
+	if len(validator.validAudiences) > 0 {
+		constrained = true
+		if !audienceMatches(value, validator.validAudiences) {
+			return false
+		}
+	}
+	if !constrained {
+		return audienceMatchesClientID(claims["aud"], p.config.ClientID)
+	}
+	return true
 }
 
 func (p *Plugin) validateClaimSchema(claims map[string]any) error {
@@ -179,6 +226,9 @@ func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]a
 		return nil, fmt.Errorf("failed to parse jwt claims")
 	}
 	p.validateIssuer(claims)
+	if !p.localJWTAudienceValid(claims) {
+		claims["active"] = false
+	}
 
 	return claims, nil
 }
@@ -231,6 +281,7 @@ func (p *Plugin) validateIssuer(payload map[string]any) {
 	}
 	discovery, err := p.discoveryDoc()
 	if err != nil || discovery.Issuer == "" {
+		payload["active"] = false
 		return
 	}
 	if issuer == "" || issuer != discovery.Issuer {

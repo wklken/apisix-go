@@ -275,7 +275,12 @@ const schema = `
           "properties": {
             "claim": {"type": "string"},
             "required": {"type": "boolean"},
-            "match_with_client_id": {"type": "boolean"}
+            "match_with_client_id": {"type": "boolean"},
+            "valid_audiences": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string"}
+            }
           }
         },
         "issuer": {

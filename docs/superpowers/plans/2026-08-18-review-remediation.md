@@ -66,9 +66,9 @@ git commit -m "docs: consolidate verified review findings"
 - Consumes: issuer allowlist/discovery, `client_id`, and JWT/introspection claims.
 - Produces: `claim_validator.audience.valid_audiences`; local JWTs require a trusted issuer and expected audience.
 
-- [ ] **Step 1: Retain the observed RED/GREEN evidence in the ledger**
-- [ ] **Step 2: Run scoped OIDC lint, package tests, manifest selection, the 28 affected integration cases, and build**
-- [ ] **Step 3: Commit only the OIDC implementation, tests, fixture, plugin status, and ledger**
+- [x] **Step 1: Retain the observed RED/GREEN evidence in the ledger**
+- [x] **Step 2: Run scoped OIDC lint, package tests, manifest selection, the 28 affected integration cases, and build**
+- [x] **Step 3: Commit only the OIDC implementation, tests, fixture, plugin status, and ledger**
 
 Commit:
 

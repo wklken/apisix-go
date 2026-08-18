@@ -14,6 +14,15 @@ require_pattern() {
     fi
 }
 
+reject_pattern() {
+    local pattern=$1
+    local file=$2
+    if grep -Eq -- "$pattern" "$file"; then
+        printf 'unexpected %q in %s\n' "$pattern" "$file" >&2
+        return 1
+    fi
+}
+
 require_pattern '^FROM golang:1\.26\.6-alpine3\.24 AS builder$' "$dockerfile"
 require_pattern '^FROM alpine:3\.24\.1$' "$dockerfile"
 require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
@@ -21,11 +30,12 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\{COMMIT\}' "$dockerfile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\{BUILD_TIME\}' "$dockerfile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\{GO_VERSION\}' "$dockerfile"
-require_pattern 'apk add --no-cache.*ca-certificates.*curl' "$dockerfile"
+require_pattern 'apk add --no-cache.*ca-certificates' "$dockerfile"
+reject_pattern 'curl' "$dockerfile"
 require_pattern 'addgroup .*10001' "$dockerfile"
 require_pattern 'adduser .*10001' "$dockerfile"
 require_pattern '^USER 10001:10001$' "$dockerfile"
-require_pattern '^HEALTHCHECK ' "$dockerfile"
+reject_pattern '^HEALTHCHECK ' "$dockerfile"
 
 test -x "$smoke"
 bash -n "$smoke"
@@ -38,7 +48,7 @@ require_pattern 'upstream_ip=.*docker inspect.*IPAddress' "$smoke"
 require_pattern 'upstream_deadline=' "$smoke"
 require_pattern '\$\{upstream_ip\}:8081' "$smoke"
 require_pattern '^#END$' "$smoke"
-require_pattern 'docker inspect.*Health' "$smoke"
+reject_pattern 'State\.Health' "$smoke"
 require_pattern 'proxy_deadline=' "$smoke"
 require_pattern 'docker exec.*id -u' "$smoke"
 require_pattern 'docker exec.*id -g' "$smoke"

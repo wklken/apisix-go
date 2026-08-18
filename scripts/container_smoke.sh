@@ -92,26 +92,8 @@ docker run --detach --name "$gateway" --network "$network" --publish 127.0.0.1::
     --volume "$temp_dir/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro" \
     "$image" -c /usr/local/apisix/conf/config.yaml >/dev/null
 
-deadline=$((SECONDS + 90))
-while (( SECONDS < deadline )); do
-    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$gateway")
-    case "$health" in
-        healthy) break ;;
-        unhealthy)
-            docker logs "$gateway" >&2
-            exit 1
-            ;;
-    esac
-    sleep 1
-done
-if [[ ${health:-} != healthy ]]; then
-    docker logs "$gateway" >&2
-    printf 'gateway did not become healthy before timeout\n' >&2
-    exit 1
-fi
-
 published=$(docker port "$gateway" 9080/tcp | head -n 1)
-proxy_deadline=$((SECONDS + 30))
+proxy_deadline=$((SECONDS + 90))
 response=""
 until response=$(curl --fail --silent --show-error "http://${published}/smoke"); do
     if (( SECONDS >= proxy_deadline )); then

@@ -12,6 +12,14 @@ type ClusterObserver interface {
 	DeleteCluster(cluster string)
 }
 
+// UpstreamStatusObserver is an optional extension for observers that expose
+// one bounded health value per configured upstream target. Keeping this
+// separate preserves the narrow ClusterObserver contract for existing users.
+type UpstreamStatusObserver interface {
+	SetUpstreamStatus(cluster, target string, healthy bool)
+	DeleteUpstreamStatus(cluster, target string)
+}
+
 // NopClusterObserver discards every cluster runtime signal. It is the default
 // observer used when no external metrics runtime is configured.
 type NopClusterObserver struct{}

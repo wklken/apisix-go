@@ -594,7 +594,6 @@ func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	config := buildRequestContextConfig(
 		resource.Route{ID: "articles", Uri: "/articles/*/comments"},
 		resource.Service{},
-		nil,
 	)
 	if got := config["$matched_uri"]; got != "/articles/*/comments" {
 		t.Fatalf("$matched_uri = %q, want original APISIX pattern", got)

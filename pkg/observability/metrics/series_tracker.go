@@ -245,6 +245,23 @@ func (t *metricSeriesTracker) deleteExpired(candidates []metricSeriesCandidate, 
 	return deleted
 }
 
+func (t *metricSeriesTracker) deleteMatching(match func([]string) bool) {
+	if t == nil || match == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for key, entry := range t.entries {
+		if entry.inFlight.Load() != 0 || !match(entry.labels) {
+			continue
+		}
+		if t.deleteLabelValues != nil {
+			t.deleteLabelValues(entry.labels...)
+		}
+		delete(t.entries, key)
+	}
+}
+
 func metricSeriesTupleKey(values []string) string {
 	var builder strings.Builder
 	for _, value := range values {

@@ -183,6 +183,7 @@ func newClusterWithTransport(
 		maxInFlight: maxInFlight,
 	}
 	if healthAware, ok := lb.(*HealthAwareLoadBalance); ok {
+		healthAware.setObserver(config.Name, observer)
 		active, enabled, err := ParseActiveHealthConfig(config.Checks)
 		if err != nil {
 			return nil, err
@@ -218,6 +219,9 @@ func (c *Cluster) Close() {
 	c.closeOnce.Do(func() {
 		if c.health != nil {
 			c.health.Close()
+		}
+		if healthAware, ok := c.lb.(*HealthAwareLoadBalance); ok {
+			healthAware.clearObserver()
 		}
 		if c.closeIdle != nil {
 			c.closeIdle()

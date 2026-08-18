@@ -28,10 +28,19 @@ func newHTTPConnectionStateObserver(injected *prometheus.GaugeVec) func(net.Conn
 		if gauges == nil {
 			gauges = Connections
 		}
-		if previous, ok := states[conn]; ok {
+		previous, hadPrevious := states[conn]
+		if hadPrevious {
 			if label, tracked := httpConnectionStateLabel(previous); tracked && gauges != nil {
 				gauges.WithLabelValues(label).Dec()
 			}
+		}
+		if state == http.StateNew {
+			if (!hadPrevious || previous != http.StateNew) && gauges != nil {
+				gauges.WithLabelValues("accepted").Inc()
+				gauges.WithLabelValues("handled").Inc()
+			}
+			states[conn] = state
+			return
 		}
 		if label, tracked := httpConnectionStateLabel(state); tracked {
 			states[conn] = state
@@ -46,12 +55,10 @@ func newHTTPConnectionStateObserver(injected *prometheus.GaugeVec) func(net.Conn
 
 func httpConnectionStateLabel(state http.ConnState) (string, bool) {
 	switch state {
-	case http.StateNew:
-		return "new", true
 	case http.StateActive:
 		return "active", true
 	case http.StateIdle:
-		return "idle", true
+		return "waiting", true
 	default:
 		return "", false
 	}
@@ -79,8 +86,14 @@ func RecordEtcdReachable(reachable bool) {
 // RecordEtcdAppliedRevision advances the last successfully applied etcd
 // revision. Invalid or empty revisions never erase a previously applied value.
 func RecordEtcdAppliedRevision(revision int64) {
-	if EtcdRevision == nil || revision <= 0 {
+	if revision <= 0 {
 		return
 	}
-	EtcdRevision.Set(float64(revision))
+	if EtcdRevision != nil {
+		EtcdRevision.Set(float64(revision))
+	}
+	if EtcdModifyIndexes != nil {
+		setEtcdModifyIndex("max_modify_index", revision)
+		setEtcdModifyIndex("x_etcd_index", revision)
+	}
 }

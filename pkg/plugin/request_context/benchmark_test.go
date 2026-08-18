@@ -13,10 +13,10 @@ func BenchmarkVerifiedSmallPath(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.Run("counter-inc", func(b *testing.B) {
+	b.Run("gauge-inc", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			metrics.Requests.Inc()
+			metrics.RecordHTTPRequestTotal()
 		}
 	})
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -58,6 +59,38 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("prometheus init propagation child failed: %v\n%s", err, output)
+	}
+}
+
+func TestPrometheusPublicEndpointRegistersWithoutPrometheusRouteBinding(t *testing.T) {
+	public_api.ResetRegistryForTest()
+	t.Cleanup(public_api.ResetRegistryForTest)
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{
+		Plugins: []string{"prometheus", "public-api"},
+		PluginAttr: map[string]map[string]any{
+			"prometheus": {
+				"enable_export_server": false,
+				"export_uri":           "/internal/metrics",
+			},
+		},
+	}
+
+	if err := registerPrometheusPublicEndpoint(); err != nil {
+		t.Fatalf("registerPrometheusPublicEndpoint() error = %v", err)
+	}
+	plugin := &public_api.Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("public-api Init() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	plugin.Handler(http.NotFoundHandler()).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/internal/metrics", nil),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("public-api metrics status = %d, want 200; body: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -762,7 +795,7 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{}
+	config.GlobalConfig = &config.Config{Plugins: []string{"prometheus"}}
 	server := newConfiguredHTTPServer(http.NotFoundHandler())
 	if server.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
@@ -775,6 +808,16 @@ func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	}
 	if server.ConnState == nil {
 		t.Fatal("configured HTTP server has no connection lifecycle observer")
+	}
+}
+
+func TestConfiguredHTTPServerSkipsConnectionObserverWithoutPrometheus(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{Plugins: []string{"limit-req"}}
+
+	if observer := newConfiguredHTTPServer(http.NotFoundHandler()).ConnState; observer != nil {
+		t.Fatal("configured HTTP server installed a Prometheus connection observer while metrics are disabled")
 	}
 }
 
@@ -838,6 +881,42 @@ func TestConfiguredHTTPHandlerLimitsHealthEndpoints(t *testing.T) {
 			handler.ServeHTTP(response, request)
 
 			assertRequestBodyLimitResponse(t, response)
+		})
+	}
+}
+
+func TestConfiguredHTTPHandlerCountsAllRequestsOnlyWhenPrometheusEnabled(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	previousRequests := metrics.Requests
+	t.Cleanup(func() {
+		config.GlobalConfig = previousConfig
+		metrics.Requests = previousRequests
+	})
+
+	for _, test := range []struct {
+		name    string
+		plugins []string
+		want    float64
+	}{
+		{name: "enabled", plugins: []string{"prometheus"}, want: 2},
+		{name: "disabled", plugins: []string{"limit-req"}, want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.Config{Plugins: test.plugins}
+			config.GlobalConfig = cfg
+			metrics.Requests = prometheus.NewGauge(prometheus.GaugeOpts{
+				Name: "test_http_handler_requests_" + test.name,
+			})
+			handler := newConfiguredHTTPHandler(http.NotFoundHandler(), cfg)
+			for _, path := range []string{"/livez", "/ordinary"} {
+				handler.ServeHTTP(
+					httptest.NewRecorder(),
+					httptest.NewRequest(http.MethodGet, path, nil),
+				)
+			}
+			if got := configApplyGaugeValue(t, metrics.Requests); got != test.want {
+				t.Fatalf("request total = %v, want %v", got, test.want)
+			}
 		})
 	}
 }
@@ -1173,53 +1252,6 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 	}
 	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after route-build failure = %v, want 0", got)
-	}
-}
-
-func TestPrometheusExportServerConfigDefaults(t *testing.T) {
-	cfg := newPrometheusExportServerConfig(nil)
-
-	if !cfg.Enabled {
-		t.Fatal("Enabled = false, want true")
-	}
-	if cfg.ExportURI != "/apisix/prometheus/metrics" {
-		t.Fatalf("ExportURI = %q, want /apisix/prometheus/metrics", cfg.ExportURI)
-	}
-	if cfg.ExportIP != "127.0.0.1" {
-		t.Fatalf("ExportIP = %q, want 127.0.0.1", cfg.ExportIP)
-	}
-	if cfg.ExportPort != 9091 {
-		t.Fatalf("ExportPort = %d, want 9091", cfg.ExportPort)
-	}
-	if cfg.Address() != "127.0.0.1:9091" {
-		t.Fatalf("Address() = %q, want 127.0.0.1:9091", cfg.Address())
-	}
-}
-
-func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
-	cfg := newPrometheusExportServerConfig(map[string]any{
-		"enable_export_server": false,
-		"export_uri":           "/metrics",
-		"export_addr": map[string]any{
-			"ip":   "0.0.0.0",
-			"port": 19091,
-		},
-	})
-
-	if cfg.Enabled {
-		t.Fatal("Enabled = true, want false")
-	}
-	if cfg.ExportURI != "/metrics" {
-		t.Fatalf("ExportURI = %q, want /metrics", cfg.ExportURI)
-	}
-	if cfg.ExportIP != "0.0.0.0" {
-		t.Fatalf("ExportIP = %q, want 0.0.0.0", cfg.ExportIP)
-	}
-	if cfg.ExportPort != 19091 {
-		t.Fatalf("ExportPort = %d, want 19091", cfg.ExportPort)
-	}
-	if cfg.Address() != "0.0.0.0:19091" {
-		t.Fatalf("Address() = %q, want 0.0.0.0:19091", cfg.Address())
 	}
 }
 

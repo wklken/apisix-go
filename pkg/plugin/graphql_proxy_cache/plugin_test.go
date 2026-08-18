@@ -301,6 +301,48 @@ func TestConfiguredMemoryZoneSharesGraphQLEntriesAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestConfiguredMemoryZoneBoundsGraphQLEntries(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-memory-bounded", MemorySize: "320B"}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{
+		CacheStrategy: "memory",
+		CacheZone:     "graphql-memory-bounded",
+		CacheTTL:      60,
+	})
+	t.Cleanup(p.Stop)
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(strings.Repeat("x", 180)))
+	}))
+
+	first := performGraphQLRequest(
+		t, handler, http.MethodPost, "/graphql", "application/graphql", "query { first }",
+	)
+	second := performGraphQLRequest(
+		t, handler, http.MethodPost, "/graphql", "application/graphql", "query { second }",
+	)
+	firstAgain := performGraphQLRequest(
+		t, handler, http.MethodPost, "/graphql", "application/graphql", "query { first }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" || second.Header().Get(cacheStatusHeader) != "MISS" ||
+		firstAgain.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"cache statuses = %q/%q/%q, want MISS/MISS/MISS after oldest eviction",
+			first.Header().Get(cacheStatusHeader),
+			second.Header().Get(cacheStatusHeader),
+			firstAgain.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3 after the first entry was evicted", calls)
+	}
+}
+
 func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
 	root := t.TempDir()
 	oldConfig := config.GlobalConfig

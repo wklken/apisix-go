@@ -776,6 +776,38 @@ func TestMemoryZoneSharesEntriesAcrossPluginInstances(t *testing.T) {
 	}
 }
 
+func TestConfiguredMemoryZoneBoundsVaryEntriesAndIndex(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "memory-vary-bounded", MemorySize: "520B"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheZone: "memory-vary-bounded", CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Vary", "X-Variant")
+		_, _ = w.Write([]byte(r.Header.Get("X-Variant") + strings.Repeat("x", 180)))
+	}))
+
+	first := performRequest(t, handler, http.MethodGet, "/bounded-vary", map[string]string{"X-Variant": "first"})
+	second := performRequest(t, handler, http.MethodGet, "/bounded-vary", map[string]string{"X-Variant": "second"})
+	firstAgain := performRequest(t, handler, http.MethodGet, "/bounded-vary", map[string]string{"X-Variant": "first"})
+	if first.Header().Get(cacheStatusHeader) != "MISS" || second.Header().Get(cacheStatusHeader) != "MISS" ||
+		firstAgain.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"cache statuses = %q/%q/%q, want MISS/MISS/MISS after oldest Vary entry eviction",
+			first.Header().Get(cacheStatusHeader),
+			second.Header().Get(cacheStatusHeader),
+			firstAgain.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3 after the first Vary entry was evicted", calls)
+	}
+}
+
 func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T) {
 	oldConfig := appconfig.GlobalConfig
 	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
@@ -1878,6 +1910,55 @@ func TestMemoryZoneStoreSharesClonedEntriesAndReleasesLastReference(t *testing.T
 		t.Fatal("nil memory store reported an entry")
 	}
 	nilStore.Close()
+}
+
+func TestMemoryZoneStoreEnforcesConfiguredCapacity(t *testing.T) {
+	oldConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
+		Zones: []appconfig.Zone{{Name: "bounded-memory-store", MemorySize: "320B"}},
+	}}}
+	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+
+	store := AcquireMemoryZoneStore("bounded-memory-store")
+	t.Cleanup(store.Close)
+	now := time.Now()
+	entry := SharedCacheEntry{
+		Header:    http.Header{"X-Origin": {"upstream"}},
+		Body:      []byte(strings.Repeat("a", 180)),
+		Status:    http.StatusOK,
+		StoredAt:  now,
+		TTL:       time.Minute,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	store.Store("oldest", entry)
+	entry.Body = []byte(strings.Repeat("b", 180))
+	entry.StoredAt = now.Add(time.Second)
+	store.Store("newest", entry)
+
+	if _, ok := store.Load("oldest"); ok {
+		t.Fatal("oldest entry remained after configured capacity was exceeded")
+	}
+	if loaded, ok := store.Load("newest"); !ok || string(loaded.Body) != strings.Repeat("b", 180) {
+		t.Fatalf("newest entry = %#v, found %t; want retained newest value", loaded, ok)
+	}
+	store.zone.lock.RLock()
+	usedBeforeOverwrite := store.zone.usedBytes
+	store.zone.lock.RUnlock()
+	entry.Body = []byte(strings.Repeat("c", 80))
+	store.Store("newest", entry)
+	store.zone.lock.RLock()
+	usedAfterOverwrite := store.zone.usedBytes
+	store.zone.lock.RUnlock()
+	if usedAfterOverwrite >= usedBeforeOverwrite {
+		t.Fatalf("used bytes after smaller overwrite = %d, want less than %d", usedAfterOverwrite, usedBeforeOverwrite)
+	}
+
+	entry.Body = []byte(strings.Repeat("x", 512))
+	entry.StoredAt = now.Add(2 * time.Second)
+	store.Store("oversized", entry)
+	if _, ok := store.Load("oversized"); ok {
+		t.Fatal("single entry larger than memory_size was retained")
+	}
 }
 
 func TestDiskZoneStoreLifecycleRejectsCorruptAndExpiredEntries(t *testing.T) {

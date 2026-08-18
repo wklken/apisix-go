@@ -299,6 +299,10 @@ func (p *Plugin) storeStateWithHeader(
 		p.purgeAllLocked(key)
 	}
 	p.entries[storageKey] = entry
+	if p.memoryZone != nil {
+		p.memoryZone.recalculateUsedBytesLocked()
+		p.memoryZone.enforceCapacityLocked()
+	}
 	index, hasIndex := p.vary[key]
 	if p.diskEnabled {
 		if err := p.persistEntryLocked(storageKey, entry); err != nil {

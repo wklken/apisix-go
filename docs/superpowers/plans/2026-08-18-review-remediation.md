@@ -109,18 +109,17 @@ git commit -m "fix(logging): redact sensitive default headers"
 - Modify: `pkg/plugin/proxy_cache/plugin.go`
 - Modify: `pkg/plugin/proxy_cache/response_phase.go`
 - Modify: `pkg/plugin/proxy_cache/plugin_test.go`
-- Modify: `pkg/plugin/graphql_proxy_cache/response_phase.go`
 - Modify: `pkg/plugin/graphql_proxy_cache/plugin_test.go`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Consumes: parsed `Zone.MemorySize` and the shared `memoryZone` lock.
 - Produces: atomic byte accounting and oldest-entry eviction shared by proxy-cache and graphql-proxy-cache; an entry larger than the zone is not retained.
 
-- [ ] **Step 1: Add failing tests for multiple unique entries, overwrite accounting, one oversized entry, Vary storage, and GraphQL shared storage**
-- [ ] **Step 2: Run the named capacity tests and observe unbounded retention**
-- [ ] **Step 3: Store parsed capacity; under the zone lock account for key/body/header/metadata/Vary bytes and evict oldest entries until within capacity**
-- [ ] **Step 4: Run both packages normally and with race, scoped lint, update the ledger, and commit**
+- [x] **Step 1: Add failing tests for multiple unique entries, overwrite accounting, one oversized entry, Vary storage, and GraphQL shared storage**
+- [x] **Step 2: Run the named capacity tests and observe unbounded retention**
+- [x] **Step 3: Store parsed capacity; under the zone lock account for key/body/header/metadata/Vary bytes and evict oldest entries until within capacity**
+- [x] **Step 4: Run both packages normally and with race, scoped lint, update the ledger, and commit**
 
 Commit:
 

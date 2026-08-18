@@ -514,7 +514,11 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 		return cacheEntry{}, "MISS"
 	}
 	if now.After(entry.expiresAt) {
-		delete(p.entries, storageKey)
+		if p.memoryZone != nil {
+			p.memoryZone.deleteEntryLocked(storageKey)
+		} else {
+			delete(p.entries, storageKey)
+		}
 		p.removeEntryLocked(storageKey)
 		p.lock.Unlock()
 		return cacheEntry{}, "EXPIRED"
@@ -557,6 +561,9 @@ func (p *Plugin) purgeAllLocked(key string) bool {
 	p.removeVaryIndexLocked(key)
 	delete(p.entries, key)
 	p.removeEntryLocked(key)
+	if p.memoryZone != nil {
+		p.memoryZone.recalculateUsedBytesLocked()
+	}
 	return baseOK || indexOK
 }
 

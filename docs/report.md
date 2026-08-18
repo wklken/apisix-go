@@ -62,7 +62,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | BUG-001 | P1 | Partially correct | Not applicable | replace | Reject：仅为 ignored 本地状态，不是仓库 finding |
 | SEC-001 | P1 | Correct | Not applicable | adjust | Follow-up |
 | SEC-002 | P1 | Correct | Not applicable | as-is | Follow-up |
-| BUG-002 | P1 | Correct | Not applicable | adjust | Follow-up |
+| BUG-002 | P1 | Correct | Not applicable | adjust | Fixed in `fix(proxy-cache): enforce memory zone capacity` |
 | BUG-003 | P1 | Correct | Not applicable | adjust | Follow-up |
 | BUG-004 | P1 | Correct | Not applicable | replace | Follow-up，需配置面语义设计 |
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
@@ -101,6 +101,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Counterevidence：TTL 只控制命中有效期，当前没有周期性 aggregate-capacity eviction；引用计数只在 plugin 生命周期结束时释放整个 zone。
 - Proposed fix assessment：adjust。容量计算不能只看 body，需要把 header、vary index、覆盖旧 entry 和并发写入纳入同一锁内的 accounting。
 - Best-fit solution：zone 保存解析后的 capacity/current bytes，并采用明确的 LRU/最旧淘汰合同；同时为 proxy-cache 和 graphql-proxy-cache 加共享 zone 容量测试。
+- Remediation：已在共享 memory zone 锁内核算 key、body、header、entry metadata、Vary index 与 loaded metadata；写入后按 `storedAt` 淘汰最旧 entry，单条超限不会保留，覆盖写入会重新计算占用。proxy-cache 的 Vary entry 淘汰会同步清理索引签名，graphql-proxy-cache 通过相同 zone store 获得同一容量边界。
+- Verification：修复前新增测试分别观察到最旧 entry 未淘汰、GraphQL 第三次请求错误 HIT、Vary 第一变体第三次请求错误 HIT；修复后 `go test ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache -count=1`、相同包的 `-race` 运行及 scoped `golangci-lint` 全部通过。
 
 ### BUG-004：永久非法资源阻断 etcd watcher 恢复
 

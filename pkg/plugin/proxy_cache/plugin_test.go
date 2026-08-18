@@ -397,7 +397,7 @@ func TestStoreStateWithHeaderRejectsOversizedVaryOverwriteWithoutMutatingExistin
 		t.Fatalf("storeStateWithHeader(small) error = %v", err)
 	}
 	oversizedState := smallState
-	oversizedState.Body = []byte(strings.Repeat("x", 512))
+	oversizedState.Body = []byte(strings.Repeat("x", 100))
 	if err := p.storeStateWithHeader(requestHeader, "same-key", oversizedState, time.Minute, false); err != nil {
 		t.Fatalf("storeStateWithHeader(oversized) error = %v", err)
 	}

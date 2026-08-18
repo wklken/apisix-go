@@ -292,7 +292,14 @@ func (p *Plugin) storeStateWithHeader(
 		storageSignature = varySignatureFromHeader(varyHeaders, requestHeader)
 		storageKey = key + "::" + storageSignature
 	}
-	if !canStoreMemoryEntry(p.memoryZone, storageKey, entry) {
+	if !canStoreMemoryEntryWithVary(
+		p.memoryZone,
+		key,
+		storageKey,
+		entry,
+		varyHeaders,
+		storageSignature,
+	) {
 		return nil
 	}
 	if p.diskEnabled {

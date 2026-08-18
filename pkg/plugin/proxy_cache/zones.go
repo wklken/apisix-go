@@ -173,6 +173,28 @@ func canStoreMemoryEntry(z *memoryZone, key string, entry cacheEntry) bool {
 	return z == nil || z.capacity <= 0 || memoryCacheEntryBytes(key, entry) <= z.capacity
 }
 
+func canStoreMemoryEntryWithVary(
+	z *memoryZone,
+	key string,
+	storageKey string,
+	entry cacheEntry,
+	varyHeaders []string,
+	signature string,
+) bool {
+	if z == nil || z.capacity <= 0 {
+		return true
+	}
+	requiredBytes := memoryCacheEntryBytes(storageKey, entry)
+	if len(varyHeaders) > 0 {
+		requiredBytes += memoryVaryIndexBytes(key, varyIndex{
+			headers:    varyHeaders,
+			signatures: []string{signature},
+		})
+		requiredBytes += memoryLoadedKeyBytes(key)
+	}
+	return requiredBytes <= z.capacity
+}
+
 func (z *memoryZone) storeEntryLocked(key string, entry cacheEntry) bool {
 	if !canStoreMemoryEntry(z, key, entry) {
 		return false
@@ -235,9 +257,13 @@ func (z *memoryZone) recalculateUsedBytesLocked() {
 		size += memoryVaryIndexBytes(key, index)
 	}
 	for key := range z.loaded {
-		size += int64(16 + len(key))
+		size += memoryLoadedKeyBytes(key)
 	}
 	z.usedBytes = size
+}
+
+func memoryLoadedKeyBytes(key string) int64 {
+	return int64(16 + len(key))
 }
 
 func memoryCacheEntryBytes(key string, entry cacheEntry) int64 {

@@ -5,7 +5,7 @@
 - Verification report: `docs/report.md`
 - Base: `master@54f09952fe290014f72da519d2557a80a5b543f0`
 - Verified head: `54f09952fe290014f72da519d2557a80a5b543f0`
-- Remediated head/diff: working tree
+- Remediated branch/diff: `codex/remediate-audit-findings`, `master...HEAD`
 - Authorized IDs: `BUG-001`, `SEC-001`, `SEC-002`, `BUG-002`, `BUG-003`, `BUG-004`, `BUG-005`, `BUG-006`, `BUG-007`, `SEC-003`
 
 ## Status
@@ -15,13 +15,13 @@
 | BUG-001 | Partially correct | Not applicable | Authorized verified subclaim | fixed | Local ignored vendor state was regenerated and verified separately; tracked diff remained empty | No repository finding exists and no empty commit is created; retained for source-ledger completeness |
 | SEC-001 | Correct | Not applicable | Authorized | fixed | Local JWT and introspection regression tests, manifest validation, 28 affected integration cases, scoped lint, package tests, and build passed | Locally verified JWTs now require a verifiable issuer and expected audience; configured audiences also apply to introspection responses |
 | SEC-002 | Correct | Not applicable | Authorized | fixed | Default snapshot and legacy payload tests failed before the change, then all three logger packages and scoped lint passed | Loki, SLS, and Splunk default payloads omit sensitive request/response headers while preserving ordinary headers |
-| BUG-002 | Correct | Not applicable | Authorized | pending | None | Queued: cache-capacity commit |
-| BUG-003 | Correct | Not applicable | Authorized | pending | None | Queued: request-boundary commit |
-| BUG-004 | Correct | Not applicable | Authorized | pending | None | Queued: typed resource-quarantine commit |
-| BUG-005 | Correct | Not applicable | Authorized | pending | None | Queued after BUG-004: malformed route/global-rule isolation commit |
-| BUG-006 | Correct | Not applicable | Authorized | pending | None | Queued: upstream-node default-port commit |
-| BUG-007 | Correct | Not applicable | Authorized | pending | None | Queued: delayed-sync lifecycle commit |
-| SEC-003 | Correct | Not applicable | Authorized | pending | None | Queued last: versioned AEAD migration commit |
+| BUG-002 | Correct | Not applicable | Authorized | fixed | proxy-cache/graphql-proxy-cache tests and races, scoped lint, build | Shared memory zones enforce aggregate capacity with oldest-entry eviction |
+| BUG-003 | Correct | Not applicable | Authorized | fixed | config/server/function-upstream tests, scoped lint, build | Positive 10 MiB/60 s defaults and bounded direct body reads |
+| BUG-004 | Correct | Not applicable | Authorized | fixed | store/etcd/metrics tests and races, scoped lint, build | Typed permanent validation quarantine preserves last-good state and watcher progress |
+| BUG-005 | Correct | Not applicable | Authorized | fixed | store/route/server/metrics tests and races, scoped lint, build | Write-boundary rejection plus explicit legacy snapshot quarantine |
+| BUG-006 | Correct | Not applicable | Authorized | fixed | resource/route tests, scoped lint, build | Scheme-aware builder owns omitted map-form ports |
+| BUG-007 | Correct | Not applicable | Authorized | fixed | limit-count tests and race, scoped lint, build | Expired idle state cleanup plus a 10,000 live-state fail-closed cap |
+| SEC-003 | Correct | Not applicable | Authorized | fixed | data-encryption/config/strict-plugin tests, data/config race, scoped lint, build | Context-bound v2 AES-GCM writes; legacy CBC decrypt-only migration |
 
 ## Changed Files
 
@@ -41,6 +41,10 @@
   - Uses the shared access-log header sanitizer in each default snapshot and legacy payload builder; explicit custom log formats remain unchanged.
 - `SEC-002`: the corresponding three `plugin_test.go` files
   - Covers request `Authorization`/`Cookie`, response `Set-Cookie`, and benign-header retention in both execution paths.
+- `BUG-002` through `BUG-007`: owning store, watcher, route, server, metrics, cache, config, resource, and limit-count packages
+  - Each finding is isolated in its own commit and carries focused behavior/race coverage where concurrency is involved.
+- `SEC-003`: `pkg/data_encryption`, strict encrypted-field plugin boundaries, standalone persistence tests, and encryption documentation
+  - New writes use random-nonce contextual AES-GCM; legacy CBC remains readable across key rotation and is rewrapped on write.
 
 ## Verification
 
@@ -60,6 +64,6 @@
 - Lint: `source .envrc && golangci-lint run ./pkg/plugin/loki_logger/... ./pkg/plugin/sls_logger/... ./pkg/plugin/splunk_hec_logging/...` passed with 0 issues.
 - Not run: repository-wide tests, the full `t/plugin` integration suite, race tests, or a real external OIDC provider. The changed behavior has focused unit and selected real-process integration coverage and does not alter a concurrency path.
 
-## Remaining Pending Work
+## Remaining Scope Boundary
 
-`BUG-002`, `BUG-003`, `BUG-004`, `BUG-005`, `BUG-006`, `BUG-007`, and `SEC-003` remain pending in the dependency-ordered implementation plan. `BUG-001`, `SEC-001`, and `SEC-002` have no remaining implementation blocker.
+No authorized OpenCode finding remains pending. The broader Codex Security findings retained in `docs/report.md` are outside this remediation set and remain separate follow-up work; this ledger does not make a production-readiness claim.

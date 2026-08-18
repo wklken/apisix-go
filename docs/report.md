@@ -60,8 +60,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | Finding ID | 原始级别 | Verdict | Introduced by current PR | 建议评估 | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | BUG-001 | P1 | Partially correct | Not applicable | replace | Reject：仅为 ignored 本地状态，不是仓库 finding |
-| SEC-001 | P1 | Correct | Not applicable | adjust | Follow-up |
-| SEC-002 | P1 | Correct | Not applicable | as-is | Follow-up |
+| SEC-001 | P1 | Correct | Not applicable | adjust | Fixed in `fix(openid-connect): require trusted JWT issuer and audience` |
+| SEC-002 | P1 | Correct | Not applicable | as-is | Fixed in `fix(logging): redact sensitive default headers` |
 | BUG-002 | P1 | Correct | Not applicable | adjust | Fixed in `fix(proxy-cache): enforce memory zone capacity` |
 | BUG-003 | P1 | Correct | Not applicable | adjust | Fixed in `fix(config): bound request bodies by default` |
 | BUG-004 | P1 | Correct | Not applicable | replace | Fixed in `fix(etcd): quarantine invalid resource updates` |
@@ -92,6 +92,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Counterevidence：插件 endpoint 自身的认证头测试不等于业务 payload 已脱敏；现有测试没有覆盖默认 event 中的业务凭据。
 - Proposed fix assessment：as-is。
 - Best-fit solution：三类默认 builder 的 snapshot/legacy 路径统一使用 `CollapseAccessLogHeaderValues`，并对 request/response 敏感头分别加回归测试。
+- Remediation：Loki、SLS、Splunk 的 default snapshot/legacy payload builder 统一使用共享 access-log header sanitizer；显式自定义 `log_format` 保持运维选择语义。默认 event 会删除 Authorization、Cookie、Set-Cookie 等敏感头，同时保留普通业务头。
+- Verification：三插件的 snapshot/legacy 回归测试在修复前暴露敏感头，修复后全包测试与 scoped lint 通过。
 
 ### BUG-002：memory cache zone 不执行 `memory_size`
 
@@ -151,6 +153,10 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 既有报告已确认 local JWT verification 默认不绑定 audience。OpenCode 进一步确认静态公钥 verifier 同时设置 `SkipIssuerCheck: true`；后置 `validateIssuer` 在没有显式 `valid_issuers` 且 discovery 失败或 issuer 为空时直接返回，`tokenActive` 又把缺失 `active` 当作 true。
 
 合并后的修复要求：本地 JWT 验证必须同时拥有可验证的 issuer 和 expected audience/resource。expected audience 不一定等于 OAuth `client_id`，应允许显式资源 audience，但缺失约束必须失败关闭。
+
+Remediation：local JWT 验证现在必须拥有可信 issuer，并默认绑定 `client_id` audience；需要独立资源 audience 时通过非空 `claim_validator.audience.valid_audiences` 显式配置。相同 audience allowlist 也用于 introspection response，缺失或不匹配均失败关闭。
+
+Verification：覆盖 discovery 不可用、discovery 缺 issuer、默认 audience 错误、显式资源 audience、introspection 缺失/错误 audience；openid-connect 全包、manifest、28 个受影响 real-process case、scoped lint、build 和独立复审均通过。
 
 ### BUG-003 → Codex Security request-body finding
 
@@ -234,12 +240,8 @@ source .envrc && GOFLAGS=-mod=mod go test \
 - 未执行动态攻击 PoC、etcd/Vault/OIDC 实环境、race 或负载测试。
 - 聚焦测试不代表已覆盖依赖升级的全部语义；它只证明本地 vendor 修复后的直接相关 package 与构建基线。
 
-## 8. 建议处理顺序
+## 8. 处理结果与后续边界
 
-1. SEC-001、SEC-002、Codex Security 的 proxy-cache Authorization 隔离及 batch trusted-header 绕过。
-2. BUG-002、BUG-003、BUG-004：优先关闭远程资源耗尽和配置面永久冻结。
-3. BUG-005：先确定 per-resource last-good/quarantine 与 fail-closed 合同，再实现。
-4. BUG-006、BUG-007：分别以小型、独立 PR 修复。
-5. SEC-003：先完成带版本的 AEAD 迁移设计，再实现和回填。
+本报告纳入的 `SEC-001`、`SEC-002`、`BUG-002` 至 `BUG-007`、`SEC-003` 已按独立 commit 修复；`BUG-001` 已作为 ignored 本地状态排除，不产生仓库修改。每项实现与验证证据汇总在 `docs/review-remediation-ledger-2026-08-18.md`。
 
-上述 P1/High finding 未关闭前，当前 revision 不应被描述为生产就绪；本地 ignored vendor 状态不构成该判断的依据。
+这不关闭第 6 节保留的其他 Codex Security finding，也不改变项目整体的“尚未生产就绪”声明；本地 ignored vendor 状态仍不构成该判断的依据。

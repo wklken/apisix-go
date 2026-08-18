@@ -224,7 +224,10 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.CustomerToken)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.CustomerToken,
+		"loggly.customer_token",
+	)
 	if err != nil {
 		return fmt.Errorf("loggly customer_token: %w", err)
 	}

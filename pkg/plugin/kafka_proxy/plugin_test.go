@@ -111,6 +111,27 @@ func TestPostInitResolvesEncryptedSASLPassword(t *testing.T) {
 	}
 }
 
+func TestPostInitResolvesContextualV2SASLPassword(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext, err := data_encryption.EncryptForContext("secret", key, "kafka-proxy.sasl.password")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: ciphertext}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.SASL.Password != "secret" {
+		t.Fatalf("SASL password = %q, want decrypted value", p.config.SASL.Password)
+	}
+}
+
 func encryptKafkaProxyTestValue(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize

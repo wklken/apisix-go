@@ -282,7 +282,10 @@ func (p *Plugin) resolveSecrets() error {
 	keyring, enabled := data_encryption.Keyring()
 	resolver := data_encryption.NewResolver(enabled, keyring)
 	if p.config.Clickhouse != nil {
-		resolved, err := resolver.Resolve(p.config.Clickhouse.Password)
+		resolved, err := resolver.ResolveForContext(
+			p.config.Clickhouse.Password,
+			"error-log-logger.clickhouse.password",
+		)
 		if err != nil {
 			return fmt.Errorf("error-log-logger clickhouse.password: %w", err)
 		}
@@ -294,7 +297,10 @@ func (p *Plugin) resolveSecrets() error {
 			if config == nil {
 				continue
 			}
-			resolved, err := resolver.Resolve(config.Password)
+			resolved, err := resolver.ResolveForContext(
+				config.Password,
+				"error-log-logger.kafka.brokers.*.sasl_config.password",
+			)
 			if err != nil {
 				return fmt.Errorf("error-log-logger kafka.brokers[%d].sasl_config.password: %w", i, err)
 			}

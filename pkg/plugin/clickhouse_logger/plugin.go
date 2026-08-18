@@ -212,7 +212,10 @@ func (p *Plugin) PostInit() error {
 	p.config.User = user
 
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Password)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.Password,
+		"clickhouse-logger.password",
+	)
 	if err != nil {
 		return fmt.Errorf("clickhouse-logger password: %w", err)
 	}

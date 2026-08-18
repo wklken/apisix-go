@@ -256,6 +256,7 @@ git commit -m "fix(limit-count): bound delayed-sync state"
 - Modify: `pkg/data_encryption/data_encryption_test.go`
 - Modify: `pkg/data_encryption/resolver.go`
 - Modify: `pkg/data_encryption/resolver_test.go`
+- Modify: `pkg/config/standalone_test.go`
 - Modify: strict encrypted-field plugin call sites that currently invoke `Resolver.Resolve`
 - Modify: `docs/design.md`
 - Modify: `docs/configuration.md`
@@ -265,11 +266,11 @@ git commit -m "fix(limit-count): bound delayed-sync state"
 - Produces: `v2:` AES-GCM envelopes with random 12-byte nonces and authenticated canonical field context; `ResolveForContext` for strict fields.
 - Preserves: unversioned AES-CBC is decrypt-only across key rotation; all new writes are v2 and tampering fails closed.
 
-- [ ] **Step 1: Add failing tests for nondeterminism, round-trip, tampering, wrong context, rotated keys, legacy CBC reads, and valid-v2 preservation**
-- [ ] **Step 2: Run the focused cryptographic tests and observe deterministic unauthenticated CBC**
-- [ ] **Step 3: Seal with AES-GCM and `crypto/rand`; encode `v2:` plus base64(nonce || ciphertext); use canonical `plugin-name.field-path` AAD**
-- [ ] **Step 4: Route unversioned values only through legacy CBC; update strict plugin call sites to contextual resolution**
-- [ ] **Step 5: Run data-encryption/store/config and every strict-field plugin package, build, update docs/ledger, and commit**
+- [x] **Step 1: Add failing tests for nondeterminism, round-trip, tampering, wrong context, rotated keys, legacy CBC reads, and valid-v2 preservation**
+- [x] **Step 2: Run the focused cryptographic tests and observe deterministic unauthenticated CBC**
+- [x] **Step 3: Seal with AES-GCM and `crypto/rand`; encode `v2:` plus base64(nonce || ciphertext); use canonical `plugin-name.field-path` AAD**
+- [x] **Step 4: Route unversioned values only through legacy CBC; update strict plugin call sites to contextual resolution**
+- [x] **Step 5: Run data-encryption/store/config and every strict-field plugin package, build, update docs/ledger, and commit**
 
 Commit:
 

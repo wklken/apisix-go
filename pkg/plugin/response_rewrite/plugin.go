@@ -271,7 +271,10 @@ func (p *Plugin) PostInit() error {
 			return fmt.Errorf("response-rewrite body_secret must not be empty")
 		}
 		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(*p.config.BodySecret)
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			*p.config.BodySecret,
+			"response-rewrite.body_secret",
+		)
 		if err != nil {
 			return fmt.Errorf("response-rewrite body_secret: %w", err)
 		}

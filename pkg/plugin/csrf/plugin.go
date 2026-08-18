@@ -76,7 +76,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Key)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(p.config.Key, "csrf.key")
 	if err != nil {
 		return fmt.Errorf("csrf key: %w", err)
 	}

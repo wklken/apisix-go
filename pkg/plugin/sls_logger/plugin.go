@@ -200,7 +200,10 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.AccessKeySecret)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.AccessKeySecret,
+		"sls-logger.access_key_secret",
+	)
 	if err != nil {
 		return fmt.Errorf("sls-logger access_key_secret: %w", err)
 	}

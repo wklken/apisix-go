@@ -464,7 +464,7 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) resolveSecret(field, value string) (string, error) {
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(value)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(value, "ai-rate-limiting."+field)
 	if err != nil {
 		return "", fmt.Errorf("ai-rate-limiting %s: %w", field, err)
 	}

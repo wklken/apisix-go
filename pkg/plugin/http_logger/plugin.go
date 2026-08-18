@@ -234,7 +234,10 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.AuthHeader != nil {
 		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(*p.config.AuthHeader)
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			*p.config.AuthHeader,
+			"http-logger.auth_header",
+		)
 		if err != nil {
 			return fmt.Errorf("http-logger auth_header: %w", err)
 		}

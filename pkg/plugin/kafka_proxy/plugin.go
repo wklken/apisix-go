@@ -69,7 +69,10 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	if p.config.SASL != nil {
 		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SASL.Password)
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			p.config.SASL.Password,
+			"kafka-proxy.sasl.password",
+		)
 		if err != nil {
 			return fmt.Errorf("kafka-proxy sasl.password: %w", err)
 		}

@@ -591,18 +591,21 @@ Close()
 
 ## APISIX 3.17 Secret Resolution Design
 
-> Status: resolver API/field registry implemented; migrated logger credentials and the explicit `response-rewrite.body_secret` extension use strict plugin-boundary resolution, while ordinary `response-rewrite.body` remains compatibility-oriented, 2026-07-12
+> Status: versioned AEAD writes and contextual resolver API implemented; migrated logger credentials and the explicit `response-rewrite.body_secret` extension use strict plugin-boundary resolution, while ordinary `response-rewrite.body` remains compatibility-oriented, 2026-08-18
 
 ### Existing contract
 
-APISIX data-encryption values are base64-encoded AES-128-CBC ciphertext. The
-configured `apisix.data_encryption.keyring` is ordered newest-first; existing
-route/consumer/plugin-metadata parsing already tries every key and replaces a
-registered encrypted field with plaintext before the plugin is initialized.
+New APISIX-Go data-encryption writes use a `v2:` envelope containing
+base64-encoded `nonce || ciphertext || tag`. AES-GCM authenticates both the
+value and its canonical `plugin-name.field-path`; wildcard registrations keep
+the registered `*` path rather than using a runtime array index. A random
+12-byte nonce makes repeated encryption of the same plaintext nondeterministic.
 
-The Go implementation keeps that wire/storage format and does not add a new
-ciphertext prefix. This avoids rewriting existing etcd data and keeps rotation
-compatible with APISIX.
+Unversioned APISIX AES-128-CBC ciphertext remains a decrypt-only migration
+format. The configured `apisix.data_encryption.keyring` is ordered
+newest-first, so legacy and v2 values can be read during rotation. A legacy
+value explicitly presented to the write path is decrypted and re-sealed as v2;
+new writes never create or preserve an unversioned CBC envelope.
 
 ### Resolver API
 
@@ -610,26 +613,27 @@ compatible with APISIX.
 
 ```go
 resolver := data_encryption.NewResolver(enabled, keyring)
-plain, err := resolver.Resolve(ciphertext)       // strict encrypted field
-plain := resolver.ResolveOptional(value)         // legacy plaintext compatible
-redacted := data_encryption.Redact(value)       // fixed "[REDACTED]" marker
+plain, err := resolver.ResolveForContext(ciphertext, "plugin.field")
+plain := resolver.ResolveOptionalForContext(value, "plugin.field")
+redacted := data_encryption.Redact(value) // fixed "[REDACTED]" marker
 ```
 
-Strict `Resolve` has explicit failure classes:
+Strict contextual resolution has explicit failure classes:
 
 | Condition | Result |
 |---|---|
 | Encryption disabled | Return the configured value unchanged. |
 | Encryption enabled with no keyring | `ErrKeyUnavailable`; do not attempt a network call. |
 | No key decrypts the value | `ErrInvalidCiphertext`; the error contains no value or key. |
-| Any key in the ordered ring decrypts the value | Return plaintext. |
+| Any key in the ordered ring decrypts the value and authenticates the exact v2 context | Return plaintext. |
+| A v2 value is tampered with or moved to another registered field | `ErrInvalidCiphertext`; fail closed. |
 | Empty value | Return empty value without error. |
 
-`ResolveOptional` is retained only for compatibility with existing plaintext
-configurations. It preserves the input when strict resolution fails. New
-encrypted fields should use strict resolution at the boundary where the caller
-can return a configuration error; the store's historical registered-field
-decryption remains compatibility-oriented until each plugin is migrated.
+`ResolveOptionalForContext` is retained only for registered fields that still
+allow legacy plaintext. It preserves the input when strict resolution fails.
+Credential-bearing fields use `ResolveForContext` at the plugin boundary, where
+tampering, wrong context, missing keys, and invalid ciphertext return a
+configuration error before an outbound client is created.
 
 ### Key source and rotation
 
@@ -637,8 +641,9 @@ decryption remains compatibility-oriented until each plugin is migrated.
 - Read path: all configured keys are tried newest-first.
 - Rotation: add the new key at index 0 and retain old keys until all stored
   values have been rewritten; no old-key deletion is performed automatically.
-- Write path: this repository currently does not expose a generic encryption
-  API, so plugins never log or persist newly generated ciphertext themselves.
+- Write path: standalone registered fields are sealed with the newest key as
+  contextual v2 AES-GCM. Existing valid v2 values are preserved; an explicit
+  legacy CBC envelope is re-sealed with the newest key and canonical context.
 - Startup/runtime failure: a strict resolver error is returned to the owning
   config/route boundary; it must not be downgraded to a network request with an
   empty credential.
@@ -689,7 +694,7 @@ README/plugin-matrix coverage percentage.
 `response-rewrite.body` remains a compatibility field because it is a
 general-purpose response body, not an unambiguous credential. The Go extension
 `response-rewrite.body_secret` is the explicit opt-in contract: store parsing
-leaves it encrypted, `PostInit` calls strict `Resolver.Resolve`, and invalid or
+leaves it encrypted, `PostInit` calls strict `Resolver.ResolveForContext`, and invalid or
 missing-key ciphertext fails before response handling. `body_secret` cannot be
 combined with ordinary `body` or `filters`.
 

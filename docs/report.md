@@ -51,7 +51,7 @@ OpenCode 的 `BUG-001` 准确复现了当前 checkout 中默认 Go 命令因 `in
 | --- | --- | --- | --- |
 | SEC-001 | P1 | Correct | 既有 OIDC wrong-audience finding 扩展为：静态 key 路径在 discovery 失败/无 issuer 时还会跳过 issuer |
 | BUG-003 | P1 | Correct | 与既有“默认请求体和读取时间无上限”合并，并补充完整读体插件清单 |
-| SEC-003 | P2 | Correct | 与既有确定性、无认证 AES-CBC finding 合并，保留版本化 AEAD 迁移要求 |
+| SEC-003 | P2 | Correct | 与既有确定性、无认证 AES-CBC finding 合并；已迁移到版本化 AEAD |
 
 ## 3. OpenCode finding 验证 ledger
 
@@ -68,7 +68,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
 | BUG-006 | P2 | Correct | Not applicable | as-is | Fixed in `fix(route): preserve scheme-aware node ports` |
 | BUG-007 | P2 | Correct | Not applicable | adjust | Fixed in `fix(limit-count): bound delayed-sync state` |
-| SEC-003 | P2 | Correct | Not applicable | as-is，要求版本迁移 | Follow-up |
+| SEC-003 | P2 | Correct | Not applicable | as-is，要求版本迁移 | Fixed in `fix(data-encryption): migrate writes to authenticated AEAD` |
 
 ## 4. OpenCode 新增 finding 详情
 
@@ -161,6 +161,10 @@ Remediation：配置解码前为 `client_max_body_size` 和 `client_body_timeout
 ### SEC-003 → Codex Security AES-CBC finding
 
 两份报告结论一致：key 被重复用作 CBC IV、密文确定性、没有认证 tag。修复必须引入版本化 AEAD envelope、随机 nonce 和字段上下文认证；legacy CBC 只能作为只读迁移入口，不能无版本原地替换。
+
+Remediation：所有新写入改为 `v2:` AES-GCM envelope，使用随机 12-byte nonce，并以 canonical `plugin-name.field-path` 作为 AAD；wildcard 字段使用注册路径中的 `*`，不绑定运行时数组下标。严格插件边界全部改用 `ResolveForContext`，篡改或错误字段上下文失败关闭。unversioned CBC 只用于跨 keyring 解密；显式 legacy envelope 经过写路径时会用最新 key/context 重封装为 v2，已有合法 v2 保持不变。
+
+Verification：覆盖随机性、round-trip、tamper、wrong context、旧 key rotation、legacy rewrap、wildcard canonical context 和重复持久化；data-encryption、config 及 17 个严格插件包测试通过，且生产插件目录已无残留 `.Resolve(` 调用。
 
 ## 6. Codex Security 原有 17 项
 

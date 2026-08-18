@@ -189,7 +189,10 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Endpoint.Token)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.Endpoint.Token,
+		"splunk-hec-logging.endpoint.token",
+	)
 	if err != nil {
 		return fmt.Errorf("splunk-hec-logging endpoint.token: %w", err)
 	}

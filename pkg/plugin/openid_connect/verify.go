@@ -79,6 +79,44 @@ func (p *Plugin) audienceClaimValidator() (audienceClaimValidator, bool) {
 	return validator, true
 }
 
+func (p *Plugin) validateConfiguredAudiences() error {
+	audience, ok := p.config.ClaimValidator["audience"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, exists := audience["valid_audiences"]
+	if !exists {
+		return nil
+	}
+	validate := func(value any) error {
+		expected, ok := value.(string)
+		if !ok {
+			return errors.New("claim_validator.audience.valid_audiences must contain strings")
+		}
+		if expected == "" {
+			return errors.New("claim_validator.audience.valid_audiences must not contain empty strings")
+		}
+		return nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		for _, value := range values {
+			if err := validate(value); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, value := range values {
+			if err := validate(value); err != nil {
+				return err
+			}
+		}
+	default:
+		return errors.New("claim_validator.audience.valid_audiences must be an array")
+	}
+	return nil
+}
+
 func audienceMatchesClientID(value any, clientID string) bool {
 	return audienceMatches(value, []string{clientID})
 }

@@ -1299,6 +1299,46 @@ func TestSchemaRejectsNonPositiveSessionTimeouts(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsEmptyConfiguredAudience(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"client_id":     "apisix",
+		"client_secret": "secret-a",
+		"discovery":     "https://idp.example.com/.well-known/openid-configuration",
+		"claim_validator": map[string]any{
+			"audience": map[string]any{
+				"valid_audiences": []any{""},
+			},
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want empty audience rejection")
+	}
+}
+
+func TestPostInitRejectsEmptyConfiguredAudience(t *testing.T) {
+	p := &Plugin{config: Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		BearerOnly:   true,
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"valid_audiences": []any{""},
+			},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want empty audience rejection")
+	}
+}
+
 func TestPostInitValidatesTokenSigningAlgorithm(t *testing.T) {
 	for _, algorithm := range []string{
 		"RS256", "RS384", "RS512",

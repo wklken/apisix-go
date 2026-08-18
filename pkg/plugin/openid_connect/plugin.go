@@ -279,7 +279,7 @@ const schema = `
             "valid_audiences": {
               "type": "array",
               "minItems": 1,
-              "items": {"type": "string"}
+              "items": {"type": "string", "minLength": 1}
             }
           }
         },
@@ -463,6 +463,9 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	if _, err := p.configuredIssuers(); err != nil {
+		return err
+	}
+	if err := p.validateConfiguredAudiences(); err != nil {
 		return err
 	}
 	if len(p.config.ClaimSchema) > 0 {

@@ -71,6 +71,14 @@ route continue serving; readiness must return to 200 after recovery and a
 newer revision must apply. See the [production release runbook](runbooks/production-release.md)
 for the evidence and operator-supplied deployment step.
 
+Deterministically invalid route, global-rule, consumer, and SSL updates are
+rejected before replacing their last-good store value. A malformed route or
+global-rule row left by an older database is skipped only from the immutable
+HTTP build snapshot: valid resources still publish, while the no-label
+`config_apply_quarantined_resources` gauge stays non-zero and `/readyz` remains
+503. Provider-side and legacy-store quarantine counts are aggregated
+independently, so clearing one source cannot hide the other.
+
 Plugin support status is verified by a separate read-only `Plugin Status
 Contract` workflow. It creates the same check on every pull request so it can
 be required without path-filtered PRs remaining pending, and runs the exact

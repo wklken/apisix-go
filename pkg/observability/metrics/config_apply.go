@@ -50,6 +50,8 @@ var configApplyState struct {
 	ready              prometheus.Gauge
 	etcdReachable      prometheus.Gauge
 	quarantined        prometheus.Gauge
+	providerQuarantine int
+	storeQuarantine    int
 	quarantineCount    int
 }
 
@@ -138,25 +140,43 @@ func RecordConfigApplyStageSuccess(stage ConfigApplyStage) {
 	}
 }
 
-// RecordConfigApplyQuarantine updates the bounded count of invalid resources
-// retained at their last-good state. The count is deliberately exported as a
-// no-label gauge so arbitrary etcd keys cannot create metric series.
+// RecordConfigApplyQuarantine updates the provider-side count of invalid
+// resources retained at their last-good state. The count is deliberately
+// exported as a no-label gauge so arbitrary etcd keys cannot create metric
+// series. Store-side legacy quarantine is tracked independently through
+// RecordConfigApplyStoreQuarantine.
 func RecordConfigApplyQuarantine(count int) {
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+	recordConfigApplyQuarantineLocked(&configApplyState.providerQuarantine, count)
+}
+
+// RecordConfigApplyStoreQuarantine updates the store-side count of malformed
+// legacy route/global-rule rows skipped from a published snapshot. It is kept
+// separate from the provider count so one source cannot clear the other.
+func RecordConfigApplyStoreQuarantine(count int) {
 	if count < 0 {
 		count = 0
 	}
 	configApplyState.Lock()
 	defer configApplyState.Unlock()
+	recordConfigApplyQuarantineLocked(&configApplyState.storeQuarantine, count)
+}
 
+func recordConfigApplyQuarantineLocked(source *int, count int) {
+	if count < 0 {
+		count = 0
+	}
 	_, ready := syncConfigApplyMetricsLocked()
-	configApplyState.quarantineCount = count
+	*source = count
+	configApplyState.quarantineCount = configApplyState.providerQuarantine + configApplyState.storeQuarantine
 	if configApplyState.quarantined != nil {
-		configApplyState.quarantined.Set(float64(count))
+		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
 	}
 	if ready == nil {
 		return
 	}
-	if count > 0 {
+	if configApplyState.quarantineCount > 0 {
 		ready.Set(0)
 		return
 	}
@@ -202,6 +222,8 @@ func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 		configApplyState.providerHealthy = false
 		configApplyState.httpRoutesObserved = false
 		configApplyState.httpRoutesHealthy = false
+		configApplyState.providerQuarantine = 0
+		configApplyState.storeQuarantine = 0
 		configApplyState.quarantineCount = 0
 		configApplyState.failures = failures
 		configApplyState.ready = ready

@@ -268,6 +268,32 @@ func (s *Store) GetBucketData(bucketName string) ([][]byte, error) {
 	return data, nil
 }
 
+type bucketEntry struct {
+	id    string
+	value []byte
+}
+
+func (s *Store) getBucketEntries(bucketName string) ([]bucketEntry, error) {
+	entries := make([]bucketEntry, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(bucketName))
+		if bucket == nil {
+			return errBucketNotFound
+		}
+		return bucket.ForEach(func(id, value []byte) error {
+			entries = append(entries, bucketEntry{
+				id:    string(bytes.Clone(id)),
+				value: bytes.Clone(value),
+			})
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // get specific key from bucket
 func (s *Store) GetFromBucket(bucketName string, id []byte) ([]byte, error) {
 	var value []byte
@@ -420,6 +446,12 @@ func (s *Store) processEvent(event *Event) error {
 	bucketName, id := getTypeAndIDFromKey(event.Key)
 	if event.Type == EventTypePut && bytes.Equal(bucketName, []byte("ssls")) {
 		if err := validateSSLCertificateEvent(event.Type, util.BytesToString(id), event.Value); err != nil {
+			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
+		}
+	}
+	if event.Type == EventTypePut &&
+		(bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("global_rules"))) {
+		if err := validateConfigResourcePut(string(bucketName), util.BytesToString(id), event.Value); err != nil {
 			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
 		}
 	}

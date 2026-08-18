@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	bolt "go.etcd.io/bbolt"
 )
 
 type recordingPlugin struct {
@@ -1070,22 +1072,26 @@ func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
 	builder.Stop()
 }
 
-func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
-	ensureRouteStore(t)
-
-	putRouteResource(t, "strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
-	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
-
-	builder := NewBuilder(nil)
+func TestBuilderPublishesValidRouteWhenLegacySnapshotRowIsUndecodable(t *testing.T) {
+	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
+		"routes": {
+			"strict-valid":   []byte(`{"id":"strict-valid","uri":"/strict-valid"}`),
+			"strict-invalid": []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`),
+		},
+	})
+	builder := NewBuilder(storage)
 	defer builder.Stop()
-	if handler := builder.Build(); handler != nil {
-		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy row quarantine", handler, err)
 	}
 }
 
 func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	ensureRouteStore(t)
-	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
+	putRouteResource(t, "strict-invalid", []byte(
+		`{"id":"strict-invalid","uri":"/strict-invalid","plugins":{"not-a-plugin":{}}}`,
+	))
 	builder := NewBuilder(nil)
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
@@ -1097,36 +1103,15 @@ func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	}
 }
 
-func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
-	ensureRouteStore(t)
-
-	put := func(bucket string, id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		event.Value = value
-		routeStoreEvents <- event
-	}
-	remove := func(bucket string, id string) {
-		event := store.NewEvent()
-		event.Type = store.EventTypeDelete
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		routeStoreEvents <- event
-	}
-
-	put("routes", "strict-global-route", []byte(`{"id":"strict-global-route","uri":"/strict-global"}`))
-	put("global_rules", "strict-valid-global", []byte(`{"id":"strict-valid-global","plugins":{}}`))
-	put("global_rules", "strict-invalid-global", []byte(`{"id":"strict-invalid-global","plugins":[]}`))
-	if err := routeStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-	t.Cleanup(func() {
-		remove("routes", "strict-global-route")
-		remove("global_rules", "strict-valid-global")
-		remove("global_rules", "strict-invalid-global")
-		if err := routeStore.Sync(); err != nil {
-			t.Errorf("cleanup Sync() error = %v", err)
-		}
+func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
+	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
+		"routes": {
+			"strict-global-route": []byte(`{"id":"strict-global-route","uri":"/strict-global"}`),
+		},
+		"global_rules": {
+			"strict-valid-global":   []byte(`{"id":"strict-valid-global","plugins":{}}`),
+			"strict-invalid-global": []byte(`{"id":"strict-invalid-global","plugins":[]}`),
+		},
 	})
 
 	rules, err := store.ListGlobalRules()
@@ -1140,11 +1125,59 @@ func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
 		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(storage)
 	defer builder.Stop()
-	if handler := builder.Build(); handler != nil {
-		t.Fatal("Build() returned a partial handler, want nil for an undecodable global-rule snapshot")
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy global-rule quarantine", handler, err)
 	}
+}
+
+func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *store.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	initial, err := store.Open(path, make(chan *store.Event, 1))
+	if err != nil {
+		t.Fatalf("open initial legacy store: %v", err)
+	}
+	if err := initial.Stop(); err != nil {
+		t.Fatalf("stop initial legacy store: %v", err)
+	}
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		for bucketName, entries := range seed {
+			bucket := tx.Bucket([]byte(bucketName))
+			for id, value := range entries {
+				if err := bucket.Put([]byte(id), value); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+	events := make(chan *store.Event, 1)
+	storage, err := store.Open(path, events)
+	if err != nil {
+		t.Fatalf("reopen legacy store: %v", err)
+	}
+	storage.Start()
+	previous := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previous)
+		if err := storage.Stop(); err != nil {
+			t.Errorf("stop legacy store: %v", err)
+		}
+	})
+	return storage
 }
 
 func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {

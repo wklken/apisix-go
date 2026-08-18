@@ -163,6 +163,88 @@ func TestConfigSnapshotConcurrentCallersUsePublishedGeneration(t *testing.T) {
 	}
 }
 
+func TestConfigSnapshotPublishesValidRoutesAndQuarantinesLegacyMalformedRows(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("routes"))
+		if err := bucket.Put([]byte("legacy-bad"), []byte(`{"id":"legacy-bad","plugins":[]}`)); err != nil {
+			return err
+		}
+		return bucket.Put([]byte("route-good"), []byte(`{"id":"route-good","uri":"/good"}`))
+	}); err != nil {
+		t.Fatalf("seed legacy routes: %v", err)
+	}
+
+	snapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() error = %v", err)
+	}
+	if len(snapshot.Routes()) != 1 || snapshot.Routes()[0].ID != "route-good" {
+		t.Fatalf("snapshot routes = %+v, want only route-good", snapshot.Routes())
+	}
+	quarantined := snapshot.QuarantinedResources()
+	if len(quarantined) != 1 || quarantined[0].Bucket != "routes" ||
+		quarantined[0].ID != "legacy-bad" {
+		t.Fatalf("snapshot quarantine = %+v, want routes/legacy-bad", quarantined)
+	}
+
+	applyConfigSnapshotEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/routes/legacy-bad",
+		`{"id":"legacy-bad","uri":"/recovered"}`,
+	)
+	snapshot, err = storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() after replacement error = %v", err)
+	}
+	if len(snapshot.QuarantinedResources()) != 0 {
+		t.Fatalf(
+			"snapshot quarantine after replacement = %+v, want empty",
+			snapshot.QuarantinedResources(),
+		)
+	}
+
+	applyConfigSnapshotEvent(t, storage, EventTypeDelete, "/apisix/routes/legacy-bad", "")
+	snapshot, err = storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() after delete error = %v", err)
+	}
+	if len(snapshot.QuarantinedResources()) != 0 {
+		t.Fatalf(
+			"snapshot quarantine after delete = %+v, want empty",
+			snapshot.QuarantinedResources(),
+		)
+	}
+}
+
+func TestConfigSnapshotPublishesValidGlobalRulesAndQuarantinesLegacyMalformedRows(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("global_rules"))
+		if err := bucket.Put([]byte("legacy-bad-rule"), []byte(`{"id":"legacy-bad-rule","plugins":[]}`)); err != nil {
+			return err
+		}
+		return bucket.Put([]byte("rule-good"), []byte(`{"id":"rule-good","plugins":{}}`))
+	}); err != nil {
+		t.Fatalf("seed legacy global rules: %v", err)
+	}
+
+	snapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() error = %v", err)
+	}
+	if len(snapshot.GlobalRules()) != 1 || snapshot.GlobalRules()[0].ID != "rule-good" {
+		t.Fatalf("snapshot global rules = %+v, want only rule-good", snapshot.GlobalRules())
+	}
+	quarantined := snapshot.QuarantinedResources()
+	if len(quarantined) != 1 || quarantined[0].Bucket != "global_rules" ||
+		quarantined[0].ID != "legacy-bad-rule" {
+		t.Fatalf("snapshot quarantine = %+v, want global_rules/legacy-bad-rule", quarantined)
+	}
+}
+
 func newConfigSnapshotTestStore(t *testing.T) *Store {
 	t.Helper()
 	storage, err := Open(t.TempDir()+"/snapshot.db", make(chan *Event, 1))

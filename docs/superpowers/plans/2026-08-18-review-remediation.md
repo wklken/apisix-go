@@ -184,22 +184,27 @@ git commit -m "fix(etcd): quarantine invalid resource updates"
 **Files:**
 - Modify: `pkg/store/store.go`
 - Modify: `pkg/store/getter.go`
-- Modify: `pkg/store/getter_test.go`
+- Modify: `pkg/store/store_test.go`
+- Modify: `pkg/store/config_snapshot_test.go`
 - Modify: `pkg/route/builder.go`
-- Modify: `pkg/route/builder_test.go`
+- Modify: `pkg/route/builder_lifecycle_test.go`
 - Modify: `pkg/server/reload.go`
 - Modify: `pkg/server/reload_test.go`
+- Modify: `pkg/server/server.go`
+- Modify: `pkg/observability/metrics/config_apply.go`
+- Modify: `pkg/observability/metrics/config_apply_test.go`
 - Modify: `docs/design.md`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `docs/configuration.md`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Consumes: BUG-004 typed validation/quarantine contract.
 - Produces: write-boundary route/global-rule validation and explicit legacy-store quarantine metadata; valid routes publish while readiness remains degraded.
 
-- [ ] **Step 1: Add failing tests proving malformed new events preserve prior good objects and legacy malformed bbolt entries no longer freeze valid routes**
-- [ ] **Step 2: Run focused store/route/server tests and observe strict snapshot failure**
-- [ ] **Step 3: Validate route/global-rule PUT values before persistence; during legacy snapshot rebuild skip malformed entries into an immutable quarantine list**
-- [ ] **Step 4: Install the valid router generation but report degraded readiness; run focused packages, update design/ledger, and commit**
+- [x] **Step 1: Add failing tests proving malformed new events preserve prior good objects and legacy malformed bbolt entries no longer freeze valid routes**
+- [x] **Step 2: Run focused store/route/server tests and observe strict snapshot failure**
+- [x] **Step 3: Validate route/global-rule PUT values before persistence; during legacy snapshot rebuild skip malformed entries into an immutable quarantine list**
+- [x] **Step 4: Install the valid router generation but report degraded readiness; run focused packages, update design/ledger, and commit**
 
 Commit:
 

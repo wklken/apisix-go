@@ -133,6 +133,16 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 `set_ngx_var` and non-zero `inactive_timeout` while retaining collector
 `request_timeout`.
 
+Configuration publication separates deterministic per-resource validation
+from generation-wide semantic validation. New route and global-rule PUTs must
+decode as JSON objects before bbolt mutation; invalid updates return a typed
+resource error, retain the last-good row, and do not schedule a reload. During
+upgrade recovery, a malformed legacy row is represented in immutable snapshot
+quarantine metadata and omitted from that snapshot, allowing valid rows to
+publish without silently declaring readiness. Disabled plugins, broken
+references, and other `BuildStrict` semantic failures remain generation-wide
+fail-closed errors and keep the previously installed handler.
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12

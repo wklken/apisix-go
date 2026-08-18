@@ -65,7 +65,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | BUG-002 | P1 | Correct | Not applicable | adjust | Fixed in `fix(proxy-cache): enforce memory zone capacity` |
 | BUG-003 | P1 | Correct | Not applicable | adjust | Fixed in `fix(config): bound request bodies by default` |
 | BUG-004 | P1 | Correct | Not applicable | replace | Fixed in `fix(etcd): quarantine invalid resource updates` |
-| BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
+| BUG-005 | P2 | Correct | Not applicable | replace | Fixed in `fix(store): isolate malformed route resources` |
 | BUG-006 | P2 | Correct | Not applicable | as-is | Fixed in `fix(route): preserve scheme-aware node ports` |
 | BUG-007 | P2 | Correct | Not applicable | adjust | Fixed in `fix(limit-count): bound delayed-sync state` |
 | SEC-003 | P2 | Correct | Not applicable | as-is，要求版本迁移 | Fixed in `fix(data-encryption): migrate writes to authenticated AEAD` |
@@ -123,6 +123,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Counterevidence：这是已有 fail-closed 合同，不是无意的局部异常。因此 OpenCode 建议的“直接 skip 并发布有效子集”不能原样采用。
 - Proposed fix assessment：replace。
 - Best-fit solution：优先在写入/同步边界验证并拒绝坏对象；若数据面必须容忍外部 etcd 污染，应设计 per-resource last-good/quarantine，而不是静默跳过或发布未经明确批准的部分配置。
+- Remediation：route/global-rule PUT 在 bbolt mutation 前验证 JSON object 与目标资源解码，失败返回 `ResourceValidationError`、保留 last-good bytes 且不触发 reload hook。升级前遗留的坏行在 immutable `ConfigSnapshot` 中按 bucket/key 记录 quarantine，只从该代 snapshot 排除；有效资源继续发布。disabled plugin、坏引用等 semantic `BuildStrict` 错误仍是 generation-wide fail-closed。provider 与 legacy-store quarantine 分源聚合到同一个无标签 gauge，任一非零时 readiness 保持 false。
+- Verification：新增 route/global-rule 写入拒绝、last-good/hook 保持、legacy route/global-rule 隔离、有效 handler 发布、replacement/delete 清除和独立 provider count 保留测试；store/route/server/metrics 全包、race、scoped lint 和 build 通过。
 
 ### BUG-006：HTTPS/grpcs map-form node 缺省端口错误
 

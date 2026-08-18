@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -70,6 +71,83 @@ func TestProcessEventWrapsOnlyResourceValidationFailures(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("closed database persistence error = nil")
+	}
+}
+
+func TestRouteAndGlobalRulePutValidationRetainsLastGoodAndSkipsHooks(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "resource-validation.db"), make(chan *Event, 8))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	var hookCalls int
+	storage.AddEventUpdateHook(func(*Event) { hookCalls++ })
+	apply := func(key string, value []byte) error {
+		event := NewAcknowledgedEvent()
+		event.Type = EventTypePut
+		event.Key = []byte(key)
+		event.Value = value
+		storage.events <- event
+		return event.Wait(context.Background())
+	}
+	for _, test := range []struct {
+		bucket string
+		id     string
+		good   []byte
+		bad    []byte
+	}{
+		{
+			bucket: "routes",
+			id:     "route-1",
+			good:   []byte(`{"id":"route-1","uri":"/last-good"}`),
+			bad:    []byte(`{"id":"route-1","uri":"/bad","plugins":[]}`),
+		},
+		{
+			bucket: "global_rules",
+			id:     "rule-1",
+			good:   []byte(`{"id":"rule-1","plugins":{}}`),
+			bad:    []byte(`{"id":"rule-1","plugins":[]}`),
+		},
+	} {
+		t.Run(test.bucket, func(t *testing.T) {
+			key := "/apisix/" + test.bucket + "/" + test.id
+			if err := apply(key, test.good); err != nil {
+				t.Fatalf("apply last-good resource: %v", err)
+			}
+			before, err := storage.GetFromBucket(test.bucket, []byte(test.id))
+			if err != nil {
+				t.Fatalf("read last-good resource: %v", err)
+			}
+			if err := apply(key, test.bad); err == nil {
+				t.Fatal("malformed resource PUT error = nil")
+			} else {
+				var validationErr *ResourceValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("malformed resource PUT error = %v, want ResourceValidationError", err)
+				}
+				if validationErr.Bucket != test.bucket || validationErr.ID != test.id {
+					t.Fatalf(
+						"validation context = %q/%q, want %q/%q",
+						validationErr.Bucket,
+						validationErr.ID,
+						test.bucket,
+						test.id,
+					)
+				}
+			}
+			after, err := storage.GetFromBucket(test.bucket, []byte(test.id))
+			if err != nil {
+				t.Fatalf("read retained resource: %v", err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("retained %s bytes = %q, want %q", test.bucket, after, before)
+			}
+		})
+	}
+	if hookCalls != 2 {
+		t.Fatalf("reload hook calls = %d, want only successful PUTs", hookCalls)
 	}
 }
 

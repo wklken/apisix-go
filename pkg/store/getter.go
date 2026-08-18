@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -355,6 +356,27 @@ func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
 	return s, nil
 }
 
+func validateConfigResourcePut(bucket, id string, config []byte) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(config, &object); err != nil {
+		return fmt.Errorf("decode %s resource: %w", bucket, err)
+	}
+	if object == nil {
+		return fmt.Errorf("decode %s resource: expected JSON object", bucket)
+	}
+	switch bucket {
+	case "routes":
+		if _, err := ParseRoute(config); err != nil {
+			return fmt.Errorf("decode route %q: %w", id, err)
+		}
+	case "global_rules":
+		if _, err := ParseGlobalRule(config); err != nil {
+			return fmt.Errorf("decode global rule %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
 func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
 	var s resource.PluginConfigRule
 	err := json.Unmarshal(config, &s)
@@ -626,6 +648,16 @@ type ConfigSnapshot struct {
 	routes         []resource.Route
 	globalRules    []resource.GlobalRule
 	pluginMetadata map[string]map[string]any
+	quarantined    []ConfigQuarantine
+}
+
+// ConfigQuarantine identifies a legacy route or global-rule row that could
+// not be decoded while the remainder of the immutable snapshot was published.
+// Callers receive a copy from QuarantinedResources and may not mutate the
+// snapshot's internal state.
+type ConfigQuarantine struct {
+	Bucket string
+	ID     string
 }
 
 // Routes returns the parsed routes of this snapshot generation.
@@ -643,6 +675,12 @@ func (snap *ConfigSnapshot) GlobalRules() []resource.GlobalRule {
 func (snap *ConfigSnapshot) PluginMetadata(id string) (map[string]any, bool) {
 	metadata, ok := snap.pluginMetadata[id]
 	return metadata, ok
+}
+
+// QuarantinedResources returns the stable bucket and bbolt key for each
+// malformed legacy route/global-rule row skipped from this generation.
+func (snap *ConfigSnapshot) QuarantinedResources() []ConfigQuarantine {
+	return append([]ConfigQuarantine(nil), snap.quarantined...)
 }
 
 // GetConfigSnapshot returns the current route-build generation, rebuilding it
@@ -687,37 +725,45 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		pluginMetadata: map[string]map[string]any{},
 	}
 
-	data, err := s.GetBucketData("routes")
+	entries, err := s.getBucketEntries("routes")
 	if err != nil {
 		return nil, err
 	}
 	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
 		hook("routes")
 	}
-	for _, d := range data {
-		r, err := ParseRoute(d)
+	for _, entry := range entries {
+		r, err := ParseRoute(entry.value)
 		if err != nil {
-			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "routes",
+				ID:     entry.id,
+			})
+			continue
 		}
 		snapshot.routes = append(snapshot.routes, r)
 	}
 
-	data, err = s.GetBucketData("global_rules")
+	entries, err = s.getBucketEntries("global_rules")
 	if err != nil {
 		return nil, err
 	}
 	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
 		hook("global_rules")
 	}
-	for _, d := range data {
-		var rule resource.GlobalRule
-		if err := json.Unmarshal(d, &rule); err != nil {
-			return nil, fmt.Errorf("parse global rule: %w", err)
+	for _, entry := range entries {
+		rule, err := ParseGlobalRule(entry.value)
+		if err != nil {
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "global_rules",
+				ID:     entry.id,
+			})
+			continue
 		}
 		snapshot.globalRules = append(snapshot.globalRules, rule)
 	}
 
-	data, err = s.GetBucketData("plugin_metadata")
+	data, err := s.GetBucketData("plugin_metadata")
 	if err != nil {
 		return nil, err
 	}
@@ -732,6 +778,12 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		}
 		snapshot.pluginMetadata[id] = metadata
 	}
+	slices.SortFunc(snapshot.quarantined, func(left, right ConfigQuarantine) int {
+		if comparison := strings.Compare(left.Bucket, right.Bucket); comparison != 0 {
+			return comparison
+		}
+		return strings.Compare(left.ID, right.ID)
+	})
 	return snapshot, nil
 }
 

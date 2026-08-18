@@ -663,7 +663,18 @@ func buildAndInstallInitialRoutes(routes *routeHandler, builder strictRouteBuild
 		return fmt.Errorf("build initial routes: %w", err)
 	}
 	routes.Replace(handler, builder.Stop)
+	recordRouteBuildQuarantine(builder)
 	return nil
+}
+
+type quarantineAwareRouteBuilder interface {
+	QuarantinedResourceCount() int
+}
+
+func recordRouteBuildQuarantine(builder any) {
+	if quarantineAware, ok := builder.(quarantineAwareRouteBuilder); ok {
+		metrics.RecordConfigApplyStoreQuarantine(quarantineAware.QuarantinedResourceCount())
+	}
 }
 
 func (s *Server) shutdown(ctx context.Context) error {

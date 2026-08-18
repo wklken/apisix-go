@@ -67,7 +67,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | BUG-004 | P1 | Correct | Not applicable | replace | Follow-up，需配置面语义设计 |
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
 | BUG-006 | P2 | Correct | Not applicable | as-is | Fixed in `fix(route): preserve scheme-aware node ports` |
-| BUG-007 | P2 | Correct | Not applicable | adjust | Follow-up |
+| BUG-007 | P2 | Correct | Not applicable | adjust | Fixed in `fix(limit-count): bound delayed-sync state` |
 | SEC-003 | P2 | Correct | Not applicable | as-is，要求版本迁移 | Follow-up |
 
 ## 4. OpenCode 新增 finding 详情
@@ -138,6 +138,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Evidence：`pkg/plugin/limit_count/delayed_sync.go:35-49,81-139` 创建并保存状态；`:208-270` 只同步 delta；生产代码没有删除 `states` 的路径。队列容量不约束 `states`、`retry` 或 `retryNext` 的长期基数。
 - Proposed fix assessment：adjust。只应删除已经过窗口、无 local delta、无 in-flight 且不在 retry 集合的状态，并需要整体容量上限防止窗口内攻击。
 - Best-fit solution：增加安全清理和显式容量/eviction 指标；测试大量唯一 key 跨窗口后状态数回落，以及 in-flight/retry 状态不会被提前删除。
+- Remediation：delayed-sync 现在在周期 flush/retry 迁移后及新 key 分配前回收已过窗口的 idle state；dirty、in-flight、retry、retryNext 和仍在有效窗口的 state 均保留。live state 固定上限为 10,000，满载时新 key 使用现有 rejection 路径失败关闭。修复前新增测试无法编译，因为不存在 cleanup/capacity 合同；修复后 limit-count 全包测试、race 与 scoped lint 通过。
 
 ## 5. 对既有 finding 的补充
 

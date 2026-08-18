@@ -234,16 +234,15 @@ git commit -m "fix(route): preserve scheme-aware node ports"
 **Files:**
 - Modify: `pkg/plugin/limit_count/delayed_sync.go`
 - Modify: `pkg/plugin/limit_count/delayed_sync_test.go`
-- Modify: `pkg/plugin/limit_count/plugin_test.go`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Produces: safe cleanup after window expiry only when local delta is zero, no call is in flight, and no retry owns the key; maximum 10,000 live states; new keys fail closed at capacity.
 
-- [ ] **Step 1: Add failing cleanup, dirty/in-flight/retry preservation, and small-capacity tests**
-- [ ] **Step 2: Run the named tests and observe permanent state growth**
-- [ ] **Step 3: Clean under `s.mu` after flush/retry promotion and before new-state allocation; never evict live or dirty quota state**
-- [ ] **Step 4: Run the package normally and with race, scoped lint, update the ledger, and commit**
+- [x] **Step 1: Add failing cleanup, dirty/in-flight/retry preservation, and small-capacity tests**
+- [x] **Step 2: Run the named tests and observe permanent state growth**
+- [x] **Step 3: Clean under `s.mu` after flush/retry promotion and before new-state allocation; never evict live or dirty quota state**
+- [x] **Step 4: Run the package normally and with race, scoped lint, update the ledger, and commit**
 
 Commit:
 

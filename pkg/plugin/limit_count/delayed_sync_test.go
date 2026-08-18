@@ -2,6 +2,7 @@ package limit_count
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -126,5 +127,83 @@ func TestDrainQueueEmpty(t *testing.T) {
 	s := &delayedSyncer{queue: make(chan string, 1)}
 	if got := s.drainQueue(); len(got) != 0 {
 		t.Fatalf("drainQueue() = %v, want an empty result", got)
+	}
+}
+
+func TestDelayedSyncReclaimsExpiredIdleStateBeforeAllocatingNewKey(t *testing.T) {
+	backend := &blockingRecordingDelayedSyncBackend{limit: 10, reset: time.Minute}
+	syncer := newTestDelayedSyncer(backend, 2)
+	base := time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC)
+	if _, _, err := syncer.incoming(context.Background(), "expired", 1, base); err != nil {
+		t.Fatalf("seed incoming() error = %v", err)
+	}
+	if err := syncer.flushNow(context.Background(), base.Add(time.Second)); err != nil {
+		t.Fatalf("flushNow() error = %v", err)
+	}
+	if err := syncer.flushNow(context.Background(), base.Add(2*time.Minute)); err != nil {
+		t.Fatalf("expiry cleanup flushNow() error = %v", err)
+	}
+	if _, ok := syncer.states["expired"]; ok {
+		t.Fatal("expired idle state remained after periodic flush cleanup")
+	}
+	if _, _, err := syncer.incoming(context.Background(), "replacement", 1, base.Add(2*time.Minute)); err != nil {
+		t.Fatalf("replacement incoming() error = %v", err)
+	}
+}
+
+func TestDelayedSyncCleanupPreservesOwnedOrLiveState(t *testing.T) {
+	now := time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC)
+	expired := now.Add(-time.Second)
+	future := now.Add(time.Minute)
+	syncer := newTestDelayedSyncer(&blockingRecordingDelayedSyncBackend{}, 10)
+	syncer.states = map[string]*delayedSyncState{
+		"idle":       {initialized: true, resetAt: expired},
+		"dirty":      {initialized: true, resetAt: expired, localDelta: 1},
+		"in-flight":  {initialized: true, resetAt: expired, inFlight: true},
+		"retry":      {initialized: true, resetAt: expired},
+		"retry-next": {initialized: true, resetAt: expired},
+		"live":       {initialized: true, resetAt: future},
+	}
+	syncer.retry["retry"] = struct{}{}
+	syncer.retryNext["retry-next"] = struct{}{}
+
+	syncer.cleanupExpiredLocked(now)
+	if _, ok := syncer.states["idle"]; ok {
+		t.Fatal("expired idle state was not reclaimed")
+	}
+	for _, key := range []string{"dirty", "in-flight", "retry", "retry-next", "live"} {
+		if _, ok := syncer.states[key]; !ok {
+			t.Fatalf("state %q was reclaimed while still live or owned", key)
+		}
+	}
+}
+
+func TestDelayedSyncRejectsNewKeyAtStateCapacity(t *testing.T) {
+	backend := &blockingRecordingDelayedSyncBackend{limit: 10, reset: time.Hour}
+	syncer := newTestDelayedSyncer(backend, 2)
+	now := time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC)
+	for _, key := range []string{"first", "second"} {
+		if _, _, err := syncer.incoming(context.Background(), key, 1, now); err != nil {
+			t.Fatalf("incoming(%q) error = %v", key, err)
+		}
+	}
+	if _, _, err := syncer.incoming(context.Background(), "overflow", 1, now); !errors.Is(err, errDelayedSyncRejected) {
+		t.Fatalf("overflow incoming() error = %v, want errDelayedSyncRejected", err)
+	}
+	if len(syncer.states) != 2 {
+		t.Fatalf("state count = %d, want capacity 2", len(syncer.states))
+	}
+}
+
+func newTestDelayedSyncer(backend delayedSyncBackend, maxStates int) *delayedSyncer {
+	return &delayedSyncer{
+		backend:   backend,
+		limit:     10,
+		window:    time.Minute,
+		queue:     make(chan string, 10),
+		states:    make(map[string]*delayedSyncState),
+		retry:     make(map[string]struct{}),
+		retryNext: make(map[string]struct{}),
+		maxStates: maxStates,
 	}
 }

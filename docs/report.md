@@ -66,7 +66,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | BUG-003 | P1 | Correct | Not applicable | adjust | Fixed in `fix(config): bound request bodies by default` |
 | BUG-004 | P1 | Correct | Not applicable | replace | Follow-up，需配置面语义设计 |
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
-| BUG-006 | P2 | Correct | Not applicable | as-is | Follow-up |
+| BUG-006 | P2 | Correct | Not applicable | as-is | Fixed in `fix(route): preserve scheme-aware node ports` |
 | BUG-007 | P2 | Correct | Not applicable | adjust | Follow-up |
 | SEC-003 | P2 | Correct | Not applicable | as-is，要求版本迁移 | Follow-up |
 
@@ -129,6 +129,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Evidence：`pkg/resource/route.go:75-125,158-175` 在读取 scheme 前把 map node 缺省端口固化为 80；`pkg/route/builder.go:2822-2864` 只有 `Port == 0` 才按目标 scheme 补 443/80。list-form 省略 port 保留零值，因此两种合法表达不一致。
 - Proposed fix assessment：as-is。
 - Best-fit solution：map parser 对未提供端口返回 0，把默认端口决策集中到 builder；为 HTTP/HTTPS/gRPC/grpcs、map/list、IPv4/IPv6 增加表驱动测试。
+- Remediation：map-form parser 对省略端口的 hostname、IPv4 和 IPv6 统一保留 `Port == 0`，显式端口保持不变；builder 继续集中应用 HTTP/gRPC 80 与 HTTPS/gRPCS 443。修复前 map-form HTTP/HTTPS 用例解码为 80；修复后 resource/route 全包测试与 scoped lint 通过。
 
 ### BUG-007：delayed-sync key 状态无回收
 

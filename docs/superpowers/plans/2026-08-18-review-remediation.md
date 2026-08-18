@@ -213,15 +213,15 @@ git commit -m "fix(store): isolate malformed route resources"
 **Files:**
 - Modify: `pkg/resource/route.go`
 - Modify: `pkg/resource/route_test.go`
-- Modify: `pkg/route/builder_test.go`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `pkg/route/upstream_weight_test.go`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Produces: map nodes without an explicit port retain `Port == 0`; the builder remains the owner of HTTP/gRPC 80 and HTTPS/gRPCS 443 defaults.
 
-- [ ] **Step 1: Add a failing HTTP/HTTPS/gRPC/gRPCS matrix for map/list, host/IP/IPv6, explicit and omitted ports**
-- [ ] **Step 2: Remove the parser's unconditional map-form port 80 assignment**
-- [ ] **Step 3: Run resource/route tests and lint, update the ledger, and commit**
+- [x] **Step 1: Add a failing HTTP/HTTPS/gRPC/gRPCS matrix for map/list, host/IP/IPv6, explicit and omitted ports**
+- [x] **Step 2: Remove the parser's unconditional map-form port 80 assignment**
+- [x] **Step 3: Run resource/route tests and lint, update the ledger, and commit**
 
 Commit:
 

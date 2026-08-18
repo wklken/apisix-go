@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -24,6 +25,73 @@ import (
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestNewElasticsearchClientUsesOfficialBulkTransport(t *testing.T) {
+	const (
+		username = "elastic"
+		password = "secret"
+	)
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/_bulk" {
+			t.Errorf("path = %q, want /_bulk", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/x-ndjson" {
+			t.Errorf("Content-Type = %q, want application/x-ndjson", got)
+		}
+		if got := r.Header.Get("X-Cluster"); got != "logs" {
+			t.Errorf("X-Cluster = %q, want logs", got)
+		}
+		gotUsername, gotPassword, ok := r.BasicAuth()
+		if !ok || gotUsername != username || gotPassword != password {
+			t.Errorf("BasicAuth() = %q/%q/%v, want %q/%q/true", gotUsername, gotPassword, ok, username, password)
+		}
+		gotTimeout := r.URL.Query().Get("timeout")
+		parsedTimeout, err := time.ParseDuration(gotTimeout)
+		if err != nil || parsedTimeout != 10*time.Second {
+			t.Errorf("timeout = %q, want 10s", gotTimeout)
+		}
+
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := newElasticsearchClient(
+		server.URL, username, password,
+		map[string]string{"X-Cluster": "logs"},
+		10*time.Second,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("newElasticsearchClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	resp, err := (esapi.BulkRequest{
+		Body:    strings.NewReader("{}\n"),
+		Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		Timeout: 10 * time.Second,
+	}).Do(context.Background(), client)
+	if err != nil {
+		t.Fatalf("BulkRequest.Do() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.IsError() {
+		t.Fatalf("BulkRequest.Do() status = %s, want success", resp.Status())
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("bulk attempts = %d, want retry after one 503", got)
+	}
+}
 
 func TestRunLogPhasePreservesIndexAndDetachedHostFields(t *testing.T) {
 	delivered := make(chan map[string]any, 1)

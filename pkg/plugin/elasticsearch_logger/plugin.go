@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -187,7 +188,7 @@ type Plugin struct {
 }
 
 type esClientRef struct {
-	client  *elasticsearch.Client
+	client  *elasticsearch.BaseClient
 	release func()
 }
 
@@ -466,12 +467,11 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 		return 0, fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
 	}
 
-	resp, err := client.Bulk(
-		bytes.NewReader(body),
-		client.Bulk.WithContext(ctx),
-		client.Bulk.WithHeader(map[string]string{"Content-Type": "application/x-ndjson"}),
-		client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
-	)
+	resp, err := (esapi.BulkRequest{
+		Body:    bytes.NewReader(body),
+		Header:  http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		Timeout: time.Duration(p.config.Timeout) * time.Second,
+	}).Do(ctx, client)
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log message: %w", err)
 	}
@@ -532,7 +532,7 @@ func (p *Plugin) endpointAddr() string {
 	return p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))]
 }
 
-func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, error) {
+func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.BaseClient, error) {
 	p.clientMu.Lock()
 	defer p.clientMu.Unlock()
 	if p.clients == nil {
@@ -549,19 +549,14 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 		password = p.config.Auth.Password
 	}
 
-	c, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{endpoint},
-		Username:  username,
-		Password:  password,
-		Header:    headerFromMap(p.config.Headers),
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout: time.Duration(p.config.Timeout) * time.Second,
-			}).DialContext,
-			ResponseHeaderTimeout: time.Duration(p.config.Timeout) * time.Second,
-			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !*p.config.SslVerify},
-		},
-	})
+	c, err := newElasticsearchClient(
+		endpoint,
+		username,
+		password,
+		p.config.Headers,
+		time.Duration(p.config.Timeout)*time.Second,
+		*p.config.SslVerify,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -571,14 +566,35 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 	value, release, err := shared.AcquireClient(
 		shared.ClientKey(name, clientUID),
 		func() (any, error) { return c, nil },
-		func(v any) { _ = v.(*elasticsearch.Client).Close(context.Background()) },
+		func(v any) { _ = v.(*elasticsearch.BaseClient).Close(context.Background()) },
 	)
 	if err != nil {
 		return nil, err
 	}
-	client := value.(*elasticsearch.Client)
+	client := value.(*elasticsearch.BaseClient)
 	p.clients[endpoint] = &esClientRef{client: client, release: release}
 	return client, nil
+}
+
+func newElasticsearchClient(
+	endpoint, username, password string,
+	headers map[string]string,
+	timeout time.Duration,
+	sslVerify bool,
+) (*elasticsearch.BaseClient, error) {
+	return elasticsearch.NewBaseClient(elasticsearch.Config{
+		Addresses: []string{endpoint},
+		Username:  username,
+		Password:  password,
+		Header:    headerFromMap(headers),
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout: timeout,
+			}).DialContext,
+			ResponseHeaderTimeout: timeout,
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !sslVerify},
+		},
+	})
 }
 
 func (p *Plugin) Stop() {
@@ -641,7 +657,7 @@ func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 	return body, nil
 }
 
-func (p *Plugin) fetchAndUpdateVersion(client *elasticsearch.Client) {
+func (p *Plugin) fetchAndUpdateVersion(client *elasticsearch.BaseClient) {
 	p.versionMu.Lock()
 	defer p.versionMu.Unlock()
 	if p.esVersion != "" {
@@ -662,10 +678,10 @@ func (p *Plugin) elasticsearchVersion() string {
 	return p.esVersion
 }
 
-func (p *Plugin) getMajorVersion(client *elasticsearch.Client) (string, error) {
+func (p *Plugin) getMajorVersion(client *elasticsearch.BaseClient) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
 	defer cancel()
-	resp, err := client.Info(client.Info.WithContext(ctx))
+	resp, err := (esapi.InfoRequest{}).Do(ctx, client)
 	if err != nil {
 		return "", err
 	}

@@ -14,6 +14,9 @@ builds:
     goarch:
       - amd64
       - arm64
+    flags: [ -trimpath ]
+    ldflags:
+      - -s -w -X github.com/wklken/apisix-go/pkg/version.Version={{ .Version }} -X github.com/wklken/apisix-go/pkg/version.Commit={{ .Commit }} -X github.com/wklken/apisix-go/pkg/version.BuildTime={{ .Date }} -X 'github.com/wklken/apisix-go/pkg/version.GoVersion={{ .Env.GOVERSION }}'
 
 archives:
   - formats:

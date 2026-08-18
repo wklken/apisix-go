@@ -609,7 +609,7 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 	systemBindings, err := b.initPluginBindingsStrict(
 		[]materializedPluginSource{{
 			name:       "request-context",
-			config:     buildRequestContextConfig(resource.Route{}, resource.Service{}, nil),
+			config:     buildRequestContextConfig(resource.Route{}, resource.Service{}),
 			scope:      plugin.ScopeSystem,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
 		}},
@@ -702,7 +702,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	localSources, serviceSources, effectivePluginConfigs := selectMaterializedPluginSources(
+	localSources, serviceSources, _ := selectMaterializedPluginSources(
 		r.Plugins,
 		r.ID,
 		pluginConfigPlugins,
@@ -718,7 +718,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 
 	// add a context plugin, set the default vars
-	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
+	systemPlugins := buildSystemPluginConfigs(r, service)
 
 	routeContext := b.pluginRouteContext(r)
 	routeContext.service = service
@@ -1219,26 +1219,23 @@ func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
 func buildSystemPluginConfigs(
 	r resource.Route,
 	service resource.Service,
-	resourcePlugins map[string]resource.PluginConfig,
 ) map[string]resource.PluginConfig {
 	return map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
+		"request-context": buildRequestContextConfig(r, service),
 	}
 }
 
 func buildRequestContextConfig(
 	r resource.Route,
 	service resource.Service,
-	pluginConfigs map[string]resource.PluginConfig,
 ) map[string]any {
 	return map[string]any{
-		"$route_id":               r.ID,
-		"$route_name":             r.Name,
-		"$matched_uri":            matchedURI(r),
-		"$matched_host":           matchedHost(r),
-		"$service_id":             r.ServiceID,
-		"$service_name":           service.Name,
-		"$prometheus_prefer_name": prometheusPreferName(pluginConfigs),
+		"$route_id":     r.ID,
+		"$route_name":   r.Name,
+		"$matched_uri":  matchedURI(r),
+		"$matched_host": matchedHost(r),
+		"$service_id":   r.ServiceID,
+		"$service_name": service.Name,
 	}
 }
 
@@ -1257,21 +1254,6 @@ func matchedHost(r resource.Route) string {
 		return r.Hosts[0]
 	}
 	return ""
-}
-
-func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
-	config, ok := pluginConfigs["prometheus"]
-	if !ok {
-		return false
-	}
-
-	values, ok := config.(map[string]any)
-	if !ok {
-		return false
-	}
-
-	preferName, _ := values["prefer_name"].(bool)
-	return preferName
 }
 
 type pluginRouteContext struct {

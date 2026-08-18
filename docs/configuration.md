@@ -60,9 +60,9 @@ no request-logging egress claim.
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
 reachable, then returns HTTP 200 with the config-apply and etcd-reachability
-state. The image HEALTHCHECK uses `/livez` (process liveness). Orchestrators must
-probe `/readyz` separately for config-apply and etcd reachability; do not use
-the Docker HEALTHCHECK as Kubernetes liveness *and* readiness.
+state. The image does not define a Docker healthcheck. Orchestrators must
+configure `/livez` for process liveness and `/readyz` for config-apply and etcd
+reachability.
 
 The production release contract requires a bounded periodic etcd reachability
 probe in addition to the watch loop. During a verified recovery test, etcd loss
@@ -111,15 +111,43 @@ path, which intentionally ignores Markdown-only changes.
 
 ### Prometheus metric lifetime and cardinality
 
+Prometheus collection is enabled only when `prometheus` is present in the
+top-level `plugins` allowlist. When it is absent, APISIX-Go does not initialize
+the collectors, expiration scanner, export listener, connection observer, or
+request metric callbacks. The process-level `http_requests_total` counts every
+HTTP request while collection is enabled. Status/latency/bandwidth and
+completed LLM metrics are recorded only for requests whose effective route,
+service, `plugin_config`, or global rule contains the `prometheus` plugin. A
+local binding takes precedence over a global binding, matching the official
+`prefer_route` run policy, so one request is never counted twice.
+
+The dedicated export server is enabled by default and listens at
+`127.0.0.1:9091`. `export_addr.ip` must be a literal IPv4 or IPv6 address and
+`export_addr.port` must be an integer from `1` through `65535`. `export_uri`
+must be a literal absolute path. When `enable_export_server` is `false`, the
+same URI is registered through the `public-api` plugin instead; it is not also
+published on the data-plane router while the dedicated server is enabled.
+Explicit wrong types and invalid values for these fields fail startup instead
+of falling back to another address or an ephemeral port.
+
+`metric_prefix`, histogram buckets, request-family `extra_labels`, series
+limits, and expiration values are also validated before collectors are registered.
+Buckets must be finite positive numbers in strictly increasing order. Extra
+label names must be valid, unique, and must not collide with the family's base
+labels or Prometheus's reserved `le` label; variable values must begin with
+`$`. An invalid explicit value fails startup and cannot be deferred into a
+panic on the first request.
+
 `plugin_attr.prometheus.max_http_series` limits each of `http_status`,
-`http_latency`, and `bandwidth` independently.
+`http_latency`, `bandwidth`, and `upstream_status` independently, and also
+caps the current route index for `stream_connection_total`.
 `plugin_attr.prometheus.max_llm_series` independently limits each of
 `llm_latency`, `llm_prompt_tokens`, `llm_completion_tokens`, and
 `llm_active_connections`. Both settings default to `10000`, accept only
 integers from `100` through `100000`, and fail startup when an explicit value
 is invalid.
 
-The seven families accept an APISIX-compatible
+These eight families accept an APISIX-compatible
 `plugin_attr.prometheus.metrics.<family>.expire` value. It is a non-negative
 whole number of idle seconds; missing or `0` disables expiration for that
 family. Activity means a successful metric observation, not a Prometheus
@@ -129,6 +157,10 @@ occurs by the next scan after the configured idle period. Cleanup deletes at
 most 256 entries from each family per scan, so larger backlogs drain over later
 scan intervals.
 
+`extra_labels` is supported only by the seven request/LLM families because
+their values come from a request context. `upstream_status` supports `expire`
+but rejects `extra_labels` instead of silently ignoring them.
+
 Each family stores at most its configured number of exact label tuples. Once
 full, an unseen tuple is written to one synthetic child with every label set to
 `__overflow__`; the vector therefore has at most `limit + 1` children from this
@@ -136,7 +168,10 @@ subsystem. HTTP overflow observations increment
 `<metric_prefix>http_metric_series_overflow_total{metric}`, and LLM overflow
 observations increment
 `<metric_prefix>llm_metric_series_overflow_total{metric}`. With the default
-prefix these names begin with `apisix_`.
+prefix these names begin with `apisix_`. Stream routes are sorted before the
+bounded index is built; configured routes beyond the cap share
+`stream_connection_total{route="__overflow__"}` and route reloads delete
+children that are no longer indexed.
 
 Expiration deletes both the exported vector child and its capacity entry.
 Recreated counters and histograms start again from zero. An
@@ -144,6 +179,30 @@ Recreated counters and histograms start again from zero. An
 active and becomes eligible only after the last release plus another idle
 period. Expiration and capacity configuration is startup-only; restart the
 process to apply changes.
+
+### Prometheus APISIX 3.17 compatibility
+
+APISIX-Go exports the APISIX 3.17 family names and labels that have honest
+Go-native runtime owners: `nginx_http_current_connections{state}`,
+`http_requests_total`, `node_info{hostname,version}`,
+`etcd_modify_indexes{key}`, `upstream_status{name,ip,port}`,
+`stream_connection_total{route}`, the HTTP status/latency/bandwidth families,
+and the four LLM families. APISIX-Go-specific readiness, proxy, logger, panic,
+and cardinality metrics remain additional families.
+
+Go's `net/http` connection callback can identify accepted/handled, active, and
+waiting connections, but it cannot separate NGINX's header-reading and
+response-writing FFI phases. The official `reading` and `writing` state series
+therefore remain zero. Likewise, APISIX-Go has no NGINX shared dictionaries or
+XRPC runtime, so `shared_dict_capacity_bytes`,
+`shared_dict_free_space_bytes`, and XRPC-only families are intentionally not
+emitted.
+
+The `bandwidth` family preserves the official labels but its byte semantics
+follow available Go ownership: ingress is the non-negative request
+`Content-Length`, and egress is the response body bytes written. These values
+do not include request/response start lines and headers as NGINX's
+`$request_length` and `$bytes_sent` do.
 
 ## HTTP upstream proxy behavior
 

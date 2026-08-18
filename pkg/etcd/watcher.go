@@ -369,6 +369,13 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 			return err
 		}
 		clearQuarantine(nextQuarantine, string(kv.Key), revision)
+		metrics.RecordEtcdModifyIndex(string(kv.Key), kv.ModRevision)
+	}
+	for _, key := range keys {
+		if _, ok := nextKeys[key]; ok {
+			continue
+		}
+		metrics.RecordEtcdModifyIndex(key, response.Header.Revision)
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = response.Header.Revision
@@ -413,6 +420,7 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
+		metrics.RecordEtcdModifyIndex(string(watched.Kv.Key), watched.Kv.ModRevision)
 		key := string(watched.Kv.Key)
 		if eventType == store.EventTypeDelete {
 			delete(nextKeys, key)

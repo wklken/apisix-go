@@ -42,27 +42,6 @@ func (p *panicSnapshotLogPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	return nil
 }
 
-type recordingSnapshotFinalizerPlugin struct {
-	base.BasePlugin
-	snapshots []base.LogSnapshot
-}
-
-func (p *recordingSnapshotFinalizerPlugin) Init() error                            { return nil }
-func (p *recordingSnapshotFinalizerPlugin) PostInit() error                        { return nil }
-func (p *recordingSnapshotFinalizerPlugin) Config() any                            { return nil }
-func (p *recordingSnapshotFinalizerPlugin) Handler(next http.Handler) http.Handler { return next }
-func (*recordingSnapshotFinalizerPlugin) RunRequestPhase(
-	_ http.ResponseWriter,
-	r *http.Request,
-) base.RequestPhaseResult {
-	return base.ContinueRequest(r)
-}
-
-func (p *recordingSnapshotFinalizerPlugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
-	p.snapshots = append(p.snapshots, snapshot)
-	return nil
-}
-
 type rejectingIngressAuthPlugin struct {
 	base.BasePlugin
 }
@@ -90,20 +69,12 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			loggerPlugin := &panicSnapshotLogPlugin{}
 			loggerPlugin.Name = "test-ingress-logger"
-			finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-			finalizerPlugin.Name = "request_context"
 			bindings := []pluginpkg.Binding{
 				pluginpkg.BindPlugin(
 					"http-logger",
 					loggerPlugin,
 					pluginpkg.ScopeRoute,
 					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: test.name},
-				),
-				pluginpkg.BindPlugin(
-					"request-context",
-					finalizerPlugin,
-					pluginpkg.ScopeSystem,
-					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
 				),
 			}
 			if test.withAuth {
@@ -145,12 +116,6 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 			}
 			if got := loggerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
 				t.Fatalf("detached log consumer header = %q, want unset", got)
-			}
-			if len(finalizerPlugin.snapshots) != 1 {
-				t.Fatalf("final log snapshots = %d, want 1", len(finalizerPlugin.snapshots))
-			}
-			if got := finalizerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
-				t.Fatalf("final log consumer header = %q, want unset", got)
 			}
 		})
 	}
@@ -242,30 +207,19 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	loggerPlugin := &panicSnapshotLogPlugin{}
 	loggerPlugin.Name = "test-logger"
-	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-	finalizerPlugin.Name = "request_context"
 	loggerBinding := pluginpkg.BindPlugin(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,
 		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "panic-log"},
 	)
-	finalizerBinding := pluginpkg.BindPlugin(
-		"request-context",
-		finalizerPlugin,
-		pluginpkg.ScopeSystem,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
-	)
-	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
-		loggerBinding,
-		finalizerBinding,
-	})
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{loggerBinding})
 	if err != nil {
 		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
 	}
 	var derived *http.Request
 	pipeline := pluginpkg.NewRequestPipeline(
-		[]pluginpkg.Binding{loggerBinding, finalizerBinding},
+		[]pluginpkg.Binding{loggerBinding},
 		nil,
 	).WithLogExecutor(&executor)
 	handler := pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -292,9 +246,6 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	if got := snapshot.Request.APISIXVars["$panic_marker"]; got != "visible-to-finalizer" {
 		t.Fatalf("panic snapshot marker = %#v", got)
 	}
-	if len(finalizerPlugin.snapshots) != 1 {
-		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
-	}
 	if got := apisixctx.GetApisixVar(derived, "$panic_marker"); got != "" {
 		t.Fatalf("panic marker after recycle = %#v, want empty", got)
 	}
@@ -303,29 +254,18 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 	loggerPlugin := &panicSnapshotLogPlugin{panicLog: true}
 	loggerPlugin.Name = "test-logger"
-	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-	finalizerPlugin.Name = "request_context"
 	loggerBinding := pluginpkg.BindPlugin(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,
 		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "logger-panic"},
 	)
-	finalizerBinding := pluginpkg.BindPlugin(
-		"request-context",
-		finalizerPlugin,
-		pluginpkg.ScopeSystem,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
-	)
-	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
-		loggerBinding,
-		finalizerBinding,
-	})
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{loggerBinding})
 	if err != nil {
 		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
 	}
 	var derived *http.Request
-	handler := pluginpkg.NewRequestPipeline([]pluginpkg.Binding{loggerBinding, finalizerBinding}, nil).
+	handler := pluginpkg.NewRequestPipeline([]pluginpkg.Binding{loggerBinding}, nil).
 		WithLogExecutor(&executor).
 		Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			derived = r
@@ -343,11 +283,8 @@ func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 	if len(loggerPlugin.snapshots) != 1 {
 		t.Fatalf("logger calls = %d, want 1", len(loggerPlugin.snapshots))
 	}
-	if len(finalizerPlugin.snapshots) != 1 {
-		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
-	}
-	if got := finalizerPlugin.snapshots[0].Request.APISIXVars["$logger_panic_marker"]; got != "live" {
-		t.Fatalf("finalizer marker = %#v, want live", got)
+	if got := loggerPlugin.snapshots[0].Request.APISIXVars["$logger_panic_marker"]; got != "live" {
+		t.Fatalf("logger snapshot marker = %#v, want live", got)
 	}
 	if got := apisixctx.GetApisixVar(derived, "$logger_panic_marker"); got != "" {
 		t.Fatalf("marker after recycle = %#v, want empty", got)

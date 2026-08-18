@@ -1,15 +1,17 @@
 package prometheus
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
-	"github.com/wklken/apisix-go/pkg/plugin/public_api"
+	dto "github.com/prometheus/client_model/go"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestHandlerPassesThrough(t *testing.T) {
@@ -35,46 +37,102 @@ func TestHandlerPassesThrough(t *testing.T) {
 	}
 }
 
-func TestPostInitRegistersMetricsPublicAPI(t *testing.T) {
-	public_api.ResetRegistryForTest()
-	t.Cleanup(public_api.ResetRegistryForTest)
-
-	p := &Plugin{}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
+func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
+	oldRequests := metrics.Requests
+	oldStatus := metrics.HttpStatus
+	oldLatency := metrics.HttpLatency
+	oldBandwidth := metrics.Bandwidth
+	oldLLMLatency := metrics.LLMLatency
+	oldLLMPromptTokens := metrics.LLMPromptTokens
+	oldLLMCompletionTokens := metrics.LLMCompletionTokens
+	metrics.Requests = promclient.NewGauge(promclient.GaugeOpts{Name: "test_prometheus_requests"})
+	metrics.HttpStatus = promclient.NewCounterVec(
+		promclient.CounterOpts{Name: "test_prometheus_http_status"},
+		[]string{
+			"code", "route", "matched_uri", "matched_host", "service", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model", "response_source",
+		},
+	)
+	metrics.HttpLatency = promclient.NewHistogramVec(
+		promclient.HistogramOpts{Name: "test_prometheus_http_latency"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	metrics.Bandwidth = promclient.NewCounterVec(
+		promclient.CounterOpts{Name: "test_prometheus_bandwidth"},
+		[]string{"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model"},
+	)
+	llmLabels := []string{
+		"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
 	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v", err)
-	}
-
-	handler := public_api.Lookup(http.MethodGet, MetricsURI)
-	if handler == nil {
-		t.Fatalf("public API handler for %s was not registered", MetricsURI)
-	}
-
-	metricName := fmt.Sprintf("apisix_go_test_prometheus_public_api_value_%d", time.Now().UnixNano())
-	gauge := promclient.NewGauge(promclient.GaugeOpts{
-		Name: metricName,
-		Help: "test metric for prometheus public api registration",
-	})
-	if err := promclient.Register(gauge); err != nil {
-		t.Fatalf("register test metric: %v", err)
-	}
+	metrics.LLMLatency = promclient.NewHistogramVec(
+		promclient.HistogramOpts{Name: "test_prometheus_llm_latency"}, llmLabels,
+	)
+	metrics.LLMPromptTokens = promclient.NewCounterVec(
+		promclient.CounterOpts{Name: "test_prometheus_llm_prompt_tokens"}, llmLabels,
+	)
+	metrics.LLMCompletionTokens = promclient.NewCounterVec(
+		promclient.CounterOpts{Name: "test_prometheus_llm_completion_tokens"}, llmLabels,
+	)
 	t.Cleanup(func() {
-		promclient.Unregister(gauge)
+		metrics.Requests = oldRequests
+		metrics.HttpStatus = oldStatus
+		metrics.HttpLatency = oldLatency
+		metrics.Bandwidth = oldBandwidth
+		metrics.LLMLatency = oldLLMLatency
+		metrics.LLMPromptTokens = oldLLMPromptTokens
+		metrics.LLMCompletionTokens = oldLLMCompletionTokens
 	})
-	gauge.Set(7)
 
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, MetricsURI, nil))
+	request := httptest.NewRequest(http.MethodPost, "http://api.example.com/orders/42", nil)
+	request.ContentLength = 7
+	request = apisixctx.WithApisixVars(request, map[string]string{
+		"$route_id":      "route-1",
+		"$matched_uri":   "/orders/:id",
+		"$matched_host":  "api.example.com",
+		"$service_id":    "service-1",
+		"$consumer_name": "alice",
+		"$balancer_ip":   "10.0.0.8",
+	})
+	request = apisixctx.WithRequestVars(request)
+	apisixctx.RegisterRequestVar(request, "$upstream_latency", int64(1))
+	apisixctx.RegisterRequestVar(request, "$request_type", "ai_chat")
+	apisixctx.RegisterRequestVar(request, "$request_llm_model", "gpt-request")
+	apisixctx.RegisterRequestVar(request, "$llm_model", "gpt-upstream")
+	started := time.Unix(1, 0)
+	snapshot := base.BuildLogSnapshot(
+		request,
+		base.ResponseCaptureSnapshot{},
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated, Bytes: 5},
+		apisixctx.ResponseSourceUpstream,
+		started,
+		started.Add(12*time.Millisecond),
+	)
+	p := &Plugin{config: Config{}}
+	p.SetResourceContext(
+		resource.Route{ID: "route-1", Name: "route-name"},
+		resource.Service{ID: "service-1", Name: "service-name"},
+	)
+	if err := p.RunLogPhase(snapshot); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	if got := counterValue(t, metrics.HttpStatus.WithLabelValues(
+		"201", "route-1", "/orders/:id", "api.example.com", "service-1", "alice", "10.0.0.8",
+		"ai_chat", "gpt-request", "gpt-upstream", "upstream",
+	)); got != 1 {
+		t.Fatalf("http status count = %v, want 1", got)
+	}
+	if got := counterValue(t, metrics.Bandwidth.WithLabelValues(
+		"egress", "route-1", "service-1", "alice", "10.0.0.8", "ai_chat", "gpt-request", "gpt-upstream",
+	)); got != 5 {
+		t.Fatalf("egress bytes = %v, want 5", got)
+	}
+}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+func counterValue(t *testing.T, counter promclient.Counter) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := counter.Write(metric); err != nil {
+		t.Fatalf("write counter: %v", err)
 	}
-	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/plain") {
-		t.Fatalf("Content-Type = %q, want prometheus text exposition", got)
-	}
-	if !strings.Contains(rec.Body.String(), metricName) {
-		t.Fatalf("metrics response does not include test metric %q", metricName)
-	}
+	return metric.GetCounter().GetValue()
 }

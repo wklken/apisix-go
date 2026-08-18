@@ -134,21 +134,9 @@ func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T
 		HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 30},
 	}}
 
-	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{}, nil)
+	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{})
 	if _, ok := plugins["client-control"]; ok {
 		t.Fatalf("system client-control = %#v, want server-owned global streaming limit", plugins["client-control"])
-	}
-
-	plugins = buildSystemPluginConfigs(
-		resource.Route{ID: "route-limit"},
-		resource.Service{},
-		map[string]resource.PluginConfig{"client-control": map[string]any{"max_body_size": 50}},
-	)
-	if _, ok := plugins["client-control"]; ok {
-		t.Fatalf(
-			"system client-control = %#v, want explicit route plugin to remain resource-owned",
-			plugins["client-control"],
-		)
 	}
 }
 

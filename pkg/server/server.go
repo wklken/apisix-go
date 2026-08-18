@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
@@ -25,6 +24,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/observability/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
+	prometheusplugin "github.com/wklken/apisix-go/pkg/plugin/prometheus"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -167,12 +168,19 @@ func NewServer() (*Server, error) {
 		addrs:           addrs,
 		server:          newConfiguredHTTPServer(handler),
 		routes:          routes,
-		clusters:        pxy.NewClusterRegistry(metrics.NewProxyRuntimeObserver()),
+		clusters:        pxy.NewClusterRegistry(newClusterObserver()),
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
 		otelShutdown:    otelShutdown,
 	}, nil
+}
+
+func newClusterObserver() pxy.ClusterObserver {
+	if !prometheusEnabled(config.GlobalConfig) {
+		return pxy.NopClusterObserver{}
+	}
+	return metrics.NewProxyRuntimeObserver()
 }
 
 func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Handler {
@@ -188,6 +196,13 @@ func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Hand
 	}
 	if pluginConfigured("node-status") {
 		handler = node_status.Track(handler)
+	}
+	if prometheusEnabled(cfg) {
+		next := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			metrics.RecordHTTPRequestTotal()
+			next.ServeHTTP(w, r)
+		})
 	}
 	return handler
 }
@@ -366,9 +381,11 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	server := &http.Server{
 		Handler:           handler,
 		Protocols:         protocols,
-		ConnState:         metrics.NewHTTPConnectionStateObserver(),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		IdleTimeout:       defaultHTTPIdleTimeout,
+	}
+	if prometheusEnabled(config.GlobalConfig) {
+		server.ConnState = metrics.NewHTTPConnectionStateObserver()
 	}
 	if frontendHTTP2Enabled() {
 		if err := http2.ConfigureServer(server, nil); err != nil {
@@ -550,11 +567,16 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := metrics.Init(); err != nil {
-		return fmt.Errorf("initialize prometheus metrics: %w", err)
-	}
-	if err := s.startPrometheusExpiration(ctx); err != nil {
-		return err
+	if prometheusEnabled(config.GlobalConfig) {
+		if err := metrics.Init(); err != nil {
+			return fmt.Errorf("initialize prometheus metrics: %w", err)
+		}
+		if err := registerPrometheusPublicEndpoint(); err != nil {
+			return err
+		}
+		if err := s.startPrometheusExpiration(ctx); err != nil {
+			return err
+		}
 	}
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
@@ -624,6 +646,17 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		s.startPrometheusExportServer,
 		s.startHTTPListeners,
 	)
+}
+
+func registerPrometheusPublicEndpoint() error {
+	endpoint, err := metrics.ConfiguredPublicEndpoint()
+	if err != nil {
+		return fmt.Errorf("configure prometheus public endpoint: %w", err)
+	}
+	if !endpoint.Enabled {
+		public_api.Register(http.MethodGet, endpoint.URI, http.HandlerFunc(prometheusplugin.MetricsHandler))
+	}
+	return nil
 }
 
 func (s *Server) startServing(
@@ -738,6 +771,7 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 		if err := s.streamRuntime.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
+		metrics.SetStreamRoutes(nil)
 	}
 	if s.routes != nil {
 		s.routes.Close()
@@ -896,6 +930,7 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	}
 	s.streamRuntime = runtime
 	s.lifecycleMu.Unlock()
+	metrics.SetStreamRoutes(streamRouteIDs(routes))
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
 	return nil
 }
@@ -918,30 +953,35 @@ func (s *Server) startPrometheusExportServer() error {
 	if config.GlobalConfig == nil {
 		return nil
 	}
-	if !slices.Contains(config.GlobalConfig.Plugins, "prometheus") {
+	if !prometheusEnabled(config.GlobalConfig) {
 		return nil
 	}
 	if err := metrics.Init(); err != nil {
 		return fmt.Errorf("initialize prometheus metrics: %w", err)
 	}
-	exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
-	exporter, _, err := metrics.StartExportServer(metrics.ExportServerConfig{
-		Enabled: exportConfig.Enabled,
-		URI:     exportConfig.ExportURI,
-		Address: exportConfig.Address(),
-	})
+	exportConfig, err := metrics.ConfiguredExportServer()
+	if err != nil {
+		return fmt.Errorf("configure prometheus export server: %w", err)
+	}
+	exporter, _, err := metrics.StartExportServer(exportConfig)
 	if err != nil {
 		return fmt.Errorf("start prometheus export server: %w", err)
 	}
 	s.lifecycleMu.Lock()
 	if s.shutdownRequested {
 		s.lifecycleMu.Unlock()
-		_ = exporter.Close()
+		if exporter != nil {
+			_ = exporter.Close()
+		}
 		return context.Canceled
 	}
 	s.prometheusServer = exporter
 	s.lifecycleMu.Unlock()
 	return nil
+}
+
+func prometheusEnabled(cfg *config.Config) bool {
+	return cfg != nil && slices.Contains(cfg.Plugins, "prometheus")
 }
 
 func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {
@@ -957,7 +997,21 @@ func (s *Server) reloadStreamRoutes() error {
 	if err != nil {
 		return err
 	}
-	return s.streamRuntime.Reload(routes)
+	if err := s.streamRuntime.Reload(routes); err != nil {
+		return err
+	}
+	metrics.SetStreamRoutes(streamRouteIDs(routes))
+	return nil
+}
+
+func streamRouteIDs(routes []resource.StreamRoute) []string {
+	ids := make([]string, 0, len(routes))
+	for _, route := range routes {
+		if route.ID != "" {
+			ids = append(ids, route.ID)
+		}
+	}
+	return ids
 }
 
 func resolveStreamRoutes(
@@ -1020,6 +1074,7 @@ func routeEventBucket(event *store.Event) (string, bool) {
 }
 
 func logStreamResult(result streamruntime.Result) {
+	metrics.RecordStreamConnection(result.RouteID)
 	if result.Err != nil {
 		logger.Errorf(
 			"stream route %s ended with error: protocol=%s remote=%s err=%s",
@@ -1333,51 +1388,4 @@ func frontendPlainHTTP2Enabled() bool {
 		}
 	}
 	return false
-}
-
-type prometheusExportServerConfig struct {
-	Enabled    bool
-	ExportURI  string
-	ExportIP   string
-	ExportPort int
-}
-
-func newPrometheusExportServerConfig(attr map[string]any) prometheusExportServerConfig {
-	cfg := prometheusExportServerConfig{
-		Enabled:    true,
-		ExportURI:  "/apisix/prometheus/metrics",
-		ExportIP:   "127.0.0.1",
-		ExportPort: 9091,
-	}
-
-	if attr == nil {
-		return cfg
-	}
-
-	if v, ok := attr["enable_export_server"].(bool); ok {
-		cfg.Enabled = v
-	}
-	if v, ok := attr["export_uri"].(string); ok && v != "" {
-		cfg.ExportURI = v
-	}
-	if v, ok := attr["export_ip"].(string); ok && v != "" {
-		cfg.ExportIP = v
-	}
-	if v, ok := attr["export_port"]; ok {
-		cfg.ExportPort = cast.ToInt(v)
-	}
-	if v, ok := attr["export_addr"].(map[string]any); ok {
-		if ip, ok := v["ip"].(string); ok && ip != "" {
-			cfg.ExportIP = ip
-		}
-		if port, ok := v["port"]; ok {
-			cfg.ExportPort = cast.ToInt(port)
-		}
-	}
-
-	return cfg
-}
-
-func (c prometheusExportServerConfig) Address() string {
-	return net.JoinHostPort(c.ExportIP, strconv.Itoa(c.ExportPort))
 }

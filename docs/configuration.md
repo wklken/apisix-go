@@ -90,7 +90,8 @@ path, which intentionally ignores Markdown-only changes.
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
 | `apisix.data_encryption` | Configures encrypted resource-field handling. |
 | `nginx_config.http.keepalive_timeout` | Maps to `http.Server.IdleTimeout`. |
-| `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. `http-data-plane-v1` requires `client_body_timeout` to be positive; the checked-in production value is 60 seconds. |
+| `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. `client_body_timeout` defaults to 60 seconds and must be positive in every profile. |
+| `nginx_config.http.client_max_body_size` | Bounds ingress request bodies before route/plugin processing. It defaults to 10 MiB and must be positive in every profile; explicitly setting zero no longer selects an unlimited body. |
 | `nginx_config.http.send_timeout` | Must remain zero. A non-zero value fails startup because Go `net/http` cannot reproduce NGINX write-idle timeout semantics without imposing an absolute response deadline. |
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
 | `deployment.etcd.health_check_timeout` | Sets the interval in seconds between independent etcd reachability probes. It defaults to 10 seconds when omitted or non-positive. Each probe is separately bounded by `deployment.etcd.timeout`; this field is an interval, not a request deadline. |

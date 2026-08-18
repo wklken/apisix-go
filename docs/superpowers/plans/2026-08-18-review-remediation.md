@@ -135,16 +135,16 @@ git commit -m "fix(proxy-cache): enforce memory zone capacity"
 - Modify: `pkg/plugin/function_upstream/plugin.go`
 - Modify: `pkg/plugin/function_upstream/plugin_test.go`
 - Modify: `docs/configuration.md`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Consumes: existing `server.limitRequestBody`, `client_body_timeout`, and `base.ReadRequestBody`.
 - Produces: omitted settings default to 10 MiB and 60 seconds; explicitly non-positive settings fail load; function-upstream uses the canonical body cache.
 
-- [ ] **Step 1: Add failing tests for omitted defaults, explicit zero rejection, and function-upstream propagation of `http.MaxBytesError`**
-- [ ] **Step 2: Run the focused tests and observe zero/unbounded behavior**
-- [ ] **Step 3: Install Viper defaults before decode, validate both values are positive for every profile, and replace raw `io.ReadAll(r.Body)` with `base.ReadRequestBody(r)`**
-- [ ] **Step 4: Run config/server/function-upstream tests, scoped lint, update docs/ledger, and commit**
+- [x] **Step 1: Add failing tests for omitted defaults, explicit zero rejection, and function-upstream propagation of `http.MaxBytesError`**
+- [x] **Step 2: Run the focused tests and observe zero/unbounded behavior**
+- [x] **Step 3: Install Viper defaults before decode, validate both values are positive for every profile, and replace raw `io.ReadAll(r.Body)` with `base.ReadRequestBody(r)`**
+- [x] **Step 4: Run config/server/function-upstream tests, scoped lint, update docs/ledger, and commit**
 
 Commit:
 

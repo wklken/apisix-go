@@ -169,11 +169,10 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 		return nil, fmt.Errorf("invalid function_uri: %w", err)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return nil, fmt.Errorf("read request body: %w", err)
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	extension := chi.URLParam(r, "ext")
 	if extension == "" {

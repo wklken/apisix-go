@@ -63,7 +63,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | SEC-001 | P1 | Correct | Not applicable | adjust | Follow-up |
 | SEC-002 | P1 | Correct | Not applicable | as-is | Follow-up |
 | BUG-002 | P1 | Correct | Not applicable | adjust | Fixed in `fix(proxy-cache): enforce memory zone capacity` |
-| BUG-003 | P1 | Correct | Not applicable | adjust | Follow-up |
+| BUG-003 | P1 | Correct | Not applicable | adjust | Fixed in `fix(config): bound request bodies by default` |
 | BUG-004 | P1 | Correct | Not applicable | replace | Follow-up，需配置面语义设计 |
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
 | BUG-006 | P2 | Correct | Not applicable | as-is | Follow-up |
@@ -151,6 +151,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 既有报告的 gateway-wide zero limit 已经覆盖 OpenCode 主结论。OpenCode 补充了受影响的直接完整读体调用方，包括 `body_transformer`、`function_upstream`、`degraphql`、`chaitin_waf`、`request_validation` 和多类 AI 插件。
 
 修复不能只改 production profile：普通/default profile 也应有正的全局上限；直接 `io.ReadAll` 调用方仍应使用 bounded helper，形成纵深防护。
+
+Remediation：配置解码前为 `client_max_body_size` 和 `client_body_timeout` 安装 10 MiB/60 秒默认值，并在所有 profile 中拒绝显式非正值。`function-upstream` 改用共享 request-body helper，保留 `*http.MaxBytesError` 错误链并关闭已读取 body。修复前测试观察到省略配置解码为零、显式零被接受、body timeout 非正值被接受以及失败读体未关闭；修复后 config/server/function-upstream 全包测试、scoped lint 和 build 通过。
 
 ### SEC-003 → Codex Security AES-CBC finding
 

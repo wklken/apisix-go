@@ -17,6 +17,16 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	function := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
@@ -188,6 +198,22 @@ func TestProgressTimeoutPreservesBodyCarryingRequests(t *testing.T) {
 
 	if response.Code != http.StatusOK || response.Body.String() != "request body" {
 		t.Fatalf("function response = %d/%q, want 200/request body", response.Code, response.Body.String())
+	}
+}
+
+func TestBuildRequestPropagatesMaxBytesError(t *testing.T) {
+	p := newTestPlugin(t, Config{FunctionURI: "http://function.example"})
+	body := &closeTrackingBody{Reader: strings.NewReader("oversized")}
+	request := httptest.NewRequest(http.MethodPost, "/function", body)
+	request.Body = http.MaxBytesReader(httptest.NewRecorder(), request.Body, 4)
+
+	_, err := p.buildRequest(request)
+	var maxBytesErr *http.MaxBytesError
+	if !errors.As(err, &maxBytesErr) {
+		t.Fatalf("buildRequest() error = %v, want *http.MaxBytesError", err)
+	}
+	if !body.closed {
+		t.Fatal("buildRequest() did not close the bounded request body after the failed read")
 	}
 }
 

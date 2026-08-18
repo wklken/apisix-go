@@ -213,9 +213,6 @@ func buildCapabilityRegistry() map[string]CapabilitySpec {
 			}
 			spec.RequestOwners = append(spec.RequestOwners, RequestOwnerSeparateSubsystem)
 		}
-		if identity == "request-context" {
-			spec.Finalizer = FinalizerSnapshot
-		}
 		if isServerlessIdentity(identity) {
 			spec.Capabilities |= CapabilityRequestRewrite | CapabilityRequestAccess |
 				CapabilityBeforeProxy | CapabilityHeaderFilter | CapabilityBufferedBodyFilter |
@@ -257,7 +254,7 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityFinalizer,
 		"limit-conn",
 	)
-	add("Plan 12", CapabilitySystem|CapabilityRequestRewrite|CapabilityFinalizer, "request-context")
+	add("Plan 12", CapabilitySystem|CapabilityRequestRewrite, "request-context")
 	add(
 		"Plan 13",
 		CapabilityRequestRewrite|CapabilityConditionalTerminal,
@@ -434,6 +431,10 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		CapabilitySystem|CapabilitySeparateSubsystem,
 		"batch-requests",
 		"node-status",
+	)
+	add(
+		"Plan 17",
+		CapabilitySystem|CapabilitySeparateSubsystem|CapabilityLog,
 		"prometheus",
 	)
 	add(
@@ -595,6 +596,7 @@ func isLogIdentity(identity string) bool {
 		return true
 	}
 	return slices.Contains([]string{
+		"prometheus",
 		"clickhouse-logger", "datadog", "elasticsearch-logger", "file-logger", "google-cloud-logging",
 		"http-logger", "kafka-logger", "lago", "loggly", "loki-logger", "rocketmq-logger",
 		"skywalking-logger", "sls-logger", "splunk-hec-logging", "syslog", "tcp-logger",
@@ -603,9 +605,6 @@ func isLogIdentity(identity string) bool {
 }
 
 func finalizerForIdentity(identity string) (FinalizerKind, bool) {
-	if identity == "request-context" {
-		return FinalizerSnapshot, true
-	}
 	if slices.Contains([]string{
 		"limit-conn", "api-breaker", "ai-rate-limiting", "opentelemetry", "skywalking", "zipkin",
 	}, identity) {

@@ -73,6 +73,11 @@ func (r *ClusterRegistry) Acquire(config ClusterConfig) (*ClusterLease, error) {
 	if err != nil {
 		return nil, err
 	}
+	if statusObserver, ok := r.observer.(UpstreamStatusObserver); ok {
+		for _, target := range sortedClusterTargets(config.Targets) {
+			statusObserver.SetUpstreamStatus(config.Name, target.Target, true)
+		}
+	}
 	r.entries[key] = &clusterEntry{cluster: cluster, refs: 1}
 	return &ClusterLease{cluster: cluster, release: r.release(key)}, nil
 }
@@ -91,16 +96,26 @@ func (r *ClusterRegistry) release(key ClusterKey) func() {
 			return
 		}
 		delete(r.entries, key)
-		deleteMetrics := true
+		remainingTargets := make(map[string]struct{})
+		sameNameRemaining := false
 		for _, remaining := range r.entries {
 			if remaining.cluster.config.Name == entry.cluster.config.Name {
-				deleteMetrics = false
-				break
+				sameNameRemaining = true
+				for target := range remaining.cluster.config.Targets {
+					remainingTargets[target] = struct{}{}
+				}
 			}
 		}
-		if !deleteMetrics {
-			r.mu.Unlock()
+		if sameNameRemaining {
 			entry.cluster.Close()
+			if statusObserver, ok := r.observer.(UpstreamStatusObserver); ok {
+				for target := range entry.cluster.config.Targets {
+					if _, retained := remainingTargets[target]; !retained {
+						statusObserver.DeleteUpstreamStatus(entry.cluster.config.Name, target)
+					}
+				}
+			}
+			r.mu.Unlock()
 			return
 		}
 		// Keep replacement acquisition serialized through cluster shutdown and

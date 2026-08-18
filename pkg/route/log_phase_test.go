@@ -442,7 +442,7 @@ func (p *metadataLogContractPlugin) LogCapturePolicy() base.LogCapturePolicy {
 	return base.LogCapturePolicy{RequestBodyBytes: 7, ResponseBodyBytes: 9}
 }
 
-func TestMetadataSnapshotOwnerPreservesRequestAndFiltersDetachedLogPhase(t *testing.T) {
+func TestMetadataRequestContextOwnsOnlyRequestPhase(t *testing.T) {
 	target := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "request-context",
 	}}
@@ -461,28 +461,20 @@ func TestMetadataSnapshotOwnerPreservesRequestAndFiltersDetachedLogPhase(t *test
 	if _, ok := wrapper.(base.LogPhasePlugin); ok {
 		t.Fatalf("metadata request-context gained undeclared log phase: %T", wrapper)
 	}
-	finalizer, ok := wrapper.(base.SnapshotFinalizerPlugin)
-	if !ok {
-		t.Fatalf("metadata request-context lost snapshot finalizer: %T", wrapper)
+	if _, ok := wrapper.(base.SnapshotFinalizerPlugin); ok {
+		t.Fatalf("metadata request-context retained removed snapshot finalizer: %T", wrapper)
 	}
-	policy, ok := wrapper.(base.LogCapturePolicyPlugin)
-	if !ok || policy.LogCapturePolicy() != (base.LogCapturePolicy{RequestBodyBytes: 7, ResponseBodyBytes: 9}) {
-		t.Fatalf("metadata request-context capture policy = %#v/%v", policy, ok)
+	if _, ok := wrapper.(base.LogCapturePolicyPlugin); ok {
+		t.Fatalf("metadata request-context retained log capture policy: %T", wrapper)
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/?enabled=yes", nil)
 	if result := requestPhase.RunRequestPhase(httptest.NewRecorder(), request); result.Request == nil {
 		t.Fatal("RunRequestPhase() returned nil request")
 	}
-	// A detached snapshot, not a live request, drives the log-time filter.
-	snapshot := base.LogSnapshot{}
-	snapshot.Request.Query = url.Values{"enabled": {"yes"}}
-	if err := finalizer.RunSnapshotFinalizer(snapshot); err != nil {
-		t.Fatalf("RunSnapshotFinalizer() error = %v", err)
-	}
-	snapshot.Request.Query.Set("enabled", "no")
-	_ = finalizer.RunSnapshotFinalizer(snapshot)
-	if target.requestCalls != 1 || target.logCalls != 0 || target.finalizerCalls != 1 {
+	request = httptest.NewRequest(http.MethodGet, "/?enabled=no", nil)
+	_ = requestPhase.RunRequestPhase(httptest.NewRecorder(), request)
+	if target.requestCalls != 1 || target.logCalls != 0 || target.finalizerCalls != 0 {
 		t.Fatalf(
 			"callback counts = request:%d log:%d finalizer:%d",
 			target.requestCalls,

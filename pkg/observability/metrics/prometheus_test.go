@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -214,7 +215,7 @@ func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
 	cfg, err := newPrometheusMetricConfig(map[string]any{
 		"metric_prefix":       "gateway_",
-		"default_buckets":     []any{10, 50.5, int64(100), "200"},
+		"default_buckets":     []any{10, 50.5, int64(100), 200},
 		"llm_latency_buckets": []any{5, 25, 125},
 		"metrics": map[string]any{
 			"http_status": map[string]any{
@@ -245,6 +246,174 @@ func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.ExtraLabels[httpStatusMetric], wantLabels) {
 		t.Fatalf("http_status extra labels = %#v, want %#v", cfg.ExtraLabels[httpStatusMetric], wantLabels)
+	}
+}
+
+func TestPrometheusMetricConfigRejectsMalformedConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		attr map[string]any
+	}{
+		{"metric prefix type", map[string]any{"metric_prefix": 123}},
+		{"metric prefix empty", map[string]any{"metric_prefix": ""}},
+		{"metric prefix invalid", map[string]any{"metric_prefix": "gateway-"}},
+		{"bucket strings", map[string]any{"default_buckets": []any{"10"}}},
+		{"bucket nan", map[string]any{"default_buckets": []any{math.NaN()}}},
+		{"bucket infinity", map[string]any{"default_buckets": []any{math.Inf(1)}}},
+		{"bucket duplicate", map[string]any{"default_buckets": []any{1, 1}}},
+		{"bucket descending", map[string]any{"default_buckets": []any{2, 1}}},
+		{"metrics type", map[string]any{"metrics": []any{}}},
+		{"known metric type", map[string]any{"metrics": map[string]any{httpStatusMetric: "bad"}}},
+		{"official metric type", map[string]any{"metrics": map[string]any{"node_info": "bad"}}},
+		{
+			"unsupported official expire",
+			map[string]any{"metrics": map[string]any{"node_info": map[string]any{"expire": -1}}},
+		},
+		{
+			"unsupported official extra labels",
+			map[string]any{"metrics": map[string]any{"node_info": map[string]any{"extra_labels": []any{}}}},
+		},
+		{
+			"unsupported request metric field",
+			map[string]any{"metrics": map[string]any{httpStatusMetric: map[string]any{"unknown": true}}},
+		},
+		{
+			"extra labels type",
+			map[string]any{"metrics": map[string]any{httpStatusMetric: map[string]any{"extra_labels": "bad"}}},
+		},
+		{
+			"extra label shape",
+			map[string]any{"metrics": map[string]any{httpStatusMetric: map[string]any{"extra_labels": []any{"bad"}}}},
+		},
+		{
+			"extra label name",
+			map[string]any{
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{
+						"extra_labels": []any{map[string]any{"bad-name": "$uri"}},
+					},
+				},
+			},
+		},
+		{
+			"extra label collision",
+			map[string]any{
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{
+						"extra_labels": []any{map[string]any{"code": "$uri"}},
+					},
+				},
+			},
+		},
+		{
+			"extra label variable",
+			map[string]any{
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{
+						"extra_labels": []any{map[string]any{"extra": "uri"}},
+					},
+				},
+			},
+		},
+		{
+			"upstream status extra label",
+			map[string]any{
+				"metrics": map[string]any{
+					upstreamStatusMetric: map[string]any{
+						"extra_labels": []any{map[string]any{"zone": "$zone"}},
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newPrometheusMetricConfig(test.attr); err == nil {
+				t.Fatal("newPrometheusMetricConfig() error = nil")
+			}
+		})
+	}
+}
+
+func TestConfiguredPublicEndpointRejectsMalformedFields(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	tests := []struct {
+		name string
+		attr map[string]any
+	}{
+		{"bool", map[string]any{"enable_export_server": "false"}},
+		{"uri", map[string]any{"export_uri": "/metrics?format=text"}},
+		{"ip", map[string]any{"export_ip": "localhost"}},
+		{"port", map[string]any{"export_port": "9091"}},
+		{"nested address", map[string]any{"export_addr": "127.0.0.1:9091"}},
+		{"nested port", map[string]any{"export_addr": map[string]any{"port": 0}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{"prometheus": test.attr}}
+			if _, err := ConfiguredPublicEndpoint(); err == nil {
+				t.Fatal("ConfiguredPublicEndpoint() error = nil")
+			}
+		})
+	}
+}
+
+func TestConfiguredPublicEndpointUsesCustomURIWhenExporterDisabled(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{
+		"prometheus": {"enable_export_server": false, "export_uri": "/custom/metrics"},
+	}}
+	endpoint, err := ConfiguredPublicEndpoint()
+	if err != nil {
+		t.Fatalf("ConfiguredPublicEndpoint() error = %v", err)
+	}
+	if endpoint.Enabled || endpoint.URI != "/custom/metrics" {
+		t.Fatalf("ConfiguredPublicEndpoint() = %#v, want disabled /custom/metrics", endpoint)
+	}
+}
+
+func TestConfiguredExportServerUsesValidatedAddress(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{
+		"prometheus": {
+			"enable_export_server": true,
+			"export_uri":           "/custom/metrics",
+			"export_addr": map[string]any{
+				"ip":   "0.0.0.0",
+				"port": 19091,
+			},
+		},
+	}}
+
+	cfg, err := ConfiguredExportServer()
+	if err != nil {
+		t.Fatalf("ConfiguredExportServer() error = %v", err)
+	}
+	if !cfg.Enabled || cfg.URI != "/custom/metrics" || cfg.Address != "0.0.0.0:19091" {
+		t.Fatalf("ConfiguredExportServer() = %#v, want enabled custom endpoint", cfg)
+	}
+}
+
+func TestStartExportServerRejectsInvalidURIWithoutPanic(t *testing.T) {
+	for _, uri := range []string{"", "metrics", "/metrics?x=1", "/metrics/{name}", "/metrics *"} {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("StartExportServer(%q) panicked: %v", uri, recovered)
+				}
+			}()
+			_, _, err := StartExportServer(ExportServerConfig{
+				Enabled: true,
+				URI:     uri,
+				Address: "127.0.0.1:0",
+			})
+			if err == nil {
+				t.Fatalf("StartExportServer(%q) error = nil", uri)
+			}
+		}()
 	}
 }
 
@@ -283,15 +452,11 @@ func TestPrometheusStatusVariablesUseDecimalLabels(t *testing.T) {
 }
 
 func TestPrometheusMetricConfigKeepsDefaultsForInvalidBuckets(t *testing.T) {
-	cfg, err := newPrometheusMetricConfig(map[string]any{
+	_, err := newPrometheusMetricConfig(map[string]any{
 		"default_buckets": []any{10, "not-a-number"},
 	})
-	if err != nil {
-		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
-	}
-
-	if !reflect.DeepEqual(cfg.Buckets, defaultLatencyBuckets) {
-		t.Fatalf("Buckets = %v, want default %v", cfg.Buckets, defaultLatencyBuckets)
+	if err == nil {
+		t.Fatal("newPrometheusMetricConfig() error = nil for invalid bucket")
 	}
 }
 
@@ -299,10 +464,13 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 	t.Helper()
 	old := struct {
 		connections          *prometheus.GaugeVec
-		requests             prometheus.Counter
+		requests             prometheus.Gauge
 		etcdReachable        prometheus.Gauge
 		hostInfo             *prometheus.GaugeVec
 		etcdRevision         prometheus.Gauge
+		etcdModifyIndexes    *prometheus.GaugeVec
+		upstreamStatus       *prometheus.GaugeVec
+		streamConnections    *prometheus.CounterVec
 		httpStatus           *prometheus.CounterVec
 		httpLatency          *prometheus.HistogramVec
 		bandwidth            *prometheus.CounterVec
@@ -321,22 +489,31 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		llmPromptSeries      *metricSeriesTracker
 		llmCompletionSeries  *metricSeriesTracker
 		llmActiveSeries      *metricSeriesTracker
+		upstreamStatusSeries *metricSeriesTracker
 	}{
 		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision,
+		EtcdModifyIndexes, UpstreamStatus, StreamConnections,
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries, LoggerBatchPendingEntries, LoggerBatchEvents,
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections, prometheusExtraLabels,
 		httpStatusSeries, httpLatencySeries, bandwidthSeries,
-		llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries,
+		llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries, upstreamStatusSeries,
 	}
 	restore := func() {
-		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision = old.connections, old.requests, old.etcdReachable, old.hostInfo, old.etcdRevision
-		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries = old.httpStatus, old.httpLatency, old.bandwidth, old.batchProcessEntries
+		Connections, Requests = old.connections, old.requests
+		EtcdReachable, HostInfo, EtcdRevision = old.etcdReachable, old.hostInfo, old.etcdRevision
+		EtcdModifyIndexes, UpstreamStatus = old.etcdModifyIndexes, old.upstreamStatus
+		StreamConnections = old.streamConnections
+		HttpStatus, HttpLatency = old.httpStatus, old.httpLatency
+		Bandwidth, BatchProcessEntries = old.bandwidth, old.batchProcessEntries
 		LoggerBatchPendingEntries, LoggerBatchEvents = old.loggerBatchPending, old.loggerBatchEvents
-		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections = old.llmLatency, old.llmPromptTokens, old.llmCompletionTokens, old.llmActiveConnections
+		LLMLatency, LLMPromptTokens = old.llmLatency, old.llmPromptTokens
+		LLMCompletionTokens, LLMActiveConnections = old.llmCompletionTokens, old.llmActiveConnections
 		prometheusExtraLabels = old.extraLabels
-		httpStatusSeries, httpLatencySeries, bandwidthSeries = old.httpStatusSeries, old.httpLatencySeries, old.bandwidthSeries
+		httpStatusSeries, httpLatencySeries = old.httpStatusSeries, old.httpLatencySeries
+		bandwidthSeries = old.bandwidthSeries
 		llmLatencySeries, llmPromptSeries = old.llmLatencySeries, old.llmPromptSeries
 		llmCompletionSeries, llmActiveSeries = old.llmCompletionSeries, old.llmActiveSeries
+		upstreamStatusSeries = old.upstreamStatusSeries
 	}
 	t.Cleanup(restore)
 
@@ -373,7 +550,10 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		"llm_model",
 	}
 	prometheusExtraLabels = nil
-	Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "http_requests_total"})
+	Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: prefix + "http_requests_total"})
+	EtcdModifyIndexes = nil
+	UpstreamStatus = nil
+	StreamConnections = nil
 	HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "http_status"}, httpLabels)
 	HttpLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: prefix + "http_latency"}, commonLabels)
 	Bandwidth = prometheus.NewCounterVec(prometheus.CounterOpts{Name: prefix + "bandwidth"}, commonLabels)
@@ -392,7 +572,7 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 	installMetricVectors(t, "test_enable_")
 
 	install := func() {
-		Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_enable_requests"})
+		Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_enable_requests"})
 		HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_enable_status"}, []string{"code"})
 		HttpLatency = prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Name: "test_enable_latency"},
@@ -416,7 +596,7 @@ func TestHTTPRequestMetricsEnabledRequiresAllVectors(t *testing.T) {
 		t.Fatal("enabled with no metric vectors installed")
 	}
 	for _, single := range []func(){
-		func() { Requests = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_one_requests"}) },
+		func() { Requests = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_one_requests"}) },
 		func() {
 			HttpStatus = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_one_status"}, []string{"code"})
 		},
@@ -641,6 +821,59 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	}
 	if requestPanics == nil {
 		t.Fatal("Init() did not install request panic metric")
+	}
+	RecordHTTPRequestTotal()
+	RecordEtcdAppliedRevision(42)
+	setUpstreamStatus("orders", "127.0.0.1:8080", true)
+	SetStreamRoutes([]string{"stream-route"})
+	RecordStreamConnection("stream-route")
+	t.Cleanup(func() { SetStreamRoutes(nil) })
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather initialized metrics: %v", err)
+	}
+	byName := make(map[string]*dto.MetricFamily, len(families))
+	for _, family := range families {
+		byName[family.GetName()] = family
+	}
+	for _, contract := range []struct {
+		name   string
+		typeID dto.MetricType
+		labels []string
+	}{
+		{name: "unit_nginx_http_current_connections", typeID: dto.MetricType_GAUGE, labels: []string{"state"}},
+		{name: "unit_http_requests_total", typeID: dto.MetricType_GAUGE},
+		{name: "unit_node_info", typeID: dto.MetricType_GAUGE, labels: []string{"hostname", "version"}},
+		{name: "unit_etcd_modify_indexes", typeID: dto.MetricType_GAUGE, labels: []string{"key"}},
+		{name: "unit_upstream_status", typeID: dto.MetricType_GAUGE, labels: []string{"name", "ip", "port"}},
+		{name: "unit_stream_connection_total", typeID: dto.MetricType_COUNTER, labels: []string{"route"}},
+	} {
+		family := byName[contract.name]
+		if family == nil {
+			t.Errorf("official metric family %q was not gathered", contract.name)
+			continue
+		}
+		if got := family.GetType(); got != contract.typeID {
+			t.Errorf("metric family %q type = %s, want %s", contract.name, got, contract.typeID)
+		}
+		if len(family.Metric) == 0 {
+			t.Errorf("metric family %q has no children", contract.name)
+			continue
+		}
+		gotLabels := make(map[string]struct{}, len(family.Metric[0].Label))
+		for _, pair := range family.Metric[0].Label {
+			gotLabels[pair.GetName()] = struct{}{}
+		}
+		if len(gotLabels) != len(contract.labels) {
+			t.Errorf("metric family %q labels = %v, want %v", contract.name, gotLabels, contract.labels)
+			continue
+		}
+		for _, label := range contract.labels {
+			if _, ok := gotLabels[label]; !ok {
+				t.Errorf("metric family %q is missing label %q", contract.name, label)
+			}
+		}
 	}
 	stop, err := StartExpiration(context.Background())
 	if err != nil {

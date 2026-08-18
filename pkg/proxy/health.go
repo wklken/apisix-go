@@ -138,6 +138,8 @@ type HealthAwareLoadBalance struct {
 	targets  []string
 	states   map[string]*healthState
 	config   PassiveHealthConfig
+	name     string
+	observer ClusterObserver
 	mu       sync.Mutex
 }
 
@@ -191,46 +193,71 @@ func (lb *HealthAwareLoadBalance) Next() string {
 
 func (lb *HealthAwareLoadBalance) ReportHTTP(target string, status int) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	if lb.config.Type == "tcp" {
+		lb.mu.Unlock()
 		return
 	}
 	state, ok := lb.states[target]
 	if !ok || state.unhealthy {
+		lb.mu.Unlock()
 		return
 	}
+	becameUnhealthy := false
 	if _, unhealthy := lb.config.UnhealthyStatuses[status]; unhealthy {
 		state.httpFailures++
 		if lb.config.HTTPFailures > 0 && state.httpFailures >= lb.config.HTTPFailures {
 			state.unhealthy = true
+			becameUnhealthy = true
 		}
-		return
-	}
-	if _, healthy := lb.config.HealthyStatuses[status]; healthy {
+	} else if _, healthy := lb.config.HealthyStatuses[status]; healthy {
 		state.httpFailures = 0
 		state.tcpFailures = 0
 		state.timeouts = 0
 	}
+	if becameUnhealthy && lb.observer != nil {
+		lb.observer.SetHealth(lb.name, target, false)
+	}
+	lb.mu.Unlock()
 }
 
 func (lb *HealthAwareLoadBalance) ReportTCPFailure(target string, timeout bool) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	state, ok := lb.states[target]
 	if !ok || state.unhealthy {
+		lb.mu.Unlock()
 		return
 	}
+	becameUnhealthy := false
 	if timeout {
 		state.timeouts++
 		if lb.config.Timeouts > 0 && state.timeouts >= lb.config.Timeouts {
 			state.unhealthy = true
+			becameUnhealthy = true
 		}
-		return
+	} else {
+		state.tcpFailures++
+		if lb.config.TCPFailures > 0 && state.tcpFailures >= lb.config.TCPFailures {
+			state.unhealthy = true
+			becameUnhealthy = true
+		}
 	}
-	state.tcpFailures++
-	if lb.config.TCPFailures > 0 && state.tcpFailures >= lb.config.TCPFailures {
-		state.unhealthy = true
+	if becameUnhealthy && lb.observer != nil {
+		lb.observer.SetHealth(lb.name, target, false)
 	}
+	lb.mu.Unlock()
+}
+
+func (lb *HealthAwareLoadBalance) setObserver(name string, observer ClusterObserver) {
+	lb.mu.Lock()
+	lb.name = name
+	lb.observer = observer
+	lb.mu.Unlock()
+}
+
+func (lb *HealthAwareLoadBalance) clearObserver() {
+	lb.mu.Lock()
+	lb.observer = nil
+	lb.mu.Unlock()
 }
 
 func (lb *HealthAwareLoadBalance) IsHealthy(target string) bool {

@@ -40,8 +40,8 @@ func TestProxyRuntimeObserverRecordsBoundedSignals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gather private registry: %v", err)
 	}
-	if len(metrics) != 4 {
-		t.Fatalf("registered metric families = %d, want 4", len(metrics))
+	if len(metrics) != 5 {
+		t.Fatalf("registered metric families = %d, want 5", len(metrics))
 	}
 }
 
@@ -75,6 +75,54 @@ func TestProxyRuntimeObserverDeletesAllClusterSeries(t *testing.T) {
 	}
 	if len(metrics) != 0 {
 		t.Fatalf("metric families after cluster retirement = %d, want 0", len(metrics))
+	}
+}
+
+func TestOfficialUpstreamStatusUsesTargetLabelsAndRetiresChildren(t *testing.T) {
+	oldVector, oldTracker := UpstreamStatus, upstreamStatusSeries
+	UpstreamStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_official_upstream_status"}, []string{"name", "ip", "port"},
+	)
+	upstreamStatusSeries = newMetricSeriesTracker(10, 3, 0, nil, UpstreamStatus.DeleteLabelValues)
+	t.Cleanup(func() { UpstreamStatus, upstreamStatusSeries = oldVector, oldTracker })
+
+	setUpstreamStatus("orders", "http://127.0.0.1:8080", true)
+	if got := gaugeVecValue(t, UpstreamStatus.WithLabelValues("orders", "127.0.0.1", "8080")); got != 1 {
+		t.Fatalf("official upstream status = %v, want 1", got)
+	}
+	upstreamStatusSeries.deleteMatching(func(labels []string) bool { return labels[0] == "orders" })
+	if got := gaugeVecValue(t, UpstreamStatus.WithLabelValues("orders", "127.0.0.1", "8080")); got != 0 {
+		t.Fatalf("retired official upstream status = %v, want 0", got)
+	}
+}
+
+func TestProxyRuntimeObserverDeletesOneRetiredUpstreamTarget(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	observer := newProxyRuntimeObserver(registry)
+	observer.SetHealth("orders", "http://127.0.0.1:8080", true)
+	observer.SetHealth("orders", "http://127.0.0.1:8081", true)
+	observer.DeleteUpstreamStatus("orders", "http://127.0.0.1:8080")
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error = %v", err)
+	}
+	if len(families) != 2 {
+		t.Fatalf("upstream metric families after targeted delete = %#v, want health and status", families)
+	}
+	for _, family := range families {
+		if len(family.Metric) != 1 {
+			t.Fatalf("%s children after targeted delete = %#v, want one", family.GetName(), family.Metric)
+		}
+		labels := family.Metric[0].Label
+		for _, label := range labels {
+			if label.GetName() == "target" && label.GetValue() != "http://127.0.0.1:8081" {
+				t.Fatalf("retained health target = %q, want replacement target", label.GetValue())
+			}
+			if label.GetName() == "port" && label.GetValue() != "8081" {
+				t.Fatalf("retained status port = %q, want 8081", label.GetValue())
+			}
+		}
 	}
 }
 

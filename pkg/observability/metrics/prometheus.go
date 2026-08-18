@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +22,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 var (
@@ -28,10 +34,13 @@ var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 
 
 var (
 	Connections           *prometheus.GaugeVec
-	Requests              prometheus.Counter
+	Requests              prometheus.Gauge
 	EtcdReachable         prometheus.Gauge
 	HostInfo              *prometheus.GaugeVec
 	EtcdRevision          prometheus.Gauge
+	EtcdModifyIndexes     *prometheus.GaugeVec
+	UpstreamStatus        *prometheus.GaugeVec
+	StreamConnections     *prometheus.CounterVec
 	HttpStatus            *prometheus.CounterVec
 	HttpLatency           *prometheus.HistogramVec
 	Bandwidth             *prometheus.CounterVec
@@ -53,6 +62,7 @@ var (
 	llmPromptSeries       *metricSeriesTracker
 	llmCompletionSeries   *metricSeriesTracker
 	llmActiveSeries       *metricSeriesTracker
+	upstreamStatusSeries  *metricSeriesTracker
 	httpSeriesOverflow    *prometheus.CounterVec
 	llmSeriesOverflow     *prometheus.CounterVec
 	metricExpiration      *expirationRuntime
@@ -66,12 +76,25 @@ const (
 	llmPromptMetric        = "llm_prompt_tokens"
 	llmCompleteMetric      = "llm_completion_tokens"
 	llmActiveMetric        = "llm_active_connections"
+	upstreamStatusMetric   = "upstream_status"
+	streamConnectionMetric = "stream_connection_total"
 	defaultMaxMetricSeries = 10000
 	minMetricSeries        = 100
 	maxMetricSeries        = 100000
 )
 
 var expirableMetricNames = [...]string{
+	httpStatusMetric,
+	httpLatencyMetric,
+	bandwidthMetric,
+	llmLatencyMetric,
+	llmPromptMetric,
+	llmCompleteMetric,
+	llmActiveMetric,
+	upstreamStatusMetric,
+}
+
+var requestExtraLabelMetricNames = [...]string{
 	httpStatusMetric,
 	httpLatencyMetric,
 	bandwidthMetric,
@@ -86,11 +109,51 @@ type prometheusExtraLabel struct {
 	Variable string
 }
 
+const (
+	defaultPrometheusExportURI  = "/apisix/prometheus/metrics"
+	defaultPrometheusExportIP   = "127.0.0.1"
+	defaultPrometheusExportPort = 9091
+)
+
+// PublicEndpointConfig describes where the prometheus plugin should expose
+// metrics when the dedicated exporter is disabled.
+type PublicEndpointConfig struct {
+	Enabled bool
+	URI     string
+}
+
+// ConfiguredPublicEndpoint validates and returns the configured public-api
+// endpoint. The plugin boundary uses this accessor so endpoint routing is
+// derived from the same strict configuration contract as the exporter.
+func ConfiguredPublicEndpoint() (PublicEndpointConfig, error) {
+	cfg, err := ConfiguredExportServer()
+	if err != nil {
+		return PublicEndpointConfig{}, err
+	}
+	return PublicEndpointConfig{Enabled: cfg.Enabled, URI: cfg.URI}, nil
+}
+
+type prometheusEndpointConfig struct {
+	Enabled bool
+	URI     string
+	Address string
+}
+
 // ExportServerConfig describes an owned prometheus export HTTP server.
 type ExportServerConfig struct {
 	Enabled bool
 	URI     string
 	Address string
+}
+
+// ConfiguredExportServer validates the process-level exporter configuration
+// and returns the complete owned-server contract for the server lifecycle.
+func ConfiguredExportServer() (ExportServerConfig, error) {
+	cfg, err := configuredPrometheusEndpoint(prometheusPluginAttributes())
+	if err != nil {
+		return ExportServerConfig{}, err
+	}
+	return ExportServerConfig(cfg), nil
 }
 
 // StartExportServer binds and serves the prometheus export endpoint and
@@ -99,6 +162,12 @@ type ExportServerConfig struct {
 func StartExportServer(cfg ExportServerConfig) (*http.Server, net.Addr, error) {
 	if !cfg.Enabled {
 		return nil, nil, nil
+	}
+	if err := validatePrometheusURI(cfg.URI, "export_uri"); err != nil {
+		return nil, nil, err
+	}
+	if cfg.Address == "" {
+		return nil, nil, errors.New("prometheus export address must not be empty")
 	}
 	mux := http.NewServeMux()
 	mux.Handle(cfg.URI, promhttp.Handler())
@@ -119,6 +188,130 @@ func StartExportServer(cfg ExportServerConfig) (*http.Server, net.Addr, error) {
 		}
 	}()
 	return exportServer, listener.Addr(), nil
+}
+
+func prometheusPluginAttributes() map[string]any {
+	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
+		return nil
+	}
+	return config.GlobalConfig.PluginAttr["prometheus"]
+}
+
+func configuredPrometheusEndpoint(attr map[string]any) (prometheusEndpointConfig, error) {
+	cfg := prometheusEndpointConfig{
+		Enabled: true,
+		URI:     defaultPrometheusExportURI,
+	}
+	if attr == nil {
+		cfg.Address = net.JoinHostPort(
+			defaultPrometheusExportIP,
+			strconv.Itoa(defaultPrometheusExportPort),
+		)
+		return cfg, nil
+	}
+	if raw, ok := attr["enable_export_server"]; ok {
+		enabled, ok := raw.(bool)
+		if !ok {
+			return cfg, fmt.Errorf(
+				"plugin_attr.prometheus.enable_export_server must be a boolean, got %T",
+				raw,
+			)
+		}
+		cfg.Enabled = enabled
+	}
+	if raw, ok := attr["export_uri"]; ok {
+		uri, ok := raw.(string)
+		if !ok {
+			return cfg, fmt.Errorf("plugin_attr.prometheus.export_uri must be a string, got %T", raw)
+		}
+		if err := validatePrometheusURI(uri, "plugin_attr.prometheus.export_uri"); err != nil {
+			return cfg, err
+		}
+		cfg.URI = uri
+	}
+	ip := defaultPrometheusExportIP
+	port := defaultPrometheusExportPort
+	if raw, ok := attr["export_ip"]; ok {
+		value, ok := raw.(string)
+		if !ok || net.ParseIP(value) == nil {
+			return cfg, fmt.Errorf(
+				"plugin_attr.prometheus.export_ip must be a literal IP address, got %v",
+				raw,
+			)
+		}
+		ip = value
+	}
+	if raw, ok := attr["export_port"]; ok {
+		value, ok := strictEndpointPort(raw)
+		if !ok {
+			return cfg, fmt.Errorf(
+				"plugin_attr.prometheus.export_port must be an integer between 1 and 65535, got %v (%T)",
+				raw, raw,
+			)
+		}
+		port = value
+	}
+	if raw, ok := attr["export_addr"]; ok {
+		addr, ok := raw.(map[string]any)
+		if !ok {
+			return cfg, fmt.Errorf("plugin_attr.prometheus.export_addr must be an object, got %T", raw)
+		}
+		if rawIP, exists := addr["ip"]; exists {
+			value, ok := rawIP.(string)
+			if !ok || net.ParseIP(value) == nil {
+				return cfg, fmt.Errorf(
+					"plugin_attr.prometheus.export_addr.ip must be a literal IP address, got %v",
+					rawIP,
+				)
+			}
+			ip = value
+		}
+		if rawPort, exists := addr["port"]; exists {
+			value, ok := strictEndpointPort(rawPort)
+			if !ok {
+				return cfg, fmt.Errorf(
+					"plugin_attr.prometheus.export_addr.port must be an integer between 1 and 65535, got %v (%T)",
+					rawPort, rawPort,
+				)
+			}
+			port = value
+		}
+	}
+	cfg.Address = net.JoinHostPort(ip, strconv.Itoa(port))
+	return cfg, nil
+}
+
+func strictEndpointPort(raw any) (int, bool) {
+	value, ok := strictInt64(raw)
+	return int(value), ok && value >= 1 && value <= 65535
+}
+
+func validatePrometheusURI(uri, field string) error {
+	if uri == "" {
+		return fmt.Errorf("%s must be a non-empty absolute path", field)
+	}
+	if strings.IndexFunc(uri, func(r rune) bool {
+		switch r {
+		case '?', '#', '{', '}', '*', ' ', '\t', '\r', '\n':
+			return true
+		default:
+			return false
+		}
+	}) >= 0 {
+		return fmt.Errorf(
+			"%s must be a literal path without query, fragment, whitespace, or wildcard syntax",
+			field,
+		)
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil ||
+		parsed.Path != uri ||
+		!strings.HasPrefix(uri, "/") ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return fmt.Errorf("%s must be a literal absolute path", field)
+	}
+	return nil
 }
 
 type HTTPRequestMetrics struct {
@@ -162,14 +355,17 @@ func initMetrics() error {
 
 	Connections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: metricConfig.MetricPrefix + "http_current_connections",
-			Help: "Number of HTTP connections",
+			Name: metricConfig.MetricPrefix + "nginx_http_current_connections",
+			Help: "Number of HTTP connections by NGINX-compatible connection state",
 		}, []string{"state"},
 	)
+	for _, state := range []string{"active", "accepted", "handled", "reading", "writing", "waiting"} {
+		Connections.WithLabelValues(state).Set(0)
+	}
 
-	// pkg/plugin/request_context/plugin.go
-	Requests = prometheus.NewCounter(
-		prometheus.CounterOpts{
+	// pkg/server/server.go
+	Requests = prometheus.NewGauge(
+		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "http_requests_total",
 			Help: "The total number of client requests since APISIX started",
 		},
@@ -186,9 +382,7 @@ func initMetrics() error {
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "node_info",
 			Help: "Info of APISIX node",
-		}, []string{
-			"hostname",
-		},
+		}, []string{"hostname", "version"},
 	)
 
 	EtcdRevision = prometheus.NewGauge(
@@ -198,7 +392,33 @@ func initMetrics() error {
 		},
 	)
 
-	// pkg/plugin/request_context/plugin.go
+	EtcdModifyIndexes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + "etcd_modify_indexes",
+			Help: "Last successfully applied etcd modify index by APISIX resource key",
+		}, []string{"key"},
+	)
+
+	UpstreamStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + "upstream_status",
+			Help: "Configured upstream target health, 1 healthy and 0 unhealthy",
+		}, []string{"name", "ip", "port"},
+	)
+
+	StreamConnections = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: metricConfig.MetricPrefix + streamConnectionMetric,
+			Help: "Completed stream connections by bounded route",
+		}, []string{"route"},
+	)
+	streamRoutes.Lock()
+	streamRoutes.ids = nil
+	streamRoutes.limit = metricConfig.MaxHTTPSeries
+	streamRoutes.overflow = false
+	streamRoutes.Unlock()
+
+	// pkg/plugin/prometheus/plugin.go
 	httpStatusLabels := metricLabelNames(httpStatusMetric, []string{
 		"code",
 		"route",
@@ -392,6 +612,13 @@ func initMetrics() error {
 		llmSeriesOverflow.WithLabelValues(llmActiveMetric),
 		LLMActiveConnections.DeleteLabelValues,
 	)
+	upstreamStatusSeries = newMetricSeriesTracker(
+		metricConfig.MaxHTTPSeries,
+		3,
+		metricConfig.Expires[upstreamStatusMetric],
+		httpSeriesOverflow.WithLabelValues(upstreamStatusMetric),
+		UpstreamStatus.DeleteLabelValues,
+	)
 	metricExpiration = newExpirationRuntime(
 		httpStatusSeries,
 		httpLatencySeries,
@@ -400,20 +627,24 @@ func initMetrics() error {
 		llmPromptSeries,
 		llmCompletionSeries,
 		llmActiveSeries,
+		upstreamStatusSeries,
 	)
 
 	hostName, err := os.Hostname()
 	if err != nil || hostName == "" {
 		hostName = "unknown"
 	}
-	HostInfo.WithLabelValues(hostName).Set(1)
+	HostInfo.WithLabelValues(hostName, version.Version).Set(1)
 
-	prometheus.MustRegister(
+	for _, collector := range []prometheus.Collector{
 		Connections,
 		Requests,
 		EtcdReachable,
 		HostInfo,
 		EtcdRevision,
+		EtcdModifyIndexes,
+		UpstreamStatus,
+		StreamConnections,
 		HttpStatus,
 		HttpLatency,
 		Bandwidth,
@@ -436,7 +667,11 @@ func initMetrics() error {
 		requestPanics,
 		ConfigApplyFailures,
 		ConfigApplyReady,
-	)
+	} {
+		if err := prometheus.Register(collector); err != nil {
+			return fmt.Errorf("register prometheus collector: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -466,8 +701,7 @@ func BeginLLMRequest(r *http.Request) func() {
 }
 
 func HTTPRequestMetricsEnabled() bool {
-	return Requests != nil &&
-		HttpStatus != nil &&
+	return HttpStatus != nil &&
 		HttpLatency != nil &&
 		Bandwidth != nil &&
 		LLMLatency != nil &&
@@ -476,6 +710,9 @@ func HTTPRequestMetricsEnabled() bool {
 }
 
 func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
+	if !HTTPRequestMetricsEnabled() || r == nil {
+		return
+	}
 	common := []string{
 		entry.Route,
 		entry.Service,
@@ -503,7 +740,12 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		HttpStatus.WithLabelValues(actual...).Inc()
 	})
 
-	requestLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"request"}, common...))
+	requestLatencyLabels := appendExtraLabelValues(
+		httpLatencyMetric,
+		r,
+		entry,
+		append([]string{"request"}, common...),
+	)
 	httpLatencySeries.withSeries(requestLatencyLabels, func(actual []string) {
 		HttpLatency.WithLabelValues(actual...).Observe(float64(entry.RequestLatency))
 	})
@@ -518,22 +760,47 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 			HttpLatency.WithLabelValues(actual...).Observe(float64(entry.UpstreamLatency))
 		})
 	}
-	apisixLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))
+	apisixLatencyLabels := appendExtraLabelValues(
+		httpLatencyMetric,
+		r,
+		entry,
+		append([]string{"apisix"}, common...),
+	)
 	httpLatencySeries.withSeries(apisixLatencyLabels, func(actual []string) {
 		HttpLatency.WithLabelValues(actual...).
 			Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
 	})
 
-	ingressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))
+	ingressLabels := appendExtraLabelValues(
+		bandwidthMetric,
+		r,
+		entry,
+		append([]string{"ingress"}, common...),
+	)
 	bandwidthSeries.withSeries(ingressLabels, func(actual []string) {
 		Bandwidth.WithLabelValues(actual...).Add(float64(entry.IngressBytes))
 	})
-	egressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"egress"}, common...))
+	egressLabels := appendExtraLabelValues(
+		bandwidthMetric,
+		r,
+		entry,
+		append([]string{"egress"}, common...),
+	)
 	bandwidthSeries.withSeries(egressLabels, func(actual []string) {
 		Bandwidth.WithLabelValues(actual...).Add(float64(entry.EgressBytes))
 	})
 
 	recordLLMMetrics(r, entry)
+}
+
+// RecordHTTPRequestTotal records the process-level HTTP request gauge. It is
+// intentionally separate from route-owned status/latency recording because
+// APISIX's global request counter includes requests without a Prometheus
+// route binding.
+func RecordHTTPRequestTotal() {
+	if Requests != nil {
+		Requests.Inc()
+	}
 }
 
 func normalizedHTTPStatus(status int) string {
@@ -722,16 +989,42 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 		cfg.MaxLLMSeries = limit
 	}
 
-	if v, ok := attr["metric_prefix"].(string); ok && v != "" {
+	if raw, ok := attr["metric_prefix"]; ok {
+		v, ok := raw.(string)
+		if !ok || v == "" {
+			return cfg, fmt.Errorf(
+				"plugin_attr.prometheus.metric_prefix must be a non-empty string, got %v (%T)",
+				raw,
+				raw,
+			)
+		}
 		cfg.MetricPrefix = v
 	}
-	if buckets, ok := parseFloatBuckets(attr["default_buckets"]); ok {
+	if raw, ok := attr["default_buckets"]; ok {
+		buckets, err := parseFloatBuckets(raw, "plugin_attr.prometheus.default_buckets")
+		if err != nil {
+			return cfg, err
+		}
 		cfg.Buckets = buckets
 	}
-	if buckets, ok := parseFloatBuckets(attr["llm_latency_buckets"]); ok {
+	if raw, ok := attr["llm_latency_buckets"]; ok {
+		buckets, err := parseFloatBuckets(raw, "plugin_attr.prometheus.llm_latency_buckets")
+		if err != nil {
+			return cfg, err
+		}
 		cfg.LLMBuckets = buckets
 	}
-	cfg.ExtraLabels = parseExtraLabels(attr["metrics"])
+	if err := validateMetricNames(cfg.MetricPrefix); err != nil {
+		return cfg, err
+	}
+	extraLabels, err := parseExtraLabels(attr["metrics"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ExtraLabels = extraLabels
+	if err := validateMetricConfigEntries(attr["metrics"]); err != nil {
+		return cfg, err
+	}
 	expires, err := parseMetricExpires(attr["metrics"])
 	if err != nil {
 		return cfg, err
@@ -764,7 +1057,10 @@ func parseSeriesLimit(raw any, fieldName string) (int, error) {
 }
 
 func parseMetricExpires(raw any) (map[string]time.Duration, error) {
-	metricConfigs, ok := raw.(map[string]any)
+	metricConfigs, ok, err := metricConfigMap(raw)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, nil
 	}
@@ -772,11 +1068,19 @@ func parseMetricExpires(raw any) (map[string]time.Duration, error) {
 	var result map[string]time.Duration
 	const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
 	for _, metricName := range expirableMetricNames {
-		metricConfig, ok := metricConfigs[metricName].(map[string]any)
-		if !ok {
+		metricConfig, exists := metricConfigs[metricName]
+		if !exists {
 			continue
 		}
-		rawExpire, exists := metricConfig["expire"]
+		configMap, ok := metricConfig.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(
+				"plugin_attr.prometheus.metrics.%s must be an object, got %T",
+				metricName,
+				metricConfig,
+			)
+		}
+		rawExpire, exists := configMap["expire"]
 		if !exists {
 			continue
 		}
@@ -834,62 +1138,288 @@ func strictInt64(raw any) (int64, bool) {
 	}
 }
 
-func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
+func strictFloat64(raw any) (float64, bool) {
+	switch typed := raw.(type) {
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func metricConfigMap(raw any) (map[string]any, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
 	metricConfigs, ok := raw.(map[string]any)
 	if !ok {
-		return nil
+		return nil, false, fmt.Errorf("plugin_attr.prometheus.metrics must be an object, got %T", raw)
 	}
+	return metricConfigs, true, nil
+}
 
-	result := make(map[string][]prometheusExtraLabel)
-	for _, metricName := range expirableMetricNames {
-		metricConfig, ok := metricConfigs[metricName].(map[string]any)
-		if !ok {
+func validateMetricConfigEntries(raw any) error {
+	metricConfigs, ok, err := metricConfigMap(raw)
+	if err != nil || !ok {
+		return err
+	}
+	known := make(map[string]struct{}, len(configuredMetricSuffixes()))
+	for _, name := range configuredMetricSuffixes() {
+		known[name] = struct{}{}
+	}
+	for name, value := range metricConfigs {
+		if _, exists := known[name]; !exists {
 			continue
 		}
-		labels, ok := metricConfig["extra_labels"].([]any)
+		fields, ok := value.(map[string]any)
 		if !ok {
-			continue
+			return fmt.Errorf("plugin_attr.prometheus.metrics.%s must be an object, got %T", name, value)
 		}
-		for _, rawLabel := range labels {
-			label, ok := rawLabel.(map[string]any)
-			if !ok || len(label) != 1 {
-				continue
-			}
-			for name, rawVariable := range label {
-				variable, ok := rawVariable.(string)
-				if name != "" && ok && len(variable) > 1 && variable[0] == '$' {
-					result[metricName] = append(result[metricName], prometheusExtraLabel{
-						Name: name, Variable: variable,
-					})
-				}
+		for field := range fields {
+			if !metricConfigFieldSupported(name, field) {
+				return fmt.Errorf("plugin_attr.prometheus.metrics.%s.%s is unsupported", name, field)
 			}
 		}
+	}
+	return nil
+}
+
+func metricConfigFieldSupported(metricName, field string) bool {
+	if field == "expire" {
+		return slices.Contains(expirableMetricNames[:], metricName)
+	}
+	if field == "extra_labels" {
+		return slices.Contains(requestExtraLabelMetricNames[:], metricName)
+	}
+	return false
+}
+
+var prometheusNamePattern = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
+
+func validateMetricNames(prefix string) error {
+	for _, suffix := range configuredMetricSuffixes() {
+		if !prometheusNamePattern.MatchString(prefix + suffix) {
+			return fmt.Errorf(
+				"plugin_attr.prometheus.metric_prefix %q produces invalid metric name %q",
+				prefix,
+				prefix+suffix,
+			)
+		}
+	}
+	return nil
+}
+
+func validPrometheusLabelName(name string) bool {
+	return regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`).MatchString(name)
+}
+
+func configuredMetricSuffixes() []string {
+	return []string{
+		"nginx_http_current_connections", "http_requests_total", "etcd_reachable", "node_info",
+		"etcd_revision", "etcd_modify_indexes", "upstream_status", streamConnectionMetric,
+		httpStatusMetric, httpLatencyMetric, bandwidthMetric, llmLatencyMetric, llmPromptMetric,
+		llmCompleteMetric, "batch_process_entries", llmActiveMetric, "ai_safety_outcomes_total",
+		"ai_stream_outcomes_total", "function_upstream_failures_total", proxyInFlightMetric,
+		proxyRejectedMetric, proxyRetryMetric, proxyHealthMetric, requestPanicsMetric,
+		configApplyFailuresMetric, configApplyReadyMetric, "http_metric_series_overflow_total",
+		"llm_metric_series_overflow_total", "logger_batch_pending_entries", "logger_batch_events_total",
+	}
+}
+
+func metricBaseLabelNames(metricName string) map[string]struct{} {
+	base := map[string][]string{
+		httpStatusMetric: {
+			"code", "route", "matched_uri", "matched_host", "service", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model", "response_source",
+		},
+		httpLatencyMetric: {
+			"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+		},
+		bandwidthMetric: {
+			"type", "route", "service", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+		},
+		llmLatencyMetric: {
+			"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+		},
+		llmPromptMetric: {
+			"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+		},
+		llmCompleteMetric: {
+			"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
+		},
+		llmActiveMetric: {
+			"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model",
+		},
+		upstreamStatusMetric: {"name", "ip", "port"},
+	}
+	result := make(map[string]struct{})
+	for _, name := range base[metricName] {
+		result[name] = struct{}{}
 	}
 	return result
 }
 
-func parseFloatBuckets(raw any) ([]float64, bool) {
-	if raw == nil {
-		return nil, false
+func parseExtraLabels(raw any) (map[string][]prometheusExtraLabel, error) {
+	metricConfigs, ok, err := metricConfigMap(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
 	}
 
-	switch values := raw.(type) {
-	case []float64:
-		if len(values) == 0 {
-			return nil, false
-		}
-		return append([]float64(nil), values...), true
-	case []any:
-		buckets := make([]float64, 0, len(values))
-		for _, value := range values {
-			bucket, err := cast.ToFloat64E(value)
-			if err != nil {
-				return nil, false
+	if upstreamConfig, exists := metricConfigs[upstreamStatusMetric]; exists {
+		configMap, valid := upstreamConfig.(map[string]any)
+		if valid {
+			if _, configured := configMap["extra_labels"]; configured {
+				return nil, fmt.Errorf(
+					"plugin_attr.prometheus.metrics.%s.extra_labels is unsupported because upstream status has no request context",
+					upstreamStatusMetric,
+				)
 			}
-			buckets = append(buckets, bucket)
 		}
-		return buckets, len(buckets) > 0
-	default:
-		return nil, false
 	}
+
+	result := make(map[string][]prometheusExtraLabel)
+	for _, metricName := range requestExtraLabelMetricNames {
+		rawConfig, exists := metricConfigs[metricName]
+		if !exists {
+			continue
+		}
+		metricConfig, ok := rawConfig.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(
+				"plugin_attr.prometheus.metrics.%s must be an object, got %T",
+				metricName,
+				rawConfig,
+			)
+		}
+		rawLabels, exists := metricConfig["extra_labels"]
+		if !exists {
+			continue
+		}
+		labels, ok := rawLabels.([]any)
+		if !ok {
+			return nil, fmt.Errorf(
+				"plugin_attr.prometheus.metrics.%s.extra_labels must be an array, got %T",
+				metricName,
+				rawLabels,
+			)
+		}
+		baseNames := metricBaseLabelNames(metricName)
+		seen := make(map[string]struct{}, len(labels))
+		for index, rawLabel := range labels {
+			label, ok := rawLabel.(map[string]any)
+			if !ok || len(label) != 1 {
+				return nil, fmt.Errorf(
+					"plugin_attr.prometheus.metrics.%s.extra_labels[%d] must be a one-entry object",
+					metricName,
+					index,
+				)
+			}
+			for name, rawVariable := range label {
+				variable, ok := rawVariable.(string)
+				if !validPrometheusLabelName(name) {
+					return nil, fmt.Errorf(
+						"plugin_attr.prometheus.metrics.%s.extra_labels[%d] has invalid label name %q",
+						metricName,
+						index,
+						name,
+					)
+				}
+				if _, exists := baseNames[name]; exists || name == "le" {
+					return nil, fmt.Errorf(
+						"plugin_attr.prometheus.metrics.%s.extra_labels label %q collides with a base or reserved label",
+						metricName,
+						name,
+					)
+				}
+				if _, exists := seen[name]; exists {
+					return nil, fmt.Errorf(
+						"plugin_attr.prometheus.metrics.%s.extra_labels contains duplicate label %q",
+						metricName,
+						name,
+					)
+				}
+				if !ok || len(variable) <= 1 || variable[0] != '$' {
+					return nil, fmt.Errorf(
+						"plugin_attr.prometheus.metrics.%s.extra_labels[%d].%s must be a non-empty variable beginning with $",
+						metricName,
+						index,
+						name,
+					)
+				}
+				seen[name] = struct{}{}
+				result[metricName] = append(
+					result[metricName],
+					prometheusExtraLabel{Name: name, Variable: variable},
+				)
+			}
+		}
+	}
+	return result, nil
+}
+
+func parseFloatBuckets(raw any, fieldName string) ([]float64, error) {
+	var values []any
+	switch typed := raw.(type) {
+	case []any:
+		values = typed
+	case []float64:
+		values = make([]any, len(typed))
+		for index, value := range typed {
+			values[index] = value
+		}
+	default:
+		return nil, fmt.Errorf("%s must be a non-empty numeric array, got %T", fieldName, raw)
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("%s must be a non-empty numeric array", fieldName)
+	}
+	buckets := make([]float64, len(values))
+	for index, rawValue := range values {
+		value, ok := strictFloat64(rawValue)
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+			return nil, fmt.Errorf(
+				"%s[%d] must be a finite positive number, got %v (%T)",
+				fieldName,
+				index,
+				rawValue,
+				rawValue,
+			)
+		}
+		if index > 0 && value <= buckets[index-1] {
+			return nil, fmt.Errorf(
+				"%s must be strictly increasing, got %v after %v",
+				fieldName,
+				value,
+				buckets[index-1],
+			)
+		}
+		buckets[index] = value
+	}
+	return buckets, nil
 }

@@ -8,8 +8,9 @@ import (
 
 type retiringClusterObserver struct {
 	NopClusterObserver
-	mu      sync.Mutex
-	deleted []string
+	mu             sync.Mutex
+	deleted        []string
+	deletedTargets []string
 }
 
 type blockingRetiringObserver struct {
@@ -67,10 +68,24 @@ func (o *retiringClusterObserver) DeleteCluster(name string) {
 	o.mu.Unlock()
 }
 
+func (o *retiringClusterObserver) SetUpstreamStatus(string, string, bool) {}
+
+func (o *retiringClusterObserver) DeleteUpstreamStatus(name, target string) {
+	o.mu.Lock()
+	o.deletedTargets = append(o.deletedTargets, name+"|"+target)
+	o.mu.Unlock()
+}
+
 func (o *retiringClusterObserver) deletedNames() []string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return append([]string(nil), o.deleted...)
+}
+
+func (o *retiringClusterObserver) retiredTargets() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.deletedTargets...)
 }
 
 func TestClusterRegistryDeletesMetricsAfterFinalSameNameClusterRetires(t *testing.T) {
@@ -98,4 +113,63 @@ func TestClusterRegistryDeletesMetricsAfterFinalSameNameClusterRetires(t *testin
 	if got := observer.deletedNames(); len(got) != 1 || got[0] != "orders" {
 		t.Fatalf("deleted names after final retirement = %#v, want [orders]", got)
 	}
+}
+
+func TestClusterRegistryDeletesOnlyRetiredTargetsAcrossSameNameReplacement(t *testing.T) {
+	observer := &retiringClusterObserver{}
+	registry := NewClusterRegistry(observer)
+	firstConfig := testClusterConfig()
+	firstConfig.Name = "orders"
+	firstConfig.Targets = map[string]int{"http://127.0.0.1:8080": 1}
+	secondConfig := testClusterConfig()
+	secondConfig.Name = "orders"
+	secondConfig.Targets = map[string]int{"http://127.0.0.1:8081": 1}
+
+	first, err := registry.Acquire(firstConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := registry.Acquire(secondConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Stop()
+	if got := observer.retiredTargets(); len(got) != 1 || got[0] != "orders|http://127.0.0.1:8080" {
+		t.Fatalf("retired targets = %#v, want old orders target", got)
+	}
+	if got := observer.deletedNames(); len(got) != 0 {
+		t.Fatalf("deleted clusters while replacement remained = %#v", got)
+	}
+	second.Stop()
+}
+
+func TestClusterRegistryRetainsTargetsSharedBySameNameGenerations(t *testing.T) {
+	observer := &retiringClusterObserver{}
+	registry := NewClusterRegistry(observer)
+	firstConfig := testClusterConfig()
+	firstConfig.Name = "orders"
+	firstConfig.Targets = map[string]int{
+		"http://127.0.0.1:8080": 1,
+		"http://127.0.0.1:8082": 1,
+	}
+	secondConfig := testClusterConfig()
+	secondConfig.Name = "orders"
+	secondConfig.Targets = map[string]int{
+		"http://127.0.0.1:8081": 1,
+		"http://127.0.0.1:8082": 1,
+	}
+
+	first, err := registry.Acquire(firstConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := registry.Acquire(secondConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Stop()
+	if got := observer.retiredTargets(); len(got) != 1 || got[0] != "orders|http://127.0.0.1:8080" {
+		t.Fatalf("retired targets = %#v, want only unshared target", got)
+	}
+	second.Stop()
 }

@@ -452,26 +452,36 @@ plugin_attr:          # Plugin attributes
     export_addr:                            # Set the address for the Prometheus export server.
       ip: 127.0.0.1                         # Set the IP.
       port: 9091                            # Set the port.
+    # max_http_series: 10000                # Maximum exact tuples in each HTTP metric family.
+    # max_llm_series: 10000                 # Maximum exact tuples in each LLM metric family.
     # metrics:    # Create extra labels from nginx variables: https://nginx.org/en/docs/varindex.html
     #  http_status:
+    #    expire: 0                          # Idle expiration in seconds; 0 disables expiration.
     #    extra_labels:
     #      - upstream_addr: $upstream_addr
     #      - status: $upstream_status  # The label name does not need to be the same as the variable name.
     #  http_latency:
+    #    expire: 0
     #    extra_labels:
     #      - upstream_addr: $upstream_addr
     #  bandwidth:
+    #    expire: 0
     #    extra_labels:
     #      - upstream_addr: $upstream_addr
+    #  llm_latency:
+    #    expire: 0
+    #  llm_prompt_tokens:
+    #    expire: 0
+    #  llm_completion_tokens:
+    #    expire: 0
+    #  llm_active_connections:
+    #    expire: 0
     # default_buckets:
     #   - 10
     #   - 50
     #   - 100
     #   - 200
     #   - 500
-    # expire: 0                       # The expiration time after metrics become inactive, unit: second.
-                                      # 0 means the metrics will not expire
-                                      # If you need to set the expiration time, it is recommended to use 600, which is 10 minutes.
   server-info:                        # Plugin: server-info
     report_ttl: 60                    # Set the TTL in seconds for server info in etcd.
                                       # Maximum: 86400. Minimum: 3.

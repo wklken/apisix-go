@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -45,21 +46,40 @@ var (
 	ProxyRetry            *prometheus.CounterVec
 	ProxyHealth           *prometheus.GaugeVec
 	prometheusExtraLabels map[string][]prometheusExtraLabel
-	httpStatusBudget      *httpSeriesBudget
-	httpLatencyBudget     *httpSeriesBudget
-	bandwidthBudget       *httpSeriesBudget
+	httpStatusSeries      *metricSeriesTracker
+	httpLatencySeries     *metricSeriesTracker
+	bandwidthSeries       *metricSeriesTracker
+	llmLatencySeries      *metricSeriesTracker
+	llmPromptSeries       *metricSeriesTracker
+	llmCompletionSeries   *metricSeriesTracker
+	llmActiveSeries       *metricSeriesTracker
 	httpSeriesOverflow    *prometheus.CounterVec
+	llmSeriesOverflow     *prometheus.CounterVec
+	metricExpiration      *expirationRuntime
 )
 
 const (
-	httpStatusMetric  = "http_status"
-	httpLatencyMetric = "http_latency"
-	bandwidthMetric   = "bandwidth"
-	llmLatencyMetric  = "llm_latency"
-	llmPromptMetric   = "llm_prompt_tokens"
-	llmCompleteMetric = "llm_completion_tokens"
-	llmActiveMetric   = "llm_active_connections"
+	httpStatusMetric       = "http_status"
+	httpLatencyMetric      = "http_latency"
+	bandwidthMetric        = "bandwidth"
+	llmLatencyMetric       = "llm_latency"
+	llmPromptMetric        = "llm_prompt_tokens"
+	llmCompleteMetric      = "llm_completion_tokens"
+	llmActiveMetric        = "llm_active_connections"
+	defaultMaxMetricSeries = 10000
+	minMetricSeries        = 100
+	maxMetricSeries        = 100000
 )
+
+var expirableMetricNames = [...]string{
+	httpStatusMetric,
+	httpLatencyMetric,
+	bandwidthMetric,
+	llmLatencyMetric,
+	llmPromptMetric,
+	llmCompleteMetric,
+	llmActiveMetric,
+}
 
 type prometheusExtraLabel struct {
 	Name     string
@@ -122,6 +142,13 @@ func Init() error {
 	return initErr
 }
 
+func StartExpiration(ctx context.Context) (func(context.Context) error, error) {
+	if metricExpiration == nil {
+		return nil, nil
+	}
+	return metricExpiration.Start(ctx)
+}
+
 func initMetrics() error {
 	var attr map[string]any
 	if config.GlobalConfig != nil {
@@ -172,82 +199,88 @@ func initMetrics() error {
 	)
 
 	// pkg/plugin/request_context/plugin.go
+	httpStatusLabels := metricLabelNames(httpStatusMetric, []string{
+		"code",
+		"route",
+		"matched_uri",
+		"matched_host",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+		"response_source",
+	})
 	HttpStatus = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "http_status",
 			Help: "HTTP status codes per service in APISIX",
-		}, metricLabelNames(httpStatusMetric, []string{
-			"code",
-			"route",
-			"matched_uri",
-			"matched_host",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-			"response_source",
-		}),
+		}, httpStatusLabels,
 	)
 
+	httpLatencyLabels := metricLabelNames(httpLatencyMetric, []string{
+		"type",
+		"route",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	})
 	HttpLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    metricConfig.MetricPrefix + "http_latency",
 			Help:    "HTTP request latency in milliseconds per service in APISIX",
 			Buckets: metricConfig.Buckets,
-		}, metricLabelNames(httpLatencyMetric, []string{
-			"type",
-			"route",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-		}),
+		}, httpLatencyLabels,
 	)
 
+	bandwidthLabels := metricLabelNames(bandwidthMetric, []string{
+		"type",
+		"route",
+		"service",
+		"consumer",
+		"node",
+		"request_type",
+		"request_llm_model",
+		"llm_model",
+	})
 	Bandwidth = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "bandwidth",
 			Help: "Total bandwidth in bytes consumed per service in APISIX",
-		}, metricLabelNames(bandwidthMetric, []string{
-			"type",
-			"route",
-			"service",
-			"consumer",
-			"node",
-			"request_type",
-			"request_llm_model",
-			"llm_model",
-		}),
+		}, bandwidthLabels,
 	)
 
 	llmLabels := []string{
 		"route_id", "service_id", "consumer", "node", "request_type", "request_llm_model", "llm_model",
 	}
+	llmLatencyLabels := metricLabelNames(llmLatencyMetric, llmLabels)
 	LLMLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    metricConfig.MetricPrefix + "llm_latency",
 			Help:    "LLM request latency in milliseconds",
 			Buckets: metricConfig.LLMBuckets,
 		},
-		metricLabelNames(llmLatencyMetric, llmLabels),
+		llmLatencyLabels,
 	)
+	llmPromptLabels := metricLabelNames(llmPromptMetric, llmLabels)
 	LLMPromptTokens = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "llm_prompt_tokens",
 			Help: "LLM service consumed prompt tokens",
 		},
-		metricLabelNames(llmPromptMetric, llmLabels),
+		llmPromptLabels,
 	)
+	llmCompletionLabels := metricLabelNames(llmCompleteMetric, llmLabels)
 	LLMCompletionTokens = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: metricConfig.MetricPrefix + "llm_completion_tokens",
 			Help: "LLM service consumed completion tokens",
 		},
-		metricLabelNames(llmCompleteMetric, llmLabels),
+		llmCompletionLabels,
 	)
 
 	BatchProcessEntries = prometheus.NewGaugeVec(
@@ -263,14 +296,15 @@ func initMetrics() error {
 
 	initLoggerBatchMetrics(metricConfig.MetricPrefix)
 
+	llmActiveLabels := metricLabelNames(llmActiveMetric, []string{
+		"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+		"request_type", "request_llm_model", "llm_model",
+	})
 	LLMActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: metricConfig.MetricPrefix + "llm_active_connections",
 			Help: "Number of active connections to LLM service",
-		}, metricLabelNames(llmActiveMetric, []string{
-			"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
-			"request_type", "request_llm_model", "llm_model",
-		}),
+		}, llmActiveLabels,
 	)
 
 	AISafetyOutcomes = newAISafetyOutcomeVector(nil, metricConfig.MetricPrefix)
@@ -308,23 +342,64 @@ func initMetrics() error {
 	requestPanics = newRequestPanicMetrics(nil, metricConfig.MetricPrefix)
 	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
 	httpSeriesOverflow = newHTTPMetricSeriesOverflow(metricConfig.MetricPrefix)
-	httpStatusBudget = newHTTPSeriesBudgetWithTail(
+	llmSeriesOverflow = newLLMMetricSeriesOverflow(metricConfig.MetricPrefix)
+	httpStatusSeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(httpStatusLabels),
+		metricConfig.Expires[httpStatusMetric],
 		httpSeriesOverflow.WithLabelValues(httpStatusMetric),
-		[]int{1, 2, 3, 4, 5, 6, 8, 9},
-		11,
+		HttpStatus.DeleteLabelValues,
 	)
-	httpLatencyBudget = newHTTPSeriesBudgetWithTail(
+	httpLatencySeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(httpLatencyLabels),
+		metricConfig.Expires[httpLatencyMetric],
 		httpSeriesOverflow.WithLabelValues(httpLatencyMetric),
-		[]int{1, 2, 3, 4, 6, 7},
-		8,
+		HttpLatency.DeleteLabelValues,
 	)
-	bandwidthBudget = newHTTPSeriesBudgetWithTail(
+	bandwidthSeries = newMetricSeriesTracker(
 		metricConfig.MaxHTTPSeries,
+		len(bandwidthLabels),
+		metricConfig.Expires[bandwidthMetric],
 		httpSeriesOverflow.WithLabelValues(bandwidthMetric),
-		[]int{1, 2, 3, 4, 6, 7},
-		8,
+		Bandwidth.DeleteLabelValues,
+	)
+	llmLatencySeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmLatencyLabels),
+		metricConfig.Expires[llmLatencyMetric],
+		llmSeriesOverflow.WithLabelValues(llmLatencyMetric),
+		LLMLatency.DeleteLabelValues,
+	)
+	llmPromptSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmPromptLabels),
+		metricConfig.Expires[llmPromptMetric],
+		llmSeriesOverflow.WithLabelValues(llmPromptMetric),
+		LLMPromptTokens.DeleteLabelValues,
+	)
+	llmCompletionSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmCompletionLabels),
+		metricConfig.Expires[llmCompleteMetric],
+		llmSeriesOverflow.WithLabelValues(llmCompleteMetric),
+		LLMCompletionTokens.DeleteLabelValues,
+	)
+	llmActiveSeries = newMetricSeriesTracker(
+		metricConfig.MaxLLMSeries,
+		len(llmActiveLabels),
+		metricConfig.Expires[llmActiveMetric],
+		llmSeriesOverflow.WithLabelValues(llmActiveMetric),
+		LLMActiveConnections.DeleteLabelValues,
+	)
+	metricExpiration = newExpirationRuntime(
+		httpStatusSeries,
+		httpLatencySeries,
+		bandwidthSeries,
+		llmLatencySeries,
+		llmPromptSeries,
+		llmCompletionSeries,
+		llmActiveSeries,
 	)
 
 	hostName, err := os.Hostname()
@@ -343,6 +418,7 @@ func initMetrics() error {
 		HttpLatency,
 		Bandwidth,
 		httpSeriesOverflow,
+		llmSeriesOverflow,
 		BatchProcessEntries,
 		LoggerBatchPendingEntries,
 		LoggerBatchEvents,
@@ -382,9 +458,11 @@ func BeginLLMRequest(r *http.Request) func() {
 		requestVarString(r, "$llm_model"),
 	}
 	labels = appendExtraLabelValues(llmActiveMetric, r, HTTPRequestMetrics{}, labels)
-	gauge := LLMActiveConnections.WithLabelValues(labels...)
-	gauge.Inc()
-	return gauge.Dec
+	return llmActiveSeries.acquireSeries(
+		labels,
+		func(actual []string) { LLMActiveConnections.WithLabelValues(actual...).Inc() },
+		func(actual []string) { LLMActiveConnections.WithLabelValues(actual...).Dec() },
+	)
 }
 
 func HTTPRequestMetricsEnabled() bool {
@@ -421,12 +499,14 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 		responseSource(r, entry.UpstreamLatency),
 	}
 	statusLabels = appendExtraLabelValues(httpStatusMetric, r, entry, statusLabels)
-	statusLabels = admitHTTPMetricLabels(httpStatusMetric, statusLabels)
-	HttpStatus.WithLabelValues(statusLabels...).Inc()
+	httpStatusSeries.withSeries(statusLabels, func(actual []string) {
+		HttpStatus.WithLabelValues(actual...).Inc()
+	})
 
 	requestLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"request"}, common...))
-	requestLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, requestLatencyLabels)
-	HttpLatency.WithLabelValues(requestLatencyLabels...).Observe(float64(entry.RequestLatency))
+	httpLatencySeries.withSeries(requestLatencyLabels, func(actual []string) {
+		HttpLatency.WithLabelValues(actual...).Observe(float64(entry.RequestLatency))
+	})
 	if entry.UpstreamLatency > 0 {
 		upstreamLatencyLabels := appendExtraLabelValues(
 			httpLatencyMetric,
@@ -434,35 +514,26 @@ func RecordHTTPRequest(r *http.Request, entry HTTPRequestMetrics) {
 			entry,
 			append([]string{"upstream"}, common...),
 		)
-		upstreamLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, upstreamLatencyLabels)
-		HttpLatency.WithLabelValues(upstreamLatencyLabels...).Observe(float64(entry.UpstreamLatency))
+		httpLatencySeries.withSeries(upstreamLatencyLabels, func(actual []string) {
+			HttpLatency.WithLabelValues(actual...).Observe(float64(entry.UpstreamLatency))
+		})
 	}
 	apisixLatencyLabels := appendExtraLabelValues(httpLatencyMetric, r, entry, append([]string{"apisix"}, common...))
-	apisixLatencyLabels = admitHTTPMetricLabels(httpLatencyMetric, apisixLatencyLabels)
-	HttpLatency.WithLabelValues(apisixLatencyLabels...).
-		Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	httpLatencySeries.withSeries(apisixLatencyLabels, func(actual []string) {
+		HttpLatency.WithLabelValues(actual...).
+			Observe(float64(apisixLatency(entry.RequestLatency, entry.UpstreamLatency)))
+	})
 
 	ingressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"ingress"}, common...))
-	ingressLabels = admitHTTPMetricLabels(bandwidthMetric, ingressLabels)
-	Bandwidth.WithLabelValues(ingressLabels...).Add(float64(entry.IngressBytes))
+	bandwidthSeries.withSeries(ingressLabels, func(actual []string) {
+		Bandwidth.WithLabelValues(actual...).Add(float64(entry.IngressBytes))
+	})
 	egressLabels := appendExtraLabelValues(bandwidthMetric, r, entry, append([]string{"egress"}, common...))
-	egressLabels = admitHTTPMetricLabels(bandwidthMetric, egressLabels)
-	Bandwidth.WithLabelValues(egressLabels...).Add(float64(entry.EgressBytes))
+	bandwidthSeries.withSeries(egressLabels, func(actual []string) {
+		Bandwidth.WithLabelValues(actual...).Add(float64(entry.EgressBytes))
+	})
 
 	recordLLMMetrics(r, entry)
-}
-
-func admitHTTPMetricLabels(metricName string, labels []string) []string {
-	switch metricName {
-	case httpStatusMetric:
-		return httpStatusBudget.admit(labels)
-	case httpLatencyMetric:
-		return httpLatencyBudget.admit(labels)
-	case bandwidthMetric:
-		return bandwidthBudget.admit(labels)
-	default:
-		return labels
-	}
 }
 
 func normalizedHTTPStatus(status int) string {
@@ -487,15 +558,22 @@ func recordLLMMetrics(r *http.Request, entry HTTPRequestMetrics) {
 		requestVarString(r, "$llm_model"),
 	}
 	if firstToken, ok := requestVarFloat64(r, "$llm_time_to_first_token"); ok && firstToken != 0 {
-		LLMLatency.WithLabelValues(appendExtraLabelValues(llmLatencyMetric, r, entry, labels)...).Observe(firstToken)
+		llmLatencyLabels := appendExtraLabelValues(llmLatencyMetric, r, entry, labels)
+		llmLatencySeries.withSeries(llmLatencyLabels, func(actual []string) {
+			LLMLatency.WithLabelValues(actual...).Observe(firstToken)
+		})
 	}
 	if promptTokens, ok := requestVarFloat64(r, "$llm_prompt_tokens"); ok {
-		LLMPromptTokens.WithLabelValues(appendExtraLabelValues(llmPromptMetric, r, entry, labels)...).Add(promptTokens)
+		llmPromptLabels := appendExtraLabelValues(llmPromptMetric, r, entry, labels)
+		llmPromptSeries.withSeries(llmPromptLabels, func(actual []string) {
+			LLMPromptTokens.WithLabelValues(actual...).Add(promptTokens)
+		})
 	}
 	if completionTokens, ok := requestVarFloat64(r, "$llm_completion_tokens"); ok {
-		LLMCompletionTokens.WithLabelValues(appendExtraLabelValues(llmCompleteMetric, r, entry, labels)...).Add(
-			completionTokens,
-		)
+		llmCompletionLabels := appendExtraLabelValues(llmCompleteMetric, r, entry, labels)
+		llmCompletionSeries.withSeries(llmCompletionLabels, func(actual []string) {
+			LLMCompletionTokens.WithLabelValues(actual...).Add(completionTokens)
+		})
 	}
 }
 
@@ -614,6 +692,8 @@ type prometheusMetricConfig struct {
 	LLMBuckets    []float64
 	ExtraLabels   map[string][]prometheusExtraLabel
 	MaxHTTPSeries int
+	MaxLLMSeries  int
+	Expires       map[string]time.Duration
 }
 
 func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, error) {
@@ -621,17 +701,25 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 		MetricPrefix:  "apisix_",
 		Buckets:       append([]float64(nil), defaultLatencyBuckets...),
 		LLMBuckets:    append([]float64(nil), defaultLatencyBuckets...),
-		MaxHTTPSeries: defaultMaxHTTPSeries,
+		MaxHTTPSeries: defaultMaxMetricSeries,
+		MaxLLMSeries:  defaultMaxMetricSeries,
 	}
 	if attr == nil {
 		return cfg, nil
 	}
 	if raw, ok := attr["max_http_series"]; ok {
-		limit, err := parseMaxHTTPSeries(raw)
+		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_http_series")
 		if err != nil {
 			return cfg, err
 		}
 		cfg.MaxHTTPSeries = limit
+	}
+	if raw, ok := attr["max_llm_series"]; ok {
+		limit, err := parseSeriesLimit(raw, "plugin_attr.prometheus.max_llm_series")
+		if err != nil {
+			return cfg, err
+		}
+		cfg.MaxLLMSeries = limit
 	}
 
 	if v, ok := attr["metric_prefix"].(string); ok && v != "" {
@@ -644,68 +732,106 @@ func newPrometheusMetricConfig(attr map[string]any) (prometheusMetricConfig, err
 		cfg.LLMBuckets = buckets
 	}
 	cfg.ExtraLabels = parseExtraLabels(attr["metrics"])
+	expires, err := parseMetricExpires(attr["metrics"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Expires = expires
 	return cfg, nil
 }
 
-func parseMaxHTTPSeries(raw any) (int, error) {
-	const fieldName = "plugin_attr.prometheus.max_http_series"
-	var value int64
-	switch typed := raw.(type) {
-	case int:
-		value = int64(typed)
-	case int8:
-		value = int64(typed)
-	case int16:
-		value = int64(typed)
-	case int32:
-		value = int64(typed)
-	case int64:
-		value = typed
-	case uint:
-		if uint64(typed) > uint64(maxInt()) {
-			return 0, fmt.Errorf(
-				"%s must be an integer between %d and %d, got %T",
-				fieldName,
-				minHTTPSeries,
-				maxHTTPSeries,
-				raw,
-			)
-		}
-		value = int64(typed)
-	case uint8:
-		value = int64(typed)
-	case uint16:
-		value = int64(typed)
-	case uint32:
-		value = int64(typed)
-	case uint64:
-		if typed > uint64(maxInt()) {
-			return 0, fmt.Errorf(
-				"%s must be an integer between %d and %d, got %T",
-				fieldName,
-				minHTTPSeries,
-				maxHTTPSeries,
-				raw,
-			)
-		}
-		value = int64(typed)
-	default:
+func parseSeriesLimit(raw any, fieldName string) (int, error) {
+	value, ok := strictInt64(raw)
+	if !ok {
 		return 0, fmt.Errorf(
 			"%s must be an integer between %d and %d, got %T",
 			fieldName,
-			minHTTPSeries,
-			maxHTTPSeries,
+			minMetricSeries,
+			maxMetricSeries,
 			raw,
 		)
 	}
-	if value < minHTTPSeries || value > maxHTTPSeries {
-		return 0, fmt.Errorf("%s must be between %d and %d, got %d", fieldName, minHTTPSeries, maxHTTPSeries, value)
+	if value < minMetricSeries || value > maxMetricSeries {
+		return 0, fmt.Errorf(
+			"%s must be between %d and %d, got %d",
+			fieldName,
+			minMetricSeries,
+			maxMetricSeries,
+			value,
+		)
 	}
 	return int(value), nil
 }
 
-func maxInt() int {
-	return int(^uint(0) >> 1)
+func parseMetricExpires(raw any) (map[string]time.Duration, error) {
+	metricConfigs, ok := raw.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+
+	var result map[string]time.Duration
+	const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+	for _, metricName := range expirableMetricNames {
+		metricConfig, ok := metricConfigs[metricName].(map[string]any)
+		if !ok {
+			continue
+		}
+		rawExpire, exists := metricConfig["expire"]
+		if !exists {
+			continue
+		}
+		seconds, valid := strictInt64(rawExpire)
+		fieldName := "plugin_attr.prometheus.metrics." + metricName + ".expire"
+		if !valid || seconds < 0 || seconds > maxSeconds {
+			return nil, fmt.Errorf(
+				"%s must be a non-negative integer number of seconds, got %v (%T)",
+				fieldName,
+				rawExpire,
+				rawExpire,
+			)
+		}
+		if seconds == 0 {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]time.Duration)
+		}
+		result[metricName] = time.Duration(seconds) * time.Second
+	}
+	return result, nil
+}
+
+func strictInt64(raw any) (int64, bool) {
+	switch typed := raw.(type) {
+	case int:
+		return int64(typed), true
+	case int8:
+		return int64(typed), true
+	case int16:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint:
+		if uint64(typed) > uint64(1<<63-1) {
+			return 0, false
+		}
+		return int64(typed), true
+	case uint8:
+		return int64(typed), true
+	case uint16:
+		return int64(typed), true
+	case uint32:
+		return int64(typed), true
+	case uint64:
+		if typed > uint64(1<<63-1) {
+			return 0, false
+		}
+		return int64(typed), true
+	default:
+		return 0, false
+	}
 }
 
 func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
@@ -715,15 +841,7 @@ func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
 	}
 
 	result := make(map[string][]prometheusExtraLabel)
-	for _, metricName := range []string{
-		httpStatusMetric,
-		httpLatencyMetric,
-		bandwidthMetric,
-		llmLatencyMetric,
-		llmPromptMetric,
-		llmCompleteMetric,
-		llmActiveMetric,
-	} {
+	for _, metricName := range expirableMetricNames {
 		metricConfig, ok := metricConfigs[metricName].(map[string]any)
 		if !ok {
 			continue

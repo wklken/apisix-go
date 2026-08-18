@@ -14,6 +14,7 @@
 ## Why apisix-go?
 
 - **Simple delivery:** build and distribute a single Go binary or container image.
+- **Compact artifacts:** reference Linux/arm64 builds produce a roughly 45 MiB stripped binary and a 60 MiB Alpine runtime image.
 - **Flexible configuration:** use etcd for traditional deployments or local YAML/JSON files for standalone data-plane deployments.
 - **Familiar APISIX model:** configure routes, services, upstreams, consumers, SSL, stream routes, and plugins with APISIX resource shapes.
 - **Go-native ecosystem:** extend traffic handling with Go middleware and plugins, with built-in logging, metrics, and tracing integrations.

@@ -1,11 +1,14 @@
 package metrics
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -60,6 +63,120 @@ func TestPrometheusMetricConfigDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.LLMBuckets, defaultLatencyBuckets) {
 		t.Fatalf("LLMBuckets = %v, want %v", cfg.LLMBuckets, defaultLatencyBuckets)
+	}
+	if cfg.MaxLLMSeries != defaultMaxMetricSeries {
+		t.Fatalf("MaxLLMSeries = %d, want %d", cfg.MaxLLMSeries, defaultMaxMetricSeries)
+	}
+	if len(cfg.Expires) != 0 {
+		t.Fatalf("Expires = %#v, want disabled defaults", cfg.Expires)
+	}
+}
+
+func TestPrometheusMetricConfigLLMSeriesLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     any
+		want    int
+		wantErr bool
+	}{
+		{name: "default", want: defaultMaxMetricSeries},
+		{name: "minimum", raw: minMetricSeries, want: minMetricSeries},
+		{name: "maximum", raw: maxMetricSeries, want: maxMetricSeries},
+		{name: "int64", raw: int64(250), want: 250},
+		{name: "invalid string", raw: "1000", wantErr: true},
+		{name: "invalid bool", raw: true, wantErr: true},
+		{name: "invalid fractional", raw: 100.5, wantErr: true},
+		{name: "below minimum", raw: minMetricSeries - 1, wantErr: true},
+		{name: "above maximum", raw: maxMetricSeries + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			attr := map[string]any{}
+			if test.raw != nil {
+				attr["max_llm_series"] = test.raw
+			}
+			cfg, err := newPrometheusMetricConfig(attr)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("newPrometheusMetricConfig() error = nil")
+				}
+				if !strings.Contains(err.Error(), "plugin_attr.prometheus.max_llm_series") {
+					t.Fatalf("error = %v, want full config field", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+			}
+			if cfg.MaxLLMSeries != test.want {
+				t.Fatalf("MaxLLMSeries = %d, want %d", cfg.MaxLLMSeries, test.want)
+			}
+		})
+	}
+}
+
+func TestPrometheusMetricConfigParsesMetricExpires(t *testing.T) {
+	metricsConfig := make(map[string]any, len(expirableMetricNames))
+	for index, name := range expirableMetricNames {
+		metricsConfig[name] = map[string]any{"expire": index + 1}
+	}
+
+	cfg, err := newPrometheusMetricConfig(map[string]any{"metrics": metricsConfig})
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
+	for index, name := range expirableMetricNames {
+		want := time.Duration(index+1) * time.Second
+		if got := cfg.Expires[name]; got != want {
+			t.Fatalf("Expires[%q] = %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestPrometheusMetricConfigMetricExpireDefaultsToDisabled(t *testing.T) {
+	cfg, err := newPrometheusMetricConfig(map[string]any{
+		"metrics": map[string]any{
+			httpStatusMetric: map[string]any{"expire": 0},
+			httpLatencyMetric: map[string]any{
+				"extra_labels": []any{map[string]any{"tenant": "$tenant"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newPrometheusMetricConfig() error = %v", err)
+	}
+	for _, name := range expirableMetricNames {
+		if got := cfg.Expires[name]; got != 0 {
+			t.Fatalf("Expires[%q] = %s, want disabled", name, got)
+		}
+	}
+}
+
+func TestPrometheusMetricConfigRejectsInvalidMetricExpire(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  any
+	}{
+		{name: "negative", raw: -1},
+		{name: "fractional", raw: 1.5},
+		{name: "string", raw: "60"},
+		{name: "boolean", raw: true},
+		{name: "overflow", raw: ^uint64(0)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newPrometheusMetricConfig(map[string]any{
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{"expire": test.raw},
+				},
+			})
+			if err == nil {
+				t.Fatal("newPrometheusMetricConfig() error = nil")
+			}
+			if !strings.Contains(err.Error(), "plugin_attr.prometheus.metrics.http_status.expire") {
+				t.Fatalf("error = %v, want full config field", err)
+			}
+		})
 	}
 }
 
@@ -197,10 +314,19 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		llmCompletionTokens  *prometheus.CounterVec
 		llmActiveConnections *prometheus.GaugeVec
 		extraLabels          map[string][]prometheusExtraLabel
+		httpStatusSeries     *metricSeriesTracker
+		httpLatencySeries    *metricSeriesTracker
+		bandwidthSeries      *metricSeriesTracker
+		llmLatencySeries     *metricSeriesTracker
+		llmPromptSeries      *metricSeriesTracker
+		llmCompletionSeries  *metricSeriesTracker
+		llmActiveSeries      *metricSeriesTracker
 	}{
 		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision,
 		HttpStatus, HttpLatency, Bandwidth, BatchProcessEntries, LoggerBatchPendingEntries, LoggerBatchEvents,
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections, prometheusExtraLabels,
+		httpStatusSeries, httpLatencySeries, bandwidthSeries,
+		llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries,
 	}
 	restore := func() {
 		Connections, Requests, EtcdReachable, HostInfo, EtcdRevision = old.connections, old.requests, old.etcdReachable, old.hostInfo, old.etcdRevision
@@ -208,6 +334,9 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		LoggerBatchPendingEntries, LoggerBatchEvents = old.loggerBatchPending, old.loggerBatchEvents
 		LLMLatency, LLMPromptTokens, LLMCompletionTokens, LLMActiveConnections = old.llmLatency, old.llmPromptTokens, old.llmCompletionTokens, old.llmActiveConnections
 		prometheusExtraLabels = old.extraLabels
+		httpStatusSeries, httpLatencySeries, bandwidthSeries = old.httpStatusSeries, old.httpLatencySeries, old.bandwidthSeries
+		llmLatencySeries, llmPromptSeries = old.llmLatencySeries, old.llmPromptSeries
+		llmCompletionSeries, llmActiveSeries = old.llmCompletionSeries, old.llmActiveSeries
 	}
 	t.Cleanup(restore)
 
@@ -254,6 +383,8 @@ func installMetricVectors(t *testing.T, prefix string) func() {
 		prometheus.CounterOpts{Name: prefix + "llm_completion_tokens"},
 		llmLabels,
 	)
+	httpStatusSeries, httpLatencySeries, bandwidthSeries = nil, nil, nil
+	llmLatencySeries, llmPromptSeries, llmCompletionSeries, llmActiveSeries = nil, nil, nil, nil
 	return restore
 }
 
@@ -479,7 +610,12 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	t.Cleanup(func() { config.GlobalConfig = previous })
 	config.GlobalConfig = &config.Config{
 		PluginAttr: map[string]map[string]any{
-			"prometheus": {"metric_prefix": "unit_"},
+			"prometheus": {
+				"metric_prefix": "unit_",
+				"metrics": map[string]any{
+					httpStatusMetric: map[string]any{"expire": 1},
+				},
+			},
 		},
 	}
 
@@ -499,8 +635,22 @@ func TestInitInstallsVectorsAndEnablement(t *testing.T) {
 	if LLMLatency == nil || LLMPromptTokens == nil || LLMCompletionTokens == nil {
 		t.Fatal("Init() did not install all LLM metric vectors")
 	}
+	if httpStatusSeries == nil || httpLatencySeries == nil || bandwidthSeries == nil ||
+		llmLatencySeries == nil || llmPromptSeries == nil || llmCompletionSeries == nil || llmActiveSeries == nil {
+		t.Fatal("Init() did not install all metric series trackers")
+	}
 	if requestPanics == nil {
 		t.Fatal("Init() did not install request panic metric")
+	}
+	stop, err := StartExpiration(context.Background())
+	if err != nil {
+		t.Fatalf("StartExpiration() error = %v", err)
+	}
+	if stop == nil {
+		t.Fatal("StartExpiration() stop = nil with enabled expiration")
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("stop expiration error = %v", err)
 	}
 }
 

@@ -10,8 +10,68 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestProcessEventWrapsOnlyResourceValidationFailures(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "validation.db"), 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	storage := &Store{
+		db:                      db,
+		consumerKV:              map[string][]byte{},
+		consumerToKeys:          map[string][]string{},
+		consumerValues:          map[string]resource.Consumer{},
+		consumerReferenceKV:     map[string]map[string][]byte{},
+		consumerToReferences:    map[string][]string{},
+		validatedPluginMetadata: newValidatedPluginMetadataCache(),
+	}
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
+
+	err = storage.processEvent(&Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/consumers/alice"),
+		Value: []byte(`{"username":"alice","plugins":{"basic-auth":{"username":"alice"}}}`),
+	})
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("consumer validation error = %v, want ResourceValidationError", err)
+	}
+	if validationErr.Bucket != "consumers" || validationErr.ID != "alice" {
+		t.Fatalf("validation context = %q/%q, want consumers/alice", validationErr.Bucket, validationErr.ID)
+	}
+	err = storage.processEvent(&Event{
+		Type:  EventType(99),
+		Key:   []byte("/apisix/ssls/bad"),
+		Value: []byte(`{"id":"bad"}`),
+	})
+	if errors.As(err, &validationErr) {
+		t.Fatalf("unsupported SSL event was wrapped as ResourceValidationError: %v", err)
+	}
+	if err == nil {
+		t.Fatal("unsupported SSL event error = nil")
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	err = storage.processEvent(&Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/routes/route-1"),
+		Value: []byte(`{"id":"route-1"}`),
+	})
+	if errors.As(err, &validationErr) {
+		t.Fatalf("persistence error was wrapped as ResourceValidationError: %v", err)
+	}
+	if err == nil {
+		t.Fatal("closed database persistence error = nil")
+	}
+}
 
 func TestOpenErrorForMissingDatabaseDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "store.db")

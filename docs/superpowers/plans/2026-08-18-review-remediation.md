@@ -155,24 +155,23 @@ git commit -m "fix(config): bound request bodies by default"
 ### Task 6: BUG-004 — quarantine permanent etcd resource validation failures
 
 **Files:**
-- Modify: `pkg/store/event.go`
 - Modify: `pkg/store/store.go`
 - Modify: `pkg/store/store_test.go`
 - Modify: `pkg/etcd/watcher.go`
 - Modify: `pkg/etcd/watcher_test.go`
-- Modify: `pkg/observability/metrics/runtime_lifecycle.go`
-- Modify: `pkg/observability/metrics/runtime_lifecycle_test.go`
+- Modify: `pkg/observability/metrics/config_apply.go`
+- Modify: `pkg/observability/metrics/config_apply_test.go`
 - Modify: `pkg/observability/metrics/prometheus.go`
-- Modify: `docs/review-remediation-ledger-2026-08-18.md`
+- Modify: `docs/report.md`
 
 **Interfaces:**
 - Produces: `store.ResourceValidationError`, watcher quarantine keyed by full etcd key and mod revision, and a bounded quarantine gauge.
 - Preserves: bbolt/I/O failures remain retryable and cannot advance watcher revision.
 
-- [ ] **Step 1: Add failing tests with a permanent invalid SSL/consumer plus an unrelated valid route, and a separate transient persistence failure**
-- [ ] **Step 2: Verify the permanent invalid resource loops recovery and the transient error is indistinguishable**
-- [ ] **Step 3: Wrap only deterministic validation errors; skip only that typed error, retain last-good state, continue other events, advance revision, and clear quarantine on valid replacement/delete**
-- [ ] **Step 4: Keep readiness false while quarantine exists; run etcd/store/metrics tests and races, update the ledger, and commit**
+- [x] **Step 1: Add failing tests with a permanent invalid SSL/consumer plus an unrelated valid route, and a separate transient persistence failure**
+- [x] **Step 2: Verify the permanent invalid resource loops recovery and the transient error is indistinguishable**
+- [x] **Step 3: Wrap only deterministic validation errors; skip only that typed error, retain last-good state, continue other events, advance revision, and clear quarantine on valid replacement/delete**
+- [x] **Step 4: Keep readiness false while quarantine exists; run etcd/store/metrics tests and races, update the ledger, and commit**
 
 Commit:
 

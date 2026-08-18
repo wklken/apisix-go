@@ -341,6 +341,7 @@ func initMetrics() error {
 	)
 	requestPanics = newRequestPanicMetrics(nil, metricConfig.MetricPrefix)
 	ConfigApplyFailures, ConfigApplyReady = newConfigApplyMetrics(nil, metricConfig.MetricPrefix)
+	ConfigApplyQuarantined = newConfigApplyQuarantineMetric(nil, metricConfig.MetricPrefix)
 	httpSeriesOverflow = newHTTPMetricSeriesOverflow(metricConfig.MetricPrefix)
 	llmSeriesOverflow = newLLMMetricSeriesOverflow(metricConfig.MetricPrefix)
 	httpStatusSeries = newMetricSeriesTracker(
@@ -436,6 +437,7 @@ func initMetrics() error {
 		requestPanics,
 		ConfigApplyFailures,
 		ConfigApplyReady,
+		ConfigApplyQuarantined,
 	)
 	return nil
 }

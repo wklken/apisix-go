@@ -64,7 +64,7 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 | SEC-002 | P1 | Correct | Not applicable | as-is | Follow-up |
 | BUG-002 | P1 | Correct | Not applicable | adjust | Fixed in `fix(proxy-cache): enforce memory zone capacity` |
 | BUG-003 | P1 | Correct | Not applicable | adjust | Fixed in `fix(config): bound request bodies by default` |
-| BUG-004 | P1 | Correct | Not applicable | replace | Follow-up，需配置面语义设计 |
+| BUG-004 | P1 | Correct | Not applicable | replace | Fixed in `fix(etcd): quarantine invalid resource updates` |
 | BUG-005 | P2 | Correct | Not applicable | replace | Follow-up，需 fail-closed/last-good 决策 |
 | BUG-006 | P2 | Correct | Not applicable | as-is | Fixed in `fix(route): preserve scheme-aware node ports` |
 | BUG-007 | P2 | Correct | Not applicable | adjust | Fixed in `fix(limit-count): bound delayed-sync state` |
@@ -112,6 +112,8 @@ Scope：`github.com/wklken/apisix-go`，当前 `master@54f09952`；不是 PR/dif
 - Counterevidence：现有恢复测试的下一份 snapshot 会移除坏资源，因此没有覆盖“坏资源永久存在”。
 - Proposed fix assessment：replace。不能简单忽略所有验证错误并宣告 snapshot 成功，否则会弱化 fail-closed。
 - Best-fit solution：定义 per-resource last-good/quarantine：按资源 ID 和 mod revision 记录拒绝状态，保留该资源上一份有效状态，同时允许无关资源推进；readiness、指标和错误日志必须暴露被隔离资源。控制面入口也应阻止非法资源写入。
+- Remediation：store 只把 SSL PUT 与 consumer 的确定性校验错误包装为 `ResourceValidationError`；watcher 按完整 etcd key 保存最新拒绝 revision，保留 last-good store 值并继续处理无关资源。合法 replacement/delete 清除 quarantine；bbolt/I/O 等普通错误仍中止 batch 且不推进 revision。无标签 quarantine gauge 暴露总数，非零时 readiness 保持 false。
+- Verification：新增 watch/snapshot 的永久非法资源、无关 route 推进、replacement/delete 清除和 transient store failure 回归测试；主线程复核并删除未被消费的 Event revision 传递后，重新运行 store/etcd/metrics 全包、race、scoped lint 和 build，全部通过。
 
 ### BUG-005：单个畸形 route/global rule 冻结全部 HTTP 发布
 

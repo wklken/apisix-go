@@ -156,16 +156,12 @@ func (e *StreamingResponseExecutor) wrapStreamingResponse(
 	r *http.Request,
 ) (http.ResponseWriter, *http.Request, *streamingFinish, error) {
 	w = guardStreamingResponseSource(w, r)
-	state := base.StreamingResponseState{Status: http.StatusOK, Header: w.Header().Clone(), Trailer: make(http.Header)}
-	if err := e.runHeaderFilters(r, &state); err != nil {
-		return nil, r, nil, err
-	}
-	copyHeader(w.Header(), state.Header)
 	request, negotiation, err := e.registerCompressionOffers(r)
 	if err != nil {
 		return nil, r, nil, err
 	}
 	finish := &streamingFinish{compression: negotiation}
+	w = e.wrapStreamingHeaderFilters(w, r)
 	inner := finish.wrapNegotiatedCompression(w, request)
 	wrapped, err := e.wrapBody(inner, request, finish)
 	return wrapped, request, finish, err
@@ -273,6 +269,66 @@ func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *bas
 		}
 	}
 	return nil
+}
+
+func (e *StreamingResponseExecutor) wrapStreamingHeaderFilters(
+	w http.ResponseWriter,
+	r *http.Request,
+) http.ResponseWriter {
+	var applied atomic.Bool
+	apply := func(status int) {
+		if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
+			return
+		}
+		if !applied.CompareAndSwap(false, true) {
+			return
+		}
+		state := base.StreamingResponseState{
+			Status: status, Header: w.Header().Clone(), Trailer: make(http.Header),
+		}
+		if err := e.runHeaderFilters(r, &state); err != nil {
+			panic(streamingSetupError{err: err})
+		}
+		copyHeader(w.Header(), state.Header)
+	}
+	return httpsnoop.Wrap(w, httpsnoop.Hooks{
+		WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(status int) {
+				apply(status)
+				writeHeader(status)
+			}
+		},
+		Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(body []byte) (int, error) {
+				apply(http.StatusOK)
+				return write(body)
+			}
+		},
+		Flush: func(flush httpsnoop.FlushFunc) httpsnoop.FlushFunc {
+			return func() {
+				apply(http.StatusOK)
+				flush()
+			}
+		},
+		FlushError: func(flush httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
+			return func() error {
+				apply(http.StatusOK)
+				return flush()
+			}
+		},
+		ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+			return func(reader io.Reader) (int64, error) {
+				apply(http.StatusOK)
+				return readFrom(reader)
+			}
+		},
+		WriteString: func(writeString httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
+			return func(value string) (int, error) {
+				apply(http.StatusOK)
+				return writeString(value)
+			}
+		},
+	})
 }
 
 func (e *StreamingResponseExecutor) wrapBody(

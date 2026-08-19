@@ -2,13 +2,17 @@ package route
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -31,6 +35,142 @@ func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
 	}
 	if req.Host != "shadow.example.com:9443" {
 		t.Fatalf("Host = %q, want shadow.example.com:9443", req.Host)
+	}
+}
+
+func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
+	ensureRouteStore(t)
+	serverCertificate, clientCertificate, clientKey, clientCAs := routeMTLSCertificates(t)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	upstream.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCertificate},
+		ClientCAs:    clientCAs,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse mTLS upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(targetURL.Port())
+	if err != nil {
+		t.Fatalf("parse mTLS upstream port: %v", err)
+	}
+
+	route := resource.Route{
+		ID:  "traffic-split-mtls",
+		Uri: "/split",
+		Plugins: map[string]resource.PluginConfig{
+			"traffic-split": map[string]any{
+				"rules": []any{map[string]any{
+					"weighted_upstreams": []any{map[string]any{
+						"weight": 1,
+						"upstream": map[string]any{
+							"scheme": "https",
+							"tls": map[string]any{
+								"client_cert": clientCertificate,
+								"client_key":  clientKey,
+								"verify":      false,
+							},
+							"nodes": []any{map[string]any{
+								"host":   targetURL.Hostname(),
+								"port":   port,
+								"weight": 1,
+							}},
+						},
+					}},
+				}},
+			},
+		},
+		Upstream: resource.Upstream{
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}
+
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	handler, err := builder.buildHandlerStrict(route)
+	if err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/split", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf(
+			"traffic-split mTLS status = %d, want %d; body=%q",
+			response.Code,
+			http.StatusNoContent,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
+	ensureRouteStore(t)
+	requestSeen := make(chan struct{}, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil && r.URL.Path == "/healthz" {
+			requestSeen <- struct{}{}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse active-probe upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(targetURL.Port())
+	if err != nil {
+		t.Fatalf("parse active-probe upstream port: %v", err)
+	}
+
+	route := resource.Route{
+		ID:  "traffic-split-active-probe",
+		Uri: "/split",
+		Plugins: map[string]resource.PluginConfig{
+			"traffic-split": map[string]any{
+				"rules": []any{map[string]any{
+					"weighted_upstreams": []any{map[string]any{
+						"weight": 1,
+						"upstream": map[string]any{
+							"scheme": "http",
+							"checks": map[string]any{
+								"active": map[string]any{
+									"type":      "https",
+									"http_path": "/healthz",
+									"healthy":   map[string]any{"interval": 1, "successes": 1},
+								},
+							},
+							"nodes": []any{map[string]any{
+								"host":   targetURL.Hostname(),
+								"port":   port,
+								"weight": 1,
+							}},
+						},
+					}},
+				}},
+			},
+		},
+	}
+
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	if _, err := builder.buildHandlerStrict(route); err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+
+	select {
+	case <-requestSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("traffic-split HTTPS active probe did not reach TLS upstream")
 	}
 }
 

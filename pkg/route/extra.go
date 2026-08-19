@@ -3,6 +3,7 @@ package route
 import (
 	"net/http"
 	"slices"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -12,6 +13,14 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 )
+
+var registerPurgeMethodOnce sync.Once
+
+func registerPurgeMethod() {
+	registerPurgeMethodOnce.Do(func() {
+		chi.RegisterMethod("PURGE")
+	})
+}
 
 func registerExtraRoutes(mux *chi.Mux) {
 	if pluginEnabled("node-status") {
@@ -33,7 +42,7 @@ func registerExtraRoutes(mux *chi.Mux) {
 		}
 	}
 	if pluginEnabled("graphql-proxy-cache") {
-		chi.RegisterMethod("PURGE")
+		registerPurgeMethod()
 		mux.Method("PURGE", graphql_proxy_cache.PurgeURI, http.HandlerFunc(graphql_proxy_cache.PurgeHandler))
 	}
 }

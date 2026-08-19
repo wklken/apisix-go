@@ -819,6 +819,21 @@ func TestReferencedUpstreamCarriesHostRewriteSettings(t *testing.T) {
 	}
 }
 
+func TestReferencedUpstreamCarriesTLSSettings(t *testing.T) {
+	upstream := upstreamFromResource(resource.Upstream{
+		Scheme: "https",
+		TLS: &resource.UpstreamTLS{
+			ClientCert: "CERT",
+			ClientKey:  "KEY",
+			Verify:     true,
+		},
+	})
+	if upstream.TLS == nil || upstream.TLS.ClientCert != "CERT" || upstream.TLS.ClientKey != "KEY" ||
+		!upstream.TLS.Verify {
+		t.Fatalf("referenced upstream TLS = %#v, want verify/certificate settings preserved", upstream.TLS)
+	}
+}
+
 func TestReferencedUpstreamKeepsLegacyDefaultNodeWeight(t *testing.T) {
 	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
 		return upstreamFromResource(resource.Upstream{

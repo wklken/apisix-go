@@ -564,11 +564,13 @@ func TestStreamingExecutorAppliesDynamicConsumerHeaderFilterPerRequest(t *testin
 						if len(merged) != 1 || merged[0].Plugin != consumerCORS {
 							t.Errorf("terminal merged streaming bindings = %#v, want consumer CORS", merged)
 						}
-						if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://consumer.example" {
-							t.Errorf("terminal CORS origin = %q, want consumer origin", got)
-						}
 					}
 					w.WriteHeader(http.StatusNoContent)
+					if useConsumer == "yes" {
+						if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://consumer.example" {
+							t.Errorf("committed CORS origin = %q, want consumer origin", got)
+						}
+					}
 				})).ServeHTTP(response, request)
 				return response
 			}
@@ -600,6 +602,32 @@ func TestStreamingExecutorAppliesDynamicConsumerHeaderFilterPerRequest(t *testin
 				t.Fatalf("resolver/terminal calls = %d/%d, want 2/2", resolverCalls, terminalCalls)
 			}
 		})
+	}
+}
+
+func TestStreamingExecutorCORSOverridesConflictingUpstreamHeader(t *testing.T) {
+	cors := newExecutorCORSPlugin(t, corsplugin.Config{
+		AllowOrigins: "https://client.example",
+	})
+	binding := pipelineBinding("cors", cors, ScopeRoute, 4000)
+	executor, err := NewStreamingResponseExecutor([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	request.Header.Set("Origin", "https://client.example")
+	response := httptest.NewRecorder()
+	executor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Access-Control-Allow-Origin", "https://upstream.example")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, request)
+
+	values := response.Header().Values("Access-Control-Allow-Origin")
+	if len(values) != 1 || values[0] != "https://client.example" {
+		t.Fatalf(
+			"Access-Control-Allow-Origin values = %v, want exactly [https://client.example]",
+			values,
+		)
 	}
 }
 

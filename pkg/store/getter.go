@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
+	bolt "go.etcd.io/bbolt"
 )
 
 var ErrNotFound = fmt.Errorf("not found")
@@ -490,77 +492,6 @@ type sslWildcardCertificate struct {
 	suffix string
 }
 
-func (s *Store) applySSLCertificateEvent(eventType EventType, id string, value []byte) {
-	current := s.sslCerts.Load()
-	next := cloneSSLCertificateIndex(current)
-	switch eventType {
-	case EventTypePut:
-		ssl, err := ParseSSL(value)
-		if err != nil {
-			logger.Errorf("reject SSL resource %q: parse: %s", id, err)
-			return
-		}
-		if ssl.Status == 0 {
-			next.remove(id)
-			break
-		}
-		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
-		if err != nil {
-			logger.Errorf("reject SSL resource %q: load: %s", id, err)
-			return
-		}
-		next.remove(id)
-		for _, sni := range ssl.Snis {
-			sni = strings.TrimSpace(sni)
-			if sni == "" {
-				continue
-			}
-			entry := sslIndexedCertificate{id: id, certificate: &certificate}
-			if strings.HasPrefix(sni, "*.") {
-				next.wildcard = append(next.wildcard, sslWildcardCertificate{
-					sslIndexedCertificate: entry,
-					suffix:                strings.ToLower(sni[1:]),
-				})
-			} else {
-				next.exact[strings.ToLower(sni)] = entry
-			}
-		}
-	case EventTypeDelete:
-		next.remove(id)
-	}
-	s.sslCerts.Store(next)
-}
-
-func (index *sslCertificateIndex) remove(id string) {
-	if index == nil {
-		return
-	}
-	for sni, entry := range index.exact {
-		if entry.id == id {
-			delete(index.exact, sni)
-		}
-	}
-	if len(index.wildcard) > 0 {
-		kept := index.wildcard[:0]
-		for _, entry := range index.wildcard {
-			if entry.id != id {
-				kept = append(kept, entry)
-			}
-		}
-		index.wildcard = kept
-	}
-}
-
-func cloneSSLCertificateIndex(index *sslCertificateIndex) *sslCertificateIndex {
-	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
-	if index == nil {
-		return next
-	}
-	maps.Copy(next.exact, index.exact)
-	next.wildcard = append(next.wildcard, index.wildcard...)
-	return next
-}
-
 // GetSSLCertificateForSNI returns the decoded frontend certificate for
 // serverName from the process-wide store, preferring exact SNI matches over
 // wildcard matches.
@@ -640,14 +571,28 @@ func (s *Store) rebuildSSLCertificateIndex() {
 	s.sslCerts.Store(next)
 }
 
-// ConfigSnapshot is an immutable generation of the route-build inputs:
-// parsed routes, parsed global rules, and decoded plugin metadata. It is
-// published once per store change; callers must not mutate it.
+var configSnapshotBuckets = []string{
+	"routes",
+	"global_rules",
+	"plugin_metadata",
+	"services",
+	"upstreams",
+	"plugin_configs",
+	"ssls",
+}
+
+// ConfigSnapshot is an immutable generation of the HTTP route-build inputs.
+// It is constructed from one bbolt read transaction and published once per
+// Store generation. Callers receive cloned values from every accessor.
 type ConfigSnapshot struct {
 	generation     uint64
 	routes         []resource.Route
 	globalRules    []resource.GlobalRule
 	pluginMetadata map[string]map[string]any
+	services       map[string]resource.Service
+	upstreams      map[string]resource.Upstream
+	pluginConfigs  map[string]resource.PluginConfigRule
+	ssls           map[string]resource.SSL
 	quarantined    []ConfigQuarantine
 }
 
@@ -662,19 +607,88 @@ type ConfigQuarantine struct {
 
 // Routes returns the parsed routes of this snapshot generation.
 func (snap *ConfigSnapshot) Routes() []resource.Route {
-	return snap.routes
+	if snap == nil {
+		return nil
+	}
+	routes := make([]resource.Route, len(snap.routes))
+	for index, route := range snap.routes {
+		routes[index] = cloneRoute(route)
+	}
+	return routes
 }
 
 // GlobalRules returns the parsed global rules of this snapshot generation.
 func (snap *ConfigSnapshot) GlobalRules() []resource.GlobalRule {
-	return snap.globalRules
+	if snap == nil {
+		return nil
+	}
+	rules := make([]resource.GlobalRule, len(snap.globalRules))
+	for index, rule := range snap.globalRules {
+		rules[index] = cloneGlobalRule(rule)
+	}
+	return rules
 }
 
 // PluginMetadata returns the decoded plugin metadata for id. The boolean is
 // false when the id has no decodable plugin metadata.
 func (snap *ConfigSnapshot) PluginMetadata(id string) (map[string]any, bool) {
+	if snap == nil {
+		return nil, false
+	}
 	metadata, ok := snap.pluginMetadata[id]
-	return metadata, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneAnyMap(metadata), true
+}
+
+// GetService returns a cloned service from this generation.
+func (snap *ConfigSnapshot) GetService(id string) (resource.Service, error) {
+	if snap == nil {
+		return resource.Service{}, ErrNotFound
+	}
+	service, ok := snap.services[id]
+	if !ok {
+		return resource.Service{}, ErrNotFound
+	}
+	return cloneService(service), nil
+}
+
+// GetUpstream returns a cloned upstream from this generation.
+func (snap *ConfigSnapshot) GetUpstream(id string) (resource.Upstream, error) {
+	if snap == nil {
+		return resource.Upstream{}, ErrNotFound
+	}
+	upstream, ok := snap.upstreams[id]
+	if !ok {
+		return resource.Upstream{}, ErrNotFound
+	}
+	return cloneUpstream(upstream), nil
+}
+
+// GetPluginConfigRule returns a cloned plugin-config rule from this
+// generation.
+func (snap *ConfigSnapshot) GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
+	if snap == nil {
+		return resource.PluginConfigRule{}, ErrNotFound
+	}
+	rule, ok := snap.pluginConfigs[id]
+	if !ok {
+		return resource.PluginConfigRule{}, ErrNotFound
+	}
+	return clonePluginConfigRule(rule), nil
+}
+
+// GetSSL returns a cloned SSL resource from this generation.
+func (snap *ConfigSnapshot) GetSSL(id string) (resource.SSL, error) {
+	if snap == nil {
+		return resource.SSL{}, ErrNotFound
+	}
+	ssl, ok := snap.ssls[id]
+	if !ok {
+		return resource.SSL{}, ErrNotFound
+	}
+	return cloneSSL(ssl), nil
 }
 
 // QuarantinedResources returns the stable bucket and bbolt key for each
@@ -684,15 +698,20 @@ func (snap *ConfigSnapshot) QuarantinedResources() []ConfigQuarantine {
 }
 
 // GetConfigSnapshot returns the current route-build generation, rebuilding it
-// once per routes/global-rules/plugin-metadata change.
+// once per HTTP route-build resource change.
 func GetConfigSnapshot() (*ConfigSnapshot, error) {
 	if s == nil {
 		return nil, ErrNotFound
 	}
-	return s.getConfigSnapshot()
+	return s.GetConfigSnapshot()
 }
 
-func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
+// GetConfigSnapshot returns one immutable HTTP route-build generation owned by
+// this Store. It never consults the package-level Store singleton.
+func (s *Store) GetConfigSnapshot() (*ConfigSnapshot, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
 	generation := s.configGeneration.Load()
 	if snapshot := s.configSnapshot.Load(); snapshot != nil && snapshot.generation == generation {
 		return snapshot, nil
@@ -719,20 +738,51 @@ func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
 	}
 }
 
+func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
+	return s.GetConfigSnapshot()
+}
+
 func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) {
 	snapshot := &ConfigSnapshot{
 		generation:     generation,
 		pluginMetadata: map[string]map[string]any{},
+		services:       map[string]resource.Service{},
+		upstreams:      map[string]resource.Upstream{},
+		pluginConfigs:  map[string]resource.PluginConfigRule{},
+		ssls:           map[string]resource.SSL{},
 	}
 
-	entries, err := s.getBucketEntries("routes")
+	entriesByBucket := make(map[string][]bucketEntry, len(configSnapshotBuckets))
+	err := s.db.View(func(tx *bolt.Tx) error {
+		for _, bucketName := range configSnapshotBuckets {
+			bucket := tx.Bucket([]byte(bucketName))
+			if bucket == nil {
+				return errBucketNotFound
+			}
+			entries := make([]bucketEntry, 0)
+			if err := bucket.ForEach(func(id, value []byte) error {
+				entries = append(entries, bucketEntry{
+					id:    string(bytes.Clone(id)),
+					value: bytes.Clone(value),
+				})
+				return nil
+			}); err != nil {
+				return err
+			}
+			entriesByBucket[bucketName] = entries
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
-		hook("routes")
+		for _, bucketName := range configSnapshotBuckets {
+			hook(bucketName)
+		}
 	}
-	for _, entry := range entries {
+
+	for _, entry := range entriesByBucket["routes"] {
 		r, err := ParseRoute(entry.value)
 		if err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
@@ -744,14 +794,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		snapshot.routes = append(snapshot.routes, r)
 	}
 
-	entries, err = s.getBucketEntries("global_rules")
-	if err != nil {
-		return nil, err
-	}
-	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
-		hook("global_rules")
-	}
-	for _, entry := range entries {
+	for _, entry := range entriesByBucket["global_rules"] {
 		rule, err := ParseGlobalRule(entry.value)
 		if err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
@@ -763,20 +806,45 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		snapshot.globalRules = append(snapshot.globalRules, rule)
 	}
 
-	data, err := s.GetBucketData("plugin_metadata")
-	if err != nil {
-		return nil, err
-	}
-	if hook := s.afterConfigSnapshotBucketRead; hook != nil {
-		hook("plugin_metadata")
-	}
-	for _, d := range data {
-		id := metadataIDForDecodeError(d)
+	for _, entry := range entriesByBucket["plugin_metadata"] {
+		id := entry.id
 		var metadata map[string]any
-		if err := decodePluginMetadata(d, id, &metadata); err != nil {
-			continue
+		if err := decodePluginMetadata(entry.value, id, &metadata); err != nil {
+			return nil, fmt.Errorf("decode plugin_metadata/%q: %w", id, err)
 		}
-		snapshot.pluginMetadata[id] = metadata
+		if metadata == nil {
+			return nil, fmt.Errorf("decode plugin_metadata/%q: expected JSON object", id)
+		}
+		snapshot.pluginMetadata[id] = cloneAnyMap(metadata)
+	}
+
+	for _, entry := range entriesByBucket["services"] {
+		service, err := ParseService(entry.value)
+		if err != nil {
+			return nil, fmt.Errorf("decode services/%q: %w", entry.id, err)
+		}
+		snapshot.services[entry.id] = service
+	}
+	for _, entry := range entriesByBucket["upstreams"] {
+		upstream, err := ParseUpstream(entry.value)
+		if err != nil {
+			return nil, fmt.Errorf("decode upstreams/%q: %w", entry.id, err)
+		}
+		snapshot.upstreams[entry.id] = upstream
+	}
+	for _, entry := range entriesByBucket["plugin_configs"] {
+		config, err := ParsePluginConfigRule(entry.value)
+		if err != nil {
+			return nil, fmt.Errorf("decode plugin_configs/%q: %w", entry.id, err)
+		}
+		snapshot.pluginConfigs[entry.id] = config
+	}
+	for _, entry := range entriesByBucket["ssls"] {
+		ssl, err := ParseSSL(entry.value)
+		if err != nil {
+			return nil, fmt.Errorf("decode ssls/%q: %w", entry.id, err)
+		}
+		snapshot.ssls[entry.id] = ssl
 	}
 	slices.SortFunc(snapshot.quarantined, func(left, right ConfigQuarantine) int {
 		if comparison := strings.Compare(left.Bucket, right.Bucket); comparison != 0 {
@@ -787,14 +855,103 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 	return snapshot, nil
 }
 
-func metadataIDForDecodeError(config []byte) string {
-	var identity struct {
-		ID string `json:"id"`
+func cloneRoute(route resource.Route) resource.Route {
+	route.Uris = append([]string(nil), route.Uris...)
+	route.Methods = append([]string(nil), route.Methods...)
+	route.Hosts = append([]string(nil), route.Hosts...)
+	route.RemoteAddrs = append([]string(nil), route.RemoteAddrs...)
+	route.Vars = bytes.Clone(route.Vars)
+	route.Script = bytes.Clone(route.Script)
+	route.ScriptID = bytes.Clone(route.ScriptID)
+	route.Plugins = clonePluginConfigs(route.Plugins)
+	route.Labels = cloneStringAnyMap(route.Labels)
+	route.Upstream = cloneUpstream(route.Upstream)
+	return route
+}
+
+func cloneService(service resource.Service) resource.Service {
+	service.Plugins = clonePluginConfigs(service.Plugins)
+	service.Upstream = cloneUpstream(service.Upstream)
+	service.Hosts = append([]string(nil), service.Hosts...)
+	return service
+}
+
+func cloneUpstream(upstream resource.Upstream) resource.Upstream {
+	upstream.Nodes = append([]resource.Node(nil), upstream.Nodes...)
+	upstream.Checks = cloneStringAnyMap(upstream.Checks)
+	if upstream.TLS != nil {
+		tls := *upstream.TLS
+		tls.ClientCertID = cloneAnyValue(tls.ClientCertID)
+		upstream.TLS = &tls
 	}
-	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
-		return identity.ID
+	return upstream
+}
+
+func cloneGlobalRule(rule resource.GlobalRule) resource.GlobalRule {
+	rule.Plugins = clonePluginConfigs(rule.Plugins)
+	return rule
+}
+
+func clonePluginConfigRule(rule resource.PluginConfigRule) resource.PluginConfigRule {
+	rule.Plugins = clonePluginConfigs(rule.Plugins)
+	return rule
+}
+
+func cloneSSL(ssl resource.SSL) resource.SSL {
+	ssl.Snis = append([]string(nil), ssl.Snis...)
+	if ssl.Labels != nil {
+		labels := make(map[string]string, len(ssl.Labels))
+		maps.Copy(labels, ssl.Labels)
+		ssl.Labels = labels
 	}
-	return "unknown"
+	return ssl
+}
+
+func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]resource.PluginConfig, len(source))
+	for name, config := range source {
+		cloned[name] = cloneAnyValue(config)
+	}
+	return cloned
+}
+
+func cloneAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneAnyValue(value)
+	}
+	return cloned
+}
+
+func cloneStringAnyMap(source map[string]any) map[string]any {
+	return cloneAnyMap(source)
+}
+
+func cloneAnyValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(value)
+	case []any:
+		cloned := make([]any, len(value))
+		for index, item := range value {
+			cloned[index] = cloneAnyValue(item)
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), value...)
+	case map[string]string:
+		cloned := make(map[string]string, len(value))
+		maps.Copy(cloned, value)
+		return cloned
+	default:
+		return value
+	}
 }
 
 // ProtoGeneration returns a counter that increments on every protos bucket

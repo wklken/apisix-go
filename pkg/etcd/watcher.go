@@ -1,12 +1,14 @@
 package etcd
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"maps"
-	"sort"
+	"math/rand"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,14 @@ type (
 
 const defaultHealthCheckInterval = 10 * time.Second
 
+func canonicalEtcdPrefix(prefix string) string {
+	trimmed := strings.Trim(prefix, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return "/" + trimmed + "/"
+}
+
 type ConfigClient struct {
 	client *clientv3.Client
 	prefix string
@@ -37,6 +47,8 @@ type ConfigClient struct {
 	startupRetry        int
 	healthCheck         healthCheckFunc
 	healthCheckInterval time.Duration
+	watchTimeout        time.Duration
+	resyncDelay         time.Duration
 
 	openWatch    watchOpenFunc
 	loadSnapshot snapshotFunc
@@ -53,6 +65,8 @@ type ClientOptions struct {
 	StartupRetry        int
 	HealthCheck         func(context.Context) error
 	HealthCheckInterval time.Duration
+	WatchTimeout        time.Duration
+	ResyncDelay         time.Duration
 	TLS                 *tls.Config
 }
 
@@ -86,6 +100,7 @@ func NewConfigClientWithOptions(
 	if options.HealthCheckInterval <= 0 {
 		options.HealthCheckInterval = defaultHealthCheckInterval
 	}
+	canonicalPrefix := canonicalEtcdPrefix(prefix)
 	config := clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: options.DialTimeout,
@@ -101,12 +116,14 @@ func NewConfigClientWithOptions(
 
 	configClient := &ConfigClient{
 		client:              client,
-		prefix:              prefix,
+		prefix:              canonicalPrefix,
 		events:              events,
 		requestTimeout:      options.RequestTimeout,
 		startupRetry:        options.StartupRetry,
 		healthCheck:         options.HealthCheck,
 		healthCheckInterval: options.HealthCheckInterval,
+		watchTimeout:        options.WatchTimeout,
+		resyncDelay:         options.ResyncDelay,
 		knownKeys:           make(map[string]struct{}),
 		quarantine:          make(map[string]int64),
 	}
@@ -115,13 +132,17 @@ func NewConfigClientWithOptions(
 		if revision > 0 {
 			opts = append(opts, clientv3.WithRev(revision))
 		}
-		return client.Watch(ctx, prefix, opts...)
+		return client.Watch(ctx, canonicalPrefix, opts...)
 	}
 	configClient.loadSnapshot = func(ctx context.Context) (*clientv3.GetResponse, error) {
-		return client.Get(ctx, prefix, clientv3.WithPrefix())
+		return client.Get(ctx, canonicalPrefix, clientv3.WithPrefix())
 	}
 	if configClient.healthCheck == nil {
-		configClient.healthCheck = newHealthCheck(client.Get, prefix)
+		healthPrefix := strings.TrimSuffix(canonicalPrefix, "/")
+		if healthPrefix == "" {
+			healthPrefix = "/"
+		}
+		configClient.healthCheck = newHealthCheck(client.Get, healthPrefix)
 	}
 	return configClient, nil
 }
@@ -173,16 +194,114 @@ func waitForWatchRetry(ctx context.Context, attempt int) bool {
 	}
 }
 
+func (c *ConfigClient) recoveryDelay(attempt int) time.Duration {
+	if c.resyncDelay <= 0 {
+		return watchRetryDelay(attempt)
+	}
+	return c.resyncDelay + time.Duration(rand.Float64()*float64(c.resyncDelay)/2)
+}
+
+func (c *ConfigClient) waitForRecoveryRetry(ctx context.Context, attempt int) bool {
+	timer := time.NewTimer(c.recoveryDelay(attempt))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func resetWatchIdleTimer(timer *time.Timer, timeout time.Duration) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(timeout)
+}
+
+func stopWatchIdleTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
+func watchIdleTimerExpired(timer *time.Timer) bool {
+	if timer == nil {
+		return false
+	}
+	select {
+	case <-timer.C:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
+	prefix := c.prefix
+	if prefix == "" || !strings.HasSuffix(prefix, "/") {
+		prefix = canonicalEtcdPrefix(prefix)
+	}
+	keyString := string(key)
+	if !strings.HasPrefix(keyString, prefix) {
+		return "", "", false
+	}
+	relative := strings.TrimPrefix(keyString, prefix)
+	if relative == "" {
+		return "", "", false
+	}
+	parts := strings.Split(relative, "/")
+	if slices.Contains(parts, "") {
+		return "", "", false
+	}
+	if len(parts) == 2 {
+		if !isManagedEtcdBucket(parts[0]) || parts[0] == "secrets" {
+			return "", "", false
+		}
+		return parts[0], parts[1], true
+	}
+	if len(parts) == 3 && parts[0] == "secrets" {
+		return "secrets", parts[1] + "/" + parts[2], true
+	}
+	return "", "", false
+}
+
+func isManagedEtcdBucket(bucket string) bool {
+	switch bucket {
+	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata",
+		"consumers", "consumer_groups", "plugins", "protos", "ssls", "stream_routes", "secrets":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
-	snapshotCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-	defer cancel()
-	response, err := c.loadSnapshot(snapshotCtx)
+	requestTimeout := c.requestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 5 * time.Second
+	}
+	loadCtx, loadCancel := context.WithTimeout(ctx, requestTimeout)
+	response, err := c.loadSnapshot(loadCtx)
+	loadCancel()
 	if err != nil {
 		metrics.RecordEtcdReachable(false)
 		return err
 	}
 	metrics.RecordEtcdReachable(true)
-	return c.applySnapshot(ctx, response)
+	applyCtx, applyCancel := context.WithTimeout(ctx, requestTimeout)
+	defer applyCancel()
+	return c.applySnapshot(applyCtx, response)
 }
 
 func (c *ConfigClient) monitorHealth(ctx context.Context) {
@@ -219,6 +338,9 @@ func (c *ConfigClient) monitorHealth(ctx context.Context) {
 }
 
 func (c *ConfigClient) Watch(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	monitorCtx, stopMonitor := context.WithCancel(ctx)
 	monitorDone := make(chan struct{})
 	go func() {
@@ -233,35 +355,67 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 	revision := c.lastRevision + 1
 	retry := 0
 	for ctx.Err() == nil {
-		stream := c.openWatch(ctx, revision)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		var idleTimer *time.Timer
+		var idleTimerC <-chan time.Time
+		if c.watchTimeout > 0 {
+			idleTimer = time.NewTimer(c.watchTimeout)
+			idleTimerC = idleTimer.C
+		}
+		stream := c.openWatch(streamCtx, revision)
 		markUnreachable := true
+		idleTimeout := false
 	watchLoop:
 		for {
 			select {
 			case <-ctx.Done():
+				stopWatchIdleTimer(idleTimer)
+				cancelStream()
 				return
+			case <-idleTimerC:
+				idleTimeout = true
+				cancelStream()
+				break watchLoop
 			case response, ok := <-stream:
 				if !ok {
+					if ctx.Err() == nil && watchIdleTimerExpired(idleTimer) {
+						idleTimeout = true
+					}
 					break watchLoop
 				}
 				if err := response.Err(); err != nil {
+					if ctx.Err() == nil && watchIdleTimerExpired(idleTimer) {
+						idleTimeout = true
+						break watchLoop
+					}
 					metrics.RecordEtcdReachable(false)
 					logger.Errorf("etcd watch canceled: %v", err)
 					break watchLoop
 				}
+				resetWatchIdleTimer(idleTimer, c.watchTimeout)
 				metrics.RecordEtcdReachable(true)
 				if err := c.applyWatchResponse(ctx, response); err != nil {
 					if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						stopWatchIdleTimer(idleTimer)
+						cancelStream()
 						return
 					}
 					markUnreachable = false
 					logger.Errorf("apply etcd watch response: %v", err)
 					break watchLoop
 				}
+				resetWatchIdleTimer(idleTimer, c.watchTimeout)
 			}
 		}
+		stopWatchIdleTimer(idleTimer)
+		cancelStream()
 		if ctx.Err() != nil {
 			return
+		}
+		if idleTimeout {
+			revision = c.lastRevision + 1
+			retry = 0
+			continue
 		}
 		if markUnreachable {
 			metrics.RecordEtcdReachable(false)
@@ -274,7 +428,7 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 			} else {
 				logger.Errorf("recover etcd watch snapshot: %v", err)
 			}
-			if !waitForWatchRetry(ctx, retry) {
+			if !c.waitForRecoveryRetry(ctx, retry) {
 				return
 			}
 			retry++
@@ -282,11 +436,8 @@ func (c *ConfigClient) Watch(ctx context.Context) {
 	}
 }
 
-func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) error {
-	event := store.NewAcknowledgedEvent()
-	event.Type = eventType
-	event.Key = bytes.Clone(key)
-	event.Value = bytes.Clone(value)
+func (c *ConfigClient) sendBatch(ctx context.Context, mutations []store.Mutation, options store.BatchOptions) error {
+	event := store.NewAcknowledgedBatch(mutations, options)
 	select {
 	case c.events <- event:
 		return event.Wait(ctx)
@@ -294,6 +445,14 @@ func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType,
 		store.PutBack(event)
 		return ctx.Err()
 	}
+}
+
+func (c *ConfigClient) sendEvent(ctx context.Context, eventType store.EventType, key, value []byte) error {
+	return c.sendBatch(ctx, []store.Mutation{{
+		Type:  eventType,
+		Key:   key,
+		Value: value,
+	}}, store.BatchOptions{})
 }
 
 func cloneQuarantine(source map[string]int64) map[string]int64 {
@@ -314,14 +473,80 @@ func clearQuarantine(quarantine map[string]int64, key string, revision int64) {
 	}
 }
 
-func resourceValidationError(err error) bool {
-	var validationErr *store.ResourceValidationError
-	return errors.As(err, &validationErr)
-}
-
 func (c *ConfigClient) commitQuarantine(quarantine map[string]int64) {
 	c.quarantine = quarantine
 	metrics.RecordConfigApplyQuarantine(len(quarantine))
+}
+
+type mutationMetadata struct {
+	mutation store.Mutation
+	key      string
+	bucket   string
+	id       string
+	revision int64
+}
+
+type batchApplyResult struct {
+	accepted []mutationMetadata
+	rejected map[int]struct{}
+}
+
+func (c *ConfigClient) applyMutationBatch(
+	ctx context.Context,
+	candidates []mutationMetadata,
+	options store.BatchOptions,
+) (batchApplyResult, error) {
+	mutations := make([]store.Mutation, len(candidates))
+	for index, candidate := range candidates {
+		mutations[index] = candidate.mutation
+	}
+	if err := c.sendBatch(ctx, mutations, options); err == nil {
+		return batchApplyResult{accepted: candidates}, nil
+	} else {
+		var validationErr *store.BatchValidationError
+		if !errors.As(err, &validationErr) {
+			return batchApplyResult{}, err
+		}
+		rejected := make(map[int]struct{}, len(validationErr.Rejected))
+		preserve := append([]store.ResourceKey(nil), options.Preserve...)
+		pruned := make([]mutationMetadata, 0, len(candidates)-len(validationErr.Rejected))
+		for _, rejection := range validationErr.Rejected {
+			if rejection.Index < 0 || rejection.Index >= len(candidates) {
+				return batchApplyResult{}, fmt.Errorf(
+					"etcd batch validation returned invalid mutation index %d",
+					rejection.Index,
+				)
+			}
+			if _, exists := rejected[rejection.Index]; exists {
+				return batchApplyResult{}, fmt.Errorf(
+					"etcd batch validation returned duplicate mutation index %d",
+					rejection.Index,
+				)
+			}
+			rejected[rejection.Index] = struct{}{}
+			candidate := candidates[rejection.Index]
+			preserve = append(preserve, store.ResourceKey{Bucket: candidate.bucket, ID: candidate.id})
+		}
+		for index, candidate := range candidates {
+			if _, isRejected := rejected[index]; isRejected {
+				continue
+			}
+			pruned = append(pruned, candidate)
+		}
+		options.Preserve = preserve
+		prunedMutations := make([]store.Mutation, len(pruned))
+		for index, candidate := range pruned {
+			prunedMutations[index] = candidate.mutation
+		}
+		if retryErr := c.sendBatch(ctx, prunedMutations, options); retryErr != nil {
+			var retryValidationErr *store.BatchValidationError
+			if errors.As(retryErr, &retryValidationErr) {
+				return batchApplyResult{}, fmt.Errorf("etcd batch validation retry failed: %w", retryErr)
+			}
+			return batchApplyResult{}, retryErr
+		}
+		return batchApplyResult{accepted: pruned, rejected: rejected}, nil
+	}
 }
 
 func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.GetResponse) error {
@@ -331,54 +556,68 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 		return err
 	}
 	nextKeys := make(map[string]struct{}, len(response.Kvs))
-	nextQuarantine := cloneQuarantine(c.quarantine)
+	candidates := make([]mutationMetadata, 0, len(response.Kvs))
 	for _, kv := range response.Kvs {
 		if kv == nil {
 			err := errors.New("etcd snapshot contains a nil key-value")
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
-		nextKeys[string(kv.Key)] = struct{}{}
-	}
-	keys := make([]string, 0, len(c.knownKeys))
-	for key := range c.knownKeys {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if _, ok := nextKeys[key]; !ok {
-			if err := c.sendEvent(ctx, store.EventTypeDelete, []byte(key), nil); err != nil {
-				metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-				return err
-			}
-			clearQuarantine(nextQuarantine, key, response.Header.Revision)
+		bucket, id, ok := c.managedKey(kv.Key)
+		if !ok {
+			continue
 		}
-	}
-	for _, kv := range response.Kvs {
+		key := string(kv.Key)
 		revision := kv.ModRevision
 		if revision <= 0 {
 			revision = response.Header.Revision
 		}
-		if err := c.sendEvent(ctx, store.EventTypePut, kv.Key, kv.Value); err != nil {
-			if resourceValidationError(err) {
-				recordQuarantine(nextQuarantine, string(kv.Key), revision)
-				logger.Errorf("quarantine invalid etcd resource key=%q revision=%d: %v", kv.Key, revision, err)
-				continue
-			}
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-			return err
-		}
-		clearQuarantine(nextQuarantine, string(kv.Key), revision)
-		metrics.RecordEtcdModifyIndex(string(kv.Key), kv.ModRevision)
+		nextKeys[key] = struct{}{}
+		candidates = append(candidates, mutationMetadata{
+			mutation: store.Mutation{Type: store.EventTypePut, Key: kv.Key, Value: kv.Value},
+			key:      key,
+			bucket:   bucket,
+			id:       id,
+			revision: revision,
+		})
 	}
-	for _, key := range keys {
+	nextQuarantine := cloneQuarantine(c.quarantine)
+	for key, revision := range nextQuarantine {
+		if _, ok := nextKeys[key]; !ok {
+			clearQuarantine(nextQuarantine, key, response.Header.Revision)
+			if revision > response.Header.Revision {
+				nextQuarantine[key] = revision
+			}
+		}
+	}
+	result, err := c.applyMutationBatch(ctx, candidates, store.BatchOptions{ReplaceManaged: true})
+	if err != nil {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
+		return err
+	}
+	for index, candidate := range candidates {
+		if _, rejected := result.rejected[index]; rejected {
+			recordQuarantine(nextQuarantine, candidate.key, candidate.revision)
+			logger.Errorf("quarantine invalid etcd resource key=%q revision=%d", candidate.key, candidate.revision)
+			continue
+		}
+		clearQuarantine(nextQuarantine, candidate.key, candidate.revision)
+	}
+	for _, candidate := range result.accepted {
+		metrics.RecordEtcdModifyIndex(candidate.key, candidate.revision)
+	}
+	for key := range c.knownKeys {
 		if _, ok := nextKeys[key]; ok {
 			continue
 		}
-		metrics.RecordEtcdModifyIndex(key, response.Header.Revision)
+		if _, _, managed := c.managedKey([]byte(key)); managed {
+			metrics.RecordEtcdModifyIndex(key, response.Header.Revision)
+		}
 	}
+	nextRevision := response.Header.Revision
+	nextRevision = max(nextRevision, c.lastRevision)
 	c.knownKeys = nextKeys
-	c.lastRevision = response.Header.Revision
+	c.lastRevision = nextRevision
 	c.commitQuarantine(nextQuarantine)
 	metrics.RecordEtcdAppliedRevision(c.lastRevision)
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
@@ -388,53 +627,61 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3.WatchResponse) error {
 	nextKeys := make(map[string]struct{}, len(c.knownKeys))
 	for key := range c.knownKeys {
-		nextKeys[key] = struct{}{}
+		if _, _, managed := c.managedKey([]byte(key)); managed {
+			nextKeys[key] = struct{}{}
+		}
 	}
-	nextRevision := c.lastRevision
-	nextQuarantine := cloneQuarantine(c.quarantine)
+	candidates := make([]mutationMetadata, 0, len(response.Events))
 	for _, watched := range response.Events {
 		if watched == nil || watched.Kv == nil {
 			err := errors.New("etcd watch response contains a nil event")
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return err
 		}
+		bucket, id, ok := c.managedKey(watched.Kv.Key)
+		if !ok {
+			continue
+		}
 		eventType := store.EventType(watched.Type)
 		revision := watched.Kv.ModRevision
 		if revision <= 0 {
 			revision = response.Header.Revision
 		}
-		if err := c.sendEvent(ctx, eventType, watched.Kv.Key, watched.Kv.Value); err != nil {
-			if resourceValidationError(err) {
-				recordQuarantine(nextQuarantine, string(watched.Kv.Key), revision)
-				logger.Errorf("quarantine invalid etcd resource key=%q revision=%d: %v", watched.Kv.Key, revision, err)
-				if revision > nextRevision {
-					nextRevision = revision
-				}
-				if eventType == store.EventTypeDelete {
-					delete(nextKeys, string(watched.Kv.Key))
-				} else {
-					nextKeys[string(watched.Kv.Key)] = struct{}{}
-				}
-				continue
-			}
-			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
-			return err
-		}
-		metrics.RecordEtcdModifyIndex(string(watched.Kv.Key), watched.Kv.ModRevision)
 		key := string(watched.Kv.Key)
+		candidates = append(candidates, mutationMetadata{
+			mutation: store.Mutation{Type: eventType, Key: watched.Kv.Key, Value: watched.Kv.Value},
+			key:      key,
+			bucket:   bucket,
+			id:       id,
+			revision: revision,
+		})
 		if eventType == store.EventTypeDelete {
 			delete(nextKeys, key)
-			clearQuarantine(nextQuarantine, key, revision)
 		} else {
 			nextKeys[key] = struct{}{}
-			clearQuarantine(nextQuarantine, key, revision)
-		}
-		if watched.Kv.ModRevision > nextRevision {
-			nextRevision = watched.Kv.ModRevision
 		}
 	}
-	if response.Header.Revision > nextRevision {
-		nextRevision = response.Header.Revision
+	nextQuarantine := cloneQuarantine(c.quarantine)
+	result, err := c.applyMutationBatch(ctx, candidates, store.BatchOptions{})
+	if err != nil {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
+		return err
+	}
+	for index, candidate := range candidates {
+		if _, rejected := result.rejected[index]; rejected {
+			recordQuarantine(nextQuarantine, candidate.key, candidate.revision)
+			logger.Errorf("quarantine invalid etcd resource key=%q revision=%d", candidate.key, candidate.revision)
+			continue
+		}
+		clearQuarantine(nextQuarantine, candidate.key, candidate.revision)
+		metrics.RecordEtcdModifyIndex(candidate.key, candidate.revision)
+	}
+	nextRevision := c.lastRevision
+	nextRevision = max(nextRevision, response.Header.Revision)
+	for _, candidate := range candidates {
+		if candidate.revision > nextRevision {
+			nextRevision = candidate.revision
+		}
 	}
 	c.knownKeys = nextKeys
 	c.lastRevision = nextRevision
@@ -455,24 +702,41 @@ func (c *ConfigClient) Close() error {
 }
 
 func (c *ConfigClient) FetchAll() error {
+	return c.FetchAllContext(context.Background())
+}
+
+func (c *ConfigClient) FetchAllContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestTimeout := c.requestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 5 * time.Second
+	}
 	var err error
 	for attempt := 0; attempt <= c.startupRetry; attempt++ {
-		loadCtx, loadCancel := context.WithTimeout(context.Background(), c.requestTimeout)
+		loadCtx, loadCancel := context.WithTimeout(ctx, requestTimeout)
 		var resp *clientv3.GetResponse
 		resp, err = c.loadSnapshot(loadCtx)
 		loadCancel()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			metrics.RecordEtcdReachable(false)
 			if attempt < c.startupRetry {
-				time.Sleep(100 * time.Millisecond)
+				if !waitForWatchRetry(ctx, attempt) {
+					return ctx.Err()
+				}
 			}
 			continue
 		}
 		metrics.RecordEtcdReachable(true)
 		logger.Info("got response")
-		snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), c.requestTimeout)
-		defer snapshotCancel()
-		return c.applySnapshot(snapshotCtx, resp)
+		snapshotCtx, snapshotCancel := context.WithTimeout(ctx, requestTimeout)
+		applyErr := c.applySnapshot(snapshotCtx, resp)
+		snapshotCancel()
+		return applyErr
 	}
 	return err
 }

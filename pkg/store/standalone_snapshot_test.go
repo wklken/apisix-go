@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -100,7 +100,7 @@ func TestConsumerRestartRebuildsPersistedPluginLookup(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsInvalidPersistedConsumerWithContext(t *testing.T) {
+func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid-consumer.db")
 	first, err := Open(path, make(chan *Event))
 	if err != nil {
@@ -117,12 +117,33 @@ func TestOpenRejectsInvalidPersistedConsumerWithContext(t *testing.T) {
 	}
 
 	storage, err := Open(path, make(chan *Event))
-	if err == nil {
-		_ = storage.Stop()
-		t.Fatal("Open() returned nil error for invalid persisted consumer")
+	if err != nil {
+		t.Fatalf("Open() error = %v, want invalid persisted consumer to be skipped", err)
 	}
-	if !strings.Contains(err.Error(), "rebuild persisted consumer indexes") ||
-		!strings.Contains(err.Error(), "alice") {
-		t.Fatalf("Open() error = %v, want persisted-consumer context", err)
+	t.Cleanup(func() { _ = storage.Stop() })
+	if _, err := storage.GetConsumerNameByPluginKey("basic-auth", "alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid persisted consumer lookup error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestOpenUsesFiniteDatabaseLockTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locked.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open lock holder: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	started := time.Now()
+	storage, err := Open(path, make(chan *Event))
+	if storage != nil {
+		_ = storage.Stop()
+		t.Fatal("Open() returned a Store while database lock was held")
+	}
+	if err == nil {
+		t.Fatal("Open() returned nil error while database lock was held")
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("Open() lock timeout took %s, want bounded timeout", elapsed)
 	}
 }

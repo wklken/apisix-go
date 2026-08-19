@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,10 @@ import (
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
 
-var errStandaloneHTTPRoutePublication = errors.New("standalone HTTP route publication")
+var (
+	errStandaloneHTTPRoutePublication = errors.New("standalone HTTP route publication")
+	errStandaloneStreamPublication    = errors.New("standalone stream publication")
+)
 
 type configProducer interface {
 	Stop() error
@@ -118,6 +122,8 @@ type Server struct {
 	routes          *routeHandler
 	clusters        *pxy.ClusterRegistry
 	streamRuntime   streamRuntimeOwner
+	streamReloadMu  sync.Mutex
+	streamRoutes    []resource.StreamRoute
 	reloadEventChan chan struct{}
 
 	events            chan *store.Event
@@ -578,27 +584,10 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			return err
 		}
 	}
+	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(config.GlobalConfig))
 	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
-		s.storage.AddEventUpdateHook(
-			func(event *store.Event) {
-				handleStoreEventUpdate(
-					event,
-					func() {
-						reloadGeneration.Add(1)
-						s.SendReloadEvent()
-					},
-					func() {
-						if s.streamRuntime == nil {
-							return
-						}
-						if err := s.reloadStreamRoutes(); err != nil {
-							logger.Errorf("reload stream routes fail: %s", err)
-						}
-					},
-				)
-			},
-		)
+		s.registerAcknowledgedStoreUpdateHook(&reloadGeneration)
 	}
 
 	logger.Info("Starting storage")
@@ -767,10 +756,17 @@ func (s *Server) shutdownAttempt(ctx context.Context) (error, bool) {
 		errs = append(errs, producerErr)
 	}
 
-	if s.streamRuntime != nil {
-		if err := s.streamRuntime.Close(ctx); err != nil {
+	s.streamReloadMu.Lock()
+	streamRuntime := s.streamRuntime
+	if streamRuntime != nil {
+		if err := streamRuntime.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop stream runtime: %w", err))
 		}
+		s.streamRuntime = nil
+		s.streamRoutes = nil
+	}
+	s.streamReloadMu.Unlock()
+	if streamRuntime != nil {
 		metrics.SetStreamRoutes(nil)
 	}
 	if s.routes != nil {
@@ -893,24 +889,33 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	if config.GlobalConfig == nil || !streamProxyModeEnabled(config.GlobalConfig) {
 		return nil
 	}
+	fail := func(err error) error {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
+		return err
+	}
 	streamConfig := config.GlobalConfig.Apisix.StreamProxy
 	if len(streamConfig.Tcp) == 0 {
-		return fmt.Errorf("stream mode requires at least one TCP listener")
+		return fail(fmt.Errorf("stream mode requires at least one TCP listener"))
 	}
 	if len(streamConfig.Udp) > 0 {
-		return fmt.Errorf("UDP stream listeners are not supported")
+		return fail(fmt.Errorf("UDP stream listeners are not supported"))
 	}
 	proxyProtocol := config.GlobalConfig.Apisix.ProxyProtocol
 	if proxyProtocol.EnableTCPPP {
-		return fmt.Errorf("stream PROXY protocol is not supported")
+		return fail(fmt.Errorf("stream PROXY protocol is not supported"))
 	}
 	if proxyProtocol.EnableTCPPPToUpstream {
-		return fmt.Errorf("upstream PROXY protocol is not supported")
+		return fail(fmt.Errorf("upstream PROXY protocol is not supported"))
 	}
 
+	// Serialize the initial load/publication with acknowledged dynamic reloads.
+	// An event committed after the initial read either blocks here and reloads
+	// the published runtime, or completes first and is included by this read.
+	s.streamReloadMu.Lock()
+	defer s.streamReloadMu.Unlock()
 	routes, err := s.loadStreamRoutes()
 	if err != nil {
-		return fmt.Errorf("load stream routes: %w", err)
+		return fail(fmt.Errorf("load stream routes: %w", err))
 	}
 	runtime, err := streamruntime.NewRuntime(
 		ctx,
@@ -920,27 +925,33 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 		logStreamResult,
 	)
 	if err != nil {
-		return fmt.Errorf("start stream proxy: %w", err)
+		return fail(fmt.Errorf("start stream proxy: %w", err))
 	}
 	s.lifecycleMu.Lock()
 	if s.shutdownRequested {
 		s.lifecycleMu.Unlock()
 		_ = runtime.Close(context.Background())
-		return context.Canceled
+		return fail(context.Canceled)
 	}
 	s.streamRuntime = runtime
 	s.lifecycleMu.Unlock()
+	s.streamRoutes = routes
 	metrics.SetStreamRoutes(streamRouteIDs(routes))
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
 	return nil
 }
 
 func (s *Server) closeStartedStreamRuntime(runtime streamRuntimeOwner) error {
+	s.streamReloadMu.Lock()
+	defer s.streamReloadMu.Unlock()
 	if runtime == nil || s.streamRuntime != runtime {
 		return nil
 	}
 	err := runtime.Close(context.Background())
 	s.streamRuntime = nil
+	s.streamRoutes = nil
+	metrics.SetStreamRoutes(nil)
 	if err != nil {
 		return fmt.Errorf("stop stream runtime after startup failure: %w", err)
 	}
@@ -993,15 +1004,29 @@ func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {
 }
 
 func (s *Server) reloadStreamRoutes() error {
+	_, err := s.reloadStreamRoutesIfStarted()
+	return err
+}
+
+func (s *Server) reloadStreamRoutesIfStarted() (bool, error) {
+	s.streamReloadMu.Lock()
+	defer s.streamReloadMu.Unlock()
+	if s.streamRuntime == nil {
+		return false, nil
+	}
 	routes, err := s.loadStreamRoutes()
 	if err != nil {
-		return err
+		return true, err
+	}
+	if reflect.DeepEqual(routes, s.streamRoutes) {
+		return true, nil
 	}
 	if err := s.streamRuntime.Reload(routes); err != nil {
-		return err
+		return true, err
 	}
+	s.streamRoutes = routes
 	metrics.SetStreamRoutes(streamRouteIDs(routes))
-	return nil
+	return true, nil
 }
 
 func streamRouteIDs(routes []resource.StreamRoute) []string {
@@ -1069,6 +1094,37 @@ func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream 
 	}
 }
 
+func (s *Server) registerAcknowledgedStoreUpdateHook(reloadGeneration *atomic.Uint64) {
+	s.storage.AddAcknowledgedEventUpdateHook(func(event *store.Event) error {
+		return s.handleAcknowledgedStoreEvent(event, func() {
+			if reloadGeneration != nil {
+				reloadGeneration.Add(1)
+			}
+			s.SendReloadEvent()
+		})
+	})
+}
+
+func (s *Server) handleAcknowledgedStoreEvent(event *store.Event, reloadHTTP func()) error {
+	if isHTTPRouteEvent(event) && reloadHTTP != nil {
+		reloadHTTP()
+	}
+	if !isStreamRouteEvent(event) {
+		return nil
+	}
+	started, err := s.reloadStreamRoutesIfStarted()
+	if err != nil {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
+		logger.Errorf("reload stream routes fail: %s", err)
+		return err
+	}
+	if !started {
+		return nil
+	}
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
+	return nil
+}
+
 func routeEventBucket(event *store.Event) (string, bool) {
 	return store.EventBucket(event)
 }
@@ -1124,18 +1180,19 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 				err,
 				s.storage.Sync,
 				func() error { return s.reload(ctx) },
-				func() {
+				func() error {
 					if s.streamRuntime == nil {
-						return
+						return nil
 					}
-					if err := s.reloadStreamRoutes(); err != nil {
-						logger.Errorf("reload stream routes fail: %s", err)
-					}
+					return s.reloadStreamRoutes()
 				},
 			); applyErr != nil {
 				if errors.Is(applyErr, errStandaloneHTTPRoutePublication) {
 					metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+				} else if errors.Is(applyErr, errStandaloneStreamPublication) {
+					metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
 				} else {
 					metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 				}
@@ -1145,6 +1202,9 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 			metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 			if result.AffectsHTTPRoutes() {
 				metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+			}
+			if result.AffectsStreams() && s.streamRuntime != nil {
+				metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
 			}
 			return nil
 		})
@@ -1158,7 +1218,7 @@ func applyStandaloneSnapshot(
 	err error,
 	syncStore func() error,
 	reloadRoutes func() error,
-	reloadStreams func(),
+	reloadStreams func() error,
 ) error {
 	if err != nil {
 		return err
@@ -1172,7 +1232,9 @@ func applyStandaloneSnapshot(
 		}
 	}
 	if result.AffectsStreams() {
-		reloadStreams()
+		if err := reloadStreams(); err != nil {
+			return fmt.Errorf("%w: %w", errStandaloneStreamPublication, err)
+		}
 	}
 	return nil
 }
@@ -1208,11 +1270,6 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 			return fmt.Errorf("build etcd TLS config: %w", err)
 		}
 	}
-	requestTimeout := 5 * time.Second
-	if etcdConfig.Timeout > 0 {
-		requestTimeout = time.Duration(etcdConfig.Timeout) * time.Second
-	}
-
 	logger.Info("Starting etcd client")
 	etcdClient, err := etcd.NewConfigClientWithOptions(
 		endpoints,
@@ -1220,13 +1277,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		password,
 		prefix,
 		s.events,
-		etcd.ClientOptions{
-			DialTimeout:         requestTimeout,
-			RequestTimeout:      requestTimeout,
-			HealthCheckInterval: etcdHealthCheckInterval(etcdConfig.HealthCheckTimeout),
-			StartupRetry:        etcdConfig.StartupRetry,
-			TLS:                 tlsConfig,
-		},
+		etcdClientOptions(etcdConfig, tlsConfig),
 	)
 	if err != nil {
 		return fmt.Errorf("start etcd client: %w", err)
@@ -1239,7 +1290,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 		return fmt.Errorf("retain etcd config watcher: %w", err)
 	}
 	logger.Info("fetch full data from etcd")
-	err = fetchAndSyncInitialEtcdConfig(etcdClient.FetchAll, s.storage.Sync)
+	err = fetchAndSyncInitialEtcdConfigContext(ctx, etcdClient.FetchAllContext, s.storage.Sync)
 	if err != nil {
 		return fmt.Errorf("fetch initial etcd config: %w", err)
 	}
@@ -1269,8 +1320,39 @@ func etcdHealthCheckInterval(timeout int) time.Duration {
 	return time.Duration(timeout) * time.Second
 }
 
+func etcdClientOptions(etcdConfig config.Etcd, tlsConfig *tls.Config) etcd.ClientOptions {
+	requestTimeout := 5 * time.Second
+	if etcdConfig.Timeout > 0 {
+		requestTimeout = time.Duration(etcdConfig.Timeout) * time.Second
+	}
+	return etcd.ClientOptions{
+		DialTimeout:         requestTimeout,
+		RequestTimeout:      requestTimeout,
+		HealthCheckInterval: etcdHealthCheckInterval(etcdConfig.HealthCheckTimeout),
+		StartupRetry:        etcdConfig.StartupRetry,
+		WatchTimeout:        time.Duration(etcdConfig.WatchTimeout) * time.Second,
+		ResyncDelay:         time.Duration(etcdConfig.ResyncDelay) * time.Second,
+		TLS:                 tlsConfig,
+	}
+}
+
 func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func() error) error {
-	if err := fetch(); err != nil {
+	return fetchAndSyncInitialEtcdConfigContext(
+		context.Background(),
+		func(context.Context) error { return fetch() },
+		syncStore,
+	)
+}
+
+func fetchAndSyncInitialEtcdConfigContext(
+	ctx context.Context,
+	fetch func(context.Context) error,
+	syncStore func() error,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := fetch(ctx); err != nil {
 		return err
 	}
 	if err := syncStore(); err != nil {

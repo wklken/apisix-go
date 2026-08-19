@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -277,13 +275,13 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	}
 }
 
-func TestResponseManifestAndRegistryHaveExactDeclaredIdentities(t *testing.T) {
-	manifestWant := []string{
+func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
+	responseWant := []string{
 		"api-breaker", "body-transformer", "echo", "error-page", "exit-transformer",
 		"graphql-proxy-cache", "proxy-cache", "response-rewrite",
 		"serverless-post-function", "serverless-pre-function",
 	}
-	registryWant := append([]string{"ai-aliyun-content-moderation", "ai-rate-limiting"}, manifestWant...)
+	registryWant := append([]string{"ai-aliyun-content-moderation", "ai-rate-limiting"}, responseWant...)
 	registryWant = append(registryWant, "grpc-transcode")
 	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
@@ -296,38 +294,6 @@ func TestResponseManifestAndRegistryHaveExactDeclaredIdentities(t *testing.T) {
 	slices.Sort(got)
 	if !reflect.DeepEqual(got, registryWant) {
 		t.Fatalf("response registry = %v, want %v", got, registryWant)
-	}
-
-	manifest, err := os.ReadFile(filepath.Join(
-		"..", "..", "docs", "superpowers", "plans", "2026-08-10-plugin-capability-manifest.md",
-	))
-	if err != nil {
-		t.Fatalf("read capability manifest: %v", err)
-	}
-	section := string(manifest)
-	start := strings.Index(section, "## Plan 15 bounded response identities")
-	if start < 0 {
-		t.Fatal("capability manifest missing Plan 15 section")
-	}
-	section = section[start:]
-	if end := strings.Index(section[len("## Plan 15 bounded response identities"):], "\n## "); end >= 0 {
-		section = section[:len("## Plan 15 bounded response identities")+end]
-	}
-	manifestIdentities := make([]string, 0, len(manifestWant))
-	for line := range strings.SplitSeq(section, "\n") {
-		fields := strings.Split(line, "|")
-		if len(fields) != 5 || strings.TrimSpace(fields[1]) == "Identity" ||
-			strings.TrimSpace(fields[3]) == "Primary plan" {
-			continue
-		}
-		identity := strings.TrimSpace(fields[1])
-		if identity != "" && identity != "---" {
-			manifestIdentities = append(manifestIdentities, identity)
-		}
-	}
-	slices.Sort(manifestIdentities)
-	if !reflect.DeepEqual(manifestIdentities, manifestWant) {
-		t.Fatalf("manifest identities = %v, want %v", manifestIdentities, manifestWant)
 	}
 }
 

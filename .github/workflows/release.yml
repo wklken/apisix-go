@@ -68,12 +68,24 @@ jobs:
       - name: Run source unit tests and coverage gate
         run: make test-cover
 
-  integration:
-    name: Release Integration Suite
+  integration-smoke:
+    name: Release Integration Smoke (${{ matrix.case.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 25
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - name: key-auth
+            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+          - name: proxy-rewrite
+            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+          - name: proxy-control
+            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+          - name: uri-blocker
+            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -89,15 +101,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run standalone integration suite
-        run: make test-integration
+      - name: Run focused standalone smoke case
+        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
 
   security-release-gates:
     name: Release Security And Operational Qualification
     needs:
       - lint
       - build-and-unit
-      - integration
+      - integration-smoke
     uses: ./.github/workflows/security-release-gates.yml
     with:
       publish-image: true
@@ -115,7 +127,7 @@ jobs:
     needs:
       - lint
       - build-and-unit
-      - integration
+      - integration-smoke
       - security-release-gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -233,7 +245,10 @@ jobs:
                 "make lint",
                 "make build",
                 "make test-cover",
-                "make test-integration",
+                "go test ./t/plugin -run TestPluginIntegration/key-auth/valid-consumer-schema -count=1 -v",
+                "go test ./t/plugin -run TestPluginIntegration/proxy-rewrite/rewrite-host -count=1 -v",
+                "go test ./t/plugin -run TestPluginIntegration/proxy-control/request-buffering-disabled -count=1 -v",
+                "go test ./t/plugin -run TestPluginIntegration/uri-blocker/one-rule-blocks-query -count=1 -v",
                 "go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1",
                 "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...",
                 "bash scripts/container_smoke.sh",

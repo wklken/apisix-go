@@ -237,6 +237,13 @@ func TestRenderRuntimeConfigForcesStandaloneIsolation(t *testing.T) {
 	if address["ip"] != "127.0.0.1" || address["port"] != 19080 {
 		t.Fatalf("node_listen = %#v, want loopback:19080", listen)
 	}
+	sslConfig, ok := apisix["ssl"].(map[string]any)
+	if !ok {
+		t.Fatalf("apisix.ssl = %#v, want disabled integration TLS config", apisix["ssl"])
+	}
+	if got := sslConfig["enable"]; got != false {
+		t.Fatalf("apisix.ssl.enable = %v, want false without frontend_tls", got)
+	}
 	deployment := config["deployment"].(map[string]any)
 	if got := deployment["role"]; got != "data_plane" {
 		t.Fatalf("deployment.role = %v, want data_plane", got)
@@ -2899,6 +2906,7 @@ func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
 		"apisix": map[string]any{
 			"enable_admin": false,
 			"proxy_mode":   "http",
+			"ssl":          map[string]any{"enable": false},
 		},
 		"deployment": map[string]any{},
 	}

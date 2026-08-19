@@ -1,17 +1,13 @@
 package public_api
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
-
-type Plugin struct {
-	base.BasePlugin
-	config Config
-}
 
 const (
 	priority = 501
@@ -38,11 +34,65 @@ type registryKey struct {
 	uri    string
 }
 
-var publicAPIs = struct {
+// Registry owns the public APIs for one route generation. A registry must be
+// captured by every public-api handler in that generation so route rebuilds
+// cannot change an already-published handler's dispatch table.
+type Registry struct {
 	sync.RWMutex
-	handlers map[registryKey]http.Handler
-}{
-	handlers: map[registryKey]http.Handler{},
+	handlers      map[registryKey]http.Handler
+	ownerIdentity map[string]string
+}
+
+func NewRegistry() *Registry {
+	return &Registry{
+		handlers:      make(map[registryKey]http.Handler),
+		ownerIdentity: make(map[string]string),
+	}
+}
+
+// ClaimOwner rejects conflicting registrations from instances that own the
+// same generation-level public APIs. Repeating an identical identity is safe.
+func (r *Registry) ClaimOwner(owner string, identity string) error {
+	if r == nil {
+		return fmt.Errorf("public API registry is nil")
+	}
+	r.Lock()
+	defer r.Unlock()
+	if r.ownerIdentity == nil {
+		r.ownerIdentity = make(map[string]string)
+	}
+	if existing, ok := r.ownerIdentity[owner]; ok && existing != identity {
+		return fmt.Errorf("public API owner %q has conflicting configurations", owner)
+	}
+	r.ownerIdentity[owner] = identity
+	return nil
+}
+
+func (r *Registry) Register(method string, uri string, handler http.Handler) {
+	if r == nil {
+		return
+	}
+	r.Lock()
+	defer r.Unlock()
+	if r.handlers == nil {
+		r.handlers = make(map[registryKey]http.Handler)
+	}
+	r.handlers[registryKey{method: method, uri: uri}] = handler
+}
+
+func (r *Registry) Lookup(method string, uri string) http.Handler {
+	if r == nil {
+		return nil
+	}
+	r.RLock()
+	defer r.RUnlock()
+	return r.handlers[registryKey{method: method, uri: uri}]
+}
+
+type Plugin struct {
+	base.BasePlugin
+	config   Config
+	registry *Registry
 }
 
 func (p *Plugin) Init() error {
@@ -53,7 +103,16 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.registry == nil {
+		p.registry = NewRegistry()
+	}
 	return nil
+}
+
+// SetPublicAPIRegistry injects the registry owned by the route generation
+// before PostInit registers any public endpoint.
+func (p *Plugin) SetPublicAPIRegistry(registry *Registry) {
+	p.registry = registry
 }
 
 func (p *Plugin) Config() any {
@@ -83,7 +142,7 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	if uri == "" {
 		uri = r.URL.Path
 	}
-	handler := Lookup(r.Method, uri)
+	handler := p.registry.Lookup(r.Method, uri)
 	if handler == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -93,22 +152,4 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	req.URL.Path = uri
 	req.URL.RawPath = ""
 	handler.ServeHTTP(w, req)
-}
-
-func Register(method string, uri string, handler http.Handler) {
-	publicAPIs.Lock()
-	defer publicAPIs.Unlock()
-	publicAPIs.handlers[registryKey{method: method, uri: uri}] = handler
-}
-
-func Lookup(method string, uri string) http.Handler {
-	publicAPIs.RLock()
-	defer publicAPIs.RUnlock()
-	return publicAPIs.handlers[registryKey{method: method, uri: uri}]
-}
-
-func ResetRegistryForTest() {
-	publicAPIs.Lock()
-	defer publicAPIs.Unlock()
-	publicAPIs.handlers = map[registryKey]http.Handler{}
 }

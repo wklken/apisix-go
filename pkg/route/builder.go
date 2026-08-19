@@ -39,6 +39,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -548,6 +549,11 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) BuildStrict() (*chi.Mux, error) {
+	publicAPIRegistry := public_api.NewRegistry()
+	if err := registerPrometheusPublicEndpoint(publicAPIRegistry); err != nil {
+		return nil, fmt.Errorf("register prometheus public endpoint: %w", err)
+	}
+
 	var configuredPlugins []string
 	if appconfig.GlobalConfig != nil {
 		configuredPlugins = appconfig.GlobalConfig.Plugins
@@ -581,7 +587,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 		if routeResource.Disabled() {
 			continue
 		}
-		handler, buildErr := b.buildHandlerStrict(routeResource)
+		handler, buildErr := b.buildHandlerStrict(routeResource, publicAPIRegistry)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
 		}
@@ -600,12 +606,14 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 			}
 		}
 	}
-	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules())
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules(), publicAPIRegistry)
 	if err != nil {
 		return nil, fmt.Errorf("build global not found handler: %w", err)
 	}
 	mux.NotFound(notFoundHandler.ServeHTTP)
-	registerExtraRoutes(mux)
+	if err := registerExtraRoutesStrict(mux, publicAPIRegistry); err != nil {
+		return nil, fmt.Errorf("register extra routes: %w", err)
+	}
 	b.configureGlobalErrorLogObserver()
 	return mux, nil
 }
@@ -678,11 +686,19 @@ func (b *Builder) QuarantinedResourceCount() int {
 	return b.snapshotQuarantineCount
 }
 
-func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+func (b *Builder) buildGlobalNotFoundHandler(
+	globalRules []resource.GlobalRule,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
+	var registry *public_api.Registry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
+	routeContext := pluginRouteContext{publicAPIRegistry: registry}
 	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, ""); err != nil {
 		return nil, err
 	}
-	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, pluginRouteContext{})
+	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
 	if err != nil {
 		return nil, err
 	}
@@ -693,7 +709,7 @@ func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) 
 			scope:      plugin.ScopeSystem,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
 		}},
-		pluginRouteContext{},
+		routeContext,
 		pluginInitOptions{allowRequestContext: true},
 	)
 	if err != nil {
@@ -741,7 +757,10 @@ func normalizePluginResourceContext(
 	return context
 }
 
-func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
+func (b *Builder) buildHandlerStrict(
+	r resource.Route,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
 	if err := validateRouteSemantics(r); err != nil {
 		return nil, err
 	}
@@ -801,6 +820,9 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	systemPlugins := buildSystemPluginConfigs(r, service)
 
 	routeContext := b.pluginRouteContext(r)
+	if len(registries) > 0 {
+		routeContext.publicAPIRegistry = registries[0]
+	}
 	routeContext.service = service
 	localBindings, err := b.initPluginBindingsStrict(localSources, routeContext, pluginInitOptions{})
 	if err != nil {
@@ -1337,10 +1359,11 @@ func matchedHost(r resource.Route) string {
 }
 
 type pluginRouteContext struct {
-	routeID    string
-	serverAddr string
-	route      resource.Route
-	service    resource.Service
+	routeID           string
+	serverAddr        string
+	route             resource.Route
+	service           resource.Service
+	publicAPIRegistry *public_api.Registry
 }
 
 func (b *Builder) pluginRouteContext(r resource.Route) pluginRouteContext {
@@ -1470,6 +1493,10 @@ func trafficSplitResourceUpstream(
 
 type pluginEnabledCheckerSetter interface {
 	SetPluginEnabledChecker(func(string) bool)
+}
+
+type publicAPIRegistrySetter interface {
+	SetPublicAPIRegistry(*public_api.Registry)
 }
 
 type pluginPreMaterializationValidator interface {
@@ -2469,6 +2496,9 @@ func (b *Builder) initPluginBindingsStrict(
 		if setter, ok := p.(pluginEnabledCheckerSetter); ok && b.enabledPlugins != nil {
 			checker := b.enabledPlugins.Contains
 			setter.SetPluginEnabledChecker(checker)
+		}
+		if setter, ok := p.(publicAPIRegistrySetter); ok {
+			setter.SetPublicAPIRegistry(routeContext.publicAPIRegistry)
 		}
 		if validator, ok := p.(pluginPreMaterializationValidator); ok {
 			if err := validator.ValidatePreMaterialization(); err != nil {

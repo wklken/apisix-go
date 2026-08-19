@@ -24,6 +24,7 @@ type Plugin struct {
 
 	client         *http.Client
 	insecureClient *http.Client
+	registry       *public_api.Registry
 }
 
 const (
@@ -120,11 +121,32 @@ func (p *Plugin) PostInit() error {
 	if strings.HasPrefix(strings.ToLower(p.config.Server), "http://") {
 		logger.Warn("Using wolf-rbac server with no TLS is a security risk")
 	}
-	public_api.Register(http.MethodPost, WolfLoginURI, http.HandlerFunc(p.handleLogin))
-	public_api.Register(http.MethodPut, WolfChangePasswordURI, http.HandlerFunc(p.handleChangePassword))
-	public_api.Register(http.MethodGet, WolfUserInfoURI, http.HandlerFunc(p.handleUserInfo))
-
+	if p.registry == nil {
+		p.registry = public_api.NewRegistry()
+	}
+	if err := p.registry.ClaimOwner(name, p.publicAPIConfigIdentity()); err != nil {
+		return err
+	}
+	p.registry.Register(http.MethodPost, WolfLoginURI, http.HandlerFunc(p.handleLogin))
+	p.registry.Register(http.MethodPut, WolfChangePasswordURI, http.HandlerFunc(p.handleChangePassword))
+	p.registry.Register(http.MethodGet, WolfUserInfoURI, http.HandlerFunc(p.handleUserInfo))
 	return nil
+}
+
+func (p *Plugin) publicAPIConfigIdentity() string {
+	// Public endpoints use only these route-level fallbacks; appid and header
+	// prefix affect the protected request path, not the public handlers.
+	return fmt.Sprintf(
+		"server=%q ssl_verify=%t",
+		p.config.Server,
+		p.config.SSLVerify != nil && *p.config.SSLVerify,
+	)
+}
+
+// SetPublicAPIRegistry injects the registry owned by the route generation
+// before PostInit registers Wolf's public endpoints.
+func (p *Plugin) SetPublicAPIRegistry(registry *public_api.Registry) {
+	p.registry = registry
 }
 
 func (p *Plugin) Config() any {

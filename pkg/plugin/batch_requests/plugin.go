@@ -104,10 +104,43 @@ type PipelineRequest struct {
 }
 
 type PipelineResponse struct {
-	Status  int               `json:"status"`
-	Reason  string            `json:"reason"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	Status  int            `json:"status"`
+	Reason  string         `json:"reason"`
+	Headers map[string]any `json:"headers,omitempty"`
+	Body    string         `json:"body,omitempty"`
+}
+
+// DispatchLease keeps a route generation alive while a batch subrequest is
+// executing through the server request boundary.
+type DispatchLease struct {
+	Handler http.Handler
+	Release func()
+}
+
+// DispatchLeaseFactory acquires a dispatch lease for one batch worker. The
+// factory must increment the generation reference before returning and its
+// lease release must be idempotent.
+type DispatchLeaseFactory func() (DispatchLease, bool)
+
+type dispatchLeaseFactoryContextKey struct{}
+
+// WithDispatchLeaseFactory attaches a generation-aware subrequest factory to
+// the request context without exposing the context key to other packages.
+func WithDispatchLeaseFactory(r *http.Request, factory DispatchLeaseFactory) *http.Request {
+	if r == nil || factory == nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), dispatchLeaseFactoryContextKey{}, factory))
+}
+
+// DispatchLeaseFactoryFromRequest returns the generation-aware subrequest
+// factory attached by the server boundary, if any.
+func DispatchLeaseFactoryFromRequest(r *http.Request) DispatchLeaseFactory {
+	if r == nil {
+		return nil
+	}
+	factory, _ := r.Context().Value(dispatchLeaseFactoryContextKey{}).(DispatchLeaseFactory)
+	return factory
 }
 
 type ErrorResponse struct {
@@ -475,6 +508,28 @@ func dispatchPipelineRequestBounded(
 	if !dispatcher.acquire(ctx) {
 		return timeoutResponse(), true
 	}
+	leaseFactory := DispatchLeaseFactoryFromRequest(outer)
+	handler := dispatcher.handler
+	var releaseLease func()
+	if leaseFactory != nil {
+		lease, ok := leaseFactory()
+		if !ok || lease.Handler == nil {
+			if lease.Release != nil {
+				lease.Release()
+			}
+			dispatcher.release()
+			return unavailableResponse(), false
+		}
+		handler = lease.Handler
+		var releaseOnce sync.Once
+		releaseLease = func() {
+			releaseOnce.Do(func() {
+				if lease.Release != nil {
+					lease.Release()
+				}
+			})
+		}
+	}
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
@@ -483,13 +538,31 @@ func dispatchPipelineRequestBounded(
 		req.Host = host
 		req.Header.Del("Host")
 	}
+	if leaseFactory != nil {
+		req = WithDispatchLeaseFactory(req, leaseFactory)
+	}
 
 	recorder := newBoundedResponseRecorder(maxResponseBodySize)
 	done := make(chan pipelineResult, 1)
 	go func() {
+		if releaseLease != nil {
+			defer releaseLease()
+		}
 		defer dispatcher.release()
-		dispatcher.handler.ServeHTTP(recorder, req)
-		resp := recorder.pipelineResponse()
+		var resp PipelineResponse
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					if recovered == http.ErrAbortHandler {
+						resp = abortResponse()
+						return
+					}
+					panic(recovered)
+				}
+			}()
+			handler.ServeHTTP(recorder, req)
+			resp = recorder.pipelineResponse()
+		}()
 		done <- pipelineResult{response: resp}
 	}()
 
@@ -552,10 +625,10 @@ func (r *boundedResponseRecorder) pipelineResponse() PipelineResponse {
 	if r.written > r.maxBytes {
 		return PipelineResponse{Status: http.StatusBadGateway, Reason: http.StatusText(http.StatusBadGateway)}
 	}
-	status := r.status
-	if status == 0 {
-		status = http.StatusOK
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
 	}
+	status := r.status
 	response := PipelineResponse{
 		Status:  status,
 		Reason:  http.StatusText(status),
@@ -582,11 +655,30 @@ func timeoutResponse() PipelineResponse {
 	}
 }
 
-func flattenHeaders(header http.Header) map[string]string {
-	out := make(map[string]string, len(header))
+func abortResponse() PipelineResponse {
+	return PipelineResponse{
+		Status: http.StatusBadGateway,
+		Reason: http.StatusText(http.StatusBadGateway),
+	}
+}
+
+func unavailableResponse() PipelineResponse {
+	return PipelineResponse{
+		Status: http.StatusBadGateway,
+		Reason: "route unavailable",
+	}
+}
+
+func flattenHeaders(header http.Header) map[string]any {
+	out := make(map[string]any, len(header))
 	for key, values := range header {
-		if len(values) > 0 {
+		switch len(values) {
+		case 0:
+			continue
+		case 1:
 			out[key] = values[0]
+		default:
+			out[key] = append([]string(nil), values...)
 		}
 	}
 	return out

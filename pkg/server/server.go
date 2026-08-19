@@ -25,8 +25,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/observability/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
-	prometheusplugin "github.com/wklken/apisix-go/pkg/plugin/prometheus"
-	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -577,9 +575,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		if err := metrics.Init(); err != nil {
 			return fmt.Errorf("initialize prometheus metrics: %w", err)
 		}
-		if err := registerPrometheusPublicEndpoint(); err != nil {
-			return err
-		}
 		if err := s.startPrometheusExpiration(ctx); err != nil {
 			return err
 		}
@@ -635,17 +630,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		s.startPrometheusExportServer,
 		s.startHTTPListeners,
 	)
-}
-
-func registerPrometheusPublicEndpoint() error {
-	endpoint, err := metrics.ConfiguredPublicEndpoint()
-	if err != nil {
-		return fmt.Errorf("configure prometheus public endpoint: %w", err)
-	}
-	if !endpoint.Enabled {
-		public_api.Register(http.MethodGet, endpoint.URI, http.HandlerFunc(prometheusplugin.MetricsHandler))
-	}
-	return nil
 }
 
 func (s *Server) startServing(

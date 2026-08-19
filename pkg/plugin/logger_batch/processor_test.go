@@ -377,6 +377,52 @@ func TestProcessorDefaultsResourceBounds(t *testing.T) {
 	}
 }
 
+func TestProcessorBoundsInitialBufferCapacityWithoutChangingBatchSize(t *testing.T) {
+	const configuredBatchMaxSize = 1 << 60
+	deliveredBatchSize := make(chan int, 1)
+	var p *Processor
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("NewWithContext panicked for a large configured batch size: %v", recovered)
+			}
+		}()
+		p = NewWithContext(Config{
+			BatchMaxSize:    configuredBatchMaxSize,
+			InactiveTimeout: time.Hour,
+			BufferDuration:  time.Hour,
+		}, func(_ context.Context, _ []map[string]any, batchMaxSize int) (int, error) {
+			deliveredBatchSize <- batchMaxSize
+			return 0, nil
+		})
+	}()
+	if p == nil {
+		t.Fatal("NewWithContext returned a nil processor")
+	}
+	t.Cleanup(p.Stop)
+
+	if p.config.BatchMaxSize != configuredBatchMaxSize {
+		t.Fatalf("configured BatchMaxSize = %d, want %d", p.config.BatchMaxSize, configuredBatchMaxSize)
+	}
+	if got := cap(p.buffer); got > DefaultBatchMaxSize {
+		t.Fatalf("initial buffer capacity = %d, want at most %d", got, DefaultBatchMaxSize)
+	}
+	if !p.Push(map[string]any{"id": "bounded-capacity"}) {
+		t.Fatal("push was rejected")
+	}
+
+	p.Stop()
+	select {
+	case got := <-deliveredBatchSize:
+		if got != configuredBatchMaxSize {
+			t.Fatalf("delivery batch size = %d, want configured value %d", got, configuredBatchMaxSize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delivery")
+	}
+}
+
 func TestProcessorRejectsAtExactPendingBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

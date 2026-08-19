@@ -12,13 +12,15 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+func newTestPlugin(t *testing.T, cfg Config, registries ...*public_api.Registry) *Plugin {
 	t.Helper()
 
-	public_api.ResetRegistryForTest()
-	t.Cleanup(public_api.ResetRegistryForTest)
-
 	p := &Plugin{config: cfg}
+	registry := public_api.NewRegistry()
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
+	p.SetPublicAPIRegistry(registry)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -71,8 +73,9 @@ func TestHandlerSetsUpstreamOverrideWhenIPConfigured(t *testing.T) {
 }
 
 func TestControlAPIHelloReturnsText(t *testing.T) {
-	p := newTestPlugin(t, Config{I: 1})
-	handler := public_api.Lookup(http.MethodGet, "/v1/plugin/example-plugin/hello")
+	registry := public_api.NewRegistry()
+	p := newTestPlugin(t, Config{I: 1}, registry)
+	handler := registry.Lookup(http.MethodGet, "/v1/plugin/example-plugin/hello")
 	if handler == nil {
 		t.Fatal("example-plugin control API was not registered")
 	}
@@ -93,8 +96,9 @@ func TestControlAPIHelloReturnsText(t *testing.T) {
 }
 
 func TestControlAPIHelloReturnsJSON(t *testing.T) {
-	newTestPlugin(t, Config{I: 1})
-	handler := public_api.Lookup(http.MethodGet, "/v1/plugin/example-plugin/hello")
+	registry := public_api.NewRegistry()
+	newTestPlugin(t, Config{I: 1}, registry)
+	handler := registry.Lookup(http.MethodGet, "/v1/plugin/example-plugin/hello")
 	if handler == nil {
 		t.Fatal("example-plugin control API was not registered")
 	}

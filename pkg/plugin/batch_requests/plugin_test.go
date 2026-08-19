@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -225,6 +226,58 @@ func TestHandlerBoundsPipelineResponseBody(t *testing.T) {
 	}
 	if responses[0].Body != "" || responses[1].Body != "" {
 		t.Fatalf("oversized bodies retained: %#v", responses)
+	}
+}
+
+func TestHandlerConvertsAbortHandlerToBadGateway(t *testing.T) {
+	handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}), Limits{})
+	request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/abort"}]
+	}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	responses := decodePipelineResponses(t, response.Body.String())
+	if responses[0].Status != http.StatusBadGateway {
+		t.Fatalf("pipeline status = %d, want 502", responses[0].Status)
+	}
+	if responses[0].Reason != http.StatusText(http.StatusBadGateway) {
+		t.Fatalf("pipeline reason = %q, want %q", responses[0].Reason, http.StatusText(http.StatusBadGateway))
+	}
+}
+
+func TestHandlerPreservesRepeatedResponseHeaders(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "session=one")
+		w.Header().Add("Set-Cookie", "session=two")
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/cookies"}]
+	}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	var responses []struct {
+		Status  int            `json:"status"`
+		Headers map[string]any `json:"headers"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responses); err != nil {
+		t.Fatalf("decode response: %v; body=%q", err, response.Body.String())
+	}
+	if responses[0].Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", responses[0].Status)
+	}
+	cookies, ok := responses[0].Headers["Set-Cookie"].([]any)
+	if !ok {
+		t.Fatalf("Set-Cookie header = %#v, want JSON array", responses[0].Headers["Set-Cookie"])
+	}
+	if got, want := cookies, []any{"session=one", "session=two"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Set-Cookie values = %#v, want %#v", got, want)
 	}
 }
 

@@ -452,6 +452,7 @@ func matchesWildcardRoute(pattern string, path string) bool {
 }
 
 type Builder struct {
+	storage             *store.Store
 	serverAddr          string
 	enabledPlugins      *plugin.EnabledSet
 	clusterRegistry     *pxy.ClusterRegistry
@@ -509,6 +510,7 @@ func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder 
 // Stop, but never closes it; the server owns its lifecycle.
 func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, registry *pxy.ClusterRegistry) *Builder {
 	builder := &Builder{
+		storage:         storage,
 		serverAddr:      normalizeServerAddr(serverAddr),
 		clusterRegistry: registry,
 		consumerResolution: consumerResolutionCache{
@@ -562,7 +564,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
 		return nil, fmt.Errorf("validate proxy-cache zone registry: %w", err)
 	}
-	snapshot, err := store.GetConfigSnapshot()
+	snapshot, err := b.configSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("get config snapshot: %w", err)
 	}
@@ -614,6 +616,67 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	}
 	b.configureGlobalErrorLogObserver()
 	return mux, nil
+}
+
+func (b *Builder) configSnapshot() (*store.ConfigSnapshot, error) {
+	if b.storage != nil {
+		return b.storage.GetConfigSnapshot()
+	}
+	return store.GetConfigSnapshot()
+}
+
+func (b *Builder) lookupSnapshot() (*store.ConfigSnapshot, error) {
+	if b.snapshot != nil {
+		return b.snapshot, nil
+	}
+	if b.storage != nil {
+		return b.storage.GetConfigSnapshot()
+	}
+	return nil, nil
+}
+
+func (b *Builder) getService(id string) (resource.Service, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.Service{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetService(id)
+	}
+	return store.GetService(id)
+}
+
+func (b *Builder) getUpstream(id string) (resource.Upstream, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.Upstream{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetUpstream(id)
+	}
+	return store.GetUpstream(id)
+}
+
+func (b *Builder) getPluginConfigRule(id string) (resource.PluginConfigRule, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.PluginConfigRule{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetPluginConfigRule(id)
+	}
+	return store.GetPluginConfigRule(id)
+}
+
+func (b *Builder) getSSL(id string) (resource.SSL, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.SSL{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetSSL(id)
+	}
+	return store.GetSSL(id)
 }
 
 // QuarantinedResourceCount reports the number of malformed legacy route or
@@ -705,7 +768,7 @@ func (b *Builder) buildHandlerStrict(
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
-		pluginConfigRule, err := store.GetPluginConfigRule(r.PluginConfigID)
+		pluginConfigRule, err := b.getPluginConfigRule(r.PluginConfigID)
 		if err != nil {
 			// FIXME: should return 503
 			logger.Errorf("get plugin config rule fail: %s", err)
@@ -725,7 +788,7 @@ func (b *Builder) buildHandlerStrict(
 	var service resource.Service
 	var err error
 	if r.ServiceID != "" {
-		service, err = store.GetService(r.ServiceID)
+		service, err = b.getService(r.ServiceID)
 		if err != nil {
 			logger.Errorf("get service fail: %s", err)
 			return nil, err
@@ -811,7 +874,7 @@ func (b *Builder) buildHandlerStrict(
 		terminalSources = append(terminalSources, globalSources...)
 	}
 
-	resolvedUpstream, upstreamProvenance, err := resolveRouteUpstream(r, service)
+	resolvedUpstream, upstreamProvenance, err := b.resolveRouteUpstream(r, service)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,6 +1393,10 @@ type pluginTrafficSplitRuntimeAcquirerSetter interface {
 	SetRuntimeAcquirer(traffic_split.RuntimeAcquirer)
 }
 
+type pluginTrafficSplitUpstreamResolverSetter interface {
+	SetUpstreamResolver(traffic_split.ResourceUpstreamResolver)
+}
+
 type trafficSplitRuntimeAcquirer struct {
 	builder *Builder
 	route   resource.Route
@@ -1346,7 +1413,7 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 	if err != nil {
 		return nil, err
 	}
-	transportOption, err := buildTransportOption(a.route, resourceUpstream)
+	transportOption, err := a.builder.buildTransportOption(a.route, resourceUpstream)
 	if err != nil {
 		return nil, err
 	}
@@ -2198,8 +2265,12 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 // globalRules returns the global rules of the current build generation,
 // falling back to a live store read outside Build.
 func (b *Builder) globalRules() ([]resource.GlobalRule, error) {
-	if b.snapshot != nil {
-		return b.snapshot.GlobalRules(), nil
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	if snapshot != nil {
+		return snapshot.GlobalRules(), nil
 	}
 	return store.ListGlobalRules()
 }
@@ -2207,8 +2278,8 @@ func (b *Builder) globalRules() ([]resource.GlobalRule, error) {
 // pluginMetadata returns the decoded plugin metadata of the current build
 // generation, falling back to a live store read outside Build.
 func (b *Builder) pluginMetadata(name string) (map[string]any, bool) {
-	if b.snapshot != nil {
-		return b.snapshot.PluginMetadata(name)
+	if snapshot, err := b.lookupSnapshot(); err == nil && snapshot != nil {
+		return snapshot.PluginMetadata(name)
 	}
 	var metadata map[string]any
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
@@ -2455,6 +2526,9 @@ func (b *Builder) initPluginBindingsStrict(
 		if setter, ok := p.(pluginTrafficSplitRuntimeAcquirerSetter); ok {
 			setter.SetRuntimeAcquirer(&trafficSplitRuntimeAcquirer{builder: b, route: routeContext.route})
 		}
+		if setter, ok := p.(pluginTrafficSplitUpstreamResolverSetter); ok {
+			setter.SetUpstreamResolver(b.getUpstream)
+		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
 			if !ok {
@@ -2685,13 +2759,28 @@ func resolveRouteUpstream(
 	r resource.Route,
 	service resource.Service,
 ) (resource.Upstream, plugin.ResourceProvenance, error) {
+	return resolveRouteUpstreamWithGetter(r, service, store.GetUpstream)
+}
+
+func (b *Builder) resolveRouteUpstream(
+	r resource.Route,
+	service resource.Service,
+) (resource.Upstream, plugin.ResourceProvenance, error) {
+	return resolveRouteUpstreamWithGetter(r, service, b.getUpstream)
+}
+
+func resolveRouteUpstreamWithGetter(
+	r resource.Route,
+	service resource.Service,
+	getUpstream func(string) (resource.Upstream, error),
+) (resource.Upstream, plugin.ResourceProvenance, error) {
 	// Keep this priority identical to buildReverseHandler: inline route,
 	// route upstream_id, inline service, then service upstream_id.
 	if inlineUpstreamConfigured(r.Upstream) {
 		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 	}
 	if r.UpstreamID != "" {
-		upstream, err := store.GetUpstream(r.UpstreamID)
+		upstream, err := getUpstream(r.UpstreamID)
 		if err != nil {
 			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID},
 				fmt.Errorf("get upstream %q fail: %w", r.UpstreamID, err)
@@ -2702,7 +2791,7 @@ func resolveRouteUpstream(
 		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
 	}
 	if service.UpstreamID != "" {
-		upstream, err := store.GetUpstream(service.UpstreamID)
+		upstream, err := getUpstream(service.UpstreamID)
 		if err != nil {
 			return resource.Upstream{}, plugin.ResourceProvenance{
 					Kind: plugin.ResourceUpstream,
@@ -2938,7 +3027,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		}
 	} else {
 		var err error
-		upstream, upstreamProvenance, err = resolveRouteUpstream(r, service)
+		upstream, upstreamProvenance, err = b.resolveRouteUpstream(r, service)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -3025,7 +3114,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	}
 
 	if strings.EqualFold(scheme, "kafka") {
-		handler, err := buildKafkaPubSubProxyHandlerStrict(upstream, nil)
+		handler, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, nil, b.getSSL)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -3037,7 +3126,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	// Never construct an empty round-robin picker: without nodes, target
 	// selection reports a classified director error unless traffic-split
 	// supplies an override for the request.
-	transportOption, err := buildTransportOption(r, upstream)
+	transportOption, err := b.buildTransportOption(r, upstream)
 	if err != nil {
 		return nil, routeProtocolTerminals{}, err
 	}

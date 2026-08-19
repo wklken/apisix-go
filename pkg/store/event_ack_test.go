@@ -87,3 +87,22 @@ func TestAcknowledgedEventPoolReuseWaitsForCompletion(t *testing.T) {
 		}
 	}
 }
+
+func TestAcknowledgedBatchClonesMutations(t *testing.T) {
+	mutations := []Mutation{{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/routes/route-1"),
+		Value: []byte(`{"id":"route-1"}`),
+	}}
+	event := NewAcknowledgedBatch(mutations, BatchOptions{})
+	defer PutBack(event)
+
+	mutations[0].Key[0] = 'x'
+	mutations[0].Value[0] = 'x'
+	if got := string(event.mutations[0].Key); got != "/apisix/routes/route-1" {
+		t.Fatalf("batch key = %q, want cloned original", got)
+	}
+	if got := string(event.mutations[0].Value); got != `{"id":"route-1"}` {
+		t.Fatalf("batch value = %q, want cloned original", got)
+	}
+}

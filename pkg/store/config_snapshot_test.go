@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,6 +243,157 @@ func TestConfigSnapshotPublishesValidGlobalRulesAndQuarantinesLegacyMalformedRow
 	if len(quarantined) != 1 || quarantined[0].Bucket != "global_rules" ||
 		quarantined[0].ID != "legacy-bad-rule" {
 		t.Fatalf("snapshot quarantine = %+v, want global_rules/legacy-bad-rule", quarantined)
+	}
+}
+
+func TestConfigSnapshotIncludesCompleteHTTPBuildGeneration(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		for bucket, entries := range map[string]map[string]string{
+			"routes": {
+				"route-1": `{"id":"route-1","uri":"/orders","service_id":"service-1","plugin_config_id":"config-1","plugins":{"request-id":{"include_in_response":true}}}`,
+			},
+			"services": {
+				"service-1": `{"id":"service-1","upstream_id":"upstream-1","plugins":{"request-id":{"include_in_response":true}}}`,
+			},
+			"upstreams": {
+				"upstream-1": `{"scheme":"http","nodes":{"backend.test:80":1}}`,
+			},
+			"plugin_configs": {
+				"config-1": `{"plugins":{"limit-req":{"rate":10}}}`,
+			},
+			"plugin_metadata": {
+				"request-id": `{"header_name":"X-Request-ID","nested":{"enabled":true}}`,
+			},
+			"ssls": {
+				"ssl-1": `{"id":"ssl-1","snis":["api.test"],"status":1}`,
+			},
+		} {
+			bucketRef := tx.Bucket([]byte(bucket))
+			for id, value := range entries {
+				if err := bucketRef.Put([]byte(id), []byte(value)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed complete config snapshot: %v", err)
+	}
+
+	snapshot, err := storage.GetConfigSnapshot()
+	if err != nil {
+		t.Fatalf("GetConfigSnapshot() error = %v", err)
+	}
+	if len(snapshot.Routes()) != 1 {
+		t.Fatalf("snapshot routes = %d, want 1", len(snapshot.Routes()))
+	}
+	if service, err := snapshot.GetService("service-1"); err != nil || service.UpstreamID != "upstream-1" {
+		t.Fatalf("snapshot service = %+v/%v, want service-1 -> upstream-1", service, err)
+	}
+	if upstream, err := snapshot.GetUpstream("upstream-1"); err != nil || len(upstream.Nodes) != 1 {
+		t.Fatalf("snapshot upstream = %+v/%v, want one node", upstream, err)
+	}
+	if config, err := snapshot.GetPluginConfigRule("config-1"); err != nil || config.Plugins["limit-req"] == nil {
+		t.Fatalf("snapshot plugin config = %+v/%v, want limit-req", config, err)
+	}
+	if ssl, err := snapshot.GetSSL("ssl-1"); err != nil || ssl.Snis[0] != "api.test" {
+		t.Fatalf("snapshot SSL = %+v/%v, want api.test", ssl, err)
+	}
+
+	routes := snapshot.Routes()
+	routes[0].Uris = []string{"/mutated"}
+	routes[0].Plugins["request-id"] = map[string]any{"mutated": true}
+	metadata, ok := snapshot.PluginMetadata("request-id")
+	if !ok {
+		t.Fatal("snapshot metadata request-id missing")
+	}
+	metadata["nested"].(map[string]any)["enabled"] = false
+	metadataAgain, ok := snapshot.PluginMetadata("request-id")
+	routesAgain := snapshot.Routes()
+	if !ok || routesAgain[0].Uri != "/orders" ||
+		metadataAgain["nested"].(map[string]any)["enabled"] != true {
+		t.Fatalf("snapshot returned mutable state: routes=%+v metadata=%+v", routesAgain, metadataAgain)
+	}
+}
+
+func TestConfigSnapshotDoesNotMixServiceAndUpstreamGenerations(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket([]byte("services")).Put(
+			[]byte("service-1"),
+			[]byte(`{"id":"service-1","upstream_id":"upstream-old"}`),
+		); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte("upstreams")).Put(
+			[]byte("upstream-old"),
+			[]byte(`{"scheme":"http","nodes":{"old.test:80":1}}`),
+		)
+	}); err != nil {
+		t.Fatalf("seed initial service/upstream generation: %v", err)
+	}
+
+	var mutated bool
+	storage.afterConfigSnapshotBucketRead = func(bucket string) {
+		if bucket != "routes" || mutated {
+			return
+		}
+		mutated = true
+		event := NewAcknowledgedBatch([]Mutation{
+			{
+				Type:  EventTypePut,
+				Key:   []byte("/apisix/services/service-1"),
+				Value: []byte(`{"id":"service-1","upstream_id":"upstream-new"}`),
+			},
+			{Type: EventTypeDelete, Key: []byte("/apisix/upstreams/upstream-old")},
+			{
+				Type:  EventTypePut,
+				Key:   []byte("/apisix/upstreams/upstream-new"),
+				Value: []byte(`{"scheme":"http","nodes":{"new.test:80":1}}`),
+			},
+		}, BatchOptions{})
+		storage.events <- event
+		if err := event.Wait(context.Background()); err != nil {
+			t.Errorf("apply replacement service/upstream generation: %v", err)
+		}
+	}
+
+	snapshot, err := storage.GetConfigSnapshot()
+	if err != nil {
+		t.Fatalf("GetConfigSnapshot() error = %v", err)
+	}
+	service, err := snapshot.GetService("service-1")
+	if err != nil {
+		t.Fatalf("snapshot service lookup: %v", err)
+	}
+	if service.UpstreamID != "upstream-new" {
+		t.Fatalf("snapshot service upstream_id = %q, want upstream-new", service.UpstreamID)
+	}
+	if _, err := snapshot.GetUpstream("upstream-old"); err != ErrNotFound {
+		t.Fatalf("snapshot old upstream lookup error = %v, want ErrNotFound", err)
+	}
+	upstream, err := snapshot.GetUpstream("upstream-new")
+	if err != nil || len(upstream.Nodes) != 1 || upstream.Nodes[0].Host != "new.test" {
+		t.Fatalf("snapshot new upstream = %+v/%v, want new.test", upstream, err)
+	}
+}
+
+func TestConfigSnapshotFailsClosedForMalformedPluginMetadata(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("plugin_metadata")).Put(
+			[]byte("metadata-bad"),
+			[]byte(`[]`),
+		)
+	}); err != nil {
+		t.Fatalf("seed malformed plugin metadata: %v", err)
+	}
+
+	if _, err := storage.GetConfigSnapshot(); err == nil ||
+		!strings.Contains(err.Error(), "plugin_metadata") ||
+		!strings.Contains(err.Error(), "metadata-bad") {
+		t.Fatalf("GetConfigSnapshot() error = %v, want plugin_metadata/metadata-bad context", err)
 	}
 }
 

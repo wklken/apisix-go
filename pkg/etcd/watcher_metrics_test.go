@@ -9,16 +9,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/store"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestFetchAllRecordsReachabilityAndAppliedRevision(t *testing.T) {
 	reachable, revision := installEtcdRuntimeMetrics(t)
+	_, events := newWatcherStore(t)
 	client := &ConfigClient{
-		events:         make(chan *store.Event),
-		requestTimeout: 50 * time.Millisecond,
+		events:         events,
+		requestTimeout: time.Second,
 		knownKeys:      make(map[string]struct{}),
 		loadSnapshot: func(context.Context) (*clientv3.GetResponse, error) {
 			return &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 17}}, nil
@@ -53,6 +54,34 @@ func TestFetchAllFailureMarksUnreachableWithoutAdvancingRevision(t *testing.T) {
 	}
 	if got := metricGaugeValue(t, revision); got != 11 {
 		t.Fatalf("etcd revision = %v, want prior applied revision 11", got)
+	}
+}
+
+func TestApplySnapshotDoesNotRecordRejectedResourceRevision(t *testing.T) {
+	old := metrics.EtcdModifyIndexes
+	metrics.EtcdModifyIndexes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_watcher_etcd_modify_index"},
+		[]string{"key"},
+	)
+	t.Cleanup(func() { metrics.EtcdModifyIndexes = old })
+	_, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:    canonicalEtcdPrefix("/apisix"),
+		events:    events,
+		knownKeys: make(map[string]struct{}),
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 20},
+		Kvs: []*mvccpb.KeyValue{{
+			Key:         []byte("/apisix/ssls/bad"),
+			Value:       []byte(`{"id":"bad","cert":"bad","key":"bad","status":1}`),
+			ModRevision: 20,
+		}},
+	}); err != nil {
+		t.Fatalf("applySnapshot() error = %v, want invalid resource quarantined", err)
+	}
+	if got := metricGaugeValue(t, metrics.EtcdModifyIndexes.WithLabelValues("ssls")); got != 0 {
+		t.Fatalf("rejected SSL modify index = %v, want 0", got)
 	}
 }
 
@@ -214,6 +243,48 @@ func TestWatchHealthCheckCancellationJoinsMonitor(t *testing.T) {
 	case <-monitorExited:
 	default:
 		t.Fatal("Watch returned before joining the health monitor")
+	}
+}
+
+func TestWatchTimeoutKeepsReachabilityAndAppliedRevision(t *testing.T) {
+	reachable, revisionMetric := installEtcdRuntimeMetrics(t)
+	metrics.RecordEtcdReachable(true)
+	metrics.RecordEtcdAppliedRevision(40)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var opens int
+	client := &ConfigClient{
+		watchTimeout: 10 * time.Millisecond,
+		lastRevision: 40,
+		knownKeys:    make(map[string]struct{}),
+		openWatch: func(watchCtx context.Context, revision int64) clientv3.WatchChan {
+			if revision != 41 {
+				t.Fatalf("watch revision = %d, want 41", revision)
+			}
+			opens++
+			stream := make(chan clientv3.WatchResponse)
+			if opens == 2 {
+				cancel()
+				close(stream)
+				return stream
+			}
+			go func() {
+				<-watchCtx.Done()
+				close(stream)
+			}()
+			return stream
+		},
+	}
+	client.Watch(ctx)
+	if opens != 2 {
+		t.Fatalf("watch opens = %d, want two timeout reopen attempts", opens)
+	}
+	if got := metricGaugeValue(t, reachable); got != 1 {
+		t.Fatalf("etcd reachable after idle timeout = %v, want 1", got)
+	}
+	if got := metricGaugeValue(t, revisionMetric); got != 40 {
+		t.Fatalf("applied revision after idle timeout = %v, want 40", got)
 	}
 }
 

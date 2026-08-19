@@ -13,7 +13,8 @@ const (
 )
 
 // ReadinessState contains the bounded runtime state used by the HTTP health
-// endpoints. ConfigApplyReady requires both config-apply stages to have been
+// endpoints. ConfigApplyReady requires the provider and HTTP route stages,
+// plus the stream stage when stream publication is required, to have been
 // observed successful; EtcdReachable is the current etcd observation.
 type ReadinessState struct {
 	ConfigApplyReady bool
@@ -21,13 +22,14 @@ type ReadinessState struct {
 }
 
 // ConfigApplyStage identifies one bounded configuration-apply owner. Readiness
-// is healthy only when both stages have been observed successful and neither
-// stage is currently unhealthy.
+// is healthy only when the required stages have been observed successful and
+// none is currently unhealthy.
 type ConfigApplyStage uint8
 
 const (
 	ConfigApplyStageProvider ConfigApplyStage = iota
 	ConfigApplyStageHTTPRoutes
+	ConfigApplyStageStreams
 )
 
 var (
@@ -40,10 +42,14 @@ var configApplyState struct {
 	sync.Mutex
 	providerBlocked    bool
 	httpRoutesBlocked  bool
+	streamRequired     bool
+	streamBlocked      bool
 	providerObserved   bool
 	providerHealthy    bool
 	httpRoutesObserved bool
 	httpRoutesHealthy  bool
+	streamObserved     bool
+	streamHealthy      bool
 	etcdObserved       bool
 	etcdHealthy        bool
 	failures           prometheus.Counter
@@ -62,7 +68,7 @@ func newConfigApplyMetrics(registry *prometheus.Registry, prefix string) (promet
 	})
 	ready := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: prefix + configApplyReadyMetric,
-		Help: "Whether provider/store and HTTP route publication stages are healthy",
+		Help: "Whether required provider/store, HTTP route, and stream publication stages are healthy",
 	})
 	if registry != nil {
 		registry.MustRegister(failures, ready)
@@ -98,15 +104,17 @@ func RecordConfigApplyStageFailure(stage ConfigApplyStage) {
 		configApplyState.httpRoutesBlocked = true
 		configApplyState.httpRoutesObserved = true
 		configApplyState.httpRoutesHealthy = false
+	case ConfigApplyStageStreams:
+		configApplyState.streamBlocked = true
+		configApplyState.streamObserved = true
+		configApplyState.streamHealthy = false
 	default:
 		return
 	}
 	if failures != nil {
 		failures.Inc()
 	}
-	if ready != nil {
-		ready.Set(0)
-	}
+	setConfigApplyReadyLocked(ready)
 }
 
 // RecordConfigApplyFailure preserves the legacy provider/store stage API.
@@ -115,8 +123,8 @@ func RecordConfigApplyFailure() {
 }
 
 // RecordConfigApplyStageSuccess clears only the supplied stage's blocker and
-// marks readiness healthy when the other stage is also unblocked. It is safe
-// before metrics.Init().
+// marks readiness healthy when every required stage is also healthy. It is
+// safe before metrics.Init().
 func RecordConfigApplyStageSuccess(stage ConfigApplyStage) {
 	configApplyState.Lock()
 	defer configApplyState.Unlock()
@@ -131,13 +139,31 @@ func RecordConfigApplyStageSuccess(stage ConfigApplyStage) {
 		configApplyState.httpRoutesBlocked = false
 		configApplyState.httpRoutesObserved = true
 		configApplyState.httpRoutesHealthy = true
+	case ConfigApplyStageStreams:
+		configApplyState.streamBlocked = false
+		configApplyState.streamObserved = true
+		configApplyState.streamHealthy = true
 	default:
 		return
 	}
-	if ready != nil && configApplyState.quarantineCount == 0 &&
-		!configApplyState.providerBlocked && !configApplyState.httpRoutesBlocked {
-		ready.Set(1)
+	setConfigApplyReadyLocked(ready)
+}
+
+// SetConfigApplyStreamRequired controls whether stream publication participates
+// in config-apply readiness. Changing the requirement clears the stream
+// observation so enabling it always requires a fresh successful publication.
+func SetConfigApplyStreamRequired(required bool) {
+	configApplyState.Lock()
+	defer configApplyState.Unlock()
+
+	_, ready := syncConfigApplyMetricsLocked()
+	if configApplyState.streamRequired != required {
+		configApplyState.streamRequired = required
+		configApplyState.streamBlocked = false
+		configApplyState.streamObserved = false
+		configApplyState.streamHealthy = false
 	}
+	setConfigApplyReadyLocked(ready)
 }
 
 // RecordConfigApplyQuarantine updates the provider-side count of invalid
@@ -173,18 +199,7 @@ func recordConfigApplyQuarantineLocked(source *int, count int) {
 	if configApplyState.quarantined != nil {
 		configApplyState.quarantined.Set(float64(configApplyState.quarantineCount))
 	}
-	if ready == nil {
-		return
-	}
-	if configApplyState.quarantineCount > 0 {
-		ready.Set(0)
-		return
-	}
-	if configApplyState.providerObserved && configApplyState.providerHealthy &&
-		configApplyState.httpRoutesObserved && configApplyState.httpRoutesHealthy &&
-		!configApplyState.providerBlocked && !configApplyState.httpRoutesBlocked {
-		ready.Set(1)
-	}
+	setConfigApplyReadyLocked(ready)
 }
 
 // RecordConfigApplySuccess preserves the legacy provider/store stage API.
@@ -202,12 +217,8 @@ func GetReadiness() ReadinessState {
 	syncConfigApplyMetricsLocked()
 	syncEtcdReachabilityLocked()
 	return ReadinessState{
-		ConfigApplyReady: configApplyState.providerObserved &&
-			configApplyState.providerHealthy &&
-			configApplyState.httpRoutesObserved &&
-			configApplyState.httpRoutesHealthy &&
-			configApplyState.quarantineCount == 0,
-		EtcdReachable: configApplyState.etcdObserved && configApplyState.etcdHealthy,
+		ConfigApplyReady: configApplyReadyLocked(),
+		EtcdReachable:    configApplyState.etcdObserved && configApplyState.etcdHealthy,
 	}
 }
 
@@ -218,10 +229,14 @@ func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 		configApplyState.quarantined != quarantined {
 		configApplyState.providerBlocked = false
 		configApplyState.httpRoutesBlocked = false
+		configApplyState.streamRequired = false
+		configApplyState.streamBlocked = false
 		configApplyState.providerObserved = false
 		configApplyState.providerHealthy = false
 		configApplyState.httpRoutesObserved = false
 		configApplyState.httpRoutesHealthy = false
+		configApplyState.streamObserved = false
+		configApplyState.streamHealthy = false
 		configApplyState.providerQuarantine = 0
 		configApplyState.storeQuarantine = 0
 		configApplyState.quarantineCount = 0
@@ -230,6 +245,32 @@ func syncConfigApplyMetricsLocked() (prometheus.Counter, prometheus.Gauge) {
 		configApplyState.quarantined = quarantined
 	}
 	return failures, ready
+}
+
+func configApplyReadyLocked() bool {
+	if configApplyState.quarantineCount != 0 ||
+		configApplyState.providerBlocked || !configApplyState.providerObserved ||
+		!configApplyState.providerHealthy || configApplyState.httpRoutesBlocked ||
+		!configApplyState.httpRoutesObserved || !configApplyState.httpRoutesHealthy {
+		return false
+	}
+	if configApplyState.streamRequired &&
+		(configApplyState.streamBlocked || !configApplyState.streamObserved ||
+			!configApplyState.streamHealthy) {
+		return false
+	}
+	return true
+}
+
+func setConfigApplyReadyLocked(ready prometheus.Gauge) {
+	if ready == nil {
+		return
+	}
+	if configApplyReadyLocked() {
+		ready.Set(1)
+		return
+	}
+	ready.Set(0)
 }
 
 func syncEtcdReachabilityLocked() prometheus.Gauge {

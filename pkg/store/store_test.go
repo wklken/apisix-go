@@ -784,6 +784,7 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		{bucket: "plugin_metadata", http: true},
 		{bucket: "ssls", http: true},
 		{bucket: "protos", http: true},
+		{bucket: "consumer_groups"},
 		{bucket: "consumers"},
 	}
 

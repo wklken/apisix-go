@@ -28,6 +28,7 @@ type Plugin struct {
 	rules              []compiledRule
 	runtimeAcquirer    RuntimeAcquirer
 	runtimeAcquirerSet bool
+	upstreamResolver   ResourceUpstreamResolver
 }
 
 const (
@@ -201,6 +202,10 @@ type RuntimeAcquirer interface {
 	Acquire(upstream *Upstream, targets map[string]int) (*Runtime, error)
 }
 
+// ResourceUpstreamResolver resolves an upstream_id from the route builder's
+// current Store generation before PostInit compiles the weighted targets.
+type ResourceUpstreamResolver func(id string) (resource.Upstream, error)
+
 type compiledRule struct {
 	exprs    []*pluginexpr.Expression
 	balancer pxy.LoadBalancer
@@ -341,6 +346,12 @@ func (p *Plugin) SetRuntimeAcquirer(acquirer RuntimeAcquirer) {
 	p.runtimeAcquirerSet = true
 }
 
+// SetUpstreamResolver supplies the route builder's Store-scoped resolver
+// before PostInit. Standalone plugin callers retain the package Store fallback.
+func (p *Plugin) SetUpstreamResolver(resolver ResourceUpstreamResolver) {
+	p.upstreamResolver = resolver
+}
+
 func (p *Plugin) PostInit() error {
 	if p.config.MaxBodySize <= 0 {
 		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
@@ -369,7 +380,7 @@ func (p *Plugin) PostInit() error {
 			upstream := weightedUpstream.Upstream
 			if upstream == nil && weightedUpstream.UpstreamID != "" {
 				var err error
-				upstream, err = getUpstreamByID(weightedUpstream.UpstreamID)
+				upstream, err = p.resolveUpstreamByID(weightedUpstream.UpstreamID)
 				if err != nil {
 					compileErr = fmt.Errorf(
 						"failed to find upstream by id: %s",
@@ -717,6 +728,17 @@ func overrideFromNode(upstream *Upstream, node Node) *Override {
 		Timeout:      upstream.Timeout,
 		Retries:      configuredRetries(upstream),
 	}
+}
+
+func (p *Plugin) resolveUpstreamByID(id string) (*Upstream, error) {
+	if p.upstreamResolver == nil {
+		return getUpstreamByID(id)
+	}
+	stored, err := p.upstreamResolver(id)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamFromResource(stored), nil
 }
 
 func overrideTargetURL(override *Override) string {

@@ -1,6 +1,7 @@
 package route
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -1121,6 +1122,98 @@ func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testi
 	}
 }
 
+func TestBuilderBuildStrictUsesPassedStoreSnapshot(t *testing.T) {
+	globalStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"global-only": []byte(`{"id":"global-only","uri":"/global-only","service_id":"missing-service"}`),
+		},
+	})
+	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"passed-store": []byte(
+				`{"id":"passed-store","uri":"/passed-store","service_id":"passed-service","plugin_config_id":"passed-config"}`,
+			),
+		},
+		"services": {
+			"passed-service": []byte(`{"id":"passed-service","upstream_id":"passed-upstream"}`),
+		},
+		"upstreams": {
+			"passed-upstream": []byte(`{"scheme":"http","nodes":{"127.0.0.1:8080":1}}`),
+		},
+		"plugin_configs": {
+			"passed-config": []byte(`{"plugins":{}}`),
+		},
+	})
+	previous := store.ReplaceGlobalStoreForTest(globalStore)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
+
+	builder := NewBuilder(passedStore)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want handler from passed Store", handler, err)
+	}
+}
+
+func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
+	previousConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Plugins: []string{"traffic-split"}}
+	t.Cleanup(func() { appconfig.GlobalConfig = previousConfig })
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	host, portText, err := net.SplitHostPort(strings.TrimPrefix(target.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split target address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("split target port: %v", err)
+	}
+
+	globalStore, _ := openBuildSnapshotStore(t, nil)
+	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"passed-split": []byte(`{
+				"id":"passed-split",
+				"uri":"/passed-split",
+				"plugins":{"traffic-split":{"rules":[{"weighted_upstreams":[{"upstream_id":"split","weight":1}]}]}},
+				"upstream":{"scheme":"http","nodes":{"127.0.0.1:8080":1}}
+			}`),
+		},
+		"upstreams": {
+			"split": fmt.Appendf(nil,
+				`{"scheme":"http","nodes":[{"host":%q,"port":%d,"weight":1}]}`,
+				host,
+				port,
+			),
+		},
+	})
+	previousStore := store.ReplaceGlobalStoreForTest(globalStore)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	if _, err := store.GetUpstream("split"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("global Store split upstream error = %v, want ErrNotFound", err)
+	}
+
+	builder := NewBuilder(passedStore)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want traffic-split upstream_id from passed Store", handler, err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/passed-split", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf(
+			"traffic-split response status = %d, want %d; body=%q",
+			response.Code,
+			http.StatusNoContent,
+			response.Body,
+		)
+	}
+}
+
 func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy.db")
@@ -1166,6 +1259,34 @@ func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *stor
 		}
 	})
 	return storage
+}
+
+func openBuildSnapshotStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
+	t.Helper()
+	events := make(chan *store.Event, 16)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "builder-snapshot.db"), events)
+	if err != nil {
+		t.Fatalf("open builder snapshot store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() {
+		if err := storage.Stop(); err != nil {
+			t.Errorf("stop builder snapshot store: %v", err)
+		}
+	})
+	for bucket, entries := range seed {
+		for id, value := range entries {
+			event := store.NewEvent()
+			event.Type = store.EventTypePut
+			event.Key = []byte("/apisix/" + bucket + "/" + id)
+			event.Value = append([]byte(nil), value...)
+			events <- event
+			if err := storage.Sync(); err != nil {
+				t.Fatalf("seed %s/%s: %v", bucket, id, err)
+			}
+		}
+	}
+	return storage, events
 }
 
 func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {

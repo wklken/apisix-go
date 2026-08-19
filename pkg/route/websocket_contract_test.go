@@ -71,7 +71,9 @@ func newWebsocketBackend(t *testing.T) *websocketBackend {
 	backend.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
 			backend.upgradeCalls.Add(1)
-			connection, err := upgrader.Upgrade(w, r, nil)
+			responseHeader := make(http.Header)
+			responseHeader.Set("Server", "upstream-origin")
+			connection, err := upgrader.Upgrade(w, r, responseHeader)
 			if err != nil {
 				t.Errorf("upstream websocket upgrade: %v", err)
 				return

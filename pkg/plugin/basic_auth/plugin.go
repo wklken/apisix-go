@@ -216,5 +216,15 @@ func parseBasicAuthorization(header string) (string, string, error) {
 	if !found {
 		return "", "", errInvalidBasicValue
 	}
-	return user, pass, nil
+	return normalizeBasicCredential(user), normalizeBasicCredential(pass), nil
+}
+
+func normalizeBasicCredential(value string) string {
+	return strings.Map(func(char rune) rune {
+		switch char {
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			return -1
+		}
+		return char
+	}, value)
 }

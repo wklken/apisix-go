@@ -531,7 +531,7 @@ func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 	}
 }
 
-func TestRouterPrefersSpecificRouteOverWildcard(t *testing.T) {
+func TestRouterUsesFirstMatchingResource(t *testing.T) {
 	router, err := NewRouter([]resource.StreamRoute{
 		{
 			ID: "wildcard",
@@ -554,8 +554,35 @@ func TestRouterPrefersSpecificRouteOverWildcard(t *testing.T) {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
-	if !ok || entry.route.ID != "specific" {
-		t.Fatalf("matched route = %#v, want specific", entry.route)
+	if !ok || entry.route.ID != "wildcard" {
+		t.Fatalf("matched route = %#v, want wildcard first resource", entry.route)
+	}
+}
+
+func TestRouterPreservesResourceOrder(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{
+		{
+			ID: "first",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "second",
+			ServerPort: 1883,
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
+	if !ok || entry.route.ID != "first" {
+		t.Fatalf("matched route = %#v, want first resource", entry.route)
 	}
 }
 

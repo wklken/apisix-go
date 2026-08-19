@@ -776,7 +776,7 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		stream bool
 	}{
 		{bucket: "routes", http: true},
-		{bucket: "services", http: true},
+		{bucket: "services", http: true, stream: true},
 		{bucket: "upstreams", http: true, stream: true},
 		{bucket: "stream_routes", stream: true},
 		{bucket: "global_rules", http: true},

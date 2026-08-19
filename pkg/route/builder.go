@@ -568,6 +568,11 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get config snapshot: %w", err)
 	}
+	if dynamicPlugins, present := snapshot.HTTPPlugins(); present {
+		configuredPlugins = dynamicPlugins
+		enabledPlugins = plugin.NewEnabledSet(configuredPlugins)
+		b.enabledPlugins = &enabledPlugins
+	}
 	b.snapshotQuarantineCount = len(snapshot.QuarantinedResources())
 	b.snapshot = snapshot
 	b.compiledSchemas = make(map[string]*util.CompiledSchema)
@@ -587,7 +592,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 		if routeResource.Disabled() {
 			continue
 		}
-		handler, buildErr := b.buildHandlerStrict(routeResource, publicAPIRegistry)
+		handler, hosts, buildErr := b.materializeRouteStrict(routeResource, publicAPIRegistry)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
 		}
@@ -599,7 +604,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 			if registerErr := registrar.registerRouteWithHosts(
 				routeResource.Methods,
 				uri,
-				routeResource.EffectiveHosts(),
+				hosts,
 				handler,
 			); registerErr != nil {
 				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
@@ -695,6 +700,7 @@ func (b *Builder) buildGlobalNotFoundHandler(
 		registry = registries[0]
 	}
 	routeContext := pluginRouteContext{publicAPIRegistry: registry}
+	globalRules = deduplicateGlobalRules(globalRules)
 	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, ""); err != nil {
 		return nil, err
 	}
@@ -764,7 +770,52 @@ func (b *Builder) buildHandlerStrict(
 	if err := validateRouteSemantics(r); err != nil {
 		return nil, err
 	}
+	service, err := b.loadRouteService(r)
+	if err != nil {
+		return nil, err
+	}
+	return b.buildHandlerWithServiceStrict(r, service, registries...)
+}
 
+func (b *Builder) materializeRouteStrict(
+	r resource.Route,
+	registries ...*public_api.Registry,
+) (http.Handler, []string, error) {
+	if err := validateRouteSemantics(r); err != nil {
+		return nil, nil, err
+	}
+	service, err := b.loadRouteService(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	handler, err := b.buildHandlerWithServiceStrict(r, service, registries...)
+	if err != nil {
+		return nil, nil, err
+	}
+	hosts := r.EffectiveHosts()
+	if !r.HostConfigured() && !r.HostsConfigured() && r.ServiceID != "" {
+		hosts = service.Hosts
+	}
+	return handler, hosts, nil
+}
+
+func (b *Builder) loadRouteService(r resource.Route) (resource.Service, error) {
+	if r.ServiceID == "" {
+		return resource.Service{}, nil
+	}
+	service, err := b.getService(r.ServiceID)
+	if err != nil {
+		logger.Errorf("get service fail: %s", err)
+		return resource.Service{}, err
+	}
+	return service, nil
+}
+
+func (b *Builder) buildHandlerWithServiceStrict(
+	r resource.Route,
+	service resource.Service,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
@@ -784,15 +835,7 @@ func (b *Builder) buildHandlerStrict(
 		pluginConfigPlugins = pluginConfigRule.Plugins
 	}
 
-	// if service_id is not empty, get the service config
-	var service resource.Service
-	var err error
 	if r.ServiceID != "" {
-		service, err = b.getService(r.ServiceID)
-		if err != nil {
-			logger.Errorf("get service fail: %s", err)
-			return nil, err
-		}
 		if err := b.validatePluginConfigSource(service.Plugins, "service", r.ServiceID); err != nil {
 			return nil, err
 		}
@@ -853,6 +896,7 @@ func (b *Builder) buildHandlerStrict(
 		logger.Errorf("list global rules fail: %s", err)
 		return nil, err
 	}
+	globalRules = deduplicateGlobalRules(globalRules)
 	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, r.ID); err != nil {
 		return nil, err
 	}
@@ -918,7 +962,10 @@ func (b *Builder) buildHandlerStrict(
 	if err != nil {
 		return nil, err
 	}
-	websocketEnabled := r.EnableWebsocket || service.EnableWebsocket
+	websocketEnabled := r.EnableWebsocket
+	if !r.EnableWebsocketConfigured() {
+		websocketEnabled = service.EnableWebsocket
+	}
 	ordinaryHandler := plan.Install(pipeline, requireWebsocketEnablement(handler, websocketEnabled))
 	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(
 		pipeline, plan, handler, websocketEnabled,
@@ -1405,11 +1452,12 @@ type trafficSplitRuntimeAcquirer struct {
 func (a *trafficSplitRuntimeAcquirer) Acquire(
 	upstream *traffic_split.Upstream,
 	targets map[string]int,
+	priorities map[string]int,
 ) (*traffic_split.Runtime, error) {
 	if upstream == nil {
 		return nil, fmt.Errorf("traffic-split upstream is nil")
 	}
-	resourceUpstream, err := trafficSplitResourceUpstream(upstream, targets)
+	resourceUpstream, err := trafficSplitResourceUpstream(upstream, targets, priorities)
 	if err != nil {
 		return nil, err
 	}
@@ -1421,7 +1469,13 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 		a.builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 		a.builder.ownsClusterRegistry = true
 	}
-	clusterConfig, err := buildClusterConfigWithTransport(a.route, resourceUpstream, targets, transportOption)
+	clusterConfig, err := buildClusterConfigWithTransport(
+		a.route,
+		resourceUpstream,
+		targets,
+		transportOption,
+		priorities,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1442,6 +1496,7 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 func trafficSplitResourceUpstream(
 	upstream *traffic_split.Upstream,
 	targets map[string]int,
+	priorities map[string]int,
 ) (resource.Upstream, error) {
 	scheme := upstream.Scheme
 	if scheme == "" {
@@ -1483,9 +1538,10 @@ func trafficSplitResourceUpstream(
 			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
 		}
 		result.Nodes = append(result.Nodes, resource.Node{
-			Host:   parsed.Hostname(),
-			Port:   numericPort,
-			Weight: targets[target],
+			Host:     parsed.Hostname(),
+			Port:     numericPort,
+			Weight:   targets[target],
+			Priority: priorities[target],
 		})
 	}
 	return result, nil
@@ -2200,7 +2256,13 @@ type pluginObserverStarter interface {
 
 func (b *Builder) configureGlobalErrorLogObserver() {
 	const pluginName = "error-log-logger"
-	if appconfig.GlobalConfig == nil || !slices.Contains(appconfig.GlobalConfig.Plugins, pluginName) {
+	enabled := false
+	if b.enabledPlugins != nil {
+		enabled = b.enabledPlugins.Contains(pluginName)
+	} else if appconfig.GlobalConfig != nil {
+		enabled = slices.Contains(appconfig.GlobalConfig.Plugins, pluginName)
+	}
+	if !enabled {
 		_ = logger.ReplaceObserver(pluginName, nil)
 		return
 	}
@@ -2731,6 +2793,7 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 	globalRules []resource.GlobalRule,
 	routeContext pluginRouteContext,
 ) ([]plugin.Binding, error) {
+	globalRules = deduplicateGlobalRules(globalRules)
 	bindings := make([]plugin.Binding, 0, len(globalRules))
 	for _, rule := range globalRules {
 		if rule.ID == "" {
@@ -2753,6 +2816,37 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 		bindings = append(bindings, initialized...)
 	}
 	return bindings, nil
+}
+
+func deduplicateGlobalRules(globalRules []resource.GlobalRule) []resource.GlobalRule {
+	seen := make(map[string]struct{})
+	duplicates := make(map[string]struct{})
+	for _, rule := range globalRules {
+		for name := range rule.Plugins {
+			if _, ok := seen[name]; ok {
+				duplicates[name] = struct{}{}
+				continue
+			}
+			seen[name] = struct{}{}
+		}
+	}
+
+	result := make([]resource.GlobalRule, len(globalRules))
+	for index, rule := range globalRules {
+		result[index] = rule
+		if rule.Plugins == nil {
+			continue
+		}
+		plugins := make(map[string]resource.PluginConfig, len(rule.Plugins))
+		for name, config := range rule.Plugins {
+			if _, duplicate := duplicates[name]; duplicate {
+				continue
+			}
+			plugins[name] = config
+		}
+		result[index].Plugins = plugins
+	}
+	return result
 }
 
 func resolveRouteUpstream(
@@ -3051,6 +3145,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
+	priorities := make(map[string]int, len(upstream.Nodes))
 	scheme := upstream.Scheme
 	targetScheme := scheme
 	if strings.EqualFold(targetScheme, "grpc") {
@@ -3093,6 +3188,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		}
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
+		priorities[uri] = node.Priority
 	}
 	if len(servers) > 0 {
 		hasPositiveWeight := false
@@ -3137,7 +3233,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			b.ownsClusterRegistry = true
 		}
-		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption)
+		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption, priorities)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -3594,7 +3690,7 @@ func attachHTTPRetriesCompiled(
 			if override.NextRetry == nil {
 				return false
 			}
-			next := override.NextRetry()
+			next := override.NextRetry(retry)
 			if !applyTrafficSplitTarget(retry, next, originalHost) {
 				return false
 			}
@@ -3639,7 +3735,7 @@ func applyUpstreamTargetCompiled(
 	originalHost string,
 	targets map[string]compiledUpstreamTarget,
 ) error {
-	target := loadBalancer.Next()
+	target := pxy.NextTarget(loadBalancer, request)
 	pxy.SetSelectedTarget(request, target)
 	compiled, err := resolveCompiledUpstreamTarget(target, targets)
 	if err != nil {
@@ -3722,11 +3818,25 @@ func newModifyResponse() pxy.ModifyResponse {
 		// resp.Request = resp.Request.WithContext(ctx)
 
 		status := resp.StatusCode
+		pxy.RecordUpstreamStatus(resp.Request, status)
+		upstreamStatus := pxy.UpstreamStatusChain(resp.Request)
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Del("Server")
+		if showUpstreamStatusInResponseHeader() ||
+			(status >= http.StatusInternalServerError && status <= 599) {
+			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
+		}
 		ctx.SetRequestResponseSource(resp.Request, ctx.ResponseSourceUpstream)
 		pxy.ReportHTTPOutcome(resp.Request, status)
 		if ctx.GetRequestVars(resp.Request) != nil {
 			ctx.RegisterRequestVar(resp.Request, "$status", status)
-			ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
+			if upstreamStatus == strconv.Itoa(status) {
+				ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
+			} else {
+				ctx.RegisterRequestVar(resp.Request, "$upstream_status", upstreamStatus)
+			}
 		}
 		recordUpstreamLatency(resp.Request)
 
@@ -3827,6 +3937,7 @@ func newErrorHandler() pxy.ErrorHandler {
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
 		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
+		directorFailed := false
 		if overloaded {
 			// The cluster is saturated. This is a capacity decision, not a
 			// target failure, so it never reports a TCP health failure.
@@ -3836,6 +3947,7 @@ func newErrorHandler() pxy.ErrorHandler {
 			// it as an upstream failure instead of a client cancellation.
 			err = directorErr
 			status = http.StatusBadGateway
+			directorFailed = true
 		} else if !errors.Is(err, context.Canceled) {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				pxy.ReportTCPFailureOutcome(r, true)
@@ -3862,12 +3974,27 @@ func newErrorHandler() pxy.ErrorHandler {
 			}
 		}
 
+		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
+			if showUpstreamStatusInResponseHeader() ||
+				(status >= http.StatusInternalServerError && status <= 599) {
+				w.Header().Set("X-APISIX-Upstream-Status", upstreamStatus)
+			}
+			if ctx.GetRequestVars(r) != nil {
+				ctx.RegisterRequestVar(r, "$upstream_status", upstreamStatus)
+			}
+		}
+
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
 		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
+}
+
+func showUpstreamStatusInResponseHeader() bool {
+	return appconfig.GlobalConfig != nil &&
+		appconfig.GlobalConfig.Apisix.ShowUpstreamStatusInResponseHeader
 }
 
 func proxyFailureLogPath(r *http.Request) string {

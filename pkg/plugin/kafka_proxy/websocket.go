@@ -164,17 +164,30 @@ func ServePubSubWebSocket(
 	}
 
 	for {
-		payload, err := bridge.readMessage()
+		messageType, payload, err := bridge.readFrame()
 		if err != nil {
 			if websocketBridgeNormalClose(ctx, err) {
 				return nil
 			}
 			return &websocketProxyError{hijacked: true, err: err}
 		}
+		if messageType != websocket.BinaryMessage {
+			continue
+		}
 		request, err := ParsePubSubRequest(payload)
 		if err != nil {
-			_ = bridge.writeClose(1002, "malformed PubSub request")
-			return &websocketProxyError{hijacked: true, err: err}
+			response := PubSubResponse{
+				Kind:    RespError,
+				Message: "wrong command",
+			}
+			encoded, encodeErr := MarshalPubSubResponse(response)
+			if encodeErr != nil {
+				return &websocketProxyError{hijacked: true, err: encodeErr}
+			}
+			if err := bridge.writeBinary(encoded); err != nil {
+				return &websocketProxyError{hijacked: true, err: err}
+			}
+			continue
 		}
 		response, err := dispatchPubSubRequest(ctx, consumer, request)
 		if err != nil {
@@ -203,6 +216,37 @@ func ServePubSubWebSocket(
 			return &websocketProxyError{hijacked: true, err: err}
 		}
 	}
+}
+
+// readMessage returns one complete binary WebSocket message.
+func (b *websocketBridge) readMessage() ([]byte, error) {
+	messageType, payload, err := b.readFrame()
+	if err != nil {
+		return nil, err
+	}
+	if messageType != websocket.BinaryMessage {
+		_ = b.writeClose(1003, "Kafka WebSocket messages must be binary")
+		return nil, fmt.Errorf("%w: Kafka WebSocket messages must be binary", ErrWebSocketProtocol)
+	}
+	return payload, nil
+}
+
+func (b *websocketBridge) readFrame() (int, []byte, error) {
+	if err := b.conn.SetReadDeadline(time.Now().Add(b.readTimeout)); err != nil {
+		return 0, nil, err
+	}
+	messageType, payload, err := b.conn.ReadMessage()
+	if err != nil {
+		var closeErr *websocket.CloseError
+		if errors.As(err, &closeErr) {
+			return 0, nil, io.EOF
+		}
+		if errors.Is(err, websocket.ErrReadLimit) {
+			return 0, nil, fmt.Errorf("%w: Kafka WebSocket message is too large", ErrWebSocketProtocol)
+		}
+		return 0, nil, err
+	}
+	return messageType, payload, nil
 }
 
 func dispatchPubSubRequest(
@@ -267,7 +311,11 @@ func upgradeKafkaWebSocket(w http.ResponseWriter, r *http.Request, transport *Tr
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(*http.Request) bool { return true },
 	}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	responseHeader := make(http.Header)
+	if values := w.Header().Values("Server"); len(values) > 0 {
+		responseHeader["Server"] = append([]string(nil), values...)
+	}
+	conn, err := upgrader.Upgrade(w, r, responseHeader)
 	if err != nil {
 		return nil, err
 	}
@@ -345,29 +393,6 @@ func writeKafkaPayload(
 		payload = payload[frameSize:]
 	}
 	return nil
-}
-
-// readMessage returns one complete binary WebSocket message.
-func (b *websocketBridge) readMessage() ([]byte, error) {
-	if err := b.conn.SetReadDeadline(time.Now().Add(b.readTimeout)); err != nil {
-		return nil, err
-	}
-	messageType, payload, err := b.conn.ReadMessage()
-	if err != nil {
-		var closeErr *websocket.CloseError
-		if errors.As(err, &closeErr) {
-			return nil, io.EOF
-		}
-		if errors.Is(err, websocket.ErrReadLimit) {
-			return nil, fmt.Errorf("%w: Kafka WebSocket message is too large", ErrWebSocketProtocol)
-		}
-		return nil, err
-	}
-	if messageType != websocket.BinaryMessage {
-		_ = b.writeClose(1003, "Kafka WebSocket messages must be binary")
-		return nil, fmt.Errorf("%w: Kafka WebSocket messages must be binary", ErrWebSocketProtocol)
-	}
-	return payload, nil
 }
 
 func (b *websocketBridge) writeBinary(payload []byte) error {

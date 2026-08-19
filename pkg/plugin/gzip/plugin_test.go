@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	cgzip "compress/gzip"
-	"compress/zlib"
 	"io"
 	"net"
 	"net/http"
@@ -151,39 +150,39 @@ func TestHandlerWildcardTypesCompressesAnyContentType(t *testing.T) {
 }
 
 func TestHandlerCompressesMultipleWritesOnce(t *testing.T) {
-	for _, acceptEncoding := range []string{"gzip", "deflate"} {
-		t.Run(acceptEncoding, func(t *testing.T) {
-			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
-			req := httptest.NewRequest(http.MethodGet, "/text", nil)
-			req.Header.Set("Accept-Encoding", acceptEncoding)
-			res := httptest.NewRecorder()
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	res := httptest.NewRecorder()
 
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "text/plain")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("hello "))
-				_, _ = w.Write([]byte("world"))
-			})).ServeHTTP(res, req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello "))
+		_, _ = w.Write([]byte("world"))
+	})).ServeHTTP(res, req)
 
-			var decoded string
-			if acceptEncoding == "gzip" {
-				decoded = decodeGzip(t, res.Body.Bytes())
-			} else {
-				reader, err := zlib.NewReader(bytes.NewReader(res.Body.Bytes()))
-				if err != nil {
-					t.Fatalf("create zlib reader: %v", err)
-				}
-				decompressed, err := io.ReadAll(reader)
-				if err != nil {
-					t.Fatalf("decode deflate: %v", err)
-				}
-				_ = reader.Close()
-				decoded = string(decompressed)
-			}
-			if decoded != "hello world" {
-				t.Fatalf("decoded body = %q, want hello world", decoded)
-			}
-		})
+	if decoded := decodeGzip(t, res.Body.Bytes()); decoded != "hello world" {
+		t.Fatalf("decoded body = %q, want hello world", decoded)
+	}
+}
+
+func TestHandlerDoesNotCompressDeflate(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "deflate")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("identity response"))
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want no deflate offer", got)
+	}
+	if got := res.Body.String(); got != "identity response" {
+		t.Fatalf("body = %q, want identity response", got)
 	}
 }
 
@@ -203,9 +202,9 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 			wantStatus:     http.StatusOK,
 		},
 		{
-			name:           "disabled gzip defers to deflate",
+			name:           "disabled gzip uses identity when deflate is requested",
 			acceptEncoding: "gzip;q=0, deflate;q=1",
-			wantEncoding:   "deflate",
+			wantEncoding:   "",
 			wantVary:       true,
 			wantStatus:     http.StatusOK,
 		},
@@ -261,19 +260,6 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 			case "gzip":
 				if decoded := decodeGzip(t, res.Body.Bytes()); decoded != "compress me please" {
 					t.Fatalf("decoded body = %q, want gzip-compressed body", decoded)
-				}
-			case "deflate":
-				reader, err := zlib.NewReader(bytes.NewReader(res.Body.Bytes()))
-				if err != nil {
-					t.Fatalf("create zlib reader: %v", err)
-				}
-				defer func() { _ = reader.Close() }()
-				decoded, err := io.ReadAll(reader)
-				if err != nil {
-					t.Fatalf("decode deflate body: %v", err)
-				}
-				if string(decoded) != "compress me please" {
-					t.Fatalf("decoded body = %q, want deflate-compressed body", decoded)
 				}
 			default:
 				wantBody := "compress me please"
@@ -371,36 +357,32 @@ func TestNotAcceptableInvalidatesBodyDerivedHeaders(t *testing.T) {
 }
 
 func TestCompressionInvalidatesBodyDerivedHeaders(t *testing.T) {
-	for _, acceptEncoding := range []string{"gzip", "deflate"} {
-		t.Run(acceptEncoding, func(t *testing.T) {
-			p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Header.Set("Accept-Encoding", acceptEncoding)
-			res := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				for _, field := range []string{
-					"Content-Range", "Content-MD5", "Digest", "Content-Digest",
-					"Repr-Digest", "ETag", "Last-Modified",
-				} {
-					w.Header().Set(field, "stale")
-				}
-				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Length", "11")
-				_, _ = w.Write([]byte("hello world"))
-			})).ServeHTTP(res, req)
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for _, field := range []string{
+			"Content-Range", "Content-MD5", "Digest", "Content-Digest",
+			"Repr-Digest", "ETag", "Last-Modified",
+		} {
+			w.Header().Set(field, "stale")
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "11")
+		_, _ = w.Write([]byte("hello world"))
+	})).ServeHTTP(res, req)
 
-			if got := res.Header().Get("Content-Encoding"); got != acceptEncoding {
-				t.Fatalf("Content-Encoding = %q, want %q", got, acceptEncoding)
-			}
-			for _, field := range []string{
-				"Content-Length", "Content-Range", "Content-MD5", "Digest",
-				"Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
-			} {
-				if values := res.Header().Values(field); len(values) != 0 {
-					t.Errorf("%s = %v, want removed after compression", field, values)
-				}
-			}
-		})
+	if got := res.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	for _, field := range []string{
+		"Content-Length", "Content-Range", "Content-MD5", "Digest",
+		"Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
+	} {
+		if values := res.Header().Values(field); len(values) != 0 {
+			t.Errorf("%s = %v, want removed after compression", field, values)
+		}
 	}
 }
 
@@ -562,13 +544,16 @@ func TestGzipStructuralCompressionOfferWrapsOnlySelectedCoding(t *testing.T) {
 	}
 }
 
-func TestGzipStructuralOfferIncludesDeflateAndHTTPVersionGate(t *testing.T) {
+func TestGzipStructuralOfferOnlyIncludesGzipAndHTTPVersionGate(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.ProtoMajor, req.ProtoMinor = 1, 1
 	req.Header.Set("Accept-Encoding", "gzip;q=0, deflate;q=1")
 	registered, state := compression.Register(req)
 	offers := p.RegisterCompressionOffers(registered, state)
+	if len(offers) != 1 {
+		t.Fatalf("offers = %#v, want only gzip", offers)
+	}
 	offer := offers[0]
 	if offer.Coding != compression.Gzip {
 		t.Fatalf("primary offer coding = %q, want gzip", offer.Coding)
@@ -579,8 +564,8 @@ func TestGzipStructuralOfferIncludesDeflateAndHTTPVersionGate(t *testing.T) {
 		Status: http.StatusOK,
 		Header: http.Header{"Content-Type": []string{"text/plain"}},
 	})
-	if decision.Coding != compression.Deflate {
-		t.Fatalf("decision coding = %q, want deflate", decision.Coding)
+	if decision.Coding != compression.Identity {
+		t.Fatalf("decision coding = %q, want identity when only deflate is accepted", decision.Coding)
 	}
 
 	legacy := httptest.NewRequest(http.MethodGet, "/", nil)

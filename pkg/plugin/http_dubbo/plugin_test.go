@@ -17,6 +17,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -79,6 +80,46 @@ func TestRunRequestPhasePreparesRouteOwnedHTTPDubboState(t *testing.T) {
 	cfg, ok := GetConfig(result.Request)
 	if !ok || cfg.ServiceName != "svc" || cfg.Method != "call" {
 		t.Fatalf("prepared config = %+v (ok=%t), want svc/call", cfg, ok)
+	}
+}
+
+func TestTransportConfigAcceptsFractionalMillisecondTimeouts(t *testing.T) {
+	var cfg Config
+	if err := util.Parse(map[string]any{
+		"connect_timeout": 1.25,
+		"read_timeout":    2.5,
+		"send_timeout":    3.75,
+	}, &cfg); err != nil {
+		t.Fatalf("util.Parse() error = %v, want fractional timeout values accepted", err)
+	}
+	config := transportConfig(cfg)
+
+	if config.ConnectTimeout != 1250*time.Microsecond {
+		t.Fatalf("connect timeout = %s, want 1.25ms", config.ConnectTimeout)
+	}
+	if config.ReadTimeout != 2500*time.Microsecond {
+		t.Fatalf("read timeout = %s, want 2.5ms", config.ReadTimeout)
+	}
+	if config.SendTimeout != 3750*time.Microsecond {
+		t.Fatalf("send timeout = %s, want 3.75ms", config.SendTimeout)
+	}
+}
+
+func TestTransportConfigAppliesIntegerMillisecondTimeouts(t *testing.T) {
+	var cfg Config
+	if err := util.Parse(map[string]any{
+		"connect_timeout": 1500,
+		"read_timeout":    2500,
+		"send_timeout":    3750,
+	}, &cfg); err != nil {
+		t.Fatalf("util.Parse() error = %v, want integer timeout values accepted", err)
+	}
+	config := transportConfig(cfg)
+	if config.ConnectTimeout != 1500*time.Millisecond ||
+		config.ReadTimeout != 2500*time.Millisecond ||
+		config.SendTimeout != 3750*time.Millisecond {
+		t.Fatalf("timeouts = %s/%s/%s, want 1500ms/2500ms/3750ms",
+			config.ConnectTimeout, config.ReadTimeout, config.SendTimeout)
 	}
 }
 

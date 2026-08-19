@@ -67,8 +67,6 @@ type jweToken struct {
 }
 
 type jweHeader struct {
-	Alg string `json:"alg"`
-	Enc string `json:"enc"`
 	Kid string `json:"kid"`
 }
 
@@ -160,16 +158,6 @@ func parseCompactJWE(raw string) (jweToken, error) {
 	var header jweHeader
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return jweToken{}, err
-	}
-	if header.Alg != "dir" || header.Enc != "A256GCM" {
-		return jweToken{}, fmt.Errorf("unsupported JWE algorithm")
-	}
-	encryptedKey, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return jweToken{}, err
-	}
-	if len(encryptedKey) != 0 {
-		return jweToken{}, fmt.Errorf("JWE encrypted key must be empty for direct encryption")
 	}
 
 	iv, err := base64.RawURLEncoding.DecodeString(parts[2])

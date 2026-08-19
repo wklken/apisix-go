@@ -37,6 +37,123 @@ func TestResolveStreamRoutesResolvesReferencedUpstream(t *testing.T) {
 	}
 }
 
+func TestResolveStreamRoutesMergesInlineServiceWithRouteOverrides(t *testing.T) {
+	serviceUpstream := resource.Upstream{
+		Scheme: "tcp",
+		Nodes:  []resource.Node{{Host: "service.example", Port: 1883, Weight: 1}},
+	}
+	service := resource.Service{
+		ID: "service",
+		Plugins: map[string]resource.PluginConfig{
+			"mqtt-proxy":   map[string]any{"protocol_level": 3},
+			"service-only": map[string]any{},
+		},
+		Upstream: serviceUpstream,
+	}
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{
+			ID:        "route",
+			ServiceID: "service",
+			Plugins:   map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{"protocol_level": 4}},
+		}},
+		func(string) (resource.Upstream, error) { return resource.Upstream{}, ErrMissingStreamUpstream },
+		func(id string) (resource.Service, error) {
+			if id != service.ID {
+				t.Fatalf("service lookup id = %q, want %q", id, service.ID)
+			}
+			return service, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("resolved service routes = %#v, want one", routes)
+	}
+	resolved := routes[0]
+	if resolved.ServiceID != "service" ||
+		len(resolved.Upstream.Nodes) != 1 ||
+		resolved.Upstream.Nodes[0].Host != "service.example" {
+		t.Fatalf("resolved service upstream = %#v", routes)
+	}
+	if got := routes[0].Plugins["mqtt-proxy"].(map[string]any)["protocol_level"]; got != 4 {
+		t.Fatalf("route plugin override = %#v, want protocol_level=4", routes[0].Plugins["mqtt-proxy"])
+	}
+	if _, ok := routes[0].Plugins["service-only"]; !ok {
+		t.Fatal("service-only stream plugin was not inherited")
+	}
+}
+
+func TestResolveStreamRoutesResolvesServiceUpstreamID(t *testing.T) {
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{ID: "route", ServiceID: "service"}},
+		func(id string) (resource.Upstream, error) {
+			if id != "service-upstream" {
+				t.Fatalf("upstream lookup id = %q, want service-upstream", id)
+			}
+			return resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "service-upstream.example", Port: 1883, Weight: 1}},
+			}, nil
+		},
+		func(string) (resource.Service, error) {
+			return resource.Service{ID: "service", UpstreamID: "service-upstream"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if len(routes) != 1 || routes[0].UpstreamID != "service-upstream" || len(routes[0].Upstream.Nodes) != 1 ||
+		routes[0].Upstream.Nodes[0].Host != "service-upstream.example" {
+		t.Fatalf("resolved service upstream_id = %#v", routes)
+	}
+}
+
+func TestResolveStreamRoutesPrefersRouteUpstreamOverService(t *testing.T) {
+	serviceLookupCalls := 0
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{ID: "route", ServiceID: "service", UpstreamID: "route-upstream"}},
+		func(id string) (resource.Upstream, error) {
+			if id != "route-upstream" {
+				t.Fatalf("upstream lookup id = %q, want route-upstream", id)
+			}
+			return resource.Upstream{
+				Scheme: "tcp",
+				Nodes: []resource.Node{{
+					Host: "route.example", Port: 1883, Weight: 1,
+				}},
+			}, nil
+		},
+		func(string) (resource.Service, error) {
+			serviceLookupCalls++
+			return resource.Service{
+				ID: "service",
+				Plugins: map[string]resource.PluginConfig{
+					"service-only": map[string]any{},
+				},
+				Upstream: resource.Upstream{
+					Scheme: "tcp",
+					Nodes: []resource.Node{{
+						Host: "service.example", Port: 1883, Weight: 1,
+					}},
+				},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if serviceLookupCalls != 0 {
+		t.Fatalf("service lookup calls = %d, want 0 when route upstream_id wins", serviceLookupCalls)
+	}
+	if len(routes[0].Plugins) != 0 {
+		t.Fatalf("route plugins = %#v, want no service merge", routes[0].Plugins)
+	}
+	if len(routes) != 1 || len(routes[0].Upstream.Nodes) != 1 || routes[0].Upstream.Nodes[0].Host != "route.example" {
+		t.Fatalf("route upstream override = %#v", routes)
+	}
+}
+
 func TestResolveStreamRoutesRejectsMissingReferencedUpstream(t *testing.T) {
 	_, err := resolveStreamRoutes(
 		[]resource.StreamRoute{{ID: "route", UpstreamID: "missing"}},
@@ -75,6 +192,7 @@ func TestIsStreamRouteEvent(t *testing.T) {
 	}{
 		{key: "/apisix/stream_routes/mqtt", stream: true},
 		{key: "/apisix/upstreams/mqtt", httpReload: true, stream: true},
+		{key: "/apisix/services/mqtt", httpReload: true, stream: true},
 		{key: "/apisix/routes/http", httpReload: true},
 		{key: "/apisix/global_rules/1", httpReload: true},
 		{key: "/apisix/plugin_configs/1", httpReload: true},

@@ -258,6 +258,7 @@ type Route struct {
 	hostSet       bool
 	hostsSet      bool
 	remoteAddrSet bool
+	websocketSet  bool
 }
 
 func (r *Route) UnmarshalJSON(data []byte) error {
@@ -280,6 +281,7 @@ func (r *Route) UnmarshalJSON(data []byte) error {
 	_, r.hostSet = fields["host"]
 	_, r.hostsSet = fields["hosts"]
 	r.remoteAddrSet = aux.RemoteAddr != nil
+	_, r.websocketSet = fields["enable_websocket"]
 	if aux.Host != nil {
 		r.Host = *aux.Host
 	}
@@ -314,6 +316,10 @@ func (r Route) RemoteAddrConfigured() bool {
 	return r.remoteAddrSet || r.RemoteAddr != ""
 }
 
+func (r Route) EnableWebsocketConfigured() bool {
+	return r.websocketSet || r.EnableWebsocket
+}
+
 func (r Route) EffectiveHosts() []string {
 	if r.HostConfigured() {
 		return []string{r.Host}
@@ -329,6 +335,7 @@ type StreamRoute struct {
 	ServerAddr string                  `json:"server_addr,omitempty"`
 	ServerPort int                     `json:"server_port,omitempty"`
 	RemoteAddr string                  `json:"remote_addr,omitempty"`
+	ServiceID  string                  `json:"service_id,omitempty"`
 	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
 	UpstreamID string                  `json:"upstream_id,omitempty"`
 	Upstream   Upstream                `json:"upstream"`

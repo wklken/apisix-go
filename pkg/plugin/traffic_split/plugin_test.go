@@ -259,23 +259,88 @@ func TestRetryOverrideSelectsAnotherNodeFromSameTarget(t *testing.T) {
 		}},
 	}}})
 
-	first := performRequest(t, p)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	first := performRequestWithRequest(t, p, request)
 	if first == nil || first.NextRetry == nil {
 		t.Fatalf("first override = %#v, want retry selector", first)
 	}
-	second := first.NextRetry()
+	second := first.NextRetry(request)
 	if second == nil || second.NextRetry == nil {
 		t.Fatalf("second override = %#v, want chained retry selector", second)
 	}
 	if second.Host == first.Host {
 		t.Fatalf("retry host = %q, want a node other than first host %q", second.Host, first.Host)
 	}
-	third := second.NextRetry()
+	third := second.NextRetry(request)
 	if third == nil {
 		t.Fatal("third override = nil")
 	}
 	if third.Host == second.Host {
 		t.Fatalf("second retry host = %q, want a node other than previous host", third.Host)
+	}
+}
+
+func TestHandlerSelectsHighestPriorityInlineNode(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{Nodes: []Node{
+				{Host: "low.example.com", Port: 80, Weight: 1, Priority: 0},
+				{Host: "high.example.com", Port: 80, Weight: 1, Priority: 10},
+			}},
+		}},
+	}}})
+
+	for range 10 {
+		override := performRequest(t, p)
+		if override == nil || override.Host != "high.example.com:80" {
+			t.Fatalf("priority override = %#v, want high.example.com:80", override)
+		}
+	}
+}
+
+func TestChashRetryExhaustsActualHighPriorityPeersBeforeLowerGroup(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Type: "chash", HashOn: "header", Key: "X-Key",
+				Nodes: []Node{
+					{Host: "a-high.example.com", Port: 80, Weight: 1, Priority: 10},
+					{Host: "b-high.example.com", Port: 80, Weight: 1, Priority: 10},
+					{Host: "low.example.com", Port: 80, Weight: 1, Priority: 0},
+				},
+			},
+		}},
+	}}})
+
+	var key string
+	compiled := p.rules[0]
+	for _, target := range compiled.targets {
+		for candidate := range 1000 {
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			request.Header.Set("X-Key", fmt.Sprintf("key-%d", candidate))
+			if target.selectHashedNode(request) == "http://b-high.example.com:80" {
+				key = request.Header.Get("X-Key")
+				break
+			}
+		}
+	}
+	if key == "" {
+		t.Fatal("no deterministic chash key selected b-high.example.com")
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request.Header.Set("X-Key", key)
+	first := performRequestWithRequest(t, p, request)
+	if first == nil || first.Host != "b-high.example.com:80" {
+		t.Fatalf("initial chash override = %#v, want b-high.example.com:80", first)
+	}
+	second := first.NextRetry(request)
+	if second == nil || second.Host != "a-high.example.com:80" {
+		t.Fatalf("first retry override = %#v, want remaining high-priority peer", second)
+	}
+	third := second.NextRetry(request)
+	if third == nil || third.Host != "low.example.com:80" {
+		t.Fatalf("second retry override = %#v, want lower-priority fallback", third)
 	}
 }
 
@@ -831,6 +896,15 @@ func TestReferencedUpstreamCarriesTLSSettings(t *testing.T) {
 	if upstream.TLS == nil || upstream.TLS.ClientCert != "CERT" || upstream.TLS.ClientKey != "KEY" ||
 		!upstream.TLS.Verify {
 		t.Fatalf("referenced upstream TLS = %#v, want verify/certificate settings preserved", upstream.TLS)
+	}
+}
+
+func TestReferencedUpstreamCarriesNodePriority(t *testing.T) {
+	upstream := upstreamFromResource(resource.Upstream{Nodes: []resource.Node{{
+		Host: "priority.example.com", Port: 80, Weight: 1, Priority: 10,
+	}}})
+	if len(upstream.Nodes) != 1 || upstream.Nodes[0].Priority != 10 {
+		t.Fatalf("referenced upstream nodes = %#v, want priority 10", upstream.Nodes)
 	}
 }
 

@@ -1563,13 +1563,15 @@ func TestHandleStoreEventUpdateDispatchesByBucket(t *testing.T) {
 	var httpCalls, streamCalls int
 	httpEvent := &store.Event{Key: []byte("/apisix/routes/route-1")}
 	streamEvent := &store.Event{Key: []byte("/apisix/stream_routes/stream-1")}
+	serviceEvent := &store.Event{Key: []byte("/apisix/services/service-1")}
 
 	handleStoreEventUpdate(httpEvent, func() { httpCalls++ }, func() { streamCalls++ })
 	handleStoreEventUpdate(streamEvent, func() { httpCalls++ }, func() { streamCalls++ })
+	handleStoreEventUpdate(serviceEvent, func() { httpCalls++ }, func() { streamCalls++ })
 	handleStoreEventUpdate(nil, func() { httpCalls++ }, func() { streamCalls++ })
 
-	if httpCalls != 1 || streamCalls != 1 {
-		t.Fatalf("http/stream calls = %d/%d, want 1/1", httpCalls, streamCalls)
+	if httpCalls != 2 || streamCalls != 2 {
+		t.Fatalf("http/stream calls = %d/%d, want 2/2", httpCalls, streamCalls)
 	}
 }
 

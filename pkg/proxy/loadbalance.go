@@ -2,6 +2,7 @@ package proxy
 
 // loadbalance
 import (
+	"net/http"
 	"sort"
 	"sync"
 
@@ -14,6 +15,28 @@ import (
 
 type LoadBalancer interface {
 	Next() string
+}
+
+// NextTarget selects a target for one request attempt. Priority-aware
+// balancers use the request to avoid retrying targets already attempted by the
+// same request; other balancers retain their existing process-wide selection.
+func NextTarget(loadBalancer LoadBalancer, request *http.Request) string {
+	if requestAware, ok := loadBalancer.(interface {
+		NextForRequest(*http.Request) string
+	}); ok {
+		return requestAware.NextForRequest(request)
+	}
+	return loadBalancer.Next()
+}
+
+// RecordSelectedTarget marks a target chosen outside the load balancer (for
+// example by chash) as attempted in the request-local priority state.
+func RecordSelectedTarget(loadBalancer LoadBalancer, request *http.Request, target string) {
+	if recorder, ok := loadBalancer.(interface {
+		RecordSelectedTarget(*http.Request, string)
+	}); ok {
+		recorder.RecordSelectedTarget(request, target)
+	}
 }
 
 // SingleLoadBalance for the backend with only one host

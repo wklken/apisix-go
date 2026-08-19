@@ -269,8 +269,7 @@ func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
 	}
 }
 
-func TestHandlerUsesExactCredentialBytes(t *testing.T) {
-	addBasicAuthConsumer(t, "user name", "sec ret")
+func TestHandlerNormalizesWhitespaceInCredentials(t *testing.T) {
 	addBasicAuthConsumer(t, "username", "secret")
 	addBasicAuthConsumer(t, "empty-password-user", "")
 
@@ -282,35 +281,39 @@ func TestHandlerUsesExactCredentialBytes(t *testing.T) {
 		wantConsumer string
 	}{
 		{
-			name:         "internal spaces exact",
+			name:         "internal spaces normalized",
 			username:     "user name",
 			password:     "sec ret",
 			wantCode:     http.StatusNoContent,
-			wantConsumer: "user name",
+			wantConsumer: "username",
 		},
 		{
-			name:     "leading username space",
-			username: " user name",
-			password: "sec ret",
-			wantCode: http.StatusUnauthorized,
+			name:         "leading username space",
+			username:     " username",
+			password:     "secret",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "username",
 		},
 		{
-			name:     "trailing username space",
-			username: "user name ",
-			password: "sec ret",
-			wantCode: http.StatusUnauthorized,
+			name:         "trailing username space",
+			username:     "username ",
+			password:     "secret",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "username",
 		},
 		{
-			name:     "leading password space",
-			username: "user name",
-			password: " sec ret",
-			wantCode: http.StatusUnauthorized,
+			name:         "leading password space",
+			username:     "username",
+			password:     " secret",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "username",
 		},
 		{
-			name:     "trailing password space",
-			username: "user name",
-			password: "sec ret ",
-			wantCode: http.StatusUnauthorized,
+			name:         "trailing password space",
+			username:     "username",
+			password:     "secret ",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "username",
 		},
 		{
 			name:         "empty password",
@@ -321,19 +324,26 @@ func TestHandlerUsesExactCredentialBytes(t *testing.T) {
 		},
 		{
 			name:     "same-length wrong password",
-			username: "user name",
+			username: "username",
 			password: "sec rex",
 			wantCode: http.StatusUnauthorized,
 		},
 		{
 			name:     "different-length wrong password",
-			username: "user name",
+			username: "username",
 			password: "sec",
 			wantCode: http.StatusUnauthorized,
 		},
 		{
-			name:     "spaceful username is not normalized to username",
-			username: "user name",
+			name:         "spaceful username is normalized to username",
+			username:     "user name",
+			password:     "secret",
+			wantCode:     http.StatusNoContent,
+			wantConsumer: "username",
+		},
+		{
+			name:     "non-ASCII NBSP is preserved",
+			username: "user\u00a0name",
 			password: "secret",
 			wantCode: http.StatusUnauthorized,
 		},

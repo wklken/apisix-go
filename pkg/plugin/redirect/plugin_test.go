@@ -63,6 +63,22 @@ func TestHandlerAppendsRequestQueryToRegexURI(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotAppendEmptyRequestQuery(t *testing.T) {
+	appendQueryString := true
+	p := newTestPlugin(t, Config{Uri: "/new", AppendQueryString: &appendQueryString})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/old", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != "/new" {
+		t.Fatalf("Location = %q, want no trailing question mark", got)
+	}
+}
+
 func TestHandlerRegexURINoMatchFallsThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		RegexUri: []string{`^/users/(\d+)$`, `/profiles/$1`},

@@ -197,6 +197,27 @@ func TestWriteActionResponseDropsConnectionHeadersForHTTP2(t *testing.T) {
 	}
 }
 
+func TestWriteActionResponseFallsBackToOriginalJSONForFalseBody(t *testing.T) {
+	original := `{"statusCode":202,"headers":{"X-Action":"done"},"body":false}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(original)),
+	}
+	recorder := httptest.NewRecorder()
+
+	(&Plugin{}).writeActionResponse(recorder, response, false)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("response code = %d, want %d", recorder.Code, http.StatusAccepted)
+	}
+	if got := recorder.Header().Get("X-Action"); got != "done" {
+		t.Fatalf("X-Action = %q, want done", got)
+	}
+	if got := recorder.Body.String(); got != original {
+		t.Fatalf("body = %q, want original JSON %q", got, original)
+	}
+}
+
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net"
 	"net/http"
 	"path"
@@ -16,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -31,6 +34,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"github.com/wklken/apisix-go/pkg/version"
 	"golang.org/x/net/http2"
 )
 
@@ -198,6 +202,9 @@ func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Hand
 	if cfg != nil && cfg.Apisix.NormalizeURILikeServlet {
 		handler = normalizeRequestPath(handler)
 	}
+	if cfg != nil && cfg.Apisix.DeleteURITailSlash {
+		handler = deleteURITailSlash(handler)
+	}
 	if pluginConfigured("node-status") {
 		handler = node_status.Track(handler)
 	}
@@ -208,7 +215,7 @@ func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Hand
 			next.ServeHTTP(w, r)
 		})
 	}
-	return handler
+	return forceServerHeader(handler, cfg)
 }
 
 func newHealthHandler(next http.Handler, requireEtcd bool) http.Handler {
@@ -339,6 +346,75 @@ func normalizeRequestPath(next http.Handler) http.Handler {
 		requestURL.RawPath = ""
 		request.URL = &requestURL
 		next.ServeHTTP(w, request)
+	})
+}
+
+func deleteURITailSlash(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL == nil || r.URL.Path == "/" || !strings.HasSuffix(r.URL.Path, "/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		request := r.Clone(r.Context())
+		requestURL := *r.URL
+		requestURL.Path = strings.TrimSuffix(requestURL.Path, "/")
+		requestURL.RawPath = ""
+		request.URL = &requestURL
+		next.ServeHTTP(w, request)
+	})
+}
+
+func configuredServerToken(cfg *config.Config) string {
+	if cfg != nil && !cfg.Apisix.EnableServerTokens {
+		return "APISIX"
+	}
+	return "APISIX/" + version.Version
+}
+
+func forceServerHeader(next http.Handler, cfg *config.Config) http.Handler {
+	token := configuredServerToken(cfg)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", token)
+		wrapped := httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(status int) {
+					w.Header().Set("Server", token)
+					writeHeader(status)
+				}
+			},
+			Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(p []byte) (int, error) {
+					w.Header().Set("Server", token)
+					return write(p)
+				}
+			},
+			Flush: func(flush httpsnoop.FlushFunc) httpsnoop.FlushFunc {
+				return func() {
+					w.Header().Set("Server", token)
+					flush()
+				}
+			},
+			FlushError: func(flushError httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
+				return func() error {
+					w.Header().Set("Server", token)
+					return flushError()
+				}
+			},
+			ReadFrom: func(readFrom httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+				return func(src io.Reader) (int64, error) {
+					w.Header().Set("Server", token)
+					return readFrom(src)
+				}
+			},
+			WriteString: func(writeString httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
+				return func(value string) (int, error) {
+					w.Header().Set("Server", token)
+					return writeString(value)
+				}
+			},
+		})
+		next.ServeHTTP(wrapped, r)
 	})
 }
 
@@ -984,7 +1060,7 @@ func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {
 	if err != nil {
 		return nil, err
 	}
-	return resolveStreamRoutes(routes, store.GetUpstream)
+	return resolveStreamRoutesWithServices(routes, store.GetUpstream, store.GetService)
 }
 
 func (s *Server) reloadStreamRoutes() error {
@@ -1027,14 +1103,36 @@ func resolveStreamRoutes(
 	routes []resource.StreamRoute,
 	lookup func(string) (resource.Upstream, error),
 ) ([]resource.StreamRoute, error) {
+	return resolveStreamRoutesWithServices(routes, lookup, nil)
+}
+
+func resolveStreamRoutesWithServices(
+	routes []resource.StreamRoute,
+	lookupUpstream func(string) (resource.Upstream, error),
+	lookupService func(string) (resource.Service, error),
+) ([]resource.StreamRoute, error) {
 	resolved := make([]resource.StreamRoute, len(routes))
 	copy(resolved, routes)
 	for index := range resolved {
 		route := &resolved[index]
+		if route.ServiceID != "" && route.UpstreamID == "" {
+			if lookupService == nil {
+				return nil, fmt.Errorf(
+					"stream route %q references service %q: service lookup is unavailable",
+					route.ID,
+					route.ServiceID,
+				)
+			}
+			service, err := lookupService(route.ServiceID)
+			if err != nil {
+				return nil, fmt.Errorf("stream route %q references service %q: %w", route.ID, route.ServiceID, err)
+			}
+			mergeStreamService(route, service)
+		}
 		if route.UpstreamID == "" || len(route.Upstream.Nodes) > 0 {
 			continue
 		}
-		if lookup == nil {
+		if lookupUpstream == nil {
 			return nil, fmt.Errorf(
 				"stream route %q references upstream %q: %w",
 				route.ID,
@@ -1042,13 +1140,29 @@ func resolveStreamRoutes(
 				ErrMissingStreamUpstream,
 			)
 		}
-		upstream, err := lookup(route.UpstreamID)
+		upstream, err := lookupUpstream(route.UpstreamID)
 		if err != nil {
 			return nil, fmt.Errorf("stream route %q references upstream %q: %w", route.ID, route.UpstreamID, err)
 		}
 		route.Upstream = upstream
 	}
 	return resolved, nil
+}
+
+func mergeStreamService(route *resource.StreamRoute, service resource.Service) {
+	if route == nil {
+		return
+	}
+	if len(service.Plugins) > 0 {
+		plugins := make(map[string]resource.PluginConfig, len(service.Plugins)+len(route.Plugins))
+		maps.Copy(plugins, service.Plugins)
+		maps.Copy(plugins, route.Plugins)
+		route.Plugins = plugins
+	}
+	if route.UpstreamID == "" && len(route.Upstream.Nodes) == 0 {
+		route.Upstream = service.Upstream
+		route.UpstreamID = service.UpstreamID
+	}
 }
 
 func streamProxyModeEnabled(cfg *config.Config) bool {

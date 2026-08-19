@@ -109,6 +109,49 @@ path, which intentionally ignores Markdown-only changes.
 | `proxy.max_conns_per_host` | Maximum number of concurrent connections per upstream host. Default 1024; zero selects the default. |
 | `proxy.max_in_flight` | Maximum number of concurrently active upstream response bodies per cluster. Default 1024; zero selects the default. Negative values are rejected at configuration load. |
 
+### APISIX 3.17 parity details
+
+The following resource and wire contracts are part of the supported
+compatibility profile:
+
+- The dynamic HTTP plugin allowlist is the single `/apisix/plugins` resource.
+  Its value is a JSON array of `{name: string, stream?: boolean}` objects;
+  entries with `stream: true` are excluded from the HTTP allowlist. A valid
+  dynamic list overrides the startup `plugins` list. A malformed update is
+  rejected and the last valid generation remains active; deleting the resource
+  removes the dynamic override and restores the startup list.
+- A route with neither `host` nor `hosts` configured inherits `service.hosts`.
+  Route plugin and upstream fields take precedence over service fields. An
+  explicitly configured `enable_websocket: false` overrides a service value;
+  an omitted route field inherits the service value. A plugin name present in
+  more than one global rule is removed from all of those global bindings,
+  matching APISIX's duplicate elimination.
+- Upstream node `priority` values are retained in the cluster configuration.
+  The highest-priority group is selected while it has a selectable target;
+  transport retries exhaust that group before trying a lower group, and
+  zero-weight nodes are not selectable. If every group is unavailable, the
+  existing fail-open behavior applies.
+- Frontend SSL resources default an omitted `status` to enabled and accept
+  singular `sni` as well as `snis`. A `*.example.com` wildcard matches exactly
+  one label. An SSL resource `client.ca` enables client-certificate
+  verification for that SNI (with omitted `client.depth` defaulting to `1`);
+  when no resource client CA is configured, the global trusted client CA
+  remains in effect. Unsupported resource depth and URI-skip forms are
+  rejected rather than silently weakening mTLS.
+- Stream routes resolve a route-level `upstream_id` first. Only when it is
+  absent does `service_id` supply plugins and an upstream, with route values
+  taking precedence. Service updates trigger stream reloads, and matching uses
+  the published resource order (the first matching route wins), not specificity
+  sorting.
+- `apisix.delete_uri_tail_slash: true` removes one trailing slash before HTTP
+  route matching but preserves `/`. `apisix.show_upstream_status_in_response_header:
+  true` emits `X-APISIX-Upstream-Status` for every upstream status; `false`
+  emits it only when the final upstream result is 5xx. Transport retries retain
+  the comma-separated attempt status chain. Local route/director failures do
+  not synthesize an upstream status. `apisix.enable_server_tokens: true`
+  forces `Server: APISIX/<version>` and `false` forces `Server: APISIX` on local,
+  upstream, and streaming responses.
+
 ### Prometheus metric lifetime and cardinality
 
 Prometheus collection is enabled only when `prometheus` is present in the
@@ -168,8 +211,9 @@ subsystem. HTTP overflow observations increment
 `<metric_prefix>http_metric_series_overflow_total{metric}`, and LLM overflow
 observations increment
 `<metric_prefix>llm_metric_series_overflow_total{metric}`. With the default
-prefix these names begin with `apisix_`. Stream routes are sorted before the
-bounded index is built; configured routes beyond the cap share
+prefix these names begin with `apisix_`. For the bounded
+`stream_connection_total` metric index only, stream routes are sorted before
+the index is built; configured routes beyond the cap share
 `stream_connection_total{route="__overflow__"}` and route reloads delete
 children that are no longer indexed.
 

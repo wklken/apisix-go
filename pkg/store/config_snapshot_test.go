@@ -1,7 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +124,203 @@ func TestConfigSnapshotGenerationTracksGlobalRulesAndPluginMetadata(t *testing.T
 			metadata,
 			ok,
 		)
+	}
+}
+
+func TestConfigSnapshotTracksDynamicHTTPPluginsAndDelete(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+
+	initial, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("initial getConfigSnapshot() error = %v", err)
+	}
+	if plugins, present := initial.HTTPPlugins(); present || plugins != nil {
+		t.Fatalf("initial HTTPPlugins() = %#v/%t, want nil/false", plugins, present)
+	}
+
+	applyConfigSnapshotEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/plugins",
+		`[{"name":"request-id"},{"name":"mqtt-proxy","stream":true},{"name":"gzip","stream":false}]`,
+	)
+	withPlugins, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("dynamic plugin getConfigSnapshot() error = %v", err)
+	}
+	plugins, present := withPlugins.HTTPPlugins()
+	if !present || !slices.Equal(plugins, []string{"request-id", "gzip"}) {
+		t.Fatalf("HTTPPlugins() = %#v/%t, want request-id,gzip/true", plugins, present)
+	}
+	plugins[0] = "mutated"
+	if got, _ := withPlugins.HTTPPlugins(); !slices.Equal(got, []string{"request-id", "gzip"}) {
+		t.Fatalf("HTTPPlugins() returned mutable snapshot data: %#v", got)
+	}
+
+	applyConfigSnapshotEvent(t, storage, EventTypeDelete, "/apisix/plugins", "")
+	withoutPlugins, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() after plugin delete error = %v", err)
+	}
+	if plugins, present := withoutPlugins.HTTPPlugins(); present || plugins != nil {
+		t.Fatalf("HTTPPlugins() after delete = %#v/%t, want nil/false", plugins, present)
+	}
+	if withoutPlugins.generation != withPlugins.generation+1 {
+		t.Fatalf("plugin delete generation = %d, want %d", withoutPlugins.generation, withPlugins.generation+1)
+	}
+}
+
+func TestDynamicPluginPutValidationRetainsLastGoodAndSkipsReload(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	var hooks int
+	storage.AddEventUpdateHook(func(event *Event) {
+		if bucket, ok := EventBucket(event); ok && bucket == "plugins" {
+			hooks++
+		}
+	})
+
+	applyConfigSnapshotEvent(t, storage, EventTypePut, "/apisix/plugins", `[{"name":"request-id"}]`)
+	before, err := storage.GetFromBucket("plugins", []byte("plugins"))
+	if err != nil {
+		t.Fatalf("read last-good plugin list: %v", err)
+	}
+	beforeSnapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("get last-good plugin snapshot: %v", err)
+	}
+
+	bad := NewAcknowledgedEvent()
+	bad.Type = EventTypePut
+	bad.Key = []byte("/apisix/plugins")
+	bad.Value = []byte(`[{"name":123}]`)
+	storage.events <- bad
+	err = bad.Wait(context.Background())
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("malformed plugin list error = %v, want ResourceValidationError", err)
+	}
+	if validationErr.Bucket != "plugins" || validationErr.ID != "plugins" {
+		t.Fatalf("validation context = %q/%q, want plugins/plugins", validationErr.Bucket, validationErr.ID)
+	}
+	after, err := storage.GetFromBucket("plugins", []byte("plugins"))
+	if err != nil {
+		t.Fatalf("read retained plugin list: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("retained plugin list = %q, want %q", after, before)
+	}
+	afterSnapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("get retained plugin snapshot: %v", err)
+	}
+	if afterSnapshot != beforeSnapshot || afterSnapshot.generation != beforeSnapshot.generation {
+		t.Fatalf(
+			"malformed plugin list published snapshot %p/%d, want %p/%d",
+			afterSnapshot,
+			afterSnapshot.generation,
+			beforeSnapshot,
+			beforeSnapshot.generation,
+		)
+	}
+	if hooks != 1 {
+		t.Fatalf("plugin reload hooks = %d, want 1 successful PUT", hooks)
+	}
+}
+
+func TestDynamicPluginNullRetainsLastGoodAndSkipsReload(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	var hooks int
+	storage.AddEventUpdateHook(func(event *Event) {
+		if bucket, ok := EventBucket(event); ok && bucket == "plugins" {
+			hooks++
+		}
+	})
+
+	applyConfigSnapshotEvent(t, storage, EventTypePut, "/apisix/plugins", `[{"name":"request-id"}]`)
+	before, err := storage.GetFromBucket("plugins", []byte("plugins"))
+	if err != nil {
+		t.Fatalf("read last-good plugin list: %v", err)
+	}
+	beforeSnapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("get last-good plugin snapshot: %v", err)
+	}
+
+	bad := NewAcknowledgedEvent()
+	bad.Type = EventTypePut
+	bad.Key = []byte("/apisix/plugins")
+	bad.Value = []byte(`null`)
+	storage.events <- bad
+	err = bad.Wait(context.Background())
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("null plugin list error = %v, want ResourceValidationError", err)
+	}
+	after, err := storage.GetFromBucket("plugins", []byte("plugins"))
+	if err != nil {
+		t.Fatalf("read retained plugin list: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("retained plugin list = %q, want %q", after, before)
+	}
+	afterSnapshot, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("get retained plugin snapshot: %v", err)
+	}
+	if afterSnapshot != beforeSnapshot || afterSnapshot.generation != beforeSnapshot.generation {
+		t.Fatalf(
+			"null plugin list published snapshot %p/%d, want %p/%d",
+			afterSnapshot,
+			afterSnapshot.generation,
+			beforeSnapshot,
+			beforeSnapshot.generation,
+		)
+	}
+	if hooks != 1 {
+		t.Fatalf("plugin reload hooks = %d, want 1 successful PUT", hooks)
+	}
+}
+
+func TestDynamicPluginAliasKeysAreRejectedForEventAndBatch(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("batch=%t", batch), func(t *testing.T) {
+			storage := newConfigSnapshotTestStore(t)
+			mutation := Mutation{
+				Type:  EventTypePut,
+				Key:   []byte("/apisix/plugins/plugins"),
+				Value: []byte(`[{"name":"request-id"}]`),
+			}
+			var event *Event
+			if batch {
+				event = NewAcknowledgedBatch([]Mutation{mutation}, BatchOptions{})
+			} else {
+				event = NewAcknowledgedEvent()
+				event.Type = mutation.Type
+				event.Key = mutation.Key
+				event.Value = mutation.Value
+			}
+			storage.events <- event
+			err := event.Wait(context.Background())
+			if batch {
+				var validationErr *BatchValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("alias batch error = %v, want BatchValidationError", err)
+				}
+			} else {
+				var validationErr *ResourceValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("alias event error = %v, want ResourceValidationError", err)
+				}
+			}
+			stored, readErr := storage.GetFromBucket("plugins", []byte("plugins"))
+			if readErr != nil {
+				t.Fatalf("read plugin singleton: %v", readErr)
+			}
+			if stored != nil {
+				t.Fatalf("alias event persisted plugin singleton: %q", stored)
+			}
+		})
 	}
 }
 

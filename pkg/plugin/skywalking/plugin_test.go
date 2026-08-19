@@ -459,6 +459,119 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 	}
 }
 
+func TestRouteRewriteOwnsSkyWalkingTraceStateOverGlobal(t *testing.T) {
+	reported := make(chan []map[string]any, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var segments []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&segments); err != nil {
+			t.Fatalf("decode segments: %v", err)
+		}
+		reported <- segments
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	global := newTestPlugin(t, Config{
+		EndpointAddr: server.URL, ServiceName: "global-service", ReportInterval: 60,
+	})
+	route := newTestPlugin(t, Config{
+		EndpointAddr: server.URL, ServiceName: "route-service", ReportInterval: 60,
+	})
+	request, lifecycle := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+	)
+	request.Header.Set("sw8", sw8Context{
+		TraceID:        "client-trace-id",
+		TraceSegmentID: "client-segment-id",
+		SpanID:         7,
+	}.header("client-service", "client-instance", "/client"))
+	globalResult := global.RunRequestPhase(httptest.NewRecorder(), request)
+	routeResult := route.RunRequestPhase(httptest.NewRecorder(), globalResult.Request)
+	state, ok := routeResult.Request.Context().Value(segmentStateContextKey{}).(*segmentState)
+	if !ok {
+		t.Fatal("final route segment state is missing")
+	}
+	if state.context.ParentService != "client-service" || state.context.ParentTraceSegmentID != "client-segment-id" {
+		t.Fatalf(
+			"route parent = %q/%q, want original client parent",
+			state.context.ParentService,
+			state.context.ParentTraceSegmentID,
+		)
+	}
+	lifecycle.SetFinalRequest(routeResult.Request)
+	lifecycle.Complete(
+		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK},
+		time.Now(),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("lifecycle failures = %#v", failures)
+	}
+
+	global.Flush()
+	route.Flush()
+	select {
+	case segments := <-reported:
+		if len(segments) != 1 {
+			t.Fatalf("reported segments = %#v, want one route-owned segment", segments)
+		}
+		if got := segments[0]["service"]; got != "route-service" {
+			t.Fatalf("reported service = %v, want route-service", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for route-owned SkyWalking report")
+	}
+	select {
+	case extra := <-reported:
+		t.Fatalf("reported extra segment = %#v, want only the final route binding", extra)
+	default:
+	}
+}
+
+func TestRouteUnsamplingRemovesGeneratedSkyWalkingHeaderAndReport(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		originalSW8 string
+		wantHeader  string
+	}{
+		{name: "no client header"},
+		{name: "preserve client header", originalSW8: "client-skywalking-header", wantHeader: "client-skywalking-header"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			global := newTestPlugin(t, Config{SampleRatio: 1, ReportInterval: 60})
+			route := newTestPlugin(t, Config{SampleRatio: 0.25, ReportInterval: 60})
+			route.sampleRandom = func() (float64, error) { return 1, nil }
+			request, lifecycle := apisixctx.EnsureRequestLifecycle(
+				httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
+			)
+			if test.originalSW8 != "" {
+				request.Header.Set("sw8", test.originalSW8)
+			}
+
+			globalResult := global.RunRequestPhase(httptest.NewRecorder(), request)
+			routeResult := route.RunRequestPhase(httptest.NewRecorder(), globalResult.Request)
+			if got := routeResult.Request.Header.Get("sw8"); got != test.wantHeader {
+				t.Fatalf("final sw8 header = %q, want %q", got, test.wantHeader)
+			}
+			lifecycle.SetFinalRequest(routeResult.Request)
+			lifecycle.Complete(
+				apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK},
+				time.Now(),
+			)
+			if failures := lifecycle.Finalize(); len(failures) != 0 {
+				t.Fatalf("lifecycle failures = %#v", failures)
+			}
+			for name, plugin := range map[string]*Plugin{"global": global, "route": route} {
+				plugin.reportMu.Lock()
+				queued := len(plugin.segments)
+				plugin.reportMu.Unlock()
+				if queued != 0 {
+					t.Fatalf("%s queued segments = %d, want no report after route unsampling", name, queued)
+				}
+			}
+		})
+	}
+}
+
 func TestUnsampledTraceRegistersNoExportFinalizer(t *testing.T) {
 	p := newTestPlugin(t, Config{EndpointAddr: "http://127.0.0.1:12800", SampleRatio: 0.25, ReportInterval: 60})
 	p.sampleRandom = func() (float64, error) { return 0.9, nil }

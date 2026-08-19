@@ -77,9 +77,13 @@ type tracingContextKey struct{}
 type segmentStateContextKey struct{}
 
 type segmentState struct {
-	context sw8Context
-	started time.Time
-	once    sync.Once
+	context             sw8Context
+	started             time.Time
+	originalSW8         []string
+	owner               *Plugin
+	sampled             bool
+	finalizerRegistered bool
+	once                sync.Once
 }
 
 type sw8Context struct {
@@ -228,12 +232,20 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	if r == nil {
 		return base.ContinueRequest(r)
 	}
-	if _, exists := r.Context().Value(segmentStateContextKey{}).(*segmentState); exists {
-		return base.ContinueRequest(r)
-	}
+	state, exists := r.Context().Value(segmentStateContextKey{}).(*segmentState)
 	lifecycle := apisixctx.GetRequestLifecycle(r)
 	if lifecycle == nil {
 		r, lifecycle = apisixctx.EnsureRequestLifecycle(r, time.Now())
+	}
+	if !exists {
+		state = &segmentState{originalSW8: append([]string(nil), r.Header.Values("sw8")...)}
+		r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, state))
+	} else {
+		// A lower-precedence SkyWalking binding may already have generated an
+		// outbound header. The final binding must make its sampling and parent
+		// decision from the original client context, as if the earlier binding
+		// had been skipped by APISIX's prefer_route policy.
+		restoreSkyWalkingHeader(r, state.originalSW8)
 	}
 	traceContext, _ := parseSW8(r.Header.Get("sw8"))
 	sample, err := p.shouldSample()
@@ -242,7 +254,9 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
 	}
 	if !sample {
-		r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, &segmentState{}))
+		restoreSkyWalkingHeader(r, state.originalSW8)
+		state.owner = p
+		state.sampled = false
 		return base.ContinueRequest(r)
 	}
 	if traceContext.TraceID == "" {
@@ -261,14 +275,28 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 	traceContext.SpanID = 0
 	r.Header.Set("sw8", traceContext.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
-	state := &segmentState{context: traceContext, started: time.Now()}
-	r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, state))
-	if !lifecycle.AddFinalizer(name, func() error {
-		return p.finishSegment(state, lifecycle, r)
-	}) {
-		return base.ContinueRequest(r)
+	state.context = traceContext
+	state.started = time.Now()
+	state.owner = p
+	state.sampled = true
+	if !state.finalizerRegistered {
+		if lifecycle.AddFinalizer(name, func() error {
+			if !state.sampled || state.owner == nil {
+				return nil
+			}
+			return state.owner.finishSegment(state, lifecycle, r)
+		}) {
+			state.finalizerRegistered = true
+		}
 	}
 	return base.ContinueRequest(r)
+}
+
+func restoreSkyWalkingHeader(r *http.Request, original []string) {
+	r.Header.Del("sw8")
+	for _, value := range original {
+		r.Header.Add("sw8", value)
+	}
 }
 
 func (p *Plugin) finishSegment(

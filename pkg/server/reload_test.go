@@ -293,7 +293,7 @@ func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
 		nil,
 		func() error { return wantErr },
 		func() error { routes++; return nil },
-		func() { streams++ },
+		func() error { streams++; return nil },
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)

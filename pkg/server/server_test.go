@@ -1147,6 +1147,66 @@ func TestStandaloneConfigProviderSelection(t *testing.T) {
 	}
 }
 
+func TestApplyStandaloneSnapshotPropagatesStreamPublicationFailure(t *testing.T) {
+	wantErr := errors.New("stream publication failed")
+	err := applyStandaloneSnapshot(
+		config.StandaloneReloadResult{ChangedStreamBuckets: []string{"stream_routes"}},
+		nil,
+		func() error { return nil },
+		func() error { return nil },
+		func() error { return wantErr },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestEtcdClientOptionsUseConfiguredWatchAndResyncDelay(t *testing.T) {
+	options := etcdClientOptions(config.Etcd{
+		Timeout:            7,
+		WatchTimeout:       11,
+		ResyncDelay:        13,
+		HealthCheckTimeout: 17,
+		StartupRetry:       19,
+	}, nil)
+	if options.DialTimeout != 7*time.Second || options.RequestTimeout != 7*time.Second {
+		t.Fatalf("etcd request timeouts = %s/%s, want 7s/7s", options.DialTimeout, options.RequestTimeout)
+	}
+	if options.WatchTimeout != 11*time.Second {
+		t.Fatalf("etcd watch timeout = %s, want 11s", options.WatchTimeout)
+	}
+	if options.ResyncDelay != 13*time.Second {
+		t.Fatalf("etcd resync delay = %s, want 13s", options.ResyncDelay)
+	}
+	if options.HealthCheckInterval != 17*time.Second || options.StartupRetry != 19 {
+		t.Fatalf("etcd health/retry options = %s/%d, want 17s/19", options.HealthCheckInterval, options.StartupRetry)
+	}
+}
+
+func TestFetchAndSyncInitialEtcdConfigContextIsPropagated(t *testing.T) {
+	ctx := t.Context()
+	seen := make(chan context.Context, 1)
+	err := fetchAndSyncInitialEtcdConfigContext(
+		ctx,
+		func(fetchCtx context.Context) error {
+			seen <- fetchCtx
+			return nil
+		},
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("fetchAndSyncInitialEtcdConfigContext() error = %v", err)
+	}
+	select {
+	case fetchCtx := <-seen:
+		if fetchCtx != ctx {
+			t.Fatalf("fetch context = %p, want startup context %p", fetchCtx, ctx)
+		}
+	default:
+		t.Fatal("fetchAndSyncInitialEtcdConfigContext() did not invoke fetch")
+	}
+}
+
 func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1207,7 +1267,7 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 				test.err,
 				func() error { calls = append(calls, "sync"); return nil },
 				func() error { calls = append(calls, "routes"); return nil },
-				func() { calls = append(calls, "streams") },
+				func() error { calls = append(calls, "streams"); return nil },
 			)
 			if !slices.Equal(calls, test.want) {
 				t.Fatalf("calls = %v, want %v", calls, test.want)
@@ -1234,7 +1294,7 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 		nil,
 		func() error { return nil },
 		func() error { return wantErr },
-		func() { streams++ },
+		func() error { streams++; return nil },
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)

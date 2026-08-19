@@ -28,6 +28,8 @@ func TestNewConfigClientWithOptionsAppliesRuntimeSettings(t *testing.T) {
 			DialTimeout:    2 * time.Second,
 			RequestTimeout: 3 * time.Second,
 			StartupRetry:   2,
+			WatchTimeout:   4 * time.Second,
+			ResyncDelay:    5 * time.Second,
 		},
 	)
 	if err != nil {
@@ -40,6 +42,15 @@ func TestNewConfigClientWithOptionsAppliesRuntimeSettings(t *testing.T) {
 	}
 	if client.startupRetry != 2 {
 		t.Fatalf("startupRetry = %d, want 2", client.startupRetry)
+	}
+	if client.watchTimeout != 4*time.Second {
+		t.Fatalf("watchTimeout = %s, want 4s", client.watchTimeout)
+	}
+	if client.resyncDelay != 5*time.Second {
+		t.Fatalf("resyncDelay = %s, want 5s", client.resyncDelay)
+	}
+	if client.prefix != "/apisix/" {
+		t.Fatalf("prefix = %q, want canonical /apisix/", client.prefix)
 	}
 }
 
@@ -153,6 +164,37 @@ func TestWatchStopsWhileSnapshotRecoveryIsFailing(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not stop after context cancellation")
+	}
+}
+
+func TestRecoverSnapshotUsesFreshApplyTimeout(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	var delayed atomic.Bool
+	storage.AddAcknowledgedEventUpdateHook(func(*store.Event) error {
+		if delayed.CompareAndSwap(false, true) {
+			time.Sleep(300 * time.Millisecond)
+		}
+		return nil
+	})
+	client := &ConfigClient{
+		prefix:         canonicalEtcdPrefix("/apisix"),
+		events:         events,
+		knownKeys:      make(map[string]struct{}),
+		requestTimeout: 500 * time.Millisecond,
+		loadSnapshot: func(context.Context) (*clientv3.GetResponse, error) {
+			time.Sleep(300 * time.Millisecond)
+			return &clientv3.GetResponse{
+				Header: &etcdserverpb.ResponseHeader{Revision: 2},
+				Kvs: []*mvccpb.KeyValue{{
+					Key:         []byte("/apisix/routes/route"),
+					Value:       []byte(`{"id":"route"}`),
+					ModRevision: 2,
+				}},
+			}, nil
+		},
+	}
+	if err := client.recoverSnapshot(context.Background()); err != nil {
+		t.Fatalf("recoverSnapshot() error = %v, want independent load and apply budgets", err)
 	}
 }
 
@@ -485,7 +527,7 @@ func TestApplyWatchResponseStagesStateUntilEveryEventAcknowledges(t *testing.T) 
 		t.Fatalf("quarantine revision = %d, want 13", got)
 	}
 	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
-		t.Fatalf("durable first event = %q, %v; want acknowledged partial event", value, err)
+		t.Fatalf("durable first event = %q, %v; want pruned valid event", value, err)
 	}
 }
 
@@ -581,7 +623,7 @@ func TestApplySnapshotStagesStateUntilEveryEventAcknowledges(t *testing.T) {
 		t.Fatal("snapshot did not retain invalid resource quarantine")
 	}
 	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
-		t.Fatalf("durable first snapshot event = %q, %v; want acknowledged partial event", value, err)
+		t.Fatalf("durable first snapshot event = %q, %v; want pruned valid event", value, err)
 	}
 }
 
@@ -708,8 +750,8 @@ func TestNewConfigClientDelegatesToWithOptions(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	if client.prefix != "/apisix" || client.startupRetry != 0 {
-		t.Fatalf("prefix/startupRetry = %q/%d, want /apisix/0", client.prefix, client.startupRetry)
+	if client.prefix != "/apisix/" || client.startupRetry != 0 {
+		t.Fatalf("prefix/startupRetry = %q/%d, want /apisix//0", client.prefix, client.startupRetry)
 	}
 	if client.openWatch == nil || client.loadSnapshot == nil {
 		t.Fatal("NewConfigClient() did not install watch and snapshot hooks")
@@ -839,6 +881,334 @@ func TestSendEventHonorsCancellation(t *testing.T) {
 	client := &ConfigClient{events: make(chan *store.Event)}
 	if err := client.sendEvent(ctx, store.EventTypePut, []byte("k"), []byte("v")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("sendEvent() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCanonicalEtcdPrefixAndManagedKeyShapes(t *testing.T) {
+	tests := []struct {
+		prefix string
+		key    string
+		want   bool
+	}{
+		{prefix: "/apisix", key: "/apisix/routes/route-1", want: true},
+		{prefix: "/apisix", key: "/apisix2/routes/route-1", want: false},
+		{prefix: "/apisix", key: "/apisix/data_plane/server_info/node-1", want: false},
+		{prefix: "/apisix", key: "/apisix/unknown/item", want: false},
+		{prefix: "/apisix", key: "/apisix/routes", want: false},
+		{prefix: "/apisix", key: "/apisix/routes/", want: false},
+		{prefix: "/apisix", key: "/apisix/routes/route-1/extra", want: false},
+		{prefix: "/apisix", key: "/apisix/secrets/vault/item", want: true},
+		{prefix: "/apisix", key: "/apisix/secrets/item", want: false},
+	}
+	for _, test := range tests {
+		client := &ConfigClient{prefix: canonicalEtcdPrefix(test.prefix)}
+		if _, _, got := client.managedKey([]byte(test.key)); got != test.want {
+			t.Errorf("managedKey(%q, %q) = %v, want %v", test.prefix, test.key, got, test.want)
+		}
+	}
+}
+
+func TestApplySnapshotFiltersSiblingServerInfoUnknownAndCollectionKeys(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	client := &ConfigClient{
+		prefix:    canonicalEtcdPrefix("/apisix"),
+		events:    events,
+		knownKeys: map[string]struct{}{},
+	}
+	response := &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 20},
+		Kvs: []*mvccpb.KeyValue{
+			{Key: []byte("/apisix/routes/good"), Value: []byte(`{"id":"good"}`), ModRevision: 20},
+			{Key: []byte("/apisix2/routes/sibling"), Value: []byte(`{"id":"sibling"}`), ModRevision: 20},
+			{Key: []byte("/apisix/data_plane/server_info/node-1"), Value: []byte(`{"id":"node-1"}`), ModRevision: 20},
+			{Key: []byte("/apisix/unknown/item"), Value: []byte(`{"id":"item"}`), ModRevision: 20},
+			{Key: []byte("/apisix/routes"), Value: []byte(`{"id":"collection"}`), ModRevision: 20},
+			{Key: []byte("/apisix/routes/good/extra"), Value: []byte(`{"id":"extra"}`), ModRevision: 20},
+		},
+	}
+	if err := client.applySnapshot(context.Background(), response); err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if len(client.knownKeys) != 1 {
+		t.Fatalf("knownKeys = %v, want only managed resource", client.knownKeys)
+	}
+	if _, ok := client.knownKeys["/apisix/routes/good"]; !ok {
+		t.Fatalf("knownKeys = %v, want /apisix/routes/good", client.knownKeys)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("good")); err != nil || string(value) != `{"id":"good"}` {
+		t.Fatalf("managed route = %q, %v", value, err)
+	}
+	for _, id := range []string{"sibling", "collection"} {
+		value, err := storage.GetFromBucket("routes", []byte(id))
+		if err != nil || value != nil {
+			t.Fatalf("ignored route %q = %q, %v; want absent", id, value, err)
+		}
+	}
+}
+
+func TestApplySnapshotAuthoritativelyDeletesPersistedRowsWithEmptyKnownKeys(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	applyWatcherMutation(t, events, store.Mutation{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/routes/stale"),
+		Value: []byte(`{"id":"stale"}`),
+	})
+	client := &ConfigClient{
+		prefix:    canonicalEtcdPrefix("/apisix"),
+		events:    events,
+		knownKeys: map[string]struct{}{},
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 21},
+		Kvs: []*mvccpb.KeyValue{{
+			Key:         []byte("/apisix/routes/fresh"),
+			Value:       []byte(`{"id":"fresh"}`),
+			ModRevision: 21,
+		}},
+	}); err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("stale")); err != nil || value != nil {
+		t.Fatalf("persisted stale route = %q, %v; want deleted", value, err)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("fresh")); err != nil || string(value) != `{"id":"fresh"}` {
+		t.Fatalf("fresh route = %q, %v", value, err)
+	}
+}
+
+func TestApplySnapshotQuarantinesAndPreservesInvalidReplacementAtomically(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	applyWatcherMutation(t, events, store.Mutation{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/ssls/keep"),
+		Value: []byte(`{"id":"keep","cert":"","key":"","status":0}`),
+	})
+	var hookCalls atomic.Int32
+	storage.AddAcknowledgedEventUpdateHook(func(*store.Event) error {
+		hookCalls.Add(1)
+		return nil
+	})
+	client := &ConfigClient{
+		prefix: canonicalEtcdPrefix("/apisix"),
+		events: events,
+		knownKeys: map[string]struct{}{
+			"/apisix/ssls/keep": {},
+		},
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 22},
+		Kvs: []*mvccpb.KeyValue{
+			{
+				Key:         []byte("/apisix/ssls/keep"),
+				Value:       []byte(`{"id":"keep","cert":"bad","key":"bad","status":1}`),
+				ModRevision: 22,
+			},
+			{Key: []byte("/apisix/routes/new"), Value: []byte(`{"id":"new"}`), ModRevision: 22},
+		},
+	}); err != nil {
+		t.Fatalf("applySnapshot() error = %v, want one validation-pruned retry", err)
+	}
+	if got := hookCalls.Load(); got == 0 {
+		t.Fatal("acknowledged batch hook was not called")
+	}
+	if value, err := storage.GetFromBucket("ssls", []byte("keep")); err != nil ||
+		string(value) != `{"id":"keep","cert":"","key":"","status":0}` {
+		t.Fatalf("preserved SSL = %q, %v", value, err)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("new")); err != nil || string(value) != `{"id":"new"}` {
+		t.Fatalf("unrelated route = %q, %v", value, err)
+	}
+	if got := client.quarantine["/apisix/ssls/keep"]; got != 22 {
+		t.Fatalf("quarantine revision = %d, want 22", got)
+	}
+}
+
+func TestApplyWatchResponseNonValidationHookFailureDoesNotAdvanceState(t *testing.T) {
+	storage, events := newWatcherStore(t)
+	storage.AddAcknowledgedEventUpdateHook(func(*store.Event) error {
+		return errors.New("stream publication failed")
+	})
+	client := &ConfigClient{
+		prefix:       canonicalEtcdPrefix("/apisix"),
+		events:       events,
+		knownKeys:    map[string]struct{}{},
+		lastRevision: 30,
+	}
+	err := client.applyWatchResponse(context.Background(), clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 31},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/routes/new"), Value: []byte(`{"id":"new"}`), ModRevision: 31},
+		}},
+	})
+	if err == nil || err.Error() != "stream publication failed" {
+		t.Fatalf("applyWatchResponse() error = %v, want hook failure", err)
+	}
+	if client.lastRevision != 30 {
+		t.Fatalf("lastRevision = %d, want unchanged 30", client.lastRevision)
+	}
+	if len(client.knownKeys) != 0 || len(client.quarantine) != 0 {
+		t.Fatalf("watcher state = keys=%v quarantine=%v, want unchanged", client.knownKeys, client.quarantine)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("new")); err != nil || string(value) != `{"id":"new"}` {
+		t.Fatalf("durable route = %q, %v; want committed before hook acknowledgement", value, err)
+	}
+}
+
+func TestFetchAllContextCancellationStopsStartupRetry(t *testing.T) {
+	client := &ConfigClient{
+		prefix:         canonicalEtcdPrefix("/apisix"),
+		events:         make(chan *store.Event),
+		knownKeys:      map[string]struct{}{},
+		requestTimeout: time.Second,
+		startupRetry:   2,
+	}
+	var loads atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	client.loadSnapshot = func(context.Context) (*clientv3.GetResponse, error) {
+		loads.Add(1)
+		cancel()
+		return nil, errors.New("unavailable")
+	}
+	start := time.Now()
+	err := client.FetchAllContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("FetchAllContext() error = %v, want context.Canceled", err)
+	}
+	if loads.Load() != 1 {
+		t.Fatalf("snapshot loads = %d, want no retry after cancellation", loads.Load())
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("FetchAllContext() took %s, want cancellation-aware retry wait", elapsed)
+	}
+}
+
+func TestWatchTimeoutReopensWithoutSnapshotRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var opens atomic.Int32
+	var revisions []int64
+	recoveryStarted := make(chan struct{}, 1)
+	client := &ConfigClient{
+		prefix:       canonicalEtcdPrefix("/apisix"),
+		knownKeys:    map[string]struct{}{},
+		lastRevision: 40,
+		watchTimeout: 10 * time.Millisecond,
+		loadSnapshot: func(context.Context) (*clientv3.GetResponse, error) {
+			recoveryStarted <- struct{}{}
+			return nil, errors.New("unexpected snapshot recovery")
+		},
+	}
+	client.openWatch = func(watchCtx context.Context, revision int64) clientv3.WatchChan {
+		revisions = append(revisions, revision)
+		stream := make(chan clientv3.WatchResponse)
+		if opens.Add(1) == 2 {
+			cancel()
+			close(stream)
+			return stream
+		}
+		go func() {
+			<-watchCtx.Done()
+			close(stream)
+		}()
+		return stream
+	}
+	client.Watch(ctx)
+	if len(revisions) != 2 || revisions[0] != 41 || revisions[1] != 41 {
+		t.Fatalf("watch revisions = %v, want [41 41]", revisions)
+	}
+	select {
+	case <-recoveryStarted:
+		t.Fatal("watch timeout unexpectedly started snapshot recovery")
+	default:
+	}
+}
+
+func TestWatchTimeoutIsIdleNotConnectionLifetime(t *testing.T) {
+	_, events := newWatcherStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const timeout = 30 * time.Millisecond
+	var opens atomic.Int32
+	firstOpened := make(chan struct{})
+	stopProgress := make(chan struct{})
+	reopened := make(chan struct{})
+	client := &ConfigClient{
+		prefix:       canonicalEtcdPrefix("/apisix"),
+		events:       events,
+		watchTimeout: timeout,
+		knownKeys:    map[string]struct{}{},
+	}
+	client.openWatch = func(watchCtx context.Context, revision int64) clientv3.WatchChan {
+		stream := make(chan clientv3.WatchResponse)
+		if opens.Add(1) == 1 {
+			close(firstOpened)
+			go func() {
+				ticker := time.NewTicker(timeout / 5)
+				defer ticker.Stop()
+				var progressRevision int64
+				for {
+					select {
+					case <-watchCtx.Done():
+						close(stream)
+						return
+					case <-stopProgress:
+						return
+					case <-ticker.C:
+						progressRevision++
+						stream <- clientv3.WatchResponse{
+							Header: etcdserverpb.ResponseHeader{Revision: progressRevision},
+						}
+					}
+				}
+			}()
+			return stream
+		}
+		close(reopened)
+		cancel()
+		close(stream)
+		return stream
+	}
+
+	done := make(chan struct{})
+	go func() {
+		client.Watch(ctx)
+		close(done)
+	}()
+	<-firstOpened
+	time.Sleep(3 * timeout)
+	if got := opens.Load(); got != 1 {
+		t.Fatalf("watch reopened during continuous progress: opens = %d, want 1", got)
+	}
+	close(stopProgress)
+	select {
+	case <-reopened:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("watch did not reopen after progress stopped")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Watch did not stop after cancellation")
+	}
+}
+
+func TestConfiguredRecoveryDelayIncludesAtMostFiftyPercentJitter(t *testing.T) {
+	client := &ConfigClient{resyncDelay: 20 * time.Millisecond}
+	for range 20 {
+		delay := client.recoveryDelay(0)
+		if delay < 20*time.Millisecond || delay > 30*time.Millisecond {
+			t.Fatalf("recovery delay = %s, want [20ms, 30ms]", delay)
+		}
+	}
+}
+
+func applyWatcherMutation(t *testing.T, events chan *store.Event, mutation store.Mutation) {
+	t.Helper()
+	event := store.NewAcknowledgedBatch([]store.Mutation{mutation}, store.BatchOptions{})
+	events <- event
+	if err := event.Wait(context.Background()); err != nil {
+		t.Fatalf("apply watcher seed mutation: %v", err)
 	}
 }
 

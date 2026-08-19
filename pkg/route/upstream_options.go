@@ -13,7 +13,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type upstreamTimeouts struct {
@@ -117,11 +116,11 @@ func resolveUpstreamClientCertificate(
 	return certificate, nil
 }
 
-func buildTransportOption(
+func (b *Builder) buildTransportOption(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 ) (proxy.TransportOption, error) {
-	return buildTransportOptionWithSSLResolver(routeResource, upstream, store.GetSSL)
+	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL)
 }
 
 func buildTransportOptionWithSSLResolver(

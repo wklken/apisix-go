@@ -9,16 +9,21 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/util"
 	bolt "go.etcd.io/bbolt"
 )
 
 // eventUpdateHook is a function that is called when an event is updated.
 type EventUpdateHook func(event *Event)
+
+// AcknowledgedEventUpdateHook is a required publication stage. Its error is
+// returned to the producer after the durable Store transaction has committed.
+type AcknowledgedEventUpdateHook func(event *Event) error
 
 type Store struct {
 	events  chan *Event
@@ -38,6 +43,9 @@ type Store struct {
 
 	// eventUpdateHooks is a list of hooks that are called when an event is updated.
 	eventUpdateHooks []EventUpdateHook
+	// acknowledgedEventUpdateHooks are called after a durable mutation and may
+	// reject provider acknowledgement when required publication fails.
+	acknowledgedEventUpdateHooks []AcknowledgedEventUpdateHook
 
 	// FIXME: not so sure about this
 	// store uniq key->consumer_id, like key-auth:123456->foo
@@ -107,11 +115,13 @@ func (e *ResourceValidationError) Unwrap() error {
 	return e.Err
 }
 
+const storeOpenTimeout = time.Second
+
 // Open constructs a store that owns its database file. It has no global side
 // effects; callers that also need the package-level getters must register
 // the store through GetStore.
 func Open(dbPath string, events chan *Event) (*Store, error) {
-	db, err := bolt.Open(dbPath, 0o600, nil)
+	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: storeOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("open store database %q: %w", dbPath, err)
 	}
@@ -177,6 +187,10 @@ func ReplaceGlobalStoreForTest(storage *Store) *Store {
 
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
+}
+
+func (s *Store) AddAcknowledgedEventUpdateHook(hook AcknowledgedEventUpdateHook) {
+	s.acknowledgedEventUpdateHooks = append(s.acknowledgedEventUpdateHooks, hook)
 }
 
 // IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
@@ -271,27 +285,6 @@ func (s *Store) GetBucketData(bucketName string) ([][]byte, error) {
 type bucketEntry struct {
 	id    string
 	value []byte
-}
-
-func (s *Store) getBucketEntries(bucketName string) ([]bucketEntry, error) {
-	entries := make([]bucketEntry, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(bucketName))
-		if bucket == nil {
-			return errBucketNotFound
-		}
-		return bucket.ForEach(func(id, value []byte) error {
-			entries = append(entries, bucketEntry{
-				id:    string(bytes.Clone(id)),
-				value: bytes.Clone(value),
-			})
-			return nil
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
 }
 
 // get specific key from bucket
@@ -442,97 +435,229 @@ func (s *Store) processEvent(event *Event) error {
 		close(event.done)
 		return nil
 	}
+	if event.batch {
+		return s.processMutations(event.mutations, event.options, true)
+	}
+	return s.processMutations([]Mutation{{
+		Type:  event.Type,
+		Key:   event.Key,
+		Value: event.Value,
+	}}, BatchOptions{}, false)
+}
 
-	bucketName, id := getTypeAndIDFromKey(event.Key)
-	if event.Type == EventTypePut && bytes.Equal(bucketName, []byte("ssls")) {
-		if err := validateSSLCertificateEvent(event.Type, util.BytesToString(id), event.Value); err != nil {
-			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
+type parsedMutation struct {
+	mutation Mutation
+	bucket   string
+	id       string
+}
+
+func (s *Store) processMutations(mutations []Mutation, options BatchOptions, batch bool) error {
+	parsed := make([]parsedMutation, 0, len(mutations))
+	validationErr := &BatchValidationError{}
+	affectedBuckets := make([]string, 0, len(mutations))
+	affected := make(map[string]struct{}, len(mutations))
+	addAffected := func(bucket string) {
+		if !IsHTTPRouteReloadBucket(bucket) && !IsStreamReloadBucket(bucket) {
+			return
+		}
+		if _, ok := affected[bucket]; ok {
+			return
+		}
+		affected[bucket] = struct{}{}
+		affectedBuckets = append(affectedBuckets, bucket)
+	}
+	needsConsumerRebuild := options.ReplaceManaged
+	needsSSLRebuild := options.ReplaceManaged
+	needsSecretCacheReset := options.ReplaceManaged
+	needsProtoGeneration := options.ReplaceManaged
+	needsConfigGeneration := options.ReplaceManaged
+	for index, mutation := range mutations {
+		bucket, id, err := parseMutationKey(mutation.Key)
+		if err != nil {
+			validationErr.Rejected = append(validationErr.Rejected, RejectedMutation{
+				Index: index,
+				Err:   &ResourceValidationError{Err: err},
+			})
+			continue
+		}
+		if mutation.Type != EventTypePut && mutation.Type != EventTypeDelete {
+			return fmt.Errorf("unsupported store event type %d", mutation.Type)
+		}
+		parsed = append(parsed, parsedMutation{mutation: mutation, bucket: bucket, id: id})
+		addAffected(bucket)
+		if IsHTTPRouteReloadBucket(bucket) {
+			needsConfigGeneration = true
+		}
+		switch bucket {
+		case "consumers":
+			needsConsumerRebuild = true
+		case "ssls":
+			needsSSLRebuild = true
+		case "secrets":
+			needsSecretCacheReset = true
+		case "protos":
+			needsProtoGeneration = true
+		}
+		if mutation.Type != EventTypePut {
+			continue
+		}
+		var resourceErr error
+		switch bucket {
+		case "ssls":
+			resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
+		case "routes", "global_rules":
+			resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
+		case "consumers":
+			_, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)
+			if resourceErr != nil {
+				resourceErr = fmt.Errorf("store process the consumer fail: %w", resourceErr)
+			}
+		case "plugin_metadata":
+			resourceErr = validatePluginMetadataPut(id, mutation.Value)
+		}
+		if resourceErr != nil {
+			validationErr.Rejected = append(validationErr.Rejected, RejectedMutation{
+				Index: index,
+				Err:   &ResourceValidationError{Bucket: bucket, ID: id, Err: resourceErr},
+			})
 		}
 	}
-	if event.Type == EventTypePut &&
-		(bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("global_rules"))) {
-		if err := validateConfigResourcePut(string(bucketName), util.BytesToString(id), event.Value); err != nil {
-			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
+	if len(validationErr.Rejected) > 0 {
+		if !batch && len(validationErr.Rejected) == 1 {
+			return validationErr.Rejected[0].Err
+		}
+		return validationErr
+	}
+	if options.ReplaceManaged {
+		for _, bucket := range builtInBuckets {
+			addAffected(string(bucket))
 		}
 	}
 
-	switch event.Type {
-	case EventTypePut:
-		var snapshot consumerSnapshot
-		isConsumer := bytes.Equal(bucketName, []byte("consumers"))
-		if isConsumer {
-			var err error
-			snapshot, err = s.prepareConsumerSnapshot(id, event.Value)
-			if err != nil {
-				return &ResourceValidationError{
-					Bucket: string(bucketName),
-					ID:     string(id),
-					Err:    fmt.Errorf("store process the consumer fail: %w", err),
+	preserve := make(map[ResourceKey]struct{}, len(options.Preserve))
+	for _, key := range options.Preserve {
+		preserve[key] = struct{}{}
+	}
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		if options.ReplaceManaged {
+			if err := clearManagedBuckets(tx, preserve); err != nil {
+				return err
+			}
+		}
+		for _, entry := range parsed {
+			bucket := tx.Bucket([]byte(entry.bucket))
+			if bucket == nil {
+				return errBucketNotFound
+			}
+			id := []byte(entry.id)
+			switch entry.mutation.Type {
+			case EventTypePut:
+				if err := bucket.Put(id, entry.mutation.Value); err != nil {
+					return fmt.Errorf("put key-value fail: %w", err)
+				}
+			case EventTypeDelete:
+				if err := bucket.Delete(id); err != nil {
+					return fmt.Errorf("delete key-value fail: %w", err)
 				}
 			}
 		}
-
-		err := s.db.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket(bucketName)
-			if b == nil {
-				return errBucketNotFound
-			}
-			if err := b.Put(id, event.Value); err != nil {
-				return fmt.Errorf("put key-value fail: %s", err)
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if isConsumer {
-			s.applyConsumerSnapshot(snapshot)
-		}
-	case EventTypeDelete:
-		isConsumer := bytes.Equal(bucketName, []byte("consumers"))
-		err := s.db.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket(bucketName)
-			if b == nil {
-				return errBucketNotFound
-			}
-
-			err := b.Delete(id)
-			if err != nil {
-				return fmt.Errorf("delete key-value fail: %s", err)
-			}
-
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if isConsumer {
-			if err := s.consumerKVDelete(id); err != nil {
-				return fmt.Errorf("store process the consumer fail: %w", err)
-			}
-		}
-	default:
-		return fmt.Errorf("unsupported store event type %d", event.Type)
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	// FIXME: what type of event should trigger the hooks?
-	bucket := string(bucketName)
-	if bucket == "ssls" {
-		s.applySSLCertificateEvent(event.Type, util.BytesToString(id), event.Value)
+	// Derived indexes and caches are published only after the durable write.
+	if needsConsumerRebuild {
+		if err := s.rebuildPersistedConsumerIndexes(); err != nil {
+			return err
+		}
 	}
-	if bucket == "secrets" {
+	if needsSSLRebuild {
+		s.rebuildSSLCertificateIndex()
+	}
+	if needsSecretCacheReset {
 		s.vaultMu.Lock()
 		s.vaultSecrets = nil
 		s.vaultMu.Unlock()
 	}
-	if bucket == "routes" || bucket == "global_rules" || bucket == "plugin_metadata" {
+	if needsConfigGeneration {
 		s.configGeneration.Add(1)
 	}
-	if bucket == "protos" {
+	if needsProtoGeneration {
 		s.protosGeneration.Add(1)
 	}
-	if IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket) {
-		s.triggerEventUpdateHooks(event)
+	return s.triggerBatchUpdateHooks(parsed, affectedBuckets)
+}
+
+func parseMutationKey(key []byte) (string, string, error) {
+	parts := bytes.Split(key, []byte("/"))
+	if len(parts) > 0 && len(parts[0]) == 0 {
+		parts = parts[1:]
+	}
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid resource key %q", key)
+	}
+	for _, part := range parts {
+		if len(part) == 0 {
+			return "", "", fmt.Errorf("invalid resource key %q", key)
+		}
+	}
+	bucket := string(parts[len(parts)-2])
+	id := string(parts[len(parts)-1])
+	if len(parts) >= 3 && string(parts[len(parts)-3]) == "secrets" {
+		bucket = "secrets"
+		id = string(parts[len(parts)-2]) + "/" + id
+	} else if bucket == "secrets" {
+		return "", "", fmt.Errorf("invalid secret resource key %q", key)
+	}
+	if !isManagedBucket(bucket) {
+		return "", "", fmt.Errorf("unsupported resource bucket %q", bucket)
+	}
+	return bucket, id, nil
+}
+
+func isManagedBucket(bucket string) bool {
+	for _, managed := range builtInBuckets {
+		if string(managed) == bucket {
+			return true
+		}
+	}
+	return false
+}
+
+func clearManagedBuckets(tx *bolt.Tx, preserve map[ResourceKey]struct{}) error {
+	for _, bucketName := range builtInBuckets {
+		bucket := tx.Bucket(bucketName)
+		if bucket == nil {
+			return errBucketNotFound
+		}
+		keys := make([][]byte, 0)
+		if err := bucket.ForEach(func(id, _ []byte) error {
+			key := ResourceKey{Bucket: string(bucketName), ID: string(id)}
+			if _, ok := preserve[key]; !ok {
+				keys = append(keys, bytes.Clone(id))
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("list managed bucket %q: %w", bucketName, err)
+		}
+		for _, id := range keys {
+			if err := bucket.Delete(id); err != nil {
+				return fmt.Errorf("clear managed bucket %q: %w", bucketName, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validatePluginMetadataPut(id string, value []byte) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil {
+		return fmt.Errorf("decode plugin metadata %q: %w", id, err)
+	}
+	if object == nil {
+		return fmt.Errorf("decode plugin metadata %q: expected JSON object", id)
 	}
 	return nil
 }
@@ -557,9 +682,47 @@ func validateSSLCertificateEvent(eventType EventType, id string, value []byte) e
 	return nil
 }
 
-// trigger the hooks
-func (s *Store) triggerEventUpdateHooks(event *Event) {
+func (s *Store) triggerBatchUpdateHooks(parsed []parsedMutation, buckets []string) error {
+	byBucket := make(map[string]*Event, len(buckets))
+	for _, entry := range parsed {
+		if _, ok := byBucket[entry.bucket]; ok {
+			continue
+		}
+		byBucket[entry.bucket] = &Event{
+			Type:  entry.mutation.Type,
+			Key:   append([]byte(nil), entry.mutation.Key...),
+			Value: append([]byte(nil), entry.mutation.Value...),
+		}
+	}
+	var acknowledgedErr error
+	for _, bucket := range buckets {
+		event := byBucket[bucket]
+		if event == nil {
+			event = &Event{
+				Type:  EventTypePut,
+				Key:   []byte("/apisix/" + bucket + "/__snapshot__"),
+				Value: nil,
+			}
+		}
+		if err := s.triggerAcknowledgedEventUpdateHooks(event); err != nil {
+			acknowledgedErr = errors.Join(acknowledgedErr, err)
+		}
+	}
+	return acknowledgedErr
+}
+
+func (s *Store) triggerAcknowledgedEventUpdateHooks(event *Event) error {
 	for _, hook := range s.eventUpdateHooks {
 		hook(event)
 	}
+	var acknowledgedErr error
+	for _, hook := range s.acknowledgedEventUpdateHooks {
+		if hook == nil {
+			continue
+		}
+		if err := hook(event); err != nil {
+			acknowledgedErr = errors.Join(acknowledgedErr, err)
+		}
+	}
+	return acknowledgedErr
 }

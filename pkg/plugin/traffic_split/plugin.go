@@ -24,8 +24,10 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	rules  []compiledRule
+	config             Config
+	rules              []compiledRule
+	runtimeAcquirer    RuntimeAcquirer
+	runtimeAcquirerSet bool
 }
 
 const (
@@ -76,6 +78,15 @@ const schema = `
                   "properties": {
                     "type": {"type": "string"},
                     "scheme": {"type": "string"},
+                    "tls": {
+                      "type": "object",
+                      "properties": {
+                        "client_cert_id": {},
+                        "client_cert": {"type": "string"},
+                        "client_key": {"type": "string"},
+                        "verify": {"type": "boolean"}
+                      }
+                    },
                     "pass_host": {
                       "type": "string",
                       "enum": ["pass", "node", "rewrite"],
@@ -142,14 +153,15 @@ type WeightedUpstream struct {
 }
 
 type Upstream struct {
-	Type         string           `json:"type,omitempty"`
-	Scheme       string           `json:"scheme,omitempty"`
-	PassHost     string           `json:"pass_host,omitempty"`
-	UpstreamHost string           `json:"upstream_host,omitempty"`
-	HashOn       string           `json:"hash_on,omitempty"`
-	Key          string           `json:"key,omitempty"`
-	Timeout      resource.Timeout `json:"timeout"`
-	Retries      int              `json:"retries,omitempty"`
+	Type         string                `json:"type,omitempty"`
+	Scheme       string                `json:"scheme,omitempty"`
+	TLS          *resource.UpstreamTLS `json:"tls,omitempty"`
+	PassHost     string                `json:"pass_host,omitempty"`
+	UpstreamHost string                `json:"upstream_host,omitempty"`
+	HashOn       string                `json:"hash_on,omitempty"`
+	Key          string                `json:"key,omitempty"`
+	Timeout      resource.Timeout      `json:"timeout"`
+	Retries      int                   `json:"retries,omitempty"`
 	retriesSet   bool
 	Checks       map[string]any `json:"checks,omitempty"`
 	Nodes        []Node         `json:"nodes,omitempty"`
@@ -172,6 +184,21 @@ type Override struct {
 	NextRetry      func() *Override
 	HealthReporter pxy.HealthReporter
 	HealthTarget   string
+	RoundTripper   http.RoundTripper
+}
+
+// Runtime contains the reusable cluster-owned state for one weighted
+// upstream. The route builder materializes it once per route generation.
+type Runtime struct {
+	LoadBalancer pxy.LoadBalancer
+	RoundTripper http.RoundTripper
+}
+
+// RuntimeAcquirer materializes a weighted upstream through the route-owned
+// cluster registry. It accepts concrete target identities so active probes and
+// passive health use the same keys as request selection.
+type RuntimeAcquirer interface {
+	Acquire(upstream *Upstream, targets map[string]int) (*Runtime, error)
 }
 
 type compiledRule struct {
@@ -308,6 +335,12 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+// SetRuntimeAcquirer supplies the route-owned materializer before PostInit.
+func (p *Plugin) SetRuntimeAcquirer(acquirer RuntimeAcquirer) {
+	p.runtimeAcquirer = acquirer
+	p.runtimeAcquirerSet = true
+}
+
 func (p *Plugin) PostInit() error {
 	if p.config.MaxBodySize <= 0 {
 		p.config.MaxBodySize = base.DefaultRequestBodyMaxBytes
@@ -371,11 +404,11 @@ func (p *Plugin) PostInit() error {
 				if nodeWeight == 0 {
 					continue
 				}
-				nodeID := fmt.Sprintf("%s-node-%d", targetID, len(nodeWeights))
-				nodeWeights[nodeID] = nodeWeight
-				nodeOverrides[nodeID] = override
+				nodeTarget := overrideTargetURL(override)
+				nodeWeights[nodeTarget] = nodeWeight
+				nodeOverrides[nodeTarget] = override
 				hashNodes = append(hashNodes, chash.Node{
-					ID: override.Host, Target: nodeID, Weight: nodeWeight,
+					ID: override.Host, Target: nodeTarget, Weight: nodeWeight,
 				})
 				retryScan += nodeWeight
 			}
@@ -397,14 +430,40 @@ func (p *Plugin) PostInit() error {
 					return fmt.Errorf("traffic-split rule %d chash ring invalid: %w", ruleIndex, ringErr)
 				}
 			}
-			targetBalancer, err := pxy.NewUpstreamLoadBalance(nodeWeights, upstream.Checks)
-			if err != nil {
-				return fmt.Errorf("traffic-split rule %d upstream health checks invalid: %w", ruleIndex, err)
+			var targetBalancer pxy.LoadBalancer
+			var targetTransport http.RoundTripper
+			var err error
+			if p.runtimeAcquirerSet {
+				if p.runtimeAcquirer == nil {
+					return fmt.Errorf("traffic-split rule %d upstream runtime acquirer is not configured", ruleIndex)
+				}
+				runtime, err := p.runtimeAcquirer.Acquire(upstream, nodeWeights)
+				if err != nil {
+					return fmt.Errorf(
+						"traffic-split rule %d upstream runtime materialization failed: %w",
+						ruleIndex,
+						err,
+					)
+				}
+				if runtime == nil || runtime.LoadBalancer == nil || runtime.RoundTripper == nil {
+					return fmt.Errorf(
+						"traffic-split rule %d upstream runtime materialization returned incomplete runtime",
+						ruleIndex,
+					)
+				}
+				targetBalancer = runtime.LoadBalancer
+				targetTransport = runtime.RoundTripper
+			} else {
+				targetBalancer, err = pxy.NewUpstreamLoadBalance(nodeWeights, upstream.Checks)
+				if err != nil {
+					return fmt.Errorf("traffic-split rule %d upstream health checks invalid: %w", ruleIndex, err)
+				}
 			}
 			reporter, _ := targetBalancer.(pxy.HealthReporter)
 			for nodeID, override := range nodeOverrides {
 				override.HealthReporter = reporter
 				override.HealthTarget = nodeID
+				override.RoundTripper = targetTransport
 			}
 			targetWeights[targetID] += weight
 			targets[targetID] = compiledTarget{
@@ -433,6 +492,12 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() any {
 	return &p.config
+}
+
+// RetriesConfigured reports whether retries was explicitly present, including
+// an explicit zero.
+func (u Upstream) RetriesConfigured() bool {
+	return u.retriesSet || u.Retries != 0
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -654,6 +719,10 @@ func overrideFromNode(upstream *Upstream, node Node) *Override {
 	}
 }
 
+func overrideTargetURL(override *Override) string {
+	return (&url.URL{Scheme: override.Scheme, Host: override.Host}).String()
+}
+
 func configuredRetries(upstream *Upstream) int {
 	if upstream.retriesSet || upstream.Retries != 0 {
 		return upstream.Retries
@@ -713,6 +782,7 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 	upstream := &Upstream{
 		Type:         stored.Type,
 		Scheme:       stored.Scheme,
+		TLS:          stored.TLS,
 		PassHost:     stored.PassHost,
 		UpstreamHost: stored.UpstreamHost,
 		HashOn:       stored.HashOn,

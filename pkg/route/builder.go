@@ -129,6 +129,7 @@ type routeRegistrar struct {
 }
 
 func newRouteRegistrar(mux *chi.Mux) *routeRegistrar {
+	registerPurgeMethod()
 	return &routeRegistrar{
 		mux:         mux,
 		dispatchers: make(map[string]*wildcardDispatcher),
@@ -154,10 +155,6 @@ func (r *routeRegistrar) registerRouteWithHosts(
 		return nil
 	}
 	for _, method := range methods {
-		if method == "PURGE" {
-			logger.Warnf("http method: %s is not supported", method)
-			continue
-		}
 		logger.Debugf("add route: %s %s", method, converted)
 		r.mux.Method(method, converted, handler)
 	}
@@ -204,10 +201,6 @@ func (r *routeRegistrar) registerWildcardRoute(
 		return
 	}
 	for _, method := range methods {
-		if method == "PURGE" {
-			logger.Warnf("http method: %s is not supported", method)
-			continue
-		}
 		logger.Debugf("add route: %s %s", method, converted)
 		dispatcher.add(wildcardRoute{
 			method:   strings.ToUpper(method),
@@ -312,10 +305,34 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 		}
 	}
 	if pathMatched && hostMatched {
+		allowedMethods := d.allowedMethods(request)
+		if len(allowedMethods) > 0 {
+			writer.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+		}
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	http.NotFound(writer, request)
+}
+
+func (d *wildcardDispatcher) allowedMethods(request *http.Request) []string {
+	allowed := make(map[string]struct{})
+	for embeddedIndex := range 2 {
+		for hostRank := range 3 {
+			for methodIndex := range 2 {
+				for _, route := range d.buckets[embeddedIndex][hostRank][methodIndex] {
+					if route.method == "*" || !matchesRoutePath(route.pattern, request.URL.Path) {
+						continue
+					}
+					if routeHostRank(route.hosts, request.Host) != hostRank {
+						continue
+					}
+					allowed[route.method] = struct{}{}
+				}
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(allowed))
 }
 
 func (d *wildcardDispatcher) matchEmbeddedRoute(
@@ -1284,6 +1301,104 @@ type pluginRouteContextSetter interface {
 
 type pluginResourceContextSetter interface {
 	SetResourceContext(route resource.Route, service resource.Service)
+}
+
+type pluginTrafficSplitRuntimeAcquirerSetter interface {
+	SetRuntimeAcquirer(traffic_split.RuntimeAcquirer)
+}
+
+type trafficSplitRuntimeAcquirer struct {
+	builder *Builder
+	route   resource.Route
+}
+
+func (a *trafficSplitRuntimeAcquirer) Acquire(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+) (*traffic_split.Runtime, error) {
+	if upstream == nil {
+		return nil, fmt.Errorf("traffic-split upstream is nil")
+	}
+	resourceUpstream, err := trafficSplitResourceUpstream(upstream, targets)
+	if err != nil {
+		return nil, err
+	}
+	transportOption, err := buildTransportOption(a.route, resourceUpstream)
+	if err != nil {
+		return nil, err
+	}
+	if a.builder.clusterRegistry == nil {
+		a.builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+		a.builder.ownsClusterRegistry = true
+	}
+	clusterConfig, err := buildClusterConfigWithTransport(a.route, resourceUpstream, targets, transportOption)
+	if err != nil {
+		return nil, err
+	}
+	clusterConfig.Retries = max(upstream.Retries, 0)
+	clusterConfig.RetriesConfigured = upstream.RetriesConfigured()
+	lease, err := a.builder.clusterRegistry.Acquire(clusterConfig)
+	if err != nil {
+		return nil, fmt.Errorf("acquire traffic-split upstream cluster: %w", err)
+	}
+	a.builder.addStopper(lease)
+	cluster := lease.Cluster()
+	return &traffic_split.Runtime{
+		LoadBalancer: cluster.LoadBalancer(),
+		RoundTripper: cluster.RoundTripper(),
+	}, nil
+}
+
+func trafficSplitResourceUpstream(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+) (resource.Upstream, error) {
+	scheme := upstream.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	result := resource.Upstream{
+		Type:         upstream.Type,
+		Scheme:       scheme,
+		TLS:          upstream.TLS,
+		Timeout:      upstream.Timeout,
+		Checks:       upstream.Checks,
+		HashOn:       upstream.HashOn,
+		Key:          upstream.Key,
+		PassHost:     upstream.PassHost,
+		UpstreamHost: upstream.UpstreamHost,
+		Retries:      upstream.Retries,
+		Nodes:        make([]resource.Node, 0, len(targets)),
+	}
+	addresses := slices.Sorted(maps.Keys(targets))
+	for _, target := range addresses {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			return resource.Upstream{}, fmt.Errorf("parse traffic-split target %q: %w", target, err)
+		}
+		if parsed.Hostname() == "" {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has no host", target)
+		}
+		port := parsed.Port()
+		if port == "" {
+			switch strings.ToLower(parsed.Scheme) {
+			case "https", "grpcs":
+				port = "443"
+			default:
+				port = "80"
+			}
+		}
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 1 || numericPort > 65535 {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
+		}
+		result.Nodes = append(result.Nodes, resource.Node{
+			Host:   parsed.Hostname(),
+			Port:   numericPort,
+			Weight: targets[target],
+		})
+	}
+	return result, nil
 }
 
 type pluginEnabledCheckerSetter interface {
@@ -2307,6 +2422,9 @@ func (b *Builder) initPluginBindingsStrict(
 			setter.SetResourceContext(routeContext.route, routeContext.service)
 			resourceContextSetters = append(resourceContextSetters, setter)
 		}
+		if setter, ok := p.(pluginTrafficSplitRuntimeAcquirerSetter); ok {
+			setter.SetRuntimeAcquirer(&trafficSplitRuntimeAcquirer{builder: b, route: routeContext.route})
+		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
 			if !ok {
@@ -2915,6 +3033,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	} else {
 		transport = pxy.NewRetryTransport(pxy.NewTransport(transportOption))
 	}
+	transport = &trafficSplitRoundTripper{fallback: transport}
 	director := func(req *http.Request) {
 		// 1. basic
 		// proxyMethod := proxyHTTP.GetMethod()
@@ -3301,6 +3420,17 @@ func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingH
 func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
 	reporter, _ := lb.(pxy.HealthReporter)
 	return reporter
+}
+
+type trafficSplitRoundTripper struct {
+	fallback http.RoundTripper
+}
+
+func (t *trafficSplitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if override := traffic_split.GetOverride(request); override != nil && override.RoundTripper != nil {
+		return override.RoundTripper.RoundTrip(request)
+	}
+	return t.fallback.RoundTrip(request)
 }
 
 func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {

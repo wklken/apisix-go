@@ -277,3 +277,62 @@ func TestActiveHealthCheckerCloseStopsProbeGoroutines(t *testing.T) {
 	checker.Start()
 	checker.Close()
 }
+
+func TestActiveHealthCheckerUsesConfiguredHTTPSProbeScheme(t *testing.T) {
+	requestSeen := make(chan struct {
+		tls  bool
+		path string
+		host string
+	}, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestSeen <- struct {
+			tls  bool
+			path string
+			host string
+		}{tls: r.TLS != nil, path: r.URL.Path, host: r.Host}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	config, enabled, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{
+			"type":      "https",
+			"http_path": "/healthz",
+			"host":      "orders.example.com",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("active health config disabled")
+	}
+
+	target := "http://" + strings.TrimPrefix(upstream.URL, "https://")
+	lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := newActiveHealthChecker(
+		config,
+		lb,
+		map[string]int{target: 1},
+		"active-orders",
+		NopClusterObserver{},
+		upstream.Client().Transport,
+	)
+	if !checker.probeOnce(target) {
+		t.Fatal("HTTPS active probe failed against an http target identity")
+	}
+
+	seen := <-requestSeen
+	if !seen.tls {
+		t.Fatal("active probe did not use TLS")
+	}
+	if seen.path != "/healthz" {
+		t.Fatalf("active probe path = %q, want /healthz", seen.path)
+	}
+	if seen.host != "orders.example.com" {
+		t.Fatalf("active probe Host = %q, want orders.example.com", seen.host)
+	}
+}

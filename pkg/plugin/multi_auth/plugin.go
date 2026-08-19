@@ -116,9 +116,6 @@ func (p *Plugin) PostInit() error {
 
 	p.auths = make([]configuredAuth, 0, len(p.config.AuthPlugins))
 	for _, authPlugin := range p.config.AuthPlugins {
-		if len(authPlugin) != 1 {
-			return fmt.Errorf("each auth_plugins entry must contain exactly one auth plugin")
-		}
 		for authName, authConfig := range authPlugin {
 			if p.enabledChecker != nil && !p.enabledChecker(authName) {
 				return fmt.Errorf("multi-auth child plugin %q is disabled", authName)

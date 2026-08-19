@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,6 +172,91 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 	case <-requestSeen:
 	case <-time.After(3 * time.Second):
 		t.Fatal("traffic-split HTTPS active probe did not reach TLS upstream")
+	}
+}
+
+func TestTrafficSplitRouteRetriesFromHigherToLowerPriorityNode(t *testing.T) {
+	ensureRouteStore(t)
+	var highCalls atomic.Int32
+	high := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		highCalls.Add(1)
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack high-priority response: %v", err)
+			return
+		}
+		_ = connection.Close()
+	}))
+	t.Cleanup(high.Close)
+	var lowCalls atomic.Int32
+	low := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		lowCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(low.Close)
+
+	highURL, err := url.Parse(high.URL)
+	if err != nil {
+		t.Fatalf("parse high-priority URL: %v", err)
+	}
+	highPort, err := strconv.Atoi(highURL.Port())
+	if err != nil {
+		t.Fatalf("parse high-priority port: %v", err)
+	}
+	lowURL, err := url.Parse(low.URL)
+	if err != nil {
+		t.Fatalf("parse low-priority URL: %v", err)
+	}
+	lowPort, err := strconv.Atoi(lowURL.Port())
+	if err != nil {
+		t.Fatalf("parse low-priority port: %v", err)
+	}
+
+	route := resource.Route{
+		ID:  "traffic-split-priority-retry",
+		Uri: "/split",
+		Plugins: map[string]resource.PluginConfig{
+			"traffic-split": map[string]any{
+				"rules": []any{map[string]any{
+					"weighted_upstreams": []any{map[string]any{
+						"weight": 1,
+						"upstream": map[string]any{
+							"retries": 1,
+							"nodes": []any{
+								map[string]any{
+									"host": "localhost", "port": highPort, "weight": 1, "priority": 10,
+								},
+								map[string]any{
+									"host": lowURL.Hostname(), "port": lowPort, "weight": 1, "priority": 0,
+								},
+							},
+						},
+					}},
+				}},
+			},
+		},
+		Upstream: resource.Upstream{
+			Scheme: "http",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}
+
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	handler, err := builder.buildHandlerStrict(route)
+	if err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/split", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("traffic-split priority retry status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if got := highCalls.Load(); got != 1 {
+		t.Fatalf("high-priority calls = %d, want 1 before fallback", got)
+	}
+	if got := lowCalls.Load(); got != 1 {
+		t.Fatalf("low-priority calls = %d, want 1 after high-priority failure", got)
 	}
 }
 

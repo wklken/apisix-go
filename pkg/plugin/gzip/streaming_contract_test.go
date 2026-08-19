@@ -1,8 +1,6 @@
 package gzip_test
 
 import (
-	"compress/zlib"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,7 +46,7 @@ func TestGzipStreamingNotAcceptableIsBodyless406(t *testing.T) {
 	}
 }
 
-func TestGzipStreamingExecutorSelectsDeflateOffer(t *testing.T) {
+func TestGzipStreamingExecutorIgnoresDeflateOffer(t *testing.T) {
 	p := &gzip.Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -73,18 +71,10 @@ func TestGzipStreamingExecutorSelectsDeflateOffer(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("deflated response"))
 	})).ServeHTTP(response, request)
-	if got := response.Header().Get("Content-Encoding"); got != "deflate" {
-		t.Fatalf("Content-Encoding = %q, want deflate", got)
+	if got := response.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want no deflate offer", got)
 	}
-	reader, err := zlib.NewReader(response.Body)
-	if err != nil {
-		t.Fatalf("zlib.NewReader() error = %v", err)
-	}
-	body, err := io.ReadAll(reader)
-	if closeErr := reader.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil || string(body) != "deflated response" {
-		t.Fatalf("decoded response = %q/%v", body, err)
+	if got := response.Body.String(); got != "deflated response" {
+		t.Fatalf("response body = %q, want identity body", got)
 	}
 }

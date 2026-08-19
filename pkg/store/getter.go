@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"sort"
@@ -482,9 +484,20 @@ type sslCertificateIndex struct {
 	wildcard []sslWildcardCertificate
 }
 
+// SSLCertificateConfig contains the immutable TLS material selected for an
+// SNI. ClientCAs is nil when the SSL resource does not configure resource-level
+// client certificate verification.
+type SSLCertificateConfig struct {
+	Certificate *tls.Certificate
+	ClientCAs   *x509.CertPool
+	ClientDepth int
+}
+
 type sslIndexedCertificate struct {
 	id          string
 	certificate *tls.Certificate
+	clientCAs   *x509.CertPool
+	clientDepth int
 }
 
 type sslWildcardCertificate struct {
@@ -502,30 +515,61 @@ func GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
 	return s.GetSSLCertificateForSNI(serverName)
 }
 
+// GetSSLCertificateConfigForSNI returns the decoded frontend certificate and
+// any resource-level client CA selected for serverName.
+func GetSSLCertificateConfigForSNI(serverName string) (*SSLCertificateConfig, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	return s.GetSSLCertificateConfigForSNI(serverName)
+}
+
 // GetSSLCertificateForSNI returns the decoded frontend certificate for
 // serverName, preferring exact SNI matches over wildcard matches.
 // Certificates are decoded once at publication; handshakes only look up.
 func (s *Store) GetSSLCertificateForSNI(serverName string) (*tls.Certificate, error) {
+	selected, err := s.GetSSLCertificateConfigForSNI(serverName)
+	if err != nil {
+		return nil, err
+	}
+	return selected.Certificate, nil
+}
+
+// GetSSLCertificateConfigForSNI returns the decoded frontend certificate and
+// any resource-level client CA selected for serverName.
+func (s *Store) GetSSLCertificateConfigForSNI(serverName string) (*SSLCertificateConfig, error) {
 	serverName = strings.TrimSpace(serverName)
 	index := s.sslCerts.Load()
 	if index == nil {
 		return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
 	}
+	var selected sslIndexedCertificate
+	var found bool
 	if entry, ok := index.exact[serverName]; ok {
-		return entry.certificate, nil
+		selected, found = entry, true
 	}
 	lower := strings.ToLower(serverName)
-	if lower != serverName {
+	if !found && lower != serverName {
 		if entry, ok := index.exact[lower]; ok {
-			return entry.certificate, nil
+			selected, found = entry, true
 		}
 	}
-	for _, entry := range index.wildcard {
-		if strings.HasSuffix(lower, entry.suffix) {
-			return entry.certificate, nil
+	if !found {
+		for _, entry := range index.wildcard {
+			if wildcardSSNIMatches(lower, entry.suffix) {
+				selected, found = entry.sslIndexedCertificate, true
+				break
+			}
 		}
 	}
-	return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+	if !found {
+		return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+	}
+	return &SSLCertificateConfig{
+		Certificate: selected.certificate,
+		ClientCAs:   selected.clientCAs,
+		ClientDepth: selected.clientDepth,
+	}, nil
 }
 
 // rebuildSSLCertificateIndex publishes a full index built from the ssls
@@ -533,13 +577,26 @@ func (s *Store) GetSSLCertificateForSNI(serverName string) (*tls.Certificate, er
 // remains usable.
 func (s *Store) rebuildSSLCertificateIndex() {
 	next := &sslCertificateIndex{exact: map[string]sslIndexedCertificate{}}
-	data, err := s.GetBucketData("ssls")
+	entries := make([]bucketEntry, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("ssls"))
+		if bucket == nil {
+			return errBucketNotFound
+		}
+		return bucket.ForEach(func(id, value []byte) error {
+			entries = append(entries, bucketEntry{
+				id:    string(bytes.Clone(id)),
+				value: bytes.Clone(value),
+			})
+			return nil
+		})
+	})
 	if err != nil {
 		logger.Errorf("publish SSL certificate index: %s", err)
 		return
 	}
-	for _, value := range data {
-		ssl, err := ParseSSL(value)
+	for _, entry := range entries {
+		ssl, err := ParseSSL(entry.value)
 		if err != nil {
 			logger.Errorf("reject SSL resource: parse: %s", err)
 			return
@@ -547,24 +604,36 @@ func (s *Store) rebuildSSLCertificateIndex() {
 		if ssl.Status == 0 {
 			continue
 		}
-		certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+		if !isFrontendSSL(ssl) {
+			continue
+		}
+		certificate, err := buildSSLCertificateConfig(ssl)
 		if err != nil {
-			logger.Errorf("reject SSL resource %q: load: %s", ssl.ID, err)
+			logger.Errorf("reject SSL resource %q: load: %s", entry.id, err)
 			return
 		}
-		for _, sni := range ssl.Snis {
-			sni = strings.TrimSpace(sni)
+		id := entry.id
+		if id == "" {
+			id = ssl.ID
+		}
+		for _, sni := range sslSNIs(ssl) {
+			sni = normalizeSSLSNI(sni)
 			if sni == "" {
 				continue
 			}
-			entry := sslIndexedCertificate{id: ssl.ID, certificate: &certificate}
-			if strings.HasPrefix(sni, "*.") {
+			indexed := sslIndexedCertificate{
+				id:          id,
+				certificate: certificate.Certificate,
+				clientCAs:   certificate.ClientCAs,
+				clientDepth: certificate.ClientDepth,
+			}
+			if strings.HasPrefix(strings.ToLower(sni), "*.") {
 				next.wildcard = append(next.wildcard, sslWildcardCertificate{
-					sslIndexedCertificate: entry,
+					sslIndexedCertificate: indexed,
 					suffix:                strings.ToLower(sni[1:]),
 				})
 			} else {
-				next.exact[strings.ToLower(sni)] = entry
+				next.exact[strings.ToLower(sni)] = indexed
 			}
 		}
 	}
@@ -579,6 +648,126 @@ var configSnapshotBuckets = []string{
 	"upstreams",
 	"plugin_configs",
 	"ssls",
+	"plugins",
+}
+
+func isFrontendSSL(ssl resource.SSL) bool {
+	return ssl.Type == "" || ssl.Type == "server"
+}
+
+func sslSNIs(ssl resource.SSL) []string {
+	if len(ssl.Snis) > 0 {
+		return ssl.Snis
+	}
+	if ssl.Sni != "" {
+		return []string{ssl.Sni}
+	}
+	return nil
+}
+
+func normalizeSSLSNI(sni string) string {
+	sni = strings.TrimSpace(sni)
+	return strings.TrimSuffix(sni, ".")
+}
+
+func wildcardSSNIMatches(serverName, suffix string) bool {
+	if !strings.HasSuffix(serverName, suffix) {
+		return false
+	}
+	prefix := strings.TrimSuffix(serverName, suffix)
+	return prefix != "" && !strings.Contains(prefix, ".")
+}
+
+func buildSSLCertificateConfig(ssl resource.SSL) (*SSLCertificateConfig, error) {
+	certificate, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key))
+	if err != nil {
+		return nil, err
+	}
+	clientCAs, err := parseSSLClientCAs(ssl.Client)
+	if err != nil {
+		return nil, err
+	}
+	clientDepth := 0
+	if ssl.Client != nil {
+		clientDepth = ssl.Client.Depth
+	}
+	return &SSLCertificateConfig{
+		Certificate: &certificate,
+		ClientCAs:   clientCAs,
+		ClientDepth: clientDepth,
+	}, nil
+}
+
+func parseSSLClientCAs(client *resource.SSLClient) (*x509.CertPool, error) {
+	if client == nil {
+		return nil, nil
+	}
+	if client.Depth != 1 {
+		return nil, fmt.Errorf("unsupported SSL client depth %d; only depth 1 is supported", client.Depth)
+	}
+	if len(client.SkipMTLSURIRegex) > 0 {
+		return nil, fmt.Errorf("unsupported SSL client skip_mtls_uri_regex")
+	}
+	ca := strings.TrimSpace(client.CA)
+	if ca == "" {
+		return nil, fmt.Errorf("SSL client.ca must not be empty")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(ca)) {
+		return nil, fmt.Errorf("SSL client.ca contains no certificates")
+	}
+	return pool, nil
+}
+
+type dynamicPlugin struct {
+	Name   string `json:"name"`
+	Stream bool   `json:"stream"`
+}
+
+func decodeDynamicPluginList(value []byte) ([]dynamicPlugin, error) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var plugins []dynamicPlugin
+	if err := decoder.Decode(&plugins); err != nil {
+		return nil, err
+	}
+	if plugins == nil {
+		return nil, fmt.Errorf("expected JSON array")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("trailing JSON value")
+		}
+		return nil, err
+	}
+	for index, plugin := range plugins {
+		if plugin.Name == "" {
+			return nil, fmt.Errorf("plugin[%d].name must not be empty", index)
+		}
+	}
+	return plugins, nil
+}
+
+func validateDynamicPluginList(value []byte) error {
+	_, err := decodeDynamicPluginList(value)
+	if err != nil {
+		return fmt.Errorf("reject dynamic plugin list: %w", err)
+	}
+	return nil
+}
+
+func parseDynamicHTTPPlugins(value []byte) ([]string, error) {
+	plugins, err := decodeDynamicPluginList(value)
+	if err != nil {
+		return nil, err
+	}
+	httpPlugins := make([]string, 0, len(plugins))
+	for _, plugin := range plugins {
+		if !plugin.Stream {
+			httpPlugins = append(httpPlugins, plugin.Name)
+		}
+	}
+	return httpPlugins, nil
 }
 
 // ConfigSnapshot is an immutable generation of the HTTP route-build inputs.
@@ -593,6 +782,8 @@ type ConfigSnapshot struct {
 	upstreams      map[string]resource.Upstream
 	pluginConfigs  map[string]resource.PluginConfigRule
 	ssls           map[string]resource.SSL
+	httpPlugins    []string
+	dynamicPlugins bool
 	quarantined    []ConfigQuarantine
 }
 
@@ -689,6 +880,12 @@ func (snap *ConfigSnapshot) GetSSL(id string) (resource.SSL, error) {
 		return resource.SSL{}, ErrNotFound
 	}
 	return cloneSSL(ssl), nil
+}
+
+// HTTPPlugins returns a defensive copy of the dynamic HTTP plugin allowlist
+// and whether the control plane currently publishes one.
+func (snap *ConfigSnapshot) HTTPPlugins() ([]string, bool) {
+	return append([]string(nil), snap.httpPlugins...), snap.dynamicPlugins
 }
 
 // QuarantinedResources returns the stable bucket and bbolt key for each
@@ -845,6 +1042,22 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 			return nil, fmt.Errorf("decode ssls/%q: %w", entry.id, err)
 		}
 		snapshot.ssls[entry.id] = ssl
+	}
+
+	entries := entriesByBucket["plugins"]
+	if len(entries) > 1 {
+		return nil, fmt.Errorf("dynamic plugin bucket contains %d entries, want one", len(entries))
+	}
+	if len(entries) == 1 {
+		if entries[0].id != "plugins" {
+			return nil, fmt.Errorf("dynamic plugin bucket key %q, want plugins", entries[0].id)
+		}
+		httpPlugins, err := parseDynamicHTTPPlugins(entries[0].value)
+		if err != nil {
+			return nil, fmt.Errorf("parse dynamic plugin list: %w", err)
+		}
+		snapshot.httpPlugins = httpPlugins
+		snapshot.dynamicPlugins = true
 	}
 	slices.SortFunc(snapshot.quarantined, func(left, right ConfigQuarantine) int {
 		if comparison := strings.Compare(left.Bucket, right.Bucket); comparison != 0 {

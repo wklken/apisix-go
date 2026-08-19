@@ -267,7 +267,9 @@ func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.Streaming
 		requestedHeaders = r.Header.Get("Access-Control-Request-Headers")
 	}
 	p.setAPISIXResponseHeaders(state.Header, origin, requestedHeaders)
-	base.AppendVaryToken(state.Header, "Origin")
+	if p.config.AllowOrigins != "*" {
+		base.AppendVaryToken(state.Header, "Origin")
+	}
 	if timingOrigin, ok := p.timingAllowOrigin(origin); ok {
 		state.Header.Set("Timing-Allow-Origin", timingOrigin)
 	}
@@ -282,7 +284,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	// rs/cors owns the CORS engine: origin/method/header matching, preflight
 	// handling, Vary, credentials, private-network, max-age and the 200 status
 	// for successful preflight OPTIONS requests.
-	handler := p.cors.Handler(next)
+	corsNext := next
+	if p.config.AllowOrigins == "*" {
+		corsNext = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if responseWriter, ok := w.(*varyResponseWriter); ok {
+				responseWriter.captureCorsVary()
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	handler := p.cors.Handler(corsNext)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture request headers before downstream plugins (e.g. proxy-rewrite)
 		// can rewrite them: the CORS response headers must reflect the original
@@ -292,6 +303,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			p:                p,
 			origin:           r.Header.Get("Origin"),
 			requestedHeaders: r.Header.Get("Access-Control-Request-Headers"),
+			initialVary:      append([]string(nil), w.Header().Values("Vary")...),
 		}
 		if origin, ok := p.timingAllowOrigin(responseWriter.origin); ok {
 			responseWriter.Header().Set("Timing-Allow-Origin", origin)
@@ -315,6 +327,8 @@ type varyResponseWriter struct {
 	origin           string
 	requestedHeaders string
 	wroteHeader      bool
+	initialVary      []string
+	corsVaryCaptured bool
 }
 
 func (w *varyResponseWriter) WriteHeader(statusCode int) {
@@ -326,7 +340,11 @@ func (w *varyResponseWriter) WriteHeader(statusCode int) {
 	// have produced their headers, so the plugin wins over any upstream CORS
 	// headers and emits Allow-Methods/Allow-Headers/Max-Age on every response.
 	w.p.setAPISIXResponseHeaders(w.Header(), w.origin, w.requestedHeaders)
-	w.Header().Add("Vary", "Origin")
+	if w.p.config.AllowOrigins != "*" {
+		w.Header().Add("Vary", "Origin")
+	} else {
+		w.removeAutomaticVary()
+	}
 	normalizeVary(w.Header())
 	w.ResponseWriter.WriteHeader(statusCode)
 }
@@ -392,6 +410,25 @@ func normalizeVary(header http.Header) {
 		entries = append(entries, "Origin")
 	}
 	header.Set("Vary", strings.Join(entries, ", "))
+}
+
+func (w *varyResponseWriter) captureCorsVary() {
+	w.corsVaryCaptured = true
+	setVaryValues(w.Header(), w.initialVary)
+}
+
+func (w *varyResponseWriter) removeAutomaticVary() {
+	if w.corsVaryCaptured {
+		return
+	}
+	setVaryValues(w.Header(), w.initialVary)
+}
+
+func setVaryValues(header http.Header, values []string) {
+	header.Del("Vary")
+	for _, value := range values {
+		header.Add("Vary", value)
+	}
 }
 
 func (p *Plugin) allowOrigin(origin string) bool {

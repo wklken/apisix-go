@@ -430,6 +430,58 @@ func TestHandlerAllowsDefaultWildcardMethods(t *testing.T) {
 	if got := rr.Code; got != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", got, http.StatusNoContent)
 	}
+	if got := countVaryToken(rr.Header(), "Origin"); got != 0 {
+		t.Fatalf("Vary Origin token count = %d, want 0 for default wildcard", got)
+	}
+}
+
+func TestHandlerDefaultWildcardPreservesUpstreamVaryOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Vary", "Origin, Via")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Vary"); got != "Origin, Via" {
+		t.Fatalf("Vary = %q, want upstream Origin and Via tokens preserved", got)
+	}
+}
+
+func TestStreamingHeaderFilterOmitsVaryForDefaultWildcard(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	state := base.StreamingResponseState{Header: make(http.Header)}
+
+	if err := p.RunStreamingHeaderFilter(req, &state); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := state.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want wildcard", got)
+	}
+	if got := countVaryToken(state.Header, "Origin"); got != 0 {
+		t.Fatalf("Vary Origin token count = %d, want 0 for default wildcard", got)
+	}
+}
+
+func TestStreamingHeaderFilterPreservesUpstreamVaryOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	state := base.StreamingResponseState{
+		Header: http.Header{"Vary": []string{"Origin, Via"}},
+	}
+
+	if err := p.RunStreamingHeaderFilter(req, &state); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := state.Header.Get("Vary"); got != "Origin, Via" {
+		t.Fatalf("Vary = %q, want upstream Origin and Via tokens preserved", got)
+	}
 }
 
 func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {

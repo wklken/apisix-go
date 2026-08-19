@@ -172,6 +172,7 @@ type Node struct {
 	Host      string `json:"host,omitempty"`
 	Port      int    `json:"port,omitempty"`
 	Weight    int    `json:"weight,omitempty"`
+	Priority  int    `json:"priority,omitempty"`
 	weightSet bool
 }
 
@@ -182,7 +183,7 @@ type Override struct {
 	UpstreamHost   string
 	Timeout        resource.Timeout
 	Retries        int
-	NextRetry      func() *Override
+	NextRetry      func(*http.Request) *Override
 	HealthReporter pxy.HealthReporter
 	HealthTarget   string
 	RoundTripper   http.RoundTripper
@@ -199,7 +200,7 @@ type Runtime struct {
 // cluster registry. It accepts concrete target identities so active probes and
 // passive health use the same keys as request selection.
 type RuntimeAcquirer interface {
-	Acquire(upstream *Upstream, targets map[string]int) (*Runtime, error)
+	Acquire(upstream *Upstream, targets map[string]int, priorities map[string]int) (*Runtime, error)
 }
 
 // ResourceUpstreamResolver resolves an upstream_id from the route builder's
@@ -214,13 +215,14 @@ type compiledRule struct {
 }
 
 type compiledTarget struct {
-	fallback  bool
-	balancer  pxy.LoadBalancer
-	overrides map[string]*Override
-	hashOn    string
-	key       string
-	ring      *chash.Ring
-	retryScan int
+	fallback   bool
+	balancer   pxy.LoadBalancer
+	overrides  map[string]*Override
+	priorities map[string]int
+	hashOn     string
+	key        string
+	ring       *chash.Ring
+	retryScan  int
 }
 
 type overrideKey struct{}
@@ -316,15 +318,17 @@ func (w *WeightedUpstream) UnmarshalJSON(data []byte) error {
 
 func (n *Node) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Host   string `json:"host"`
-		Port   int    `json:"port"`
-		Weight *int   `json:"weight"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Weight   *int   `json:"weight"`
+		Priority int    `json:"priority"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	n.Host = raw.Host
 	n.Port = raw.Port
+	n.Priority = raw.Priority
 	if raw.Weight != nil {
 		n.Weight = *raw.Weight
 		n.weightSet = true
@@ -406,6 +410,7 @@ func (p *Plugin) PostInit() error {
 				continue
 			}
 			nodeWeights := map[string]int{}
+			nodePriorities := map[string]int{}
 			nodeOverrides := map[string]*Override{}
 			hashNodes := make([]chash.Node, 0, len(upstream.Nodes))
 			retryScan := 0
@@ -417,6 +422,7 @@ func (p *Plugin) PostInit() error {
 				}
 				nodeTarget := overrideTargetURL(override)
 				nodeWeights[nodeTarget] = nodeWeight
+				nodePriorities[nodeTarget] = node.Priority
 				nodeOverrides[nodeTarget] = override
 				hashNodes = append(hashNodes, chash.Node{
 					ID: override.Host, Target: nodeTarget, Weight: nodeWeight,
@@ -448,7 +454,7 @@ func (p *Plugin) PostInit() error {
 				if p.runtimeAcquirer == nil {
 					return fmt.Errorf("traffic-split rule %d upstream runtime acquirer is not configured", ruleIndex)
 				}
-				runtime, err := p.runtimeAcquirer.Acquire(upstream, nodeWeights)
+				runtime, err := p.runtimeAcquirer.Acquire(upstream, nodeWeights, nodePriorities)
 				if err != nil {
 					return fmt.Errorf(
 						"traffic-split rule %d upstream runtime materialization failed: %w",
@@ -465,7 +471,11 @@ func (p *Plugin) PostInit() error {
 				targetBalancer = runtime.LoadBalancer
 				targetTransport = runtime.RoundTripper
 			} else {
-				targetBalancer, err = pxy.NewUpstreamLoadBalance(nodeWeights, upstream.Checks)
+				targetBalancer, err = pxy.NewUpstreamLoadBalanceWithPriorities(
+					nodeWeights,
+					nodePriorities,
+					upstream.Checks,
+				)
 				if err != nil {
 					return fmt.Errorf("traffic-split rule %d upstream health checks invalid: %w", ruleIndex, err)
 				}
@@ -478,12 +488,13 @@ func (p *Plugin) PostInit() error {
 			}
 			targetWeights[targetID] += weight
 			targets[targetID] = compiledTarget{
-				balancer:  targetBalancer,
-				overrides: nodeOverrides,
-				hashOn:    hashOn,
-				key:       upstream.Key,
-				ring:      ring,
-				retryScan: retryScan,
+				balancer:   targetBalancer,
+				overrides:  nodeOverrides,
+				priorities: nodePriorities,
+				hashOn:     hashOn,
+				key:        upstream.Key,
+				ring:       ring,
+				retryScan:  retryScan,
 			}
 		}
 
@@ -553,39 +564,42 @@ func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 		if !ok || target.fallback {
 			return nil, nil
 		}
-		nodeID := target.balancer.Next()
+		var nodeID string
 		if target.hashOn != "" {
 			nodeID = target.selectHashedNode(r)
+			pxy.RecordSelectedTarget(target.balancer, r, nodeID)
+		} else {
+			nodeID = pxy.NextTarget(target.balancer, r)
 		}
-		return target.requestOverride(nodeID), nil
+		return target.requestOverride(r, nodeID), nil
 	}
 	return nil, nil
 }
 
-func (target compiledTarget) requestOverride(nodeID string) *Override {
+func (target compiledTarget) requestOverride(request *http.Request, nodeID string) *Override {
 	base := target.overrides[nodeID]
 	if base == nil {
 		return nil
 	}
 	override := *base
-	override.NextRetry = func() *Override {
-		nextID := target.nextRetryNode(nodeID)
+	override.NextRetry = func(retry *http.Request) *Override {
+		nextID := target.nextRetryNode(retry, nodeID)
 		if nextID == "" {
 			return nil
 		}
-		return target.requestOverride(nextID)
+		return target.requestOverride(retry, nextID)
 	}
 	return &override
 }
 
-func (target compiledTarget) nextRetryNode(previous string) string {
+func (target compiledTarget) nextRetryNode(request *http.Request, previous string) string {
 	if target.balancer == nil || len(target.overrides) < 2 {
 		return ""
 	}
 	scanLimit := target.retryScan
 	scanLimit = max(scanLimit, len(target.overrides))
 	for range scanLimit + 1 {
-		nodeID := target.balancer.Next()
+		nodeID := pxy.NextTarget(target.balancer, request)
 		if nodeID != "" && nodeID != previous {
 			return nodeID
 		}
@@ -641,13 +655,29 @@ func (target compiledTarget) selectHashedNode(r *http.Request) string {
 	if value == "" {
 		value = pluginexpr.String(pluginexpr.RequestValue(r, "remote_addr"))
 	}
-	for _, selected := range target.ring.Candidates(value) {
+	candidates := target.ring.Candidates(value)
+	maxPriority := 0
+	found := false
+	for _, selected := range candidates {
+		if health, ok := target.balancer.(interface{ IsHealthy(string) bool }); ok && !health.IsHealthy(selected) {
+			continue
+		}
+		priority := target.priorities[selected]
+		if !found || priority > maxPriority {
+			maxPriority = priority
+			found = true
+		}
+	}
+	for _, selected := range candidates {
+		if target.priorities[selected] != maxPriority {
+			continue
+		}
 		if health, ok := target.balancer.(interface{ IsHealthy(string) bool }); ok && !health.IsHealthy(selected) {
 			continue
 		}
 		return selected
 	}
-	return target.balancer.Next()
+	return pxy.NextTarget(target.balancer, r)
 }
 
 func resolveHashValue(r *http.Request, hashOn string, key string) string {
@@ -820,6 +850,7 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 			Host:      node.Host,
 			Port:      node.Port,
 			Weight:    node.Weight,
+			Priority:  node.Priority,
 			weightSet: node.WeightConfigured(),
 		})
 	}

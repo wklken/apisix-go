@@ -166,7 +166,7 @@ func TestAttachHTTPRetriesAdvancesTrafficSplitTargets(t *testing.T) {
 		Host:     "127.0.0.1:8080",
 		PassHost: "node",
 		Retries:  2,
-		NextRetry: func() *traffic_split.Override {
+		NextRetry: func(*http.Request) *traffic_split.Override {
 			if next >= len(retryHosts) {
 				return nil
 			}

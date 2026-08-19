@@ -579,6 +579,9 @@ func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
 	if !route.EnableWebsocket || route.ServiceID != "websocket-service" {
 		t.Fatalf("route websocket/service = %t/%q, want true/websocket-service", route.EnableWebsocket, route.ServiceID)
 	}
+	if !route.EnableWebsocketConfigured() {
+		t.Fatal("route EnableWebsocketConfigured() = false, want true")
+	}
 
 	var service Service
 	if err := json.Unmarshal([]byte(`{
@@ -590,6 +593,42 @@ func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
 	}
 	if !service.EnableWebsocket || service.Name != "orders" {
 		t.Fatalf("service websocket/name = %t/%q, want true/orders", service.EnableWebsocket, service.Name)
+	}
+}
+
+func TestStreamRouteUnmarshalServiceID(t *testing.T) {
+	var route StreamRoute
+	if err := json.Unmarshal([]byte(`{"id":"stream-route","service_id":"stream-service"}`), &route); err != nil {
+		t.Fatalf("stream route unmarshal error = %v", err)
+	}
+	if route.ServiceID != "stream-service" {
+		t.Fatalf("stream route service_id = %q, want stream-service", route.ServiceID)
+	}
+}
+
+func TestRouteUnmarshalDistinguishesOmittedAndExplicitFalseWebsocket(t *testing.T) {
+	var omitted Route
+	if err := json.Unmarshal([]byte(`{"id":"omitted-websocket"}`), &omitted); err != nil {
+		t.Fatalf("omitted websocket unmarshal error = %v", err)
+	}
+	if omitted.EnableWebsocket || omitted.EnableWebsocketConfigured() {
+		t.Fatalf(
+			"omitted websocket = %t/%t, want false/false",
+			omitted.EnableWebsocket,
+			omitted.EnableWebsocketConfigured(),
+		)
+	}
+
+	var disabled Route
+	if err := json.Unmarshal([]byte(`{"id":"disabled-websocket","enable_websocket":false}`), &disabled); err != nil {
+		t.Fatalf("explicit false websocket unmarshal error = %v", err)
+	}
+	if disabled.EnableWebsocket || !disabled.EnableWebsocketConfigured() {
+		t.Fatalf(
+			"explicit false websocket = %t/%t, want false/true",
+			disabled.EnableWebsocket,
+			disabled.EnableWebsocketConfigured(),
+		)
 	}
 }
 

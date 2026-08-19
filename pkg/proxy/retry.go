@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -23,6 +25,12 @@ type retryTransport struct {
 }
 
 type retryContextKey struct{}
+
+type upstreamStatusState struct {
+	statuses []int
+}
+
+type upstreamStatusContextKey struct{}
 
 // WithRetries attaches the number of transport-error retries and the target
 // selector that must run before each subsequent attempt. Requests that cannot
@@ -85,11 +93,13 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 	state, _ := request.Context().Value(retryContextKey{}).(*retryState)
 	if state == nil {
 		response, err := transport.base.RoundTrip(request)
+		recordUpstreamTransportFailure(request, err)
 		transport.observeResult(err, false)
 		return response, err
 	}
 
 	response, err := transport.base.RoundTrip(request)
+	recordUpstreamTransportFailure(request, err)
 	stopped := false
 	for remaining := state.count; err != nil && remaining > 0; remaining-- {
 		if request.Context().Err() != nil || !resetRequestBody(request) {
@@ -104,9 +114,53 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 		state.attempts++
 		apisixctx.RegisterRequestVar(request, "$retry_count", state.attempts)
 		response, err = transport.base.RoundTrip(request)
+		recordUpstreamTransportFailure(request, err)
 	}
 	transport.observeResult(err, stopped)
 	return response, err
+}
+
+// RecordUpstreamStatus appends one upstream attempt status to the request-local
+// status chain used by APISIX variables and response headers.
+func RecordUpstreamStatus(request *http.Request, status int) {
+	if request == nil || status <= 0 {
+		return
+	}
+	state, ok := request.Context().Value(upstreamStatusContextKey{}).(*upstreamStatusState)
+	if !ok {
+		state = &upstreamStatusState{}
+		*request = *request.WithContext(context.WithValue(request.Context(), upstreamStatusContextKey{}, state))
+	}
+	state.statuses = append(state.statuses, status)
+}
+
+// UpstreamStatusChain returns the NGINX-compatible comma-separated statuses
+// from every upstream attempt made for this request.
+func UpstreamStatusChain(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	state, ok := request.Context().Value(upstreamStatusContextKey{}).(*upstreamStatusState)
+	if !ok || len(state.statuses) == 0 {
+		return ""
+	}
+	values := make([]string, 0, len(state.statuses))
+	for _, status := range state.statuses {
+		values = append(values, strconv.Itoa(status))
+	}
+	return strings.Join(values, ", ")
+}
+
+func recordUpstreamTransportFailure(request *http.Request, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		RecordUpstreamStatus(request, http.StatusGatewayTimeout)
+		return
+	}
+	RecordUpstreamStatus(request, http.StatusBadGateway)
 }
 
 func (transport *retryTransport) observeResult(err error, stopped bool) {

@@ -584,8 +584,8 @@ func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testi
 
 	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("response code = %d, want 503", rr.Code)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
 	}
 	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
 	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")

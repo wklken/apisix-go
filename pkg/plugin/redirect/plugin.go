@@ -214,7 +214,7 @@ func (p *Plugin) runRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 
 	if p.config.Uri != "" {
 		url := expandRedirectURI(r, p.config.Uri)
-		if p.config.AppendQueryString != nil && *p.config.AppendQueryString {
+		if p.config.AppendQueryString != nil && *p.config.AppendQueryString && r.URL.RawQuery != "" {
 			if strings.Contains(url, "?") {
 				url = url + "&" + r.URL.RawQuery
 			} else {

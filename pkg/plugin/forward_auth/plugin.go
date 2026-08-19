@@ -254,17 +254,21 @@ func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 			authReq.Header["Content-Encoding"] = append([]string(nil), values...)
 		}
 	}
-	for _, header := range p.config.RequestHeaders {
-		authReq.Header.Del(header)
-		if values := r.Header.Values(header); len(values) > 0 {
-			authReq.Header[http.CanonicalHeaderKey(header)] = append([]string(nil), values...)
-		}
-	}
+	p.setForwardedHeaders(authReq, facts)
+
 	postArgs := postArgumentCache{}
 	for header, value := range p.config.ExtraHeaders {
 		authReq.Header.Set(header, resolveValue(r, value, &postArgs))
 	}
-	p.setForwardedHeaders(authReq, facts)
+	for _, header := range p.config.RequestHeaders {
+		canonicalHeader := http.CanonicalHeaderKey(header)
+		if _, exists := authReq.Header[canonicalHeader]; exists {
+			continue
+		}
+		if values := r.Header.Values(header); len(values) > 0 {
+			authReq.Header[canonicalHeader] = append([]string(nil), values...)
+		}
+	}
 
 	return p.client.Do(authReq)
 }

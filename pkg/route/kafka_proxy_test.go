@@ -311,7 +311,7 @@ func TestBuildReverseHandlerRejectsInvalidKafkaTLSClientCertificate(t *testing.T
 	}
 }
 
-func TestBuildKafkaPubSubHandlerClosesMalformedRequest(t *testing.T) {
+func TestBuildKafkaPubSubHandlerReturnsWrongCommandAndKeepsSession(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{}, nil
 	}
@@ -322,8 +322,29 @@ func TestBuildKafkaPubSubHandlerClosesMalformedRequest(t *testing.T) {
 	defer server.Close()
 	conn := dialKafkaWebSocket(t, server.URL)
 	writeKafkaWebSocketMessage(t, conn, []byte{0x8a, 0x02, 0x05, 0x08, 0x01})
-	if closeErr := readKafkaWebSocketClose(t, conn); closeErr.Code != 1002 {
-		t.Fatalf("malformed-request close code = %d, want 1002", closeErr.Code)
+	response, err := kafka_proxy.ParsePubSubResponse(readKafkaWebSocketMessage(t, conn))
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse() error = %v", err)
+	}
+	if response.Sequence != 0 || response.Kind != kafka_proxy.RespError || response.Code != 0 ||
+		response.Message != "wrong command" {
+		t.Fatalf("malformed-request response = %#v, want sequence 0 wrong command", response)
+	}
+
+	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
+		Sequence: 11, Command: kafka_proxy.CmdPing, State: []byte("still-open"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalPubSubRequest() error = %v", err)
+	}
+	writeKafkaWebSocketMessage(t, conn, request)
+	response, err = kafka_proxy.ParsePubSubResponse(readKafkaWebSocketMessage(t, conn))
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse() after malformed request error = %v", err)
+	}
+	if response.Sequence != 11 || response.Kind != kafka_proxy.RespPong ||
+		!bytes.Equal(response.State, []byte("still-open")) {
+		t.Fatalf("post-malformed response = %#v, want pong sequence 11", response)
 	}
 }
 
@@ -600,7 +621,7 @@ func TestBuildKafkaPubSubHandlerHandlesPingBeforeRequest(t *testing.T) {
 	}
 }
 
-func TestBuildKafkaPubSubHandlerRejectsTextMessage(t *testing.T) {
+func TestBuildKafkaPubSubHandlerIgnoresTextMessage(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{}, nil
 	}
@@ -614,8 +635,20 @@ func TestBuildKafkaPubSubHandlerRejectsTextMessage(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("not binary")); err != nil {
 		t.Fatalf("write text message: %v", err)
 	}
-	if closeErr := readKafkaWebSocketClose(t, conn); closeErr.Code != 1003 {
-		t.Fatalf("text-message close code = %d, want 1003", closeErr.Code)
+	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
+		Sequence: 12, Command: kafka_proxy.CmdPing, State: []byte("after-text"),
+	})
+	if err != nil {
+		t.Fatalf("MarshalPubSubRequest() error = %v", err)
+	}
+	writeKafkaWebSocketMessage(t, conn, request)
+	response, err := kafka_proxy.ParsePubSubResponse(readKafkaWebSocketMessage(t, conn))
+	if err != nil {
+		t.Fatalf("ParsePubSubResponse() error = %v", err)
+	}
+	if response.Sequence != 12 || response.Kind != kafka_proxy.RespPong ||
+		!bytes.Equal(response.State, []byte("after-text")) {
+		t.Fatalf("post-text response = %#v, want pong sequence 12", response)
 	}
 }
 

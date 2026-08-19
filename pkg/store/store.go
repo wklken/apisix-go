@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -197,7 +196,7 @@ func (s *Store) AddAcknowledgedEventUpdateHook(hook AcknowledgedEventUpdateHook)
 func IsHTTPRouteReloadBucket(bucket string) bool {
 	switch bucket {
 	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata", "ssls", "secrets",
-		"protos":
+		"protos", "plugins":
 		return true
 	default:
 		return false
@@ -219,7 +218,7 @@ func EventBucket(event *Event) (string, bool) {
 
 // IsStreamReloadBucket reports whether a resource change affects stream routing.
 func IsStreamReloadBucket(bucket string) bool {
-	return bucket == "upstreams" || bucket == "stream_routes"
+	return bucket == "upstreams" || bucket == "stream_routes" || bucket == "services"
 }
 
 var builtInBuckets = [][]byte{
@@ -383,6 +382,9 @@ func (storage *Store) Stop() error {
 // /apisix/routes/505192286146003655
 func getTypeAndIDFromKey(key []byte) ([]byte, []byte, error) {
 	parts := bytes.Split(key, []byte("/"))
+	if len(parts) == 3 && bytes.Equal(parts[1], []byte("apisix")) && bytes.Equal(parts[2], []byte("plugins")) {
+		return parts[2], parts[2], nil
+	}
 	if len(parts) < 2 {
 		return nil, nil, fmt.Errorf("invalid store event key %q: missing bucket or ID", key)
 	}
@@ -399,6 +401,9 @@ func getTypeAndIDFromKey(key []byte) ([]byte, []byte, error) {
 		id = parts[len(parts)-1]
 	}
 
+	if bytes.Equal(bucket, []byte("plugins")) {
+		return bucket, id, fmt.Errorf("invalid store event key %q: unsupported dynamic plugin key", key)
+	}
 	if len(bucket) == 0 || len(id) == 0 {
 		return bucket, id, fmt.Errorf("invalid store event key %q: missing bucket or ID", key)
 	}
@@ -509,22 +514,23 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		case "protos":
 			needsProtoGeneration = true
 		}
-		if mutation.Type != EventTypePut {
-			continue
-		}
 		var resourceErr error
-		switch bucket {
-		case "ssls":
-			resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
-		case "routes", "global_rules":
-			resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
-		case "consumers":
-			_, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)
-			if resourceErr != nil {
-				resourceErr = fmt.Errorf("store process the consumer fail: %w", resourceErr)
+		if mutation.Type == EventTypePut {
+			switch bucket {
+			case "ssls":
+				resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
+			case "routes", "global_rules":
+				resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
+			case "consumers":
+				_, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)
+				if resourceErr != nil {
+					resourceErr = fmt.Errorf("store process the consumer fail: %w", resourceErr)
+				}
+			case "plugin_metadata":
+				resourceErr = validatePluginMetadataPut(id, mutation.Value)
+			case "plugins":
+				resourceErr = validateDynamicPluginList(mutation.Value)
 			}
-		case "plugin_metadata":
-			resourceErr = validatePluginMetadataPut(id, mutation.Value)
 		}
 		if resourceErr != nil {
 			validationErr.Rejected = append(validationErr.Rejected, RejectedMutation{
@@ -614,8 +620,14 @@ func parseMutationKey(key []byte) (string, string, error) {
 			return "", "", fmt.Errorf("invalid resource key %q", key)
 		}
 	}
+	if len(parts) == 2 && string(parts[0]) == "apisix" && string(parts[1]) == "plugins" {
+		return "plugins", "plugins", nil
+	}
 	bucket := string(parts[len(parts)-2])
 	id := string(parts[len(parts)-1])
+	if bucket == "plugins" {
+		return "", "", fmt.Errorf("unsupported dynamic plugin key %q", key)
+	}
 	if len(parts) >= 3 && string(parts[len(parts)-3]) == "secrets" {
 		bucket = "secrets"
 		id = string(parts[len(parts)-2]) + "/" + id
@@ -684,10 +696,16 @@ func validateSSLCertificateEvent(eventType EventType, id string, value []byte) e
 	if err != nil {
 		return fmt.Errorf("reject SSL resource %q: parse: %w", id, err)
 	}
+	if ssl.Type != "" && ssl.Type != "server" && ssl.Type != "client" {
+		return fmt.Errorf("reject SSL resource %q: unsupported type %q", id, ssl.Type)
+	}
+	if ssl.Status != 0 && ssl.Status != 1 {
+		return fmt.Errorf("reject SSL resource %q: unsupported status %d", id, ssl.Status)
+	}
 	if ssl.Status == 0 {
 		return nil
 	}
-	if _, err := tls.X509KeyPair([]byte(ssl.Cert), []byte(ssl.Key)); err != nil {
+	if _, err := buildSSLCertificateConfig(ssl); err != nil {
 		return fmt.Errorf("reject SSL resource %q: load: %w", id, err)
 	}
 	return nil

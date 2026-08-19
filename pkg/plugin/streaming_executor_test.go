@@ -591,9 +591,9 @@ func TestStreamingExecutorAppliesDynamicConsumerHeaderFilterPerRequest(t *testin
 			if got := routeResponse.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 				t.Fatalf("route CORS origin after consumer request = %q, want wildcard route origin", got)
 			}
-			if got := countExecutorVaryToken(routeResponse.Header(), "Origin"); got != 1 {
+			if got := countExecutorVaryToken(routeResponse.Header(), "Origin"); got != 0 {
 				t.Fatalf(
-					"route Vary: Origin count = %d, want 1 (headers=%v)",
+					"route Vary: Origin count = %d, want 0 for wildcard origin (headers=%v)",
 					got,
 					routeResponse.Header().Values("Vary"),
 				)

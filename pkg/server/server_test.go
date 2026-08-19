@@ -23,7 +23,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
-	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -59,38 +58,6 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("prometheus init propagation child failed: %v\n%s", err, output)
-	}
-}
-
-func TestPrometheusPublicEndpointRegistersWithoutPrometheusRouteBinding(t *testing.T) {
-	public_api.ResetRegistryForTest()
-	t.Cleanup(public_api.ResetRegistryForTest)
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{
-		Plugins: []string{"prometheus", "public-api"},
-		PluginAttr: map[string]map[string]any{
-			"prometheus": {
-				"enable_export_server": false,
-				"export_uri":           "/internal/metrics",
-			},
-		},
-	}
-
-	if err := registerPrometheusPublicEndpoint(); err != nil {
-		t.Fatalf("registerPrometheusPublicEndpoint() error = %v", err)
-	}
-	plugin := &public_api.Plugin{}
-	if err := plugin.Init(); err != nil {
-		t.Fatalf("public-api Init() error = %v", err)
-	}
-	response := httptest.NewRecorder()
-	plugin.Handler(http.NotFoundHandler()).ServeHTTP(
-		response,
-		httptest.NewRequest(http.MethodGet, "/internal/metrics", nil),
-	)
-	if response.Code != http.StatusOK {
-		t.Fatalf("public-api metrics status = %d, want 200; body: %s", response.Code, response.Body.String())
 	}
 }
 

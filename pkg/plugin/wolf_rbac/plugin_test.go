@@ -72,10 +72,15 @@ func addWolfConsumer(t *testing.T, username, appid, server string) {
 	t.Fatalf("consumer %q was not indexed for wolf-rbac appid %q", username, appid)
 }
 
-func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+func newTestPlugin(t *testing.T, cfg Config, registries ...*public_api.Registry) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	registry := public_api.NewRegistry()
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
+	p.SetPublicAPIRegistry(registry)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -84,6 +89,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPublicAPIRegistry(t *testing.T) *public_api.Registry {
+	t.Helper()
+
+	registry := public_api.NewRegistry()
+	newTestPlugin(t, Config{}, registry)
+	return registry
 }
 
 func TestPostInitAppliesOfficialDefaults(t *testing.T) {
@@ -517,10 +530,7 @@ func TestHandlerStopsAfterThreeWolfServerFailures(t *testing.T) {
 }
 
 func TestPostInitRegistersWolfRBACPublicAPIs(t *testing.T) {
-	public_api.ResetRegistryForTest()
-	t.Cleanup(public_api.ResetRegistryForTest)
-
-	_ = newTestPlugin(t, Config{})
+	registry := newTestPublicAPIRegistry(t)
 	for _, endpoint := range []struct {
 		method string
 		uri    string
@@ -529,9 +539,128 @@ func TestPostInitRegistersWolfRBACPublicAPIs(t *testing.T) {
 		{http.MethodPut, WolfChangePasswordURI},
 		{http.MethodGet, WolfUserInfoURI},
 	} {
-		if handler := public_api.Lookup(endpoint.method, endpoint.uri); handler == nil {
+		if handler := registry.Lookup(endpoint.method, endpoint.uri); handler == nil {
 			t.Fatalf("public API %s %s is not registered", endpoint.method, endpoint.uri)
 		}
+	}
+}
+
+func TestWolfRBACPublicAPIsUseTheirOwnGenerationRegistry(t *testing.T) {
+	wolfA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"token":    "token-a",
+				"userInfo": map[string]any{"username": "alice"},
+			},
+		})
+	}))
+	t.Cleanup(wolfA.Close)
+	wolfB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"token":    "token-b",
+				"userInfo": map[string]any{"username": "bob"},
+			},
+		})
+	}))
+	t.Cleanup(wolfB.Close)
+	addWolfConsumer(t, "wolf-isolation-a", "app-isolation-a", wolfA.URL)
+	addWolfConsumer(t, "wolf-isolation-b", "app-isolation-b", wolfB.URL)
+
+	registryA := newTestPublicAPIRegistry(t)
+	registryB := newTestPublicAPIRegistry(t)
+
+	for _, test := range []struct {
+		name     string
+		registry *public_api.Registry
+		appid    string
+		want     string
+	}{
+		{name: "first", registry: registryA, appid: "app-isolation-a", want: "token-a"},
+		{name: "second", registry: registryB, appid: "app-isolation-b", want: "token-b"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := test.registry.Lookup(http.MethodPost, WolfLoginURI)
+			if handler == nil {
+				t.Fatal("wolf login public API is not registered")
+			}
+			request := httptest.NewRequest(
+				http.MethodPost,
+				WolfLoginURI,
+				strings.NewReader(`{"appid":"`+test.appid+`","username":"admin","password":"secret"}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
+			}
+			var body map[string]any
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got := body["rbac_token"]; got != "V1#"+test.appid+"#"+test.want {
+				t.Fatalf("rbac_token = %v, want backend %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRouteInstancesDoNotOverwriteGenerationWolfPublicAPIs(t *testing.T) {
+	var backendAHits int
+	wolfA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendAHits++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"token":    "token-a",
+				"userInfo": map[string]any{"username": "alice"},
+			},
+		})
+	}))
+	t.Cleanup(wolfA.Close)
+	var backendBHits int
+	wolfB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendBHits++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"token":    "token-b",
+				"userInfo": map[string]any{"username": "bob"},
+			},
+		})
+	}))
+	t.Cleanup(wolfB.Close)
+	addWolfConsumer(t, "wolf-generation-owner", "app-generation-owner", "")
+
+	registry := public_api.NewRegistry()
+	newTestPlugin(t, Config{Server: wolfA.URL}, registry)
+	conflicting := &Plugin{config: Config{Server: wolfB.URL}}
+	conflicting.SetPublicAPIRegistry(registry)
+	if err := conflicting.Init(); err != nil {
+		t.Fatalf("conflicting Init() error = %v", err)
+	}
+	if err := conflicting.PostInit(); err == nil {
+		t.Fatal("conflicting PostInit() error = nil, want conflicting public API configuration error")
+	}
+
+	handler := registry.Lookup(http.MethodPost, WolfLoginURI)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		WolfLoginURI,
+		strings.NewReader(`{"appid":"app-generation-owner","username":"admin","password":"secret"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if backendAHits != 1 || backendBHits != 0 {
+		t.Fatalf("route backend hits = (%d, %d), want (1, 0)", backendAHits, backendBHits)
 	}
 }
 
@@ -558,8 +687,8 @@ func TestWolfRBACLoginPublicAPIForwardsCredentialsAndWrapsToken(t *testing.T) {
 	t.Cleanup(wolf.Close)
 	addWolfConsumer(t, "wolf-login-user", "app-login", wolf.URL)
 
-	_ = newTestPlugin(t, Config{})
-	handler := public_api.Lookup(http.MethodPost, WolfLoginURI)
+	registry := newTestPublicAPIRegistry(t)
+	handler := registry.Lookup(http.MethodPost, WolfLoginURI)
 	if handler == nil {
 		t.Fatal("wolf login public API is not registered")
 	}
@@ -597,8 +726,8 @@ func TestWolfRBACLoginBusinessDenialReturnsGenericFailureWithStatusOK(t *testing
 	t.Cleanup(wolf.Close)
 	addWolfConsumer(t, "wolf-login-denied-user", "app-login-denied", wolf.URL)
 
-	_ = newTestPlugin(t, Config{})
-	handler := public_api.Lookup(http.MethodPost, WolfLoginURI)
+	registry := newTestPublicAPIRegistry(t)
+	handler := registry.Lookup(http.MethodPost, WolfLoginURI)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		WolfLoginURI,

@@ -196,12 +196,8 @@ func EventBucket(event *Event) (string, bool) {
 	if event == nil {
 		return "", false
 	}
-	parts := bytes.Split(event.Key, []byte("/"))
-	if len(parts) < 4 {
-		return "", false
-	}
-	bucket, _ := getTypeAndIDFromKey(event.Key)
-	if len(bucket) == 0 {
+	bucket, _, err := getTypeAndIDFromKey(event.Key)
+	if err != nil {
 		return "", false
 	}
 	return string(bucket), true
@@ -392,13 +388,28 @@ func (storage *Store) Stop() error {
 // []byte{}  get the last part split by / in the key
 
 // /apisix/routes/505192286146003655
-func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
+func getTypeAndIDFromKey(key []byte) ([]byte, []byte, error) {
 	parts := bytes.Split(key, []byte("/"))
-	if len(parts) >= 5 && bytes.Equal(parts[len(parts)-3], []byte("secrets")) {
-		return parts[len(parts)-3], bytes.Join(parts[len(parts)-2:], []byte("/"))
+	if len(parts) < 2 {
+		return nil, nil, fmt.Errorf("invalid store event key %q: missing bucket or ID", key)
 	}
 
-	return parts[len(parts)-2], parts[len(parts)-1]
+	var bucket, id []byte
+	if len(parts) >= 5 && bytes.Equal(parts[len(parts)-3], []byte("secrets")) {
+		bucket = parts[len(parts)-3]
+		if len(parts[len(parts)-2]) == 0 || len(parts[len(parts)-1]) == 0 {
+			return bucket, nil, fmt.Errorf("invalid store event key %q: missing secret manager or ID", key)
+		}
+		id = bytes.Join(parts[len(parts)-2:], []byte("/"))
+	} else {
+		bucket = parts[len(parts)-2]
+		id = parts[len(parts)-1]
+	}
+
+	if len(bucket) == 0 || len(id) == 0 {
+		return bucket, id, fmt.Errorf("invalid store event key %q: missing bucket or ID", key)
+	}
+	return bucket, id, nil
 }
 
 func (s *Store) processEvents() {
@@ -443,7 +454,10 @@ func (s *Store) processEvent(event *Event) error {
 		return nil
 	}
 
-	bucketName, id := getTypeAndIDFromKey(event.Key)
+	bucketName, id, err := getTypeAndIDFromKey(event.Key)
+	if err != nil {
+		return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}
+	}
 	if event.Type == EventTypePut && bytes.Equal(bucketName, []byte("ssls")) {
 		if err := validateSSLCertificateEvent(event.Type, util.BytesToString(id), event.Value); err != nil {
 			return &ResourceValidationError{Bucket: string(bucketName), ID: string(id), Err: err}

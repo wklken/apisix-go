@@ -696,12 +696,76 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 }
 
 func TestGetTypeAndIDFromKeyPreservesSecretManagerID(t *testing.T) {
-	bucket, id := getTypeAndIDFromKey([]byte("/apisix/secrets/vault/test1"))
+	bucket, id, err := getTypeAndIDFromKey([]byte("/apisix/secrets/vault/test1"))
+	if err != nil {
+		t.Fatalf("getTypeAndIDFromKey() error = %v", err)
+	}
 	if got, want := string(bucket), "secrets"; got != want {
 		t.Fatalf("bucket = %q, want %q", got, want)
 	}
 	if got, want := string(id), "vault/test1"; got != want {
 		t.Fatalf("id = %q, want %q", got, want)
+	}
+}
+
+func TestGetTypeAndIDFromKeyPreservesPrefixWithoutLeadingSlash(t *testing.T) {
+	bucket, id, err := getTypeAndIDFromKey([]byte("apisix/routes/route-1"))
+	if err != nil {
+		t.Fatalf("getTypeAndIDFromKey() error = %v", err)
+	}
+	if got, want := string(bucket), "routes"; got != want {
+		t.Fatalf("bucket = %q, want %q", got, want)
+	}
+	if got, want := string(id), "route-1"; got != want {
+		t.Fatalf("id = %q, want %q", got, want)
+	}
+}
+
+func TestProcessEventRejectsMalformedKeysWithoutPanic(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "malformed-key.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "single segment", key: "malformed"},
+		{name: "missing bucket", key: "/apisix//route-1"},
+		{name: "empty id", key: "/apisix/routes/"},
+		{name: "missing secret manager", key: "/apisix/secrets//secret-1"},
+		{name: "missing secret name", key: "/apisix/secrets/vault/"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := &Event{Type: EventTypePut, Key: []byte(test.key)}
+			firstErr := storage.processEvent(event)
+			var validationErr *ResourceValidationError
+			if !errors.As(firstErr, &validationErr) {
+				t.Fatalf("processEvent(%q) error = %v, want ResourceValidationError", test.key, firstErr)
+			}
+			if _, ok := EventBucket(event); ok {
+				t.Fatalf("EventBucket(%q) = ok, want invalid", test.key)
+			}
+
+			secondErr := storage.processEvent(event)
+			if secondErr == nil || secondErr.Error() != firstErr.Error() {
+				t.Fatalf("processEvent(%q) error changed: first=%v second=%v", test.key, firstErr, secondErr)
+			}
+		})
+	}
+
+	storage.Start()
+	acknowledged := NewAcknowledgedEvent()
+	acknowledged.Type = EventTypePut
+	acknowledged.Key = []byte("malformed")
+	storage.events <- acknowledged
+	acknowledgedErr := acknowledged.Wait(context.Background())
+	var validationErr *ResourceValidationError
+	if !errors.As(acknowledgedErr, &validationErr) {
+		t.Fatalf("acknowledged malformed key error = %v, want ResourceValidationError", acknowledgedErr)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -20,6 +21,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -799,6 +802,105 @@ func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
 	}
 	if !bytes.HasPrefix(body, []byte("partial")) {
 		t.Fatalf("body = %q, want partial prefix", body)
+	}
+}
+
+func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testing.T) {
+	workerStarted := make(chan struct{})
+	workerRelease := make(chan struct{})
+	worker := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(workerStarted)
+		<-workerRelease
+	})
+	mux := http.NewServeMux()
+	mux.Handle("/slow", worker)
+	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
+
+	stopped := make(chan struct{})
+	routes := newRouteHandler(mux, func() { close(stopped) })
+	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+		"timeout": 10,
+		"pipeline": [{"path":"/slow"}]
+	}`))
+	response := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() {
+		routes.ServeHTTP(response, request)
+		close(served)
+	}()
+
+	select {
+	case <-workerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("batch worker did not start")
+	}
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("batch request did not return after timeout")
+	}
+
+	routes.Replace(http.NotFoundHandler(), nil)
+	select {
+	case <-stopped:
+		t.Fatal("retired generation stopped while cancellation-ignoring worker was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(workerRelease)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("retired generation did not stop after batch worker exited")
+	}
+}
+
+func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
+	plugin := &limit_conn.Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("limit-conn Init() error = %v", err)
+	}
+	config := plugin.Config().(*limit_conn.Config)
+	*config = limit_conn.Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.001,
+		Key:              "remote_addr",
+	}
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("limit-conn PostInit() error = %v", err)
+	}
+
+	target := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux := http.NewServeMux()
+	mux.Handle("/limited", target)
+	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
+	routes := newRouteHandler(mux, nil)
+	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/limited"}, {"path":"/limited"}]
+	}`))
+	request.RemoteAddr = "192.0.2.100:1234"
+	response := httptest.NewRecorder()
+
+	routes.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch response code = %d, want 200; body=%q", response.Code, response.Body.String())
+	}
+	var responses []struct {
+		Status int `json:"status"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responses); err != nil {
+		t.Fatalf("decode batch response: %v; body=%q", err, response.Body.String())
+	}
+	if len(responses) != 2 || responses[0].Status != http.StatusNoContent ||
+		responses[1].Status != http.StatusNoContent {
+		t.Fatalf("pipeline statuses = %#v, want two 204 responses", responses)
 	}
 }
 

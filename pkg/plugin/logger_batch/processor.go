@@ -117,7 +117,7 @@ func NewWithContext(config Config, deliver ContextDeliveryFunc) *Processor {
 		),
 		workerCount:  config.MaxConcurrentDeliveries,
 		active:       make(map[*workBatch]struct{}),
-		buffer:       make([]map[string]any, 0, config.BatchMaxSize),
+		buffer:       make([]map[string]any, 0, minInt(config.BatchMaxSize, DefaultBatchMaxSize)),
 		shutdownDone: make(chan struct{}),
 		workersDone:  make(chan struct{}),
 	}

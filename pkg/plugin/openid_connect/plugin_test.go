@@ -2052,6 +2052,61 @@ func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T)
 	}
 }
 
+func TestHandlerCodeFlowRedirectsOnlyToSameOriginPath(t *testing.T) {
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
+	})
+	t.Cleanup(idp.Close)
+
+	tests := []struct {
+		name        string
+		originalURI string
+		want        string
+	}{
+		{name: "path", originalURI: "/orders?view=open", want: "/orders?view=open"},
+		{name: "scheme relative", originalURI: "//evil.example/path", want: "/"},
+		{name: "backslash host", originalURI: "/\\evil.example/path", want: "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, codeFlowConfig(idp.URL))
+			initial := httptest.NewRecorder()
+			if err := p.writeSession(initial, sessionData{
+				CreatedAt:     time.Now().Unix(),
+				UpdatedAt:     time.Now().Unix(),
+				FlowState:     "state-a",
+				FlowExpiresAt: time.Now().Add(time.Minute).Unix(),
+				OriginalURI:   tt.originalURI,
+			}); err != nil {
+				t.Fatalf("writeSession() error = %v", err)
+			}
+
+			callback := httptest.NewRequest(
+				http.MethodGet,
+				"https://example.com/orders/.apisix/redirect?code=code-a&state=state-a",
+				nil,
+			)
+			callback.AddCookie(initial.Result().Cookies()[0])
+			callbackRecorder := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called for callback")
+			})).ServeHTTP(callbackRecorder, callback)
+
+			if callbackRecorder.Code != http.StatusFound {
+				t.Fatalf(
+					"callback status = %d, want 302; body=%s",
+					callbackRecorder.Code,
+					callbackRecorder.Body.String(),
+				)
+			}
+			if got := callbackRecorder.Header().Get("Location"); got != tt.want {
+				t.Fatalf("callback redirect = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	var idp *httptest.Server
 	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

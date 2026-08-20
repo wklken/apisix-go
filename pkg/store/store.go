@@ -192,6 +192,11 @@ func (s *Store) AddAcknowledgedEventUpdateHook(hook AcknowledgedEventUpdateHook)
 	s.acknowledgedEventUpdateHooks = append(s.acknowledgedEventUpdateHooks, hook)
 }
 
+// HTTPConfigGeneration returns the latest durably applied HTTP configuration generation.
+func (s *Store) HTTPConfigGeneration() uint64 {
+	return s.configGeneration.Load()
+}
+
 // IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
 func IsHTTPRouteReloadBucket(bucket string) bool {
 	switch bucket {
@@ -465,10 +470,12 @@ type parsedMutation struct {
 	mutation Mutation
 	bucket   string
 	id       string
+	index    int
 }
 
 func (s *Store) processMutations(mutations []Mutation, options BatchOptions, batch bool) error {
 	parsed := make([]parsedMutation, 0, len(mutations))
+	consumerSnapshots := make(map[int]consumerSnapshot)
 	validationErr := &BatchValidationError{}
 	affectedBuckets := make([]string, 0, len(mutations))
 	affected := make(map[string]struct{}, len(mutations))
@@ -499,7 +506,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		if mutation.Type != EventTypePut && mutation.Type != EventTypeDelete {
 			return fmt.Errorf("unsupported store event type %d", mutation.Type)
 		}
-		parsed = append(parsed, parsedMutation{mutation: mutation, bucket: bucket, id: id})
+		parsed = append(parsed, parsedMutation{mutation: mutation, bucket: bucket, id: id, index: index})
 		addAffected(bucket)
 		if IsHTTPRouteReloadBucket(bucket) {
 			needsConfigGeneration = true
@@ -522,9 +529,12 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 			case "routes", "global_rules":
 				resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
 			case "consumers":
-				_, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)
+				var snapshot consumerSnapshot
+				snapshot, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)
 				if resourceErr != nil {
 					resourceErr = fmt.Errorf("store process the consumer fail: %w", resourceErr)
+				} else {
+					consumerSnapshots[index] = snapshot
 				}
 			case "plugin_metadata":
 				resourceErr = validatePluginMetadataPut(id, mutation.Value)
@@ -539,6 +549,8 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 			})
 		}
 	}
+	validationErr.Rejected = append(validationErr.Rejected,
+		s.validateConsumerLookupKeyMutations(parsed, consumerSnapshots, options)...)
 	if len(validationErr.Rejected) > 0 {
 		if !batch && len(validationErr.Rejected) == 1 {
 			return validationErr.Rejected[0].Err
@@ -605,6 +617,96 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		s.protosGeneration.Add(1)
 	}
 	return s.triggerBatchUpdateHooks(parsed, affectedBuckets)
+}
+
+func (s *Store) validateConsumerLookupKeyMutations(
+	parsed []parsedMutation,
+	snapshots map[int]consumerSnapshot,
+	options BatchOptions,
+) []RejectedMutation {
+	lastMutation := make(map[string]parsedMutation)
+	for _, entry := range parsed {
+		if entry.bucket == "consumers" {
+			lastMutation[entry.id] = entry
+		}
+	}
+	preserved := make(map[string]struct{})
+	for _, resourceKey := range options.Preserve {
+		if resourceKey.Bucket == "consumers" {
+			preserved[resourceKey.ID] = struct{}{}
+		}
+	}
+	owners := make(map[string]string)
+	s.consumerMu.RLock()
+	for consumerID, keys := range s.consumerToKeys {
+		finalMutation, changing := lastMutation[consumerID]
+		if changing {
+			if finalMutation.mutation.Type != EventTypePut {
+				continue
+			}
+			snapshot, ok := snapshots[finalMutation.index]
+			if !ok {
+				for _, pluginKey := range keys {
+					owners[pluginKey] = consumerID
+				}
+				continue
+			}
+			retained := make(map[string]struct{}, len(snapshot.pluginKeys))
+			for _, pluginKey := range snapshot.pluginKeys {
+				retained[pluginKey] = struct{}{}
+			}
+			for _, pluginKey := range keys {
+				if _, keep := retained[pluginKey]; keep {
+					owners[pluginKey] = consumerID
+				}
+			}
+			continue
+		}
+		if options.ReplaceManaged {
+			if _, keep := preserved[consumerID]; !keep {
+				continue
+			}
+		}
+		for _, pluginKey := range keys {
+			owners[pluginKey] = consumerID
+		}
+	}
+	s.consumerMu.RUnlock()
+
+	var rejected []RejectedMutation
+	for _, entry := range parsed {
+		finalMutation := lastMutation[entry.id]
+		if entry.bucket != "consumers" || entry.mutation.Type != EventTypePut ||
+			finalMutation.index != entry.index {
+			continue
+		}
+		snapshot, ok := snapshots[entry.index]
+		if !ok {
+			continue
+		}
+		var collision error
+		for _, pluginKey := range snapshot.pluginKeys {
+			if owner := owners[pluginKey]; owner != "" && owner != entry.id {
+				collision = duplicateConsumerLookupKeyError(pluginKey, owner)
+				break
+			}
+		}
+		if collision != nil {
+			rejected = append(rejected, RejectedMutation{
+				Index: entry.index,
+				Err: &ResourceValidationError{
+					Bucket: "consumers",
+					ID:     entry.id,
+					Err:    collision,
+				},
+			})
+			continue
+		}
+		for _, pluginKey := range snapshot.pluginKeys {
+			owners[pluginKey] = entry.id
+		}
+	}
+	return rejected
 }
 
 func parseMutationKey(key []byte) (string, string, error) {

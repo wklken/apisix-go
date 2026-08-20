@@ -10,18 +10,19 @@ import (
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
-func TestXForwardedForUsesLastAddress(t *testing.T) {
+func TestXForwardedForWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "http_x_forwarded_for"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
 	req.Header.Set("X-Forwarded-For", "198.51.100.1, 203.0.113.9:9443")
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.9" {
-			t.Fatalf("remote_addr = %q, want 203.0.113.9", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
+			t.Fatalf("remote_addr = %q, want unchanged", got)
 		}
-		if got := apisixctx.GetString(r.Context(), "remote_port"); got != "9443" {
-			t.Fatalf("remote_port = %q, want 9443", got)
+		if got := r.RemoteAddr; got != "192.0.2.10:12345" {
+			t.Fatalf("request RemoteAddr = %q, want original peer", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

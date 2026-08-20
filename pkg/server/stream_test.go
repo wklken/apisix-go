@@ -527,7 +527,7 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 	})
 	runtime := &fakeStreamRuntime{reloadErr: errors.New("stream reload failed")}
 	server := &Server{storage: storage, streamRuntime: runtime}
-	server.registerAcknowledgedStoreUpdateHook(nil)
+	server.registerAcknowledgedStoreUpdateHook(context.Background())
 
 	put := func() error {
 		event := store.NewAcknowledgedBatch([]store.Mutation{{
@@ -573,8 +573,13 @@ func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T)
 		_ = storage.Stop()
 	})
 	runtime := &fakeStreamRuntime{}
-	server := &Server{storage: storage, streamRuntime: runtime}
-	server.registerAcknowledgedStoreUpdateHook(nil)
+	server := &Server{
+		addr:          "127.0.0.1:9080",
+		storage:       storage,
+		routes:        newRouteHandler(http.NotFoundHandler(), nil),
+		streamRuntime: runtime,
+	}
+	server.registerAcknowledgedStoreUpdateHook(context.Background())
 	event := store.NewAcknowledgedBatch([]store.Mutation{
 		{
 			Type:  store.EventTypePut,

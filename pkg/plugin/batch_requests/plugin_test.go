@@ -640,22 +640,69 @@ func TestHandlerReturnsGatewayTimeoutForTimedOutPipelineRequest(t *testing.T) {
 	}
 }
 
-func TestHandlerAppliesPipelineHostHeader(t *testing.T) {
+func TestHandlerPinsPipelineHostToOuterRequest(t *testing.T) {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Got-Host", r.Host)
+		w.Header().Set("X-Got-Forwarded-Host", r.Header.Get("X-Forwarded-Host"))
 		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
-		"headers": {"Host": "common.example.com"},
-		"pipeline": [{"path": "/inner", "headers": {"Host": "item.example.com"}}]
+		"headers": {"Host": "common.example.com", "X-Forwarded-Host": "common-forwarded.example.com"},
+		"pipeline": [{"path": "/inner", "headers": {"Host": "item.example.com", "X-Forwarded-Host": "item-forwarded.example.com"}}]
 	}`))
+	req.Host = "outer.example.com"
+	req.Header.Set("X-Forwarded-Host", "outer-forwarded.example.com")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
 	responses := decodePipelineResponses(t, res.Body.String())
-	if got := responses[0].Headers["X-Got-Host"]; got != "item.example.com" {
-		t.Fatalf("pipeline host = %q, want item.example.com", got)
+	if got := responses[0].Headers["X-Got-Host"]; got != "outer.example.com" {
+		t.Fatalf("pipeline host = %q, want outer.example.com", got)
+	}
+	if got := responses[0].Headers["X-Got-Forwarded-Host"]; got != "outer-forwarded.example.com" {
+		t.Fatalf("pipeline forwarded host = %q, want outer-forwarded.example.com", got)
+	}
+}
+
+func TestHandlerRejectsAbsolutePipelineTarget(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path": "http://internal.example/secret"}]
+	}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path must start with /") {
+		t.Fatalf("response = %d %q, want path-only rejection", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsSchemeRelativePipelineTarget(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path": "//internal.example/secret"}]
+	}`))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path is invalid") {
+		t.Fatalf("response = %d %q, want path-only rejection", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsPipelineQueryEmbeddedInPath(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path": "/inner?admin=true"}]
+	}`))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path is invalid") {
+		t.Fatalf("response = %d %q, want query field requirement", res.Code, res.Body.String())
 	}
 }
 

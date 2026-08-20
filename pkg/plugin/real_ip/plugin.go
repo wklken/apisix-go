@@ -98,6 +98,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if len(p.config.TrustedAddresses) == 0 &&
+			strings.EqualFold(strings.TrimPrefix(p.config.Source, "$"), "http_x_forwarded_for") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if len(p.config.TrustedAddresses) > 0 {
 			ip, _, ok := parseAddr(r.RemoteAddr)
 			if !ok || !p.isTrustedProxy(net.ParseIP(ip)) {

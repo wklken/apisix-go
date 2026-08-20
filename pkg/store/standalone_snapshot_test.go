@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,41 @@ func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 	t.Cleanup(func() { _ = storage.Stop() })
 	if _, err := storage.GetConsumerNameByPluginKey("basic-auth", "alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("invalid persisted consumer lookup error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestOpenRejectsDuplicatePersistedConsumerLookupKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate-consumers.db")
+	first, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	if err := first.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("consumers"))
+		if err := bucket.Put(
+			[]byte("alice"),
+			[]byte(`{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		); err != nil {
+			return err
+		}
+		return bucket.Put(
+			[]byte("bob"),
+			[]byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		)
+	}); err != nil {
+		t.Fatalf("persist duplicate consumers: %v", err)
+	}
+	if err := first.Stop(); err != nil {
+		t.Fatalf("first Store.Stop() error = %v", err)
+	}
+
+	storage, err := Open(path, make(chan *Event))
+	if err == nil || !strings.Contains(err.Error(), "key-auth:shared-key") ||
+		!strings.Contains(err.Error(), "alice") {
+		if storage != nil {
+			_ = storage.Stop()
+		}
+		t.Fatalf("Open() error = %v, want duplicate lookup key and current owner", err)
 	}
 }
 

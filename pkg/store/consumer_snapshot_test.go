@@ -40,6 +40,29 @@ func TestConsumerSnapshotRejectsInvalidBasicAuthUpdateAndKeepsLastGood(t *testin
 	}
 }
 
+func TestConsumerSnapshotRejectsDuplicatePluginLookupKey(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+	}
+	alice := []byte(`{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("alice"), alice); err != nil {
+		t.Fatalf("seed alice consumerKVAdd() error = %v", err)
+	}
+	bob := []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	err := consumerStore.consumerKVAdd([]byte("bob"), bob)
+	if err == nil || !strings.Contains(err.Error(), `key-auth:shared-key`) ||
+		!strings.Contains(err.Error(), `alice`) {
+		t.Fatalf("duplicate consumerKVAdd() error = %v, want key and current owner", err)
+	}
+	if got := string(consumerStore.consumerKV["key-auth:shared-key"]); got != "alice" {
+		t.Fatalf("shared lookup owner = %q, want alice", got)
+	}
+	if _, ok := consumerStore.consumerValues["bob"]; ok {
+		t.Fatal("rejected consumer was published")
+	}
+}
+
 func TestConsumerSnapshotValidatesJWTAuthConsumerSchema(t *testing.T) {
 	tests := []struct {
 		name       string

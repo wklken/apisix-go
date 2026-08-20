@@ -27,6 +27,163 @@ func TestAcknowledgedConsumerValidationErrorIsNotRepeatedBySync(t *testing.T) {
 	}
 }
 
+func TestAcknowledgedConsumerRejectsDuplicatePluginLookupKeyBeforeCommit(t *testing.T) {
+	storage := newConsumerSnapshotStore(t)
+	put := func(id, value string) error {
+		event := NewAcknowledgedEvent()
+		event.Type = EventTypePut
+		event.Key = []byte("/apisix/consumers/" + id)
+		event.Value = []byte(value)
+		storage.events <- event
+		return event.Wait(context.Background())
+	}
+	if err := put("alice", `{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`); err != nil {
+		t.Fatalf("seed alice consumer: %v", err)
+	}
+	err := put("bob", `{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	if err == nil || !strings.Contains(err.Error(), `key-auth:shared-key`) ||
+		!strings.Contains(err.Error(), `alice`) {
+		t.Fatalf("duplicate consumer error = %v, want key and current owner", err)
+	}
+	if value, readErr := storage.GetFromBucket("consumers", []byte("bob")); readErr != nil {
+		t.Fatalf("read rejected consumer: %v", readErr)
+	} else if value != nil {
+		t.Fatalf("rejected consumer persisted: %s", value)
+	}
+	if got := string(storage.consumerKV["key-auth:shared-key"]); got != "alice" {
+		t.Fatalf("shared lookup owner = %q, want alice", got)
+	}
+}
+
+func TestAcknowledgedConsumerBatchTransfersPluginLookupOwnership(t *testing.T) {
+	storage := newConsumerSnapshotStore(t)
+	seed := NewAcknowledgedEvent()
+	seed.Type = EventTypePut
+	seed.Key = []byte("/apisix/consumers/alice")
+	seed.Value = []byte(`{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	storage.events <- seed
+	if err := seed.Wait(context.Background()); err != nil {
+		t.Fatalf("seed alice consumer: %v", err)
+	}
+
+	transfer := NewAcknowledgedBatch([]Mutation{
+		{Type: EventTypeDelete, Key: []byte("/apisix/consumers/alice")},
+		{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/consumers/bob"),
+			Value: []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		},
+	}, BatchOptions{})
+	storage.events <- transfer
+	if err := transfer.Wait(context.Background()); err != nil {
+		t.Fatalf("transfer shared lookup ownership: %v", err)
+	}
+	if got := string(storage.consumerKV["key-auth:shared-key"]); got != "bob" {
+		t.Fatalf("shared lookup owner = %q, want bob", got)
+	}
+	if value, err := storage.GetFromBucket("consumers", []byte("alice")); err != nil {
+		t.Fatalf("read deleted alice consumer: %v", err)
+	} else if value != nil {
+		t.Fatalf("deleted alice consumer persisted: %s", value)
+	}
+}
+
+func TestAuthoritativeConsumerSnapshotKeepsCurrentLookupOwner(t *testing.T) {
+	storage := newConsumerSnapshotStore(t)
+	apply := func(event *Event) error {
+		storage.events <- event
+		return event.Wait(context.Background())
+	}
+	seed := NewAcknowledgedEvent()
+	seed.Type = EventTypePut
+	seed.Key = []byte("/apisix/consumers/bob")
+	seed.Value = []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	if err := apply(seed); err != nil {
+		t.Fatalf("seed bob consumer: %v", err)
+	}
+
+	snapshot := NewAcknowledgedBatch([]Mutation{
+		{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/consumers/alice"),
+			Value: []byte(`{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		},
+		{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/consumers/bob"),
+			Value: []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		},
+	}, BatchOptions{ReplaceManaged: true})
+	err := apply(snapshot)
+	var batchErr *BatchValidationError
+	if !errors.As(err, &batchErr) || len(batchErr.Rejected) != 1 || batchErr.Rejected[0].Index != 0 {
+		t.Fatalf("snapshot error = %v, want only new conflicting alice at index 0 rejected", err)
+	}
+
+	retry := NewAcknowledgedBatch([]Mutation{{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/consumers/bob"),
+		Value: []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`),
+	}}, BatchOptions{
+		ReplaceManaged: true,
+		Preserve:       []ResourceKey{{Bucket: "consumers", ID: "alice"}},
+	})
+	if err := apply(retry); err != nil {
+		t.Fatalf("snapshot retry preserving rejected alice: %v", err)
+	}
+	if got := string(storage.consumerKV["key-auth:shared-key"]); got != "bob" {
+		t.Fatalf("shared lookup owner = %q, want bob", got)
+	}
+}
+
+func TestAuthoritativeConsumerSnapshotKeepsInvalidCurrentOwnerLastGood(t *testing.T) {
+	storage := newConsumerSnapshotStore(t)
+	apply := func(event *Event) error {
+		storage.events <- event
+		return event.Wait(context.Background())
+	}
+	seed := NewAcknowledgedEvent()
+	seed.Type = EventTypePut
+	seed.Key = []byte("/apisix/consumers/bob")
+	seed.Value = []byte(`{"username":"bob","plugins":{"key-auth":{"key":"shared-key"}}}`)
+	if err := apply(seed); err != nil {
+		t.Fatalf("seed bob consumer: %v", err)
+	}
+
+	snapshot := NewAcknowledgedBatch([]Mutation{
+		{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/consumers/alice"),
+			Value: []byte(`{"username":"alice","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		},
+		{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/consumers/bob"),
+			Value: []byte(`{"username":"bob","plugins":{"basic-auth":{"username":"bob"}}}`),
+		},
+	}, BatchOptions{ReplaceManaged: true})
+	err := apply(snapshot)
+	var batchErr *BatchValidationError
+	if !errors.As(err, &batchErr) || len(batchErr.Rejected) != 2 ||
+		batchErr.Rejected[0].Index != 1 || batchErr.Rejected[1].Index != 0 {
+		t.Fatalf("snapshot error = %v rejected=%#v, want invalid bob and conflicting alice rejected", err, batchErr)
+	}
+
+	retry := NewAcknowledgedBatch(nil, BatchOptions{
+		ReplaceManaged: true,
+		Preserve: []ResourceKey{
+			{Bucket: "consumers", ID: "alice"},
+			{Bucket: "consumers", ID: "bob"},
+		},
+	})
+	if err := apply(retry); err != nil {
+		t.Fatalf("snapshot retry preserving rejected consumers: %v", err)
+	}
+	if got := string(storage.consumerKV["key-auth:shared-key"]); got != "bob" {
+		t.Fatalf("shared lookup owner = %q, want bob", got)
+	}
+}
+
 func TestUnacknowledgedConsumerValidationErrorIsReturnedBySyncOnce(t *testing.T) {
 	storage := newConsumerSnapshotStore(t)
 	storage.events <- &Event{
@@ -395,7 +552,9 @@ func TestReadOnlyStoreMutationPreservesLastGoodState(t *testing.T) {
 	if snapshot, err := storage.prepareConsumerSnapshot([]byte("foo"), seedConsumer); err != nil {
 		t.Fatalf("prepare seeded consumer: %v", err)
 	} else {
-		storage.applyConsumerSnapshot(snapshot)
+		if err := storage.applyConsumerSnapshot(snapshot); err != nil {
+			t.Fatalf("apply seeded consumer: %v", err)
+		}
 	}
 	storage.rebuildSSLCertificateIndex()
 	var hookCalls int

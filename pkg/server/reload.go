@@ -46,20 +46,6 @@ func (s *Server) listenReloadEvent(ctx context.Context) {
 	})
 }
 
-func reconcileInitialReloadEvent(events chan struct{}, builtGeneration uint64, currentGeneration func() uint64) {
-	select {
-	case <-events:
-	default:
-	}
-	if currentGeneration() == builtGeneration {
-		return
-	}
-	select {
-	case events <- struct{}{}:
-	default:
-	}
-}
-
 func runReloadScheduler(
 	ctx context.Context,
 	events <-chan struct{},
@@ -143,9 +129,11 @@ func stopAndDrainReloadTimer(timer *time.Timer) {
 // skips the rebuild so a shutting-down server does not install a handler it
 // cannot serve.
 func (s *Server) reload(ctx context.Context) (reloadErr error) {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	if ctx != nil && ctx.Err() != nil {
 		logger.Info("skip reload: context cancelled")
-		return nil
+		return ctx.Err()
 	}
 
 	logger.Info("reloading")

@@ -341,7 +341,15 @@ func validateRequest(req Request, limits Limits) error {
 		if item.Path == "" {
 			return fmt.Errorf("pipeline[%d].path is required", i)
 		}
-		if _, err := http.NewRequest(http.MethodGet, item.Path, nil); err != nil {
+		if !strings.HasPrefix(item.Path, "/") {
+			return fmt.Errorf("pipeline[%d].path must start with /", i)
+		}
+		target, err := url.ParseRequestURI(item.Path)
+		if err != nil || strings.HasPrefix(item.Path, "//") || target.IsAbs() || target.Host != "" ||
+			target.RawQuery != "" {
+			if err == nil {
+				err = fmt.Errorf("target must be an origin-form request URI")
+			}
 			return fmt.Errorf("pipeline[%d].path is invalid: %w", i, err)
 		}
 		if item.Method != "" && !validMethod(item.Method) {
@@ -534,9 +542,10 @@ func dispatchPipelineRequestBounded(
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
 	req.Header.Del("X-Consumer-Username")
-	if host := req.Header.Get("Host"); host != "" {
-		req.Host = host
-		req.Header.Del("Host")
+	req.Header.Del("Host")
+	req.Header.Del("X-Forwarded-Host")
+	for _, value := range outer.Header.Values("X-Forwarded-Host") {
+		req.Header.Add("X-Forwarded-Host", value)
 	}
 	if leaseFactory != nil {
 		req = WithDispatchLeaseFactory(req, leaseFactory)

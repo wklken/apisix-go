@@ -70,6 +70,9 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 		consumerKV[key] = consumerID
 		consumerToKeys[key] = append([]string(nil), snapshot.pluginKeys...)
 		for _, pluginKey := range snapshot.pluginKeys {
+			if owner := string(consumerKV[pluginKey]); owner != "" && owner != key {
+				return duplicateConsumerLookupKeyError(pluginKey, owner)
+			}
 			consumerKV[pluginKey] = consumerID
 		}
 		if len(snapshot.referencePlugins) > 0 {

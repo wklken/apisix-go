@@ -20,36 +20,6 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-func TestReconcileInitialReloadEventDropsRepresentedSentinel(t *testing.T) {
-	events := make(chan struct{}, 1)
-	events <- struct{}{}
-	var generation atomic.Uint64
-	generation.Store(1)
-
-	reconcileInitialReloadEvent(events, 1, generation.Load)
-
-	if got := len(events); got != 0 {
-		t.Fatalf("reload queue length = %d, want 0 after initial build", got)
-	}
-}
-
-func TestReconcileInitialReloadEventPreservesUpdateDuringBuild(t *testing.T) {
-	events := make(chan struct{}, 1)
-	events <- struct{}{}
-	var generation atomic.Uint64
-	generation.Store(1)
-
-	// The update increments its generation before its enqueue coalesces with
-	// the initial sentinel, matching the server's store hook ordering.
-	generation.Add(1)
-
-	reconcileInitialReloadEvent(events, 1, generation.Load)
-
-	if got := len(events); got != 1 {
-		t.Fatalf("reload queue length = %d, want 1 for the update during build", got)
-	}
-}
-
 func TestReloadSchedulerCoalescesBurstAfterQuietPeriod(t *testing.T) {
 	const quiet = 20 * time.Millisecond
 	const maxWait = 200 * time.Millisecond
@@ -479,6 +449,132 @@ func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {
 	}
 	if got := oldStops.Load(); got != 0 {
 		t.Fatalf("last-good handler stopper calls = %d, want 0", got)
+	}
+}
+
+func TestAcknowledgedHTTPRouteWaitsForSuccessfulPublication(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{}
+
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/acknowledged-http.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	server := &Server{
+		addr:            "127.0.0.1:9080",
+		storage:         storage,
+		routes:          newRouteHandler(http.NotFoundHandler(), nil),
+		reloadEventChan: make(chan struct{}, 1),
+	}
+	server.registerAcknowledgedStoreUpdateHook(context.Background())
+
+	event := store.NewAcknowledgedEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/routes/disabled-route")
+	event.Value = []byte(`{"id":"disabled-route","uri":"/disabled","plugins":{"disabled-test-plugin":{}}}`)
+	events <- event
+	err = event.Wait(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disabled-test-plugin") {
+		t.Fatalf("acknowledged route error = %v, want publication failure", err)
+	}
+}
+
+func TestAcknowledgedHTTPPublicationRunsOncePerStoreGeneration(t *testing.T) {
+	server := &Server{}
+	var reloads atomic.Int32
+	reload := func() error {
+		reloads.Add(1)
+		return nil
+	}
+
+	if err := server.publishAcknowledgedHTTPGeneration(7, reload); err != nil {
+		t.Fatalf("first publication: %v", err)
+	}
+	if err := server.publishAcknowledgedHTTPGeneration(7, reload); err != nil {
+		t.Fatalf("duplicate bucket publication: %v", err)
+	}
+	if got := reloads.Load(); got != 1 {
+		t.Fatalf("reload calls for one store generation = %d, want 1", got)
+	}
+	if err := server.publishAcknowledgedHTTPGeneration(8, reload); err != nil {
+		t.Fatalf("next generation publication: %v", err)
+	}
+	if got := reloads.Load(); got != 2 {
+		t.Fatalf("reload calls after next store generation = %d, want 2", got)
+	}
+
+	wantErr := errors.New("publication failed")
+	failedServer := &Server{}
+	var failedReloads atomic.Int32
+	failedReload := func() error {
+		failedReloads.Add(1)
+		return wantErr
+	}
+	for range 2 {
+		if err := failedServer.publishAcknowledgedHTTPGeneration(9, failedReload); !errors.Is(err, wantErr) {
+			t.Fatalf("cached publication error = %v, want %v", err, wantErr)
+		}
+	}
+	if got := failedReloads.Load(); got != 1 {
+		t.Fatalf("failed reload calls for one store generation = %d, want 1", got)
+	}
+}
+
+func TestAcknowledgedHTTPRouteRejectsCanceledPublicationContext(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{}
+
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/acknowledged-http-canceled.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	server := &Server{
+		storage: storage,
+		routes:  newRouteHandler(http.NotFoundHandler(), nil),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	server.registerAcknowledgedStoreUpdateHook(ctx)
+
+	event := store.NewAcknowledgedEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/routes/canceled-route")
+	event.Value = []byte(`{"id":"canceled-route","uri":"/canceled"}`)
+	events <- event
+	if err := event.Wait(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acknowledged route error = %v, want context.Canceled", err)
+	}
+}
+
+func TestAcknowledgedHTTPPublicationRejectsContextCanceledWhileWaitingForReload(t *testing.T) {
+	server := &Server{}
+	server.reloadMu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.reloadAcknowledgedHTTP(ctx)
+	}()
+	select {
+	case err := <-done:
+		server.reloadMu.Unlock()
+		t.Fatalf("publication returned before reload lock was released: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	server.reloadMu.Unlock()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("acknowledged publication error = %v, want context.Canceled", err)
 	}
 }
 

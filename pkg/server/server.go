@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -127,6 +126,12 @@ type Server struct {
 	streamReloadMu  sync.Mutex
 	streamRoutes    []resource.StreamRoute
 	reloadEventChan chan struct{}
+
+	reloadMu                  sync.Mutex
+	httpPublicationMu         sync.Mutex
+	httpPublicationAttempted  bool
+	httpPublicationGeneration uint64
+	httpPublicationErr        error
 
 	events            chan *store.Event
 	storage           *store.Store
@@ -656,9 +661,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 	}
 	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(config.GlobalConfig))
-	var reloadGeneration atomic.Uint64
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
-		s.registerAcknowledgedStoreUpdateHook(&reloadGeneration)
+		s.registerAcknowledgedStoreUpdateHook(ctx)
 	}
 
 	logger.Info("Starting storage")
@@ -670,18 +674,18 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
-	logger.Info("build the routes")
-	initialReloadGeneration := reloadGeneration.Load()
-	builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
-	if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
-		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
-		return err
+	if standaloneConfigProvider(config.GlobalConfig) != "" {
+		logger.Info("build the routes")
+		builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
+		if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
+			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+			return err
+		}
+		metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
-	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	previousStreamRuntime := s.streamRuntime
 	if err := s.startStreamProxy(ctx); err != nil {
 		return err
@@ -1192,20 +1196,38 @@ func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream 
 	}
 }
 
-func (s *Server) registerAcknowledgedStoreUpdateHook(reloadGeneration *atomic.Uint64) {
+func (s *Server) registerAcknowledgedStoreUpdateHook(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.storage.AddAcknowledgedEventUpdateHook(func(event *store.Event) error {
-		return s.handleAcknowledgedStoreEvent(event, func() {
-			if reloadGeneration != nil {
-				reloadGeneration.Add(1)
-			}
-			s.SendReloadEvent()
+		return s.handleAcknowledgedStoreEvent(event, func() error {
+			return s.publishAcknowledgedHTTPGeneration(
+				s.storage.HTTPConfigGeneration(),
+				func() error { return s.reloadAcknowledgedHTTP(ctx) },
+			)
 		})
 	})
 }
 
-func (s *Server) handleAcknowledgedStoreEvent(event *store.Event, reloadHTTP func()) error {
+func (s *Server) publishAcknowledgedHTTPGeneration(generation uint64, reload func() error) error {
+	s.httpPublicationMu.Lock()
+	defer s.httpPublicationMu.Unlock()
+	if s.httpPublicationAttempted && s.httpPublicationGeneration == generation {
+		return s.httpPublicationErr
+	}
+	err := reload()
+	s.httpPublicationAttempted = true
+	s.httpPublicationGeneration = generation
+	s.httpPublicationErr = err
+	return err
+}
+
+func (s *Server) handleAcknowledgedStoreEvent(event *store.Event, reloadHTTP func() error) error {
 	if isHTTPRouteEvent(event) && reloadHTTP != nil {
-		reloadHTTP()
+		if err := reloadHTTP(); err != nil {
+			return err
+		}
 	}
 	if !isStreamRouteEvent(event) {
 		return nil
@@ -1220,6 +1242,20 @@ func (s *Server) handleAcknowledgedStoreEvent(event *store.Event, reloadHTTP fun
 		return nil
 	}
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
+	return nil
+}
+
+func (s *Server) reloadAcknowledgedHTTP(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if err := s.reload(ctx); err != nil {
+		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
+		return err
+	}
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
 	return nil
 }
 

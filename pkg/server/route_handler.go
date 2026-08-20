@@ -270,7 +270,7 @@ func (r *routeSet) acquireRequest() bool {
 func (r *routeSet) acquireDispatchLease() bool {
 	for {
 		state := r.state.Load()
-		if state == routeSetRetired {
+		if state&routeSetRetired != 0 {
 			return false
 		}
 		if r.state.CompareAndSwap(state, state+1) {

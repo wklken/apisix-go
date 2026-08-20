@@ -333,17 +333,23 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
-	s.applyConsumerSnapshot(snapshot)
-	return nil
+	return s.applyConsumerSnapshot(snapshot)
 }
 
-func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) {
+func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) error {
 	s.consumerMu.Lock()
 	defer s.consumerMu.Unlock()
 	key := util.BytesToString(snapshot.id)
+	for _, pluginKey := range snapshot.pluginKeys {
+		if owner := string(s.consumerKV[pluginKey]); owner != "" && owner != key {
+			return duplicateConsumerLookupKeyError(pluginKey, owner)
+		}
+	}
 	if keys, ok := s.consumerToKeys[key]; ok {
 		for _, oldKey := range keys {
-			delete(s.consumerKV, oldKey)
+			if string(s.consumerKV[oldKey]) == key {
+				delete(s.consumerKV, oldKey)
+			}
 		}
 	}
 	for _, pluginName := range s.consumerToReferences[key] {
@@ -375,6 +381,11 @@ func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) {
 	}
 	s.consumerToReferences[key] = snapshot.referencePlugins
 	s.consumerValues[key] = snapshot.consumer
+	return nil
+}
+
+func duplicateConsumerLookupKeyError(pluginKey, owner string) error {
+	return fmt.Errorf("consumer lookup key %q is already owned by consumer %q", pluginKey, owner)
 }
 
 func validateJWEDecryptConsumerConfig(config jweDecrypt) error {
@@ -413,7 +424,9 @@ func (s *Store) consumerKVDelete(id []byte) error {
 	// clear old keys
 	if keys, ok := s.consumerToKeys[key]; ok {
 		for _, k := range keys {
-			delete(s.consumerKV, k)
+			if string(s.consumerKV[k]) == key {
+				delete(s.consumerKV, k)
+			}
 		}
 		delete(s.consumerToKeys, key)
 	}

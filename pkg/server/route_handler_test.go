@@ -854,6 +854,18 @@ func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testin
 	}
 }
 
+func TestRetiredRouteSetRefusesNestedDispatchLease(t *testing.T) {
+	generation := newRouteSet(http.NotFoundHandler(), nil)
+	if !generation.acquireRequest() {
+		t.Fatal("active generation refused request")
+	}
+	retireRouteSet(generation)
+	if generation.acquireDispatchLease() {
+		t.Fatal("retired generation accepted a nested dispatch lease")
+	}
+	generation.releaseRequest()
+}
+
 func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
 	plugin := &limit_conn.Plugin{}
 	if err := plugin.Init(); err != nil {

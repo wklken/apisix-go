@@ -318,6 +318,7 @@ func TestHandlerVerifiesBearerJWTWithPublicKey(t *testing.T) {
 	})
 	token := signRS256(t, privateKey, map[string]any{
 		"iss":   idp.URL,
+		"aud":   "apisix",
 		"sub":   "alice",
 		"scope": "read write",
 		"exp":   timeNowUnix() + 3600,
@@ -391,6 +392,7 @@ func TestHandlerVerifiesBearerJWTWithJWKS(t *testing.T) {
 	})
 	token := signRS256WithKid(t, privateKey, "kid-a", map[string]any{
 		"iss":   idp.URL,
+		"aud":   "apisix",
 		"sub":   "alice",
 		"scope": "read",
 		"exp":   timeNowUnix() + 3600,
@@ -550,6 +552,69 @@ func TestHandlerRejectsMismatchedAudienceClaim(t *testing.T) {
 	}
 	if strings.TrimSpace(rr.Body.String()) != `{"error":"mismatched audience"}` {
 		t.Fatalf("body = %q, want mismatched audience error", rr.Body.String())
+	}
+}
+
+func TestHandlerValidatesIntrospectedTokenAgainstConfiguredAudiences(t *testing.T) {
+	tests := []struct {
+		name       string
+		claims     map[string]any
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "allowed audience",
+			claims:     map[string]any{"active": true, "aud": "https://api.example.test"},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "wrong audience",
+			claims:     map[string]any{"active": true, "aud": "https://other.example.test"},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"mismatched audience"}`,
+		},
+		{
+			name:       "missing audience",
+			claims:     map[string]any{"active": true},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"required audience claim not present"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(test.claims)
+			}))
+			t.Cleanup(idp.Close)
+
+			p := newTestPlugin(t, Config{
+				ClientID:              "apisix",
+				ClientSecret:          "secret-a",
+				IntrospectionEndpoint: idp.URL,
+				BearerOnly:            true,
+				ClaimValidator: map[string]any{
+					"audience": map[string]any{
+						"valid_audiences": []any{"https://api.example.test"},
+					},
+				},
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+			req.Header.Set("Authorization", "Bearer token-a")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, test.wantStatus, rr.Body.String())
+			}
+			if got := strings.TrimSpace(rr.Body.String()); got != test.wantBody {
+				t.Fatalf("body = %q, want %q", got, test.wantBody)
+			}
+		})
 	}
 }
 
@@ -916,6 +981,7 @@ func TestHandlerValidatesIssuerAgainstConfiguredIssuers(t *testing.T) {
 	})
 	token := signRS256(t, privateKey, map[string]any{
 		"iss": "https://other.example.test",
+		"aud": "apisix",
 		"exp": timeNowUnix() + 3600,
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
@@ -928,6 +994,145 @@ func TestHandlerValidatesIssuerAgainstConfiguredIssuers(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsStaticJWTWhenDiscoveryUnavailable(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  "http://127.0.0.1:1/.well-known/openid-configuration",
+		BearerOnly: true,
+		PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	token := signRS256(t, privateKey, map[string]any{
+		"iss": "https://issuer.example.test",
+		"aud": "apisix",
+		"exp": timeNowUnix() + 3600,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsStaticJWTWhenDiscoveryHasNoIssuer(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(idp.Close)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  idp.URL,
+		BearerOnly: true,
+		PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	token := signRS256(t, privateKey, map[string]any{
+		"iss": "https://issuer.example.test",
+		"aud": "apisix",
+		"exp": timeNowUnix() + 3600,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsStaticJWTForWrongAudience(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host})
+	}))
+	t.Cleanup(idp.Close)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  idp.URL,
+		BearerOnly: true,
+		PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	token := signRS256(t, privateKey, map[string]any{
+		"iss": idp.URL,
+		"aud": "other-client",
+		"exp": timeNowUnix() + 3600,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerAcceptsStaticJWTForConfiguredAudience(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host})
+	}))
+	t.Cleanup(idp.Close)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  idp.URL,
+		BearerOnly: true,
+		PublicKey:  publicKeyPEM(t, &privateKey.PublicKey),
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"valid_audiences": []any{"https://api.example.test"},
+			},
+		},
+	})
+	token := signRS256(t, privateKey, map[string]any{
+		"iss": idp.URL,
+		"aud": "https://api.example.test",
+		"exp": timeNowUnix() + 3600,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -968,8 +1173,8 @@ func TestValidateIssuerRequiresConfiguredIssuerClaim(t *testing.T) {
 			wantActive: true,
 		},
 		{
-			name:       "no issuer constraint accepts missing claim",
-			wantActive: true,
+			name:       "no verifiable issuer rejects missing claim",
+			wantActive: false,
 		},
 	}
 
@@ -1091,6 +1296,46 @@ func TestSchemaRejectsNonPositiveSessionTimeouts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSchemaRejectsEmptyConfiguredAudience(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"client_id":     "apisix",
+		"client_secret": "secret-a",
+		"discovery":     "https://idp.example.com/.well-known/openid-configuration",
+		"claim_validator": map[string]any{
+			"audience": map[string]any{
+				"valid_audiences": []any{""},
+			},
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want empty audience rejection")
+	}
+}
+
+func TestPostInitRejectsEmptyConfiguredAudience(t *testing.T) {
+	p := &Plugin{config: Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "https://idp.example.com/.well-known/openid-configuration",
+		BearerOnly:   true,
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"valid_audiences": []any{""},
+			},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want empty audience rejection")
 	}
 }
 
@@ -1807,6 +2052,61 @@ func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T)
 	}
 }
 
+func TestHandlerCodeFlowRedirectsOnlyToSameOriginPath(t *testing.T) {
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
+	})
+	t.Cleanup(idp.Close)
+
+	tests := []struct {
+		name        string
+		originalURI string
+		want        string
+	}{
+		{name: "path", originalURI: "/orders?view=open", want: "/orders?view=open"},
+		{name: "scheme relative", originalURI: "//evil.example/path", want: "/"},
+		{name: "backslash host", originalURI: "/\\evil.example/path", want: "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, codeFlowConfig(idp.URL))
+			initial := httptest.NewRecorder()
+			if err := p.writeSession(initial, sessionData{
+				CreatedAt:     time.Now().Unix(),
+				UpdatedAt:     time.Now().Unix(),
+				FlowState:     "state-a",
+				FlowExpiresAt: time.Now().Add(time.Minute).Unix(),
+				OriginalURI:   tt.originalURI,
+			}); err != nil {
+				t.Fatalf("writeSession() error = %v", err)
+			}
+
+			callback := httptest.NewRequest(
+				http.MethodGet,
+				"https://example.com/orders/.apisix/redirect?code=code-a&state=state-a",
+				nil,
+			)
+			callback.AddCookie(initial.Result().Cookies()[0])
+			callbackRecorder := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called for callback")
+			})).ServeHTTP(callbackRecorder, callback)
+
+			if callbackRecorder.Code != http.StatusFound {
+				t.Fatalf(
+					"callback status = %d, want 302; body=%s",
+					callbackRecorder.Code,
+					callbackRecorder.Body.String(),
+				)
+			}
+			if got := callbackRecorder.Header().Get("Location"); got != tt.want {
+				t.Fatalf("callback redirect = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	var idp *httptest.Server
 	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2488,6 +2788,7 @@ func TestProviderClientReusedAcrossRequestsPreservesJWKSCache(t *testing.T) {
 	})
 	token := signRS256WithKid(t, privateKey, "kid-a", map[string]any{
 		"iss": idp.URL,
+		"aud": "apisix",
 		"sub": "alice",
 		"exp": timeNowUnix() + 3600,
 	})

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -510,7 +512,7 @@ func (p *Plugin) executeProviderRequest(
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
 		registerUpstreamResponseTime(r, time.Since(upstreamStarted))
-		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
+		base.WriteJSONMessage(w, providerRequestErrorStatus(err), "failed to request LLM")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -870,6 +872,10 @@ func (p *Plugin) writeProviderResponse(
 	started time.Time,
 	resp *http.Response,
 ) {
+	if isProviderErrorStatus(resp.StatusCode) {
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
 	if prepared.clientDocument.IsStreaming(prepared.clientProtocol) {
 		for field, values := range resp.Header {
 			if prepared.anthropicConversion && strings.EqualFold(field, "Content-Length") {
@@ -1001,4 +1007,29 @@ func (p *Plugin) writeProviderResponse(
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+func isProviderErrorStatus(status int) bool {
+	return status == http.StatusTooManyRequests || (status >= http.StatusInternalServerError && status < 600)
+}
+
+func providerRequestErrorStatus(err error) int {
+	if isTimeoutError(err) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusInternalServerError
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
 }

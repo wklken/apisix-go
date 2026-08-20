@@ -281,6 +281,79 @@ func TestRouterRejectsNonMatchingRouteWithoutDialing(t *testing.T) {
 	}
 }
 
+func TestRouterMatchesClientLocalAddrInsteadOfWildcardListener(t *testing.T) {
+	upstream, upstreamAddr := startStreamUpstream(t, []byte("stream-response"))
+	defer func() { _ = upstream.Close() }()
+
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen wildcard stream route: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	_, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address: %v", err)
+	}
+	routePort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse route port: %v", err)
+	}
+	upstreamHost, upstreamPort, err := net.SplitHostPort(upstreamAddr)
+	if err != nil {
+		t.Fatalf("split upstream address: %v", err)
+	}
+	upstreamPortNumber, err := strconv.Atoi(upstreamPort)
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID:         "local-addr-route",
+		ServerAddr: "127.0.0.1",
+		ServerPort: routePort,
+		Upstream: resource.Upstream{
+			Scheme: "tcp",
+			Nodes:  []resource.Node{{Host: upstreamHost, Port: upstreamPortNumber, Weight: 1}},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", portText))
+	if err != nil {
+		t.Fatalf("dial stream route: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	serverConn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept stream route: %v", err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- router.Serve(context.Background(), listener, serverConn) }()
+
+	if _, err := client.Write([]byte("stream-request")); err != nil {
+		t.Fatalf("write stream request: %v", err)
+	}
+	response := make([]byte, len("stream-response"))
+	if _, err := io.ReadFull(client, response); err != nil {
+		t.Fatalf("read stream response: %v", err)
+	}
+	if string(response) != "stream-response" {
+		t.Fatalf("response = %q, want stream-response", response)
+	}
+	_ = client.Close()
+
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve() did not stop after client close")
+	}
+}
+
 func TestNewRouterRejectsUnsupportedUpstreamScheme(t *testing.T) {
 	_, err := NewRouter([]resource.StreamRoute{{
 		ID: "tls-route",
@@ -531,7 +604,7 @@ func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 	}
 }
 
-func TestRouterPrefersSpecificRouteOverWildcard(t *testing.T) {
+func TestRouterUsesFirstMatchingResource(t *testing.T) {
 	router, err := NewRouter([]resource.StreamRoute{
 		{
 			ID: "wildcard",
@@ -554,8 +627,35 @@ func TestRouterPrefersSpecificRouteOverWildcard(t *testing.T) {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
-	if !ok || entry.route.ID != "specific" {
-		t.Fatalf("matched route = %#v, want specific", entry.route)
+	if !ok || entry.route.ID != "wildcard" {
+		t.Fatalf("matched route = %#v, want wildcard first resource", entry.route)
+	}
+}
+
+func TestRouterPreservesResourceOrder(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{
+		{
+			ID: "first",
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "second",
+			ServerPort: 1883,
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	entry, ok := router.matchEntry("127.0.0.1:1883", "127.0.0.1:1000")
+	if !ok || entry.route.ID != "first" {
+		t.Fatalf("matched route = %#v, want first resource", entry.route)
 	}
 }
 

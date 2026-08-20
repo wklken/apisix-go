@@ -1,8 +1,12 @@
 package store
 
 import (
+	"errors"
 	"strconv"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestParseSSL(t *testing.T) {
@@ -110,6 +114,68 @@ func TestSSLCertificateIndexPublishesExactAndWildcard(t *testing.T) {
 	}
 	if _, err := GetSSLCertificateForSNI("other.example.test"); err == nil {
 		t.Fatal("GetSSLCertificateForSNI(unrelated) error = nil")
+	}
+}
+
+func TestSSLCertificateIndexSupportsSingularSNIAndOneLabelWildcard(t *testing.T) {
+	storage, events := sslIndexTestStore(t)
+	cert, key := testCertificatePEM(t, "singular.example.test")
+	singular, err := json.Marshal(resource.SSL{
+		ID:   "ssl-singular",
+		Sni:  "singular.example.test",
+		Cert: cert,
+		Key:  key,
+	})
+	if err != nil {
+		t.Fatalf("marshal singular SSL: %v", err)
+	}
+	putSSL(t, events, "ssl-singular", singular)
+	putSSL(t, events, "ssl-wild", sslValue("ssl-wild", []string{"*.wild.example.test"}, cert, key, 1))
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if _, err := GetSSLCertificateForSNI("singular.example.test"); err != nil {
+		t.Fatalf("singular SNI lookup error = %v", err)
+	}
+	if _, err := GetSSLCertificateForSNI("one.wild.example.test"); err != nil {
+		t.Fatalf("one-label wildcard lookup error = %v", err)
+	}
+	if _, err := GetSSLCertificateForSNI("two.labels.wild.example.test"); err == nil {
+		t.Fatal("multi-label wildcard lookup succeeded")
+	}
+}
+
+func TestSSLCertificateIndexRejectsMalformedClientCAAndRetainsLastGood(t *testing.T) {
+	storage, events := sslIndexTestStore(t)
+	cert, key := testCertificatePEM(t, "last-good.example.test")
+	putSSL(t, events, "ssl-good", sslValue("ssl-good", []string{"last-good.example.test"}, cert, key, 1))
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("Sync() after valid SSL error = %v", err)
+	}
+
+	badValue, err := json.Marshal(resource.SSL{
+		ID:   "ssl-bad-client",
+		Sni:  "bad-client.example.test",
+		Cert: cert,
+		Key:  key,
+		Client: &resource.SSLClient{
+			CA: "not-a-certificate",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal malformed client SSL: %v", err)
+	}
+	putSSL(t, events, "ssl-bad-client", badValue)
+	err = storage.Sync()
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("malformed client CA error = %v, want ResourceValidationError", err)
+	}
+	if _, err := GetSSLCertificateForSNI("last-good.example.test"); err != nil {
+		t.Fatalf("last-good SSL lost after malformed client CA: %v", err)
+	}
+	if _, err := GetSSLCertificateForSNI("bad-client.example.test"); err == nil {
+		t.Fatal("malformed client CA resource was published")
 	}
 }
 

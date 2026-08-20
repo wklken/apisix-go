@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -74,6 +75,52 @@ func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsNon2xxOPAResponseBeforeAllowBody(t *testing.T) {
+	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
+	}))
+	defer opa.Close()
+
+	p := newTestPlugin(t, Config{
+		Host:   opa.URL,
+		Policy: "authz",
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for a non-2xx OPA response")
+	})
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandlerDoesNotFollowOPAResponseRedirect(t *testing.T) {
+	var redirectedHits atomic.Int32
+	redirected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectedHits.Add(1)
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
+	}))
+	defer redirected.Close()
+	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirected.URL, http.StatusFound)
+	}))
+	defer opa.Close()
+
+	p := newTestPlugin(t, Config{Host: opa.URL, Policy: "authz"})
+	res := performRequest(p, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called for a redirected OPA response")
+	})
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+	if got := redirectedHits.Load(); got != 0 {
+		t.Fatalf("redirected OPA backend hits = %d, want 0", got)
 	}
 }
 

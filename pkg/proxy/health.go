@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/smallnest/weighted"
 )
 
 // HealthReporter receives passive upstream outcomes from the route/protocol
@@ -100,13 +98,46 @@ func healthStateFromRequest(r *http.Request) (*healthRequestState, bool) {
 // node pool is a construction error: the empty round-robin picker used to
 // panic on the first Next() type assertion.
 func NewUpstreamLoadBalance(servers map[string]int, checks map[string]any) (LoadBalancer, error) {
+	return newUpstreamLoadBalanceWithPriorities(servers, nil, checks)
+}
+
+// NewUpstreamLoadBalanceWithPriorities builds the common upstream selector
+// while preserving APISIX node priority groups.
+func NewUpstreamLoadBalanceWithPriorities(
+	servers map[string]int,
+	priorities map[string]int,
+	checks map[string]any,
+) (LoadBalancer, error) {
+	return newUpstreamLoadBalanceWithPriorities(servers, priorities, checks)
+}
+
+func newUpstreamLoadBalanceWithPriorities(
+	servers map[string]int,
+	priorities map[string]int,
+	checks map[string]any,
+) (LoadBalancer, error) {
 	if len(servers) == 0 {
 		return nil, fmt.Errorf("cannot build upstream load balancer without nodes")
 	}
-	if _, hasPassive := checks["passive"]; !hasPassive {
-		if _, hasActive := checks["active"]; !hasActive {
-			return NewWeightedRRLoadBalance(servers), nil
+	groups := newPriorityGroups(servers, priorities)
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("cannot build upstream load balancer without positive-weight nodes")
+	}
+	healthChecksConfigured := false
+	if _, hasPassive := checks["passive"]; hasPassive {
+		healthChecksConfigured = true
+	}
+	if _, hasActive := checks["active"]; hasActive {
+		healthChecksConfigured = true
+	}
+	if len(groups) > 1 {
+		if !healthChecksConfigured {
+			return &priorityLoadBalance{groups: groups}, nil
 		}
+		return newHealthAwareLoadBalance(servers, priorities, checks)
+	}
+	if !healthChecksConfigured {
+		return &priorityLoadBalance{groups: groups}, nil
 	}
 	return NewHealthAwareLoadBalance(servers, checks)
 }
@@ -134,40 +165,49 @@ type healthState struct {
 // deliberately fails open and returns the next configured target, matching
 // APISIX's documented availability behavior for an exhausted pool.
 type HealthAwareLoadBalance struct {
-	selector *RRLoadBalance
-	targets  []string
-	states   map[string]*healthState
-	config   PassiveHealthConfig
-	mu       sync.Mutex
+	groups           []priorityGroup
+	healthySelectors []*RRLoadBalance
+	targets          []string
+	states           map[string]*healthState
+	config           PassiveHealthConfig
+	name             string
+	observer         ClusterObserver
+	mu               sync.Mutex
 }
 
 func NewHealthAwareLoadBalance(servers map[string]int, checks map[string]any) (*HealthAwareLoadBalance, error) {
+	return newHealthAwareLoadBalance(servers, nil, checks)
+}
+
+func newHealthAwareLoadBalance(
+	servers map[string]int,
+	priorities map[string]int,
+	checks map[string]any,
+) (*HealthAwareLoadBalance, error) {
 	config, err := parsePassiveHealthConfig(checks)
 	if err != nil {
 		return nil, err
 	}
 
+	groups := newPriorityGroups(servers, priorities)
 	targets := make([]string, 0, len(servers))
 	for target := range servers {
 		targets = append(targets, target)
 	}
 	sort.Strings(targets)
 
-	selector := &RRLoadBalance{w: &weighted.SW{}}
-	for _, target := range targets {
-		selector.w.Add(target, servers[target])
-	}
-
 	states := make(map[string]*healthState, len(targets))
 	for _, target := range targets {
 		states[target] = &healthState{}
 	}
-	return &HealthAwareLoadBalance{
-		selector: selector,
-		targets:  targets,
-		states:   states,
-		config:   config,
-	}, nil
+	lb := &HealthAwareLoadBalance{
+		groups:  groups,
+		targets: targets,
+		states:  states,
+		config:  config,
+	}
+	lb.refreshHealthySelectorsLocked()
+	return lb, nil
 }
 
 func (lb *HealthAwareLoadBalance) Next() string {
@@ -177,60 +217,157 @@ func (lb *HealthAwareLoadBalance) Next() string {
 		return ""
 	}
 
-	for range lb.targets {
-		target := lb.selector.Next()
-		if target == "" || !lb.states[target].unhealthy {
-			return target
-		}
+	if target, ok := lb.nextHealthyLocked(); ok {
+		return target
 	}
 
 	// APISIX keeps forwarding when no healthy node is available. The extra
-	// selection is intentional: all prior candidates were quarantined.
-	return lb.selector.Next()
+	// selection is intentional: all prior candidates were quarantined. When
+	// priorities are configured, fail-open starts with the highest group.
+	if len(lb.groups) == 0 {
+		return ""
+	}
+	return lb.groups[0].selector.Next()
+}
+
+func (lb *HealthAwareLoadBalance) NextForRequest(request *http.Request) string {
+	state := priorityStateForRequest(request)
+	state.finishPreviousAttempt()
+
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	anyHealthy := false
+	for _, group := range lb.groups {
+		for target := range group.weights {
+			if !lb.states[target].unhealthy {
+				anyHealthy = true
+				break
+			}
+		}
+		if anyHealthy {
+			break
+		}
+	}
+	selectable := func(target string) bool {
+		return !anyHealthy || !lb.states[target].unhealthy
+	}
+	for _, group := range lb.groups {
+		if target := group.nextUntried(state.tried, selectable); target != "" {
+			state.last = target
+			return target
+		}
+	}
+	return ""
+}
+
+func (lb *HealthAwareLoadBalance) RecordSelectedTarget(request *http.Request, target string) {
+	recordPriorityTargetAttempt(request, target)
+}
+
+func (lb *HealthAwareLoadBalance) nextHealthyLocked() (string, bool) {
+	for _, selector := range lb.healthySelectors {
+		if target := selector.Next(); target != "" {
+			return target, true
+		}
+	}
+	return "", false
+}
+
+func (lb *HealthAwareLoadBalance) refreshHealthySelectorsLocked() {
+	selectors := make([]*RRLoadBalance, 0, len(lb.groups))
+	for _, group := range lb.groups {
+		allHealthy := true
+		for target := range group.weights {
+			if lb.states[target].unhealthy {
+				allHealthy = false
+				break
+			}
+		}
+		if allHealthy {
+			selectors = append(selectors, group.selector)
+			continue
+		}
+		weights := make(map[string]int, len(group.weights))
+		for target, weight := range group.weights {
+			if !lb.states[target].unhealthy {
+				weights[target] = weight
+			}
+		}
+		selectors = append(selectors, NewWeightedRRLoadBalance(weights))
+	}
+	lb.healthySelectors = selectors
 }
 
 func (lb *HealthAwareLoadBalance) ReportHTTP(target string, status int) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	if lb.config.Type == "tcp" {
+		lb.mu.Unlock()
 		return
 	}
 	state, ok := lb.states[target]
 	if !ok || state.unhealthy {
+		lb.mu.Unlock()
 		return
 	}
+	becameUnhealthy := false
 	if _, unhealthy := lb.config.UnhealthyStatuses[status]; unhealthy {
 		state.httpFailures++
 		if lb.config.HTTPFailures > 0 && state.httpFailures >= lb.config.HTTPFailures {
 			state.unhealthy = true
+			lb.refreshHealthySelectorsLocked()
+			becameUnhealthy = true
 		}
-		return
-	}
-	if _, healthy := lb.config.HealthyStatuses[status]; healthy {
+	} else if _, healthy := lb.config.HealthyStatuses[status]; healthy {
 		state.httpFailures = 0
 		state.tcpFailures = 0
 		state.timeouts = 0
 	}
+	if becameUnhealthy && lb.observer != nil {
+		lb.observer.SetHealth(lb.name, target, false)
+	}
+	lb.mu.Unlock()
 }
 
 func (lb *HealthAwareLoadBalance) ReportTCPFailure(target string, timeout bool) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	state, ok := lb.states[target]
 	if !ok || state.unhealthy {
+		lb.mu.Unlock()
 		return
 	}
+	becameUnhealthy := false
 	if timeout {
 		state.timeouts++
 		if lb.config.Timeouts > 0 && state.timeouts >= lb.config.Timeouts {
 			state.unhealthy = true
+			lb.refreshHealthySelectorsLocked()
+			becameUnhealthy = true
 		}
-		return
+	} else {
+		state.tcpFailures++
+		if lb.config.TCPFailures > 0 && state.tcpFailures >= lb.config.TCPFailures {
+			state.unhealthy = true
+			lb.refreshHealthySelectorsLocked()
+			becameUnhealthy = true
+		}
 	}
-	state.tcpFailures++
-	if lb.config.TCPFailures > 0 && state.tcpFailures >= lb.config.TCPFailures {
-		state.unhealthy = true
+	if becameUnhealthy && lb.observer != nil {
+		lb.observer.SetHealth(lb.name, target, false)
 	}
+	lb.mu.Unlock()
+}
+
+func (lb *HealthAwareLoadBalance) setObserver(name string, observer ClusterObserver) {
+	lb.mu.Lock()
+	lb.name = name
+	lb.observer = observer
+	lb.mu.Unlock()
+}
+
+func (lb *HealthAwareLoadBalance) clearObserver() {
+	lb.mu.Lock()
+	lb.observer = nil
+	lb.mu.Unlock()
 }
 
 func (lb *HealthAwareLoadBalance) IsHealthy(target string) bool {
@@ -254,6 +391,7 @@ func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
 	state.httpFailures = 0
 	state.tcpFailures = 0
 	state.timeouts = 0
+	lb.refreshHealthySelectorsLocked()
 	return true
 }
 
@@ -268,6 +406,7 @@ func (lb *HealthAwareLoadBalance) MarkUnhealthy(target string) bool {
 		return false
 	}
 	state.unhealthy = true
+	lb.refreshHealthySelectorsLocked()
 	return true
 }
 

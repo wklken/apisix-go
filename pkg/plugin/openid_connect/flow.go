@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -183,11 +184,24 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 		return
 	}
 
-	originalURI := session.OriginalURI
-	if originalURI == "" || !strings.HasPrefix(originalURI, "/") {
-		originalURI = "/"
-	}
+	originalURI := safeOriginalURI(session.OriginalURI)
 	http.Redirect(w, r, originalURI, http.StatusFound)
+}
+
+func safeOriginalURI(originalURI string) string {
+	if originalURI == "" || !strings.HasPrefix(originalURI, "/") ||
+		strings.HasPrefix(originalURI, "//") || strings.Contains(originalURI, "\\") ||
+		strings.IndexFunc(originalURI, unicode.IsControl) >= 0 {
+		return "/"
+	}
+
+	parsed, err := url.ParseRequestURI(originalURI)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Path == "" ||
+		strings.HasPrefix(parsed.Path, "//") || strings.Contains(parsed.Path, "\\") ||
+		strings.IndexFunc(parsed.Path, unicode.IsControl) >= 0 {
+		return "/"
+	}
+	return originalURI
 }
 
 func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier string) (tokenResponse, error) {

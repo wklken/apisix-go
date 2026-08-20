@@ -49,8 +49,12 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	t.Cleanup(func() { ConfigApplyFailures, ConfigApplyReady = oldFailures, oldReady })
 
 	RecordConfigApplySuccess()
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready after provider-only success = %v, want 0", got)
+	}
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
 	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
-		t.Fatalf("ready after success = %v, want 1", got)
+		t.Fatalf("ready after provider and HTTP success = %v, want 1", got)
 	}
 	RecordConfigApplyFailure()
 	if got := counterValue(t, ConfigApplyFailures); got != 1 {
@@ -58,6 +62,110 @@ func TestRecordConfigApplyUpdatesFailureAndReady(t *testing.T) {
 	}
 	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after failure = %v, want 0", got)
+	}
+}
+
+func TestConfigApplyStreamReadinessIsOptional(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_stream_optional_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_optional_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_optional_quarantine"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+		SetConfigApplyStreamRequired(false)
+	})
+
+	SetConfigApplyStreamRequired(false)
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("HTTP-only config apply readiness = false after provider and HTTP success")
+	}
+
+	SetConfigApplyStreamRequired(true)
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("stream-required config apply readiness = true before stream success")
+	}
+	RecordConfigApplyStageSuccess(ConfigApplyStageStreams)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("stream-required config apply readiness = false after all stages succeeded")
+	}
+
+	SetConfigApplyStreamRequired(false)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("HTTP-only config apply readiness = false after stream requirement disabled")
+	}
+}
+
+func TestConfigApplyStreamFailureBlocksAndRecoversReadiness(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_stream_failure_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_failure_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_failure_quarantine"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+		SetConfigApplyStreamRequired(false)
+	})
+
+	SetConfigApplyStreamRequired(true)
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplyStageSuccess(ConfigApplyStageStreams)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("config apply readiness = false after initial stream success")
+	}
+
+	RecordConfigApplyStageFailure(ConfigApplyStageStreams)
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true after stream failure")
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready gauge after stream failure = %v, want 0", got)
+	}
+	if got := counterValue(t, ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure counter after stream failure = %v, want 1", got)
+	}
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageStreams)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("config apply readiness = false after stream recovery")
+	}
+	if got := counterValue(t, ConfigApplyFailures); got != 1 {
+		t.Fatalf("failure counter after stream recovery = %v, want unchanged 1", got)
+	}
+}
+
+func TestConfigApplyCollectorReplacementResetsStreamState(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_stream_reset_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_reset_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_reset_quarantine"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+		SetConfigApplyStreamRequired(false)
+	})
+
+	SetConfigApplyStreamRequired(true)
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplyStageSuccess(ConfigApplyStageStreams)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("config apply readiness = false before collector replacement")
+	}
+
+	ConfigApplyFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "test_stream_reset_replaced_failures_total"},
+	)
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_reset_replaced_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_stream_reset_replaced_quarantine"})
+	if got := GetReadiness().ConfigApplyReady; got {
+		t.Fatal("config apply readiness = true after collector replacement")
+	}
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := GetReadiness().ConfigApplyReady; !got {
+		t.Fatal("HTTP-only config apply readiness = false after collector replacement reset")
 	}
 }
 
@@ -170,5 +278,95 @@ func TestGetReadinessResetsWhenConfigMetricsAreReplaced(t *testing.T) {
 	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_readiness_reset_ready_replaced"})
 	if got := GetReadiness().ConfigApplyReady; got {
 		t.Fatal("config apply readiness = true after collector replacement")
+	}
+}
+
+func TestConfigApplyQuarantineBlocksReadinessUntilCleared(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "test_quarantine_readiness_failures_total"},
+	)
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_readiness_count"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready before quarantine = %v, want 1", got)
+	}
+
+	RecordConfigApplyQuarantine(2)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 2 {
+		t.Fatalf("quarantine count = %v, want 2", got)
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 0 {
+		t.Fatalf("ready with quarantine = %v, want 0", got)
+	}
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("GetReadiness() remained ready while resources were quarantined")
+	}
+
+	RecordConfigApplyQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
+		t.Fatalf("quarantine count after clear = %v, want 0", got)
+	}
+	if got := gaugeValue(t, ConfigApplyReady); got != 1 {
+		t.Fatalf("ready after quarantine clear = %v, want 1", got)
+	}
+}
+
+func TestConfigApplyQuarantineMetricHasNoLabels(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	gauge := newConfigApplyQuarantineMetric(registry, "apisix_")
+	gauge.Set(3)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error = %v", err)
+	}
+	if len(families) != 1 || len(families[0].GetMetric()) != 1 {
+		t.Fatalf(
+			"quarantine metric families = %d, samples = %d, want one each",
+			len(families),
+			len(families[0].GetMetric()),
+		)
+	}
+	if labels := families[0].GetMetric()[0].GetLabel(); len(labels) != 0 {
+		t.Fatalf("quarantine metric labels = %v, want none", labels)
+	}
+}
+
+func TestConfigApplyQuarantineAggregatesProviderAndStoreSources(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined
+	ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "test_quarantine_sources_failures_total"})
+	ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_ready"})
+	ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_quarantine_sources_count"})
+	t.Cleanup(func() {
+		ConfigApplyFailures, ConfigApplyReady, ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+
+	RecordConfigApplyStageSuccess(ConfigApplyStageProvider)
+	RecordConfigApplyStageSuccess(ConfigApplyStageHTTPRoutes)
+	RecordConfigApplyQuarantine(2)
+	RecordConfigApplyStoreQuarantine(3)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 5 {
+		t.Fatalf("aggregated quarantine count = %v, want 5", got)
+	}
+	if GetReadiness().ConfigApplyReady {
+		t.Fatal("readiness = true while provider and store quarantine remain")
+	}
+
+	RecordConfigApplyQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 3 {
+		t.Fatalf("count after provider quarantine clear = %v, want 3", got)
+	}
+	RecordConfigApplyStoreQuarantine(0)
+	if got := gaugeValue(t, ConfigApplyQuarantined); got != 0 {
+		t.Fatalf("count after store quarantine clear = %v, want 0", got)
+	}
+	if !GetReadiness().ConfigApplyReady {
+		t.Fatal("readiness = false after both quarantine sources clear")
 	}
 }

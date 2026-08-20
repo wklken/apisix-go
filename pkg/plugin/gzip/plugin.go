@@ -196,15 +196,12 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-// RegisterCompressionOffers exposes gzip and deflate through the shared,
-// request-local negotiation state. The response metadata decides eligibility
-// once, before the selected wrapper is constructed.
+// RegisterCompressionOffers exposes gzip through the shared, request-local
+// negotiation state. The response metadata decides eligibility once, before
+// the selected wrapper is constructed.
 func (p *Plugin) RegisterCompressionOffers(r *http.Request, _ *compression.State) []compression.Offer {
 	eligible := p.requestEligible(r)
-	return []compression.Offer{
-		{Coding: compression.Gzip, Rank: 995, Eligible: eligible},
-		{Coding: compression.Deflate, Rank: 994, Eligible: eligible},
-	}
+	return []compression.Offer{{Coding: compression.Gzip, Rank: 995, Eligible: eligible}}
 }
 
 func (p *Plugin) WrapCompression(
@@ -213,7 +210,7 @@ func (p *Plugin) WrapCompression(
 	state *compression.State,
 	decision compression.Decision,
 ) (http.ResponseWriter, error) {
-	if decision.Coding != compression.Gzip && decision.Coding != compression.Deflate {
+	if decision.Coding != compression.Gzip {
 		return w, nil
 	}
 	return &maybeCompressResponseWriter{
@@ -247,7 +244,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		r, state := compression.Register(r,
 			compression.Offer{Coding: compression.Gzip, Rank: 995, Eligible: eligible},
-			compression.Offer{Coding: compression.Deflate, Rank: 994, Eligible: eligible},
 		)
 		mcw := &maybeCompressResponseWriter{
 			ResponseWriter: w,

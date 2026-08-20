@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -513,7 +514,7 @@ func TestHandlerLeavesSuccessfulHMACBodyOwnedByServer(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
+func TestPostInitAllowsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
 		{"basic-auth": {}, "key-auth": {}},
 		{"jwt-auth": {}},
@@ -522,9 +523,37 @@ func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "exactly one auth plugin") {
-		t.Fatalf("PostInit() error = %v, want exactly-one-plugin diagnostic", err)
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want all plugins in an entry to be accepted", err)
+	}
+	if len(p.auths) != 3 {
+		t.Fatalf("configured auth plugins = %d, want 3", len(p.auths))
+	}
+}
+
+func TestHandlerRunsEveryAuthPluginWithinArrayObject(t *testing.T) {
+	addAuthConsumer(t, "same-entry-key-user", map[string]any{
+		"key-auth": map[string]any{"key": "same-entry-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "same-entry-key")
+
+	p := newTestPlugin(t, Config{AuthPlugins: []AuthPluginConfig{
+		{"basic-auth": {}, "key-auth": {"header": "apikey"}},
+		{"jwt-auth": {}},
+	}})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "same-entry-key")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "same-entry-key-user" {
+			t.Fatalf("consumer_name = %v, want same-entry-key-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
 	}
 }
 
@@ -679,7 +708,10 @@ func (directSuccessAuth) GetSchema() string { return `{}` }
 func (directSuccessAuth) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("X-Direct-Auth", "authenticated")
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(
+			w,
+			ctx.WithAuthenticationState(r, ctx.NewAuthenticationState("direct-success-auth", resource.Consumer{})),
+		)
 	})
 }
 
@@ -736,6 +768,25 @@ func TestHandlerAllowsKeyAuthAfterJWEDecryptMissingToken(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsJWEDecryptPassthroughWithoutAuthenticationState(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"jwe-decrypt": {"header": "Authorization", "forward_header": "Authorization", "strict": false}},
+			{"key-auth": {"header": "apikey"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called without authentication state")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401; body=%s", res.Code, res.Body.String())
 	}
 }
 

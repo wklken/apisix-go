@@ -79,15 +79,15 @@ const schema = `
 `
 
 type Config struct {
-	ServiceName            string `json:"service_name"`
-	ServiceVersion         string `json:"service_version,omitempty"`
-	Method                 string `json:"method"`
-	ParamsTypeDesc         string `json:"params_type_desc,omitempty"`
-	SerializationHeaderKey string `json:"serialization_header_key,omitempty"`
-	Serialized             bool   `json:"serialized,omitempty"`
-	ConnectTimeout         int    `json:"connect_timeout,omitempty"`
-	ReadTimeout            int    `json:"read_timeout,omitempty"`
-	SendTimeout            int    `json:"send_timeout,omitempty"`
+	ServiceName            string  `json:"service_name"`
+	ServiceVersion         string  `json:"service_version,omitempty"`
+	Method                 string  `json:"method"`
+	ParamsTypeDesc         string  `json:"params_type_desc,omitempty"`
+	SerializationHeaderKey string  `json:"serialization_header_key,omitempty"`
+	Serialized             bool    `json:"serialized,omitempty"`
+	ConnectTimeout         float64 `json:"connect_timeout,omitempty"`
+	ReadTimeout            float64 `json:"read_timeout,omitempty"`
+	SendTimeout            float64 `json:"send_timeout,omitempty"`
 }
 
 type configKey struct{}
@@ -185,9 +185,9 @@ func ServeDubboWithRetries(
 
 func transportConfig(cfg Config) dubbo.Config {
 	return dubbo.Config{
-		ConnectTimeout: time.Duration(cfg.ConnectTimeout) * time.Millisecond,
-		SendTimeout:    time.Duration(cfg.SendTimeout) * time.Millisecond,
-		ReadTimeout:    time.Duration(cfg.ReadTimeout) * time.Millisecond,
+		ConnectTimeout: time.Duration(cfg.ConnectTimeout * float64(time.Millisecond)),
+		SendTimeout:    time.Duration(cfg.SendTimeout * float64(time.Millisecond)),
+		ReadTimeout:    time.Duration(cfg.ReadTimeout * float64(time.Millisecond)),
 		DecodeResponse: decodeTextResponse,
 	}
 }

@@ -44,6 +44,20 @@ func TestHandlerRedirectsWithRegexURI(t *testing.T) {
 	}
 }
 
+func TestHandlerRegexURIReplacesFirstMatchOnly(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RegexUri: []string{`foo`, `bar`},
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/foo/foo", nil))
+	if got := res.Header().Get("Location"); got != "/bar/foo" {
+		t.Fatalf("Location = %q, want first-match /bar/foo", got)
+	}
+}
+
 func TestHandlerAppendsRequestQueryToRegexURI(t *testing.T) {
 	appendQueryString := true
 	p := newTestPlugin(t, Config{
@@ -60,6 +74,22 @@ func TestHandlerAppendsRequestQueryToRegexURI(t *testing.T) {
 
 	if got := res.Header().Get("Location"); got != "http://test.com/hello?q=apisix&o=apache" {
 		t.Fatalf("Location = %q, want regex redirect URI with the request query appended", got)
+	}
+}
+
+func TestHandlerDoesNotAppendEmptyRequestQuery(t *testing.T) {
+	appendQueryString := true
+	p := newTestPlugin(t, Config{Uri: "/new", AppendQueryString: &appendQueryString})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/old", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != "/new" {
+		t.Fatalf("Location = %q, want no trailing question mark", got)
 	}
 }
 

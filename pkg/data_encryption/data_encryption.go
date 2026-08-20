@@ -3,6 +3,7 @@ package data_encryption
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -12,6 +13,11 @@ import (
 )
 
 const encryptedValuePrefix = "$encrypted://"
+
+const (
+	v2CiphertextPrefix = "v2:"
+	v2NonceSize        = 12
+)
 
 var runtimeConfig struct {
 	sync.RWMutex
@@ -122,7 +128,7 @@ func EncryptPluginMetadata(name string, metadata map[string]any, keyring []strin
 		return ErrKeyUnavailable
 	}
 	for _, field := range pluginMetadataFields[name] {
-		if err := encryptField(metadata, field, keyring); err != nil {
+		if err := encryptField(metadata, name, field, keyring); err != nil {
 			return fmt.Errorf("%s.%s: %w", name, field, err)
 		}
 	}
@@ -143,7 +149,7 @@ func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
 			continue
 		}
 		for _, field := range fields {
-			if err := encryptField(config, field, keyring); err != nil {
+			if err := encryptField(config, name, field, keyring); err != nil {
 				return fmt.Errorf("%s.%s: %w", name, field, err)
 			}
 		}
@@ -151,11 +157,11 @@ func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
 	return nil
 }
 
-func encryptField(config map[string]any, path string, keyring []string) error {
-	return encryptPath(config, strings.Split(path, "."), keyring)
+func encryptField(config map[string]any, pluginName string, path string, keyring []string) error {
+	return encryptPath(config, strings.Split(path, "."), keyring, pluginName+"."+path)
 }
 
-func encryptPath(current any, segments []string, keyring []string) error {
+func encryptPath(current any, segments []string, keyring []string, context string) error {
 	if len(segments) == 0 {
 		return nil
 	}
@@ -164,7 +170,7 @@ func encryptPath(current any, segments []string, keyring []string) error {
 	case map[string]any:
 		if segment == "*" {
 			for _, child := range value {
-				if err := encryptPath(child, segments[1:], keyring); err != nil {
+				if err := encryptPath(child, segments[1:], keyring, context); err != nil {
 					return err
 				}
 			}
@@ -177,14 +183,14 @@ func encryptPath(current any, segments []string, keyring []string) error {
 		for _, key := range keys {
 			child := value[key]
 			if len(segments) == 1 {
-				encrypted, err := encryptValue(child, keyring)
+				encrypted, err := encryptValue(child, keyring, context)
 				if err != nil {
 					return err
 				}
 				value[key] = encrypted
 				continue
 			}
-			if err := encryptPath(child, segments[1:], keyring); err != nil {
+			if err := encryptPath(child, segments[1:], keyring, context); err != nil {
 				return err
 			}
 		}
@@ -194,7 +200,7 @@ func encryptPath(current any, segments []string, keyring []string) error {
 			return nil
 		}
 		for _, child := range value {
-			if err := encryptPath(child, segments[1:], keyring); err != nil {
+			if err := encryptPath(child, segments[1:], keyring, context); err != nil {
 				return err
 			}
 		}
@@ -202,25 +208,41 @@ func encryptPath(current any, segments []string, keyring []string) error {
 	return nil
 }
 
-func encryptValue(value any, keyring []string) (any, error) {
+func encryptValue(value any, keyring []string, context string) (any, error) {
 	switch typed := value.(type) {
 	case string:
 		if typed == "" {
 			return typed, nil
 		}
-		if ciphertext, ok := strings.CutPrefix(typed, encryptedValuePrefix); ok {
+		ciphertext, prefixed := strings.CutPrefix(typed, encryptedValuePrefix)
+		if prefixed {
 			if ciphertext == "" {
 				return nil, ErrInvalidCiphertext
 			}
-			if _, err := Decrypt(ciphertext, keyring); err != nil {
+			if strings.HasPrefix(ciphertext, v2CiphertextPrefix) {
+				if _, err := decryptEncoded(ciphertext, keyring, context); err != nil {
+					return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
+				}
+				return typed, nil
+			}
+			plaintext, err := decryptLegacy(ciphertext, keyring)
+			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
 			}
-			return ciphertext, nil
+			ciphertext, err = EncryptForContext(plaintext, keyring[0], context)
+			if err != nil {
+				return nil, err
+			}
+			return encryptedValuePrefix + ciphertext, nil
 		}
-		return Encrypt(typed, keyring[0])
+		ciphertext, err := EncryptForContext(typed, keyring[0], context)
+		if err != nil {
+			return nil, err
+		}
+		return encryptedValuePrefix + ciphertext, nil
 	case map[string]any:
 		for key, child := range typed {
-			encrypted, err := encryptValue(child, keyring)
+			encrypted, err := encryptValue(child, keyring, context)
 			if err != nil {
 				return nil, err
 			}
@@ -228,7 +250,7 @@ func encryptValue(value any, keyring []string) (any, error) {
 		}
 	case []any:
 		for i, child := range typed {
-			encrypted, err := encryptValue(child, keyring)
+			encrypted, err := encryptValue(child, keyring, context)
 			if err != nil {
 				return nil, err
 			}
@@ -264,7 +286,7 @@ func DecryptPluginConfigWithResolver(config any, pluginName string, resolver Res
 		if IsStrictPluginField(pluginName, field) {
 			continue
 		}
-		decryptField(pluginConfig, field, resolver)
+		decryptField(pluginConfig, pluginName, field, resolver)
 	}
 }
 
@@ -277,15 +299,15 @@ func DecryptPluginMetadata(name string, metadata map[string]any, keyring []strin
 		if slices.Contains(strictPluginMetadataFields[name], field) {
 			continue
 		}
-		decryptField(metadata, field, resolver)
+		decryptField(metadata, name, field, resolver)
 	}
 }
 
-func decryptField(config map[string]any, path string, resolver Resolver) {
-	decryptPath(config, strings.Split(path, "."), resolver)
+func decryptField(config map[string]any, pluginName string, path string, resolver Resolver) {
+	decryptPath(config, strings.Split(path, "."), resolver, pluginName+"."+path)
 }
 
-func decryptPath(current any, segments []string, resolver Resolver) {
+func decryptPath(current any, segments []string, resolver Resolver, context string) {
 	if len(segments) == 0 {
 		return
 	}
@@ -294,7 +316,7 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 	case map[string]any:
 		if segment == "*" {
 			for _, child := range value {
-				decryptPath(child, segments[1:], resolver)
+				decryptPath(child, segments[1:], resolver, context)
 			}
 			return
 		}
@@ -305,17 +327,17 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 		for _, key := range keys {
 			child := value[key]
 			if len(segments) == 1 {
-				value[key] = decryptValue(child, resolver)
+				value[key] = decryptValue(child, resolver, context)
 				continue
 			}
-			decryptPath(child, segments[1:], resolver)
+			decryptPath(child, segments[1:], resolver, context)
 		}
 	case []any:
 		if segment != "*" {
 			return
 		}
 		for _, child := range value {
-			decryptPath(child, segments[1:], resolver)
+			decryptPath(child, segments[1:], resolver, context)
 		}
 	}
 }
@@ -330,23 +352,67 @@ func matchingMapKeys(value map[string]any, segment string) []string {
 	return keys
 }
 
-func decryptValue(value any, resolver Resolver) any {
+func decryptValue(value any, resolver Resolver, context string) any {
 	switch typed := value.(type) {
 	case string:
-		return resolver.ResolveOptional(typed)
+		return resolver.ResolveOptionalForContext(typed, context)
 	case map[string]any:
 		for key, child := range typed {
-			typed[key] = decryptValue(child, resolver)
+			typed[key] = decryptValue(child, resolver, context)
 		}
 	case []any:
 		for i, child := range typed {
-			typed[i] = decryptValue(child, resolver)
+			typed[i] = decryptValue(child, resolver, context)
 		}
 	}
 	return value
 }
 
+// Decrypt preserves the public compatibility API for legacy CBC and values
+// produced by Encrypt. Registered field-bound v2 values must use
+// Resolver.ResolveForContext so their AAD cannot be bypassed.
 func Decrypt(encoded string, keyring []string) (string, error) {
+	return decryptEncoded(encoded, keyring, "")
+}
+
+func decryptEncoded(encoded string, keyring []string, context string) (string, error) {
+	encoded = strings.TrimPrefix(encoded, encryptedValuePrefix)
+	if strings.HasPrefix(encoded, v2CiphertextPrefix) {
+		return decryptV2(encoded, keyring, context)
+	}
+	return decryptLegacy(encoded, keyring)
+}
+
+func decryptV2(encoded string, keyring []string, context string) (string, error) {
+	encoded = strings.TrimPrefix(encoded, v2CiphertextPrefix)
+	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	if len(ciphertext) <= v2NonceSize {
+		return "", fmt.Errorf("invalid v2 envelope")
+	}
+	for _, key := range keyring {
+		if len(key) != aes.BlockSize {
+			continue
+		}
+		block, err := aes.NewCipher([]byte(key))
+		if err != nil {
+			continue
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil || gcm.NonceSize() != v2NonceSize || len(ciphertext) <= gcm.Overhead() {
+			continue
+		}
+		plaintext, err := gcm.Open(nil, ciphertext[:v2NonceSize], ciphertext[v2NonceSize:], []byte(context))
+		if err == nil {
+			return string(plaintext), nil
+		}
+	}
+	return "", fmt.Errorf("decrypt data encryption field")
+}
+
+func decryptLegacy(encoded string, keyring []string) (string, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", err
@@ -370,6 +436,12 @@ func Decrypt(encoded string, keyring []string) (string, error) {
 }
 
 func Encrypt(plaintext string, key string) (string, error) {
+	return EncryptForContext(plaintext, key, "")
+}
+
+// EncryptForContext seals a value in the versioned data-encryption envelope.
+// The canonical field context is authenticated as AEAD associated data.
+func EncryptForContext(plaintext string, key string, context string) (string, error) {
 	if len(key) != aes.BlockSize {
 		return "", errors.New("data encryption key must be 16 bytes")
 	}
@@ -377,15 +449,17 @@ func Encrypt(plaintext string, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
-	padded := make([]byte, len(plaintext)+padding)
-	copy(padded, plaintext)
-	for i := len(plaintext); i < len(padded); i++ {
-		padded[i] = byte(padding)
+	gcm, err := cipher.NewGCM(block)
+	if err != nil || gcm.NonceSize() != v2NonceSize {
+		return "", errors.New("data encryption gcm unavailable")
 	}
-	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	nonce := make([]byte, v2NonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generate data encryption nonce: %w", err)
+	}
+	sealed := gcm.Seal(nil, nonce, []byte(plaintext), []byte(context))
+	envelope := append(nonce, sealed...)
+	return v2CiphertextPrefix + base64.StdEncoding.EncodeToString(envelope), nil
 }
 
 func unpad(value []byte) ([]byte, error) {

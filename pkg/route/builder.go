@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -39,6 +38,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -124,11 +124,13 @@ func convertURI(uri string) (string, error) {
 }
 
 type routeRegistrar struct {
-	mux         *chi.Mux
-	dispatchers map[string]*wildcardDispatcher
+	mux                   *chi.Mux
+	dispatchers           map[string]*wildcardDispatcher
+	nextRegistrationIndex uint64
 }
 
 func newRouteRegistrar(mux *chi.Mux) *routeRegistrar {
+	registerPurgeMethod()
 	return &routeRegistrar{
 		mux:         mux,
 		dispatchers: make(map[string]*wildcardDispatcher),
@@ -145,8 +147,10 @@ func (r *routeRegistrar) registerRouteWithHosts(
 	if err != nil {
 		return err
 	}
+	registrationIndex := r.nextRegistrationIndex
+	r.nextRegistrationIndex++
 	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
-		r.registerWildcardRoute(methods, converted, uri, hosts, handler)
+		r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex)
 		return nil
 	}
 	if len(methods) == 0 {
@@ -154,10 +158,6 @@ func (r *routeRegistrar) registerRouteWithHosts(
 		return nil
 	}
 	for _, method := range methods {
-		if method == "PURGE" {
-			logger.Warnf("http method: %s is not supported", method)
-			continue
-		}
 		logger.Debugf("add route: %s %s", method, converted)
 		r.mux.Method(method, converted, handler)
 	}
@@ -165,17 +165,183 @@ func (r *routeRegistrar) registerRouteWithHosts(
 }
 
 type wildcardRoute struct {
-	method   string
-	pattern  string
-	embedded bool
-	hosts    []string
-	handler  http.Handler
+	method            string
+	pattern           string
+	embedded          bool
+	hosts             []string
+	handler           http.Handler
+	registrationIndex uint64
 }
 
 type wildcardDispatcher struct {
-	prefix           string
-	buckets          [2][3][2][]wildcardRoute // embedded, host rank, exact method
-	embeddedSuffixes [3][2]map[string][]int   // host rank, exact method, suffix
+	prefix      string
+	nonEmbedded *routeDecisionIndex
+	embedded    map[string]*routeDecisionIndex
+}
+
+type routeCandidate struct {
+	route wildcardRoute
+	valid bool
+}
+
+type routeHostDecision struct {
+	exact    map[string]routeCandidate
+	wildcard routeCandidate
+	allowed  []string
+}
+
+type routeDecisionIndex struct {
+	pattern       string
+	hostless      routeHostDecision
+	exactHosts    map[string]*routeHostDecision
+	wildcardHosts map[string]*routeHostDecision
+}
+
+func (d *routeDecisionIndex) add(route wildcardRoute) {
+	if len(route.hosts) == 0 {
+		d.hostless.add(route)
+		return
+	}
+	for _, host := range route.hosts {
+		host = normalizeRouteHost(host)
+		if strings.ContainsAny(host, "*?[") {
+			suffix, ok := wildcardRouteHostKey(host)
+			if !ok {
+				continue
+			}
+			if d.wildcardHosts == nil {
+				d.wildcardHosts = make(map[string]*routeHostDecision)
+			}
+			decision := d.wildcardHosts[suffix]
+			if decision == nil {
+				decision = &routeHostDecision{}
+				d.wildcardHosts[suffix] = decision
+			}
+			decision.add(route)
+			continue
+		}
+		if d.exactHosts == nil {
+			d.exactHosts = make(map[string]*routeHostDecision)
+		}
+		decision := d.exactHosts[host]
+		if decision == nil {
+			decision = &routeHostDecision{}
+			d.exactHosts[host] = decision
+		}
+		decision.add(route)
+	}
+}
+
+func (d *routeHostDecision) add(route wildcardRoute) {
+	candidate := routeCandidate{route: route, valid: true}
+	if route.method == "*" {
+		if !d.wildcard.valid || d.wildcard.route.registrationIndex < route.registrationIndex {
+			d.wildcard = candidate
+		}
+		return
+	}
+	if d.exact == nil {
+		d.exact = make(map[string]routeCandidate)
+	}
+	current, ok := d.exact[route.method]
+	if !ok || current.route.registrationIndex < route.registrationIndex {
+		d.exact[route.method] = candidate
+	}
+	if !ok {
+		index, _ := slices.BinarySearch(d.allowed, route.method)
+		d.allowed = append(d.allowed, "")
+		copy(d.allowed[index+1:], d.allowed[index:])
+		d.allowed[index] = route.method
+	}
+}
+
+func (d *routeDecisionIndex) lookup(
+	host string,
+	wildcardHost string,
+	hostRank int,
+	methodIndex int,
+	method string,
+) (routeCandidate, bool, bool) {
+	decision := d.hostDecision(host, wildcardHost, hostRank)
+	if decision == nil {
+		return routeCandidate{}, false, false
+	}
+	if !decision.hasRoutes() {
+		return routeCandidate{}, false, false
+	}
+	if methodIndex == 1 {
+		return decision.wildcard, true, decision.wildcard.valid
+	}
+	candidate, ok := decision.exact[method]
+	return candidate, true, ok
+}
+
+func (d *routeHostDecision) hasRoutes() bool {
+	return d.wildcard.valid || len(d.exact) > 0
+}
+
+func (d *routeDecisionIndex) hostDecision(
+	host string,
+	wildcardHost string,
+	hostRank int,
+) *routeHostDecision {
+	switch hostRank {
+	case 2:
+		return d.exactHosts[host]
+	case 1:
+		if wildcardHost == "" {
+			return nil
+		}
+		return d.wildcardHosts[wildcardHost]
+	default:
+		return &d.hostless
+	}
+}
+
+func (d *routeDecisionIndex) addAllowedMethods(
+	host string,
+	wildcardHost string,
+	allowed []string,
+) []string {
+	add := func(decision *routeHostDecision) {
+		if decision == nil {
+			return
+		}
+		for _, method := range decision.allowed {
+			index, found := slices.BinarySearch(allowed, method)
+			if found {
+				continue
+			}
+			allowed = append(allowed, "")
+			copy(allowed[index+1:], allowed[index:])
+			allowed[index] = method
+		}
+	}
+	add(d.exactHosts[host])
+	if wildcardHost != "" {
+		add(d.wildcardHosts[wildcardHost])
+	}
+	add(&d.hostless)
+	return allowed
+}
+
+func normalizeRouteHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func wildcardRouteHostKey(pattern string) (string, bool) {
+	if !strings.HasPrefix(pattern, "*.") {
+		return "", false
+	}
+	return pattern[1:], true
+}
+
+func wildcardHostKey(host string) string {
+	dot := strings.IndexByte(host, '.')
+	if dot <= 0 || dot == len(host)-1 {
+		return ""
+	}
+	return host[dot:]
 }
 
 func (r *routeRegistrar) registerWildcardRoute(
@@ -184,10 +350,14 @@ func (r *routeRegistrar) registerWildcardRoute(
 	pattern string,
 	hosts []string,
 	handler http.Handler,
+	registrationIndex uint64,
 ) {
 	dispatcher := r.dispatchers[converted]
 	if dispatcher == nil {
-		dispatcher = &wildcardDispatcher{prefix: strings.TrimSuffix(converted, "*")}
+		dispatcher = &wildcardDispatcher{
+			prefix:   strings.TrimSuffix(converted, "*"),
+			embedded: make(map[string]*routeDecisionIndex),
+		}
 		r.mux.Handle(converted, dispatcher)
 		r.dispatchers[converted] = dispatcher
 	}
@@ -195,92 +365,66 @@ func (r *routeRegistrar) registerWildcardRoute(
 	embedded := strings.Contains(pattern, "/*/")
 	if len(methods) == 0 {
 		dispatcher.add(wildcardRoute{
-			method:   "*",
-			pattern:  pattern,
-			embedded: embedded,
-			hosts:    hosts,
-			handler:  handler,
+			method:            "*",
+			pattern:           pattern,
+			embedded:          embedded,
+			hosts:             hosts,
+			handler:           handler,
+			registrationIndex: registrationIndex,
 		})
 		return
 	}
 	for _, method := range methods {
-		if method == "PURGE" {
-			logger.Warnf("http method: %s is not supported", method)
-			continue
-		}
 		logger.Debugf("add route: %s %s", method, converted)
 		dispatcher.add(wildcardRoute{
-			method:   strings.ToUpper(method),
-			pattern:  pattern,
-			embedded: embedded,
-			hosts:    hosts,
-			handler:  handler,
+			method:            strings.ToUpper(method),
+			pattern:           pattern,
+			embedded:          embedded,
+			hosts:             hosts,
+			handler:           handler,
+			registrationIndex: registrationIndex,
 		})
 	}
 }
 
 func (d *wildcardDispatcher) add(route wildcardRoute) {
-	embeddedIndex := 1
+	if d.embedded == nil {
+		d.embedded = make(map[string]*routeDecisionIndex)
+	}
 	if route.embedded {
-		embeddedIndex = 0
-	}
-	methodIndex := 0
-	if route.method == "*" {
-		methodIndex = 1
-	}
-	if len(route.hosts) == 0 {
-		d.addToBucket(embeddedIndex, 0, methodIndex, route)
-		return
-	}
-	hasExact := false
-	hasWildcard := false
-	for _, host := range route.hosts {
-		if strings.ContainsAny(host, "*?[") {
-			hasWildcard = true
-		} else {
-			hasExact = true
+		suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
+		decision := d.embedded[suffix]
+		if decision == nil {
+			decision = &routeDecisionIndex{pattern: route.pattern}
+			d.embedded[suffix] = decision
 		}
-	}
-	if hasExact {
-		d.addToBucket(embeddedIndex, 2, methodIndex, route)
-	}
-	if hasWildcard {
-		d.addToBucket(embeddedIndex, 1, methodIndex, route)
-	}
-}
-
-func (d *wildcardDispatcher) addToBucket(
-	embeddedIndex int,
-	hostRank int,
-	methodIndex int,
-	route wildcardRoute,
-) {
-	bucket := &d.buckets[embeddedIndex][hostRank][methodIndex]
-	*bucket = append(*bucket, route)
-	if !route.embedded {
+		decision.add(route)
 		return
 	}
-	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
-	if suffixes == nil {
-		suffixes = make(map[string][]int)
-		d.embeddedSuffixes[hostRank][methodIndex] = suffixes
+	if d.nonEmbedded == nil {
+		d.nonEmbedded = &routeDecisionIndex{pattern: route.pattern}
 	}
-	suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
-	suffixes[suffix] = append(suffixes[suffix], len(*bucket)-1)
+	d.nonEmbedded.add(route)
 }
 
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	host := requestHostname(request.Host)
+	wildcardHost := wildcardHostKey(host)
+	nonEmbeddedPathMatched := d.nonEmbedded != nil &&
+		matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path)
 	pathMatched := false
 	hostMatched := false
 	for embeddedIndex := range 2 {
 		for _, hostRank := range []int{2, 1, 0} {
 			for methodIndex := range 2 {
 				if embeddedIndex == 0 {
-					if len(d.embeddedSuffixes[hostRank][methodIndex]) == 0 {
+					if len(d.embedded) == 0 {
 						continue
 					}
 					route, matched, matchedPath, matchedHost := d.matchEmbeddedRoute(
 						request,
+						host,
+						wildcardHost,
 						hostRank,
 						methodIndex,
 					)
@@ -292,19 +436,17 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 					}
 					continue
 				}
-				for _, route := range slices.Backward(d.buckets[embeddedIndex][hostRank][methodIndex]) {
-					if !matchesRoutePath(route.pattern, request.URL.Path) {
-						continue
-					}
-					pathMatched = true
-					if routeHostRank(route.hosts, request.Host) != hostRank {
-						continue
-					}
-					hostMatched = true
-					if (methodIndex == 0 && route.method != request.Method) ||
-						(methodIndex == 1 && route.method != "*") {
-						continue
-					}
+				route, matched, matchedPath, matchedHost := d.matchNonEmbeddedRoute(
+					request,
+					host,
+					wildcardHost,
+					hostRank,
+					methodIndex,
+					nonEmbeddedPathMatched,
+				)
+				pathMatched = pathMatched || matchedPath
+				hostMatched = hostMatched || matchedHost
+				if matched {
 					route.handler.ServeHTTP(writer, request)
 					return
 				}
@@ -312,25 +454,54 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 		}
 	}
 	if pathMatched && hostMatched {
+		allowedMethods := d.allowedMethods(request)
+		if len(allowedMethods) > 0 {
+			writer.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+		}
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	http.NotFound(writer, request)
 }
 
+func (d *wildcardDispatcher) allowedMethods(request *http.Request) []string {
+	host := requestHostname(request.Host)
+	wildcardHost := wildcardHostKey(host)
+	var allowed []string
+	if d.nonEmbedded != nil && matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path) {
+		allowed = d.nonEmbedded.addAllowedMethods(host, wildcardHost, allowed)
+	}
+	for searchFrom := len(d.prefix); searchFrom < len(request.URL.Path); {
+		relativeSlash := strings.IndexByte(request.URL.Path[searchFrom:], '/')
+		if relativeSlash < 0 {
+			break
+		}
+		suffixStart := searchFrom + relativeSlash
+		suffix := request.URL.Path[suffixStart:]
+		if decision := d.embedded[suffix]; decision != nil &&
+			len(request.URL.Path) > len(d.prefix)+len(suffix) {
+			allowed = decision.addAllowedMethods(host, wildcardHost, allowed)
+		}
+		searchFrom = suffixStart + 1
+	}
+	return allowed
+}
+
 func (d *wildcardDispatcher) matchEmbeddedRoute(
 	request *http.Request,
+	host string,
+	wildcardHost string,
 	hostRank int,
 	methodIndex int,
 ) (wildcardRoute, bool, bool, bool) {
-	bucket := d.buckets[0][hostRank][methodIndex]
-	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
 	requestPath := request.URL.Path
 	if len(requestPath) <= len(d.prefix) || !strings.HasPrefix(requestPath, d.prefix) {
 		return wildcardRoute{}, false, false, false
 	}
 
-	bestIndex := -1
+	bestIndex := uint64(0)
+	bestFound := false
+	var bestRoute wildcardRoute
 	pathMatched := false
 	hostMatched := false
 	for searchFrom := len(d.prefix); searchFrom < len(requestPath); {
@@ -340,32 +511,53 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 		}
 		suffixStart := searchFrom + relativeSlash
 		suffix := requestPath[suffixStart:]
-		indexes := suffixes[suffix]
-		if len(indexes) > 0 && len(requestPath) > len(d.prefix)+len(suffix) {
+		decision := d.embedded[suffix]
+		if decision != nil && len(requestPath) > len(d.prefix)+len(suffix) {
 			pathMatched = true
-			for _, routeIndex := range slices.Backward(indexes) {
-				if routeIndex <= bestIndex {
-					break
-				}
-				route := bucket[routeIndex]
-				if routeHostRank(route.hosts, request.Host) != hostRank {
-					continue
-				}
-				hostMatched = true
-				if (methodIndex == 0 && route.method != request.Method) ||
-					(methodIndex == 1 && route.method != "*") {
-					continue
-				}
-				bestIndex = routeIndex
-				break
+			candidate, matchedHost, ok := decision.lookup(
+				host,
+				wildcardHost,
+				hostRank,
+				methodIndex,
+				request.Method,
+			)
+			hostMatched = hostMatched || matchedHost
+			if ok && (!bestFound || candidate.route.registrationIndex > bestIndex) {
+				bestIndex = candidate.route.registrationIndex
+				bestFound = true
+				bestRoute = candidate.route
 			}
 		}
 		searchFrom = suffixStart + 1
 	}
-	if bestIndex < 0 {
+	if !bestFound {
 		return wildcardRoute{}, false, pathMatched, hostMatched
 	}
-	return bucket[bestIndex], true, pathMatched, hostMatched
+	return bestRoute, true, pathMatched, hostMatched
+}
+
+func (d *wildcardDispatcher) matchNonEmbeddedRoute(
+	request *http.Request,
+	host string,
+	wildcardHost string,
+	hostRank int,
+	methodIndex int,
+	pathMatched bool,
+) (wildcardRoute, bool, bool, bool) {
+	if d.nonEmbedded == nil || !pathMatched {
+		return wildcardRoute{}, false, false, false
+	}
+	candidate, matchedHost, ok := d.nonEmbedded.lookup(
+		host,
+		wildcardHost,
+		hostRank,
+		methodIndex,
+		request.Method,
+	)
+	if !ok {
+		return wildcardRoute{}, false, true, matchedHost
+	}
+	return candidate.route, true, true, matchedHost
 }
 
 func matchesRoutePath(pattern string, requestPath string) bool {
@@ -402,24 +594,40 @@ func routeHostRank(patterns []string, requestHost string) int {
 	if len(patterns) == 0 {
 		return 0
 	}
-	host := requestHost
-	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
-		host = parsedHost
-	}
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host := requestHostname(requestHost)
 	best := -1
 	for _, pattern := range patterns {
 		pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 		if pattern == host {
 			return 2
 		}
-		if strings.ContainsAny(pattern, "*?[") {
-			if matched, _ := path.Match(pattern, host); matched {
-				best = 1
-			}
+		if matchOneLabelHostWildcard(pattern, host) {
+			best = 1
 		}
 	}
 	return best
+}
+
+func requestHostname(requestHost string) string {
+	host := requestHost
+	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func matchOneLabelHostWildcard(pattern, host string) bool {
+	if !strings.HasPrefix(pattern, "*.") {
+		return false
+	}
+	suffix := pattern[1:]
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	prefix := strings.TrimSuffix(host, suffix)
+	return prefix != "" && !strings.Contains(prefix, ".")
 }
 
 func matchesWildcardRoute(pattern string, path string) bool {
@@ -434,6 +642,7 @@ func matchesWildcardRoute(pattern string, path string) bool {
 }
 
 type Builder struct {
+	storage             *store.Store
 	serverAddr          string
 	enabledPlugins      *plugin.EnabledSet
 	clusterRegistry     *pxy.ClusterRegistry
@@ -449,6 +658,10 @@ type Builder struct {
 	// populated at Build() start and cleared before Build() returns so no
 	// request path reads across a generation boundary.
 	snapshot *store.ConfigSnapshot
+	// snapshotQuarantineCount is published by the server owner only after a
+	// successful handler installation, keeping standalone Builder callers free
+	// of global readiness side effects.
+	snapshotQuarantineCount int
 	// compiledSchemas caches plugin schema compilation for the duration of one
 	// Build; plugin schemas are constants, so repeated plugin instances never
 	// recompile the same schema.
@@ -462,8 +675,7 @@ type consumerResolutionTemplate struct {
 }
 
 type consumerResolutionCache struct {
-	mu      sync.Mutex
-	entries map[plugin.ConsumerCacheKey]*consumerResolutionTemplate
+	entries sync.Map // map[plugin.ConsumerCacheKey]*consumerResolutionTemplate
 }
 
 var errConsumerBindingInitializationPanicked = errors.New("consumer plugin initialization panicked")
@@ -487,12 +699,10 @@ func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder 
 // Stop, but never closes it; the server owns its lifecycle.
 func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, registry *pxy.ClusterRegistry) *Builder {
 	builder := &Builder{
+		storage:         storage,
 		serverAddr:      normalizeServerAddr(serverAddr),
 		clusterRegistry: registry,
-		consumerResolution: consumerResolutionCache{
-			entries: make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate),
-		},
-		servicePlugins: make(map[servicePluginKey]plugin.Plugin),
+		servicePlugins:  make(map[servicePluginKey]plugin.Plugin),
 	}
 	if registry == nil {
 		builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
@@ -525,6 +735,11 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) BuildStrict() (*chi.Mux, error) {
+	publicAPIRegistry := public_api.NewRegistry()
+	if err := registerPrometheusPublicEndpoint(publicAPIRegistry); err != nil {
+		return nil, fmt.Errorf("register prometheus public endpoint: %w", err)
+	}
+
 	var configuredPlugins []string
 	if appconfig.GlobalConfig != nil {
 		configuredPlugins = appconfig.GlobalConfig.Plugins
@@ -535,10 +750,16 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
 		return nil, fmt.Errorf("validate proxy-cache zone registry: %w", err)
 	}
-	snapshot, err := store.GetConfigSnapshot()
+	snapshot, err := b.configSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("get config snapshot: %w", err)
 	}
+	if dynamicPlugins, present := snapshot.HTTPPlugins(); present {
+		configuredPlugins = dynamicPlugins
+		enabledPlugins = plugin.NewEnabledSet(configuredPlugins)
+		b.enabledPlugins = &enabledPlugins
+	}
+	b.snapshotQuarantineCount = len(snapshot.QuarantinedResources())
 	b.snapshot = snapshot
 	b.compiledSchemas = make(map[string]*util.CompiledSchema)
 	defer func() {
@@ -557,7 +778,7 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 		if routeResource.Disabled() {
 			continue
 		}
-		handler, buildErr := b.buildHandlerStrict(routeResource)
+		handler, hosts, buildErr := b.materializeRouteStrict(routeResource, publicAPIRegistry)
 		if buildErr != nil {
 			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
 		}
@@ -569,39 +790,118 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 			if registerErr := registrar.registerRouteWithHosts(
 				routeResource.Methods,
 				uri,
-				routeResource.EffectiveHosts(),
+				hosts,
 				handler,
 			); registerErr != nil {
 				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
 			}
 		}
 	}
-	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules())
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules(), publicAPIRegistry)
 	if err != nil {
 		return nil, fmt.Errorf("build global not found handler: %w", err)
 	}
 	mux.NotFound(notFoundHandler.ServeHTTP)
-	registerExtraRoutes(mux)
+	if err := registerExtraRoutesStrict(mux, publicAPIRegistry); err != nil {
+		return nil, fmt.Errorf("register extra routes: %w", err)
+	}
 	b.configureGlobalErrorLogObserver()
 	return mux, nil
 }
 
-func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+func (b *Builder) configSnapshot() (*store.ConfigSnapshot, error) {
+	if b.storage != nil {
+		return b.storage.GetConfigSnapshot()
+	}
+	return store.GetConfigSnapshot()
+}
+
+func (b *Builder) lookupSnapshot() (*store.ConfigSnapshot, error) {
+	if b.snapshot != nil {
+		return b.snapshot, nil
+	}
+	if b.storage != nil {
+		return b.storage.GetConfigSnapshot()
+	}
+	return nil, nil
+}
+
+func (b *Builder) getService(id string) (resource.Service, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.Service{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetService(id)
+	}
+	return store.GetService(id)
+}
+
+func (b *Builder) getUpstream(id string) (resource.Upstream, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.Upstream{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetUpstream(id)
+	}
+	return store.GetUpstream(id)
+}
+
+func (b *Builder) getPluginConfigRule(id string) (resource.PluginConfigRule, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.PluginConfigRule{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetPluginConfigRule(id)
+	}
+	return store.GetPluginConfigRule(id)
+}
+
+func (b *Builder) getSSL(id string) (resource.SSL, error) {
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return resource.SSL{}, err
+	}
+	if snapshot != nil {
+		return snapshot.GetSSL(id)
+	}
+	return store.GetSSL(id)
+}
+
+// QuarantinedResourceCount reports the number of malformed legacy route or
+// global-rule rows in the last BuildStrict snapshot. The server records this
+// value after installing the returned handler.
+func (b *Builder) QuarantinedResourceCount() int {
+	return b.snapshotQuarantineCount
+}
+
+func (b *Builder) buildGlobalNotFoundHandler(
+	globalRules []resource.GlobalRule,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
+	var registry *public_api.Registry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
+	routeContext := pluginRouteContext{publicAPIRegistry: registry}
+	globalRules = deduplicateGlobalRules(globalRules)
 	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, ""); err != nil {
 		return nil, err
 	}
-	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, pluginRouteContext{})
+	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
 	if err != nil {
 		return nil, err
 	}
 	systemBindings, err := b.initPluginBindingsStrict(
 		[]materializedPluginSource{{
 			name:       "request-context",
-			config:     buildRequestContextConfig(resource.Route{}, resource.Service{}, nil),
+			config:     buildRequestContextConfig(resource.Route{}, resource.Service{}),
 			scope:      plugin.ScopeSystem,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceSystem, ID: "request-context"},
 		}},
-		pluginRouteContext{},
+		routeContext,
 		pluginInitOptions{allowRequestContext: true},
 	)
 	if err != nil {
@@ -649,15 +949,63 @@ func normalizePluginResourceContext(
 	return context
 }
 
-func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
+func (b *Builder) buildHandlerStrict(
+	r resource.Route,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
 	if err := validateRouteSemantics(r); err != nil {
 		return nil, err
 	}
+	service, err := b.loadRouteService(r)
+	if err != nil {
+		return nil, err
+	}
+	return b.buildHandlerWithServiceStrict(r, service, registries...)
+}
 
+func (b *Builder) materializeRouteStrict(
+	r resource.Route,
+	registries ...*public_api.Registry,
+) (http.Handler, []string, error) {
+	if err := validateRouteSemantics(r); err != nil {
+		return nil, nil, err
+	}
+	service, err := b.loadRouteService(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	handler, err := b.buildHandlerWithServiceStrict(r, service, registries...)
+	if err != nil {
+		return nil, nil, err
+	}
+	hosts := r.EffectiveHosts()
+	if !r.HostConfigured() && !r.HostsConfigured() && r.ServiceID != "" {
+		hosts = service.Hosts
+	}
+	return handler, hosts, nil
+}
+
+func (b *Builder) loadRouteService(r resource.Route) (resource.Service, error) {
+	if r.ServiceID == "" {
+		return resource.Service{}, nil
+	}
+	service, err := b.getService(r.ServiceID)
+	if err != nil {
+		logger.Errorf("get service fail: %s", err)
+		return resource.Service{}, err
+	}
+	return service, nil
+}
+
+func (b *Builder) buildHandlerWithServiceStrict(
+	r resource.Route,
+	service resource.Service,
+	registries ...*public_api.Registry,
+) (http.Handler, error) {
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
-		pluginConfigRule, err := store.GetPluginConfigRule(r.PluginConfigID)
+		pluginConfigRule, err := b.getPluginConfigRule(r.PluginConfigID)
 		if err != nil {
 			// FIXME: should return 503
 			logger.Errorf("get plugin config rule fail: %s", err)
@@ -673,15 +1021,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		pluginConfigPlugins = pluginConfigRule.Plugins
 	}
 
-	// if service_id is not empty, get the service config
-	var service resource.Service
-	var err error
 	if r.ServiceID != "" {
-		service, err = store.GetService(r.ServiceID)
-		if err != nil {
-			logger.Errorf("get service fail: %s", err)
-			return nil, err
-		}
 		if err := b.validatePluginConfigSource(service.Plugins, "service", r.ServiceID); err != nil {
 			return nil, err
 		}
@@ -690,7 +1030,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	localSources, serviceSources, effectivePluginConfigs := selectMaterializedPluginSources(
+	localSources, serviceSources, _ := selectMaterializedPluginSources(
 		r.Plugins,
 		r.ID,
 		pluginConfigPlugins,
@@ -706,9 +1046,12 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 
 	// add a context plugin, set the default vars
-	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
+	systemPlugins := buildSystemPluginConfigs(r, service)
 
 	routeContext := b.pluginRouteContext(r)
+	if len(registries) > 0 {
+		routeContext.publicAPIRegistry = registries[0]
+	}
 	routeContext.service = service
 	localBindings, err := b.initPluginBindingsStrict(localSources, routeContext, pluginInitOptions{})
 	if err != nil {
@@ -739,6 +1082,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		logger.Errorf("list global rules fail: %s", err)
 		return nil, err
 	}
+	globalRules = deduplicateGlobalRules(globalRules)
 	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, r.ID); err != nil {
 		return nil, err
 	}
@@ -760,7 +1104,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		terminalSources = append(terminalSources, globalSources...)
 	}
 
-	resolvedUpstream, upstreamProvenance, err := resolveRouteUpstream(r, service)
+	resolvedUpstream, upstreamProvenance, err := b.resolveRouteUpstream(r, service)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +1148,10 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	websocketEnabled := r.EnableWebsocket || service.EnableWebsocket
+	websocketEnabled := r.EnableWebsocket
+	if !r.EnableWebsocketConfigured() {
+		websocketEnabled = service.EnableWebsocket
+	}
 	ordinaryHandler := plan.Install(pipeline, requireWebsocketEnablement(handler, websocketEnabled))
 	transparentUpgradeHandler, err := buildTransparentUpgradeHandler(
 		pipeline, plan, handler, websocketEnabled,
@@ -1021,41 +1368,41 @@ func (b *Builder) consumerBindingsForKey(
 	key plugin.ConsumerCacheKey,
 	initialize func() ([]plugin.Binding, error),
 ) ([]plugin.Binding, error) {
-	b.consumerResolution.mu.Lock()
-	if template, ok := b.consumerResolution.entries[key]; ok {
-		b.consumerResolution.mu.Unlock()
+	if actual, ok := b.consumerResolution.entries.Load(key); ok {
+		template := actual.(*consumerResolutionTemplate)
 		<-template.ready
 		if template.err != nil {
 			return nil, template.err
 		}
 		return append([]plugin.Binding(nil), template.bindings...), nil
 	}
-	if b.consumerResolution.entries == nil {
-		b.consumerResolution.entries = make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate)
-	}
+
 	template := &consumerResolutionTemplate{ready: make(chan struct{})}
-	b.consumerResolution.entries[key] = template
-	b.consumerResolution.mu.Unlock()
+	actual, loaded := b.consumerResolution.entries.LoadOrStore(key, template)
+	if loaded {
+		template = actual.(*consumerResolutionTemplate)
+		<-template.ready
+		if template.err != nil {
+			return nil, template.err
+		}
+		return append([]plugin.Binding(nil), template.bindings...), nil
+	}
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			b.consumerResolution.mu.Lock()
 			template.err = errConsumerBindingInitializationPanicked
-			delete(b.consumerResolution.entries, key)
 			close(template.ready)
-			b.consumerResolution.mu.Unlock()
+			b.consumerResolution.entries.Delete(key)
 			panic(recovered)
 		}
 	}()
 	bindings, err := initialize()
-	b.consumerResolution.mu.Lock()
 	template.bindings = append([]plugin.Binding(nil), bindings...)
 	template.err = err
-	if err != nil {
-		delete(b.consumerResolution.entries, key)
-	}
 	close(template.ready)
-	b.consumerResolution.mu.Unlock()
+	if err != nil {
+		b.consumerResolution.entries.Delete(key)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1207,26 +1554,23 @@ func pluginsFromBindings(bindings []plugin.Binding) []plugin.Plugin {
 func buildSystemPluginConfigs(
 	r resource.Route,
 	service resource.Service,
-	resourcePlugins map[string]resource.PluginConfig,
 ) map[string]resource.PluginConfig {
 	return map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
+		"request-context": buildRequestContextConfig(r, service),
 	}
 }
 
 func buildRequestContextConfig(
 	r resource.Route,
 	service resource.Service,
-	pluginConfigs map[string]resource.PluginConfig,
 ) map[string]any {
 	return map[string]any{
-		"$route_id":               r.ID,
-		"$route_name":             r.Name,
-		"$matched_uri":            matchedURI(r),
-		"$matched_host":           matchedHost(r),
-		"$service_id":             r.ServiceID,
-		"$service_name":           service.Name,
-		"$prometheus_prefer_name": prometheusPreferName(pluginConfigs),
+		"$route_id":     r.ID,
+		"$route_name":   r.Name,
+		"$matched_uri":  matchedURI(r),
+		"$matched_host": matchedHost(r),
+		"$service_id":   r.ServiceID,
+		"$service_name": service.Name,
 	}
 }
 
@@ -1247,26 +1591,12 @@ func matchedHost(r resource.Route) string {
 	return ""
 }
 
-func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
-	config, ok := pluginConfigs["prometheus"]
-	if !ok {
-		return false
-	}
-
-	values, ok := config.(map[string]any)
-	if !ok {
-		return false
-	}
-
-	preferName, _ := values["prefer_name"].(bool)
-	return preferName
-}
-
 type pluginRouteContext struct {
-	routeID    string
-	serverAddr string
-	route      resource.Route
-	service    resource.Service
+	routeID           string
+	serverAddr        string
+	route             resource.Route
+	service           resource.Service
+	publicAPIRegistry *public_api.Registry
 }
 
 func (b *Builder) pluginRouteContext(r resource.Route) pluginRouteContext {
@@ -1292,8 +1622,123 @@ type pluginResourceContextSetter interface {
 	SetResourceContext(route resource.Route, service resource.Service)
 }
 
+type pluginTrafficSplitRuntimeAcquirerSetter interface {
+	SetRuntimeAcquirer(traffic_split.RuntimeAcquirer)
+}
+
+type pluginTrafficSplitUpstreamResolverSetter interface {
+	SetUpstreamResolver(traffic_split.ResourceUpstreamResolver)
+}
+
+type trafficSplitRuntimeAcquirer struct {
+	builder *Builder
+	route   resource.Route
+}
+
+func (a *trafficSplitRuntimeAcquirer) Acquire(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+) (*traffic_split.Runtime, error) {
+	if upstream == nil {
+		return nil, fmt.Errorf("traffic-split upstream is nil")
+	}
+	resourceUpstream, err := trafficSplitResourceUpstream(upstream, targets, priorities)
+	if err != nil {
+		return nil, err
+	}
+	transportOption, err := a.builder.buildTransportOption(a.route, resourceUpstream)
+	if err != nil {
+		return nil, err
+	}
+	if a.builder.clusterRegistry == nil {
+		a.builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
+		a.builder.ownsClusterRegistry = true
+	}
+	clusterConfig, err := buildClusterConfigWithTransport(
+		a.route,
+		resourceUpstream,
+		targets,
+		transportOption,
+		priorities,
+	)
+	if err != nil {
+		return nil, err
+	}
+	clusterConfig.Retries = max(upstream.Retries, 0)
+	clusterConfig.RetriesConfigured = upstream.RetriesConfigured()
+	lease, err := a.builder.clusterRegistry.Acquire(clusterConfig)
+	if err != nil {
+		return nil, fmt.Errorf("acquire traffic-split upstream cluster: %w", err)
+	}
+	a.builder.addStopper(lease)
+	cluster := lease.Cluster()
+	return &traffic_split.Runtime{
+		LoadBalancer: cluster.LoadBalancer(),
+		RoundTripper: cluster.RoundTripper(),
+	}, nil
+}
+
+func trafficSplitResourceUpstream(
+	upstream *traffic_split.Upstream,
+	targets map[string]int,
+	priorities map[string]int,
+) (resource.Upstream, error) {
+	scheme := upstream.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	result := resource.Upstream{
+		Type:         upstream.Type,
+		Scheme:       scheme,
+		TLS:          upstream.TLS,
+		Timeout:      upstream.Timeout,
+		Checks:       upstream.Checks,
+		HashOn:       upstream.HashOn,
+		Key:          upstream.Key,
+		PassHost:     upstream.PassHost,
+		UpstreamHost: upstream.UpstreamHost,
+		Retries:      upstream.Retries,
+		Nodes:        make([]resource.Node, 0, len(targets)),
+	}
+	addresses := slices.Sorted(maps.Keys(targets))
+	for _, target := range addresses {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			return resource.Upstream{}, fmt.Errorf("parse traffic-split target %q: %w", target, err)
+		}
+		if parsed.Hostname() == "" {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has no host", target)
+		}
+		port := parsed.Port()
+		if port == "" {
+			switch strings.ToLower(parsed.Scheme) {
+			case "https", "grpcs":
+				port = "443"
+			default:
+				port = "80"
+			}
+		}
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 1 || numericPort > 65535 {
+			return resource.Upstream{}, fmt.Errorf("traffic-split target %q has invalid port", target)
+		}
+		result.Nodes = append(result.Nodes, resource.Node{
+			Host:     parsed.Hostname(),
+			Port:     numericPort,
+			Weight:   targets[target],
+			Priority: priorities[target],
+		})
+	}
+	return result, nil
+}
+
 type pluginEnabledCheckerSetter interface {
 	SetPluginEnabledChecker(func(string) bool)
+}
+
+type publicAPIRegistrySetter interface {
+	SetPublicAPIRegistry(*public_api.Registry)
 }
 
 type pluginPreMaterializationValidator interface {
@@ -1997,7 +2442,13 @@ type pluginObserverStarter interface {
 
 func (b *Builder) configureGlobalErrorLogObserver() {
 	const pluginName = "error-log-logger"
-	if appconfig.GlobalConfig == nil || !slices.Contains(appconfig.GlobalConfig.Plugins, pluginName) {
+	enabled := false
+	if b.enabledPlugins != nil {
+		enabled = b.enabledPlugins.Contains(pluginName)
+	} else if appconfig.GlobalConfig != nil {
+		enabled = slices.Contains(appconfig.GlobalConfig.Plugins, pluginName)
+	}
+	if !enabled {
 		_ = logger.ReplaceObserver(pluginName, nil)
 		return
 	}
@@ -2062,8 +2513,12 @@ func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) erro
 // globalRules returns the global rules of the current build generation,
 // falling back to a live store read outside Build.
 func (b *Builder) globalRules() ([]resource.GlobalRule, error) {
-	if b.snapshot != nil {
-		return b.snapshot.GlobalRules(), nil
+	snapshot, err := b.lookupSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	if snapshot != nil {
+		return snapshot.GlobalRules(), nil
 	}
 	return store.ListGlobalRules()
 }
@@ -2071,8 +2526,8 @@ func (b *Builder) globalRules() ([]resource.GlobalRule, error) {
 // pluginMetadata returns the decoded plugin metadata of the current build
 // generation, falling back to a live store read outside Build.
 func (b *Builder) pluginMetadata(name string) (map[string]any, bool) {
-	if b.snapshot != nil {
-		return b.snapshot.PluginMetadata(name)
+	if snapshot, err := b.lookupSnapshot(); err == nil && snapshot != nil {
+		return snapshot.PluginMetadata(name)
 	}
 	var metadata map[string]any
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
@@ -2290,6 +2745,9 @@ func (b *Builder) initPluginBindingsStrict(
 			checker := b.enabledPlugins.Contains
 			setter.SetPluginEnabledChecker(checker)
 		}
+		if setter, ok := p.(publicAPIRegistrySetter); ok {
+			setter.SetPublicAPIRegistry(routeContext.publicAPIRegistry)
+		}
 		if validator, ok := p.(pluginPreMaterializationValidator); ok {
 			if err := validator.ValidatePreMaterialization(); err != nil {
 				return nil, sourceError(fmt.Errorf("validate plugin %s before secret materialization: %w", name, err))
@@ -2312,6 +2770,12 @@ func (b *Builder) initPluginBindingsStrict(
 		if setter, ok := p.(pluginResourceContextSetter); ok {
 			setter.SetResourceContext(routeContext.route, routeContext.service)
 			resourceContextSetters = append(resourceContextSetters, setter)
+		}
+		if setter, ok := p.(pluginTrafficSplitRuntimeAcquirerSetter); ok {
+			setter.SetRuntimeAcquirer(&trafficSplitRuntimeAcquirer{builder: b, route: routeContext.route})
+		}
+		if setter, ok := p.(pluginTrafficSplitUpstreamResolverSetter); ok {
+			setter.SetUpstreamResolver(b.getUpstream)
 		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
@@ -2515,6 +2979,7 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 	globalRules []resource.GlobalRule,
 	routeContext pluginRouteContext,
 ) ([]plugin.Binding, error) {
+	globalRules = deduplicateGlobalRules(globalRules)
 	bindings := make([]plugin.Binding, 0, len(globalRules))
 	for _, rule := range globalRules {
 		if rule.ID == "" {
@@ -2539,9 +3004,55 @@ func (b *Builder) initGlobalPluginBindingsStrict(
 	return bindings, nil
 }
 
+func deduplicateGlobalRules(globalRules []resource.GlobalRule) []resource.GlobalRule {
+	seen := make(map[string]struct{})
+	duplicates := make(map[string]struct{})
+	for _, rule := range globalRules {
+		for name := range rule.Plugins {
+			if _, ok := seen[name]; ok {
+				duplicates[name] = struct{}{}
+				continue
+			}
+			seen[name] = struct{}{}
+		}
+	}
+
+	result := make([]resource.GlobalRule, len(globalRules))
+	for index, rule := range globalRules {
+		result[index] = rule
+		if rule.Plugins == nil {
+			continue
+		}
+		plugins := make(map[string]resource.PluginConfig, len(rule.Plugins))
+		for name, config := range rule.Plugins {
+			if _, duplicate := duplicates[name]; duplicate {
+				continue
+			}
+			plugins[name] = config
+		}
+		result[index].Plugins = plugins
+	}
+	return result
+}
+
 func resolveRouteUpstream(
 	r resource.Route,
 	service resource.Service,
+) (resource.Upstream, plugin.ResourceProvenance, error) {
+	return resolveRouteUpstreamWithGetter(r, service, store.GetUpstream)
+}
+
+func (b *Builder) resolveRouteUpstream(
+	r resource.Route,
+	service resource.Service,
+) (resource.Upstream, plugin.ResourceProvenance, error) {
+	return resolveRouteUpstreamWithGetter(r, service, b.getUpstream)
+}
+
+func resolveRouteUpstreamWithGetter(
+	r resource.Route,
+	service resource.Service,
+	getUpstream func(string) (resource.Upstream, error),
 ) (resource.Upstream, plugin.ResourceProvenance, error) {
 	// Keep this priority identical to buildReverseHandler: inline route,
 	// route upstream_id, inline service, then service upstream_id.
@@ -2549,7 +3060,7 @@ func resolveRouteUpstream(
 		return r.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: r.ID}, nil
 	}
 	if r.UpstreamID != "" {
-		upstream, err := store.GetUpstream(r.UpstreamID)
+		upstream, err := getUpstream(r.UpstreamID)
 		if err != nil {
 			return resource.Upstream{}, plugin.ResourceProvenance{Kind: plugin.ResourceUpstream, ID: r.UpstreamID},
 				fmt.Errorf("get upstream %q fail: %w", r.UpstreamID, err)
@@ -2560,7 +3071,7 @@ func resolveRouteUpstream(
 		return service.Upstream, plugin.ResourceProvenance{Kind: plugin.ResourceService, ID: service.ID}, nil
 	}
 	if service.UpstreamID != "" {
-		upstream, err := store.GetUpstream(service.UpstreamID)
+		upstream, err := getUpstream(service.UpstreamID)
 		if err != nil {
 			return resource.Upstream{}, plugin.ResourceProvenance{
 					Kind: plugin.ResourceUpstream,
@@ -2796,7 +3307,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		}
 	} else {
 		var err error
-		upstream, upstreamProvenance, err = resolveRouteUpstream(r, service)
+		upstream, upstreamProvenance, err = b.resolveRouteUpstream(r, service)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -2820,6 +3331,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
+	priorities := make(map[string]int, len(upstream.Nodes))
 	scheme := upstream.Scheme
 	targetScheme := scheme
 	if strings.EqualFold(targetScheme, "grpc") {
@@ -2862,6 +3374,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		}
 		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
+		priorities[uri] = node.Priority
 	}
 	if len(servers) > 0 {
 		hasPositiveWeight := false
@@ -2883,7 +3396,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	}
 
 	if strings.EqualFold(scheme, "kafka") {
-		handler, err := buildKafkaPubSubProxyHandlerStrict(upstream, nil)
+		handler, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, nil, b.getSSL)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -2895,7 +3408,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	// Never construct an empty round-robin picker: without nodes, target
 	// selection reports a classified director error unless traffic-split
 	// supplies an override for the request.
-	transportOption, err := buildTransportOption(r, upstream)
+	transportOption, err := b.buildTransportOption(r, upstream)
 	if err != nil {
 		return nil, routeProtocolTerminals{}, err
 	}
@@ -2906,7 +3419,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			b.ownsClusterRegistry = true
 		}
-		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption)
+		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption, priorities)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -2921,6 +3434,7 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 	} else {
 		transport = pxy.NewRetryTransport(pxy.NewTransport(transportOption))
 	}
+	transport = &trafficSplitRoundTripper{fallback: transport}
 	director := func(req *http.Request) {
 		// 1. basic
 		// proxyMethod := proxyHTTP.GetMethod()
@@ -3309,6 +3823,17 @@ func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
 	return reporter
 }
 
+type trafficSplitRoundTripper struct {
+	fallback http.RoundTripper
+}
+
+func (t *trafficSplitRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if override := traffic_split.GetOverride(request); override != nil && override.RoundTripper != nil {
+		return override.RoundTripper.RoundTrip(request)
+	}
+	return t.fallback.RoundTrip(request)
+}
+
 func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
 	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
 		return nil
@@ -3351,7 +3876,7 @@ func attachHTTPRetriesCompiled(
 			if override.NextRetry == nil {
 				return false
 			}
-			next := override.NextRetry()
+			next := override.NextRetry(retry)
 			if !applyTrafficSplitTarget(retry, next, originalHost) {
 				return false
 			}
@@ -3396,7 +3921,7 @@ func applyUpstreamTargetCompiled(
 	originalHost string,
 	targets map[string]compiledUpstreamTarget,
 ) error {
-	target := loadBalancer.Next()
+	target := pxy.NextTarget(loadBalancer, request)
 	pxy.SetSelectedTarget(request, target)
 	compiled, err := resolveCompiledUpstreamTarget(target, targets)
 	if err != nil {
@@ -3479,11 +4004,25 @@ func newModifyResponse() pxy.ModifyResponse {
 		// resp.Request = resp.Request.WithContext(ctx)
 
 		status := resp.StatusCode
+		pxy.RecordUpstreamStatus(resp.Request, status)
+		upstreamStatus := pxy.UpstreamStatusChain(resp.Request)
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Del("Server")
+		if showUpstreamStatusInResponseHeader() ||
+			(status >= http.StatusInternalServerError && status <= 599) {
+			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
+		}
 		ctx.SetRequestResponseSource(resp.Request, ctx.ResponseSourceUpstream)
 		pxy.ReportHTTPOutcome(resp.Request, status)
 		if ctx.GetRequestVars(resp.Request) != nil {
 			ctx.RegisterRequestVar(resp.Request, "$status", status)
-			ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
+			if upstreamStatus == strconv.Itoa(status) {
+				ctx.RegisterRequestVar(resp.Request, "$upstream_status", status)
+			} else {
+				ctx.RegisterRequestVar(resp.Request, "$upstream_status", upstreamStatus)
+			}
 		}
 		recordUpstreamLatency(resp.Request)
 
@@ -3584,6 +4123,7 @@ func newErrorHandler() pxy.ErrorHandler {
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
 		overloaded := errors.Is(err, pxy.ErrClusterOverloaded)
+		directorFailed := false
 		if overloaded {
 			// The cluster is saturated. This is a capacity decision, not a
 			// target failure, so it never reports a TCP health failure.
@@ -3593,6 +4133,7 @@ func newErrorHandler() pxy.ErrorHandler {
 			// it as an upstream failure instead of a client cancellation.
 			err = directorErr
 			status = http.StatusBadGateway
+			directorFailed = true
 		} else if !errors.Is(err, context.Canceled) {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				pxy.ReportTCPFailureOutcome(r, true)
@@ -3619,12 +4160,27 @@ func newErrorHandler() pxy.ErrorHandler {
 			}
 		}
 
+		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
+			if showUpstreamStatusInResponseHeader() ||
+				(status >= http.StatusInternalServerError && status <= 599) {
+				w.Header().Set("X-APISIX-Upstream-Status", upstreamStatus)
+			}
+			if ctx.GetRequestVars(r) != nil {
+				ctx.RegisterRequestVar(r, "$upstream_status", upstreamStatus)
+			}
+		}
+
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
 		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
+}
+
+func showUpstreamStatusInResponseHeader() bool {
+	return appconfig.GlobalConfig != nil &&
+		appconfig.GlobalConfig.Apisix.ShowUpstreamStatusInResponseHeader
 }
 
 func proxyFailureLogPath(r *http.Request) string {

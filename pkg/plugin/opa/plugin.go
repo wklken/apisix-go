@@ -170,7 +170,10 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.client = &http.Client{
-		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
+		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: p.transport(),
 	}
 
@@ -231,6 +234,9 @@ func (p *Plugin) queryOPA(r *http.Request) (*opaDecision, int, error) {
 		return nil, http.StatusForbidden, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("OPA returned status %d", resp.StatusCode)
+	}
 
 	var opaResp opaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&opaResp); err != nil {

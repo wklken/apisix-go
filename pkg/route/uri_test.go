@@ -298,6 +298,100 @@ func TestEmbeddedWildcardOverlappingSuffixUsesLatestRegistration(t *testing.T) {
 	}
 }
 
+func TestWildcardDispatcherCollisionKeepsHostAndMethodPrecedence(t *testing.T) {
+	t.Parallel()
+
+	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
+	register := func(methods []string, hosts []string, status int) {
+		t.Helper()
+		handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(status)
+		})
+		if err := registrar.registerRouteWithHosts(methods, "/collision/*", hosts, handler); err != nil {
+			t.Fatalf("register route: %v", err)
+		}
+	}
+
+	register(nil, nil, http.StatusNoContent)
+	register([]string{http.MethodGet}, []string{"*.example.com"}, http.StatusCreated)
+	register([]string{http.MethodPost}, []string{"api.example.com"}, http.StatusAccepted)
+	register([]string{http.MethodGet}, []string{"api.example.com"}, http.StatusResetContent)
+
+	for _, test := range []struct {
+		name   string
+		method string
+		host   string
+		want   int
+	}{
+		{name: "exact host and method", method: http.MethodGet, host: "api.example.com", want: http.StatusResetContent},
+		{name: "exact host method fallback", method: http.MethodPost, host: "api.example.com", want: http.StatusAccepted},
+		{name: "wildcard host", method: http.MethodGet, host: "edge.example.com", want: http.StatusCreated},
+		{name: "hostless method fallback", method: http.MethodDelete, host: "edge.example.com", want: http.StatusNoContent},
+		{name: "hostless unmatched host", method: http.MethodDelete, host: "other.local", want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(test.method, "/collision/item", nil)
+			request.Host = test.host
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("%s %s status = %d, want %d", test.method, test.host, response.Code, test.want)
+			}
+		})
+	}
+}
+
+func TestEmbeddedWildcardCollisionUsesLatestRegistrationAcrossSuffixes(t *testing.T) {
+	t.Parallel()
+
+	for _, laterSuffix := range []string{"/comments", "/v1/comments"} {
+		t.Run("later="+strings.TrimPrefix(laterSuffix, "/"), func(t *testing.T) {
+			t.Parallel()
+
+			router := chi.NewRouter()
+			registrar := newRouteRegistrar(router)
+			register := func(pattern string, status int) {
+				t.Helper()
+				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					writer.WriteHeader(status)
+				})
+				if err := registrar.registerRouteWithHosts(
+					[]string{http.MethodGet},
+					pattern,
+					[]string{"api.example.com"},
+					handler,
+				); err != nil {
+					t.Fatalf("register %s: %v", pattern, err)
+				}
+			}
+
+			register("/articles/*/comments", http.StatusNoContent)
+			register("/articles/*/v1/comments", http.StatusCreated)
+			if laterSuffix == "/comments" {
+				register("/articles/*/comments", http.StatusAccepted)
+			}
+
+			path := "/articles/tenant/v1/comments"
+			if laterSuffix == "/comments" {
+				path = "/articles/tenant/comments"
+			}
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Host = "api.example.com"
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			want := http.StatusCreated
+			if laterSuffix == "/comments" {
+				want = http.StatusAccepted
+			}
+			if response.Code != want {
+				t.Fatalf("GET %s status = %d, want %d", path, response.Code, want)
+			}
+		})
+	}
+}
+
 func TestEmbeddedWildcardWinsOverCatchAllSibling(t *testing.T) {
 	t.Parallel()
 
@@ -594,7 +688,6 @@ func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	config := buildRequestContextConfig(
 		resource.Route{ID: "articles", Uri: "/articles/*/comments"},
 		resource.Service{},
-		nil,
 	)
 	if got := config["$matched_uri"]; got != "/articles/*/comments" {
 		t.Fatalf("$matched_uri = %q, want original APISIX pattern", got)

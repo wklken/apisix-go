@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -20,6 +21,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -39,27 +42,6 @@ func (p *panicSnapshotLogPlugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if p.panicLog {
 		panic("detached logger panic")
 	}
-	return nil
-}
-
-type recordingSnapshotFinalizerPlugin struct {
-	base.BasePlugin
-	snapshots []base.LogSnapshot
-}
-
-func (p *recordingSnapshotFinalizerPlugin) Init() error                            { return nil }
-func (p *recordingSnapshotFinalizerPlugin) PostInit() error                        { return nil }
-func (p *recordingSnapshotFinalizerPlugin) Config() any                            { return nil }
-func (p *recordingSnapshotFinalizerPlugin) Handler(next http.Handler) http.Handler { return next }
-func (*recordingSnapshotFinalizerPlugin) RunRequestPhase(
-	_ http.ResponseWriter,
-	r *http.Request,
-) base.RequestPhaseResult {
-	return base.ContinueRequest(r)
-}
-
-func (p *recordingSnapshotFinalizerPlugin) RunSnapshotFinalizer(snapshot base.LogSnapshot) error {
-	p.snapshots = append(p.snapshots, snapshot)
 	return nil
 }
 
@@ -90,20 +72,12 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			loggerPlugin := &panicSnapshotLogPlugin{}
 			loggerPlugin.Name = "test-ingress-logger"
-			finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-			finalizerPlugin.Name = "request_context"
 			bindings := []pluginpkg.Binding{
 				pluginpkg.BindPlugin(
 					"http-logger",
 					loggerPlugin,
 					pluginpkg.ScopeRoute,
 					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: test.name},
-				),
-				pluginpkg.BindPlugin(
-					"request-context",
-					finalizerPlugin,
-					pluginpkg.ScopeSystem,
-					pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
 				),
 			}
 			if test.withAuth {
@@ -145,12 +119,6 @@ func TestServeRouteRequestOwnsConsumerIdentityAtIngress(t *testing.T) {
 			}
 			if got := loggerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
 				t.Fatalf("detached log consumer header = %q, want unset", got)
-			}
-			if len(finalizerPlugin.snapshots) != 1 {
-				t.Fatalf("final log snapshots = %d, want 1", len(finalizerPlugin.snapshots))
-			}
-			if got := finalizerPlugin.snapshots[0].Request.Header.Get("X-Consumer-Username"); got != "" {
-				t.Fatalf("final log consumer header = %q, want unset", got)
 			}
 		})
 	}
@@ -242,30 +210,19 @@ func TestRouteHandlerPanicBeforeCommitReturnsStableJSON(t *testing.T) {
 func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	loggerPlugin := &panicSnapshotLogPlugin{}
 	loggerPlugin.Name = "test-logger"
-	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-	finalizerPlugin.Name = "request_context"
 	loggerBinding := pluginpkg.BindPlugin(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,
 		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "panic-log"},
 	)
-	finalizerBinding := pluginpkg.BindPlugin(
-		"request-context",
-		finalizerPlugin,
-		pluginpkg.ScopeSystem,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
-	)
-	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
-		loggerBinding,
-		finalizerBinding,
-	})
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{loggerBinding})
 	if err != nil {
 		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
 	}
 	var derived *http.Request
 	pipeline := pluginpkg.NewRequestPipeline(
-		[]pluginpkg.Binding{loggerBinding, finalizerBinding},
+		[]pluginpkg.Binding{loggerBinding},
 		nil,
 	).WithLogExecutor(&executor)
 	handler := pipeline.Then(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -292,9 +249,6 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 	if got := snapshot.Request.APISIXVars["$panic_marker"]; got != "visible-to-finalizer" {
 		t.Fatalf("panic snapshot marker = %#v", got)
 	}
-	if len(finalizerPlugin.snapshots) != 1 {
-		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
-	}
 	if got := apisixctx.GetApisixVar(derived, "$panic_marker"); got != "" {
 		t.Fatalf("panic marker after recycle = %#v, want empty", got)
 	}
@@ -303,29 +257,18 @@ func TestPluginPhaseClosurePreTerminalPanicLogsAndRecycles(t *testing.T) {
 func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 	loggerPlugin := &panicSnapshotLogPlugin{panicLog: true}
 	loggerPlugin.Name = "test-logger"
-	finalizerPlugin := &recordingSnapshotFinalizerPlugin{}
-	finalizerPlugin.Name = "request_context"
 	loggerBinding := pluginpkg.BindPlugin(
 		"http-logger",
 		loggerPlugin,
 		pluginpkg.ScopeRoute,
 		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "logger-panic"},
 	)
-	finalizerBinding := pluginpkg.BindPlugin(
-		"request-context",
-		finalizerPlugin,
-		pluginpkg.ScopeSystem,
-		pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "request-context"},
-	)
-	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{
-		loggerBinding,
-		finalizerBinding,
-	})
+	executor, err := pluginpkg.NewLogExecutorFromBindings([]pluginpkg.Binding{loggerBinding})
 	if err != nil {
 		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
 	}
 	var derived *http.Request
-	handler := pluginpkg.NewRequestPipeline([]pluginpkg.Binding{loggerBinding, finalizerBinding}, nil).
+	handler := pluginpkg.NewRequestPipeline([]pluginpkg.Binding{loggerBinding}, nil).
 		WithLogExecutor(&executor).
 		Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			derived = r
@@ -343,11 +286,8 @@ func TestPluginPhaseClosureLoggerPanicStillFinalizesAndRecycles(t *testing.T) {
 	if len(loggerPlugin.snapshots) != 1 {
 		t.Fatalf("logger calls = %d, want 1", len(loggerPlugin.snapshots))
 	}
-	if len(finalizerPlugin.snapshots) != 1 {
-		t.Fatalf("snapshot finalizer calls = %d, want 1", len(finalizerPlugin.snapshots))
-	}
-	if got := finalizerPlugin.snapshots[0].Request.APISIXVars["$logger_panic_marker"]; got != "live" {
-		t.Fatalf("finalizer marker = %#v, want live", got)
+	if got := loggerPlugin.snapshots[0].Request.APISIXVars["$logger_panic_marker"]; got != "live" {
+		t.Fatalf("logger snapshot marker = %#v, want live", got)
 	}
 	if got := apisixctx.GetApisixVar(derived, "$logger_panic_marker"); got != "" {
 		t.Fatalf("marker after recycle = %#v, want empty", got)
@@ -862,6 +802,105 @@ func TestRouteHandlerPanicAfterWriteAbortsConnection(t *testing.T) {
 	}
 	if !bytes.HasPrefix(body, []byte("partial")) {
 		t.Fatalf("body = %q, want partial prefix", body)
+	}
+}
+
+func TestRouteHandlerBatchTimeoutKeepsRetiredGenerationUntilWorkerExit(t *testing.T) {
+	workerStarted := make(chan struct{})
+	workerRelease := make(chan struct{})
+	worker := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(workerStarted)
+		<-workerRelease
+	})
+	mux := http.NewServeMux()
+	mux.Handle("/slow", worker)
+	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
+
+	stopped := make(chan struct{})
+	routes := newRouteHandler(mux, func() { close(stopped) })
+	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+		"timeout": 10,
+		"pipeline": [{"path":"/slow"}]
+	}`))
+	response := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() {
+		routes.ServeHTTP(response, request)
+		close(served)
+	}()
+
+	select {
+	case <-workerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("batch worker did not start")
+	}
+	select {
+	case <-served:
+	case <-time.After(time.Second):
+		t.Fatal("batch request did not return after timeout")
+	}
+
+	routes.Replace(http.NotFoundHandler(), nil)
+	select {
+	case <-stopped:
+		t.Fatal("retired generation stopped while cancellation-ignoring worker was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(workerRelease)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("retired generation did not stop after batch worker exited")
+	}
+}
+
+func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
+	plugin := &limit_conn.Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("limit-conn Init() error = %v", err)
+	}
+	config := plugin.Config().(*limit_conn.Config)
+	*config = limit_conn.Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.001,
+		Key:              "remote_addr",
+	}
+	if err := plugin.PostInit(); err != nil {
+		t.Fatalf("limit-conn PostInit() error = %v", err)
+	}
+
+	target := plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apisixctx.GetRequestLifecycle(r) == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux := http.NewServeMux()
+	mux.Handle("/limited", target)
+	mux.Handle("/apisix/batch-requests", batch_requests.NewHandlerWithLimits(mux, batch_requests.Limits{}))
+	routes := newRouteHandler(mux, nil)
+	request := httptest.NewRequest(http.MethodPost, batch_requests.DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path":"/limited"}, {"path":"/limited"}]
+	}`))
+	request.RemoteAddr = "192.0.2.100:1234"
+	response := httptest.NewRecorder()
+
+	routes.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch response code = %d, want 200; body=%q", response.Code, response.Body.String())
+	}
+	var responses []struct {
+		Status int `json:"status"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &responses); err != nil {
+		t.Fatalf("decode batch response: %v; body=%q", err, response.Body.String())
+	}
+	if len(responses) != 2 || responses[0].Status != http.StatusNoContent ||
+		responses[1].Status != http.StatusNoContent {
+		t.Fatalf("pipeline statuses = %#v, want two 204 responses", responses)
 	}
 }
 

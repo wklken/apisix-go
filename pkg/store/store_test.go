@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,8 +11,145 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestProcessEventWrapsOnlyResourceValidationFailures(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "validation.db"), 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	storage := &Store{
+		db:                      db,
+		consumerKV:              map[string][]byte{},
+		consumerToKeys:          map[string][]string{},
+		consumerValues:          map[string]resource.Consumer{},
+		consumerReferenceKV:     map[string]map[string][]byte{},
+		consumerToReferences:    map[string][]string{},
+		validatedPluginMetadata: newValidatedPluginMetadataCache(),
+	}
+	if err := storage.InitBuckets(); err != nil {
+		t.Fatalf("InitBuckets() error = %v", err)
+	}
+
+	err = storage.processEvent(&Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/consumers/alice"),
+		Value: []byte(`{"username":"alice","plugins":{"basic-auth":{"username":"alice"}}}`),
+	})
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("consumer validation error = %v, want ResourceValidationError", err)
+	}
+	if validationErr.Bucket != "consumers" || validationErr.ID != "alice" {
+		t.Fatalf("validation context = %q/%q, want consumers/alice", validationErr.Bucket, validationErr.ID)
+	}
+	err = storage.processEvent(&Event{
+		Type:  EventType(99),
+		Key:   []byte("/apisix/ssls/bad"),
+		Value: []byte(`{"id":"bad"}`),
+	})
+	if errors.As(err, &validationErr) {
+		t.Fatalf("unsupported SSL event was wrapped as ResourceValidationError: %v", err)
+	}
+	if err == nil {
+		t.Fatal("unsupported SSL event error = nil")
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	err = storage.processEvent(&Event{
+		Type:  EventTypePut,
+		Key:   []byte("/apisix/routes/route-1"),
+		Value: []byte(`{"id":"route-1"}`),
+	})
+	if errors.As(err, &validationErr) {
+		t.Fatalf("persistence error was wrapped as ResourceValidationError: %v", err)
+	}
+	if err == nil {
+		t.Fatal("closed database persistence error = nil")
+	}
+}
+
+func TestRouteAndGlobalRulePutValidationRetainsLastGoodAndSkipsHooks(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "resource-validation.db"), make(chan *Event, 8))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	var hookCalls int
+	storage.AddEventUpdateHook(func(*Event) { hookCalls++ })
+	apply := func(key string, value []byte) error {
+		event := NewAcknowledgedEvent()
+		event.Type = EventTypePut
+		event.Key = []byte(key)
+		event.Value = value
+		storage.events <- event
+		return event.Wait(context.Background())
+	}
+	for _, test := range []struct {
+		bucket string
+		id     string
+		good   []byte
+		bad    []byte
+	}{
+		{
+			bucket: "routes",
+			id:     "route-1",
+			good:   []byte(`{"id":"route-1","uri":"/last-good"}`),
+			bad:    []byte(`{"id":"route-1","uri":"/bad","plugins":[]}`),
+		},
+		{
+			bucket: "global_rules",
+			id:     "rule-1",
+			good:   []byte(`{"id":"rule-1","plugins":{}}`),
+			bad:    []byte(`{"id":"rule-1","plugins":[]}`),
+		},
+	} {
+		t.Run(test.bucket, func(t *testing.T) {
+			key := "/apisix/" + test.bucket + "/" + test.id
+			if err := apply(key, test.good); err != nil {
+				t.Fatalf("apply last-good resource: %v", err)
+			}
+			before, err := storage.GetFromBucket(test.bucket, []byte(test.id))
+			if err != nil {
+				t.Fatalf("read last-good resource: %v", err)
+			}
+			if err := apply(key, test.bad); err == nil {
+				t.Fatal("malformed resource PUT error = nil")
+			} else {
+				var validationErr *ResourceValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("malformed resource PUT error = %v, want ResourceValidationError", err)
+				}
+				if validationErr.Bucket != test.bucket || validationErr.ID != test.id {
+					t.Fatalf(
+						"validation context = %q/%q, want %q/%q",
+						validationErr.Bucket,
+						validationErr.ID,
+						test.bucket,
+						test.id,
+					)
+				}
+			}
+			after, err := storage.GetFromBucket(test.bucket, []byte(test.id))
+			if err != nil {
+				t.Fatalf("read retained resource: %v", err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("retained %s bytes = %q, want %q", test.bucket, after, before)
+			}
+		})
+	}
+	if hookCalls != 2 {
+		t.Fatalf("reload hook calls = %d, want only successful PUTs", hookCalls)
+	}
+}
 
 func TestOpenErrorForMissingDatabaseDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "store.db")
@@ -558,12 +696,76 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 }
 
 func TestGetTypeAndIDFromKeyPreservesSecretManagerID(t *testing.T) {
-	bucket, id := getTypeAndIDFromKey([]byte("/apisix/secrets/vault/test1"))
+	bucket, id, err := getTypeAndIDFromKey([]byte("/apisix/secrets/vault/test1"))
+	if err != nil {
+		t.Fatalf("getTypeAndIDFromKey() error = %v", err)
+	}
 	if got, want := string(bucket), "secrets"; got != want {
 		t.Fatalf("bucket = %q, want %q", got, want)
 	}
 	if got, want := string(id), "vault/test1"; got != want {
 		t.Fatalf("id = %q, want %q", got, want)
+	}
+}
+
+func TestGetTypeAndIDFromKeyPreservesPrefixWithoutLeadingSlash(t *testing.T) {
+	bucket, id, err := getTypeAndIDFromKey([]byte("apisix/routes/route-1"))
+	if err != nil {
+		t.Fatalf("getTypeAndIDFromKey() error = %v", err)
+	}
+	if got, want := string(bucket), "routes"; got != want {
+		t.Fatalf("bucket = %q, want %q", got, want)
+	}
+	if got, want := string(id), "route-1"; got != want {
+		t.Fatalf("id = %q, want %q", got, want)
+	}
+}
+
+func TestProcessEventRejectsMalformedKeysWithoutPanic(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "malformed-key.db"), make(chan *Event))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "single segment", key: "malformed"},
+		{name: "missing bucket", key: "/apisix//route-1"},
+		{name: "empty id", key: "/apisix/routes/"},
+		{name: "missing secret manager", key: "/apisix/secrets//secret-1"},
+		{name: "missing secret name", key: "/apisix/secrets/vault/"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := &Event{Type: EventTypePut, Key: []byte(test.key)}
+			firstErr := storage.processEvent(event)
+			var validationErr *ResourceValidationError
+			if !errors.As(firstErr, &validationErr) {
+				t.Fatalf("processEvent(%q) error = %v, want ResourceValidationError", test.key, firstErr)
+			}
+			if _, ok := EventBucket(event); ok {
+				t.Fatalf("EventBucket(%q) = ok, want invalid", test.key)
+			}
+
+			secondErr := storage.processEvent(event)
+			if secondErr == nil || secondErr.Error() != firstErr.Error() {
+				t.Fatalf("processEvent(%q) error changed: first=%v second=%v", test.key, firstErr, secondErr)
+			}
+		})
+	}
+
+	storage.Start()
+	acknowledged := NewAcknowledgedEvent()
+	acknowledged.Type = EventTypePut
+	acknowledged.Key = []byte("malformed")
+	storage.events <- acknowledged
+	acknowledgedErr := acknowledged.Wait(context.Background())
+	var validationErr *ResourceValidationError
+	if !errors.As(acknowledgedErr, &validationErr) {
+		t.Fatalf("acknowledged malformed key error = %v, want ResourceValidationError", acknowledgedErr)
 	}
 }
 
@@ -574,7 +776,7 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		stream bool
 	}{
 		{bucket: "routes", http: true},
-		{bucket: "services", http: true},
+		{bucket: "services", http: true, stream: true},
 		{bucket: "upstreams", http: true, stream: true},
 		{bucket: "stream_routes", stream: true},
 		{bucket: "global_rules", http: true},
@@ -582,6 +784,7 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		{bucket: "plugin_metadata", http: true},
 		{bucket: "ssls", http: true},
 		{bucket: "protos", http: true},
+		{bucket: "consumer_groups"},
 		{bucket: "consumers"},
 	}
 

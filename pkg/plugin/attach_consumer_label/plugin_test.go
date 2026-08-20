@@ -63,20 +63,25 @@ func TestHandlerPassesThroughWithoutAuthenticatedConsumer(t *testing.T) {
 		},
 	})
 
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("X-Consumer-Department", "spoofed")
+	req = ctx.WithApisixVars(req, map[string]string{})
+	res := httptest.NewRecorder()
 	var gotDepartment string
-	res := performRequest(p, nil, func(r *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotDepartment = r.Header.Get("X-Consumer-Department")
-	})
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
 	}
-	if gotDepartment != "" {
-		t.Fatalf("X-Consumer-Department = %q, want empty without authenticated consumer", gotDepartment)
+	if gotDepartment != "spoofed" {
+		t.Fatalf("X-Consumer-Department = %q, want preserved header without authenticated consumer", gotDepartment)
 	}
 }
 
-func TestHandlerRemovesClientHeaderWhenConsumerLabelIsMissing(t *testing.T) {
+func TestHandlerPreservesClientHeaderWhenConsumerLabelsAreAbsent(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Headers: map[string]string{
 			"X-Consumer-Role": "$role",
@@ -89,8 +94,8 @@ func TestHandlerRemovesClientHeaderWhenConsumerLabelIsMissing(t *testing.T) {
 	ctx.AttachConsumer(req, resource.Consumer{Username: "alice"})
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Consumer-Role"); got != "" {
-			t.Fatalf("X-Consumer-Role = %q, want removed when label is missing", got)
+		if got := r.Header.Get("X-Consumer-Role"); got != "admin" {
+			t.Fatalf("X-Consumer-Role = %q, want preserved when consumer labels are absent", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

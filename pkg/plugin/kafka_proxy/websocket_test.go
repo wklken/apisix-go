@@ -210,6 +210,7 @@ func TestServeWebSocketRejectsNonUpgradeRequests(t *testing.T) {
 func TestServePubSubWebSocketFullLoop(t *testing.T) {
 	served := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "APISIX/test-version")
 		served <- ServePubSubWebSocket(w, r, []string{"kafka://127.0.0.1:9092"}, TransportOptions{}, func(
 			context.Context,
 			[]string,
@@ -220,11 +221,14 @@ func TestServePubSubWebSocketFullLoop(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/pubsub", nil)
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/pubsub", nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
+	if got := response.Header.Get("Server"); got != "APISIX/test-version" {
+		t.Fatalf("websocket Server header = %q, want preconfigured token", got)
+	}
 
 	pingWire := mustMarshalPubSubRequest(t, PubSubRequest{Sequence: 1, Command: CmdPing, State: []byte("s")})
 	if err := conn.WriteMessage(websocket.BinaryMessage, pingWire); err != nil {
@@ -264,12 +268,40 @@ func TestServePubSubWebSocketFullLoop(t *testing.T) {
 	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x08}); err != nil {
 		t.Fatalf("write malformed request: %v", err)
 	}
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("ReadMessage() error = nil after malformed request, want close frame")
+	_, payload, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read malformed-request response: %v", err)
+	}
+	malformedResponse, err := ParsePubSubResponse(payload)
+	if err != nil {
+		t.Fatalf("parse malformed-request response: %v", err)
+	}
+	if malformedResponse.Sequence != 0 || malformedResponse.Kind != RespError ||
+		malformedResponse.Code != 0 || malformedResponse.Message != "wrong command" {
+		t.Fatalf("malformed-request response = %#v, want sequence 0 wrong command", malformedResponse)
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("ignored")); err != nil {
+		t.Fatalf("write text message: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, pingWire); err != nil {
+		t.Fatalf("write ping after malformed/text messages: %v", err)
+	}
+	_, payload, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read pong after malformed/text messages: %v", err)
+	}
+	postMalformed, err := ParsePubSubResponse(payload)
+	if err != nil {
+		t.Fatalf("parse pong after malformed/text messages: %v", err)
+	}
+	if postMalformed.Kind != RespPong || postMalformed.Sequence != 1 ||
+		!bytes.Equal(postMalformed.State, []byte("s")) {
+		t.Fatalf("post-malformed response = %#v, want pong sequence 1", postMalformed)
 	}
 	_ = conn.Close()
-	if err := <-served; err == nil {
-		t.Fatal("ServePubSubWebSocket() error = nil for a malformed request")
+	if err := <-served; err != nil {
+		t.Fatalf("ServePubSubWebSocket() error = %v after normal close", err)
 	}
 }
 

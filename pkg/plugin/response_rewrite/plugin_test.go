@@ -63,6 +63,119 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestResponseRewriteDescribesAndRunsPureHeaderStreamingConfig(t *testing.T) {
+	plugin := newTestPlugin(t, Config{
+		Headers: Headers{
+			Add: []string{"Set-Cookie: session=1"},
+			Set: map[string]string{
+				"X-Request":  "$http_x_request",
+				"X-Status":   "$status",
+				"X-Upstream": "$sent_http_x_upstream",
+			},
+			Remove: []string{"X-Remove"},
+		},
+	})
+	descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+	if err != nil {
+		t.Fatalf("DescribeBindingPhases() error = %v", err)
+	}
+	if descriptor != (base.BindingPhaseDescriptor{RequestStage: "none", StreamingHeader: true}) {
+		t.Fatalf("descriptor = %#v, want pure header descriptor", descriptor)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("X-Request", "from-request")
+	state := base.StreamingResponseState{
+		Status: http.StatusAccepted,
+		Header: http.Header{
+			"X-Remove":   {"delete-me"},
+			"X-Upstream": {"upstream-value"},
+		},
+	}
+	if err := plugin.RunStreamingHeaderFilter(req, &state); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := state.Header.Get("X-Request"); got != "from-request" {
+		t.Fatalf("X-Request = %q, want from-request", got)
+	}
+	if got := state.Header.Get("X-Status"); got != "202" {
+		t.Fatalf("X-Status = %q, want 202", got)
+	}
+	if got := state.Header.Get("X-Upstream"); got != "upstream-value" {
+		t.Fatalf("X-Upstream = %q, want upstream-value", got)
+	}
+	if got := state.Header.Get("X-Remove"); got != "" {
+		t.Fatalf("X-Remove = %q, want removed", got)
+	}
+	if got := state.Header.Values("Set-Cookie"); len(got) != 1 || got[0] != "session=1" {
+		t.Fatalf("Set-Cookie = %v, want [session=1]", got)
+	}
+}
+
+func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "status",
+			cfg:  Config{Headers: Headers{Set: map[string]string{"X-Mode": "status"}}, StatusCode: http.StatusCreated},
+		},
+		{
+			name: "vars",
+			cfg: Config{
+				Headers: Headers{Set: map[string]string{"X-Mode": "vars"}},
+				Vars:    []any{[]any{"status", "==", http.StatusOK}},
+			},
+		},
+		{name: "body", cfg: Config{Headers: Headers{Set: map[string]string{"X-Mode": "body"}}, Body: new("rewritten")}},
+		{
+			name: "body_secret",
+			cfg: Config{
+				Headers:    Headers{Set: map[string]string{"X-Mode": "body_secret"}},
+				BodySecret: new("ciphertext"),
+			},
+		},
+		{
+			name: "filters",
+			cfg: Config{
+				Headers: Headers{Set: map[string]string{"X-Mode": "filters"}},
+				Filters: []Filter{{Regex: "old", Replace: "new"}},
+			},
+		},
+		{name: "bytes_sent", cfg: Config{Headers: Headers{Set: map[string]string{"X-Mode": "$bytes_sent"}}}},
+		{name: "body_bytes_sent", cfg: Config{Headers: Headers{Set: map[string]string{"X-Mode": "$body_bytes_sent"}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := &Plugin{config: test.cfg}
+			if err := plugin.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if test.name == "body_secret" {
+				// PostInit validates and resolves body_secret; the descriptor only
+				// needs to classify the already parsed configuration.
+				if descriptor, err := test.cfg.DescribeBindingPhases(); err != nil {
+					t.Fatalf("DescribeBindingPhases() error = %v", err)
+				} else if !descriptor.BufferedBody || descriptor.Header || descriptor.StreamingHeader {
+					t.Fatalf("descriptor = %#v, want buffered body only", descriptor)
+				}
+				return
+			}
+			if err := plugin.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+			descriptor, err := plugin.Config().(base.BindingPhaseDescriber).DescribeBindingPhases()
+			if err != nil {
+				t.Fatalf("DescribeBindingPhases() error = %v", err)
+			}
+			if !descriptor.BufferedBody || descriptor.Header || descriptor.StreamingHeader {
+				t.Fatalf("descriptor = %#v, want buffered body only", descriptor)
+			}
+		})
+	}
+}
+
 func TestHandlerRewritesStatusAndBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		StatusCode: 201,

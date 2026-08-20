@@ -30,6 +30,17 @@ func NewResolver(enabled bool, keyring []string) Resolver {
 // encryption is enabled. Callers that need legacy plaintext compatibility can
 // use ResolveOptional instead.
 func (r Resolver) Resolve(value string) (string, error) {
+	return r.resolve(value, "")
+}
+
+// ResolveForContext strictly resolves a value using the registered canonical
+// field context as authenticated associated data for v2 envelopes. Legacy
+// unversioned CBC values remain readable during key rotation.
+func (r Resolver) ResolveForContext(value string, context string) (string, error) {
+	return r.resolve(value, context)
+}
+
+func (r Resolver) resolve(value string, context string) (string, error) {
 	if value == "" || !r.enabled {
 		return value, nil
 	}
@@ -37,7 +48,7 @@ func (r Resolver) Resolve(value string) (string, error) {
 		return "", ErrKeyUnavailable
 	}
 
-	plaintext, err := Decrypt(value, r.keyring)
+	plaintext, err := decryptEncoded(value, r.keyring, context)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
 	}
@@ -48,6 +59,16 @@ func (r Resolver) Resolve(value string) (string, error) {
 // plaintext values when encryption is disabled or the value is not encrypted.
 func (r Resolver) ResolveOptional(value string) string {
 	plaintext, err := r.Resolve(value)
+	if err != nil {
+		return value
+	}
+	return plaintext
+}
+
+// ResolveOptionalForContext is the legacy-plaintext-compatible counterpart to
+// ResolveForContext. It is used only for non-strict registered fields.
+func (r Resolver) ResolveOptionalForContext(value string, context string) string {
+	plaintext, err := r.ResolveForContext(value, context)
 	if err != nil {
 		return value
 	}

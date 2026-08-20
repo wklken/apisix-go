@@ -75,6 +75,13 @@ func TestCapabilityRegistryAliasAndImplementationNameExceptions(t *testing.T) {
 	if _, ok := CapabilitySpecForIdentity("otel"); ok {
 		t.Fatal("otel unexpectedly accepted as canonical identity")
 	}
+	if requestContext.Capabilities&CapabilityFinalizer != 0 || requestContext.Finalizer != FinalizerNone {
+		t.Fatalf("request-context unexpectedly owns a finalizer: %#v", requestContext)
+	}
+	prometheusSpec, ok := CapabilitySpecForFactory("prometheus")
+	if !ok || prometheusSpec.Capabilities&CapabilityLog == 0 {
+		t.Fatalf("prometheus spec = %#v/%v, want log ownership", prometheusSpec, ok)
+	}
 }
 
 func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T) {

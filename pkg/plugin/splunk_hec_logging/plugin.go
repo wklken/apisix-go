@@ -189,7 +189,10 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Endpoint.Token)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.Endpoint.Token,
+		"splunk-hec-logging.endpoint.token",
+	)
 	if err != nil {
 		return fmt.Errorf("splunk-hec-logging endpoint.token: %w", err)
 	}
@@ -362,10 +365,10 @@ func splunkSnapshotDefaultEvent(snapshot base.LogSnapshot) map[string]any {
 	return map[string]any{
 		"request_url":      requestURL,
 		"request_method":   snapshot.Request.Method,
-		"request_headers":  snapshot.Request.Header,
+		"request_headers":  base.CollapseAccessLogHeaderValues(snapshot.Request.Header),
 		"request_query":    snapshot.Request.Query,
 		"request_size":     requestSize,
-		"response_headers": snapshot.Response.Header,
+		"response_headers": base.CollapseAccessLogHeaderValues(snapshot.Response.Header),
 		"response_status":  snapshot.Outcome.Status,
 		"response_size":    snapshot.Outcome.Bytes,
 		"latency":          latency,
@@ -406,10 +409,10 @@ func buildDefaultEvent(
 	return map[string]any{
 		"request_url":      request.url,
 		"request_method":   request.method,
-		"request_headers":  request.headers,
+		"request_headers":  base.CollapseAccessLogHeaderValues(request.headers),
 		"request_query":    request.query,
 		"request_size":     request.size,
-		"response_headers": responseHeaders.Clone(),
+		"response_headers": base.CollapseAccessLogHeaderValues(responseHeaders),
 		"response_status":  metrics.Code,
 		"response_size":    metrics.Written,
 		"latency":          metrics.Duration.Milliseconds(),

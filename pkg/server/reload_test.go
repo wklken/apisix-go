@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestReconcileInitialReloadEventDropsRepresentedSentinel(t *testing.T) {
@@ -291,7 +293,7 @@ func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
 		nil,
 		func() error { return wantErr },
 		func() error { routes++; return nil },
-		func() { streams++ },
+		func() error { streams++; return nil },
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
@@ -301,33 +303,26 @@ func TestApplyStandaloneSnapshotSkipsReloadWhenSyncFails(t *testing.T) {
 	}
 }
 
-func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
-	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/reload.db", events)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	storage.Start()
-	t.Cleanup(func() { _ = storage.Stop() })
-
-	put := func(bucket string, id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		event.Value = value
-		events <- event
-	}
-	remove := func(bucket string, id string) {
-		event := store.NewEvent()
-		event.Type = store.EventTypeDelete
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		events <- event
-	}
-	put("routes", "valid-route", []byte(`{"id":"valid-route","uri":"/valid"}`))
-	put("routes", "invalid-route", []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`))
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("initial route storage sync: %v", err)
-	}
+func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBlocked(t *testing.T) {
+	oldFailures, oldReady, oldQuarantine := metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_legacy_reload_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_legacy_reload_ready"})
+	metrics.ConfigApplyQuarantined = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_legacy_reload_quarantine"})
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures, metrics.ConfigApplyReady, metrics.ConfigApplyQuarantined = oldFailures, oldReady, oldQuarantine
+	})
+	storage, events := openLegacyReloadStore(t, map[string]map[string][]byte{
+		"routes": {
+			"valid-route":   []byte(`{"id":"valid-route","uri":"/valid"}`),
+			"invalid-route": []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`),
+		},
+		"global_rules": {
+			"valid-global":   []byte(`{"id":"valid-global","plugins":{}}`),
+			"invalid-global": []byte(`{"id":"invalid-global","plugins":[]}`),
+		},
+	})
 
 	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Handler", "last-good")
@@ -340,32 +335,96 @@ func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 		routes:  newRouteHandler(oldHandler, nil),
 	}
 
-	_ = server.reload(context.Background())
+	if err := server.reload(context.Background()); err != nil {
+		t.Fatalf("reload() error = %v, want valid route generation", err)
+	}
 	response := httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
-	if got, want := response.Code, http.StatusUnauthorized; got != want {
-		t.Fatalf("status after invalid reload = %d, want retained handler status %d", got, want)
+	if got := response.Header().Get("X-Handler"); got != "" {
+		t.Fatalf("handler marker after legacy-row reload = %q, want newly published handler", got)
 	}
-	if got, want := response.Header().Get("X-Handler"), "last-good"; got != want {
-		t.Fatalf("handler marker after invalid reload = %q, want %q", got, want)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 2 {
+		t.Fatalf("legacy quarantine gauge = %v, want two malformed rows", got)
+	}
+	if metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = true while legacy resources remain quarantined")
 	}
 
-	remove("routes", "invalid-route")
-	put("global_rules", "valid-global", []byte(`{"id":"valid-global","plugins":{}}`))
-	put("global_rules", "invalid-global", []byte(`{"id":"invalid-global","plugins":[]}`))
+	metrics.RecordConfigApplyQuarantine(4)
+	replacement := store.NewEvent()
+	replacement.Type = store.EventTypePut
+	replacement.Key = []byte("/apisix/routes/invalid-route")
+	replacement.Value = []byte(`{"id":"invalid-route","uri":"/recovered"}`)
+	events <- replacement
+	deletion := store.NewEvent()
+	deletion.Type = store.EventTypeDelete
+	deletion.Key = []byte("/apisix/global_rules/invalid-global")
+	events <- deletion
 	if err := storage.Sync(); err != nil {
-		t.Fatalf("global rule storage sync: %v", err)
+		t.Fatalf("recover legacy rows: %v", err)
 	}
+	if err := server.reload(context.Background()); err != nil {
+		t.Fatalf("reload() after legacy recovery = %v", err)
+	}
+	if got := configApplyGaugeValue(t, metrics.ConfigApplyQuarantined); got != 4 {
+		t.Fatalf("quarantine gauge after store recovery = %v, want independent provider count 4", got)
+	}
+	if metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = true while provider quarantine remains")
+	}
+	metrics.RecordConfigApplyQuarantine(0)
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = false after provider and store quarantines clear")
+	}
+}
 
-	_ = server.reload(context.Background())
-	response = httptest.NewRecorder()
-	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
-	if got, want := response.Code, http.StatusUnauthorized; got != want {
-		t.Fatalf("status after invalid global-rule reload = %d, want retained handler status %d", got, want)
+func openLegacyReloadStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy-reload.db")
+	initial, err := store.Open(path, make(chan *store.Event, 1))
+	if err != nil {
+		t.Fatalf("open initial legacy store: %v", err)
 	}
-	if got, want := response.Header().Get("X-Global-Security"), "enforced"; got != want {
-		t.Fatalf("global security marker after invalid reload = %q, want %q", got, want)
+	if err := initial.Stop(); err != nil {
+		t.Fatalf("stop initial legacy store: %v", err)
 	}
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		for bucketName, entries := range seed {
+			bucket := tx.Bucket([]byte(bucketName))
+			for id, value := range entries {
+				if err := bucket.Put([]byte(id), value); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+	events := make(chan *store.Event, 1)
+	storage, err := store.Open(path, events)
+	if err != nil {
+		t.Fatalf("reopen legacy store: %v", err)
+	}
+	storage.Start()
+	previous := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previous)
+		if err := storage.Stop(); err != nil {
+			t.Errorf("stop legacy reload store: %v", err)
+		}
+	})
+	return storage, events
 }
 
 func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {

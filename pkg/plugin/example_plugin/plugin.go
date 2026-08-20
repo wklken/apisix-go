@@ -13,7 +13,8 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config   Config
+	registry *public_api.Registry
 }
 
 const (
@@ -83,8 +84,17 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	public_api.Register(http.MethodGet, helloURI, http.HandlerFunc(hello))
+	if p.registry == nil {
+		p.registry = public_api.NewRegistry()
+	}
+	p.registry.Register(http.MethodGet, helloURI, http.HandlerFunc(hello))
 	return nil
+}
+
+// SetPublicAPIRegistry injects the registry owned by the route generation
+// before PostInit registers the example endpoint.
+func (p *Plugin) SetPublicAPIRegistry(registry *public_api.Registry) {
+	p.registry = registry
 }
 
 func (p *Plugin) Config() any {

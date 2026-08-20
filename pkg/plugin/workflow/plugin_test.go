@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +39,26 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSetResourceContextForwardsRouteScopeToChildren(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{Actions: []Action{{
+		Name: "limit-req",
+		Config: map[string]any{
+			"rate":  1,
+			"burst": 0,
+			"key":   "remote_addr",
+		},
+	}}}}})
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	child := p.children[actionPosition{rule: 0, action: 0}]
+	if child == nil {
+		t.Fatal("expected materialized limit-req child")
+	}
+	if dump := fmt.Sprintf("%#v", child); !strings.Contains(dump, `routeID:"route-1"`) {
+		t.Fatalf("child = %s, want route-scoped limit key", dump)
+	}
 }
 
 func TestParseOfficialReturnActionArray(t *testing.T) {

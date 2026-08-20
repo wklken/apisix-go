@@ -235,6 +235,37 @@ func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
 	}
 }
 
+func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) {
+	redisLimiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:              1,
+		Burst:             0,
+		DefaultConnDelay:  0.1,
+		Key:               "remote_addr",
+		Policy:            "redis-cluster",
+		RedisClusterNodes: []string{"127.0.0.1:5000"},
+		RedisClusterName:  "cluster-1",
+	})
+	p.redisLimiter = redisLimiter
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+	req = apisixctx.WithApisixVars(req, map[string]string{"$consumer_name": "jack"})
+	req = apisixctx.WithConsumerPluginOverrides(req, map[string]struct{}{name: {}})
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	if redisLimiter.key != "consumer:jack:192.0.2.40" {
+		t.Fatalf("Redis consumer key = %q, want consumer scope", redisLimiter.key)
+	}
+}
+
 func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
 	routeLimiter := &fakeRedisConnLimiter{allowed: true}
 	routePlugin := newTestPlugin(t, Config{
@@ -260,10 +291,10 @@ func TestRedisScopesDistinctLimitConfigsOnSameRoute(t *testing.T) {
 	globalPlugin.redisLimiter = globalLimiter
 	globalPlugin.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
 
-	if _, _, _, err := routePlugin.increase("192.0.2.70", 4, 1); err != nil {
+	if _, _, _, err := routePlugin.increase(nil, "192.0.2.70", 4, 1); err != nil {
 		t.Fatalf("route increase error = %v", err)
 	}
-	if _, _, _, err := globalPlugin.increase("192.0.2.70", 2, 1); err != nil {
+	if _, _, _, err := globalPlugin.increase(nil, "192.0.2.70", 2, 1); err != nil {
 		t.Fatalf("global increase error = %v", err)
 	}
 	if routeLimiter.key == globalLimiter.key {
@@ -517,7 +548,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		OnlyUseDefaultDelay: true,
 	})
 
-	firstDelay, allowed, _, err := p.increase("client", 1, 2)
+	firstDelay, allowed, _, err := p.increase(nil, "client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -528,7 +559,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("first delay = %s, want 0", firstDelay)
 	}
 
-	secondDelay, allowed, _, err := p.increase("client", 1, 2)
+	secondDelay, allowed, _, err := p.increase(nil, "client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -539,7 +570,7 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("second delay = %s, want 200ms", secondDelay)
 	}
 
-	thirdDelay, allowed, _, err := p.increase("client", 1, 2)
+	thirdDelay, allowed, _, err := p.increase(nil, "client", 1, 2)
 	if err != nil {
 		t.Fatalf("increase() error = %v", err)
 	}
@@ -559,17 +590,17 @@ func TestDecreaseAdaptsUnitDelayFromDownstreamLatency(t *testing.T) {
 		Key:              "remote_addr",
 	})
 
-	_, allowed, release, err := p.increase("client", 1, 1)
+	_, allowed, release, err := p.increase(nil, "client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
 	}
 	latency := 600 * time.Millisecond
 	release(&latency)
 
-	if delay, allowed, _, err := p.increase("client", 1, 1); err != nil || !allowed || delay != 0 {
+	if delay, allowed, _, err := p.increase(nil, "client", 1, 1); err != nil || !allowed || delay != 0 {
 		t.Fatalf("first adapted increase = delay %s, allowed %v, error %v", delay, allowed, err)
 	}
-	delay, allowed, _, err := p.increase("client", 1, 1)
+	delay, allowed, _, err := p.increase(nil, "client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("second adapted increase = allowed %v, error %v", allowed, err)
 	}
@@ -587,16 +618,16 @@ func TestDecreaseKeepsDefaultUnitDelayWhenConfigured(t *testing.T) {
 		OnlyUseDefaultDelay: true,
 	})
 
-	_, allowed, release, err := p.increase("client", 1, 1)
+	_, allowed, release, err := p.increase(nil, "client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
 	}
 	latency := 600 * time.Millisecond
 	release(&latency)
-	if _, allowed, _, err := p.increase("client", 1, 1); err != nil || !allowed {
+	if _, allowed, _, err := p.increase(nil, "client", 1, 1); err != nil || !allowed {
 		t.Fatalf("first fixed increase = allowed %v, error %v", allowed, err)
 	}
-	delay, allowed, _, err := p.increase("client", 1, 1)
+	delay, allowed, _, err := p.increase(nil, "client", 1, 1)
 	if err != nil || !allowed {
 		t.Fatalf("second fixed increase = allowed %v, error %v", allowed, err)
 	}

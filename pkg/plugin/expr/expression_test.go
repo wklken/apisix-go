@@ -188,6 +188,14 @@ func TestRequestValueResolvesBuiltInHTTPVariables(t *testing.T) {
 	}
 }
 
+func TestRequestValueHostStripsPort(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com:9080/", nil)
+	request.Host = "example.com:9080"
+	if got := RequestValue(request, "host"); got != "example.com" {
+		t.Fatalf("host = %#v, want example.com", got)
+	}
+}
+
 func TestRequestValueHonorsContextOverridesAndFallbackPrecedence(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
 	request.RemoteAddr = "192.0.2.10:4321"

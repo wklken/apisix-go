@@ -14,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
 )
 
 const routeSetRetired = uint64(1) << 63
@@ -21,7 +22,7 @@ const routeSetRetired = uint64(1) << 63
 type routeSet struct {
 	handler     http.Handler
 	stop        func()
-	state       atomic.Uint64 // high bit is retired; remaining bits are active requests
+	state       atomic.Uint64 // high bit is retired; remaining bits are requests and batch leases
 	drained     chan struct{}
 	drainedOnce sync.Once
 	hijackMu    sync.Mutex
@@ -49,11 +50,7 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
 		}
-		state := current.state.Load()
-		if state&routeSetRetired != 0 {
-			continue
-		}
-		if current.state.CompareAndSwap(state, state+1) {
+		if current.acquireRequest() {
 			break
 		}
 	}
@@ -103,6 +100,22 @@ func serveRouteRequestForGeneration(
 		}
 	}()
 	request = base.WithResponseCapture(request, capture)
+	if generation != nil {
+		request = batch_requests.WithDispatchLeaseFactory(request, func() (batch_requests.DispatchLease, bool) {
+			if !generation.acquireDispatchLease() {
+				return batch_requests.DispatchLease{}, false
+			}
+			var releaseOnce sync.Once
+			return batch_requests.DispatchLease{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					serveRouteRequestForGeneration(w, r, generation.handler, generation)
+				}),
+				Release: func() {
+					releaseOnce.Do(generation.releaseRequest)
+				},
+			}, true
+		})
+	}
 	lifecycle.SetFinalRequest(request)
 
 	defer func() {
@@ -242,11 +255,39 @@ func newRouteSet(handler http.Handler, stop func()) *routeSet {
 	return &routeSet{handler: handler, stop: stop, drained: make(chan struct{})}
 }
 
-func (h *routeHandler) finishRequest(current *routeSet) {
-	state := current.state.Add(^uint64(0))
-	if state == routeSetRetired {
-		current.closeDrained()
+func (r *routeSet) acquireRequest() bool {
+	for {
+		state := r.state.Load()
+		if state&routeSetRetired != 0 {
+			return false
+		}
+		if r.state.CompareAndSwap(state, state+1) {
+			return true
+		}
 	}
+}
+
+func (r *routeSet) acquireDispatchLease() bool {
+	for {
+		state := r.state.Load()
+		if state == routeSetRetired {
+			return false
+		}
+		if r.state.CompareAndSwap(state, state+1) {
+			return true
+		}
+	}
+}
+
+func (r *routeSet) releaseRequest() {
+	state := r.state.Add(^uint64(0))
+	if state == routeSetRetired {
+		r.closeDrained()
+	}
+}
+
+func (h *routeHandler) finishRequest(current *routeSet) {
+	current.releaseRequest()
 }
 
 func retireRouteSet(current *routeSet) {

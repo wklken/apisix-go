@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -18,9 +16,10 @@ import (
 )
 
 type responseTestConfig struct {
-	stage  string
-	header bool
-	body   bool
+	stage           string
+	header          bool
+	streamingHeader bool
+	body            bool
 }
 
 type responseModeTestConfig struct{ modes base.ResponseModeMask }
@@ -96,20 +95,22 @@ func (c *countingResponseTestConfig) DescribeBindingPhases() (base.BindingPhaseD
 
 func (c responseTestConfig) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
 	return base.BindingPhaseDescriptor{
-		RequestStage: c.stage,
-		Header:       c.header,
-		BufferedBody: c.body,
+		RequestStage:    c.stage,
+		Header:          c.header,
+		StreamingHeader: c.streamingHeader,
+		BufferedBody:    c.body,
 	}, nil
 }
 
 type responseTestPlugin struct {
 	base.BasePlugin
-	config   any
-	request  func(http.ResponseWriter, *http.Request) base.RequestPhaseResult
-	header   func(*http.Request, *base.ResponseState) error
-	body     func(*http.Request, *base.ResponseState) error
-	store    func(*http.Request, base.ResponseState) error
-	eligible func(apisixctx.ResponseSource) bool
+	config          any
+	request         func(http.ResponseWriter, *http.Request) base.RequestPhaseResult
+	streamingHeader func(*http.Request, *base.StreamingResponseState) error
+	header          func(*http.Request, *base.ResponseState) error
+	body            func(*http.Request, *base.ResponseState) error
+	store           func(*http.Request, base.ResponseState) error
+	eligible        func(apisixctx.ResponseSource) bool
 }
 
 func newResponseTestPlugin(name string, priority int, config any) *responseTestPlugin {
@@ -131,6 +132,16 @@ func (p *responseTestPlugin) RunRequestPhase(
 		return base.ContinueRequest(r)
 	}
 	return p.request(w, r)
+}
+
+func (p *responseTestPlugin) RunStreamingHeaderFilter(
+	r *http.Request,
+	state *base.StreamingResponseState,
+) error {
+	if p.streamingHeader != nil {
+		return p.streamingHeader(r, state)
+	}
+	return nil
 }
 
 func (p *responseTestPlugin) RunHeaderFilter(r *http.Request, state *base.ResponseState) error {
@@ -277,13 +288,142 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	}
 }
 
-func TestResponseManifestAndRegistryHaveExactDeclaredIdentities(t *testing.T) {
-	manifestWant := []string{
+func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
+	tests := []struct {
+		name              string
+		config            responseTestConfig
+		wantBuffered      int
+		wantStreaming     int
+		wantMetadataOwner ResponseOwnerKind
+		conditional       bool
+	}{
+		{
+			name:              "streaming header",
+			config:            responseTestConfig{stage: "none", streamingHeader: true},
+			wantStreaming:     1,
+			wantMetadataOwner: ResponseOwnerStreamingHeaderFilter,
+		},
+		{
+			name:              "buffered body",
+			config:            responseTestConfig{stage: "none", body: true},
+			wantBuffered:      1,
+			wantMetadataOwner: ResponseOwnerBufferedBodyFilter,
+		},
+		{
+			name:              "conditional early response bounded fallback",
+			config:            responseTestConfig{stage: "none", streamingHeader: true},
+			wantBuffered:      1,
+			wantMetadataOwner: ResponseOwnerStreamingHeaderFilter,
+			conditional:       true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := newResponseTestPlugin("response-rewrite", 1, test.config)
+			binding := checkedResponseBinding(t, "response-rewrite", instance, ScopeRoute, "route-1")
+			bindings := []Binding{binding}
+			if test.conditional {
+				auth := newExecutorRequestPlugin(
+					"key-auth",
+					100,
+					func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+						return base.StopRequest(r)
+					},
+				)
+				bindings = append(bindings, BindPlugin(
+					"key-auth",
+					auth,
+					ScopeRoute,
+					ResourceProvenance{Kind: ResourceRoute, ID: "route-1"},
+				))
+			}
+			plan, err := BuildResponsePlan(bindings)
+			if err != nil {
+				t.Fatalf("BuildResponsePlan() error = %v", err)
+			}
+			if got := len(plan.BufferedBindings()); got != test.wantBuffered {
+				t.Fatalf("buffered bindings = %d, want %d", got, test.wantBuffered)
+			}
+			if got := len(plan.StreamingBindings()); got != test.wantStreaming {
+				t.Fatalf("streaming bindings = %d, want %d", got, test.wantStreaming)
+			}
+			phases, err := ResolveResponsePhases("response-rewrite", test.config)
+			if err != nil {
+				t.Fatalf("ResolveResponsePhases() error = %v", err)
+			}
+			if !slices.Equal(phases.Owners, []ResponseOwnerKind{test.wantMetadataOwner}) {
+				t.Fatalf("metadata owners = %v, want [%v]", phases.Owners, test.wantMetadataOwner)
+			}
+		})
+	}
+}
+
+func TestDynamicResponseRewriteConditionalFallbackRunsExactlyOnce(t *testing.T) {
+	staticRewrite := newResponseTestPlugin(
+		"response-rewrite",
+		1,
+		responseTestConfig{stage: "none", streamingHeader: true},
+	)
+	consumerRewrite := newResponseTestPlugin(
+		"response-rewrite",
+		1,
+		responseTestConfig{stage: "none", streamingHeader: true},
+	)
+	consumerRewrite.body = func(_ *http.Request, state *base.ResponseState) error {
+		state.Header.Add("Set-Cookie", "consumer=1")
+		return nil
+	}
+	consumerRewrite.streamingHeader = func(_ *http.Request, state *base.StreamingResponseState) error {
+		state.Header.Add("Set-Cookie", "consumer=1")
+		return nil
+	}
+	auth := newExecutorRequestPlugin(
+		"key-auth",
+		100,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			return base.ContinueRequest(r)
+		},
+	)
+	static := []Binding{
+		checkedResponseBinding(t, "response-rewrite", staticRewrite, ScopeRoute, "route-1"),
+		BindPlugin(
+			"key-auth",
+			auth,
+			ScopeRoute,
+			ResourceProvenance{Kind: ResourceRoute, ID: "route-1"},
+		),
+	}
+	consumer := checkedResponseBinding(t, "response-rewrite", consumerRewrite, ScopeConsumer, "consumer-1")
+	consumer.Provenance.Kind = ResourceConsumer
+	plan, err := BuildResponsePlan(static)
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	pipeline := NewRequestPipeline(static, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{consumer}}, nil
+	})
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	response := httptest.NewRecorder()
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		time.Now(),
+	)
+	plan.Install(pipeline, terminal).ServeHTTP(response, request)
+	if got := response.Header().Values("Set-Cookie"); !reflect.DeepEqual(got, []string{"consumer=1"}) {
+		t.Fatalf("Set-Cookie = %v, want exactly one consumer value", got)
+	}
+}
+
+func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
+	responseWant := []string{
 		"api-breaker", "body-transformer", "echo", "error-page", "exit-transformer",
 		"graphql-proxy-cache", "proxy-cache", "response-rewrite",
 		"serverless-post-function", "serverless-pre-function",
 	}
-	registryWant := append([]string{"ai-aliyun-content-moderation", "ai-rate-limiting"}, manifestWant...)
+	registryWant := append([]string{"ai-aliyun-content-moderation", "ai-rate-limiting"}, responseWant...)
 	registryWant = append(registryWant, "grpc-transcode")
 	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
@@ -296,38 +436,6 @@ func TestResponseManifestAndRegistryHaveExactDeclaredIdentities(t *testing.T) {
 	slices.Sort(got)
 	if !reflect.DeepEqual(got, registryWant) {
 		t.Fatalf("response registry = %v, want %v", got, registryWant)
-	}
-
-	manifest, err := os.ReadFile(filepath.Join(
-		"..", "..", "docs", "superpowers", "plans", "2026-08-10-plugin-capability-manifest.md",
-	))
-	if err != nil {
-		t.Fatalf("read capability manifest: %v", err)
-	}
-	section := string(manifest)
-	start := strings.Index(section, "## Plan 15 bounded response identities")
-	if start < 0 {
-		t.Fatal("capability manifest missing Plan 15 section")
-	}
-	section = section[start:]
-	if end := strings.Index(section[len("## Plan 15 bounded response identities"):], "\n## "); end >= 0 {
-		section = section[:len("## Plan 15 bounded response identities")+end]
-	}
-	manifestIdentities := make([]string, 0, len(manifestWant))
-	for line := range strings.SplitSeq(section, "\n") {
-		fields := strings.Split(line, "|")
-		if len(fields) != 5 || strings.TrimSpace(fields[1]) == "Identity" ||
-			strings.TrimSpace(fields[3]) == "Primary plan" {
-			continue
-		}
-		identity := strings.TrimSpace(fields[1])
-		if identity != "" && identity != "---" {
-			manifestIdentities = append(manifestIdentities, identity)
-		}
-	}
-	slices.Sort(manifestIdentities)
-	if !reflect.DeepEqual(manifestIdentities, manifestWant) {
-		t.Fatalf("manifest identities = %v, want %v", manifestIdentities, manifestWant)
 	}
 }
 

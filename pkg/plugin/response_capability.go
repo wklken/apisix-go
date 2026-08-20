@@ -117,6 +117,26 @@ func responseCapabilityForBinding(binding Binding) (ResponseCapability, error) {
 	if !found {
 		capability, found = responseCapabilityRegistry[binding.factoryName]
 	}
+	if responseSpec, ok := responseFactoryRegistry[binding.factoryName]; ok && responseSpec.allowStreamingHeader {
+		describer, ok := binding.Plugin.Config().(base.BindingPhaseDescriber)
+		if !ok {
+			return ResponseCapability{}, fmt.Errorf(
+				"factory %q requires a binding phase descriptor (resource=%s/%s)",
+				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+			)
+		}
+		descriptor, err := describer.DescribeBindingPhases()
+		if err != nil {
+			return ResponseCapability{}, fmt.Errorf(
+				"factory %q binding phase descriptor: %w", binding.factoryName, err,
+			)
+		}
+		if err := validateBindingPhaseDescriptor(binding.factoryName, descriptor); err != nil {
+			return ResponseCapability{}, err
+		}
+		capability.HeaderFilter = descriptor.StreamingHeader
+		found = true
+	}
 	if describer, ok := binding.Plugin.Config().(base.ResponseModeDescriber); ok {
 		descriptor, err := describer.DescribeResponseMode()
 		if err != nil {
@@ -214,7 +234,11 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 			)
 		}
 	}
-	responseBindings, err := MaterializeResponseBindings(bindingsToEffectiveSet(static))
+	bufferStreamingHeaders := hasConditionalTerminalBinding(static)
+	responseBindings, err := materializeResponseBindings(
+		bindingsToEffectiveSet(static),
+		bufferStreamingHeaders,
+	)
 	if err != nil {
 		return ResponsePlan{}, err
 	}
@@ -232,6 +256,13 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 			// MQTT is classified for completeness, but is never installed in
 			// the HTTP request/response executor.
 			continue
+		}
+		streamingHeader, descriptorErr := bindingDeclaresStreamingHeader(binding)
+		if descriptorErr != nil {
+			return ResponsePlan{}, descriptorErr
+		}
+		if capability.HeaderFilter && bufferStreamingHeaders && streamingHeader {
+			capability.HeaderFilter = false
 		}
 		if capability.HeaderFilter || capability.StreamingBodyFilter || capability.StreamingResponseOwner {
 			plan.streamingBindings = append(plan.streamingBindings, binding)
@@ -254,6 +285,42 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 		return ResponsePlan{}, err
 	}
 	return plan, nil
+}
+
+func hasConditionalTerminalBinding(bindings []Binding) bool {
+	for _, binding := range bindings {
+		if isConditionalTerminalIdentity(binding.factoryName) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConditionalTerminalEffective(effective EffectiveBindingSet) bool {
+	return hasConditionalTerminalBinding(effective.global) ||
+		hasConditionalTerminalBinding(effective.merged)
+}
+
+func bindingDeclaresStreamingHeader(binding Binding) (bool, error) {
+	responseSpec, ok := responseFactoryRegistry[binding.factoryName]
+	if !ok || !responseSpec.allowStreamingHeader || binding.Plugin == nil {
+		return false, nil
+	}
+	describer, ok := binding.Plugin.Config().(base.BindingPhaseDescriber)
+	if !ok {
+		return false, fmt.Errorf(
+			"factory %q requires a binding phase descriptor (resource=%s/%s)",
+			binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+		)
+	}
+	descriptor, err := describer.DescribeBindingPhases()
+	if err != nil {
+		return false, fmt.Errorf("factory %q descriptor: %w", binding.factoryName, err)
+	}
+	if err := validateBindingPhaseDescriptor(binding.factoryName, descriptor); err != nil {
+		return false, err
+	}
+	return descriptor.StreamingHeader, nil
 }
 
 func routeTerminalMatches(candidates []RouteTerminalCandidate, want RouteTerminalCandidate) bool {
@@ -475,10 +542,11 @@ type ResponseBinding struct {
 }
 
 type responseFactorySpec struct {
-	configAware bool
-	mask        ResponsePhaseMask
-	allowHeader bool
-	allowBody   bool
+	configAware          bool
+	mask                 ResponsePhaseMask
+	allowHeader          bool
+	allowStreamingHeader bool
+	allowBody            bool
 }
 
 var responseFactoryRegistry = map[string]responseFactorySpec{
@@ -492,7 +560,7 @@ var responseFactoryRegistry = map[string]responseFactorySpec{
 	"graphql-proxy-cache":          {mask: ResponsePhaseFinalStore},
 	"grpc-transcode":               {mask: ResponsePhaseBufferedBody, allowBody: true},
 	"proxy-cache":                  {mask: ResponsePhaseFinalStore},
-	"response-rewrite":             {mask: ResponsePhaseBufferedBody, allowBody: true},
+	"response-rewrite":             {configAware: true, allowStreamingHeader: true, allowBody: true},
 	"serverless-pre-function":      {configAware: true, allowHeader: true, allowBody: true},
 	"serverless-post-function":     {configAware: true, allowHeader: true, allowBody: true},
 }
@@ -502,7 +570,13 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 	if !ok {
 		return false
 	}
+	if descriptor.StreamingHeader && (descriptor.Header || descriptor.BufferedBody) {
+		return false
+	}
 	if descriptor.Header && !spec.allowHeader {
+		return false
+	}
+	if descriptor.StreamingHeader && !spec.allowStreamingHeader {
 		return false
 	}
 	if descriptor.BufferedBody && !spec.allowBody {
@@ -536,6 +610,13 @@ func responseFactoryAllowsDescriptor(factoryKey string, descriptor base.BindingP
 }
 
 func MaterializeResponseBindings(effective EffectiveBindingSet) ([]ResponseBinding, error) {
+	return materializeResponseBindings(effective, false)
+}
+
+func materializeResponseBindings(
+	effective EffectiveBindingSet,
+	bufferStreamingHeaders bool,
+) ([]ResponseBinding, error) {
 	result := make([]ResponseBinding, 0, len(effective.global)+len(effective.merged))
 	for _, partition := range [][]Binding{effective.global, effective.merged} {
 		ordered := append([]Binding(nil), partition...)
@@ -608,6 +689,15 @@ func MaterializeResponseBindings(effective EffectiveBindingSet) ([]ResponseBindi
 					phases |= ResponsePhaseHeader
 				}
 				if descriptor.BufferedBody {
+					phases |= ResponsePhaseBufferedBody
+				}
+				if descriptor.StreamingHeader && bufferStreamingHeaders {
+					if !responseSpec.allowBody {
+						return nil, fmt.Errorf(
+							"factory %q has no bounded fallback for an early response (resource=%s/%s)",
+							binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+						)
+					}
 					phases |= ResponsePhaseBufferedBody
 				}
 			}

@@ -9,31 +9,60 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
+func TestRegistriesIsolateSameMethodAndURI(t *testing.T) {
+	first := NewRegistry()
+	second := NewRegistry()
+
+	firstHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
+	secondHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	first.Register(http.MethodGet, "/same", firstHandler)
+	second.Register(http.MethodGet, "/same", secondHandler)
+
+	if got := first.Lookup(http.MethodGet, "/same"); got == nil {
+		t.Fatal("first registry lost its handler")
+	} else if response := serveRegistryHandler(got); response.Code != http.StatusCreated {
+		t.Fatalf("first registry status = %d, want 201", response.Code)
+	}
+	if got := second.Lookup(http.MethodGet, "/same"); got == nil {
+		t.Fatal("second registry lost its handler")
+	} else if response := serveRegistryHandler(got); response.Code != http.StatusAccepted {
+		t.Fatalf("second registry status = %d, want 202", response.Code)
+	}
+}
+
+func serveRegistryHandler(handler http.Handler) *httptest.ResponseRecorder {
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/same", nil))
+	return response
+}
+
 func TestLookupRequiresExactMethodAndURI(t *testing.T) {
-	ResetRegistryForTest()
-	t.Cleanup(ResetRegistryForTest)
+	registry := NewRegistry()
 
 	seen := make(chan string, 1)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.URL.Path
 		w.WriteHeader(http.StatusNoContent)
 	})
-	Register(http.MethodGet, "/public", handler)
+	registry.Register(http.MethodGet, "/public", handler)
 
-	if got := Lookup(http.MethodGet, "/public"); got == nil {
+	if got := registry.Lookup(http.MethodGet, "/public"); got == nil {
 		t.Fatal("Lookup(GET /public) = nil, want registered handler")
 	}
-	if got := Lookup(http.MethodPost, "/public"); got != nil {
+	if got := registry.Lookup(http.MethodPost, "/public"); got != nil {
 		t.Fatal("Lookup(POST /public) = non-nil, want nil for different method")
 	}
-	if got := Lookup(http.MethodGet, "/other"); got != nil {
+	if got := registry.Lookup(http.MethodGet, "/other"); got != nil {
 		t.Fatal("Lookup(GET /other) = non-nil, want nil for different URI")
 	}
 }
 
 func TestPublicAPIHandlerDispatch(t *testing.T) {
-	ResetRegistryForTest()
-	t.Cleanup(ResetRegistryForTest)
+	registry := NewRegistry()
 
 	tests := []struct {
 		name       string
@@ -55,12 +84,16 @@ func TestPublicAPIHandlerDispatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var seenPath string
-			Register(http.MethodGet, test.wantPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				seenPath = r.URL.Path
-				w.WriteHeader(http.StatusNoContent)
-			}))
+			registry.Register(
+				http.MethodGet,
+				test.wantPath,
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seenPath = r.URL.Path
+					w.WriteHeader(http.StatusNoContent)
+				}),
+			)
 
-			plugin := &Plugin{config: Config{URI: test.configURI}}
+			plugin := &Plugin{config: Config{URI: test.configURI}, registry: registry}
 			request := httptest.NewRequest(http.MethodGet, test.requestURI, nil)
 			response := httptest.NewRecorder()
 			plugin.Handler(http.NotFoundHandler()).ServeHTTP(response, request)
@@ -83,7 +116,7 @@ func TestPublicAPIHandlerDispatch(t *testing.T) {
 }
 
 func TestRunRequestPhasePublishesAPISIXSourceForGatewayMiss(t *testing.T) {
-	plugin := &Plugin{}
+	plugin := &Plugin{registry: NewRegistry()}
 	request := httptest.NewRequest(http.MethodGet, "/missing", nil)
 	lifecycle := apisixctx.NewRequestLifecycle(time.Now())
 	request = apisixctx.WithRequestLifecycle(request, lifecycle)

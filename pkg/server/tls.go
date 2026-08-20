@@ -44,7 +44,7 @@ func buildFrontendTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("frontend TLS ciphers: %w", err)
 	}
 
-	config := &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion:             minVersion,
 		MaxVersion:             maxVersion,
 		CipherSuites:           cipherSuites,
@@ -61,10 +61,11 @@ func buildFrontendTLSConfig() (*tls.Config, error) {
 		if !clientCAs.AppendCertsFromPEM(certificatePEM) {
 			return nil, fmt.Errorf("parse trusted client CA %q: no certificates found", trustedCertificate)
 		}
-		config.ClientCAs = clientCAs
-		config.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsConfig.ClientCAs = clientCAs
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	}
-	return config, nil
+	tlsConfig.GetConfigForClient = frontendTLSConfigSelector(tlsConfig)
+	return tlsConfig, nil
 }
 
 func parseFrontendTLSProtocols(raw string, required bool) (uint16, uint16, error) {
@@ -150,10 +151,61 @@ func frontendTLSNextProtos() []string {
 
 func frontendTLSCertificateSelector() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		serverName := strings.TrimSpace(hello.ServerName)
-		if serverName == "" && config.GlobalConfig != nil {
-			serverName = strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
-		}
+		serverName := frontendTLSServerName(hello)
 		return store.GetSSLCertificateForSNI(serverName)
 	}
+}
+
+func frontendTLSConfigSelector(base *tls.Config) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		serverName := frontendTLSServerName(hello)
+		selected, err := store.GetSSLCertificateConfigForSNI(serverName)
+		if err != nil {
+			// Tests and embedders may supply static certificates directly. Keep
+			// that net/http behavior when the dynamic SSL index has no match.
+			if len(base.Certificates) > 0 {
+				return nil, nil
+			}
+			return nil, err
+		}
+		selectedConfig := base.Clone()
+		selectedConfig.GetConfigForClient = nil
+		selectedConfig.GetCertificate = nil
+		selectedConfig.Certificates = []tls.Certificate{*selected.Certificate}
+		if selected.ClientCAs != nil {
+			selectedConfig.ClientCAs = selected.ClientCAs
+			selectedConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			enforceClientCertificateDepth(selectedConfig, selected.ClientDepth)
+		}
+		return selectedConfig, nil
+	}
+}
+
+func enforceClientCertificateDepth(tlsConfig *tls.Config, maximumDepth int) {
+	previous := tlsConfig.VerifyConnection
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if previous != nil {
+			if err := previous(state); err != nil {
+				return err
+			}
+		}
+		for _, chain := range state.VerifiedChains {
+			if len(chain)-1 <= maximumDepth {
+				return nil
+			}
+		}
+		return fmt.Errorf("client certificate chain exceeds verification depth %d", maximumDepth)
+	}
+}
+
+func frontendTLSServerName(hello *tls.ClientHelloInfo) string {
+	if hello != nil {
+		if serverName := strings.TrimSpace(hello.ServerName); serverName != "" {
+			return serverName
+		}
+	}
+	if config.GlobalConfig != nil {
+		return strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
+	}
+	return ""
 }

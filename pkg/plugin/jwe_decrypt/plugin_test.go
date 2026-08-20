@@ -150,6 +150,32 @@ func TestHandlerDecryptsStdBase64EncodedConsumerSecret(t *testing.T) {
 	}
 }
 
+func TestHandlerSelectsConsumerByKidAndIgnoresUnsupportedDeclarations(t *testing.T) {
+	secret := []byte("abcdefghijklmnopqrstuvwxyz123456")
+	key := "kid-ignored-declarations"
+	addJWEConsumer(t, "jwe-ignored-declarations-user", key, string(secret), false)
+	p := newTestPlugin(t, Config{})
+	token := makeCompactJWEWithDeclarations(t, map[string]any{
+		"alg": "RSA-OAEP",
+		"enc": "A128CBC-HS256",
+		"kid": key,
+	}, "not-a-base64-encrypted-key", secret, "declarations-ignored")
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Authorization", token)
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "declarations-ignored" {
+			t.Fatalf("Authorization header = %q, want decrypted plaintext", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestHandlerRejectsMissingTokenWhenStrict(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
@@ -245,11 +271,23 @@ func TestDecryptJWERejectsConsumerSecretThatIsNot32Bytes(t *testing.T) {
 func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) string {
 	t.Helper()
 
-	header, err := json.Marshal(map[string]any{
+	return makeCompactJWEWithDeclarations(t, map[string]any{
 		"alg": "dir",
 		"enc": "A256GCM",
 		"kid": kid,
-	})
+	}, "", secret, plaintext)
+}
+
+func makeCompactJWEWithDeclarations(
+	t *testing.T,
+	headerValue map[string]any,
+	encryptedKey string,
+	secret []byte,
+	plaintext string,
+) string {
+	t.Helper()
+
+	header, err := json.Marshal(headerValue)
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
 	}
@@ -269,7 +307,7 @@ func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) s
 
 	return strings.Join([]string{
 		protectedHeader,
-		"",
+		encryptedKey,
 		base64.RawURLEncoding.EncodeToString(iv),
 		base64.RawURLEncoding.EncodeToString(sealed[:tagStart]),
 		base64.RawURLEncoding.EncodeToString(sealed[tagStart:]),

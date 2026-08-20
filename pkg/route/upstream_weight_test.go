@@ -93,3 +93,34 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildReverseHandlerAppliesSchemeAwareDefaultNodePorts(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+	}{
+		{name: "http map", config: `{"scheme":"http","nodes":{"127.0.0.1":1}}`},
+		{name: "https map", config: `{"scheme":"https","nodes":{"127.0.0.1":1}}`},
+		{name: "grpc list", config: `{"scheme":"grpc","nodes":[{"host":"127.0.0.1","weight":1}]}`},
+		{name: "grpcs list", config: `{"scheme":"grpcs","nodes":[{"host":"127.0.0.1","weight":1}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var upstream resource.Upstream
+			if err := json.Unmarshal([]byte(test.config), &upstream); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if upstream.Nodes[0].Port != 0 {
+				t.Fatalf("decoded port = %d, want zero for builder-owned default", upstream.Nodes[0].Port)
+			}
+
+			builder := &Builder{}
+			t.Cleanup(builder.Stop)
+			if _, err := builder.buildReverseHandler(
+				resource.Route{Upstream: upstream},
+				resource.Service{},
+			); err != nil {
+				t.Fatalf("buildReverseHandler() error = %v", err)
+			}
+		})
+	}
+}

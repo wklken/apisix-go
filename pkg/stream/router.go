@@ -1,14 +1,12 @@
 package stream
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,10 +86,6 @@ func (r *Router) Reload(routes []resource.StreamRoute) error {
 		}
 		entries = append(entries, entry)
 	}
-	slices.SortStableFunc(entries, func(a, b routeEntry) int {
-		return cmp.Compare(routeSpecificity(b.route), routeSpecificity(a.route))
-	})
-
 	r.mu.Lock()
 	r.routes = entries
 	r.mu.Unlock()
@@ -106,13 +100,17 @@ func (r *Router) Serve(ctx context.Context, listener net.Listener, client net.Co
 	if listener != nil && listener.Addr() != nil {
 		listenerAddr = listener.Addr().String()
 	}
+	serverAddr := listenerAddr
+	if client.LocalAddr() != nil {
+		serverAddr = client.LocalAddr().String()
+	}
 	remoteAddr := ""
 	if client.RemoteAddr() != nil {
 		remoteAddr = client.RemoteAddr().String()
 	}
 
 	r.mu.RLock()
-	entry, ok := r.matchEntry(listenerAddr, remoteAddr)
+	entry, ok := r.matchEntry(serverAddr, remoteAddr)
 	r.mu.RUnlock()
 	if !ok {
 		err := ErrNoStreamRoute
@@ -384,21 +382,4 @@ func matchesListenerHost(configured, actual string) bool {
 		return true
 	}
 	return false
-}
-
-func routeSpecificity(route resource.StreamRoute) int {
-	score := 0
-	if route.ServerAddr != "" && route.ServerAddr != "0.0.0.0" && route.ServerAddr != "::" {
-		score += 8
-	}
-	if route.ServerPort != 0 {
-		score += 4
-	}
-	if route.RemoteAddr != "" {
-		score += 2
-		if net.ParseIP(route.RemoteAddr) != nil {
-			score++
-		}
-	}
-	return score
 }

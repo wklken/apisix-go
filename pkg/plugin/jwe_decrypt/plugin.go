@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -67,8 +68,6 @@ type jweToken struct {
 }
 
 type jweHeader struct {
-	Alg string `json:"alg"`
-	Enc string `json:"enc"`
 	Kid string `json:"kid"`
 }
 
@@ -134,7 +133,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		r.Header.Set(p.config.ForwardHeader, string(plaintext))
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -160,16 +159,6 @@ func parseCompactJWE(raw string) (jweToken, error) {
 	var header jweHeader
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return jweToken{}, err
-	}
-	if header.Alg != "dir" || header.Enc != "A256GCM" {
-		return jweToken{}, fmt.Errorf("unsupported JWE algorithm")
-	}
-	encryptedKey, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return jweToken{}, err
-	}
-	if len(encryptedKey) != 0 {
-		return jweToken{}, fmt.Errorf("JWE encrypted key must be empty for direct encryption")
 	}
 
 	iv, err := base64.RawURLEncoding.DecodeString(parts[2])

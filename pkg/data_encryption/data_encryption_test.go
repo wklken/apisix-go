@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -120,7 +121,7 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 		if !ok || ciphertext == plaintext {
 			t.Fatalf("%s = %v, want ciphertext", field, config[field])
 		}
-		decrypted, err := Decrypt(ciphertext, []string{key})
+		decrypted, err := NewResolver(true, []string{key}).ResolveForContext(ciphertext, "ai-rate-limiting."+field)
 		if err != nil || decrypted != plaintext {
 			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
 		}
@@ -167,8 +168,11 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 	if header["Authorization"] == ciphertextShapedPlaintext {
 		t.Fatal("ai-proxy.auth.header.Authorization remained plaintext")
 	}
-	if header["X-Encrypted"] != alreadyEncrypted {
-		t.Fatal("already encrypted container leaf was encrypted again")
+	rewrapped, ok := header["X-Encrypted"].(string)
+	if !ok ||
+		!strings.HasPrefix(rewrapped, encryptedValuePrefix+v2CiphertextPrefix) ||
+		rewrapped == encryptedValuePrefix+alreadyEncrypted {
+		t.Fatalf("legacy encrypted container leaf = %v, want explicit v2 ciphertext", header["X-Encrypted"])
 	}
 	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
 	if fallbacks[0] == "old-secret-1" || fallbacks[1] == "old-secret-2" {
@@ -228,6 +232,123 @@ func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
 	metadata := map[string]any{"master_apikey": "$encrypted://not-base64"}
 	if err := EncryptPluginMetadata("azure-functions", metadata, []string{key}); err == nil {
 		t.Fatal("EncryptPluginMetadata() accepted invalid explicit ciphertext")
+	}
+}
+
+func TestEncryptPluginConfigsPreservesValidV2CiphertextWithPrefix(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	context := "kafka-proxy.sasl.password"
+	ciphertext, err := EncryptForContext("kafka-secret", key, context)
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	value := "$encrypted://" + ciphertext
+	configs := map[string]any{
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": value},
+		},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	got := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"]
+	if got != value {
+		t.Fatalf("kafka-proxy.sasl.password = %v, want original v2 value", got)
+	}
+}
+
+func TestEncryptPluginConfigsRejectsV2CiphertextWithWrongContext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext, err := EncryptForContext("kafka-secret", key, "kafka-logger.brokers.*.sasl_config.password")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	configs := map[string]any{
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": "$encrypted://" + ciphertext},
+		},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err == nil {
+		t.Fatal("EncryptPluginConfigs() accepted v2 ciphertext with wrong context")
+	}
+}
+
+func TestEncryptPluginConfigsWritesV2ContextualCiphertext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": "kafka-secret"},
+		},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	ciphertext := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
+	if !strings.HasPrefix(ciphertext, encryptedValuePrefix+v2CiphertextPrefix) {
+		t.Fatalf("ciphertext = %q, want explicit v2 envelope", ciphertext)
+	}
+	resolver := NewResolver(true, []string{key})
+	plaintext, err := resolver.ResolveForContext(ciphertext, "kafka-proxy.sasl.password")
+	if err != nil || plaintext != "kafka-secret" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want kafka-secret", plaintext, err)
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() second error = %v", err)
+	}
+	if got := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"]; got != ciphertext {
+		t.Fatalf("second EncryptPluginConfigs() = %v, want ciphertext preserved", got)
+	}
+}
+
+func TestEncryptPluginConfigsTreatsBareV2AsPlaintext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": "v2:not-ciphertext"},
+		},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	persisted := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
+	if !strings.HasPrefix(persisted, encryptedValuePrefix+v2CiphertextPrefix) {
+		t.Fatalf("persisted password = %q, want explicit v2 wrapper", persisted)
+	}
+
+	plaintext, err := NewResolver(true, []string{key}).ResolveForContext(
+		persisted,
+		"kafka-proxy.sasl.password",
+	)
+	if err != nil || plaintext != "v2:not-ciphertext" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want v2:not-ciphertext", plaintext, err)
+	}
+}
+
+func TestEncryptPluginConfigsUsesCanonicalContextForWildcardEntries(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"kafka-logger": map[string]any{
+			"brokers": []any{
+				map[string]any{"sasl_config": map[string]any{"password": "first-secret"}},
+				map[string]any{"sasl_config": map[string]any{"password": "second-secret"}},
+			},
+		},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	brokers := configs["kafka-logger"].(map[string]any)["brokers"].([]any)
+	resolver := NewResolver(true, []string{key})
+	for i, want := range []string{"first-secret", "second-secret"} {
+		password := brokers[i].(map[string]any)["sasl_config"].(map[string]any)["password"].(string)
+		got, err := resolver.ResolveForContext(password, "kafka-logger.brokers.*.sasl_config.password")
+		if err != nil || got != want {
+			t.Fatalf("broker[%d] ResolveForContext() = (%q, %v), want %q", i, got, err, want)
+		}
+		if _, err := resolver.ResolveForContext(password, "kafka-logger.brokers.0.sasl_config.password"); err == nil {
+			t.Fatalf("broker[%d] accepted runtime-index context", i)
+		}
 	}
 }
 

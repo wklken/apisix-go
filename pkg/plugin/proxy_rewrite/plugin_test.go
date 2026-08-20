@@ -358,6 +358,20 @@ func TestHandlerExpandsAdjacentRegexCaptures(t *testing.T) {
 	}
 }
 
+func TestHandlerRegexURIReplacesFirstMatchOnly(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RegexURI: []string{`foo`, `bar`},
+	})
+	var rewrite map[string]any
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/foo/foo", nil))
+	if got := rewrite["uri"].(string); got != "/bar/foo" {
+		t.Fatalf("rewrite uri = %q, want first-match /bar/foo", got)
+	}
+}
+
 func TestPostInitRejectsOddRegexURI(t *testing.T) {
 	p := &Plugin{config: Config{RegexURI: []string{`^/users/(\d+)$`}}}
 	if err := p.Init(); err != nil {

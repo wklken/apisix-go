@@ -490,6 +490,18 @@ func (p *Plugin) scopedRedisKey(key string) string {
 	return key + ":config:" + p.limitScope
 }
 
+func (p *Plugin) applyLimitKey(r *http.Request, key string) string {
+	if r != nil && apisixctx.ConsumerPluginOverrides(r, name) {
+		if consumerName, _ := apisixctx.GetApisixVar(r, "$consumer_name").(string); consumerName != "" {
+			return "consumer:" + consumerName + ":" + key
+		}
+	}
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		return p.scopedRedisKey(key)
+	}
+	return p.scopedKey(key)
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if apisixctx.GetRequestLifecycle(r) != nil {
@@ -581,7 +593,7 @@ func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhas
 		http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
 		return base.StopRequest(r), nil
 	}
-	delay, allowed, releaseAdmission, err := p.increase(key, conn, burst)
+	delay, allowed, releaseAdmission, err := p.increase(r, key, conn, burst)
 	if err != nil {
 		if *p.config.AllowDegradation {
 			return base.ContinueRequest(r), nil
@@ -781,7 +793,7 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			continue
 		}
 
-		nextDelay, allowed, release, err := p.increase(key, conn, burst)
+		nextDelay, allowed, release, err := p.increase(r, key, conn, burst)
 		if err != nil {
 			p.decreaseAdmissions(admissions, nil)
 			return nil, 0, false, err
@@ -808,12 +820,13 @@ func (p *Plugin) decreaseAdmissions(admissions []admission, latency *time.Durati
 }
 
 func (p *Plugin) increase(
+	r *http.Request,
 	key string,
 	conn int,
 	burst int,
 ) (time.Duration, bool, func(*time.Duration), error) {
+	key = p.applyLimitKey(r, key)
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		key = p.scopedRedisKey(key)
 		limiter := p.redisLimiter
 		delay, member, allowed, err := limiter.incoming(key, conn, burst)
 		if err != nil || !allowed {
@@ -823,7 +836,6 @@ func (p *Plugin) increase(
 			_ = limiter.leaving(key, member, latency)
 		}, nil
 	}
-	key = p.scopedKey(key)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

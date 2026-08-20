@@ -336,7 +336,7 @@ func TestHandlerPreservesRepeatedConfiguredHeaders(t *testing.T) {
 	}
 }
 
-func TestHandlerGeneratedHeadersOverrideRequestAndExtraHeaders(t *testing.T) {
+func TestHandlerGeneratedHeadersRespectAPISIXPrecedence(t *testing.T) {
 	generated := map[string]string{
 		"X-Forwarded-Proto":  "proto",
 		"X-Forwarded-Method": "method",
@@ -346,15 +346,15 @@ func TestHandlerGeneratedHeadersOverrideRequestAndExtraHeaders(t *testing.T) {
 	}
 	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := map[string]string{
-			"X-Forwarded-Proto":  "http",
-			"X-Forwarded-Method": http.MethodGet,
-			"X-Forwarded-Host":   "example.com",
-			"X-Forwarded-Uri":    "/get?x=1",
-			"X-Forwarded-For":    "192.0.2.10",
+			"X-Forwarded-Proto":  "extra-proto",
+			"X-Forwarded-Method": "extra-method",
+			"X-Forwarded-Host":   "extra-host",
+			"X-Forwarded-Uri":    "extra-uri",
+			"X-Forwarded-For":    "extra-for",
 		}
 		for name, value := range want {
 			if got := r.Header.Get(name); got != value {
-				t.Errorf("%s = %q, want generated value %q", name, got, value)
+				t.Errorf("%s = %q, want extra-header value %q", name, got, value)
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)

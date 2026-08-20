@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
@@ -30,6 +34,123 @@ func TestResolveStreamRoutesResolvesReferencedUpstream(t *testing.T) {
 	}
 	if len(routes) != 1 || len(routes[0].Upstream.Nodes) != 1 || routes[0].Upstream.Nodes[0].Port != 1883 {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestResolveStreamRoutesMergesInlineServiceWithRouteOverrides(t *testing.T) {
+	serviceUpstream := resource.Upstream{
+		Scheme: "tcp",
+		Nodes:  []resource.Node{{Host: "service.example", Port: 1883, Weight: 1}},
+	}
+	service := resource.Service{
+		ID: "service",
+		Plugins: map[string]resource.PluginConfig{
+			"mqtt-proxy":   map[string]any{"protocol_level": 3},
+			"service-only": map[string]any{},
+		},
+		Upstream: serviceUpstream,
+	}
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{
+			ID:        "route",
+			ServiceID: "service",
+			Plugins:   map[string]resource.PluginConfig{"mqtt-proxy": map[string]any{"protocol_level": 4}},
+		}},
+		func(string) (resource.Upstream, error) { return resource.Upstream{}, ErrMissingStreamUpstream },
+		func(id string) (resource.Service, error) {
+			if id != service.ID {
+				t.Fatalf("service lookup id = %q, want %q", id, service.ID)
+			}
+			return service, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("resolved service routes = %#v, want one", routes)
+	}
+	resolved := routes[0]
+	if resolved.ServiceID != "service" ||
+		len(resolved.Upstream.Nodes) != 1 ||
+		resolved.Upstream.Nodes[0].Host != "service.example" {
+		t.Fatalf("resolved service upstream = %#v", routes)
+	}
+	if got := routes[0].Plugins["mqtt-proxy"].(map[string]any)["protocol_level"]; got != 4 {
+		t.Fatalf("route plugin override = %#v, want protocol_level=4", routes[0].Plugins["mqtt-proxy"])
+	}
+	if _, ok := routes[0].Plugins["service-only"]; !ok {
+		t.Fatal("service-only stream plugin was not inherited")
+	}
+}
+
+func TestResolveStreamRoutesResolvesServiceUpstreamID(t *testing.T) {
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{ID: "route", ServiceID: "service"}},
+		func(id string) (resource.Upstream, error) {
+			if id != "service-upstream" {
+				t.Fatalf("upstream lookup id = %q, want service-upstream", id)
+			}
+			return resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "service-upstream.example", Port: 1883, Weight: 1}},
+			}, nil
+		},
+		func(string) (resource.Service, error) {
+			return resource.Service{ID: "service", UpstreamID: "service-upstream"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if len(routes) != 1 || routes[0].UpstreamID != "service-upstream" || len(routes[0].Upstream.Nodes) != 1 ||
+		routes[0].Upstream.Nodes[0].Host != "service-upstream.example" {
+		t.Fatalf("resolved service upstream_id = %#v", routes)
+	}
+}
+
+func TestResolveStreamRoutesPrefersRouteUpstreamOverService(t *testing.T) {
+	serviceLookupCalls := 0
+	routes, err := resolveStreamRoutesWithServices(
+		[]resource.StreamRoute{{ID: "route", ServiceID: "service", UpstreamID: "route-upstream"}},
+		func(id string) (resource.Upstream, error) {
+			if id != "route-upstream" {
+				t.Fatalf("upstream lookup id = %q, want route-upstream", id)
+			}
+			return resource.Upstream{
+				Scheme: "tcp",
+				Nodes: []resource.Node{{
+					Host: "route.example", Port: 1883, Weight: 1,
+				}},
+			}, nil
+		},
+		func(string) (resource.Service, error) {
+			serviceLookupCalls++
+			return resource.Service{
+				ID: "service",
+				Plugins: map[string]resource.PluginConfig{
+					"service-only": map[string]any{},
+				},
+				Upstream: resource.Upstream{
+					Scheme: "tcp",
+					Nodes: []resource.Node{{
+						Host: "service.example", Port: 1883, Weight: 1,
+					}},
+				},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveStreamRoutesWithServices() error = %v", err)
+	}
+	if serviceLookupCalls != 0 {
+		t.Fatalf("service lookup calls = %d, want 0 when route upstream_id wins", serviceLookupCalls)
+	}
+	if len(routes[0].Plugins) != 0 {
+		t.Fatalf("route plugins = %#v, want no service merge", routes[0].Plugins)
+	}
+	if len(routes) != 1 || len(routes[0].Upstream.Nodes) != 1 || routes[0].Upstream.Nodes[0].Host != "route.example" {
+		t.Fatalf("route upstream override = %#v", routes)
 	}
 }
 
@@ -71,6 +192,7 @@ func TestIsStreamRouteEvent(t *testing.T) {
 	}{
 		{key: "/apisix/stream_routes/mqtt", stream: true},
 		{key: "/apisix/upstreams/mqtt", httpReload: true, stream: true},
+		{key: "/apisix/services/mqtt", httpReload: true, stream: true},
 		{key: "/apisix/routes/http", httpReload: true},
 		{key: "/apisix/global_rules/1", httpReload: true},
 		{key: "/apisix/plugin_configs/1", httpReload: true},
@@ -102,11 +224,40 @@ func TestServerShutdownClosesStreamRuntime(t *testing.T) {
 }
 
 type fakeStreamRuntime struct {
-	closed bool
+	closed      bool
+	reloadErr   error
+	reloadCalls int
 }
 
-func (r *fakeStreamRuntime) Reload([]resource.StreamRoute) error {
+type blockingStreamRuntime struct {
+	reloadStarted     chan struct{}
+	releaseReload     chan struct{}
+	closeCalled       chan struct{}
+	reloading         atomic.Bool
+	closeDuringReload atomic.Bool
+}
+
+func (r *blockingStreamRuntime) Reload([]resource.StreamRoute) error {
+	r.reloading.Store(true)
+	close(r.reloadStarted)
+	<-r.releaseReload
+	r.reloading.Store(false)
 	return nil
+}
+
+func (r *blockingStreamRuntime) Close(context.Context) error {
+	if r.reloading.Load() {
+		r.closeDuringReload.Store(true)
+	}
+	close(r.closeCalled)
+	return nil
+}
+
+func (r *blockingStreamRuntime) Addresses() []string { return nil }
+
+func (r *fakeStreamRuntime) Reload([]resource.StreamRoute) error {
+	r.reloadCalls++
+	return r.reloadErr
 }
 
 func (r *fakeStreamRuntime) Close(context.Context) error {
@@ -344,4 +495,298 @@ func (r *streamRuntimeCloseError) Reload([]resource.StreamRoute) error {
 
 func (r *streamRuntimeCloseError) Close(context.Context) error {
 	return r.err
+}
+
+func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_server_stream_ack_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_server_stream_ack_ready",
+	})
+	metrics.SetConfigApplyStreamRequired(true)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures = oldFailures
+		metrics.ConfigApplyReady = oldReady
+		metrics.SetConfigApplyStreamRequired(false)
+	})
+
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/stream-ack.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+	runtime := &fakeStreamRuntime{reloadErr: errors.New("stream reload failed")}
+	server := &Server{storage: storage, streamRuntime: runtime}
+	server.registerAcknowledgedStoreUpdateHook(nil)
+
+	put := func() error {
+		event := store.NewAcknowledgedBatch([]store.Mutation{{
+			Type:  store.EventTypePut,
+			Key:   []byte("/apisix/stream_routes/route"),
+			Value: []byte(`{"id":"route","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1":1}}}`),
+		}}, store.BatchOptions{})
+		events <- event
+		return event.Wait(context.Background())
+	}
+	if err := put(); !errors.Is(err, runtime.reloadErr) {
+		t.Fatalf("acknowledged stream update error = %v, want %v", err, runtime.reloadErr)
+	}
+	if runtime.reloadCalls != 1 {
+		t.Fatalf("stream reload calls after failure = %d, want 1", runtime.reloadCalls)
+	}
+	if metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = true after stream publication failure")
+	}
+
+	runtime.reloadErr = nil
+	if err := put(); err != nil {
+		t.Fatalf("acknowledged stream recovery error = %v", err)
+	}
+	if runtime.reloadCalls != 2 {
+		t.Fatalf("stream reload calls after recovery = %d, want 2", runtime.reloadCalls)
+	}
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = false after stream publication recovery")
+	}
+}
+
+func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/stream-batch.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+	runtime := &fakeStreamRuntime{}
+	server := &Server{storage: storage, streamRuntime: runtime}
+	server.registerAcknowledgedStoreUpdateHook(nil)
+	event := store.NewAcknowledgedBatch([]store.Mutation{
+		{
+			Type:  store.EventTypePut,
+			Key:   []byte("/apisix/upstreams/upstream"),
+			Value: []byte(`{"id":"upstream","scheme":"tcp","nodes":{"127.0.0.1:1":1}}`),
+		},
+		{
+			Type:  store.EventTypePut,
+			Key:   []byte("/apisix/stream_routes/route"),
+			Value: []byte(`{"id":"route","upstream_id":"upstream"}`),
+		},
+	}, store.BatchOptions{})
+	events <- event
+	if err := event.Wait(context.Background()); err != nil {
+		t.Fatalf("acknowledged stream batch error = %v", err)
+	}
+	if runtime.reloadCalls != 1 {
+		t.Fatalf("stream reload calls for one multi-bucket batch = %d, want 1", runtime.reloadCalls)
+	}
+}
+
+func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/stream-startup-race.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+	events <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/stream_routes/route"),
+		Value: []byte(`{"id":"route","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1":1}}}`),
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("seed stream route: %v", err)
+	}
+
+	runtime := &fakeStreamRuntime{}
+	server := &Server{storage: storage}
+	server.streamReloadMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- server.handleAcknowledgedStoreEvent(&store.Event{
+			Type: store.EventTypePut,
+			Key:  []byte("/apisix/stream_routes/route"),
+		}, nil)
+	}()
+	select {
+	case err := <-done:
+		server.streamReloadMu.Unlock()
+		t.Fatalf("stream update returned before initial publication completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	server.streamRuntime = runtime
+	server.streamReloadMu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("stream update after initial publication: %v", err)
+	}
+	if runtime.reloadCalls != 1 {
+		t.Fatalf("stream reload calls after initial publication = %d, want 1", runtime.reloadCalls)
+	}
+}
+
+func TestShutdownDoesNotCloseStreamRuntimeDuringAcknowledgedReload(t *testing.T) {
+	events := make(chan *store.Event)
+	storage, err := store.Open(t.TempDir()+"/stream-shutdown-race.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	storage.Start()
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+	events <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/stream_routes/route"),
+		Value: []byte(`{"id":"route","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1":1}}}`),
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("seed stream route: %v", err)
+	}
+	runtime := &blockingStreamRuntime{
+		reloadStarted: make(chan struct{}),
+		releaseReload: make(chan struct{}),
+		closeCalled:   make(chan struct{}),
+	}
+	server := &Server{storage: storage, streamRuntime: runtime}
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- server.handleAcknowledgedStoreEvent(&store.Event{
+			Type: store.EventTypePut,
+			Key:  []byte("/apisix/stream_routes/route"),
+		}, nil)
+	}()
+	<-runtime.reloadStarted
+	shutdownDone := make(chan error, 1)
+	go func() {
+		err, _ := server.shutdownAttempt(context.Background())
+		shutdownDone <- err
+	}()
+	select {
+	case <-runtime.closeCalled:
+		close(runtime.releaseReload)
+		<-reloadDone
+		<-shutdownDone
+		t.Fatal("stream runtime closed while acknowledged reload was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(runtime.releaseReload)
+	if err := <-reloadDone; err != nil {
+		t.Fatalf("acknowledged stream reload: %v", err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("shutdownAttempt() error = %v", err)
+	}
+	if runtime.closeDuringReload.Load() {
+		t.Fatal("stream runtime Close overlapped Reload")
+	}
+}
+
+func TestStartStreamProxyRecordsInitialConfigApplyStage(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_server_stream_initial_failures_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_server_stream_initial_ready",
+	})
+	metrics.SetConfigApplyStreamRequired(true)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures = oldFailures
+		metrics.ConfigApplyReady = oldReady
+		metrics.SetConfigApplyStreamRequired(false)
+	})
+	previousConfig := config.GlobalConfig
+	previousStore := store.ReplaceGlobalStoreForTest(nil)
+	t.Cleanup(func() {
+		config.GlobalConfig = previousConfig
+		store.ReplaceGlobalStoreForTest(previousStore)
+	})
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+		ProxyMode: "stream",
+		StreamProxy: config.StreamProxy{
+			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
+		},
+	}}
+	events := make(chan *store.Event)
+	storage, err := store.GetStore(t.TempDir()+"/stream-initial-stage.db", events)
+	if err != nil {
+		t.Fatalf("get store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	events <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/stream_routes/route"),
+		Value: []byte(`{"id":"route","upstream":{"scheme":"tcp","nodes":{"127.0.0.1:1":1}}}`),
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("seed stream route: %v", err)
+	}
+	server := &Server{}
+	if err := server.startStreamProxy(context.Background()); err != nil {
+		t.Fatalf("startStreamProxy() error = %v", err)
+	}
+	t.Cleanup(func() { _ = server.streamRuntime.Close(context.Background()) })
+	if !metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = false after successful initial stream publication")
+	}
+}
+
+func TestStartStreamProxyRecordsInitialConfigApplyFailure(t *testing.T) {
+	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
+	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "test_server_stream_initial_failure_record_total",
+	})
+	metrics.ConfigApplyReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_server_stream_initial_failure_record_ready",
+	})
+	metrics.SetConfigApplyStreamRequired(true)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
+	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageHTTPRoutes)
+	t.Cleanup(func() {
+		metrics.ConfigApplyFailures = oldFailures
+		metrics.ConfigApplyReady = oldReady
+		metrics.SetConfigApplyStreamRequired(false)
+	})
+	previousConfig := config.GlobalConfig
+	previousStore := store.ReplaceGlobalStoreForTest(nil)
+	t.Cleanup(func() {
+		config.GlobalConfig = previousConfig
+		store.ReplaceGlobalStoreForTest(previousStore)
+	})
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+		ProxyMode: "stream",
+		StreamProxy: config.StreamProxy{
+			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
+		},
+	}}
+	if err := (&Server{}).startStreamProxy(context.Background()); err == nil {
+		t.Fatal("startStreamProxy() error = nil, want route-load failure")
+	}
+	if metrics.GetReadiness().ConfigApplyReady {
+		t.Fatal("config readiness = true after initial stream publication failure")
+	}
 }

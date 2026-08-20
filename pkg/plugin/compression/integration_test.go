@@ -3,7 +3,6 @@ package compression_test
 import (
 	"bytes"
 	cgzip "compress/gzip"
-	"compress/zlib"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,9 +38,9 @@ func TestCombinedCompressionNegotiation(t *testing.T) {
 			},
 		},
 		{
-			name:           "deflate preferred",
-			acceptEncoding: "br;q=0.2, gzip;q=0.3, deflate;q=0.9",
-			wantEncoding:   "deflate",
+			name:           "identity fallback when only deflate is preferred",
+			acceptEncoding: "br;q=0, gzip;q=0, deflate;q=0.9",
+			wantEncoding:   "",
 			wrap: func(next http.Handler) http.Handler {
 				return newBrotli(t).Handler(newGzip(t).Handler(next))
 			},
@@ -64,7 +63,11 @@ func TestCombinedCompressionNegotiation(t *testing.T) {
 			if got := res.Header().Get("Content-Encoding"); got != tt.wantEncoding {
 				t.Fatalf("Content-Encoding = %q, want %q", got, tt.wantEncoding)
 			}
-			if got := res.Header().Values("Content-Encoding"); len(got) != 1 {
+			if got := res.Header().Values("Content-Encoding"); tt.wantEncoding == "" {
+				if len(got) != 0 {
+					t.Fatalf("Content-Encoding values = %#v, want no encoding for identity", got)
+				}
+			} else if len(got) != 1 {
 				t.Fatalf("Content-Encoding values = %#v, want exactly one layer", got)
 			}
 			var decoded []byte
@@ -74,13 +77,8 @@ func TestCombinedCompressionNegotiation(t *testing.T) {
 				decoded, _ = io.ReadAll(reader)
 			case "gzip":
 				decoded = decodeGzip(t, res.Body.Bytes())
-			case "deflate":
-				reader, err := zlib.NewReader(bytes.NewReader(res.Body.Bytes()))
-				if err != nil {
-					t.Fatalf("create zlib reader: %v", err)
-				}
-				decoded, _ = io.ReadAll(reader)
-				_ = reader.Close()
+			case "":
+				decoded = res.Body.Bytes()
 			}
 			if !bytes.Equal(decoded, body) {
 				t.Fatalf("decoded body = %q, want %q", decoded, body)

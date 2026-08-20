@@ -3,6 +3,7 @@ package resource
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -412,18 +413,68 @@ func TestParseNodeAddress(t *testing.T) {
 		wantHost string
 		wantPort int
 	}{
-		{address: "example.test", wantHost: "example.test", wantPort: 80},
+		{address: "example.test", wantHost: "example.test"},
 		{address: "example.test:8080", wantHost: "example.test", wantPort: 8080},
 		{address: "[2001:db8::1]:8443", wantHost: "2001:db8::1", wantPort: 8443},
-		{address: "[2001:db8::1]", wantHost: "[2001:db8::1]", wantPort: 80},
-		{address: "2001:db8::1", wantHost: "2001:db8::1", wantPort: 80},
-		{address: "example.test:not-a-port", wantHost: "example.test:not-a-port", wantPort: 80},
+		{address: "[2001:db8::1]", wantHost: "[2001:db8::1]"},
+		{address: "2001:db8::1", wantHost: "2001:db8::1"},
+		{address: "example.test:not-a-port", wantHost: "example.test:not-a-port"},
 	}
 	for _, test := range tests {
 		host, port := parseNodeAddress(test.address)
 		if host != test.wantHost || port != test.wantPort {
 			t.Fatalf("parseNodeAddress(%q) = %q/%d, want %q/%d", test.address, host, port, test.wantHost, test.wantPort)
 		}
+	}
+}
+
+func TestUpstreamUnmarshalPreservesOmittedNodePortAcrossFormsAndSchemes(t *testing.T) {
+	tests := []struct {
+		name     string
+		scheme   string
+		nodes    string
+		wantHost string
+		wantPort int
+	}{
+		{name: "http map hostname", scheme: "http", nodes: `{"backend.example":1}`, wantHost: "backend.example"},
+		{name: "https map ipv4", scheme: "https", nodes: `{"192.0.2.1":1}`, wantHost: "192.0.2.1"},
+		{name: "grpc map ipv6", scheme: "grpc", nodes: `{"[2001:db8::1]":1}`, wantHost: "[2001:db8::1]"},
+		{
+			name:     "grpcs list hostname",
+			scheme:   "grpcs",
+			nodes:    `[{"host":"backend.example","weight":1}]`,
+			wantHost: "backend.example",
+		},
+		{
+			name:     "https map explicit port",
+			scheme:   "https",
+			nodes:    `{"backend.example:8443":1}`,
+			wantHost: "backend.example",
+			wantPort: 8443,
+		},
+		{
+			name:     "grpcs list explicit port",
+			scheme:   "grpcs",
+			nodes:    `[{"host":"backend.example","port":9443,"weight":1}]`,
+			wantHost: "backend.example",
+			wantPort: 9443,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstream Upstream
+			raw := fmt.Sprintf(`{"scheme":%q,"nodes":%s}`, test.scheme, test.nodes)
+			if err := json.Unmarshal([]byte(raw), &upstream); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if len(upstream.Nodes) != 1 {
+				t.Fatalf("nodes = %#v, want one node", upstream.Nodes)
+			}
+			node := upstream.Nodes[0]
+			if node.Host != test.wantHost || node.Port != test.wantPort {
+				t.Fatalf("node = %q/%d, want %q/%d", node.Host, node.Port, test.wantHost, test.wantPort)
+			}
+		})
 	}
 }
 
@@ -528,6 +579,9 @@ func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
 	if !route.EnableWebsocket || route.ServiceID != "websocket-service" {
 		t.Fatalf("route websocket/service = %t/%q, want true/websocket-service", route.EnableWebsocket, route.ServiceID)
 	}
+	if !route.EnableWebsocketConfigured() {
+		t.Fatal("route EnableWebsocketConfigured() = false, want true")
+	}
 
 	var service Service
 	if err := json.Unmarshal([]byte(`{
@@ -539,6 +593,42 @@ func TestRouteAndServiceUnmarshalWebsocketIntent(t *testing.T) {
 	}
 	if !service.EnableWebsocket || service.Name != "orders" {
 		t.Fatalf("service websocket/name = %t/%q, want true/orders", service.EnableWebsocket, service.Name)
+	}
+}
+
+func TestStreamRouteUnmarshalServiceID(t *testing.T) {
+	var route StreamRoute
+	if err := json.Unmarshal([]byte(`{"id":"stream-route","service_id":"stream-service"}`), &route); err != nil {
+		t.Fatalf("stream route unmarshal error = %v", err)
+	}
+	if route.ServiceID != "stream-service" {
+		t.Fatalf("stream route service_id = %q, want stream-service", route.ServiceID)
+	}
+}
+
+func TestRouteUnmarshalDistinguishesOmittedAndExplicitFalseWebsocket(t *testing.T) {
+	var omitted Route
+	if err := json.Unmarshal([]byte(`{"id":"omitted-websocket"}`), &omitted); err != nil {
+		t.Fatalf("omitted websocket unmarshal error = %v", err)
+	}
+	if omitted.EnableWebsocket || omitted.EnableWebsocketConfigured() {
+		t.Fatalf(
+			"omitted websocket = %t/%t, want false/false",
+			omitted.EnableWebsocket,
+			omitted.EnableWebsocketConfigured(),
+		)
+	}
+
+	var disabled Route
+	if err := json.Unmarshal([]byte(`{"id":"disabled-websocket","enable_websocket":false}`), &disabled); err != nil {
+		t.Fatalf("explicit false websocket unmarshal error = %v", err)
+	}
+	if disabled.EnableWebsocket || !disabled.EnableWebsocketConfigured() {
+		t.Fatalf(
+			"explicit false websocket = %t/%t, want false/true",
+			disabled.EnableWebsocket,
+			disabled.EnableWebsocketConfigured(),
+		)
 	}
 }
 

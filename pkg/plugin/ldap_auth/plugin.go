@@ -196,7 +196,7 @@ func extractBasicUser(authorization string) (basicUser, error) {
 
 	username := removeWhitespace(parts[0])
 	password := removeWhitespace(parts[1])
-	if username == "" {
+	if username == "" || password == "" {
 		return basicUser{}, authorizationError("Invalid authorization header format")
 	}
 

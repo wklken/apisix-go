@@ -14,6 +14,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
 )
 
 type logExecutorTestPlugin struct {
@@ -689,6 +690,141 @@ func TestRequestPipelineUsesResolvedConsumerLogWinner(t *testing.T) {
 	}
 }
 
+func TestPrometheusLogBindingPrefersRouteOverGlobal(t *testing.T) {
+	global := newLogExecutorTestPlugin("global-prometheus", 1, nil)
+	route := newLogExecutorTestPlugin("route-prometheus", 2, nil)
+	bindings := []Binding{
+		BindPlugin("prometheus", global, ScopeGlobal, ResourceProvenance{
+			Kind: ResourceGlobalRule,
+			ID:   "global-1",
+		}),
+		BindPlugin("prometheus", route, ScopeRoute, ResourceProvenance{
+			Kind: ResourceRoute,
+			ID:   "route-1",
+		}),
+	}
+	executor, err := NewLogExecutorFromBindings(bindings)
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Unix(1, 0),
+	)
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	lifecycle.Complete(ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK}, time.Unix(2, 0))
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if len(global.seen) != 0 {
+		t.Fatalf("global prometheus callback count = %d, want 0", len(global.seen))
+	}
+	if len(route.seen) != 1 {
+		t.Fatalf("route prometheus callback count = %d, want 1", len(route.seen))
+	}
+}
+
+func TestPrometheusLogBindingUsesGlobalWhenRouteAbsent(t *testing.T) {
+	global := newLogExecutorTestPlugin("global-prometheus", 1, nil)
+	binding := BindPlugin("prometheus", global, ScopeGlobal, ResourceProvenance{
+		Kind: ResourceGlobalRule,
+		ID:   "global-1",
+	})
+	executor, err := NewLogExecutorFromBindings([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Unix(1, 0),
+	)
+	request, err = executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := executor.SealAndRegister(request); err != nil {
+		t.Fatalf("SealAndRegister() error = %v", err)
+	}
+	lifecycle.Complete(ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK}, time.Unix(2, 0))
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if len(global.seen) != 1 {
+		t.Fatalf("global prometheus callback count = %d, want 1", len(global.seen))
+	}
+}
+
+func TestPrometheusConsumerBindingRunsWithEmptyStaticLogExecutor(t *testing.T) {
+	consumer := newLogExecutorTestPlugin("consumer-prometheus", 2, nil)
+	consumerBinding := BindPlugin("prometheus", consumer, ScopeConsumer, ResourceProvenance{
+		Kind: ResourceConsumer,
+		ID:   "consumer-1",
+	})
+	emptyExecutor, err := NewLogExecutorFromBindings(nil)
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Bindings: []Binding{consumerBinding}, Resolved: true}, nil
+	}).WithLogExecutor(&emptyExecutor)
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Unix(1, 0),
+	)
+	pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	lifecycle.Complete(
+		ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusNoContent},
+		time.Unix(2, 0),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if len(consumer.seen) != 1 {
+		t.Fatalf("consumer prometheus callback count = %d, want 1", len(consumer.seen))
+	}
+}
+
+func TestEmptyLogExecutorSkipsRequestStateAndFinalizer(t *testing.T) {
+	requestContext := &requestcontext.Plugin{}
+	binding := BindPlugin("request-context", requestContext, ScopeSystem, ResourceProvenance{
+		Kind: ResourceSystem,
+		ID:   "request-context",
+	})
+	executor, err := NewLogExecutorFromBindings([]Binding{binding})
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil),
+		time.Unix(1, 0),
+	)
+	prepared, err := executor.Prepare(request)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if prepared != request {
+		t.Fatal("empty log executor replaced request")
+	}
+	if logStateFromRequest(request) != nil {
+		t.Fatal("empty log executor allocated request log state")
+	}
+	if executor.RegisterComposite(request) {
+		t.Fatal("empty log executor registered a lifecycle finalizer")
+	}
+	lifecycle.Complete(ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusOK}, time.Unix(2, 0))
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+}
+
 func TestRequestPipelineLogsFinalReplacementRequest(t *testing.T) {
 	loggerPlugin := newLogExecutorTestPlugin("logger", 1, nil)
 	auth := newExecutorRequestPlugin(
@@ -761,7 +897,7 @@ func TestRequestPipelineAuthStopWithBufferedResponseRegistersLogComposite(t *tes
 	bounded := newResponseTestPlugin(
 		"response-rewrite",
 		1,
-		responseTestConfig{stage: "none", header: true},
+		responseTestConfig{stage: "none", body: true},
 	)
 	bindings := []Binding{
 		pipelineBinding("key-auth", auth, ScopeRoute, 10),
@@ -904,10 +1040,10 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 			},
 		},
 		{
-			name: "missing snapshot finalizer",
+			name: "missing prometheus log callback",
 			run: func() error {
 				_, err := NewLogExecutorFromBindings([]Binding{{
-					factoryName: "request-context", Plugin: &logExecutorNoCallbackPlugin{},
+					factoryName: "prometheus", Plugin: &logExecutorNoCallbackPlugin{},
 				}})
 				return err
 			},

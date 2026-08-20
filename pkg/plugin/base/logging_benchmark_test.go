@@ -63,6 +63,26 @@ func (w *benchmarkWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func BenchmarkResponseCaptureWrite(b *testing.B) {
+	payload := []byte("response-body")
+	underlying := &benchmarkWriter{}
+	wrapped, _ := CaptureResponseOutcomeController(underlying)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	var sink int
+	for b.Loop() {
+		n, err := wrapped.Write(payload)
+		if err != nil {
+			b.Fatal(err)
+		}
+		sink += n
+	}
+	b.StopTimer()
+	runtime.KeepAlive(sink)
+}
+
 // Header is never touched by the benchmarked write path.
 func (*benchmarkWriter) Header() http.Header {
 	return nil

@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,7 +50,7 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 		"exit-transformer":             {Stage: RequestStageNone},
 		"graphql-proxy-cache":          {Stage: RequestStageAccess},
 		"proxy-cache":                  {Stage: RequestStageAccess},
-		"response-rewrite":             {Stage: RequestStageNone},
+		"response-rewrite":             {Stage: RequestStageNone, ConfigAware: true},
 		"serverless-pre-function":      {Stage: RequestStageNone, ConfigAware: true},
 		"serverless-post-function":     {Stage: RequestStageNone, ConfigAware: true},
 		"request-context":              {Stage: RequestStageRewrite, AdaptLegacyHandler: false},
@@ -242,52 +240,6 @@ func TestPlan14RegistrySubsetsAreExact(t *testing.T) {
 		spec, ok := requestStageRegistry[key]
 		if !ok || !spec.AuthenticatesConsumer || !spec.ConsumerConfigOnly {
 			t.Fatalf("credential-only auth %q = %#v/%v", key, spec, ok)
-		}
-	}
-}
-
-func TestPlan16RequestStageAssignmentsAreExact(t *testing.T) {
-	manifest, err := os.ReadFile(filepath.Join(
-		"..", "..", "docs", "superpowers", "plans", "2026-08-10-plugin-capability-manifest.md",
-	))
-	if err != nil {
-		t.Fatalf("read capability manifest: %v", err)
-	}
-	section := string(manifest)
-	start := strings.Index(section, "## Plan 16 streaming, protocol, and terminal identities")
-	if start < 0 {
-		t.Fatal("capability manifest missing Plan 16 section")
-	}
-	section = section[start:]
-	if end := strings.Index(
-		section[len("## Plan 16 streaming, protocol, and terminal identities"):],
-		"\n## ",
-	); end >= 0 {
-		section = section[:len("## Plan 16 streaming, protocol, and terminal identities")+end]
-	}
-	want := make(map[string]RequestStage)
-	for line := range strings.SplitSeq(section, "\n") {
-		fields := strings.Split(line, "|")
-		if len(fields) != 5 || strings.TrimSpace(fields[1]) == "Identity" {
-			continue
-		}
-		factory, capabilities := strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
-		switch {
-		case strings.Contains(capabilities, "request_rewrite"):
-			want[factory] = RequestStageRewrite
-		case strings.Contains(capabilities, "request_access"):
-			want[factory] = RequestStageAccess
-		case strings.Contains(capabilities, "before_proxy"):
-			want[factory] = RequestStageBeforeProxy
-		}
-	}
-	if len(want) != 20 {
-		t.Fatalf("Plan 16 request-stage manifest size = %d, want 20 (%v)", len(want), want)
-	}
-	for factory, stage := range want {
-		spec, ok := RequestStageFor(factory)
-		if !ok || spec.Stage != stage {
-			t.Fatalf("RequestStageFor(%q) = %#v/%v, want stage %d", factory, spec, ok, stage)
 		}
 	}
 }

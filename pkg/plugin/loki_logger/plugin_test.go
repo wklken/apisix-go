@@ -54,6 +54,64 @@ func TestRunLogPhasePreservesLokiEnvelopeLabelsAndTimestamp(t *testing.T) {
 	}
 }
 
+func TestDefaultLogFieldsRedactSensitiveHeaders(t *testing.T) {
+	requestHeaders := http.Header{
+		"Authorization": {"Bearer request-secret"},
+		"Cookie":        {"session=request-secret"},
+		"X-Trace-ID":    {"trace-a"},
+	}
+	responseHeaders := http.Header{
+		"Set-Cookie": {"session=response-secret"},
+		"X-Upstream": {"orders"},
+	}
+
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			Host:   "gateway.example",
+			Header: requestHeaders,
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: responseHeaders},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}
+	assertLokiHeadersSanitized(t, lokiSnapshotDefaultFields(snapshot, time.Unix(100, 0)))
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
+	request.Header = requestHeaders.Clone()
+	assertLokiHeadersSanitized(t, (&Plugin{}).defaultLogFields(
+		request,
+		responseHeaders,
+		http.StatusOK,
+		0,
+		time.Now(),
+	))
+}
+
+func assertLokiHeadersSanitized(t *testing.T, fields map[string]any) {
+	t.Helper()
+	request := requiredObject(t, fields, "request")
+	requestHeaders := requiredObject(t, request, "headers")
+	if _, ok := requestHeaders["authorization"]; ok {
+		t.Fatalf("request headers contain authorization: %#v", requestHeaders)
+	}
+	if _, ok := requestHeaders["cookie"]; ok {
+		t.Fatalf("request headers contain cookie: %#v", requestHeaders)
+	}
+	if got := requestHeaders["x-trace-id"]; got != "trace-a" {
+		t.Fatalf("request x-trace-id = %#v, want trace-a", got)
+	}
+
+	response := requiredObject(t, fields, "response")
+	responseHeaders := requiredObject(t, response, "headers")
+	if _, ok := responseHeaders["set-cookie"]; ok {
+		t.Fatalf("response headers contain set-cookie: %#v", responseHeaders)
+	}
+	if got := responseHeaders["x-upstream"]; got != "orders" {
+		t.Fatalf("response x-upstream = %#v, want orders", got)
+	}
+}
+
 func TestLogCapturePolicyIncludesExtraFieldsAndLabels(t *testing.T) {
 	p := &Plugin{
 		config: Config{

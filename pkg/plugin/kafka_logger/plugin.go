@@ -375,7 +375,7 @@ func (p *Plugin) resolveSecrets() error {
 		if config == nil {
 			continue
 		}
-		resolved, err := resolver.Resolve(config.Password)
+		resolved, err := resolver.ResolveForContext(config.Password, "kafka-logger.brokers.*.sasl_config.password")
 		if err != nil {
 			return fmt.Errorf("kafka-logger brokers[%d].sasl_config.password: %w", i, err)
 		}

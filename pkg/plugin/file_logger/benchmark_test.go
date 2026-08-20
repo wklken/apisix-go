@@ -2,8 +2,29 @@ package file_logger
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
+
+func BenchmarkFileLoggerPayloadEstimator(b *testing.B) {
+	fields := map[string]any{
+		"request": map[string]any{
+			"uri":     "/orders/123?include=summary",
+			"headers": map[string][]string{"host": {"gateway.test"}, "accept": {"application/json"}},
+			"query":   []any{"summary", "details"},
+		},
+		"response": map[string]any{
+			"status": 200,
+			"body":   strings.Repeat("x", 512),
+		},
+	}
+	record := fileLogRecord{kind: fileLogFieldsRecord, fields: fields}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = fileLogRecordPayloadBytes(record)
+	}
+}
 
 func BenchmarkFileLoggerWrite(b *testing.B) {
 	p := &Plugin{config: Config{Path: b.TempDir() + "/access.log"}}

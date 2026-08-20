@@ -762,7 +762,7 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{}
+	config.GlobalConfig = &config.Config{Plugins: []string{"prometheus"}}
 	server := newConfiguredHTTPServer(http.NotFoundHandler())
 	if server.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
@@ -775,6 +775,16 @@ func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 	}
 	if server.ConnState == nil {
 		t.Fatal("configured HTTP server has no connection lifecycle observer")
+	}
+}
+
+func TestConfiguredHTTPServerSkipsConnectionObserverWithoutPrometheus(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{Plugins: []string{"limit-req"}}
+
+	if observer := newConfiguredHTTPServer(http.NotFoundHandler()).ConnState; observer != nil {
+		t.Fatal("configured HTTP server installed a Prometheus connection observer while metrics are disabled")
 	}
 }
 
@@ -838,6 +848,42 @@ func TestConfiguredHTTPHandlerLimitsHealthEndpoints(t *testing.T) {
 			handler.ServeHTTP(response, request)
 
 			assertRequestBodyLimitResponse(t, response)
+		})
+	}
+}
+
+func TestConfiguredHTTPHandlerCountsAllRequestsOnlyWhenPrometheusEnabled(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	previousRequests := metrics.Requests
+	t.Cleanup(func() {
+		config.GlobalConfig = previousConfig
+		metrics.Requests = previousRequests
+	})
+
+	for _, test := range []struct {
+		name    string
+		plugins []string
+		want    float64
+	}{
+		{name: "enabled", plugins: []string{"prometheus"}, want: 2},
+		{name: "disabled", plugins: []string{"limit-req"}, want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.Config{Plugins: test.plugins}
+			config.GlobalConfig = cfg
+			metrics.Requests = prometheus.NewGauge(prometheus.GaugeOpts{
+				Name: "test_http_handler_requests_" + test.name,
+			})
+			handler := newConfiguredHTTPHandler(http.NotFoundHandler(), cfg)
+			for _, path := range []string{"/livez", "/ordinary"} {
+				handler.ServeHTTP(
+					httptest.NewRecorder(),
+					httptest.NewRequest(http.MethodGet, path, nil),
+				)
+			}
+			if got := configApplyGaugeValue(t, metrics.Requests); got != test.want {
+				t.Fatalf("request total = %v, want %v", got, test.want)
+			}
 		})
 	}
 }
@@ -1068,6 +1114,66 @@ func TestStandaloneConfigProviderSelection(t *testing.T) {
 	}
 }
 
+func TestApplyStandaloneSnapshotPropagatesStreamPublicationFailure(t *testing.T) {
+	wantErr := errors.New("stream publication failed")
+	err := applyStandaloneSnapshot(
+		config.StandaloneReloadResult{ChangedStreamBuckets: []string{"stream_routes"}},
+		nil,
+		func() error { return nil },
+		func() error { return nil },
+		func() error { return wantErr },
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestEtcdClientOptionsUseConfiguredWatchAndResyncDelay(t *testing.T) {
+	options := etcdClientOptions(config.Etcd{
+		Timeout:            7,
+		WatchTimeout:       11,
+		ResyncDelay:        13,
+		HealthCheckTimeout: 17,
+		StartupRetry:       19,
+	}, nil)
+	if options.DialTimeout != 7*time.Second || options.RequestTimeout != 7*time.Second {
+		t.Fatalf("etcd request timeouts = %s/%s, want 7s/7s", options.DialTimeout, options.RequestTimeout)
+	}
+	if options.WatchTimeout != 11*time.Second {
+		t.Fatalf("etcd watch timeout = %s, want 11s", options.WatchTimeout)
+	}
+	if options.ResyncDelay != 13*time.Second {
+		t.Fatalf("etcd resync delay = %s, want 13s", options.ResyncDelay)
+	}
+	if options.HealthCheckInterval != 17*time.Second || options.StartupRetry != 19 {
+		t.Fatalf("etcd health/retry options = %s/%d, want 17s/19", options.HealthCheckInterval, options.StartupRetry)
+	}
+}
+
+func TestFetchAndSyncInitialEtcdConfigContextIsPropagated(t *testing.T) {
+	ctx := t.Context()
+	seen := make(chan context.Context, 1)
+	err := fetchAndSyncInitialEtcdConfigContext(
+		ctx,
+		func(fetchCtx context.Context) error {
+			seen <- fetchCtx
+			return nil
+		},
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("fetchAndSyncInitialEtcdConfigContext() error = %v", err)
+	}
+	select {
+	case fetchCtx := <-seen:
+		if fetchCtx != ctx {
+			t.Fatalf("fetch context = %p, want startup context %p", fetchCtx, ctx)
+		}
+	default:
+		t.Fatal("fetchAndSyncInitialEtcdConfigContext() did not invoke fetch")
+	}
+}
+
 func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1128,7 +1234,7 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 				test.err,
 				func() error { calls = append(calls, "sync"); return nil },
 				func() error { calls = append(calls, "routes"); return nil },
-				func() { calls = append(calls, "streams") },
+				func() error { calls = append(calls, "streams"); return nil },
 			)
 			if !slices.Equal(calls, test.want) {
 				t.Fatalf("calls = %v, want %v", calls, test.want)
@@ -1155,7 +1261,7 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 		nil,
 		func() error { return nil },
 		func() error { return wantErr },
-		func() { streams++ },
+		func() error { streams++; return nil },
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("applyStandaloneSnapshot() error = %v, want %v", err, wantErr)
@@ -1173,53 +1279,6 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 	}
 	if got := configApplyGaugeValue(t, metrics.ConfigApplyReady); got != 0 {
 		t.Fatalf("ready after route-build failure = %v, want 0", got)
-	}
-}
-
-func TestPrometheusExportServerConfigDefaults(t *testing.T) {
-	cfg := newPrometheusExportServerConfig(nil)
-
-	if !cfg.Enabled {
-		t.Fatal("Enabled = false, want true")
-	}
-	if cfg.ExportURI != "/apisix/prometheus/metrics" {
-		t.Fatalf("ExportURI = %q, want /apisix/prometheus/metrics", cfg.ExportURI)
-	}
-	if cfg.ExportIP != "127.0.0.1" {
-		t.Fatalf("ExportIP = %q, want 127.0.0.1", cfg.ExportIP)
-	}
-	if cfg.ExportPort != 9091 {
-		t.Fatalf("ExportPort = %d, want 9091", cfg.ExportPort)
-	}
-	if cfg.Address() != "127.0.0.1:9091" {
-		t.Fatalf("Address() = %q, want 127.0.0.1:9091", cfg.Address())
-	}
-}
-
-func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
-	cfg := newPrometheusExportServerConfig(map[string]any{
-		"enable_export_server": false,
-		"export_uri":           "/metrics",
-		"export_addr": map[string]any{
-			"ip":   "0.0.0.0",
-			"port": 19091,
-		},
-	})
-
-	if cfg.Enabled {
-		t.Fatal("Enabled = true, want false")
-	}
-	if cfg.ExportURI != "/metrics" {
-		t.Fatalf("ExportURI = %q, want /metrics", cfg.ExportURI)
-	}
-	if cfg.ExportIP != "0.0.0.0" {
-		t.Fatalf("ExportIP = %q, want 0.0.0.0", cfg.ExportIP)
-	}
-	if cfg.ExportPort != 19091 {
-		t.Fatalf("ExportPort = %d, want 19091", cfg.ExportPort)
-	}
-	if cfg.Address() != "0.0.0.0:19091" {
-		t.Fatalf("Address() = %q, want 0.0.0.0:19091", cfg.Address())
 	}
 }
 
@@ -1504,13 +1563,15 @@ func TestHandleStoreEventUpdateDispatchesByBucket(t *testing.T) {
 	var httpCalls, streamCalls int
 	httpEvent := &store.Event{Key: []byte("/apisix/routes/route-1")}
 	streamEvent := &store.Event{Key: []byte("/apisix/stream_routes/stream-1")}
+	serviceEvent := &store.Event{Key: []byte("/apisix/services/service-1")}
 
 	handleStoreEventUpdate(httpEvent, func() { httpCalls++ }, func() { streamCalls++ })
 	handleStoreEventUpdate(streamEvent, func() { httpCalls++ }, func() { streamCalls++ })
+	handleStoreEventUpdate(serviceEvent, func() { httpCalls++ }, func() { streamCalls++ })
 	handleStoreEventUpdate(nil, func() { httpCalls++ }, func() { streamCalls++ })
 
-	if httpCalls != 1 || streamCalls != 1 {
-		t.Fatalf("http/stream calls = %d/%d, want 1/1", httpCalls, streamCalls)
+	if httpCalls != 2 || streamCalls != 2 {
+		t.Fatalf("http/stream calls = %d/%d, want 2/2", httpCalls, streamCalls)
 	}
 }
 

@@ -251,7 +251,10 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.Auth != nil {
 		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Auth.Password)
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			p.config.Auth.Password,
+			"elasticsearch-logger.auth.password",
+		)
 		if err != nil {
 			return fmt.Errorf("elasticsearch-logger auth.password: %w", err)
 		}

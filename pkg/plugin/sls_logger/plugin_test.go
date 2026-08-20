@@ -24,7 +24,10 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -40,6 +43,58 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestDefaultAccessLogFieldsRedactSensitiveHeaders(t *testing.T) {
+	requestHeaders := http.Header{
+		"Authorization": {"Bearer request-secret"},
+		"Cookie":        {"session=request-secret"},
+		"X-Trace-ID":    {"trace-a"},
+	}
+	responseHeaders := http.Header{
+		"Set-Cookie": {"session=response-secret"},
+		"X-Upstream": {"orders"},
+	}
+
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			Host:   "gateway.example",
+			Header: requestHeaders,
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: responseHeaders},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}
+	assertSLSHeadersSanitized(t, slsSnapshotDefaultFields(snapshot))
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
+	request.Header = requestHeaders.Clone()
+	assertSLSHeadersSanitized(t, defaultAccessLogFields(request, http.StatusOK, responseHeaders))
+}
+
+func assertSLSHeadersSanitized(t *testing.T, fields map[string]any) {
+	t.Helper()
+	request := fields["request"].(map[string]any)
+	requestHeaders := request["headers"].(map[string]any)
+	if _, ok := requestHeaders["authorization"]; ok {
+		t.Fatalf("request headers contain authorization: %#v", requestHeaders)
+	}
+	if _, ok := requestHeaders["cookie"]; ok {
+		t.Fatalf("request headers contain cookie: %#v", requestHeaders)
+	}
+	if got := requestHeaders["x-trace-id"]; got != "trace-a" {
+		t.Fatalf("request x-trace-id = %#v, want trace-a", got)
+	}
+
+	response := fields["response"].(map[string]any)
+	responseHeaders := response["headers"].(map[string]any)
+	if _, ok := responseHeaders["set-cookie"]; ok {
+		t.Fatalf("response headers contain set-cookie: %#v", responseHeaders)
+	}
+	if got := responseHeaders["x-upstream"]; got != "orders" {
+		t.Fatalf("response x-upstream = %#v, want orders", got)
+	}
 }
 
 func TestPostInitSetsSLSDefaults(t *testing.T) {

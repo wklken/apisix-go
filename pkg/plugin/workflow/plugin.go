@@ -23,6 +23,9 @@ type Plugin struct {
 	enabledChecker func(string) bool
 	childStoppers  []workflowChildStopper
 	children       map[actionPosition]workflowChild
+	route          resource.Route
+	service        resource.Service
+	resourceSet    bool
 }
 
 type actionPosition struct {
@@ -212,7 +215,28 @@ func (p *Plugin) MaterializeSecrets() error {
 		}
 	}
 	committed = true
+	p.applyResourceContext()
 	return nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
+	p.route = route
+	p.service = service
+	p.resourceSet = true
+	p.applyResourceContext()
+}
+
+func (p *Plugin) applyResourceContext() {
+	if !p.resourceSet {
+		return
+	}
+	for _, child := range p.children {
+		if setter, ok := child.(interface {
+			SetResourceContext(resource.Route, resource.Service)
+		}); ok {
+			setter.SetResourceContext(p.route, p.service)
+		}
+	}
 }
 
 func (p *Plugin) materializeChild(action *Action, child workflowChild) error {

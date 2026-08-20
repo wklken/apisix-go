@@ -34,6 +34,7 @@ type ClusterKey [sha256.Size]byte
 type ClusterConfig struct {
 	Name              string
 	Targets           map[string]int
+	Priorities        map[string]int
 	Checks            map[string]any
 	Transport         TransportOption
 	SendTimeout       time.Duration
@@ -50,6 +51,7 @@ type ClusterConfig struct {
 // timeout, idle, or connection-cap change produces a new cluster.
 type clusterKeyIdentity struct {
 	Targets           []clusterKeyTarget
+	Priorities        []clusterKeyPriority
 	Checks            map[string]any
 	Transport         transportKeyIdentity
 	SendTimeout       time.Duration
@@ -65,12 +67,18 @@ type clusterKeyTarget struct {
 	Weight int
 }
 
+type clusterKeyPriority struct {
+	Target   string
+	Priority int
+}
+
 // Key computes the identity digest for this effective cluster configuration.
 // An error means the configuration cannot be serialized deterministically and
 // the caller must fail rather than reuse a partial digest.
 func (c ClusterConfig) Key() (ClusterKey, error) {
 	identity := clusterKeyIdentity{
 		Targets:           sortedClusterTargets(c.Targets),
+		Priorities:        sortedClusterPriorities(c.Priorities),
 		Checks:            c.Checks,
 		Transport:         c.Transport.keyIdentity(),
 		SendTimeout:       c.SendTimeout,
@@ -96,6 +104,22 @@ func sortedClusterTargets(targets map[string]int) []clusterKeyTarget {
 	result := make([]clusterKeyTarget, 0, len(keys))
 	for _, target := range keys {
 		result = append(result, clusterKeyTarget{Target: target, Weight: targets[target]})
+	}
+	return result
+}
+
+func sortedClusterPriorities(priorities map[string]int) []clusterKeyPriority {
+	if len(priorities) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(priorities))
+	for target := range priorities {
+		keys = append(keys, target)
+	}
+	sort.Strings(keys)
+	result := make([]clusterKeyPriority, 0, len(keys))
+	for _, target := range keys {
+		result = append(result, clusterKeyPriority{Target: target, Priority: priorities[target]})
 	}
 	return result
 }
@@ -160,7 +184,7 @@ func newClusterWithTransport(
 
 	var lb LoadBalancer
 	if len(config.Targets) > 0 {
-		lb, err = NewUpstreamLoadBalance(config.Targets, config.Checks)
+		lb, err = newUpstreamLoadBalanceWithPriorities(config.Targets, config.Priorities, config.Checks)
 		if err != nil {
 			return nil, err
 		}
@@ -183,6 +207,7 @@ func newClusterWithTransport(
 		maxInFlight: maxInFlight,
 	}
 	if healthAware, ok := lb.(*HealthAwareLoadBalance); ok {
+		healthAware.setObserver(config.Name, observer)
 		active, enabled, err := ParseActiveHealthConfig(config.Checks)
 		if err != nil {
 			return nil, err
@@ -218,6 +243,9 @@ func (c *Cluster) Close() {
 	c.closeOnce.Do(func() {
 		if c.health != nil {
 			c.health.Close()
+		}
+		if healthAware, ok := c.lb.(*HealthAwareLoadBalance); ok {
+			healthAware.clearObserver()
 		}
 		if c.closeIdle != nil {
 			c.closeIdle()

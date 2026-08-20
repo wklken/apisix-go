@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -322,7 +323,24 @@ func (c *activeHealthChecker) probeOnce(target string) bool {
 }
 
 func (c *activeHealthChecker) probeHTTP(target string) bool {
-	request, err := http.NewRequestWithContext(c.ctx, http.MethodGet, target+c.config.HTTPPath, nil)
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	probePath, err := url.Parse(c.config.HTTPPath)
+	if err != nil {
+		return false
+	}
+	targetURL.Scheme = c.config.Type
+	targetURL.Path = probePath.Path
+	targetURL.RawPath = probePath.RawPath
+	if probePath.RawQuery != "" {
+		targetURL.RawQuery = probePath.RawQuery
+		targetURL.ForceQuery = probePath.ForceQuery
+	}
+	targetURL.Fragment = ""
+
+	request, err := http.NewRequestWithContext(c.ctx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
 		return false
 	}

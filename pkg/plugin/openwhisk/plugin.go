@@ -293,6 +293,11 @@ func resultBody(value any, fallback []byte) []byte {
 		return fallback
 	case string:
 		return []byte(v)
+	case bool:
+		if !v {
+			return fallback
+		}
+		return []byte("true")
 	default:
 		data, err := json.Marshal(v)
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,21 @@ type recordingHealthReporter struct {
 	target string
 	status int
 	tcp    bool
+}
+
+type healthTransition struct {
+	cluster string
+	target  string
+	healthy bool
+}
+
+type recordingClusterHealthObserver struct {
+	NopClusterObserver
+	transitions []healthTransition
+}
+
+func (o *recordingClusterHealthObserver) SetHealth(cluster, target string, healthy bool) {
+	o.transitions = append(o.transitions, healthTransition{cluster: cluster, target: target, healthy: healthy})
 }
 
 func (r *recordingHealthReporter) ReportHTTP(target string, status int) {
@@ -122,6 +138,46 @@ func TestHealthAwareLoadBalanceQuarantinesHTTPStatusesAfterThreshold(t *testing.
 		if got := lb.Next(); got == failed {
 			t.Fatalf("target %q was selected after the HTTP failure threshold", failed)
 		}
+	}
+}
+
+func TestPassiveHealthTransitionsNotifyClusterObserver(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	tests := []struct {
+		name   string
+		checks map[string]any
+		report func(*HealthAwareLoadBalance)
+	}{
+		{
+			name: "http threshold",
+			checks: map[string]any{"passive": map[string]any{
+				"unhealthy": map[string]any{"http_failures": 1, "http_statuses": []any{500}},
+			}},
+			report: func(lb *HealthAwareLoadBalance) { lb.ReportHTTP(target, 500) },
+		},
+		{
+			name: "tcp threshold",
+			checks: map[string]any{"passive": map[string]any{
+				"type":      "tcp",
+				"unhealthy": map[string]any{"tcp_failures": 1},
+			}},
+			report: func(lb *HealthAwareLoadBalance) { lb.ReportTCPFailure(target, false) },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, test.checks)
+			if err != nil {
+				t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+			}
+			observer := &recordingClusterHealthObserver{}
+			lb.setObserver("orders", observer)
+			test.report(lb)
+			want := []healthTransition{{cluster: "orders", target: target, healthy: false}}
+			if !reflect.DeepEqual(observer.transitions, want) {
+				t.Fatalf("health transitions = %#v, want %#v", observer.transitions, want)
+			}
+		})
 	}
 }
 

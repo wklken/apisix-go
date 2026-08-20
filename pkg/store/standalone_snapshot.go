@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -37,7 +39,8 @@ func (s *Store) SnapshotBuckets(bucketNames []string) (map[string]map[string][]b
 }
 
 func (s *Store) rebuildPersistedConsumerIndexes() error {
-	return s.db.View(func(tx *bolt.Tx) error {
+	snapshots := make([]consumerSnapshot, 0)
+	err := s.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("consumers"))
 		if bucket == nil {
 			return errBucketNotFound
@@ -45,10 +48,48 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 		return bucket.ForEach(func(id, value []byte) error {
 			snapshot, err := s.prepareConsumerSnapshot(bytes.Clone(id), bytes.Clone(value))
 			if err != nil {
-				return fmt.Errorf("rebuild persisted consumer %q: %w", id, err)
+				logger.Warnf("skip invalid persisted consumer %q: %s", id, err)
+				return nil
 			}
-			s.applyConsumerSnapshot(snapshot)
+			snapshots = append(snapshots, snapshot)
 			return nil
 		})
 	})
+	if err != nil {
+		return err
+	}
+
+	consumerKV := make(map[string][]byte)
+	consumerToKeys := make(map[string][]string)
+	consumerValues := make(map[string]resource.Consumer)
+	consumerReferenceKV := make(map[string]map[string][]byte)
+	consumerToReferences := make(map[string][]string)
+	for _, snapshot := range snapshots {
+		key := string(snapshot.id)
+		consumerID := append([]byte(nil), snapshot.id...)
+		consumerKV[key] = consumerID
+		consumerToKeys[key] = append([]string(nil), snapshot.pluginKeys...)
+		for _, pluginKey := range snapshot.pluginKeys {
+			consumerKV[pluginKey] = consumerID
+		}
+		if len(snapshot.referencePlugins) > 0 {
+			consumerToReferences[key] = append([]string(nil), snapshot.referencePlugins...)
+		}
+		for _, pluginName := range snapshot.referencePlugins {
+			if consumerReferenceKV[pluginName] == nil {
+				consumerReferenceKV[pluginName] = make(map[string][]byte)
+			}
+			consumerReferenceKV[pluginName][key] = consumerID
+		}
+		consumerValues[key] = snapshot.consumer
+	}
+
+	s.consumerMu.Lock()
+	s.consumerKV = consumerKV
+	s.consumerToKeys = consumerToKeys
+	s.consumerValues = consumerValues
+	s.consumerReferenceKV = consumerReferenceKV
+	s.consumerToReferences = consumerToReferences
+	s.consumerMu.Unlock()
+	return nil
 }

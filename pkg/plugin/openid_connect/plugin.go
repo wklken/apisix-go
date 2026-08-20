@@ -275,7 +275,12 @@ const schema = `
           "properties": {
             "claim": {"type": "string"},
             "required": {"type": "boolean"},
-            "match_with_client_id": {"type": "boolean"}
+            "match_with_client_id": {"type": "boolean"},
+            "valid_audiences": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string", "minLength": 1}
+            }
           }
         },
         "issuer": {
@@ -458,6 +463,9 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	if _, err := p.configuredIssuers(); err != nil {
+		return err
+	}
+	if err := p.validateConfiguredAudiences(); err != nil {
 		return err
 	}
 	if len(p.config.ClaimSchema) > 0 {

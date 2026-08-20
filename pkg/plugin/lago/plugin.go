@@ -237,7 +237,7 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Token)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(p.config.Token, "lago.token")
 	if err != nil {
 		return fmt.Errorf("lago token: %w", err)
 	}

@@ -68,11 +68,24 @@ func NewLogExecutor(bindings []LogBinding) (LogExecutor, error) {
 	}, nil
 }
 
+func (e LogExecutor) enabled() bool {
+	return len(e.bindings) > 0
+}
+
 // NewLogExecutorFromBindings selects explicit sanitizer, log, and snapshot-
 // finalizer owners from one materialized binding set. Dynamic finalizers
 // register their own lifecycle callbacks and never enter this executor.
 func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 	logBindings := make([]LogBinding, 0)
+	routePrometheus := false
+	for _, binding := range bindings {
+		if binding.factoryName == "prometheus" &&
+			binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal {
+			routePrometheus = true
+			break
+		}
+	}
+	globalPrometheusAdded := false
 	for _, binding := range bindings {
 		if binding.Plugin == nil {
 			return LogExecutor{}, fmt.Errorf(
@@ -85,6 +98,14 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 		spec, ok := CapabilitySpecForFactory(binding.factoryName)
 		if !ok {
 			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.factoryName)
+		}
+		if binding.factoryName == "prometheus" {
+			if binding.Scope == ScopeGlobal || binding.Scope == ScopeSystem {
+				if routePrometheus || globalPrometheusAdded {
+					continue
+				}
+				globalPrometheusAdded = true
+			}
 		}
 		ownsLog := spec.Capabilities&CapabilityLog != 0
 		ownsSanitizer := spec.Capabilities&CapabilityLogSanitizer != 0
@@ -158,6 +179,9 @@ func (e LogExecutor) Bindings() []LogBinding {
 func (e LogExecutor) Prepare(r *http.Request) (*http.Request, error) {
 	if r == nil {
 		return nil, fmt.Errorf("cannot prepare a nil request")
+	}
+	if !e.enabled() {
+		return r, nil
 	}
 	if existing := logStateFromRequest(r); existing != nil {
 		if capture, ok := base.ResponseCaptureFromRequest(r); ok {

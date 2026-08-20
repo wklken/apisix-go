@@ -1,10 +1,12 @@
 package route
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +23,7 @@ import (
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	bolt "go.etcd.io/bbolt"
 )
 
 type recordingPlugin struct {
@@ -132,21 +135,9 @@ func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T
 		HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 30},
 	}}
 
-	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{}, nil)
+	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{})
 	if _, ok := plugins["client-control"]; ok {
 		t.Fatalf("system client-control = %#v, want server-owned global streaming limit", plugins["client-control"])
-	}
-
-	plugins = buildSystemPluginConfigs(
-		resource.Route{ID: "route-limit"},
-		resource.Service{},
-		map[string]resource.PluginConfig{"client-control": map[string]any{"max_body_size": 50}},
-	)
-	if _, ok := plugins["client-control"]; ok {
-		t.Fatalf(
-			"system client-control = %#v, want explicit route plugin to remain resource-owned",
-			plugins["client-control"],
-		)
 	}
 }
 
@@ -1070,22 +1061,26 @@ func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
 	builder.Stop()
 }
 
-func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
-	ensureRouteStore(t)
-
-	putRouteResource(t, "strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
-	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
-
-	builder := NewBuilder(nil)
+func TestBuilderPublishesValidRouteWhenLegacySnapshotRowIsUndecodable(t *testing.T) {
+	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
+		"routes": {
+			"strict-valid":   []byte(`{"id":"strict-valid","uri":"/strict-valid"}`),
+			"strict-invalid": []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`),
+		},
+	})
+	builder := NewBuilder(storage)
 	defer builder.Stop()
-	if handler := builder.Build(); handler != nil {
-		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy row quarantine", handler, err)
 	}
 }
 
 func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	ensureRouteStore(t)
-	putRouteResource(t, "strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
+	putRouteResource(t, "strict-invalid", []byte(
+		`{"id":"strict-invalid","uri":"/strict-invalid","plugins":{"not-a-plugin":{}}}`,
+	))
 	builder := NewBuilder(nil)
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
@@ -1097,36 +1092,15 @@ func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	}
 }
 
-func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
-	ensureRouteStore(t)
-
-	put := func(bucket string, id string, value []byte) {
-		event := store.NewEvent()
-		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		event.Value = value
-		routeStoreEvents <- event
-	}
-	remove := func(bucket string, id string) {
-		event := store.NewEvent()
-		event.Type = store.EventTypeDelete
-		event.Key = []byte("/apisix/" + bucket + "/" + id)
-		routeStoreEvents <- event
-	}
-
-	put("routes", "strict-global-route", []byte(`{"id":"strict-global-route","uri":"/strict-global"}`))
-	put("global_rules", "strict-valid-global", []byte(`{"id":"strict-valid-global","plugins":{}}`))
-	put("global_rules", "strict-invalid-global", []byte(`{"id":"strict-invalid-global","plugins":[]}`))
-	if err := routeStore.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-	t.Cleanup(func() {
-		remove("routes", "strict-global-route")
-		remove("global_rules", "strict-valid-global")
-		remove("global_rules", "strict-invalid-global")
-		if err := routeStore.Sync(); err != nil {
-			t.Errorf("cleanup Sync() error = %v", err)
-		}
+func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
+	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
+		"routes": {
+			"strict-global-route": []byte(`{"id":"strict-global-route","uri":"/strict-global"}`),
+		},
+		"global_rules": {
+			"strict-valid-global":   []byte(`{"id":"strict-valid-global","plugins":{}}`),
+			"strict-invalid-global": []byte(`{"id":"strict-invalid-global","plugins":[]}`),
+		},
 	})
 
 	rules, err := store.ListGlobalRules()
@@ -1140,11 +1114,179 @@ func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
 		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(storage)
 	defer builder.Stop()
-	if handler := builder.Build(); handler != nil {
-		t.Fatal("Build() returned a partial handler, want nil for an undecodable global-rule snapshot")
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy global-rule quarantine", handler, err)
 	}
+}
+
+func TestBuilderBuildStrictUsesPassedStoreSnapshot(t *testing.T) {
+	globalStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"global-only": []byte(`{"id":"global-only","uri":"/global-only","service_id":"missing-service"}`),
+		},
+	})
+	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"passed-store": []byte(
+				`{"id":"passed-store","uri":"/passed-store","service_id":"passed-service","plugin_config_id":"passed-config"}`,
+			),
+		},
+		"services": {
+			"passed-service": []byte(`{"id":"passed-service","upstream_id":"passed-upstream"}`),
+		},
+		"upstreams": {
+			"passed-upstream": []byte(`{"scheme":"http","nodes":{"127.0.0.1:8080":1}}`),
+		},
+		"plugin_configs": {
+			"passed-config": []byte(`{"plugins":{}}`),
+		},
+	})
+	previous := store.ReplaceGlobalStoreForTest(globalStore)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
+
+	builder := NewBuilder(passedStore)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want handler from passed Store", handler, err)
+	}
+}
+
+func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
+	previousConfig := appconfig.GlobalConfig
+	appconfig.GlobalConfig = &appconfig.Config{Plugins: []string{"traffic-split"}}
+	t.Cleanup(func() { appconfig.GlobalConfig = previousConfig })
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	host, portText, err := net.SplitHostPort(strings.TrimPrefix(target.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split target address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("split target port: %v", err)
+	}
+
+	globalStore, _ := openBuildSnapshotStore(t, nil)
+	passedStore, _ := openBuildSnapshotStore(t, map[string]map[string][]byte{
+		"routes": {
+			"passed-split": []byte(`{
+				"id":"passed-split",
+				"uri":"/passed-split",
+				"plugins":{"traffic-split":{"rules":[{"weighted_upstreams":[{"upstream_id":"split","weight":1}]}]}},
+				"upstream":{"scheme":"http","nodes":{"127.0.0.1:8080":1}}
+			}`),
+		},
+		"upstreams": {
+			"split": fmt.Appendf(nil,
+				`{"scheme":"http","nodes":[{"host":%q,"port":%d,"weight":1}]}`,
+				host,
+				port,
+			),
+		},
+	})
+	previousStore := store.ReplaceGlobalStoreForTest(globalStore)
+	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
+	if _, err := store.GetUpstream("split"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("global Store split upstream error = %v, want ErrNotFound", err)
+	}
+
+	builder := NewBuilder(passedStore)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want traffic-split upstream_id from passed Store", handler, err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/passed-split", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf(
+			"traffic-split response status = %d, want %d; body=%q",
+			response.Code,
+			http.StatusNoContent,
+			response.Body,
+		)
+	}
+}
+
+func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *store.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	initial, err := store.Open(path, make(chan *store.Event, 1))
+	if err != nil {
+		t.Fatalf("open initial legacy store: %v", err)
+	}
+	if err := initial.Stop(); err != nil {
+		t.Fatalf("stop initial legacy store: %v", err)
+	}
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		for bucketName, entries := range seed {
+			bucket := tx.Bucket([]byte(bucketName))
+			for id, value := range entries {
+				if err := bucket.Put([]byte(id), value); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+	events := make(chan *store.Event, 1)
+	storage, err := store.Open(path, events)
+	if err != nil {
+		t.Fatalf("reopen legacy store: %v", err)
+	}
+	storage.Start()
+	previous := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previous)
+		if err := storage.Stop(); err != nil {
+			t.Errorf("stop legacy store: %v", err)
+		}
+	})
+	return storage
+}
+
+func openBuildSnapshotStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
+	t.Helper()
+	events := make(chan *store.Event, 16)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "builder-snapshot.db"), events)
+	if err != nil {
+		t.Fatalf("open builder snapshot store: %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() {
+		if err := storage.Stop(); err != nil {
+			t.Errorf("stop builder snapshot store: %v", err)
+		}
+	})
+	for bucket, entries := range seed {
+		for id, value := range entries {
+			event := store.NewEvent()
+			event.Type = store.EventTypePut
+			event.Key = []byte("/apisix/" + bucket + "/" + id)
+			event.Value = append([]byte(nil), value...)
+			events <- event
+			if err := storage.Sync(); err != nil {
+				t.Fatalf("seed %s/%s: %v", bucket, id, err)
+			}
+		}
+	}
+	return storage, events
 }
 
 func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {

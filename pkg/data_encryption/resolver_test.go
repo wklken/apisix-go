@@ -2,6 +2,7 @@ package data_encryption
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,87 @@ func TestRedactDoesNotReturnSecret(t *testing.T) {
 	}
 	if got := Redact(""); got != "" {
 		t.Fatalf("Redact(empty) = %q, want empty", got)
+	}
+}
+
+func TestEncryptForContextProducesNondeterministicV2Ciphertext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	context := "kafka-proxy.sasl.password"
+	first, err := EncryptForContext("access-token", key, context)
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	second, err := EncryptForContext("access-token", key, context)
+	if err != nil {
+		t.Fatalf("EncryptForContext() second error = %v", err)
+	}
+	if !strings.HasPrefix(first, "v2:") || !strings.HasPrefix(second, "v2:") {
+		t.Fatalf("ciphertexts = %q/%q, want v2 envelopes", first, second)
+	}
+	if first == second {
+		t.Fatal("EncryptForContext() returned deterministic ciphertext")
+	}
+
+	resolver := NewResolver(true, []string{key})
+	plaintext, err := resolver.ResolveForContext(first, context)
+	if err != nil || plaintext != "access-token" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want access-token", plaintext, err)
+	}
+}
+
+func TestResolverDecryptsExplicitV2Wrapper(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	context := "kafka-proxy.sasl.password"
+	ciphertext, err := EncryptForContext("access-token", key, context)
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+
+	plaintext, err := NewResolver(true, []string{key}).ResolveForContext(
+		encryptedValuePrefix+ciphertext,
+		context,
+	)
+	if err != nil || plaintext != "access-token" {
+		t.Fatalf("ResolveForContext() = (%q, %v), want access-token", plaintext, err)
+	}
+}
+
+func TestResolverRejectsV2TamperingAndWrongContext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext, err := EncryptForContext("access-token", key, "kafka-proxy.sasl.password")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	encoded := strings.TrimPrefix(ciphertext, "v2:")
+	last := encoded[len(encoded)-1]
+	if last == 'A' {
+		last = 'B'
+	} else {
+		last = 'A'
+	}
+	tampered := "v2:" + encoded[:len(encoded)-1] + string(last)
+	resolver := NewResolver(true, []string{key})
+	if _, err := resolver.ResolveForContext(
+		tampered,
+		"kafka-proxy.sasl.password",
+	); !errors.Is(err, ErrInvalidCiphertext) {
+		t.Fatalf("tampered ResolveForContext() error = %v, want ErrInvalidCiphertext", err)
+	}
+	if _, err := resolver.ResolveForContext(
+		ciphertext,
+		"kafka-logger.brokers.*.sasl_config.password",
+	); !errors.Is(err, ErrInvalidCiphertext) {
+		t.Fatalf("wrong-context ResolveForContext() error = %v, want ErrInvalidCiphertext", err)
+	}
+}
+
+func TestDecryptDoesNotBypassContextBinding(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext, err := EncryptForContext("access-token", key, "kafka-proxy.sasl.password")
+	if err != nil {
+		t.Fatalf("EncryptForContext() error = %v", err)
+	}
+	if _, err := Decrypt(ciphertext, []string{key}); err == nil {
+		t.Fatal("Decrypt() accepted a field-bound v2 ciphertext without context")
 	}
 }

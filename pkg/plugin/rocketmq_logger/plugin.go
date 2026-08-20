@@ -229,7 +229,10 @@ func (p *Plugin) PostInit() error {
 	}
 
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SecretKey)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		p.config.SecretKey,
+		"rocketmq-logger.secret_key",
+	)
 	if err != nil {
 		return fmt.Errorf("rocketmq-logger secret_key: %w", err)
 	}

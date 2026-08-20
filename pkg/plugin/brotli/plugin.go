@@ -276,6 +276,11 @@ func (w *streamingCompressionWriter) WriteHeader(status int) {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
+	if strings.TrimSpace(w.Header().Get("Content-Encoding")) != "" {
+		w.compressor = nil
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	base.InvalidateBodyDerivedHeaders(w.Header())
 	w.Header().Set("Content-Encoding", "br")
 	w.ResponseWriter.WriteHeader(status)

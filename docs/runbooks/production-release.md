@@ -72,10 +72,10 @@ The operational gates are:
 
 1. focused race and vulnerability checks;
 2. the exact container smoke, SBOM, and fail-closed Trivy result;
-3. the verified-TLS etcd recovery scenario: readiness becomes 503 during an
-   etcd outage while liveness and the last-good route continue to work, then
-   readiness returns to 200 and the same route/upstream IDs serve the newer
-   revision;
+3. the release-grade verified-TLS etcd recovery scenario described below:
+   readiness becomes 503 during an etcd outage while liveness and the last-good
+   route continue to work, then readiness returns to 200 and the same route ID
+   switches to the second upstream resource;
 4. the canonical 30-minute proxy soak, with real JSON evidence produced by:
 
    ```bash
@@ -232,8 +232,9 @@ APISIX_IMAGE="$IMAGE_REFERENCE" APISIX_SKIP_BUILD=1 bash scripts/container_smoke
 ```
 
 The real etcd recovery gate uses the generated CA/server certificate and
-`SSL_CERT_FILE` against `gcr.io/etcd-development/etcd:v3.6.13`. It must run as
-UID/GID `10001:10001`, use the exact production profile, and reject a tag-only
+`SSL_CERT_FILE` against exactly one TLS etcd 3.6.13 member from
+`gcr.io/etcd-development/etcd:v3.6.13`. It must run as UID/GID `10001:10001`,
+use the exact `conf/config-production.yaml` profile, and reject a tag-only
 handoff. Pass the immutable local image ID produced by Docker:
 
 ```bash
@@ -328,10 +329,39 @@ separately by the existing `deployment.etcd.timeout` request deadline.
 The verified-TLS recovery harness is the canonical acceptance scenario. During
 etcd loss, expect `/livez` 200, `/readyz` 503, and the last successfully applied
 route to continue serving. After etcd restarts, expect `/readyz` 200, update the
-same route and upstream IDs to the newer revision, and prove the newer response.
+same route ID to the second upstream resource, and prove the newer response.
 Capture the harness transcript, readiness bodies, container logs, and image
 identity. A manual request that does not exercise this order is not recovery
 evidence.
+
+The harness is a real-etcd lifecycle gate, not a YAML or fake-watcher check. It
+starts exactly one TLS etcd 3.6.13 member, two upstream fixtures, and two
+independent APISIX-Go gateway containers. Every readiness, liveness, resource,
+and proxy assertion is made against both gateway replicas. The initial etcd
+PUTs cover the route and upstreams, a service, a key-auth consumer, a cors
+global rule, a request-id plugin config, and a frontend SSL resource. The gate
+observes authentication, service-selected upstream responses, global CORS,
+plugin-config request-ID changes, and a fresh TLS SNI handshake. It also
+updates credentials, the global rule, the plugin config, the direct route, and
+the service's upstream to prove dynamic convergence.
+
+The gate exercises real deletes as well as puts. During the compaction gap it
+deletes a route and changes the service back to the first upstream; after
+recovery both replicas must return 404 for the deleted route and serve the
+first upstream. It then deletes the consumer, global rule, and SSL resource;
+both replicas must reject the old consumer key, omit the deleted
+global CORS origin, and fail a fresh TLS handshake for the deleted SNI.
+
+For compaction recovery, the harness keeps both gateways on a control network
+and disconnects only their data/etcd network until both still-reachable
+processes report readiness 503. It mutates and deletes etcd state, compacts at
+the current revision, reconnects the data network, and requires each gateway
+log to contain the stable etcd compacted-revision error. It then proves that
+both replicas publish the same recovered snapshot, including the current
+consumer, service, global rule, plugin config, SSL, and route state. All
+created gateway, fixture, etcd, and network resources are cleaned up on every exit. A
+non-Docker host may run the Docker-free contract test, but cannot claim that
+this real-etcd gate passed; record it as pending.
 
 ## Immutable rollback
 

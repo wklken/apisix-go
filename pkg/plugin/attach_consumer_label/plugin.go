@@ -60,10 +60,11 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
-		var labels map[string]any
-		if ok {
-			labels = consumer.Labels
+		if !ok || consumer.Labels == nil {
+			next.ServeHTTP(w, r)
+			return
 		}
+		labels := consumer.Labels
 
 		for header, labelRef := range p.config.Headers {
 			r.Header.Del(header)

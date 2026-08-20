@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -56,6 +57,85 @@ func TestRunLogPhasePreservesSplunkDefaultEventFields(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("detached Splunk entry was not delivered")
+	}
+}
+
+func TestDefaultEventsRedactSensitiveHeaders(t *testing.T) {
+	requestHeaders := http.Header{
+		"Authorization": {"Bearer request-secret"},
+		"Cookie":        {"session=request-secret"},
+		"X-Trace-ID":    {"trace-a"},
+	}
+	responseHeaders := http.Header{
+		"Set-Cookie": {"session=response-secret"},
+		"X-Upstream": {"orders"},
+	}
+
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			URL:    "/orders",
+			Scheme: "http",
+			Host:   "gateway.example",
+			Header: requestHeaders,
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: responseHeaders},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}
+	assertSplunkHeadersSanitized(t, splunkSnapshotDefaultEvent(snapshot))
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
+	request.Header = requestHeaders.Clone()
+	assertSplunkHeadersSanitized(t, buildDefaultEvent(
+		captureRequest(request),
+		responseHeaders,
+		request,
+		httpsnoop.Metrics{Code: http.StatusOK},
+	))
+}
+
+func assertSplunkHeadersSanitized(t *testing.T, fields map[string]any) {
+	t.Helper()
+	requestHeaders := splunkTestHeaderMap(t, fields["request_headers"])
+	if _, ok := requestHeaders["authorization"]; ok {
+		t.Fatalf("request headers contain authorization: %#v", requestHeaders)
+	}
+	if _, ok := requestHeaders["cookie"]; ok {
+		t.Fatalf("request headers contain cookie: %#v", requestHeaders)
+	}
+	if got := requestHeaders["x-trace-id"]; got != "trace-a" {
+		t.Fatalf("request x-trace-id = %#v, want trace-a", got)
+	}
+
+	responseHeaders := splunkTestHeaderMap(t, fields["response_headers"])
+	if _, ok := responseHeaders["set-cookie"]; ok {
+		t.Fatalf("response headers contain set-cookie: %#v", responseHeaders)
+	}
+	if got := responseHeaders["x-upstream"]; got != "orders" {
+		t.Fatalf("response x-upstream = %#v, want orders", got)
+	}
+}
+
+func splunkTestHeaderMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	switch headers := value.(type) {
+	case map[string]any:
+		return headers
+	case http.Header:
+		result := make(map[string]any, len(headers))
+		for name, values := range headers {
+			key := strings.ToLower(name)
+			if len(values) == 1 {
+				result[key] = values[0]
+			} else {
+				result[key] = append([]string(nil), values...)
+			}
+		}
+		return result
+	default:
+		t.Fatalf("header payload = %#v, want map or http.Header", value)
+		return nil
 	}
 }
 
@@ -224,8 +304,8 @@ func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *test
 	if got := entry["request_method"]; got != http.MethodPost {
 		t.Fatalf("request_method = %#v", got)
 	}
-	requestHeaders, ok := entry["request_headers"].(http.Header)
-	if !ok || requestHeaders.Get("X-Request-Marker") != "request-value" {
+	requestHeaders := splunkTestHeaderMap(t, entry["request_headers"])
+	if requestHeaders["x-request-marker"] != "request-value" {
 		t.Fatalf("request_headers = %#v", entry["request_headers"])
 	}
 	requestQuery, ok := entry["request_query"].(map[string][]string)
@@ -235,8 +315,8 @@ func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *test
 	if got := entry["request_size"]; got != int64(len("payload")) {
 		t.Fatalf("request_size = %#v", got)
 	}
-	responseHeaders, ok := entry["response_headers"].(http.Header)
-	if !ok || responseHeaders.Get("X-Upstream-Marker") != "response-value" {
+	responseHeaders := splunkTestHeaderMap(t, entry["response_headers"])
+	if responseHeaders["x-upstream-marker"] != "response-value" {
 		t.Fatalf("response_headers = %#v", entry["response_headers"])
 	}
 	if got := entry["response_status"]; got != http.StatusCreated {

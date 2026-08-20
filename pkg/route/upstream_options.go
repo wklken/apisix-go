@@ -13,7 +13,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type upstreamTimeouts struct {
@@ -117,11 +116,11 @@ func resolveUpstreamClientCertificate(
 	return certificate, nil
 }
 
-func buildTransportOption(
+func (b *Builder) buildTransportOption(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 ) (proxy.TransportOption, error) {
-	return buildTransportOptionWithSSLResolver(routeResource, upstream, store.GetSSL)
+	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL)
 }
 
 func buildTransportOptionWithSSLResolver(
@@ -171,12 +170,13 @@ func buildClusterConfigWithSSLResolver(
 	upstream resource.Upstream,
 	servers map[string]int,
 	resolveSSL sslResolver,
+	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
 	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
-	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport)
+	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport, priorities...)
 }
 
 func buildClusterConfigWithTransport(
@@ -184,6 +184,7 @@ func buildClusterConfigWithTransport(
 	upstream resource.Upstream,
 	servers map[string]int,
 	transport proxy.TransportOption,
+	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
 	timeouts := resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout)
 
@@ -203,6 +204,7 @@ func buildClusterConfigWithTransport(
 	config := proxy.ClusterConfig{
 		Name:              upstreamMetricLabel(routeResource, upstream),
 		Targets:           servers,
+		Priorities:        firstPriorityMap(priorities),
 		Checks:            checks,
 		Transport:         transport,
 		SendTimeout:       timeouts.send,
@@ -220,6 +222,13 @@ func buildClusterConfigWithTransport(
 		config.Name = hex.EncodeToString(key[:])[:12]
 	}
 	return config, nil
+}
+
+func firstPriorityMap(values []map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 func normalizeSSLID(value any) (string, error) {

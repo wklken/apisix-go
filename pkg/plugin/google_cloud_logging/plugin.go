@@ -387,7 +387,10 @@ func latencyString(latency time.Duration) string {
 func (p *Plugin) PostInit() error {
 	if p.config.AuthConfig != nil {
 		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.AuthConfig.PrivateKey)
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			p.config.AuthConfig.PrivateKey,
+			"google-cloud-logging.auth_config.private_key",
+		)
 		if err != nil {
 			return fmt.Errorf("google-cloud-logging auth_config.private_key: %w", err)
 		}

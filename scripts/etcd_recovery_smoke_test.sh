@@ -26,6 +26,24 @@ assert_contains() {
     }
 }
 
+assert_count() {
+    local needle=$1
+    local file=$2
+    local expected=$3
+    local count
+    count=$(grep -F -c -- "$needle" "$file" || true)
+    (( count == expected )) || fail "wanted $expected occurrences of $needle in $file, got $count"
+}
+
+assert_at_least() {
+    local needle=$1
+    local file=$2
+    local minimum=$3
+    local count
+    count=$(grep -F -c -- "$needle" "$file" || true)
+    (( count >= minimum )) || fail "wanted at least $minimum occurrences of $needle in $file, got $count"
+}
+
 assert_order() {
     local file=$1
     shift
@@ -48,15 +66,29 @@ write_stub() {
 
 write_fake_openssl() {
     local bin=$1
+    # The generated stub expands these variables when it runs.
+    # shellcheck disable=SC2016
     write_stub "$bin/openssl" '#!/usr/bin/env bash
 set -euo pipefail
-printf "openssl %s\n" "$*" >>"${FAKE_LOG:?}"
+state_dir=${FAKE_STATE_DIR:-${TMPDIR:-/tmp}/apisix-etcd-recovery-fake}
+mkdir -p "$state_dir"
+printf "openssl %s\n" "$*" >>"${FAKE_LOG:-/dev/null}"
+if [[ ${1:-} == s_client ]]; then
+    if [[ -e "$state_dir/ssl-deleted" ]]; then
+        printf "SSL handshake failed for release.example.test\n" >&2
+        exit 1
+    fi
+    printf "CONNECTED(00000003)\nsubject=CN = release.example.test\nVerify return code: 0 (ok)\n"
+    exit 0
+fi
 for ((i = 1; i <= $#; i++)); do
     arg=${!i}
     case "$arg" in
         -keyout|-out)
             next=$((i + 1))
-            : >"${!next}"
+            target=${!next}
+            mkdir -p "$(dirname "$target")"
+            : >"$target"
             ;;
     esac
 done
@@ -65,56 +97,260 @@ done
 
 write_fake_docker() {
     local bin=$1
+    # The generated stub expands these variables when it runs.
+    # shellcheck disable=SC2016
     write_stub "$bin/docker" '#!/usr/bin/env bash
 set -euo pipefail
-printf "docker %s\n" "$*" >>"${FAKE_LOG:?}"
-case "${1:-}" in
-    image)
-        if [[ ${2:-} == inspect ]]; then
-            printf "%s\n" "${FAKE_IMAGE_ID:?}"
+state_dir=${FAKE_STATE_DIR:-${TMPDIR:-/tmp}/apisix-etcd-recovery-fake}
+mkdir -p "$state_dir"
+printf "docker %s\n" "$*" >>"${FAKE_LOG:-/dev/null}"
+
+container_name=
+for ((i = 1; i <= $#; i++)); do
+    argument=${!i}
+    case "$argument" in
+        --name)
+            next=$((i + 1))
+            container_name=${!next}
+            ;;
+        --name=*)
+            container_name=${argument#--name=}
+            ;;
+    esac
+done
+
+record_etcd_put() {
+    local key=$1
+    local value=$2
+    printf "%s %s\n" "$key" "$value" >>"$state_dir/etcd-puts.log"
+    case "$key" in
+        */routes/release-route)
+            if [[ "$value" == *"/release-v2"* ]]; then
+                : >"$state_dir/route-v2"
+                rm -f "$state_dir/route-v1"
+            else
+                : >"$state_dir/route-v1"
+                rm -f "$state_dir/route-v2"
+            fi
+            ;;
+        */routes/release-managed-route)
+            : >"$state_dir/managed-route"
+            ;;
+        */routes/release-stale-route)
+            : >"$state_dir/stale-route"
+            ;;
+        */services/release-service)
+            if [[ "$value" == *release-upstream-v2* ]]; then
+                printf "v2\n" >"$state_dir/service-version"
+            else
+                printf "v1\n" >"$state_dir/service-version"
+            fi
+            ;;
+        */consumers/release-consumer)
+            : >"$state_dir/consumer"
+            if [[ "$value" == *release-key-v2* ]]; then
+                printf "release-key-v2\n" >"$state_dir/consumer-key"
+            else
+                printf "release-key-v1\n" >"$state_dir/consumer-key"
+            fi
+            ;;
+        */global_rules/release-global-rule)
+            : >"$state_dir/global-rule"
+            if [[ "$value" == *global-v2.example* ]]; then
+                printf "https://global-v2.example\n" >"$state_dir/global-origin"
+            else
+                printf "https://global-v1.example\n" >"$state_dir/global-origin"
+            fi
+            ;;
+        */plugin_configs/release-plugin-config)
+            : >"$state_dir/plugin-config"
+            if [[ "$value" == *X-Plugin-Config-V2* ]]; then
+                printf "X-Plugin-Config-V2\n" >"$state_dir/plugin-header"
+            else
+                printf "X-Plugin-Config-V1\n" >"$state_dir/plugin-header"
+            fi
+            ;;
+        */ssls/release-ssl)
+            : >"$state_dir/ssl"
+            rm -f "$state_dir/ssl-deleted"
+            ;;
+    esac
+}
+
+record_etcd_delete() {
+    local key=$1
+    printf "%s\n" "$key" >>"$state_dir/etcd-deletes.log"
+    case "$key" in
+        */routes/release-stale-route)
+            rm -f "$state_dir/stale-route"
+            ;;
+        */consumers/release-consumer)
+            rm -f "$state_dir/consumer" "$state_dir/consumer-key"
+            ;;
+        */global_rules/release-global-rule)
+            rm -f "$state_dir/global-rule" "$state_dir/global-origin"
+            ;;
+        */ssls/release-ssl)
+            rm -f "$state_dir/ssl"
+            : >"$state_dir/ssl-deleted"
+            ;;
+    esac
+}
+
+if [[ ${1:-} == image && ${2:-} == inspect ]]; then
+    printf "%s\n" "${FAKE_IMAGE_ID:?}"
+    exit 0
+fi
+
+if [[ ${1:-} == network ]]; then
+    case "${2:-}" in
+        create)
+            network_name=${!#}
+            printf "%s\n" "$network_name" >>"$state_dir/networks-created"
+            if [[ "$network_name" == *data* || ! -e "$state_dir/data-network" ]]; then
+                printf "%s\n" "$network_name" >"$state_dir/data-network"
+            else
+                printf "%s\n" "$network_name" >"$state_dir/control-network"
+            fi
+            printf "fake-network-id\n"
             exit 0
+            ;;
+        disconnect|connect)
+            network_name=${3:-}
+            container=${4:-}
+            if [[ "${2:-}" != disconnect && "${2:-}" != connect ]]; then
+                network_name=${2:-}
+                container=${3:-}
+            fi
+            control_network=$(cat "$state_dir/control-network" 2>/dev/null || true)
+            if [[ "${2:-}" == disconnect && "$network_name" == "$control_network" ]]; then
+                printf "fake contract: control network cannot be disconnected\n" >&2
+                exit 95
+            fi
+            if [[ "${2:-}" == disconnect ]]; then
+                : >"$state_dir/disconnected-$container"
+            else
+                if [[ -e "$state_dir/disconnected-$container" && -e "$state_dir/compaction" ]]; then
+                    : >"$state_dir/reconnected-after-compaction-$container"
+                fi
+                rm -f "$state_dir/disconnected-$container"
+            fi
+            exit 0
+            ;;
+        rm)
+            exit 0
+            ;;
+    esac
+fi
+
+if [[ ${1:-} == run ]]; then
+    if [[ "$*" == *"--entrypoint /usr/local/bin/etcdctl"* ]]; then
+        if [[ ${FAKE_ETCDCTL_FAIL:-0} == 1 ]]; then
+            exit 1
         fi
-        ;;
-    network)
+        subcommand=
+        subcommand_index=0
+        for ((i = 1; i <= $#; i++)); do
+            argument=${!i}
+            case "$argument" in
+                endpoint|get|put|del|compact)
+                    subcommand=$argument
+                    subcommand_index=$i
+                    break
+                    ;;
+            esac
+        done
+        case "$subcommand" in
+            endpoint)
+                if [[ -e ${FAKE_ETCD_STOPPED:?} ]]; then
+                    exit 1
+                fi
+                printf "https://etcd:2379 is healthy\n"
+                ;;
+            get)
+                printf "{\"header\":{\"revision\":%s},\"kvs\":[]}\n" "${FAKE_ETCD_REVISION:-42}"
+                ;;
+            put)
+                key_index=$((subcommand_index + 1))
+                value_index=$((subcommand_index + 2))
+                record_etcd_put "${!key_index}" "${!value_index}"
+                ;;
+            del)
+                key_index=$((subcommand_index + 1))
+                record_etcd_delete "${!key_index}"
+                ;;
+            compact)
+                revision_index=$((subcommand_index + 1))
+                printf "%s\n" "${!revision_index}" >"$state_dir/compacted-revision"
+                : >"$state_dir/compaction"
+                printf "compacted revision %s\n" "${!revision_index}"
+                ;;
+            *)
+                printf "fake contract: unknown etcdctl command\n" >&2
+                exit 94
+                ;;
+        esac
         exit 0
-        ;;
-    run)
-        if [[ "$*" == *"--entrypoint /usr/local/bin/etcdctl"* && "$*" == *"gcr.io/etcd-development/etcd:v3.6.13 etcdctl --endpoints="* ]]; then
-            printf "fake contract: duplicate etcdctl invocation\n" >&2
-            exit 97
-        fi
-        if [[ "$*" == *"--name=etcd0"* && "$*" != *"gcr.io/etcd-development/etcd:v3.6.13 /usr/local/bin/etcd --name=etcd0"* ]]; then
+    fi
+    if [[ "$*" == *"--name=etcd0"* ]]; then
+        if [[ "$*" != *"gcr.io/etcd-development/etcd:v3.6.13 /usr/local/bin/etcd --name=etcd0"* ]]; then
             printf "fake contract: etcd executable is missing\n" >&2
             exit 98
         fi
-        if [[ "$*" == *"--name=etcd0"* && "$*" == *"--trusted-ca-file="* ]]; then
+        if [[ "$*" == *"--trusted-ca-file="* ]]; then
             printf "fake contract: one-way TLS unexpectedly requires client certificates\n" >&2
             exit 99
         fi
-        if [[ "$*" == *"--user 10001:10001"* ]]; then
-            for argument in "$@"; do
-                case "$argument" in
-                    *:/etc/ssl/certs/etcd-ca.crt:ro)
-                        ca_path=${argument%%:*}
-                        if [[ -z $(find "$ca_path" -prune -perm 0644 -print -quit) ]]; then
-                            printf "fake contract: CA is not mode 0644\n" >&2
-                            exit 96
-                        fi
-                        ;;
-                esac
-            done
-        fi
-        if [[ ${FAKE_FAIL_GATEWAY:-0} == 1 && "$*" == *"--user 10001:10001"* ]]; then
+        : >"$state_dir/etcd-started"
+        printf "fake-etcd-container-id\n"
+        exit 0
+    fi
+    if [[ "$*" == *"--user 10001:10001"* ]]; then
+        for argument in "$@"; do
+            case "$argument" in
+                *:/etc/ssl/certs/etcd-ca.crt:ro)
+                    ca_path=${argument%%:*}
+                    if [[ -z $(find "$ca_path" -prune -perm 0644 -print -quit) ]]; then
+                        printf "fake contract: CA is not mode 0644\n" >&2
+                        exit 96
+                    fi
+                    ;;
+            esac
+        done
+        if [[ ${FAKE_FAIL_GATEWAY:-0} == 1 ]]; then
             exit 42
         fi
-        if [[ "$*" == *"etcdctl"* && ${FAKE_ETCDCTL_FAIL:-0} == 1 ]]; then
-            exit 1
-        fi
-        printf "fake-container-id\n"
+        gateway_count=$(cat "$state_dir/gateway-count" 2>/dev/null || printf "0")
+        gateway_count=$((gateway_count + 1))
+        printf "%s\n" "$gateway_count" >"$state_dir/gateway-count"
+        http_port=$((18079 + gateway_count))
+        https_port=$((18442 + gateway_count))
+        printf "%s\n" "$http_port" >"$state_dir/gateway-$container_name-http"
+        printf "%s\n" "$https_port" >"$state_dir/gateway-$container_name-https"
+        : >"$state_dir/gateway-$container_name"
+        printf "%s\n" "$container_name" >>"$state_dir/gateway-names"
+        printf "fake-gateway-%s\n" "$gateway_count"
         exit 0
-        ;;
+    fi
+    if [[ "$*" == *"busybox:1.37.0"* ]]; then
+        : >"$state_dir/upstream-$container_name"
+        printf "fake-upstream-%s\n" "$container_name"
+        exit 0
+    fi
+    printf "fake-container-id\n"
+    exit 0
+fi
+
+case "${1:-}" in
     port)
-        printf "127.0.0.1:18080\n"
+        container=${2:-}
+        requested_port=${3:-}
+        if [[ "$requested_port" == 9080 || "$requested_port" == 9080/tcp ]]; then
+            cat "$state_dir/gateway-$container-http"
+        else
+            cat "$state_dir/gateway-$container-https"
+        fi
+        printf "\n"
         exit 0
         ;;
     stop)
@@ -126,8 +362,24 @@ case "${1:-}" in
         : >"${FAKE_ETCD_RESTARTED:?}"
         exit 0
         ;;
-    logs|inspect|rm|kill)
-        printf "fake %s output\n" "$1"
+    logs)
+        container=${!#}
+        if [[ "$container" == *gateway* && -e "$state_dir/compaction" && \
+            -e "$state_dir/reconnected-after-compaction-$container" ]]; then
+            count=$(cat "$state_dir/gateway-log-count" 2>/dev/null || printf "0")
+            printf "%s\n" "$((count + 1))" >"$state_dir/gateway-log-count"
+            : >"$state_dir/compacted-log-$container"
+            printf "etcdserver: mvcc: required revision has been compacted\n"
+        else
+            printf "fake logs output\n"
+        fi
+        exit 0
+        ;;
+    inspect)
+        printf "fake inspect output\n"
+        exit 0
+        ;;
+    rm|kill)
         exit 0
         ;;
 esac
@@ -137,47 +389,195 @@ exit 0
 
 write_fake_curl() {
     local bin=$1
+    # The generated stub expands these variables when it runs.
+    # shellcheck disable=SC2016
     write_stub "$bin/curl" '#!/usr/bin/env bash
 set -euo pipefail
-printf "curl %s\n" "$*" >>"${FAKE_LOG:?}"
+state_dir=${FAKE_STATE_DIR:-${TMPDIR:-/tmp}/apisix-etcd-recovery-fake}
+mkdir -p "$state_dir"
+printf "curl %s\n" "$*" >>"${FAKE_LOG:-/dev/null}"
 if [[ ${FAKE_CURL_MODE:-happy} == timeout ]]; then
+    if [[ ! -e "$state_dir/timeout-wait-started" ]]; then
+        date +%s >"$state_dir/timeout-wait-started"
+    fi
     exit 28
 fi
 body_file=
+header_file=
+write_out=
+include_headers=0
+fail_response=0
+origin=
+api_key=
+url=
 for ((i = 1; i <= $#; i++)); do
-    if [[ ${!i} == --output ]]; then
-        next=$((i + 1))
-        body_file=${!next}
+    argument=${!i}
+    case "$argument" in
+        --output|-o)
+            next=$((i + 1))
+            body_file=${!next}
+            ;;
+        --dump-header|-D)
+            next=$((i + 1))
+            header_file=${!next}
+            ;;
+        --write-out|-w)
+            next=$((i + 1))
+            write_out=${!next}
+            ;;
+        --include)
+            include_headers=1
+            ;;
+        --fail|--fail-with-body)
+            fail_response=1
+            ;;
+        --header|-H)
+            next=$((i + 1))
+            header=${!next}
+            case "$header" in
+                apikey:*|Apikey:*|APIKEY:*|X-API-Key:*|X-Api-Key:*)
+                    api_key=${header#*:}
+                    api_key=${api_key# }
+                    ;;
+                origin:*|Origin:*|ORIGIN:*)
+                    origin=${header#*:}
+                    origin=${origin# }
+                    ;;
+            esac
+            ;;
+    esac
+    case "$argument" in
+        http://*|https://*)
+            url=$argument
+            ;;
+    esac
+done
+[[ -n "$url" ]] || exit 2
+url_hostport=${url#*://}
+url_hostport=${url_hostport%%/*}
+url_path=/${url#*://*/}
+path=${url_path%%\?*}
+port=${url_hostport##*:}
+gateway=
+protocol=http
+if [[ "$url" == https://* ]]; then
+    protocol=https
+fi
+for marker in "$state_dir"/gateway-*-$protocol; do
+    [[ -f "$marker" ]] || continue
+    if [[ $(cat "$marker") == "$port" ]]; then
+        marker_name=${marker##*/}
+        gateway=${marker_name#gateway-}
+        gateway=${gateway%-$protocol}
+        break
     fi
 done
-url=${!#}
+if [[ -z "$gateway" ]]; then
+    printf "fake contract: unknown gateway port %s\n" "$port" >&2
+    exit 7
+fi
+printf "%s %s %s\n" "$gateway" "$protocol" "$path" >>"$state_dir/gateway-probes"
+if [[ -e "$state_dir/compaction" && -e "$state_dir/reconnected-after-compaction-$gateway" ]]; then
+    printf "%s %s %s\n" "$gateway" "$protocol" "$path" >>"$state_dir/post-compaction-probes"
+fi
+if [[ "$url" == https://* && ! -e "$state_dir/ssl" ]]; then
+    printf "\\n" >>"$state_dir/ssl-failure"
+    printf "\\n" >>"$state_dir/ssl-failure-$gateway"
+    printf "SSL handshake failed for release.example.test\n" >&2
+    exit 35
+fi
 status=200
 body=
-case "$url" in
-    */readyz)
-        if [[ -e ${FAKE_ETCD_STOPPED:?} ]]; then
+case "$path" in
+    /readyz)
+        if [[ -e ${FAKE_ETCD_STOPPED:?} || ( -n "$gateway" && -e "$state_dir/disconnected-$gateway" ) ]]; then
             status=503
             body=etcd-unreachable
+            if [[ -n "$gateway" && -e "$state_dir/disconnected-$gateway" ]]; then
+                printf "\\n" >>"$state_dir/disconnected-readyz"
+                printf "\\n" >>"$state_dir/disconnected-readyz-$gateway"
+            fi
         else
             body=ready
         fi
         ;;
-    */livez)
+    /livez)
         body=live
         ;;
-    */release-v1)
-        body=v1
+    /release-v1)
+        if [[ ! -e "$state_dir/route-v1" ]]; then
+            status=404
+            body=not-found
+        else
+            body=v1
+        fi
         ;;
-    */release-v2)
-        body=v2
+    /release-v2)
+        if [[ ! -e "$state_dir/route-v2" ]]; then
+            status=404
+            body=not-found
+        else
+            body=v2
+        fi
+        ;;
+    /managed)
+        if [[ ! -e "$state_dir/managed-route" ]]; then
+            status=404
+            body=not-found
+        elif [[ ! -e "$state_dir/consumer" || ! -e "$state_dir/consumer-key" || "$api_key" != "$(cat "$state_dir/consumer-key")" ]]; then
+            status=401
+            body=unauthorized
+        else
+            body=$(cat "$state_dir/service-version" 2>/dev/null || printf "v1")
+        fi
+        ;;
+    /stale)
+        if [[ ! -e "$state_dir/stale-route" ]]; then
+            status=404
+            body=not-found
+        else
+            body=$(cat "$state_dir/service-version" 2>/dev/null || printf "v1")
+        fi
         ;;
     *)
         status=404
         body=not-found
         ;;
 esac
-printf "%s" "$body" >"$body_file"
-printf "%s" "$status"
+if [[ "$status" == 200 && -n "$origin" && -e "$state_dir/global-rule" ]]; then
+    response_origin=$(cat "$state_dir/global-origin")
+else
+    response_origin=
+fi
+response_plugin=
+if [[ "$status" == 200 && -e "$state_dir/plugin-config" ]]; then
+    response_plugin=$(cat "$state_dir/plugin-header")
+fi
+if [[ -n "$header_file" ]]; then
+    {
+        printf "HTTP/1.1 %s\r\n" "$status"
+        [[ -n "$response_origin" ]] && printf "Access-Control-Allow-Origin: %s\r\n" "$response_origin"
+        [[ -n "$response_plugin" ]] && printf "%s: enabled\r\n" "$response_plugin"
+        printf "\r\n"
+    } >"$header_file"
+fi
+if (( include_headers == 1 )) && [[ -z "$body_file" ]]; then
+    printf "HTTP/1.1 %s\r\n" "$status"
+    [[ -n "$response_origin" ]] && printf "Access-Control-Allow-Origin: %s\r\n" "$response_origin"
+    [[ -n "$response_plugin" ]] && printf "%s: enabled\r\n" "$response_plugin"
+    printf "\r\n"
+fi
+if [[ -n "$body_file" ]]; then
+    printf "%s" "$body" >"$body_file"
+else
+    printf "%s" "$body"
+fi
+if [[ "$write_out" == *"%{http_code}"* ]]; then
+    printf "%s" "$status"
+fi
+if (( fail_response == 1 && status >= 400 )); then
+    exit 22
+fi
 '
 }
 
@@ -227,6 +627,7 @@ test_rejects_mutable_image() {
         "$tagged_digest"; do
         output="$test_root/mutable-${#candidate}.out"
         run_expect_failure "$output" env PATH="$bin:$original_path" FAKE_LOG="$test_root/mutable.log" \
+            FAKE_STATE_DIR="$test_root/mutable-state" \
             "$test_shell" "$runner" "$candidate"
         assert_contains 'immutable image ID or digest-qualified reference' "$output"
     done
@@ -242,15 +643,17 @@ test_bounded_timeout() {
     write_fake_curl "$bin"
     write_fake_openssl "$bin"
     : >"$log"
-    local started=$SECONDS
     run_expect_failure "$output" env PATH="$bin:$original_path" \
         FAKE_LOG="$log" FAKE_IMAGE_ID="$image_id" \
+        FAKE_STATE_DIR="$test_root/timeout-state" \
         FAKE_ETCD_STOPPED="$test_root/timeout-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/timeout-restarted" \
         FAKE_CURL_MODE=timeout RELEASE_EVIDENCE_ROOT="$evidence" \
         ETCD_RECOVERY_TIMEOUT_SECONDS=1 ETCD_RECOVERY_POLL_INTERVAL_SECONDS=4 \
         "$test_shell" "$runner" "$image_id"
-    local elapsed=$((SECONDS - started))
+    local wait_started elapsed
+    wait_started=$(cat "$test_root/timeout-state/timeout-wait-started")
+    elapsed=$(($(date +%s) - wait_started))
     (( elapsed < 4 )) || fail "timeout fixture exceeded bound (${elapsed}s)"
     assert_contains 'timed out waiting for' "$output"
 }
@@ -267,6 +670,7 @@ test_cleanup_on_failure() {
     : >"$log"
     run_expect_failure "$output" env PATH="$bin:$original_path" \
         FAKE_LOG="$log" FAKE_IMAGE_ID="$image_id" \
+        FAKE_STATE_DIR="$test_root/cleanup-state" \
         FAKE_ETCD_STOPPED="$test_root/cleanup-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/cleanup-restarted" \
         FAKE_FAIL_GATEWAY=1 RELEASE_EVIDENCE_ROOT="$evidence" \
@@ -288,6 +692,7 @@ test_ordered_happy_path() {
     : >"$log"
     env PATH="$bin:$original_path" \
         FAKE_LOG="$log" FAKE_IMAGE_ID="$image_id" \
+        FAKE_STATE_DIR="$test_root/happy-state" \
         FAKE_ETCD_STOPPED="$test_root/happy-stopped" \
         FAKE_ETCD_RESTARTED="$test_root/happy-restarted" \
         RELEASE_EVIDENCE_ROOT="$evidence" ETCD_RECOVERY_TIMEOUT_SECONDS=2 \
@@ -297,44 +702,121 @@ test_ordered_happy_path() {
     transcript=$(find "$evidence" -type f -name steps.log -print -quit)
     [[ -n "$transcript" ]] || fail 'happy-path transcript was not preserved'
     assert_order "$transcript" \
+        'generate temporary CA and etcd/gateway certificates' \
         'network create' \
         'start etcd 3.6.13' \
-        'start upstream v1' \
+        'start upstream v1 and v2' \
         'write route/upstream v1' \
-        'start APISIX-Go as 10001:10001' \
-        'livez 200' \
-        'readyz 200' \
-        'proxy /release-v1 -> v1' \
+        'start APISIX-Go replicas as 10001:10001' \
+        'replicas ready and proxy v1' \
+        'write consumer/service/global rule/plugin config/SSL resources' \
+        'replicas converge on managed resource graph' \
+        'update consumer credential' \
+        'update plugin config and global rule' \
+        'update service to upstream v2' \
+        'replicas serve dynamic SSL' \
         'stop etcd' \
-        'readyz 503' \
-        'last-good /release-v1 -> v1' \
+        'replicas retain last-good during etcd outage' \
         'restart etcd' \
-        'readyz 200 after recovery' \
-        'update same route/upstream IDs to v2' \
-        'proxy /release-v2 -> v2'
+        'replicas ready after recovery' \
+        'update route to v2' \
+        'replicas proxy route v2' \
+        'seed route before compaction gap' \
+        'disconnect replicas from etcd' \
+        'mutate and compact etcd while replicas disconnected' \
+        'reconnect replicas' \
+        'replicas recover compacted snapshot consistently' \
+        'delete consumer/global rule/SSL resources' \
+        'replicas converge on live deletes'
     assert_contains 'gcr.io/etcd-development/etcd:v3.6.13' "$log"
-    assert_contains '--user 10001:10001' "$log"
+    assert_count 'docker network create' "$log" 2
+    assert_count '--user 10001:10001' "$log" 2
+    assert_count 'busybox:1.37.0' "$log" 2
+    assert_count 'docker run --detach --name apisix-release-etcd-' "$log" 1
+    assert_at_least 'docker port ' "$log" 4
     assert_contains 'SSL_CERT_FILE' "$log"
     assert_contains 'https://etcd:2379' "$log"
-    assert_contains 'put /apisix/upstreams/release-upstream {"nodes":{"release-upstream-v1-' "$log"
-    assert_contains 'put /apisix/routes/release-route {"id":"release-route","status":1,"uri":"/release-v1","upstream_id":"release-upstream"}' "$log"
-    assert_contains 'put /apisix/upstreams/release-upstream {"nodes":{"release-upstream-v2-' "$log"
-    assert_contains 'put /apisix/routes/release-route {"id":"release-route","status":1,"uri":"/release-v2","upstream_id":"release-upstream"}' "$log"
+    for resource in \
+        upstreams/release-upstream-v1 \
+        upstreams/release-upstream-v2 \
+        services/release-service \
+        consumers/release-consumer \
+        global_rules/release-global-rule \
+        plugin_configs/release-plugin-config \
+        ssls/release-ssl \
+        routes/release-route \
+        routes/release-managed-route \
+        routes/release-stale-route; do
+        assert_contains "put /apisix/$resource" "$log"
+    done
+    assert_at_least 'put /apisix/services/release-service' "$log" 2
+    assert_at_least 'put /apisix/consumers/release-consumer' "$log" 2
+    assert_at_least 'put /apisix/global_rules/release-global-rule' "$log" 2
+    assert_at_least 'put /apisix/plugin_configs/release-plugin-config' "$log" 2
+    assert_at_least 'put /apisix/routes/release-route' "$log" 2
+    for resource in \
+        routes/release-stale-route \
+        consumers/release-consumer \
+        global_rules/release-global-rule \
+        ssls/release-ssl; do
+        assert_contains "del /apisix/$resource" "$log"
+    done
+    assert_contains 'get /apisix --prefix --write-out=json' "$log"
+    assert_contains 'compact 42' "$log"
+    data_network=$(cat "$test_root/happy-state/data-network")
+    control_network=$(cat "$test_root/happy-state/control-network")
+    assert_count "docker network connect $control_network " "$log" 2
+    assert_count "docker network disconnect $data_network " "$log" 2
+    assert_count "docker network connect $data_network " "$log" 2
+    if grep -Fq -- "docker network disconnect $control_network " "$log"; then
+        fail 'compaction gap disconnected the control network'
+    fi
+    assert_at_least '--resolve release.example.test:' "$log" 2
+    assert_at_least 'https://release.example.test:' "$log" 2
+    disconnected_readyz=$(wc -l <"$test_root/happy-state/disconnected-readyz" 2>/dev/null || printf '0')
+    (( disconnected_readyz >= 2 )) || fail "wanted readiness 503 on both disconnected replicas, got $disconnected_readyz"
+    ssl_failures=$(wc -l <"$test_root/happy-state/ssl-failure" 2>/dev/null || printf '0')
+    (( ssl_failures >= 2 )) || fail "wanted fresh TLS failure on both deleted SSL probes, got $ssl_failures"
+    gateway_log_count=$(cat "$test_root/happy-state/gateway-log-count" 2>/dev/null || printf '0')
+    (( gateway_log_count >= 4 )) || fail "wanted compaction logs from both replicas in addition to cleanup, got $gateway_log_count"
+    gateway_name_count=$(sort -u "$test_root/happy-state/gateway-names" | wc -l | tr -d ' ')
+    (( gateway_name_count == 2 )) || fail "wanted two distinct gateway names, got $gateway_name_count"
+    while IFS= read -r gateway; do
+        [[ -n "$gateway" ]] || continue
+        [[ -s "$test_root/happy-state/disconnected-readyz-$gateway" ]] || \
+            fail "missing disconnected readiness probe for $gateway"
+        [[ -e "$test_root/happy-state/reconnected-after-compaction-$gateway" ]] || \
+            fail "missing post-compaction reconnect for $gateway"
+        [[ -e "$test_root/happy-state/compacted-log-$gateway" ]] || \
+            fail "missing compacted-revision log for $gateway"
+        [[ -s "$test_root/happy-state/ssl-failure-$gateway" ]] || \
+            fail "missing deleted-SSL failure probe for $gateway"
+        assert_contains "$gateway http /readyz" "$test_root/happy-state/post-compaction-probes"
+        assert_contains "$gateway http /managed" "$test_root/happy-state/post-compaction-probes"
+        assert_contains "$gateway http /release-v2" "$test_root/happy-state/post-compaction-probes"
+        assert_at_least "$gateway https /release-v2" "$test_root/happy-state/post-compaction-probes" 2
+    done < <(sort -u "$test_root/happy-state/gateway-names")
     assert_order "$log" \
         'docker network create apisix-release-etcd-' \
         'docker run --detach --name apisix-release-etcd-' \
         'docker run --detach --name apisix-release-upstream-v1-' \
-        'put /apisix/upstreams/release-upstream {"nodes":{"release-upstream-v1-' \
-        'put /apisix/routes/release-route {"id":"release-route","status":1,"uri":"/release-v1"' \
+        'docker run --detach --name apisix-release-upstream-v2-' \
+        'put /apisix/routes/release-route' \
         'docker run --detach --name apisix-release-gateway-' \
         'docker stop apisix-release-etcd-' \
         'docker start apisix-release-etcd-' \
-        'docker rm -f apisix-release-upstream-v1-' \
-        'docker run --detach --name apisix-release-upstream-v2-' \
-        'put /apisix/upstreams/release-upstream {"nodes":{"release-upstream-v2-' \
-        'put /apisix/routes/release-route {"id":"release-route","status":1,"uri":"/release-v2"' \
-        'docker rm -f apisix-release-gateway-' \
-        'docker network rm apisix-release-etcd-'
+        'docker network disconnect ' \
+        'del /apisix/routes/release-stale-route' \
+        'get /apisix --prefix --write-out=json' \
+        'compact 42' \
+        "docker network connect $data_network " \
+        'del /apisix/consumers/release-consumer' \
+        'del /apisix/global_rules/release-global-rule' \
+        'del /apisix/ssls/release-ssl' \
+        'docker rm -f ' \
+        'docker network rm '
+    assert_contains "docker network rm $data_network" "$log"
+    assert_contains "$control_network" "$log"
 }
 
 test_missing_tools

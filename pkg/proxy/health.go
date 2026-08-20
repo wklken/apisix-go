@@ -137,7 +137,7 @@ func newUpstreamLoadBalanceWithPriorities(
 		return newHealthAwareLoadBalance(servers, priorities, checks)
 	}
 	if !healthChecksConfigured {
-		return groups[0].selector, nil
+		return &priorityLoadBalance{groups: groups}, nil
 	}
 	return NewHealthAwareLoadBalance(servers, checks)
 }

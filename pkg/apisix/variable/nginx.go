@@ -3,6 +3,7 @@ package variable
 import (
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -85,5 +86,5 @@ func addressHost(address string) string {
 	if err == nil {
 		return host
 	}
-	return address
+	return strings.Trim(address, "[]")
 }

@@ -147,6 +147,22 @@ func TestAllowlistMissIsRejected(t *testing.T) {
 	}
 }
 
+func TestAllowlistRejectsWhenAnyUserAgentHeaderIsNotAllowed(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowList: []string{`^allowed-bot$`}})
+	req := httptest.NewRequest(http.MethodGet, "/ua", nil)
+	req.Header.Add("User-Agent", "allowed-bot")
+	req.Header.Add("User-Agent", "evil")
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("ua-restriction should not call the next handler for a mixed User-Agent list")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
 func TestAllowlistWinsBeforeDenylist(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		AllowList: []string{"same-bot"},

@@ -117,3 +117,18 @@ func TestBuildStrictRejectsBlankHost(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteHostRankMatchesOneLabelWildcardAndBareIPv6(t *testing.T) {
+	if got := routeHostRank([]string{"*.example.com"}, "foo.example.com"); got != 1 {
+		t.Fatalf("one-label wildcard rank = %d, want 1", got)
+	}
+	if got := routeHostRank([]string{"*.example.com"}, "a.b.example.com"); got != -1 {
+		t.Fatalf("multi-label wildcard rank = %d, want -1", got)
+	}
+	if got := routeHostRank([]string{"::1"}, "[::1]"); got != 2 {
+		t.Fatalf("bracketed IPv6 rank = %d, want exact 2", got)
+	}
+	if got := routeHostRank([]string{"api.example.com"}, "api.example.com:9080"); got != 2 {
+		t.Fatalf("host with port rank = %d, want exact 2", got)
+	}
+}

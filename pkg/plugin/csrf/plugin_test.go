@@ -73,6 +73,18 @@ func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsEmptyKey(t *testing.T) {
+	for _, key := range []string{"", "   "} {
+		p := &Plugin{config: Config{Key: key}}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PostInit(); err == nil {
+			t.Fatalf("PostInit() error = nil for key %q, want empty key rejection", key)
+		}
+	}
+}
+
 func TestPostInitResolvesEncryptedKey(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	data_encryption.Configure(true, []string{key})

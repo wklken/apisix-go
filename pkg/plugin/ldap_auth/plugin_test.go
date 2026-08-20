@@ -3,6 +3,7 @@ package ldap_auth
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -237,6 +238,27 @@ func TestHandlerRejectsInvalidAuthorizationHeader(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid authorization in request") {
 		t.Fatalf("body = %q, want invalid authorization message", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsEmptyOrWhitespacePassword(t *testing.T) {
+	for _, password := range []string{"", " "} {
+		t.Run(fmt.Sprintf("password=%q", password), func(t *testing.T) {
+			p := newTestPlugin(t, func(username, password string, cfg Config) error {
+				t.Fatal("LDAP authenticator should not be called")
+				return nil
+			})
+			req := ldapRequest("admin", password)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rr.Code)
+			}
+		})
 	}
 }
 

@@ -70,9 +70,19 @@ func (lb *priorityLoadBalance) Next() string {
 func (lb *priorityLoadBalance) NextForRequest(request *http.Request) string {
 	state := priorityStateForRequest(request)
 	state.finishPreviousAttempt()
+	if target := lb.nextUntried(state.tried); target != "" {
+		state.last = target
+		return target
+	}
+	clear(state.tried)
+	target := lb.nextUntried(state.tried)
+	state.last = target
+	return target
+}
+
+func (lb *priorityLoadBalance) nextUntried(tried map[string]struct{}) string {
 	for _, group := range lb.groups {
-		if target := group.nextUntried(state.tried, nil); target != "" {
-			state.last = target
+		if target := group.nextUntried(tried, nil); target != "" {
 			return target
 		}
 	}

@@ -29,7 +29,7 @@ func RequestValue(r *http.Request, name string) any {
 	case name == "method" || name == "request_method":
 		return r.Method
 	case name == "host":
-		return r.Host
+		return apisixvar.GetNginxVar(r, "$host")
 	case name == "scheme":
 		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
 			return scheme

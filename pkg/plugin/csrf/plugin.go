@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -38,7 +39,8 @@ const schema = `
 	"properties": {
 	  "key": {
 		"description": "use to generate csrf token",
-		"type": "string"
+		"type": "string",
+		"minLength": 1
 	  },
 	  "expires": {
 		"description": "expires time(s) for csrf token",
@@ -81,6 +83,9 @@ func (p *Plugin) PostInit() error {
 		return fmt.Errorf("csrf key: %w", err)
 	}
 	p.config.Key = resolved
+	if strings.TrimSpace(p.config.Key) == "" {
+		return fmt.Errorf("csrf key must not be empty")
+	}
 
 	p.config.safeMethods = map[string]struct{}{
 		http.MethodGet:     {},

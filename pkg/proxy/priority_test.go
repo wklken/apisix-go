@@ -129,8 +129,8 @@ func TestUpstreamLoadBalanceWithoutMultiplePrioritiesUsesExistingSelector(t *tes
 	if err != nil {
 		t.Fatalf("newUpstreamLoadBalanceWithPriorities(nil) error = %v", err)
 	}
-	if _, ok := withoutPriorities.(*RRLoadBalance); !ok {
-		t.Fatalf("without-priority load balancer = %T, want *RRLoadBalance", withoutPriorities)
+	if _, ok := withoutPriorities.(*priorityLoadBalance); !ok {
+		t.Fatalf("without-priority load balancer = %T, want *priorityLoadBalance", withoutPriorities)
 	}
 
 	singleGroup, err := newUpstreamLoadBalanceWithPriorities(
@@ -141,8 +141,34 @@ func TestUpstreamLoadBalanceWithoutMultiplePrioritiesUsesExistingSelector(t *tes
 	if err != nil {
 		t.Fatalf("newUpstreamLoadBalanceWithPriorities(single group) error = %v", err)
 	}
-	if _, ok := singleGroup.(*RRLoadBalance); !ok {
-		t.Fatalf("single-priority-group load balancer = %T, want *RRLoadBalance", singleGroup)
+	if _, ok := singleGroup.(*priorityLoadBalance); !ok {
+		t.Fatalf("single-priority-group load balancer = %T, want *priorityLoadBalance", singleGroup)
+	}
+}
+
+func TestSamePriorityLoadBalanceSkipsTriedTargetOnRetry(t *testing.T) {
+	lb, err := newUpstreamLoadBalanceWithPriorities(
+		map[string]int{lowPriorityTarget: 1, highPriorityTarget: 1},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	requestAware, ok := lb.(interface {
+		NextForRequest(*http.Request) string
+	})
+	if !ok {
+		t.Fatalf("same-priority load balancer %T has no request-local retry selection", lb)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	first := requestAware.NextForRequest(request)
+	second := requestAware.NextForRequest(request)
+	if first == "" || second == "" {
+		t.Fatalf("targets = %q then %q, want two same-priority nodes", first, second)
+	}
+	if first == second {
+		t.Fatalf("retry target = %q, want the remaining same-priority node", second)
 	}
 }
 

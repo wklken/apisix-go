@@ -100,13 +100,17 @@ func (r *Router) Serve(ctx context.Context, listener net.Listener, client net.Co
 	if listener != nil && listener.Addr() != nil {
 		listenerAddr = listener.Addr().String()
 	}
+	serverAddr := listenerAddr
+	if client.LocalAddr() != nil {
+		serverAddr = client.LocalAddr().String()
+	}
 	remoteAddr := ""
 	if client.RemoteAddr() != nil {
 		remoteAddr = client.RemoteAddr().String()
 	}
 
 	r.mu.RLock()
-	entry, ok := r.matchEntry(listenerAddr, remoteAddr)
+	entry, ok := r.matchEntry(serverAddr, remoteAddr)
 	r.mu.RUnlock()
 	if !ok {
 		err := ErrNoStreamRoute

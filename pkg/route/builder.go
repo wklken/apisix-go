@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -420,24 +419,40 @@ func routeHostRank(patterns []string, requestHost string) int {
 	if len(patterns) == 0 {
 		return 0
 	}
-	host := requestHost
-	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
-		host = parsedHost
-	}
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host := requestHostname(requestHost)
 	best := -1
 	for _, pattern := range patterns {
 		pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 		if pattern == host {
 			return 2
 		}
-		if strings.ContainsAny(pattern, "*?[") {
-			if matched, _ := path.Match(pattern, host); matched {
-				best = 1
-			}
+		if matchOneLabelHostWildcard(pattern, host) {
+			best = 1
 		}
 	}
 	return best
+}
+
+func requestHostname(requestHost string) string {
+	host := requestHost
+	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func matchOneLabelHostWildcard(pattern, host string) bool {
+	if !strings.HasPrefix(pattern, "*.") {
+		return false
+	}
+	suffix := pattern[1:]
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	prefix := strings.TrimSuffix(host, suffix)
+	return prefix != "" && !strings.Contains(prefix, ".")
 }
 
 func matchesWildcardRoute(pattern string, path string) bool {

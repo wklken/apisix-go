@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -132,7 +133,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		r.Header.Set(p.config.ForwardHeader, string(plaintext))
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 	}
 	return http.HandlerFunc(fn)
 }

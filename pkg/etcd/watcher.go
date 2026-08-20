@@ -289,6 +289,13 @@ func isManagedEtcdBucket(bucket string) bool {
 	}
 }
 
+func storeMutationKey(key []byte, bucket, id string) []byte {
+	if bucket == "plugins" && id == "plugins" {
+		return []byte("/apisix/plugins")
+	}
+	return key
+}
+
 func (c *ConfigClient) recoverSnapshot(ctx context.Context) error {
 	requestTimeout := c.requestTimeout
 	if requestTimeout <= 0 {
@@ -577,7 +584,11 @@ func (c *ConfigClient) applySnapshot(ctx context.Context, response *clientv3.Get
 		}
 		nextKeys[key] = struct{}{}
 		candidates = append(candidates, mutationMetadata{
-			mutation: store.Mutation{Type: store.EventTypePut, Key: kv.Key, Value: kv.Value},
+			mutation: store.Mutation{
+				Type:  store.EventTypePut,
+				Key:   storeMutationKey(kv.Key, bucket, id),
+				Value: kv.Value,
+			},
 			key:      key,
 			bucket:   bucket,
 			id:       id,
@@ -652,7 +663,11 @@ func (c *ConfigClient) applyWatchResponse(ctx context.Context, response clientv3
 		}
 		key := string(watched.Kv.Key)
 		candidates = append(candidates, mutationMetadata{
-			mutation: store.Mutation{Type: eventType, Key: watched.Kv.Key, Value: watched.Kv.Value},
+			mutation: store.Mutation{
+				Type:  eventType,
+				Key:   storeMutationKey(watched.Kv.Key, bucket, id),
+				Value: watched.Kv.Value,
+			},
 			key:      key,
 			bucket:   bucket,
 			id:       id,

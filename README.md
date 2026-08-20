@@ -46,6 +46,7 @@ The exact status definitions, supported behavior, and remaining gaps are maintai
 - [Configuration compatibility](docs/configuration.md)
 - [Candidate HTTP data-plane profile](docs/production-profile.md) (awaiting release and operations qualification)
 - [Production release runbook](docs/runbooks/production-release.md) (qualification evidence required)
+- [Proxy runtime performance acceptance](docs/performance/proxy-runtime-acceptance.md)
 - [Design notes](docs/design.md)
 - [Standalone plugin integration tests](t/plugin/README.md)
 

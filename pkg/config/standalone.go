@@ -175,14 +175,21 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standa
 	}
 	w.mu.Unlock()
 
-	for index, event := range events {
-		enqueued, err := w.enqueueAndWait(event)
+	if len(events) > 0 {
+		mutations := make([]store.Mutation, 0, len(events))
+		for _, event := range events {
+			mutations = append(mutations, store.Mutation{
+				Type:  event.Type,
+				Key:   event.Key,
+				Value: event.Value,
+			})
+			store.PutBack(event)
+		}
+		batch := store.NewAcknowledgedBatch(mutations, store.BatchOptions{})
+		enqueued, err := w.enqueueAndWait(batch)
 		if err != nil {
 			if !enqueued {
-				store.PutBack(event)
-			}
-			for _, pending := range events[index+1:] {
-				store.PutBack(pending)
+				store.PutBack(batch)
 			}
 			return result, previous, err
 		}

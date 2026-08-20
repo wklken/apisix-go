@@ -742,10 +742,7 @@ func resolveHashVariableCombination(r *http.Request, template string) string {
 }
 
 func overrideFromNode(upstream *Upstream, node Node) *Override {
-	scheme := upstream.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
+	scheme := remapTrafficSplitScheme(upstream.Scheme)
 	passHost := upstream.PassHost
 	if passHost == "" {
 		passHost = "pass"
@@ -783,6 +780,17 @@ func configuredRetries(upstream *Upstream) int {
 		return 0
 	}
 	return len(upstream.Nodes) - 1
+}
+
+func remapTrafficSplitScheme(scheme string) string {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "", "grpc":
+		return "http"
+	case "grpcs":
+		return "https"
+	default:
+		return scheme
+	}
 }
 
 func joinHostPort(scheme string, node Node) string {

@@ -28,6 +28,24 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestOverrideFromNodeRemapsGRPCSchemesAndDefaultPorts(t *testing.T) {
+	grpc := overrideFromNode(&Upstream{Scheme: "grpc"}, Node{Host: "127.0.0.1", Port: 50051})
+	if grpc.Scheme != "http" {
+		t.Fatalf("grpc scheme = %q, want http", grpc.Scheme)
+	}
+	if grpc.Host != "127.0.0.1:50051" {
+		t.Fatalf("grpc host = %q, want 127.0.0.1:50051", grpc.Host)
+	}
+
+	grpcs := overrideFromNode(&Upstream{Scheme: "grpcs"}, Node{Host: "127.0.0.1"})
+	if grpcs.Scheme != "https" {
+		t.Fatalf("grpcs scheme = %q, want https", grpcs.Scheme)
+	}
+	if grpcs.Host != "127.0.0.1:443" {
+		t.Fatalf("grpcs host = %q, want 127.0.0.1:443", grpcs.Host)
+	}
+}
+
 func TestUpstreamUnmarshalSortsMapNodesByAddress(t *testing.T) {
 	const config = `{"nodes":{"z.example.com:8080":1,"a.example.com:8080":1,"m.example.com:8080":1}}`
 	const want = "a.example.com,m.example.com,z.example.com"

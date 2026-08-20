@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -707,7 +708,10 @@ func (directSuccessAuth) GetSchema() string { return `{}` }
 func (directSuccessAuth) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("X-Direct-Auth", "authenticated")
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(
+			w,
+			ctx.WithAuthenticationState(r, ctx.NewAuthenticationState("direct-success-auth", resource.Consumer{})),
+		)
 	})
 }
 
@@ -764,6 +768,25 @@ func TestHandlerAllowsKeyAuthAfterJWEDecryptMissingToken(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsJWEDecryptPassthroughWithoutAuthenticationState(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"jwe-decrypt": {"header": "Authorization", "forward_header": "Authorization", "strict": false}},
+			{"key-auth": {"header": "apikey"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called without authentication state")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401; body=%s", res.Code, res.Body.String())
 	}
 }
 

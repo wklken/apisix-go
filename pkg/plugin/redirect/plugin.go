@@ -335,10 +335,12 @@ func urlHostname(host string) string {
 
 func (p *Plugin) redirectRegexURI(r *http.Request) (string, bool) {
 	path := r.URL.Path
-	if !p.config.regexURI.MatchString(path) {
+	indexes := p.config.regexURI.FindStringSubmatchIndex(path)
+	if indexes == nil {
 		return "", false
 	}
-	return p.config.regexURI.ReplaceAllString(path, p.config.RegexUri[1]), true
+	replaced := p.config.regexURI.ExpandString(nil, p.config.RegexUri[1], path, indexes)
+	return path[:indexes[0]] + string(replaced) + path[indexes[1]:], true
 }
 
 func (p *Plugin) redirect(w http.ResponseWriter, location string) {

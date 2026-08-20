@@ -907,6 +907,42 @@ func TestBrotliStructuralCompressionOfferOwnsStreamingFinish(t *testing.T) {
 	}
 }
 
+func TestBrotliStreamingPassthroughWhenAlreadyEncoded(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	registered, state := compression.Register(req)
+	offers := p.RegisterCompressionOffers(registered, state)
+	_, state = compression.Register(registered, offers[0])
+	decision := state.Decide(compression.ResponseMeta{
+		Method: http.MethodGet,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/plain"}, "Content-Encoding": []string{"br"}},
+	})
+	underlying := httptest.NewRecorder()
+	wrapped, err := p.WrapCompression(underlying, registered, state, decision)
+	if err != nil {
+		t.Fatalf("WrapCompression() error = %v", err)
+	}
+	wrapped.Header().Set("Content-Type", "text/plain")
+	wrapped.Header().Set("Content-Encoding", "br")
+	wrapped.WriteHeader(http.StatusOK)
+	if _, err := wrapped.Write([]byte("already-br")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if finalizer, ok := wrapped.(base.StreamingResponseFinalizer); ok {
+		if err := finalizer.FinishStreamingResponse(nil); err != nil {
+			t.Fatalf("FinishStreamingResponse() error = %v", err)
+		}
+	}
+	if got := underlying.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", got)
+	}
+	if got := underlying.Body.String(); got != "already-br" {
+		t.Fatalf("body = %q, want passthrough already-br", got)
+	}
+}
+
 func TestBrotliStructuralOfferHonorsHTTPVersionGate(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

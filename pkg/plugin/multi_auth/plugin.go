@@ -215,7 +215,7 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		} else {
 			authenticatedRequest = probeRequest
 		}
-		if result.Decision == base.RequestContinue {
+		if result.Decision == base.RequestContinue && hasAuthenticationState(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
 		authenticatedRequest = nil
@@ -223,11 +223,12 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		a.plugin.Handler(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 			authenticatedRequest = request
 		})).ServeHTTP(writer, probeRequest)
-		if authenticatedRequest != nil {
+		if hasAuthenticationState(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
+		authenticatedRequest = nil
 	}
-	if authenticatedRequest != nil {
+	if hasAuthenticationState(authenticatedRequest) {
 		return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 	}
 	if bodyState != nil {
@@ -347,6 +348,11 @@ func (s *probeBodyState) attachWinnerBody(request *http.Request) {
 
 func (r *replayReadCloser) Close() error {
 	return r.closer.Close()
+}
+
+func hasAuthenticationState(request *http.Request) bool {
+	_, ok := ctx.AuthenticationStateFrom(request)
+	return ok
 }
 
 func newAuthPlugin(name string) (authPlugin, error) {

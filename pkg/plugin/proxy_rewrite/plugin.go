@@ -251,12 +251,19 @@ func (p *Plugin) rewriteURI(path string) (string, []string) {
 		return p.config.Uri, nil
 	}
 	for _, pair := range p.config.regexURIPairs {
-		if matches := pair.pattern.FindStringSubmatch(path); matches != nil {
-			rewritten := pair.pattern.ReplaceAllStringFunc(path, func(match string) string {
-				return resolveCaptureValue(pair.replacement, pair.pattern.FindStringSubmatch(match))
-			})
-			return rewritten, matches
+		indexes := pair.pattern.FindStringSubmatchIndex(path)
+		if indexes == nil {
+			continue
 		}
+		matches := make([]string, len(indexes)/2)
+		for i := range matches {
+			start, end := indexes[2*i], indexes[2*i+1]
+			if start >= 0 && end >= start {
+				matches[i] = path[start:end]
+			}
+		}
+		rewritten := path[:indexes[0]] + resolveCaptureValue(pair.replacement, matches) + path[indexes[1]:]
+		return rewritten, matches
 	}
 	if p.config.UseRealRequestURIUnsafe {
 		return path, nil

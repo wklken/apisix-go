@@ -899,6 +899,7 @@ func TestCanonicalEtcdPrefixAndManagedKeyShapes(t *testing.T) {
 		{prefix: "/apisix", key: "/apisix/routes/route-1/extra", want: false},
 		{prefix: "/apisix", key: "/apisix/secrets/vault/item", want: true},
 		{prefix: "/apisix", key: "/apisix/secrets/item", want: false},
+		{prefix: "/apisix", key: "/apisix/plugins", want: true},
 	}
 	for _, test := range tests {
 		client := &ConfigClient{prefix: canonicalEtcdPrefix(test.prefix)}

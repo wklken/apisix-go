@@ -264,6 +264,9 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 	if slices.Contains(parts, "") {
 		return "", "", false
 	}
+	if len(parts) == 1 && parts[0] == "plugins" {
+		return "plugins", "plugins", true
+	}
 	if len(parts) == 2 {
 		if !isManagedEtcdBucket(parts[0]) || parts[0] == "secrets" {
 			return "", "", false

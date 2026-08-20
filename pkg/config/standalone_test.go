@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,18 +119,12 @@ ssls:
 	}
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
-	var routePuts atomic.Int32
-	storage.AddEventUpdateHook(func(event *store.Event) {
-		if event.Type == store.EventTypePut && string(event.Key) == "/apisix/routes/route-1" {
-			routePuts.Add(1)
-		}
-	})
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	if err := watcher.Reload(); err == nil {
-		t.Fatal("Reload() error = nil, want second-event acknowledgement failure")
+		t.Fatal("Reload() error = nil, want snapshot acknowledgement failure")
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
-		t.Fatalf("route after partial apply = %q, %v; want durable first event", route, err)
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err == nil && len(route) > 0 {
+		t.Fatalf("route after failed snapshot = %q; want atomic rollback", route)
 	}
 
 	if err := os.WriteFile(path, []byte(`routes:
@@ -149,13 +142,8 @@ ssls:
 	if err := watcher.Reload(); err == nil {
 		t.Fatal("second Reload() error = nil, want SSL acknowledgement failure")
 	}
-	if got := routePuts.Load(); got != 2 {
-		t.Fatalf("route PUT applications = %d, want 2 replayed applications", got)
-	}
-	// The route remains part of the replay because the failed batch never
-	// committed its full snapshot baseline.
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
-		t.Fatalf("route after replay attempt = %q, %v; want durable route", route, err)
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err == nil && len(route) > 0 {
+		t.Fatalf("route after replay attempt = %q; want still rolled back", route)
 	}
 }
 

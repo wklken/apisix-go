@@ -71,3 +71,35 @@ func TestWildcardDispatcher405IncludesSortedUniqueAllowMethods(t *testing.T) {
 		t.Fatalf("PUT /items/123 Allow = %q, want %q", got, "GET, POST")
 	}
 }
+
+func TestEmbeddedWildcard405IncludesMethodsAcrossHostCollisions(t *testing.T) {
+	t.Parallel()
+
+	router := chi.NewRouter()
+	registrar := newRouteRegistrar(router)
+	register := func(methods []string, hosts []string) {
+		t.Helper()
+		handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(http.StatusNoContent)
+		})
+		if err := registrar.registerRouteWithHosts(methods, "/articles/*/comments", hosts, handler); err != nil {
+			t.Fatalf("register route: %v", err)
+		}
+	}
+	register([]string{http.MethodGet}, []string{"api.example.com"})
+	register([]string{http.MethodPost}, []string{"*.example.com"})
+	register([]string{"PURGE"}, nil)
+	register([]string{http.MethodGet}, []string{"api.example.com"})
+
+	request := httptest.NewRequest(http.MethodPut, "/articles/tenant/comments", nil)
+	request.Host = "api.example.com"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /articles/tenant/comments status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+	if got := response.Header().Get("Allow"); got != "GET, POST, PURGE" {
+		t.Fatalf("PUT /articles/tenant/comments Allow = %q, want %q", got, "GET, POST, PURGE")
+	}
+}

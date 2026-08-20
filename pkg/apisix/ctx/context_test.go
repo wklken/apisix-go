@@ -291,6 +291,8 @@ func TestAuthenticationStateFromReturnsIndependentCopies(t *testing.T) {
 	}
 	state := NewAuthenticationState("jwt-auth", consumer)
 	request := WithAuthenticationState(httptest.NewRequest(http.MethodGet, "/", nil), state)
+	stateCopy := state.Consumer()
+	stateCopy.Plugins["jwt-auth"].(map[string]any)["claims"].(map[string]any)["roles"].([]any)[0] = "mutated-state-copy"
 
 	got, ok := AuthenticationStateFrom(request)
 	if !ok {

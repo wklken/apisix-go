@@ -73,7 +73,7 @@ func NewBufferedResponseExecutor(
 	}
 	cloned := cloneBindings(static)
 	set := bindingsToEffectiveSet(cloned)
-	plan, err := MaterializeResponseBindings(set)
+	plan, err := materializeResponseBindings(set, hasConditionalTerminalBinding(cloned))
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,8 @@ func (e *BufferedResponseExecutor) PostResolutionHook(
 	}
 	execution.hookCalled = true
 	execution.request = r
-	plan, err := MaterializeResponseBindings(effective.clone())
+	cloned := effective.clone()
+	plan, err := materializeResponseBindings(cloned, hasConditionalTerminalEffective(cloned))
 	if err != nil {
 		execution.internalFailure = true
 		return r, err

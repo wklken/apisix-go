@@ -124,8 +124,9 @@ func convertURI(uri string) (string, error) {
 }
 
 type routeRegistrar struct {
-	mux         *chi.Mux
-	dispatchers map[string]*wildcardDispatcher
+	mux                   *chi.Mux
+	dispatchers           map[string]*wildcardDispatcher
+	nextRegistrationIndex uint64
 }
 
 func newRouteRegistrar(mux *chi.Mux) *routeRegistrar {
@@ -146,8 +147,10 @@ func (r *routeRegistrar) registerRouteWithHosts(
 	if err != nil {
 		return err
 	}
+	registrationIndex := r.nextRegistrationIndex
+	r.nextRegistrationIndex++
 	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
-		r.registerWildcardRoute(methods, converted, uri, hosts, handler)
+		r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex)
 		return nil
 	}
 	if len(methods) == 0 {
@@ -162,17 +165,183 @@ func (r *routeRegistrar) registerRouteWithHosts(
 }
 
 type wildcardRoute struct {
-	method   string
-	pattern  string
-	embedded bool
-	hosts    []string
-	handler  http.Handler
+	method            string
+	pattern           string
+	embedded          bool
+	hosts             []string
+	handler           http.Handler
+	registrationIndex uint64
 }
 
 type wildcardDispatcher struct {
-	prefix           string
-	buckets          [2][3][2][]wildcardRoute // embedded, host rank, exact method
-	embeddedSuffixes [3][2]map[string][]int   // host rank, exact method, suffix
+	prefix      string
+	nonEmbedded *routeDecisionIndex
+	embedded    map[string]*routeDecisionIndex
+}
+
+type routeCandidate struct {
+	route wildcardRoute
+	valid bool
+}
+
+type routeHostDecision struct {
+	exact    map[string]routeCandidate
+	wildcard routeCandidate
+	allowed  []string
+}
+
+type routeDecisionIndex struct {
+	pattern       string
+	hostless      routeHostDecision
+	exactHosts    map[string]*routeHostDecision
+	wildcardHosts map[string]*routeHostDecision
+}
+
+func (d *routeDecisionIndex) add(route wildcardRoute) {
+	if len(route.hosts) == 0 {
+		d.hostless.add(route)
+		return
+	}
+	for _, host := range route.hosts {
+		host = normalizeRouteHost(host)
+		if strings.ContainsAny(host, "*?[") {
+			suffix, ok := wildcardRouteHostKey(host)
+			if !ok {
+				continue
+			}
+			if d.wildcardHosts == nil {
+				d.wildcardHosts = make(map[string]*routeHostDecision)
+			}
+			decision := d.wildcardHosts[suffix]
+			if decision == nil {
+				decision = &routeHostDecision{}
+				d.wildcardHosts[suffix] = decision
+			}
+			decision.add(route)
+			continue
+		}
+		if d.exactHosts == nil {
+			d.exactHosts = make(map[string]*routeHostDecision)
+		}
+		decision := d.exactHosts[host]
+		if decision == nil {
+			decision = &routeHostDecision{}
+			d.exactHosts[host] = decision
+		}
+		decision.add(route)
+	}
+}
+
+func (d *routeHostDecision) add(route wildcardRoute) {
+	candidate := routeCandidate{route: route, valid: true}
+	if route.method == "*" {
+		if !d.wildcard.valid || d.wildcard.route.registrationIndex < route.registrationIndex {
+			d.wildcard = candidate
+		}
+		return
+	}
+	if d.exact == nil {
+		d.exact = make(map[string]routeCandidate)
+	}
+	current, ok := d.exact[route.method]
+	if !ok || current.route.registrationIndex < route.registrationIndex {
+		d.exact[route.method] = candidate
+	}
+	if !ok {
+		index, _ := slices.BinarySearch(d.allowed, route.method)
+		d.allowed = append(d.allowed, "")
+		copy(d.allowed[index+1:], d.allowed[index:])
+		d.allowed[index] = route.method
+	}
+}
+
+func (d *routeDecisionIndex) lookup(
+	host string,
+	wildcardHost string,
+	hostRank int,
+	methodIndex int,
+	method string,
+) (routeCandidate, bool, bool) {
+	decision := d.hostDecision(host, wildcardHost, hostRank)
+	if decision == nil {
+		return routeCandidate{}, false, false
+	}
+	if !decision.hasRoutes() {
+		return routeCandidate{}, false, false
+	}
+	if methodIndex == 1 {
+		return decision.wildcard, true, decision.wildcard.valid
+	}
+	candidate, ok := decision.exact[method]
+	return candidate, true, ok
+}
+
+func (d *routeHostDecision) hasRoutes() bool {
+	return d.wildcard.valid || len(d.exact) > 0
+}
+
+func (d *routeDecisionIndex) hostDecision(
+	host string,
+	wildcardHost string,
+	hostRank int,
+) *routeHostDecision {
+	switch hostRank {
+	case 2:
+		return d.exactHosts[host]
+	case 1:
+		if wildcardHost == "" {
+			return nil
+		}
+		return d.wildcardHosts[wildcardHost]
+	default:
+		return &d.hostless
+	}
+}
+
+func (d *routeDecisionIndex) addAllowedMethods(
+	host string,
+	wildcardHost string,
+	allowed []string,
+) []string {
+	add := func(decision *routeHostDecision) {
+		if decision == nil {
+			return
+		}
+		for _, method := range decision.allowed {
+			index, found := slices.BinarySearch(allowed, method)
+			if found {
+				continue
+			}
+			allowed = append(allowed, "")
+			copy(allowed[index+1:], allowed[index:])
+			allowed[index] = method
+		}
+	}
+	add(d.exactHosts[host])
+	if wildcardHost != "" {
+		add(d.wildcardHosts[wildcardHost])
+	}
+	add(&d.hostless)
+	return allowed
+}
+
+func normalizeRouteHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func wildcardRouteHostKey(pattern string) (string, bool) {
+	if !strings.HasPrefix(pattern, "*.") {
+		return "", false
+	}
+	return pattern[1:], true
+}
+
+func wildcardHostKey(host string) string {
+	dot := strings.IndexByte(host, '.')
+	if dot <= 0 || dot == len(host)-1 {
+		return ""
+	}
+	return host[dot:]
 }
 
 func (r *routeRegistrar) registerWildcardRoute(
@@ -181,10 +350,14 @@ func (r *routeRegistrar) registerWildcardRoute(
 	pattern string,
 	hosts []string,
 	handler http.Handler,
+	registrationIndex uint64,
 ) {
 	dispatcher := r.dispatchers[converted]
 	if dispatcher == nil {
-		dispatcher = &wildcardDispatcher{prefix: strings.TrimSuffix(converted, "*")}
+		dispatcher = &wildcardDispatcher{
+			prefix:   strings.TrimSuffix(converted, "*"),
+			embedded: make(map[string]*routeDecisionIndex),
+		}
 		r.mux.Handle(converted, dispatcher)
 		r.dispatchers[converted] = dispatcher
 	}
@@ -192,88 +365,66 @@ func (r *routeRegistrar) registerWildcardRoute(
 	embedded := strings.Contains(pattern, "/*/")
 	if len(methods) == 0 {
 		dispatcher.add(wildcardRoute{
-			method:   "*",
-			pattern:  pattern,
-			embedded: embedded,
-			hosts:    hosts,
-			handler:  handler,
+			method:            "*",
+			pattern:           pattern,
+			embedded:          embedded,
+			hosts:             hosts,
+			handler:           handler,
+			registrationIndex: registrationIndex,
 		})
 		return
 	}
 	for _, method := range methods {
 		logger.Debugf("add route: %s %s", method, converted)
 		dispatcher.add(wildcardRoute{
-			method:   strings.ToUpper(method),
-			pattern:  pattern,
-			embedded: embedded,
-			hosts:    hosts,
-			handler:  handler,
+			method:            strings.ToUpper(method),
+			pattern:           pattern,
+			embedded:          embedded,
+			hosts:             hosts,
+			handler:           handler,
+			registrationIndex: registrationIndex,
 		})
 	}
 }
 
 func (d *wildcardDispatcher) add(route wildcardRoute) {
-	embeddedIndex := 1
+	if d.embedded == nil {
+		d.embedded = make(map[string]*routeDecisionIndex)
+	}
 	if route.embedded {
-		embeddedIndex = 0
-	}
-	methodIndex := 0
-	if route.method == "*" {
-		methodIndex = 1
-	}
-	if len(route.hosts) == 0 {
-		d.addToBucket(embeddedIndex, 0, methodIndex, route)
-		return
-	}
-	hasExact := false
-	hasWildcard := false
-	for _, host := range route.hosts {
-		if strings.ContainsAny(host, "*?[") {
-			hasWildcard = true
-		} else {
-			hasExact = true
+		suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
+		decision := d.embedded[suffix]
+		if decision == nil {
+			decision = &routeDecisionIndex{pattern: route.pattern}
+			d.embedded[suffix] = decision
 		}
-	}
-	if hasExact {
-		d.addToBucket(embeddedIndex, 2, methodIndex, route)
-	}
-	if hasWildcard {
-		d.addToBucket(embeddedIndex, 1, methodIndex, route)
-	}
-}
-
-func (d *wildcardDispatcher) addToBucket(
-	embeddedIndex int,
-	hostRank int,
-	methodIndex int,
-	route wildcardRoute,
-) {
-	bucket := &d.buckets[embeddedIndex][hostRank][methodIndex]
-	*bucket = append(*bucket, route)
-	if !route.embedded {
+		decision.add(route)
 		return
 	}
-	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
-	if suffixes == nil {
-		suffixes = make(map[string][]int)
-		d.embeddedSuffixes[hostRank][methodIndex] = suffixes
+	if d.nonEmbedded == nil {
+		d.nonEmbedded = &routeDecisionIndex{pattern: route.pattern}
 	}
-	suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
-	suffixes[suffix] = append(suffixes[suffix], len(*bucket)-1)
+	d.nonEmbedded.add(route)
 }
 
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	host := requestHostname(request.Host)
+	wildcardHost := wildcardHostKey(host)
+	nonEmbeddedPathMatched := d.nonEmbedded != nil &&
+		matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path)
 	pathMatched := false
 	hostMatched := false
 	for embeddedIndex := range 2 {
 		for _, hostRank := range []int{2, 1, 0} {
 			for methodIndex := range 2 {
 				if embeddedIndex == 0 {
-					if len(d.embeddedSuffixes[hostRank][methodIndex]) == 0 {
+					if len(d.embedded) == 0 {
 						continue
 					}
 					route, matched, matchedPath, matchedHost := d.matchEmbeddedRoute(
 						request,
+						host,
+						wildcardHost,
 						hostRank,
 						methodIndex,
 					)
@@ -285,19 +436,17 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 					}
 					continue
 				}
-				for _, route := range slices.Backward(d.buckets[embeddedIndex][hostRank][methodIndex]) {
-					if !matchesRoutePath(route.pattern, request.URL.Path) {
-						continue
-					}
-					pathMatched = true
-					if routeHostRank(route.hosts, request.Host) != hostRank {
-						continue
-					}
-					hostMatched = true
-					if (methodIndex == 0 && route.method != request.Method) ||
-						(methodIndex == 1 && route.method != "*") {
-						continue
-					}
+				route, matched, matchedPath, matchedHost := d.matchNonEmbeddedRoute(
+					request,
+					host,
+					wildcardHost,
+					hostRank,
+					methodIndex,
+					nonEmbeddedPathMatched,
+				)
+				pathMatched = pathMatched || matchedPath
+				hostMatched = hostMatched || matchedHost
+				if matched {
 					route.handler.ServeHTTP(writer, request)
 					return
 				}
@@ -316,38 +465,43 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 }
 
 func (d *wildcardDispatcher) allowedMethods(request *http.Request) []string {
-	allowed := make(map[string]struct{})
-	for embeddedIndex := range 2 {
-		for hostRank := range 3 {
-			for methodIndex := range 2 {
-				for _, route := range d.buckets[embeddedIndex][hostRank][methodIndex] {
-					if route.method == "*" || !matchesRoutePath(route.pattern, request.URL.Path) {
-						continue
-					}
-					if routeHostRank(route.hosts, request.Host) != hostRank {
-						continue
-					}
-					allowed[route.method] = struct{}{}
-				}
-			}
-		}
+	host := requestHostname(request.Host)
+	wildcardHost := wildcardHostKey(host)
+	var allowed []string
+	if d.nonEmbedded != nil && matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path) {
+		allowed = d.nonEmbedded.addAllowedMethods(host, wildcardHost, allowed)
 	}
-	return slices.Sorted(maps.Keys(allowed))
+	for searchFrom := len(d.prefix); searchFrom < len(request.URL.Path); {
+		relativeSlash := strings.IndexByte(request.URL.Path[searchFrom:], '/')
+		if relativeSlash < 0 {
+			break
+		}
+		suffixStart := searchFrom + relativeSlash
+		suffix := request.URL.Path[suffixStart:]
+		if decision := d.embedded[suffix]; decision != nil &&
+			len(request.URL.Path) > len(d.prefix)+len(suffix) {
+			allowed = decision.addAllowedMethods(host, wildcardHost, allowed)
+		}
+		searchFrom = suffixStart + 1
+	}
+	return allowed
 }
 
 func (d *wildcardDispatcher) matchEmbeddedRoute(
 	request *http.Request,
+	host string,
+	wildcardHost string,
 	hostRank int,
 	methodIndex int,
 ) (wildcardRoute, bool, bool, bool) {
-	bucket := d.buckets[0][hostRank][methodIndex]
-	suffixes := d.embeddedSuffixes[hostRank][methodIndex]
 	requestPath := request.URL.Path
 	if len(requestPath) <= len(d.prefix) || !strings.HasPrefix(requestPath, d.prefix) {
 		return wildcardRoute{}, false, false, false
 	}
 
-	bestIndex := -1
+	bestIndex := uint64(0)
+	bestFound := false
+	var bestRoute wildcardRoute
 	pathMatched := false
 	hostMatched := false
 	for searchFrom := len(d.prefix); searchFrom < len(requestPath); {
@@ -357,32 +511,53 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 		}
 		suffixStart := searchFrom + relativeSlash
 		suffix := requestPath[suffixStart:]
-		indexes := suffixes[suffix]
-		if len(indexes) > 0 && len(requestPath) > len(d.prefix)+len(suffix) {
+		decision := d.embedded[suffix]
+		if decision != nil && len(requestPath) > len(d.prefix)+len(suffix) {
 			pathMatched = true
-			for _, routeIndex := range slices.Backward(indexes) {
-				if routeIndex <= bestIndex {
-					break
-				}
-				route := bucket[routeIndex]
-				if routeHostRank(route.hosts, request.Host) != hostRank {
-					continue
-				}
-				hostMatched = true
-				if (methodIndex == 0 && route.method != request.Method) ||
-					(methodIndex == 1 && route.method != "*") {
-					continue
-				}
-				bestIndex = routeIndex
-				break
+			candidate, matchedHost, ok := decision.lookup(
+				host,
+				wildcardHost,
+				hostRank,
+				methodIndex,
+				request.Method,
+			)
+			hostMatched = hostMatched || matchedHost
+			if ok && (!bestFound || candidate.route.registrationIndex > bestIndex) {
+				bestIndex = candidate.route.registrationIndex
+				bestFound = true
+				bestRoute = candidate.route
 			}
 		}
 		searchFrom = suffixStart + 1
 	}
-	if bestIndex < 0 {
+	if !bestFound {
 		return wildcardRoute{}, false, pathMatched, hostMatched
 	}
-	return bucket[bestIndex], true, pathMatched, hostMatched
+	return bestRoute, true, pathMatched, hostMatched
+}
+
+func (d *wildcardDispatcher) matchNonEmbeddedRoute(
+	request *http.Request,
+	host string,
+	wildcardHost string,
+	hostRank int,
+	methodIndex int,
+	pathMatched bool,
+) (wildcardRoute, bool, bool, bool) {
+	if d.nonEmbedded == nil || !pathMatched {
+		return wildcardRoute{}, false, false, false
+	}
+	candidate, matchedHost, ok := d.nonEmbedded.lookup(
+		host,
+		wildcardHost,
+		hostRank,
+		methodIndex,
+		request.Method,
+	)
+	if !ok {
+		return wildcardRoute{}, false, true, matchedHost
+	}
+	return candidate.route, true, true, matchedHost
 }
 
 func matchesRoutePath(pattern string, requestPath string) bool {
@@ -500,8 +675,7 @@ type consumerResolutionTemplate struct {
 }
 
 type consumerResolutionCache struct {
-	mu      sync.Mutex
-	entries map[plugin.ConsumerCacheKey]*consumerResolutionTemplate
+	entries sync.Map // map[plugin.ConsumerCacheKey]*consumerResolutionTemplate
 }
 
 var errConsumerBindingInitializationPanicked = errors.New("consumer plugin initialization panicked")
@@ -528,10 +702,7 @@ func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, regi
 		storage:         storage,
 		serverAddr:      normalizeServerAddr(serverAddr),
 		clusterRegistry: registry,
-		consumerResolution: consumerResolutionCache{
-			entries: make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate),
-		},
-		servicePlugins: make(map[servicePluginKey]plugin.Plugin),
+		servicePlugins:  make(map[servicePluginKey]plugin.Plugin),
 	}
 	if registry == nil {
 		builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
@@ -1197,41 +1368,41 @@ func (b *Builder) consumerBindingsForKey(
 	key plugin.ConsumerCacheKey,
 	initialize func() ([]plugin.Binding, error),
 ) ([]plugin.Binding, error) {
-	b.consumerResolution.mu.Lock()
-	if template, ok := b.consumerResolution.entries[key]; ok {
-		b.consumerResolution.mu.Unlock()
+	if actual, ok := b.consumerResolution.entries.Load(key); ok {
+		template := actual.(*consumerResolutionTemplate)
 		<-template.ready
 		if template.err != nil {
 			return nil, template.err
 		}
 		return append([]plugin.Binding(nil), template.bindings...), nil
 	}
-	if b.consumerResolution.entries == nil {
-		b.consumerResolution.entries = make(map[plugin.ConsumerCacheKey]*consumerResolutionTemplate)
-	}
+
 	template := &consumerResolutionTemplate{ready: make(chan struct{})}
-	b.consumerResolution.entries[key] = template
-	b.consumerResolution.mu.Unlock()
+	actual, loaded := b.consumerResolution.entries.LoadOrStore(key, template)
+	if loaded {
+		template = actual.(*consumerResolutionTemplate)
+		<-template.ready
+		if template.err != nil {
+			return nil, template.err
+		}
+		return append([]plugin.Binding(nil), template.bindings...), nil
+	}
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			b.consumerResolution.mu.Lock()
 			template.err = errConsumerBindingInitializationPanicked
-			delete(b.consumerResolution.entries, key)
 			close(template.ready)
-			b.consumerResolution.mu.Unlock()
+			b.consumerResolution.entries.Delete(key)
 			panic(recovered)
 		}
 	}()
 	bindings, err := initialize()
-	b.consumerResolution.mu.Lock()
 	template.bindings = append([]plugin.Binding(nil), bindings...)
 	template.err = err
-	if err != nil {
-		delete(b.consumerResolution.entries, key)
-	}
 	close(template.ready)
-	b.consumerResolution.mu.Unlock()
+	if err != nil {
+		b.consumerResolution.entries.Delete(key)
+	}
 	if err != nil {
 		return nil, err
 	}

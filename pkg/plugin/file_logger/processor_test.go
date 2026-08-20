@@ -11,6 +11,7 @@ import (
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"go.uber.org/zap/buffer"
 )
 
 type recordingFileLoggerSink struct {
@@ -136,7 +137,8 @@ func TestFileLoggerProcessorAutomaticFlushErrorsReachNextBarrier(t *testing.T) {
 				t.Fatalf("barrier error = %v, want %v", err, writeErr)
 			}
 			stats := p.stats()
-			if stats.Delivered != test.wantDelivered || stats.Failed != test.wantFailed || stats.Pending != 0 {
+			if stats.Delivered != test.wantDelivered || stats.Failed != test.wantFailed ||
+				stats.Pending != 0 || stats.PendingBytes != 0 {
 				t.Fatalf(
 					"processor stats = %#v, want delivered=%d failed=%d",
 					stats,
@@ -324,6 +326,9 @@ func TestFileLoggerProcessorPendingWaitsForWriteCompletion(t *testing.T) {
 	if got := p.pendingCount(); got != 0 {
 		t.Fatalf("pending after Write = %d, want zero", got)
 	}
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after Write = %d, want zero", got)
+	}
 	p.stop()
 }
 
@@ -341,6 +346,121 @@ func TestFileLoggerProcessorPendingClearsAfterWriteFailure(t *testing.T) {
 	}
 	if got := p.pendingCount(); got != 0 {
 		t.Fatalf("pending after terminal write failure = %d, want zero", got)
+	}
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after terminal write failure = %d, want zero", got)
+	}
+	p.stop()
+}
+
+func TestFileLoggerProcessorRejectsPayloadWhenByteBudgetExceeded(t *testing.T) {
+	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p.payloadByteBudget = 64
+	if err := p.pushFields(map[string]any{"payload": strings.Repeat("x", 65)}); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("oversized payload error = %v, want ErrLogQueueFull", err)
+	}
+	stats := p.stats()
+	if stats.Pending != 0 || stats.PendingBytes != 0 {
+		t.Fatalf("stats after byte rejection = %#v, want no pending records", stats)
+	}
+	p.stop()
+}
+
+func TestFileLoggerProcessorCountsSnapshotBodiesAgainstByteBudget(t *testing.T) {
+	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p.payloadByteBudget = 64
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Body: []byte(strings.Repeat("x", 65))},
+	}
+	if err := p.pushSnapshot(snapshot); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("oversized snapshot body error = %v, want ErrLogQueueFull", err)
+	}
+	if stats := p.stats(); stats.Pending != 0 || stats.PendingBytes != 0 {
+		t.Fatalf("stats after snapshot byte rejection = %#v, want no pending records", stats)
+	}
+	p.stop()
+}
+
+func TestFileLoggerProcessorCountsNamedStringsAgainstByteBudget(t *testing.T) {
+	type largeString string
+
+	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p.payloadByteBudget = 1024
+	fields := map[string]any{"payload": largeString(strings.Repeat("x", 2048))}
+	if err := p.pushFields(fields); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("oversized named string error = %v, want ErrLogQueueFull", err)
+	}
+	if stats := p.stats(); stats.Pending != 0 || stats.PendingBytes != 0 {
+		t.Fatalf("stats after named string rejection = %#v, want no pending records", stats)
+	}
+	p.stop()
+}
+
+func TestFileLoggerProcessorReleasesPayloadBytesAndReadmits(t *testing.T) {
+	sink := &recordingFileLoggerSink{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	p := newFileLoggerProcessor(sink)
+	fields := map[string]any{"payload": strings.Repeat("x", 128)}
+	recordBytes := fileLogRecordPayloadBytes(fileLogRecord{kind: fileLogFieldsRecord, fields: fields})
+	p.payloadByteBudget = recordBytes
+	if err := p.pushFields(fields); err != nil {
+		t.Fatalf("first pushFields() error = %v", err)
+	}
+	ack, err := p.pushBarrier()
+	if err != nil {
+		t.Fatalf("pushBarrier() error = %v", err)
+	}
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin delivering first record")
+	}
+	if got := p.stats().PendingBytes; got != recordBytes {
+		t.Fatalf("pending bytes while first delivery is blocked = %d, want %d", got, recordBytes)
+	}
+	if err := p.pushFields(fields); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("second pushFields() error = %v, want byte-budget rejection", err)
+	}
+	if got := p.stats().PendingBytes; got != recordBytes {
+		t.Fatalf("pending bytes after rejected record = %d, want %d", got, recordBytes)
+	}
+	close(sink.release)
+	if err := <-ack; err != nil {
+		t.Fatalf("first barrier error = %v", err)
+	}
+	waitForFileLoggerPendingBytes(t, p, 0)
+	if err := p.pushFields(fields); err != nil {
+		t.Fatalf("readmitted pushFields() error = %v", err)
+	}
+	ack, err = p.pushBarrier()
+	if err != nil {
+		t.Fatalf("pushBarrier() error = %v", err)
+	}
+	if err := <-ack; err != nil {
+		t.Fatalf("barrier error = %v", err)
+	}
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after readmitted delivery = %d, want zero", got)
+	}
+	p.stop()
+}
+
+func TestFileLoggerProcessorEncodeFailureReleasesPayloadBytes(t *testing.T) {
+	p := newFileLoggerProcessor(&recordingFileLoggerSink{})
+	p.encodeFields = func(map[string]any) (*buffer.Buffer, error) {
+		return nil, errors.New("file logger test encode failure")
+	}
+	if err := p.pushFields(map[string]any{"unsupported": "value"}); err != nil {
+		t.Fatalf("pushFields() error = %v", err)
+	}
+	ack, err := p.pushBarrier()
+	if err != nil {
+		t.Fatalf("pushBarrier() error = %v", err)
+	}
+	if err := <-ack; err == nil {
+		t.Fatal("barrier error = nil, want encode failure")
+	}
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after encode failure = %d, want zero", got)
 	}
 	p.stop()
 }
@@ -374,8 +494,21 @@ func TestFileLoggerProcessorRejectsFullQueueAndStoppedAdmission(t *testing.T) {
 	if err := p.pushSnapshot(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueFull) {
 		t.Fatalf("full queue error = %v, want ErrLogQueueFull", err)
 	}
+	fullStats := p.stats()
+	if fullStats.PendingBytes <= 0 {
+		t.Fatalf("pending bytes after filling queue = %d, want positive", fullStats.PendingBytes)
+	}
+	if err := p.pushSnapshot(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueFull) {
+		t.Fatalf("second full queue error = %v, want ErrLogQueueFull", err)
+	}
+	if got := p.stats().PendingBytes; got != fullStats.PendingBytes {
+		t.Fatalf("pending bytes after channel-full rollback = %d, want %d", got, fullStats.PendingBytes)
+	}
 	close(release)
 	p.stop()
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after stop drain = %d, want zero", got)
+	}
 	if err := p.pushFields(map[string]any{"id": -2}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("stopped queue error = %v, want ErrLogQueueUnavailable", err)
 	}
@@ -422,6 +555,9 @@ func TestFileLoggerProcessorAdmitsLegacyFieldsAndBarrierAtomically(t *testing.T)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("combined barrier did not acknowledge")
+	}
+	if got := p.stats().PendingBytes; got != 0 {
+		t.Fatalf("pending bytes after combined barrier = %d, want zero", got)
 	}
 	p.stop()
 }
@@ -632,4 +768,16 @@ func splitJSONLines(data []byte) [][]byte {
 		start = index + 1
 	}
 	return lines
+}
+
+func waitForFileLoggerPendingBytes(t *testing.T, p *fileLoggerProcessor, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := p.stats().PendingBytes; got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("pending bytes = %d, want %d", p.stats().PendingBytes, want)
 }

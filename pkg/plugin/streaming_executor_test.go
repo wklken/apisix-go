@@ -20,6 +20,19 @@ type plan16StreamingPlugin struct {
 	finishes *int
 }
 
+func TestStreamingExecutorSkipsHeaderFilterWrapperWithoutBindings(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	wrapped := executor.wrapStreamingHeaderFilters(response, request)
+	if wrapped != response {
+		t.Fatalf("empty header-filter wrapper = %T, want original %T", wrapped, response)
+	}
+}
+
 type plan16CloseWriter struct {
 	http.ResponseWriter
 	closes   *int

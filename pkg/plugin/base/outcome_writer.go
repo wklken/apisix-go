@@ -62,8 +62,7 @@ func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWrite
 			return func(body []byte) (int, error) {
 				capture.commit(http.StatusOK)
 				n, err := write(body)
-				capture.addBytes(int64(n))
-				capture.captureWrittenBody(body, int64(n))
+				capture.recordWrite(body, int64(n))
 				return n, err
 			}
 		},
@@ -71,8 +70,7 @@ func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWrite
 			return func(value string) (int, error) {
 				capture.commit(http.StatusOK)
 				n, err := writeString(value)
-				capture.addBytes(int64(n))
-				capture.captureWrittenBody([]byte(value), int64(n))
+				capture.recordWrite([]byte(value), int64(n))
 				return n, err
 			}
 		},
@@ -81,8 +79,7 @@ func CaptureResponseOutcomeController(w http.ResponseWriter) (http.ResponseWrite
 				capture.commit(http.StatusOK)
 				tracked := &captureReader{reader: reader, limit: capture.remainingBodyLimit()}
 				n, err := readFrom(tracked)
-				capture.addBytes(n)
-				capture.captureWrittenBody(tracked.body, n)
+				capture.recordWrite(tracked.body, n)
 				return n, err
 			}
 		},
@@ -257,12 +254,6 @@ func (c *ResponseCapture) commit(status int) {
 	c.outcome.Committed = true
 }
 
-func (c *ResponseCapture) addBytes(written int64) {
-	c.mu.Lock()
-	c.outcome.Bytes += written
-	c.mu.Unlock()
-}
-
 func (c *ResponseCapture) markFlushed() {
 	c.mu.Lock()
 	if !c.outcome.Committed {
@@ -286,9 +277,10 @@ func (c *ResponseCapture) markHijacked(conn net.Conn) {
 	c.mu.Unlock()
 }
 
-func (c *ResponseCapture) captureWrittenBody(body []byte, written int64) {
+func (c *ResponseCapture) recordWrite(body []byte, written int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.outcome.Bytes += written
 	if c.bodyLimit <= 0 || written <= 0 {
 		return
 	}

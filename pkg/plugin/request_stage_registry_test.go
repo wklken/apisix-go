@@ -50,7 +50,7 @@ func TestRequestStageRegistryExactMembership(t *testing.T) {
 		"exit-transformer":             {Stage: RequestStageNone},
 		"graphql-proxy-cache":          {Stage: RequestStageAccess},
 		"proxy-cache":                  {Stage: RequestStageAccess},
-		"response-rewrite":             {Stage: RequestStageNone},
+		"response-rewrite":             {Stage: RequestStageNone, ConfigAware: true},
 		"serverless-pre-function":      {Stage: RequestStageNone, ConfigAware: true},
 		"serverless-post-function":     {Stage: RequestStageNone, ConfigAware: true},
 		"request-context":              {Stage: RequestStageRewrite, AdaptLegacyHandler: false},

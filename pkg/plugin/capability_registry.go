@@ -332,8 +332,8 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		CapabilityBufferedBodyFilter,
 		"error-page",
 		"exit-transformer",
-		"response-rewrite",
 	)
+	add("Plan 15", CapabilityHeaderFilter|CapabilityBufferedBodyFilter, "response-rewrite")
 	add(
 		"Plan 15",
 		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityFinalResponseStore,
@@ -679,6 +679,37 @@ func ResolveResponsePhases(factory string, config any) (ResolvedResponsePhases, 
 	}
 
 	owners := append([]ResponseOwnerKind(nil), spec.ResponseOwners...)
+	if responseSpec, ok := responseFactoryRegistry[identity]; ok && responseSpec.configAware {
+		describer, ok := config.(base.BindingPhaseDescriber)
+		if !ok {
+			return ResolvedResponsePhases{}, fmt.Errorf(
+				"factory %q requires a binding phase descriptor", factory,
+			)
+		}
+		descriptor, err := describer.DescribeBindingPhases()
+		if err != nil {
+			return ResolvedResponsePhases{}, fmt.Errorf(
+				"factory %q binding phase descriptor: %w", factory, err,
+			)
+		}
+		if err := validateBindingPhaseDescriptor(identity, descriptor); err != nil {
+			return ResolvedResponsePhases{}, err
+		}
+		owners = slices.DeleteFunc(owners, func(owner ResponseOwnerKind) bool {
+			return owner == ResponseOwnerHeaderFilter ||
+				owner == ResponseOwnerStreamingHeaderFilter ||
+				owner == ResponseOwnerBufferedBodyFilter
+		})
+		if descriptor.Header {
+			owners = append(owners, ResponseOwnerHeaderFilter)
+		}
+		if descriptor.StreamingHeader {
+			owners = append(owners, ResponseOwnerStreamingHeaderFilter)
+		}
+		if descriptor.BufferedBody {
+			owners = append(owners, ResponseOwnerBufferedBodyFilter)
+		}
+	}
 	if descriptor, ok := config.(base.ResponseModeDescriber); ok {
 		mode, err := descriptor.DescribeResponseMode()
 		if err != nil {

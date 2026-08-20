@@ -133,8 +133,20 @@ func (group priorityGroup) nextUntried(
 	tried map[string]struct{},
 	selectable func(string) bool,
 ) string {
-	weights := make(map[string]int, len(group.weights))
-	for target, weight := range group.weights {
+	if len(group.targets) == 0 {
+		return ""
+	}
+	if len(tried) == 0 && selectable == nil {
+		return group.selector.Next()
+	}
+
+	best := ""
+	bestWeight := 0
+	eligible := 0
+	// targets is sorted at construction; strict comparison preserves the
+	// fresh filtered SWRR selector's first-target tie order.
+	for _, target := range group.targets {
+		weight := group.weights[target]
 		if weight <= 0 {
 			continue
 		}
@@ -144,13 +156,14 @@ func (group priorityGroup) nextUntried(
 		if selectable != nil && !selectable(target) {
 			continue
 		}
-		weights[target] = weight
+		eligible++
+		if weight > bestWeight {
+			best = target
+			bestWeight = weight
+		}
 	}
-	if len(weights) == 0 {
-		return ""
-	}
-	if len(weights) == len(group.weights) {
+	if eligible == len(group.targets) {
 		return group.selector.Next()
 	}
-	return NewWeightedRRLoadBalance(weights).Next()
+	return best
 }

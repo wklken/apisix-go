@@ -20,8 +20,9 @@ import (
 // the optional exclusive protocol owner for one generation. It is immutable;
 // all per-request state lives in the returned handler/writer chain.
 type StreamingResponseExecutor struct {
-	bindings  []Binding
-	terminals []RouteTerminalCandidate
+	bindings              []Binding
+	terminals             []RouteTerminalCandidate
+	hasStaticHeaderFilter bool
 }
 
 type streamingFinish struct {
@@ -91,6 +92,9 @@ func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecuto
 		capability, err := responseCapabilityForBinding(binding)
 		if err != nil {
 			return nil, err
+		}
+		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.factoryName != "mqtt-proxy") {
+			executor.hasStaticHeaderFilter = true
 		}
 		if capability.ExclusiveProtocol != ProtocolNone {
 			terminal, ok := binding.Plugin.(base.ExclusiveProtocolTerminal)
@@ -200,6 +204,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 	if e == nil {
 		return r, nil
 	}
+	bufferStreamingHeaders := hasConditionalTerminalEffective(effective)
 	dynamicHeaders := make([]Binding, 0)
 	for _, binding := range effective.all() {
 		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
@@ -209,12 +214,23 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 		if err != nil {
 			return r, err
 		}
-		buffered, err := MaterializeResponseBindings(EffectiveBindingSet{merged: []Binding{binding}})
+		bufferStreamingHeader, err := bindingUsesBufferedStreamingHeaderFallback(
+			binding,
+			bufferStreamingHeaders,
+		)
+		if err != nil {
+			return r, err
+		}
+		buffered, err := materializeResponseBindings(
+			EffectiveBindingSet{merged: []Binding{binding}},
+			bufferStreamingHeader,
+		)
 		if err != nil {
 			return r, err
 		}
 		if capability.CompressionOffer || capability.BufferedBodyFilter || capability.StreamingBodyFilter ||
-			capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone || len(buffered) > 0 {
+			capability.StreamingResponseOwner || capability.ExclusiveProtocol != ProtocolNone ||
+			(len(buffered) > 0 && !bufferStreamingHeader) {
 			return r, fmt.Errorf(
 				"dynamic response identity=%q resource=%s/%s is not supported",
 				binding.factoryName,
@@ -222,7 +238,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 				binding.Provenance.ID,
 			)
 		}
-		if capability.HeaderFilter {
+		if capability.HeaderFilter && !bufferStreamingHeader {
 			dynamicHeaders = append(dynamicHeaders, binding)
 		}
 	}
@@ -233,11 +249,16 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 }
 
 func dynamicHeaderBindingsForEffective(effective EffectiveBindingSet) []Binding {
-	bindings := dynamicHeaderBindingsForPartition(nil, effective.global)
-	return dynamicHeaderBindingsForPartition(bindings, effective.merged)
+	bufferStreamingHeaders := hasConditionalTerminalEffective(effective)
+	bindings := dynamicHeaderBindingsForPartition(nil, effective.global, bufferStreamingHeaders)
+	return dynamicHeaderBindingsForPartition(bindings, effective.merged, bufferStreamingHeaders)
 }
 
-func dynamicHeaderBindingsForPartition(bindings []Binding, partition []Binding) []Binding {
+func dynamicHeaderBindingsForPartition(
+	bindings []Binding,
+	partition []Binding,
+	bufferStreamingHeaders bool,
+) []Binding {
 	for _, binding := range partition {
 		if binding.Provenance.Kind != ResourceConsumer && binding.Provenance.Kind != ResourceConsumerGroup {
 			continue
@@ -246,9 +267,23 @@ func dynamicHeaderBindingsForPartition(bindings []Binding, partition []Binding) 
 		if err != nil || !capability.HeaderFilter {
 			continue
 		}
+		bufferStreamingHeader, err := bindingUsesBufferedStreamingHeaderFallback(
+			binding,
+			bufferStreamingHeaders,
+		)
+		if err != nil || bufferStreamingHeader {
+			continue
+		}
 		bindings = append(bindings, binding)
 	}
 	return bindings
+}
+
+func bindingUsesBufferedStreamingHeaderFallback(binding Binding, enabled bool) (bool, error) {
+	if !enabled {
+		return false, nil
+	}
+	return bindingDeclaresStreamingHeader(binding)
 }
 
 func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *base.StreamingResponseState) error {
@@ -275,6 +310,9 @@ func (e *StreamingResponseExecutor) wrapStreamingHeaderFilters(
 	w http.ResponseWriter,
 	r *http.Request,
 ) http.ResponseWriter {
+	if !e.hasStreamingHeaderFilter(r) {
+		return w
+	}
 	var applied atomic.Bool
 	apply := func(status int) {
 		if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
@@ -329,6 +367,17 @@ func (e *StreamingResponseExecutor) wrapStreamingHeaderFilters(
 			}
 		},
 	})
+}
+
+func (e *StreamingResponseExecutor) hasStreamingHeaderFilter(r *http.Request) bool {
+	if e != nil && e.hasStaticHeaderFilter {
+		return true
+	}
+	if r == nil {
+		return false
+	}
+	bindings, _ := r.Context().Value(dynamicStreamingBindingsKey{}).([]Binding)
+	return len(bindings) > 0
 }
 
 func (e *StreamingResponseExecutor) wrapBody(

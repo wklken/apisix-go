@@ -319,6 +319,23 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// DescribeBindingPhases selects the response owner from the initialized
+// configuration. Header-only rewrites can run at final header commit; every
+// other configuration keeps the bounded body callback because it may change
+// status or need the complete response body.
+func (p Config) DescribeBindingPhases() (base.BindingPhaseDescriptor, error) {
+	if p.pureHeaderOnly() {
+		return base.BindingPhaseDescriptor{RequestStage: "none", StreamingHeader: true}, nil
+	}
+	return base.BindingPhaseDescriptor{RequestStage: "none", BufferedBody: true}, nil
+}
+
+func (p Config) pureHeaderOnly() bool {
+	return !p.Headers.empty() && p.StatusCode == 0 && len(p.Vars) == 0 &&
+		p.Body == nil && p.BodySecret == nil && len(p.Filters) == 0 &&
+		!p.Headers.hasBodyLengthVariable()
+}
+
 // RunBufferedBodyFilter applies status, header and body rewrites atomically to
 // the canonical response state owned by the bounded executor.
 func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseState) error {
@@ -332,6 +349,22 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 	state.Status = recorder.StatusCode()
 	state.Header = recorder.Header().Clone()
 	state.Body = append([]byte(nil), recorder.Body()...)
+	return nil
+}
+
+// RunStreamingHeaderFilter applies pure header rewrites at the upstream
+// response's final header commit. It deliberately never changes status or
+// body; configurations that need either remain on the bounded callback.
+func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.StreamingResponseState) error {
+	if state == nil || !p.config.pureHeaderOnly() || responseSource(r) == apisixctx.ResponseSourceCacheHit {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	p.config.Headers.applyTo(state.Header, func(value string) string {
+		return resolveValueFromResponse(r, state.Status, state.Header, 0, value)
+	})
 	return nil
 }
 
@@ -445,16 +478,21 @@ func (p *Plugin) varsMatched(r *http.Request, resp *base.BufferedResponseWriter)
 }
 
 func (h Headers) apply(r *http.Request, resp *base.BufferedResponseWriter) {
-	header := resp.Header()
+	h.applyTo(resp.Header(), func(value string) string {
+		return resolveValue(r, resp, value)
+	})
+}
+
+func (h Headers) applyTo(header http.Header, resolve func(string) string) {
 	for _, entry := range h.Add {
 		field, value, ok := strings.Cut(entry, ":")
 		if !ok {
 			continue
 		}
-		header.Add(strings.TrimSpace(field), resolveValue(r, resp, strings.TrimSpace(value)))
+		header.Add(strings.TrimSpace(field), resolve(strings.TrimSpace(value)))
 	}
 	for field, value := range h.LegacySet {
-		resolved := resolveValue(r, resp, value)
+		resolved := resolve(value)
 		if resolved == "" {
 			header[http.CanonicalHeaderKey(field)] = nil
 			continue
@@ -462,11 +500,44 @@ func (h Headers) apply(r *http.Request, resp *base.BufferedResponseWriter) {
 		header.Set(field, resolved)
 	}
 	for field, value := range h.Set {
-		header.Set(field, resolveValue(r, resp, value))
+		header.Set(field, resolve(value))
 	}
 	for _, field := range h.Remove {
 		header.Del(field)
 	}
+}
+
+func (h Headers) empty() bool {
+	return len(h.Add) == 0 && len(h.Set) == 0 && len(h.Remove) == 0 && len(h.LegacySet) == 0
+}
+
+func (h Headers) hasBodyLengthVariable() bool {
+	for _, entry := range h.Add {
+		_, value, ok := strings.Cut(entry, ":")
+		if ok && hasBodyLengthVariable(value) {
+			return true
+		}
+	}
+	for _, value := range h.Set {
+		if hasBodyLengthVariable(value) {
+			return true
+		}
+	}
+	for _, value := range h.LegacySet {
+		if hasBodyLengthVariable(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBodyLengthVariable(value string) bool {
+	for _, variable := range base.RequestVariablePattern.FindAllString(value, -1) {
+		if variable == "$bytes_sent" || variable == "$body_bytes_sent" {
+			return true
+		}
+	}
+	return false
 }
 
 func compileFilterPattern(pattern string, options string) (*regexp.Regexp, error) {
@@ -543,29 +614,33 @@ func expressionString(value any) string {
 }
 
 func resolveValue(r *http.Request, resp *base.BufferedResponseWriter, value string) string {
-	return base.ResolveRequestVariables(value, func(name string) string {
-		return responseVar(r, resp, name)
-	})
-}
-
-func responseVar(r *http.Request, resp *base.BufferedResponseWriter, name string) string {
-	return expressionString(responseValue(r, resp, name))
+	return resolveValueFromResponse(r, resp.StatusCode(), resp.Header(), len(resp.Body()), value)
 }
 
 func responseValue(r *http.Request, resp *base.BufferedResponseWriter, name string) any {
+	return responseValueFromResponse(r, resp.StatusCode(), resp.Header(), len(resp.Body()), name)
+}
+
+func resolveValueFromResponse(r *http.Request, status int, header http.Header, bodyLength int, value string) string {
+	return base.ResolveRequestVariables(value, func(name string) string {
+		return expressionString(responseValueFromResponse(r, status, header, bodyLength, name))
+	})
+}
+
+func responseValueFromResponse(r *http.Request, status int, header http.Header, bodyLength int, name string) any {
 	name = strings.TrimPrefix(name, "$")
 	switch {
 	case name == "status", name == "status_code", name == "upstream_status":
-		return resp.StatusCode()
+		return status
 	case strings.HasPrefix(name, "sent_http_"), strings.HasPrefix(name, "upstream_http_"):
 		prefix := "sent_http_"
 		if strings.HasPrefix(name, "upstream_http_") {
 			prefix = "upstream_http_"
 		}
-		header := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
-		return pluginexpr.HeaderValue(resp.Header(), header)
+		headerName := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
+		return pluginexpr.HeaderValue(header, headerName)
 	case name == "body_bytes_sent" || name == "bytes_sent":
-		return len(resp.Body())
+		return bodyLength
 	}
 	return pluginexpr.RequestValue(r, name)
 }

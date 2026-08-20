@@ -96,7 +96,7 @@ func benchmarkRegisterRoutes(b *testing.B, kind string, routeCount int) {
 }
 
 func BenchmarkRouteDispatch(b *testing.B) {
-	for _, kind := range []string{"static", "embedded-wildcard"} {
+	for _, kind := range []string{"static", "embedded-wildcard", "same-uri-collision", "same-suffix-collision"} {
 		for _, result := range []string{"match-first", "match-last", "miss"} {
 			for _, routeCount := range []int{10, 100, 1000} {
 				b.Run(fmt.Sprintf("kind=%s/result=%s/routes=%d", kind, result, routeCount), func(b *testing.B) {
@@ -116,13 +116,20 @@ func benchmarkRouteDispatch(b *testing.B, kind, result string, routeCount int) {
 	registrar := newRouteRegistrar(mux)
 	for i := range routeCount {
 		var uri string
+		var hosts []string
 		switch kind {
 		case "static":
 			uri = fmt.Sprintf("/routes/%04d", i)
 		case "embedded-wildcard":
 			uri = fmt.Sprintf("/articles/*/suffix-%04d", i)
+		case "same-uri-collision":
+			uri = "/collision/*"
+			hosts = []string{fmt.Sprintf("host-%04d.example", i)}
+		case "same-suffix-collision":
+			uri = "/articles/*/comments"
+			hosts = []string{fmt.Sprintf("host-%04d.example", i)}
 		}
-		if err := registrar.registerRouteWithHosts([]string{http.MethodGet}, uri, nil, handler); err != nil {
+		if err := registrar.registerRouteWithHosts([]string{http.MethodGet}, uri, hosts, handler); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -147,6 +154,26 @@ func benchmarkRouteDispatch(b *testing.B, kind, result string, routeCount int) {
 			fmt.Sprintf("http://apisix.benchmark/articles/some-slug/suffix-%04d", matchIndex),
 			nil,
 		)
+	case (kind == "same-uri-collision" || kind == "same-suffix-collision") && result != "miss":
+		path := "/collision/item"
+		if kind == "same-suffix-collision" {
+			path = "/articles/some-slug/comments"
+		}
+		hostIndex := 0
+		if result == "match-last" {
+			hostIndex = routeCount - 1
+		}
+		request = httptest.NewRequest(
+			http.MethodGet,
+			"http://host-"+fmt.Sprintf("%04d", hostIndex)+".example"+path,
+			nil,
+		)
+	case (kind == "same-uri-collision" || kind == "same-suffix-collision") && result == "miss":
+		path := "/collision/item"
+		if kind == "same-suffix-collision" {
+			path = "/articles/some-slug/comments"
+		}
+		request = httptest.NewRequest(http.MethodGet, "http://missing.example"+path, nil)
 	default:
 		request = httptest.NewRequest(http.MethodGet, "http://apisix.benchmark/articles/some-slug/suffix-missing", nil)
 	}

@@ -897,7 +897,7 @@ func TestRequestPipelineAuthStopWithBufferedResponseRegistersLogComposite(t *tes
 	bounded := newResponseTestPlugin(
 		"response-rewrite",
 		1,
-		responseTestConfig{stage: "none", header: true},
+		responseTestConfig{stage: "none", body: true},
 	)
 	bindings := []Binding{
 		pipelineBinding("key-auth", auth, ScopeRoute, 10),

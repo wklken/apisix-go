@@ -172,6 +172,62 @@ func TestSamePriorityLoadBalanceSkipsTriedTargetOnRetry(t *testing.T) {
 	}
 }
 
+func TestPriorityGroupNextUntriedUsesFreshWeightedRoundRobinPick(t *testing.T) {
+	group := priorityGroup{
+		targets:  []string{"a", "b", "c"},
+		weights:  map[string]int{"a": 5, "b": 1, "c": 3},
+		selector: NewWeightedRRLoadBalance(map[string]int{"a": 5, "b": 1, "c": 3}),
+	}
+
+	if got := group.nextUntried(nil, nil); got != "a" {
+		t.Fatalf("unfiltered target = %q, want highest-weight target %q", got, "a")
+	}
+	if got := group.nextUntried(map[string]struct{}{"a": {}}, nil); got != "c" {
+		t.Fatalf("filtered target = %q, want next-highest-weight target %q", got, "c")
+	}
+}
+
+func TestPriorityGroupNextUntriedKeepsExistingSelectorSequenceWhenUnfiltered(t *testing.T) {
+	group := priorityGroup{
+		targets:  []string{"a", "b", "c"},
+		weights:  map[string]int{"a": 5, "b": 1, "c": 3},
+		selector: NewWeightedRRLoadBalance(map[string]int{"a": 5, "b": 1, "c": 3}),
+	}
+	wantSelector := NewWeightedRRLoadBalance(map[string]int{"a": 5, "b": 1, "c": 3})
+
+	for i := range 8 {
+		got := group.nextUntried(nil, nil)
+		want := wantSelector.Next()
+		if got != want {
+			t.Fatalf("unfiltered target at pick %d = %q, want existing selector target %q", i, got, want)
+		}
+	}
+}
+
+func TestPriorityGroupNextUntriedPreservesSortedTieOrder(t *testing.T) {
+	group := priorityGroup{
+		targets:  []string{"a", "b", "c"},
+		weights:  map[string]int{"a": 3, "b": 3, "c": 1},
+		selector: NewWeightedRRLoadBalance(map[string]int{"a": 3, "b": 3, "c": 1}),
+	}
+
+	if got := group.nextUntried(map[string]struct{}{"a": {}}, nil); got != "b" {
+		t.Fatalf("filtered tie target = %q, want sorted target %q", got, "b")
+	}
+}
+
+func TestPriorityGroupNextUntriedHonorsSelectableTargets(t *testing.T) {
+	group := priorityGroup{
+		targets:  []string{"a", "b", "c"},
+		weights:  map[string]int{"a": 5, "b": 3, "c": 1},
+		selector: NewWeightedRRLoadBalance(map[string]int{"a": 5, "b": 3, "c": 1}),
+	}
+
+	if got := group.nextUntried(nil, func(target string) bool { return target != "a" }); got != "b" {
+		t.Fatalf("selectable target = %q, want highest selectable target %q", got, "b")
+	}
+}
+
 func TestClusterConfigKeyIncludesUpstreamPriorities(t *testing.T) {
 	base := testClusterConfig()
 	prioritized := base

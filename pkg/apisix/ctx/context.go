@@ -58,7 +58,6 @@ func (s AuthenticationState) Consumer() resource.Consumer {
 }
 
 func WithAuthenticationState(r *http.Request, state AuthenticationState) *http.Request {
-	state = NewAuthenticationState(state.Source, state.consumer)
 	return r.WithContext(context.WithValue(r.Context(), authenticationStateKey{}, state))
 }
 
@@ -68,12 +67,12 @@ func AuthenticationStateFrom(r *http.Request) (AuthenticationState, bool) {
 	}
 	switch state := r.Context().Value(authenticationStateKey{}).(type) {
 	case AuthenticationState:
-		return NewAuthenticationState(state.Source, state.consumer), true
+		return state, true
 	case *AuthenticationState:
 		if state == nil {
 			return AuthenticationState{}, false
 		}
-		return NewAuthenticationState(state.Source, state.consumer), true
+		return *state, true
 	default:
 		return AuthenticationState{}, false
 	}

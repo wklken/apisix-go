@@ -385,6 +385,29 @@ func TestResponseCaptureIncludesOnlyBytesConfirmedWritten(t *testing.T) {
 	}
 }
 
+func TestResponseCaptureRecordsBytesAndBodyTogether(t *testing.T) {
+	capture := &ResponseCapture{
+		outcome: apisixctx.ResponseOutcome{
+			Kind:   apisixctx.RequestOutcomeCompleted,
+			Status: http.StatusOK,
+		},
+	}
+	if err := capture.EnableBodyCapture(4); err != nil {
+		t.Fatalf("EnableBodyCapture() error = %v", err)
+	}
+
+	capture.recordWrite([]byte("abcdef"), 3)
+	capture.recordWrite([]byte("wxyz"), 4)
+
+	if got := capture.Outcome().Bytes; got != 7 {
+		t.Fatalf("outcome bytes = %d, want 7", got)
+	}
+	got := capture.Snapshot()
+	if string(got.Body) != "abcw" || !got.BodyTruncated {
+		t.Fatalf("capture snapshot = %#v, want body abcw and truncation", got)
+	}
+}
+
 func TestResponseCaptureOmitsUnconfirmedBodyWhenUnderlyingWriterPanics(t *testing.T) {
 	underlying := &panicResponseWriter{optionalResponseWriter: newOptionalResponseWriter(), panicWrite: true}
 	wrapped, capture := CaptureResponseOutcomeController(underlying)

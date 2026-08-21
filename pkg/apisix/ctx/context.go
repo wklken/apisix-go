@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -39,7 +40,72 @@ const (
 	trustedProxyKey        ContextKey = "trusted_proxy"
 )
 
-type authenticationStateKey struct{}
+type (
+	authenticationStateKey     struct{}
+	requestHeaderProvenanceKey struct{}
+)
+
+type requestHeaderProvenance struct {
+	trusted    http.Header
+	overridden map[string]struct{}
+}
+
+// WithRequestHeaderProvenance records which headers were supplied by an
+// internal request overlay and preserves the corresponding outer values for
+// authentication plugins.
+func WithRequestHeaderProvenance(r *http.Request, trusted http.Header, overridden []string) *http.Request {
+	if r == nil || len(overridden) == 0 {
+		return r
+	}
+	keys := make(map[string]struct{}, len(overridden))
+	for _, key := range overridden {
+		keys[http.CanonicalHeaderKey(key)] = struct{}{}
+	}
+	provenance := requestHeaderProvenance{trusted: trusted.Clone(), overridden: keys}
+	return r.WithContext(context.WithValue(r.Context(), requestHeaderProvenanceKey{}, provenance))
+}
+
+// RestoreTrustedRequestHeader replaces an internal overlay with the outer
+// header before authentication and before the request can reach an upstream.
+func RestoreTrustedRequestHeader(r *http.Request, name string) string {
+	if r == nil {
+		return ""
+	}
+	provenance, ok := r.Context().Value(requestHeaderProvenanceKey{}).(requestHeaderProvenance)
+	if !ok {
+		return r.Header.Get(name)
+	}
+	canonicalName := http.CanonicalHeaderKey(name)
+	if _, overridden := provenance.overridden[canonicalName]; !overridden {
+		return r.Header.Get(name)
+	}
+	r.Header.Del(name)
+	for _, value := range provenance.trusted.Values(name) {
+		r.Header.Add(name, value)
+	}
+	return r.Header.Get(name)
+}
+
+// TrustedRequestHeaders returns a clone with internal overlay values replaced
+// by their authenticated outer values. It keeps nested internal requests from
+// promoting a prior overlay into a trusted source.
+func TrustedRequestHeaders(r *http.Request) http.Header {
+	if r == nil {
+		return nil
+	}
+	headers := r.Header.Clone()
+	provenance, ok := r.Context().Value(requestHeaderProvenanceKey{}).(requestHeaderProvenance)
+	if !ok {
+		return headers
+	}
+	for key := range provenance.overridden {
+		headers.Del(key)
+		for _, value := range provenance.trusted.Values(key) {
+			headers.Add(key, value)
+		}
+	}
+	return headers
+}
 
 // AuthenticationState is the clone-safe result published by an explicit
 // consumer authenticator. Source is the exact factory key that authenticated
@@ -308,6 +374,10 @@ type RequestState struct {
 	ApisixVars  map[string]any
 	RequestVars map[string]any
 	recycled    atomic.Bool
+	// sensitiveQueryNames is request-local metadata used only at the logging
+	// boundary. It is deliberately not exposed through the APISIX variable
+	// maps, because those maps are also consumed by upstream-facing code.
+	sensitiveQueryNames map[string]struct{}
 
 	Status       int
 	BalancerIP   string
@@ -323,8 +393,71 @@ type RequestState struct {
 }
 
 func GetRequestState(r *http.Request) *RequestState {
+	if r == nil {
+		return nil
+	}
 	state, _ := r.Context().Value(requestStateKey).(*RequestState)
 	return state
+}
+
+// RegisterSensitiveQueryName marks one query parameter as a credential for
+// request logging. It never changes the request URL or query bytes.
+func RegisterSensitiveQueryName(r *http.Request, name string) {
+	if r == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	if state := GetRequestState(r); state != nil {
+		if state.sensitiveQueryNames == nil {
+			state.sensitiveQueryNames = make(map[string]struct{})
+		}
+		state.sensitiveQueryNames[name] = struct{}{}
+		return
+	}
+	// Requests may not have gone through the request lifecycle middleware yet.
+	// Install the same state in place so the
+	// registration follows later request helpers without a process-global
+	// pointer registry or a lifetime leak.
+	state := newRequestState()
+	state.ApisixVars, _ = r.Context().Value(ApisixVarsKey).(map[string]any)
+	state.RequestVars, _ = r.Context().Value(RequestVarsKey).(map[string]any)
+	if state.ApisixVars == nil {
+		state.ApisixVars = newVars()
+	}
+	if state.RequestVars == nil {
+		state.RequestVars = newVars()
+	}
+	state.sensitiveQueryNames = map[string]struct{}{name: {}}
+	*r = *r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
+}
+
+// SensitiveQueryNames returns a detached set of query names registered for
+// request logging. The returned map may be modified by the caller.
+func SensitiveQueryNames(r *http.Request) map[string]struct{} {
+	if r == nil {
+		return nil
+	}
+	if state := GetRequestState(r); state != nil {
+		if len(state.sensitiveQueryNames) == 0 {
+			return nil
+		}
+		result := make(map[string]struct{}, len(state.sensitiveQueryNames))
+		for name := range state.sensitiveQueryNames {
+			result[name] = struct{}{}
+		}
+		return result
+	}
+	return nil
+}
+
+// IsSensitiveQueryName reports whether a query key is registered for logging
+// redaction.
+func IsSensitiveQueryName(r *http.Request, name string) bool {
+	_, ok := SensitiveQueryNames(r)[name]
+	return ok
 }
 
 func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {
@@ -384,11 +517,40 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 }
 
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
-	RegisterApisixVar(r, "$consumer", consumer)
+	RegisterApisixVar(r, "$consumer", redactedConsumerView(consumer))
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
 	r.Header.Set("X-Consumer-Username", consumer.Username)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
+}
+
+func AttachConsumerFromAuthenticationState(r *http.Request) {
+	state, ok := AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	AttachConsumer(r, state.Consumer())
+}
+
+func redactedConsumerView(consumer resource.Consumer) resource.Consumer {
+	var plugins map[string]resource.PluginConfig
+	if consumer.Plugins != nil {
+		plugins = make(map[string]resource.PluginConfig, len(consumer.Plugins))
+		for name := range consumer.Plugins {
+			plugins[name] = nil
+		}
+	}
+	var labels map[string]any
+	if consumer.Labels != nil {
+		labels = make(map[string]any, len(consumer.Labels))
+		maps.Copy(labels, consumer.Labels)
+	}
+	return resource.Consumer{
+		Username: consumer.Username,
+		GroupID:  consumer.GroupID,
+		Plugins:  plugins,
+		Labels:   labels,
+	}
 }
 
 func RecycleVars(r *http.Request) {

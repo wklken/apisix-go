@@ -9,9 +9,16 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
+)
+
+const (
+	acceptRetryInitial = 5 * time.Millisecond
+	acceptRetryMax     = time.Second
 )
 
 type Runtime struct {
@@ -114,6 +121,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	r.initiateClose()
+	select {
+	case <-r.closeDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runtime) initiateClose() {
 	r.closeOnce.Do(func() {
 		r.close()
 		go func() {
@@ -121,12 +138,6 @@ func (r *Runtime) Close(ctx context.Context) error {
 			close(r.closeDone)
 		}()
 	})
-	select {
-	case <-r.closeDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 func (r *Runtime) close() {
@@ -138,6 +149,7 @@ func (r *Runtime) close() {
 
 func (r *Runtime) serveListener(listener net.Listener) {
 	defer r.wg.Done()
+	retryDelay := acceptRetryInitial
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -147,13 +159,51 @@ func (r *Runtime) serveListener(listener net.Listener) {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
+			if shouldRetryAccept(err) {
+				timer := time.NewTimer(retryDelay)
+				select {
+				case <-timer.C:
+				case <-r.ctx.Done():
+					timer.Stop()
+					return
+				}
+				if retryDelay < acceptRetryMax {
+					retryDelay *= 2
+					if retryDelay > acceptRetryMax {
+						retryDelay = acceptRetryMax
+					}
+				}
+				continue
+			}
+
+			logger.Errorf("stream listener %q accept failed: %v", listenerAddress(listener), err)
+			r.initiateClose()
 			return
 		}
+		retryDelay = acceptRetryInitial
 
 		r.wg.Go(func() {
 			_ = r.router.Serve(r.ctx, listener, conn)
 		})
 	}
+}
+
+func shouldRetryAccept(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.EMFILE) ||
+		errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM)
+}
+
+func listenerAddress(listener net.Listener) string {
+	if listener == nil || listener.Addr() == nil {
+		return "<unknown>"
+	}
+	return listener.Addr().String()
 }
 
 func normalizeListenAddr(address string) (string, error) {

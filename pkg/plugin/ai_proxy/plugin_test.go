@@ -56,6 +56,9 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 		if got := r.URL.Query().Get("api-version"); got != "2026-01-01" {
 			t.Fatalf("api-version query = %q, want 2026-01-01", got)
 		}
+		if got := r.URL.Query().Get("api-key"); got != "query-secret" {
+			t.Fatalf("api-key query = %q, want configured credential", got)
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("Authorization header = %q, want Bearer test-token", got)
 		}
@@ -79,7 +82,10 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 		Provider: "openai-compatible",
 		Auth: Auth{
 			Header: map[string]string{"Authorization": "Bearer test-token"},
-			Query:  map[string]string{"api-version": "2026-01-01"},
+			Query: map[string]string{
+				"api-version": "2026-01-01",
+				"api-key":     "query-secret",
+			},
 		},
 		Options: map[string]any{
 			"model":       "gpt-4",
@@ -94,6 +100,7 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	  "messages": [{"role": "user", "content": "ping"}],
 	  "temperature": 1
 	}`))
+	req = apisixctx.WithRequestVars(req)
 	req.Header.Set("Host", "client.example.test")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -118,6 +125,9 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	}
 	if got := upstreamBody["temperature"]; got != float64(0) {
 		t.Fatalf("temperature = %v, want configured option overwrite", got)
+	}
+	if got := apisixlog.GetField(req, "$upstream_uri"); got != "/v1/chat/completions?api-key=***&api-version=***" {
+		t.Fatalf("logged upstream URI = %#v, want auth query redacted", got)
 	}
 }
 

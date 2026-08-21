@@ -98,8 +98,7 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if len(p.config.TrustedAddresses) == 0 &&
-			strings.EqualFold(strings.TrimPrefix(p.config.Source, "$"), "http_x_forwarded_for") {
+		if len(p.config.TrustedAddresses) == 0 && clientControlledSource(p.config.Source) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -128,6 +127,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func clientControlledSource(source string) bool {
+	source = strings.ToLower(strings.TrimPrefix(source, "$"))
+	return source == "host" ||
+		strings.HasPrefix(source, "arg_") ||
+		strings.HasPrefix(source, "http_") ||
+		strings.HasPrefix(source, "cookie_")
 }
 
 func (p *Plugin) sourceValue(r *http.Request) string {

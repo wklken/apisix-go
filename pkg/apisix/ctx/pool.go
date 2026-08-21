@@ -34,4 +34,6 @@ func putRequestState(state *RequestState) {
 	putBack(state.RequestVars)
 	state.ApisixVars = nil
 	state.RequestVars = nil
+	clear(state.sensitiveQueryNames)
+	state.sensitiveQueryNames = nil
 }

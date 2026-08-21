@@ -122,6 +122,27 @@ func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
 	}
 }
 
+func TestTokenActiveRequiresExplicitBooleanTrue(t *testing.T) {
+	tests := []struct {
+		name   string
+		claims map[string]any
+		want   bool
+	}{
+		{name: "missing", claims: map[string]any{}, want: false},
+		{name: "string true", claims: map[string]any{"active": "true"}, want: false},
+		{name: "boolean false", claims: map[string]any{"active": false}, want: false},
+		{name: "boolean true", claims: map[string]any{"active": true}, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := tokenActive(test.claims); got != test.want {
+				t.Fatalf("tokenActive(%#v) = %t, want %t", test.claims, got, test.want)
+			}
+		})
+	}
+}
+
 func TestHandlerIntrospectsBearerTokenWithPrivateKeyJWT(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -338,8 +359,15 @@ func TestHandlerVerifiesBearerJWTWithPublicKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("X-Userinfo is not base64: %v", err)
 		}
-		if !strings.Contains(string(userinfo), `"sub":"alice"`) {
-			t.Fatalf("X-Userinfo = %s, want JWT claims", userinfo)
+		var claims map[string]any
+		if err := json.Unmarshal(userinfo, &claims); err != nil {
+			t.Fatalf("X-Userinfo is not JSON: %v", err)
+		}
+		if got := claims["sub"]; got != "alice" {
+			t.Fatalf("X-Userinfo sub = %#v, want alice", got)
+		}
+		if _, ok := claims["active"]; ok {
+			t.Fatalf("X-Userinfo = %s, want original JWT claims without synthesized active", userinfo)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -1753,6 +1781,9 @@ func TestHandlerCodeFlowPKCEExchangesMatchingVerifier(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(callbackRecorder, callback)
+	if !apisixctx.IsSensitiveQueryName(callback, "code") {
+		t.Fatal("openid-connect did not register code query key")
+	}
 
 	if callbackRecorder.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 302; body=%s", callbackRecorder.Code, callbackRecorder.Body.String())

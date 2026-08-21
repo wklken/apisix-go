@@ -83,21 +83,9 @@ type basicAuth struct {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attachLegacyConsumer(r)
+		ctx.AttachConsumerFromAuthenticationState(r)
 		next.ServeHTTP(w, r)
 	}))
-}
-
-func attachLegacyConsumer(r *http.Request) {
-	state, ok := ctx.AuthenticationStateFrom(r)
-	if !ok {
-		return
-	}
-	consumer := state.Consumer()
-	ctx.RegisterApisixVar(r, "$consumer", consumer)
-	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
-	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
-	r.Header.Set("X-Consumer-Username", consumer.Username)
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {

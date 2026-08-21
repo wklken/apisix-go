@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type failingReader struct{}
@@ -198,6 +199,9 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if got := apisixlog.GetField(req, "$request_uri"); got != "/message?sessionId=***" {
+		t.Fatalf("logged request URI = %#v, want redacted sessionId", got)
 	}
 }
 

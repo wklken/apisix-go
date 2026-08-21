@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -32,9 +33,103 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 		{"max_pipeline_items": 0},
 		{"max_concurrency": 0},
 		{"max_response_body_size": 0},
+		{"max_timeout": 60001},
 	} {
 		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
 			t.Fatalf("metadata %#v validated, want positive-limit rejection", metadata)
+		}
+	}
+	if got := applyLimitDefaults(Limits{}).MaxTimeout; got != defaultMaxTimeout {
+		t.Fatalf("default max timeout = %d, want %d", got, defaultMaxTimeout)
+	}
+	if got := applyLimitDefaults(Limits{MaxTimeout: hardMaxTimeout + 1}).MaxTimeout; got != hardMaxTimeout {
+		t.Fatalf("capped max timeout = %d, want %d", got, hardMaxTimeout)
+	}
+}
+
+func TestHandlerRejectsNestedBatchBeforeConcurrencyLease(t *testing.T) {
+	mux := http.NewServeMux()
+	handler := NewHandlerWithLimits(mux, Limits{MaxConcurrency: 1})
+	// The handler is intentionally mounted at a non-default URI. The marker
+	// must follow the dispatched request rather than rely on DefaultURI.
+	mux.Handle("/custom/batch", handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/custom/batch", strings.NewReader(`{
+		"timeout": 20,
+		"pipeline": [{
+			"path": "/custom/batch",
+			"body": "{\"pipeline\":[{\"path\":\"/inner\"}]}"
+		}]
+	}`))
+	res := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(res, req)
+
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("nested batch request took %s, want prompt rejection", elapsed)
+	}
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusBadRequest {
+		t.Fatalf("outer pipeline status = %d, want 400 nested rejection", responses[0].Status)
+	}
+	if !strings.Contains(responses[0].Body, "nested batch requests are not allowed") {
+		t.Fatalf("nested response body = %q, want deterministic rejection", responses[0].Body)
+	}
+}
+
+func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
+	const maxTimeout = 25
+	observed := make(chan time.Duration, 2)
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadline, ok := r.Context().Deadline()
+		if !ok {
+			t.Error("pipeline context has no timeout deadline")
+		} else {
+			observed <- time.Until(deadline)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{MaxTimeout: maxTimeout})
+
+	for _, body := range []string{
+		`{"pipeline":[{"path":"/omitted"}]}`,
+		`{"timeout":25,"pipeline":[{"path":"/exact"}]}`,
+	} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(body)))
+		if res.Code != http.StatusOK {
+			t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+		}
+		if response := decodePipelineResponses(t, res.Body.String())[0]; response.Status != http.StatusNoContent {
+			t.Fatalf("pipeline response = %#v, want 204", response)
+		}
+	}
+	for range 2 {
+		select {
+		case remaining := <-observed:
+			if remaining <= 0 || remaining > 100*time.Millisecond {
+				t.Fatalf("remaining timeout = %s, want a positive value within configured bound", remaining)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for observed timeout")
+		}
+	}
+}
+
+func TestHandlerRejectsTimeoutAboveConfiguredMaximum(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{MaxTimeout: 25})
+	for _, timeout := range []string{"26", "99999999999999999999999999999999"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI,
+			strings.NewReader(fmt.Sprintf(`{"timeout":%s,"pipeline":[{"path":"/inner"}]}`, timeout))))
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("timeout %s response code = %d, want 400; body=%q", timeout, res.Code, res.Body.String())
+		}
+		if !strings.Contains(strings.ToLower(res.Body.String()), "timeout") {
+			t.Fatalf("timeout %s response body = %q, want timeout validation", timeout, res.Body.String())
 		}
 	}
 }
@@ -662,6 +757,102 @@ func TestHandlerPinsPipelineHostToOuterRequest(t *testing.T) {
 	}
 	if got := responses[0].Headers["X-Got-Forwarded-Host"]; got != "outer-forwarded.example.com" {
 		t.Fatalf("pipeline forwarded host = %q, want outer-forwarded.example.com", got)
+	}
+}
+
+func TestHandlerDoesNotAllowPipelineHeadersToOverrideOuterTrustAndCredentials(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Got-Authorization", r.Header.Get("Authorization"))
+		w.Header().Set("X-Got-Cookie", r.Header.Get("Cookie"))
+		w.Header().Set("X-Got-Forwarded-For", r.Header.Get("X-Forwarded-For"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"headers": {
+			"Authorization": "Bearer common-attacker",
+			"Cookie": "session=common-attacker",
+			"X-Forwarded-For": "198.51.100.1"
+		},
+		"pipeline": [{
+			"path": "/inner",
+			"headers": {
+				"Authorization": "Bearer item-attacker",
+				"Cookie": "session=item-attacker",
+				"X-Forwarded-For": "198.51.100.2"
+			}
+		}]
+	}`))
+	req.Header.Set("Authorization", "Bearer outer")
+	req.Header.Set("Cookie", "session=outer")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	responses := decodePipelineResponses(t, res.Body.String())
+	for header, want := range map[string]string{
+		"X-Got-Authorization": "Bearer outer",
+		"X-Got-Cookie":        "session=outer",
+		"X-Got-Forwarded-For": "203.0.113.10",
+	} {
+		if got := responses[0].Headers[header]; got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range []string{"apikey", "X-Custom-Key", "X-Custom-JWT", "X-Rbac-Token", "X-Access-Token"} {
+			trusted := apisixctx.RestoreTrustedRequestHeader(r, header)
+			w.Header().Set("X-Got-"+header, trusted)
+			if got := r.Header.Get(header); got != trusted {
+				t.Errorf("restored %s = %q, want %q", header, got, trusted)
+			}
+		}
+		w.Header().Set("X-Got-Backend-Header", r.Header.Get("X-Backend-Header"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"headers": {
+			"apikey": "common-attacker",
+			"X-Custom-Key": "common-attacker",
+			"X-Custom-JWT": "common-attacker",
+			"X-Rbac-Token": "common-attacker",
+			"X-Access-Token": "common-attacker"
+		},
+		"pipeline": [{
+			"path": "/inner",
+			"headers": {
+				"apikey": "item-attacker",
+				"X-Custom-Key": "item-attacker",
+				"X-Custom-JWT": "item-attacker",
+				"X-Rbac-Token": "item-attacker",
+				"X-Access-Token": "item-attacker",
+				"X-Backend-Header": "item-value"
+			}
+		}]
+	}`))
+	req.Header.Set("apikey", "outer-key")
+	req.Header.Set("X-Custom-Key", "outer-custom-key")
+	req.Header.Set("X-Custom-JWT", "outer-custom-jwt")
+	req.Header.Set("X-Rbac-Token", "outer-rbac")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	responses := decodePipelineResponses(t, res.Body.String())
+	for header, want := range map[string]string{
+		"X-Got-Apikey":         "outer-key",
+		"X-Got-X-Custom-Key":   "outer-custom-key",
+		"X-Got-X-Custom-Jwt":   "outer-custom-jwt",
+		"X-Got-X-Rbac-Token":   "outer-rbac",
+		"X-Got-X-Access-Token": "",
+		"X-Got-Backend-Header": "item-value",
+	} {
+		if got := responses[0].Headers[header]; got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
 	}
 }
 

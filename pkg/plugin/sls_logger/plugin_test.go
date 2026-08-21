@@ -150,7 +150,7 @@ func TestPostInitRejectsInvalidEncryptedAccessKeySecret(t *testing.T) {
 	}
 }
 
-func TestPostInitResolvesRotatedEncryptedAccessKeySecret(t *testing.T) {
+func TestPostInitValidatesAndClearsRotatedEncryptedAccessKeySecret(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
 	data_encryption.Configure(true, []string{newKey, oldKey})
@@ -171,8 +171,8 @@ func TestPostInitResolvesRotatedEncryptedAccessKeySecret(t *testing.T) {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	t.Cleanup(func() { p.BatchProcessor.Stop() })
-	if p.config.AccessKeySecret != "sls-secret" {
-		t.Fatalf("access_key_secret = %q, want resolved plaintext", p.config.AccessKeySecret)
+	if p.config.AccessKeySecret != "" {
+		t.Fatalf("access_key_secret = %q, want cleared after validation", p.config.AccessKeySecret)
 	}
 }
 
@@ -244,9 +244,12 @@ func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
 	if !strings.HasPrefix(message, "<46>1 ") {
 		t.Fatalf("message = %q, want RFC5424 SYSLOG/INFO prefix <46>1", message)
 	}
-	wantStructured := `[logservice project="project-a" logstore="store-a" access-key-id="id" access-key-secret="secret"]`
+	wantStructured := `[logservice project="project-a" logstore="store-a" access-key-id="id"]`
 	if !strings.Contains(message, wantStructured) {
 		t.Fatalf("message = %q, want SLS structured data %s", message, wantStructured)
+	}
+	if strings.Contains(message, "secret") {
+		t.Fatalf("message = %q, want access key secret omitted", message)
 	}
 	if !strings.Contains(message, `"path":"/orders"`) {
 		t.Fatalf("message = %q, want JSON log entry", message)

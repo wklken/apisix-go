@@ -60,6 +60,7 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 	}
 
 	consumerKV := make(map[string][]byte)
+	consumerIDs := make(map[string][]byte)
 	consumerToKeys := make(map[string][]string)
 	consumerValues := make(map[string]resource.Consumer)
 	consumerReferenceKV := make(map[string]map[string][]byte)
@@ -67,7 +68,7 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 	for _, snapshot := range snapshots {
 		key := string(snapshot.id)
 		consumerID := append([]byte(nil), snapshot.id...)
-		consumerKV[key] = consumerID
+		consumerIDs[key] = consumerID
 		consumerToKeys[key] = append([]string(nil), snapshot.pluginKeys...)
 		for _, pluginKey := range snapshot.pluginKeys {
 			if owner := string(consumerKV[pluginKey]); owner != "" && owner != key {
@@ -89,10 +90,12 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 
 	s.consumerMu.Lock()
 	s.consumerKV = consumerKV
+	s.consumerIDs = consumerIDs
 	s.consumerToKeys = consumerToKeys
 	s.consumerValues = consumerValues
 	s.consumerReferenceKV = consumerReferenceKV
 	s.consumerToReferences = consumerToReferences
+	s.consumerGeneration.Add(1)
 	s.consumerMu.Unlock()
 	return nil
 }

@@ -47,10 +47,7 @@ func GetNginxVar(r *http.Request, key string) string {
 	case "$request_uri":
 		return r.URL.RequestURI()
 	case "$remote_addr":
-		if value, ok := r.Context().Value(apisixctx.RemoteAddrKey).(string); ok && value != "" {
-			return value
-		}
-		return addressHost(r.RemoteAddr)
+		return apisixctx.EffectiveRemoteIP(r)
 	case "$host":
 		return addressHost(r.Host)
 	case "$http_host":

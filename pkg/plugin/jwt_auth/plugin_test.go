@@ -208,6 +208,32 @@ func TestVerifyTokenFutureNbfWithAndWithoutLeeway(t *testing.T) {
 	}
 }
 
+func TestVerifyAPISIXTimeClaimsNbfLeewayBoundary(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	leeway := 10 * time.Second
+	boundary := now.Unix() + int64(leeway/time.Second)
+
+	for _, tc := range []struct {
+		name    string
+		nbf     int64
+		wantErr bool
+	}{
+		{name: "before boundary", nbf: boundary - 1},
+		{name: "at boundary", nbf: boundary},
+		{name: "after boundary", nbf: boundary + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyAPISIXTimeClaims(jwt.MapClaims{"nbf": tc.nbf}, now, leeway, []string{"nbf"})
+			if tc.wantErr && err == nil {
+				t.Fatal("verifyAPISIXTimeClaims() error = nil, want future nbf rejection")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("verifyAPISIXTimeClaims() error = %v, want acceptance", err)
+			}
+		})
+	}
+}
+
 func TestVerifyTokenRejectsMissingAndInvalidClaims(t *testing.T) {
 	raw, consumer := signedTokenFixture(t, "HS256", map[string]any{"key": "consumer-key"})
 	if _, err := verifyToken(raw, consumer, time.Now(), 0, []string{"exp"}); err == nil {
@@ -330,6 +356,9 @@ func TestHandlerAcceptsBearerTokenAndAttachesConsumer(t *testing.T) {
 	})
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ctx.IsSensitiveQueryName(r, "jwt") {
+			t.Fatal("jwt-auth did not register configured query key")
+		}
 		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "jwt-user" {
 			t.Fatalf("consumer_name = %v, want jwt-user", got)
 		}
@@ -365,6 +394,19 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Missing JWT token in request") {
 		t.Fatalf("body = %q, want missing token message", rr.Body.String())
+	}
+}
+
+func TestHandlerRegistersCustomQueryNameForLogging(t *testing.T) {
+	p := newTestPlugin(t, Config{Query: "custom_jwt"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?custom_jwt=invalid", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid custom jwt reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if !ctx.IsSensitiveQueryName(req, "custom_jwt") {
+		t.Fatal("jwt-auth did not register custom query name")
 	}
 }
 

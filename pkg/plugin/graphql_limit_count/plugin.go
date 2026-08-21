@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -957,11 +958,8 @@ func requestVar(r *http.Request, key string) string {
 		return r.Header.Get(header)
 	}
 
-	if key == "remote_addr" && r.RemoteAddr != "" {
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			return host
-		}
-		return r.RemoteAddr
+	if key == "remote_addr" {
+		return apisixctx.EffectiveRemoteIP(r)
 	}
 
 	value := variable.GetNginxVar(r, "$"+key)

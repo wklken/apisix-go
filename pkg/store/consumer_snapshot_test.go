@@ -63,6 +63,56 @@ func TestConsumerSnapshotRejectsDuplicatePluginLookupKey(t *testing.T) {
 	}
 }
 
+func TestConsumerIDCanEqualNamespacedPluginLookupKey(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+		consumerValues: make(map[string]resource.Consumer),
+	}
+	consumerID := []byte(`{"username":"key-auth:secret","plugins":{}}`)
+	if err := consumerStore.consumerKVAdd([]byte("key-auth:secret"), consumerID); err != nil {
+		t.Fatalf("add consumer whose ID is a plugin lookup key: %v", err)
+	}
+	credentialOwner := []byte(`{"username":"credential-owner","plugins":{"key-auth":{"key":"secret"}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("credential-owner"), credentialOwner); err != nil {
+		t.Fatalf("add consumer with literal credential: %v", err)
+	}
+	updatedID := []byte(`{"username":"key-auth:secret","plugins":{"key-auth":{"key":"id-key"}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("key-auth:secret"), updatedID); err != nil {
+		t.Fatalf("update consumer whose ID is a plugin lookup key: %v", err)
+	}
+
+	previous := ReplaceGlobalStoreForTest(consumerStore)
+	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
+	gotByID, err := GetConsumer("key-auth:secret")
+	if err != nil {
+		t.Fatalf("GetConsumer() error = %v", err)
+	}
+	if gotByID.Username != "key-auth:secret" {
+		t.Fatalf("GetConsumer() username = %q, want key-auth:secret", gotByID.Username)
+	}
+	gotByCredential, err := GetConsumerByPluginKey("key-auth", "secret")
+	if err != nil {
+		t.Fatalf("GetConsumerByPluginKey() error = %v", err)
+	}
+	if gotByCredential.Username != "credential-owner" {
+		t.Fatalf("GetConsumerByPluginKey() username = %q, want credential-owner", gotByCredential.Username)
+	}
+	if err := consumerStore.consumerKVDelete([]byte("key-auth:secret")); err != nil {
+		t.Fatalf("delete consumer whose ID is a plugin lookup key: %v", err)
+	}
+	gotByCredential, err = GetConsumerByPluginKey("key-auth", "secret")
+	if err != nil {
+		t.Fatalf("GetConsumerByPluginKey() after ID delete error = %v", err)
+	}
+	if gotByCredential.Username != "credential-owner" {
+		t.Fatalf(
+			"GetConsumerByPluginKey() after ID delete username = %q, want credential-owner",
+			gotByCredential.Username,
+		)
+	}
+}
+
 func TestConsumerSnapshotValidatesJWTAuthConsumerSchema(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -575,6 +625,108 @@ func TestGetConsumerByPluginKeyResolvesReferencedAuthKeysLazily(t *testing.T) {
 				t.Fatalf("raw lookup field = %#v, want %q", got, reference)
 			}
 		})
+	}
+}
+
+func TestGetConsumerByPluginKeyRejectsAmbiguousResolvedCredential(t *testing.T) {
+	t.Setenv("SHARED_CONSUMER_KEY_A", "shared-key")
+	t.Setenv("SHARED_CONSUMER_KEY_B", "shared-key")
+	consumerStore := newConsumerSnapshotStore(t)
+
+	for id, value := range map[string][]byte{
+		"alice": []byte(`{"username":"alice","plugins":{"key-auth":{"key":"$ENV://SHARED_CONSUMER_KEY_A"}}}`),
+		"bob":   []byte(`{"username":"bob","plugins":{"key-auth":{"key":"$ENV://SHARED_CONSUMER_KEY_B"}}}`),
+	} {
+		if err := consumerStore.consumerKVAdd([]byte(id), value); err != nil {
+			t.Fatalf("consumerKVAdd(%s) error = %v", id, err)
+		}
+	}
+
+	_, err := consumerStore.getConsumerByPluginKey("key-auth", "shared-key")
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "multiple consumers") {
+		t.Fatalf("lookup error = %v, want fail-closed ambiguous credential error", err)
+	}
+}
+
+func TestGetConsumerByPluginKeyRejectsLiteralAndResolvedCredentialCollision(t *testing.T) {
+	t.Setenv("REFERENCED_CONSUMER_KEY", "shared-key")
+	consumerStore := newConsumerSnapshotStore(t)
+
+	for id, value := range map[string][]byte{
+		"literal":    []byte(`{"username":"literal","plugins":{"key-auth":{"key":"shared-key"}}}`),
+		"referenced": []byte(`{"username":"referenced","plugins":{"key-auth":{"key":"$ENV://REFERENCED_CONSUMER_KEY"}}}`),
+	} {
+		if err := consumerStore.consumerKVAdd([]byte(id), value); err != nil {
+			t.Fatalf("consumerKVAdd(%s) error = %v", id, err)
+		}
+	}
+
+	_, err := consumerStore.getConsumerByPluginKey("key-auth", "shared-key")
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "multiple consumers") {
+		t.Fatalf("lookup error = %v, want fail-closed ambiguous credential error", err)
+	}
+}
+
+func TestGetConsumerByPluginKeyDetectsCollisionBeforeResolvingNonLookupSecrets(t *testing.T) {
+	t.Setenv("REFERENCED_BASIC_USER", "shared-user")
+	unsetEnvForTest(t, "MISSING_REFERENCED_BASIC_PASSWORD")
+	consumerStore := newConsumerSnapshotStore(t)
+
+	for id, value := range map[string][]byte{
+		"literal": []byte(
+			`{"username":"literal","plugins":{"basic-auth":{"username":"shared-user","password":"literal-password"}}}`,
+		),
+		"referenced": []byte(
+			`{"username":"referenced","plugins":{"basic-auth":{"username":"$ENV://REFERENCED_BASIC_USER","password":"$ENV://MISSING_REFERENCED_BASIC_PASSWORD"}}}`,
+		),
+	} {
+		if err := consumerStore.consumerKVAdd([]byte(id), value); err != nil {
+			t.Fatalf("consumerKVAdd(%s) error = %v", id, err)
+		}
+	}
+
+	_, err := consumerStore.getConsumerByPluginKey("basic-auth", "shared-user")
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "multiple consumers") {
+		t.Fatalf("lookup error = %v, want fail-closed ambiguous credential error", err)
+	}
+}
+
+func TestGetConsumerByPluginKeyCachesPluginOwnershipFailure(t *testing.T) {
+	var requests atomic.Int32
+	vault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer vault.Close()
+
+	consumerStore := newConsumerSnapshotStore(t)
+	if err := consumerStore.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("secrets")).Put(
+			[]byte("vault/test1"),
+			[]byte(`{"id":"vault/test1","uri":"`+vault.URL+`","prefix":"kv/apisix","token":"root"}`),
+		)
+	}); err != nil {
+		t.Fatalf("store Vault resource: %v", err)
+	}
+	for id, value := range map[string][]byte{
+		"literal": []byte(`{"username":"literal","plugins":{"key-auth":{"key":"literal-key"}}}`),
+		"vault": []byte(
+			`{"username":"vault","plugins":{"key-auth":{"key":"$secret://vault/test1/consumer/key"}}}`,
+		),
+	} {
+		if err := consumerStore.consumerKVAdd([]byte(id), value); err != nil {
+			t.Fatalf("consumerKVAdd(%s) error = %v", id, err)
+		}
+	}
+
+	for attempt, key := range []string{"literal-key", "different-attacker-key"} {
+		_, err := consumerStore.getConsumerByPluginKey("key-auth", key)
+		if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "resolve key-auth consumer credentials") {
+			t.Fatalf("lookup %d error = %v, want fail-closed ownership snapshot error", attempt+1, err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("Vault requests across plugin ownership lookups = %d, want 1", got)
 	}
 }
 

@@ -139,7 +139,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) fetchToken(r *http.Request) string {
-	token := r.Header.Get(p.config.Header)
+	token := ctx.RestoreTrustedRequestHeader(r, p.config.Header)
 	if strings.HasPrefix(token, "Bearer ") || strings.HasPrefix(token, "bearer ") {
 		return token[7:]
 	}

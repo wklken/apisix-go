@@ -18,6 +18,7 @@ import (
 	_ "crypto/sha512"
 
 	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -701,7 +702,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		clientXAccessToken := ""
 		if p.config.BearerOnly {
-			clientXAccessToken = r.Header.Get("X-Access-Token")
+			clientXAccessToken = apisixctx.RestoreTrustedRequestHeader(r, "X-Access-Token")
 		}
 		clearOutputHeaders(r)
 		if !p.config.BearerOnly && r.URL.Path == p.config.LogoutPath {
@@ -733,7 +734,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var claims map[string]any
 		var err error
-		if p.usesLocalJWTVerification() {
+		locallyVerified := p.usesLocalJWTVerification()
+		if locallyVerified {
 			claims, err = p.verifyBearerJWT(r, token)
 			if err != nil {
 				p.writeInvalidToken(w, err.Error())
@@ -746,7 +748,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if !tokenActive(claims) {
+		active := tokenActive(claims)
+		if locallyVerified {
+			active = locallyVerifiedTokenActive(claims)
+		}
+		if !active {
 			p.writeInvalidToken(w, "inactive token")
 			return
 		}

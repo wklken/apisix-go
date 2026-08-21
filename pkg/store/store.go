@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
+	"golang.org/x/sync/singleflight"
 )
 
 // eventUpdateHook is a function that is called when an event is updated.
@@ -46,9 +47,12 @@ type Store struct {
 	// reject provider acknowledgement when required publication fails.
 	acknowledgedEventUpdateHooks []AcknowledgedEventUpdateHook
 
-	// FIXME: not so sure about this
-	// store uniq key->consumer_id, like key-auth:123456->foo
+	// store plugin lookup key -> consumer_id, like key-auth:123456->foo.
+	// Consumer IDs live in consumerIDs so an ID cannot collide with a
+	// namespaced credential key.
 	consumerKV map[string][]byte
+	// store consumer ID -> consumer_id bytes for identity lookups.
+	consumerIDs map[string][]byte
 	// store consumer_id -> keys, like foo->[key-auth:123456], for update and delete
 	consumerToKeys map[string][]string
 	// store validated consumers with environment and managed secret references unresolved
@@ -58,6 +62,12 @@ type Store struct {
 	// store consumer ID -> plugin names registered in consumerReferenceKV
 	consumerToReferences map[string][]string
 	consumerMu           sync.RWMutex
+	consumerGeneration   atomic.Uint64
+
+	consumerLookupCacheMu sync.Mutex
+	consumerLookupCache   *cacheutil.BoundedTTLMap[consumerLookupSnapshot]
+	consumerLookupGroup   singleflight.Group
+	secretGeneration      atomic.Uint64
 
 	vaultMu      sync.Mutex
 	vaultClient  *http.Client
@@ -130,6 +140,7 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 		stopProducers: make(chan struct{}),
 
 		consumerKV:              map[string][]byte{},
+		consumerIDs:             map[string][]byte{},
 		consumerToKeys:          map[string][]string{},
 		consumerValues:          map[string]resource.Consumer{},
 		consumerReferenceKV:     map[string]map[string][]byte{},
@@ -609,6 +620,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		s.vaultMu.Lock()
 		s.vaultSecrets = nil
 		s.vaultMu.Unlock()
+		s.secretGeneration.Add(1)
 	}
 	if needsConfigGeneration {
 		s.configGeneration.Add(1)

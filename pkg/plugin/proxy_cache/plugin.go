@@ -776,7 +776,7 @@ func requestVar(r *http.Request, name string) string {
 		}
 		return "http"
 	case name == "remote_addr":
-		return base.RemoteIP(r.RemoteAddr)
+		return apisixctx.EffectiveRemoteIP(r)
 	case name == "consumer_name":
 		if value, ok := apisixctx.GetApisixVar(r, "$consumer_name").(string); ok {
 			return value

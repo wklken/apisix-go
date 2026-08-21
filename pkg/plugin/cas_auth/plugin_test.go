@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+const testLogoutTrustedCIDR = "192.0.2.0/24"
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -110,6 +113,9 @@ func TestCallbackValidatesTicketAndCreatesSession(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called for callback")
 	})).ServeHTTP(callbackRR, callbackReq)
+	if !apisixctx.IsSensitiveQueryName(callbackReq, "ticket") {
+		t.Fatal("cas-auth did not register ticket query key")
+	}
 
 	if callbackRR.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302", callbackRR.Code)
@@ -167,9 +173,10 @@ func TestExistingSessionPassesRequest(t *testing.T) {
 
 func TestIdPLogoutRequestDeletesMatchingCASSession(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		IDPURI:         "https://cas.example.com",
-		CASCallbackURI: "/cas_callback",
-		LogoutURI:      "/logout",
+		IDPURI:                 "https://cas.example.com",
+		CASCallbackURI:         "/cas_callback",
+		LogoutURI:              "/logout",
+		LogoutTrustedAddresses: []string{testLogoutTrustedCIDR},
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
 			Secure: new(false),
@@ -192,6 +199,171 @@ func TestIdPLogoutRequestDeletesMatchingCASSession(t *testing.T) {
 	}
 	if testSessionExists(p, "ST-1") {
 		t.Fatal("CAS session still exists after IdP logout request")
+	}
+}
+
+func TestIdPLogoutRequestAcceptsXMLDeclaration(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:                 "https://cas.example.com",
+		CASCallbackURI:         "/cas_callback",
+		LogoutURI:              "/logout",
+		LogoutTrustedAddresses: []string{testLogoutTrustedCIDR},
+		Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32), Secure: new(false)},
+	})
+	p.storeSession("ST-xml", "alice")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/cas_callback",
+		strings.NewReader(
+			`<?xml version="1.0" encoding="UTF-8"?><samlp:LogoutRequest><samlp:SessionIndex>ST-xml</samlp:SessionIndex></samlp:LogoutRequest>`,
+		),
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+		ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if testSessionExists(p, "ST-xml") {
+		t.Fatal("valid XML declaration request did not delete the CAS session")
+	}
+}
+
+func TestIdPLogoutRequestRequiresOneDirectNonEmptySessionIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "wrong root", body: `<samlp:Other><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:Other>`},
+		{name: "missing", body: `<samlp:LogoutRequest></samlp:LogoutRequest>`},
+		{
+			name: "empty",
+			body: `<samlp:LogoutRequest><samlp:SessionIndex>   </samlp:SessionIndex></samlp:LogoutRequest>`,
+		},
+		{
+			name: "duplicate",
+			body: `<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex><samlp:SessionIndex>ST-2</samlp:SessionIndex></samlp:LogoutRequest>`,
+		},
+		{
+			name: "nested",
+			body: `<samlp:LogoutRequest><samlp:Issuer><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:Issuer></samlp:LogoutRequest>`,
+		},
+		{
+			name: "trailing data",
+			body: `<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>x`,
+		},
+		{
+			name: "directive",
+			body: `<!DOCTYPE LogoutRequest><samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>`,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				IDPURI:                 "https://cas.example.com",
+				CASCallbackURI:         "/cas_callback",
+				LogoutURI:              "/logout",
+				LogoutTrustedAddresses: []string{testLogoutTrustedCIDR},
+				Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32), Secure: new(false)},
+			})
+			p.storeSession("ST-1", "alice")
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/cas_callback", strings.NewReader(test.body))
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+				ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+			}
+			if !testSessionExists(p, "ST-1") {
+				t.Fatal("invalid logout request deleted the CAS session")
+			}
+		})
+	}
+}
+
+func TestIdPLogoutRequestRejectsOversizedBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:                 "https://cas.example.com",
+		CASCallbackURI:         "/cas_callback",
+		LogoutURI:              "/logout",
+		LogoutTrustedAddresses: []string{testLogoutTrustedCIDR},
+		Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32), Secure: new(false)},
+	})
+	p.storeSession("ST-1", "alice")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/cas_callback",
+		strings.NewReader(strings.Repeat("x", 64*1024+1)),
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+		ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if !testSessionExists(p, "ST-1") {
+		t.Fatal("oversized logout request deleted the CAS session")
+	}
+}
+
+func TestIdPLogoutRequestChecksConfiguredSocketPeerCIDR(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:                 "https://cas.example.com",
+		CASCallbackURI:         "/cas_callback",
+		LogoutURI:              "/logout",
+		LogoutTrustedAddresses: []string{"192.0.2.0/24"},
+		Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32), Secure: new(false)},
+	})
+	body := `<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>`
+
+	p.storeSession("ST-1", "alice")
+	untrusted := httptest.NewRequest(http.MethodPost, "http://example.com/cas_callback", strings.NewReader(body))
+	untrusted.RemoteAddr = "198.51.100.10:1234"
+	untrusted.Header.Set("X-Forwarded-For", "192.0.2.10")
+	untrustedRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+		ServeHTTP(untrustedRR, untrusted)
+	if untrustedRR.Code != http.StatusForbidden {
+		t.Fatalf("untrusted status = %d, want 403", untrustedRR.Code)
+	}
+	if !testSessionExists(p, "ST-1") {
+		t.Fatal("untrusted logout request deleted the CAS session")
+	}
+
+	trusted := httptest.NewRequest(http.MethodPost, "http://example.com/cas_callback", strings.NewReader(body))
+	trusted.RemoteAddr = "192.0.2.10:1234"
+	trustedRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+		ServeHTTP(trustedRR, trusted)
+	if trustedRR.Code != http.StatusOK {
+		t.Fatalf("trusted status = %d, want 200", trustedRR.Code)
+	}
+	if testSessionExists(p, "ST-1") {
+		t.Fatal("trusted logout request did not delete the CAS session")
+	}
+}
+
+func TestIdPLogoutRequestRejectsEmptyTrustedAddressList(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:         "https://cas.example.com",
+		CASCallbackURI: "/cas_callback",
+		LogoutURI:      "/logout",
+		Cookie:         CookieConfig{Secret: strings.Repeat("s", 32), Secure: new(false)},
+	})
+	p.storeSession("ST-1", "alice")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/cas_callback",
+		strings.NewReader(`<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>`),
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next handler called") })).
+		ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 when trusted CIDRs are omitted", rr.Code)
+	}
+	if !testSessionExists(p, "ST-1") {
+		t.Fatal("SLO without trusted CIDRs deleted the CAS session")
 	}
 }
 
@@ -387,6 +559,19 @@ func TestPostInitRejectsSameSiteNoneWithoutSecureCookie(t *testing.T) {
 	}}
 	if err := p2.PostInit(); err != nil {
 		t.Fatalf("SameSite=None with secure=true failed PostInit validation: %v", err)
+	}
+}
+
+func TestPostInitRejectsInvalidLogoutTrustedAddress(t *testing.T) {
+	p := &Plugin{config: Config{
+		IDPURI:                 "https://cas.example.com",
+		CASCallbackURI:         "/cas_callback",
+		LogoutURI:              "/logout",
+		LogoutTrustedAddresses: []string{"not-a-cidr"},
+		Cookie:                 CookieConfig{Secret: strings.Repeat("s", 32)},
+	}}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() accepted invalid logout_trusted_addresses CIDR")
 	}
 }
 

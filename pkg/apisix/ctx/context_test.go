@@ -162,6 +162,32 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	}
 }
 
+func TestAttachConsumerRedactsPluginCredentialsFromRequestVars(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = WithApisixVars(req, map[string]string{})
+
+	AttachConsumer(req, resource.Consumer{
+		Username: "bob",
+		GroupID:  "gold",
+		Plugins: map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{"username": "bob", "password": "secret"},
+			"rate-limit": map[string]any{"count": 10},
+		},
+		Labels: map[string]any{"team": "edge"},
+	})
+
+	consumer, ok := GetApisixVar(req, "$consumer").(resource.Consumer)
+	if !ok {
+		t.Fatalf("$consumer = %T, want resource.Consumer", GetApisixVar(req, "$consumer"))
+	}
+	if consumer.Username != "bob" || consumer.GroupID != "gold" || consumer.Labels["team"] != "edge" {
+		t.Fatalf("redacted consumer identity = %#v, want identity and labels preserved", consumer)
+	}
+	if len(consumer.Plugins) != 2 || consumer.Plugins["basic-auth"] != nil || consumer.Plugins["rate-limit"] != nil {
+		t.Fatalf("redacted consumer plugins = %#v, want names without configuration", consumer.Plugins)
+	}
+}
+
 func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	RegisterApisixVar(req, "$route_id", "route-1")
@@ -170,6 +196,34 @@ func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 func TestRegisterRequestVarWithoutRequestStateIsNoOp(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	RegisterRequestVar(req, "$status", http.StatusOK)
+}
+
+func TestSensitiveQueryNamesWorkWithAndWithoutRequestState(t *testing.T) {
+	withState := WithRequestVars(httptest.NewRequest(http.MethodGet, "/?token=a", nil))
+	RegisterSensitiveQueryName(withState, "token")
+	RegisterSensitiveQueryName(withState, "token")
+	RegisterSensitiveQueryName(withState, "code")
+	if got := SensitiveQueryNames(withState); len(got) != 2 {
+		t.Fatalf("state-backed sensitive names = %#v, want two names", got)
+	}
+	if !IsSensitiveQueryName(withState, "token") || IsSensitiveQueryName(withState, "safe") {
+		t.Fatal("state-backed sensitive query lookup has wrong membership")
+	}
+
+	direct := httptest.NewRequest(http.MethodGet, "/?ticket=a", nil)
+	RegisterSensitiveQueryName(direct, "ticket")
+	if !IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct request did not retain sensitive query registration")
+	}
+	direct = WithRequestVars(direct)
+	if !IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct registration was not adopted by RequestState")
+	}
+	RecycleVars(direct)
+	if IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct request sensitive query registration survived recycle")
+	}
+	RecycleVars(withState)
 }
 
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {

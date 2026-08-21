@@ -41,6 +41,14 @@ func TestNewTransportDoesNotAutoDecompressUpstreamResponses(t *testing.T) {
 	}
 }
 
+func TestNewTransportDoesNotUseEnvironmentProxy(t *testing.T) {
+	transport := NewTransport((&TransportOptionBuilder{}).Build())
+
+	if transport.Proxy != nil {
+		t.Fatal("transport Proxy is configured, want direct upstream connections")
+	}
+}
+
 func TestNewTransportAppliesConnectionCaps(t *testing.T) {
 	transport := NewTransport((&TransportOptionBuilder{}).
 		WithMaxIdleConnections(64).

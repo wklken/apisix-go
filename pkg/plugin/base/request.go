@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -106,9 +107,8 @@ func RequestVarFromNginx(r *http.Request, key string) string {
 		return r.Header.Get(strings.ReplaceAll(after, "_", "-"))
 	}
 
-	value := apisixvar.GetNginxVar(r, "$"+key)
 	if key == "remote_addr" {
-		return RemoteIP(value)
+		return apisixctx.EffectiveRemoteIP(r)
 	}
-	return value
+	return apisixvar.GetNginxVar(r, "$"+key)
 }

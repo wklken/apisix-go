@@ -144,21 +144,9 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attachLegacyConsumer(r)
+		ctx.AttachConsumerFromAuthenticationState(r)
 		next.ServeHTTP(w, r)
 	}))
-}
-
-func attachLegacyConsumer(r *http.Request) {
-	state, ok := ctx.AuthenticationStateFrom(r)
-	if !ok {
-		return
-	}
-	consumer := state.Consumer()
-	ctx.RegisterApisixVar(r, "$consumer", consumer)
-	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
-	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
-	r.Header.Set("X-Consumer-Username", consumer.Username)
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
@@ -254,7 +242,8 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 // checked with the consumer secret or public key, and exp/nbf claims follow
 // APISIX semantics with the configured grace period.
 func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
-	if token := r.Header.Get(p.config.Header); token != "" {
+	ctx.RegisterSensitiveQueryName(r, p.config.Query)
+	if token := ctx.RestoreTrustedRequestHeader(r, p.config.Header); token != "" {
 		if *p.config.HideCredentials {
 			r.Header.Del(p.config.Header)
 		}

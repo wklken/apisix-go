@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 const accessLogVersion = "apisix-go"
@@ -45,7 +46,7 @@ type AccessLogRequest struct {
 func CaptureMinimalAccessLogRequest(r *http.Request, started time.Time) AccessLogRequest {
 	return AccessLogRequest{
 		Host:     HostWithoutPort(r.Host),
-		ClientIP: HostWithoutPort(r.RemoteAddr),
+		ClientIP: apisixctx.EffectiveRemoteIP(r),
 		Started:  started,
 	}
 }
@@ -59,7 +60,7 @@ func CaptureAccessLogRequest(r *http.Request, started time.Time, serverAddr stri
 		URI:           r.URL.RequestURI(),
 		URL:           RequestURL(r, serverAddr),
 		Host:          HostWithoutPort(r.Host),
-		ClientIP:      HostWithoutPort(r.RemoteAddr),
+		ClientIP:      apisixctx.EffectiveRemoteIP(r),
 		ContentLength: max(r.ContentLength, 0),
 		Headers:       headers,
 		QueryString:   CollapseQueryValues(r.URL.Query()),
@@ -78,6 +79,14 @@ func BuildAccessLogSnapshot(
 	r *http.Request,
 	duration time.Duration,
 ) map[string]any {
+	if r != nil {
+		sensitiveQueryNames := apisixctx.SensitiveQueryNames(r)
+		if len(sensitiveQueryNames) > 0 {
+			request.URI = apisixlog.RedactURI(request.URI, sensitiveQueryNames)
+			request.URL = apisixlog.RedactURI(request.URL, sensitiveQueryNames)
+			request.QueryString = apisixlog.RedactCollapsedQuery(request.QueryString, sensitiveQueryNames)
+		}
+	}
 	hostname := accessLogHostname()
 	latency := float64(duration) / float64(time.Millisecond)
 	upstreamLatency := RequestInt64(r, "$upstream_latency")

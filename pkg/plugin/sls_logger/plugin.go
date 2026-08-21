@@ -200,14 +200,17 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+	_, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
 		p.config.AccessKeySecret,
 		"sls-logger.access_key_secret",
 	)
 	if err != nil {
 		return fmt.Errorf("sls-logger access_key_secret: %w", err)
 	}
-	p.config.AccessKeySecret = resolved
+	// The official schema requires this field, so validate encrypted material
+	// fail-closed. The syslog transport does not authenticate with it: clear the
+	// plaintext immediately and never serialize it into the log message.
+	p.config.AccessKeySecret = ""
 
 	if p.config.SSLVerify == nil {
 		verify := true
@@ -509,11 +512,10 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 
 func (p *Plugin) structuredData() string {
 	return fmt.Sprintf(
-		`[logservice project="%s" logstore="%s" access-key-id="%s" access-key-secret="%s"]`,
+		`[logservice project="%s" logstore="%s" access-key-id="%s"]`,
 		escapeStructuredDataValue(p.config.Project),
 		escapeStructuredDataValue(p.config.Logstore),
 		escapeStructuredDataValue(p.config.AccessKeyID),
-		escapeStructuredDataValue(p.config.AccessKeySecret),
 	)
 }
 

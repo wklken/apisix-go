@@ -63,12 +63,21 @@ cases:
           plugins:
             real-ip:
               source: http_xff
+              trusted_addresses: [127.0.0.0/8]
             ip-restriction:
               whitelist: [1.1.1.1]
           upstream: &named_upstream
             type: roundrobin
             nodes:
               "{{FIXTURE.primary.ADDR}}": 1
+        - id: real-ip-ipv4-no-trust
+          uri: /no-trust
+          plugins:
+            real-ip:
+              source: arg_real_ip
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: *named_upstream
     fixtures:
       - name: primary
         kind: http
@@ -110,6 +119,10 @@ cases:
           headers:
             XFF: 1.1.1.1:65536
         output: *forbidden_output
+      - name: client-controlled-source-without-trust-does-not-rewrite
+        input:
+          path: /no-trust?real_ip=1.1.1.1
+        output: *forbidden_output
 
   - name: ipv6-addresses
     source:
@@ -121,6 +134,7 @@ cases:
           plugins:
             real-ip:
               source: http_xff
+              trusted_addresses: [127.0.0.0/8]
             ip-restriction:
               whitelist: ['::2']
           upstream: *named_upstream
@@ -161,6 +175,7 @@ cases:
           plugins:
             real-ip:
               source: http_xff
+              trusted_addresses: [127.0.0.0/8]
             response-rewrite:
               headers:
                 remote_port: $remote_port
@@ -192,6 +207,7 @@ cases:
           plugins:
             real-ip:
               source: http_x_forwarded_for
+              trusted_addresses: [127.0.0.0/8]
             ip-restriction:
               whitelist: ['::2']
           upstream: *named_upstream

@@ -420,13 +420,22 @@ func BuildSnapshotFromOwnedInputs(
 	if r == nil {
 		return snapshot
 	}
+	remoteIP := apisixctx.EffectiveRemoteIP(r)
+	remotePort := apisixctx.GetString(r.Context(), string(apisixctx.RemotePortKey))
+	if remotePort == "" {
+		_, remotePort, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	remoteAddr := remoteIP
+	if remoteIP != "" && remotePort != "" {
+		remoteAddr = net.JoinHostPort(remoteIP, remotePort)
+	}
 	request := RequestLogSnapshot{
 		Method:        r.Method,
 		URI:           r.URL.RequestURI(),
 		URL:           r.URL.String(),
 		Path:          r.URL.Path,
 		Host:          r.Host,
-		RemoteAddr:    r.RemoteAddr,
+		RemoteAddr:    remoteAddr,
 		Scheme:        requestScheme(r),
 		Proto:         r.Proto,
 		ContentLength: r.ContentLength,
@@ -435,18 +444,50 @@ func BuildSnapshotFromOwnedInputs(
 		Body:          requestBody,
 		BodyTruncated: requestBodyTruncated,
 	}
+	sensitiveQueryNames := apisixctx.SensitiveQueryNames(r)
+	request.URI = RedactURI(request.URI, sensitiveQueryNames)
+	request.URL = RedactURI(request.URL, sensitiveQueryNames)
+	request.Query = RedactQuery(request.Query, sensitiveQueryNames)
 	remaining := snapshotValueBudget
 	request.APISIXVars = cloneSafeMap(apisixctx.GetApisixVars(r), &remaining)
 	if request.APISIXVars == nil {
 		request.APISIXVars = make(map[string]any)
 	}
-	if remoteAddr := apisixctx.GetString(r.Context(), string(apisixctx.RemoteAddrKey)); remoteAddr != "" {
-		request.APISIXVars["$remote_addr"] = remoteAddr
+	if remoteIP != "" {
+		request.APISIXVars["$remote_addr"] = remoteIP
 	}
-	if remotePort := apisixctx.GetString(r.Context(), string(apisixctx.RemotePortKey)); remotePort != "" {
+	if remotePort != "" {
 		request.APISIXVars["$remote_port"] = remotePort
 	}
 	request.RequestVars = cloneSafeMap(apisixctx.GetRequestVars(r), &remaining)
+	if len(sensitiveQueryNames) > 0 {
+		redactedQueryString := RedactRawQuery(r.URL.RawQuery, sensitiveQueryNames)
+		redactedRequestURI := RedactURI(r.URL.RequestURI(), sensitiveQueryNames)
+		for _, values := range []map[string]any{request.APISIXVars, request.RequestVars} {
+			if values == nil {
+				continue
+			}
+			if _, ok := values["$args"]; ok {
+				values["$args"] = redactedQueryString
+			}
+			if _, ok := values["$query_string"]; ok {
+				values["$query_string"] = redactedQueryString
+			}
+			if _, ok := values["$request_uri"]; ok {
+				values["$request_uri"] = redactedRequestURI
+			}
+			if upstreamURI, ok := values["$upstream_uri"].(string); ok {
+				values["$upstream_uri"] = RedactURI(upstreamURI, sensitiveQueryNames)
+			}
+			for key := range values {
+				if queryName, ok := strings.CutPrefix(key, "$arg_"); ok {
+					if _, sensitive := sensitiveQueryNames[queryName]; sensitive {
+						values[key] = sensitiveQueryPlaceholder
+					}
+				}
+			}
+		}
+	}
 	correlation := CaptureRequestCorrelation(r)
 	request.ID = correlation.RequestID
 	snapshot.NodeID = correlation.NodeID

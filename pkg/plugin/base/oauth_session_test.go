@@ -266,4 +266,7 @@ func TestCodeFromRequest(t *testing.T) {
 	if got := CodeFromRequest(r, "X-Code", "code"); got != "query-code" {
 		t.Fatalf("CodeFromRequest() = %q, want query-code", got)
 	}
+	if !apisixctx.IsSensitiveQueryName(r, "code") {
+		t.Fatal("CodeFromRequest() did not register query code for logging redaction")
+	}
 }

@@ -11,10 +11,12 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 	bolt "go.etcd.io/bbolt"
@@ -128,7 +130,7 @@ func GetConsumer(id string) (resource.Consumer, error) {
 	consumer, ok := s.consumerValues[id]
 	s.consumerMu.RUnlock()
 	if ok {
-		return consumer, nil
+		return cloneConsumer(consumer), nil
 	}
 	config, err := s.GetFromBucket("consumers", util.StringToBytes(id))
 	if err != nil {
@@ -419,37 +421,123 @@ func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, e
 }
 
 func (s *Store) getConsumerByPluginKey(pluginName, key string) (resource.Consumer, error) {
-	directKey := fmt.Sprintf("%s:%s", pluginName, key)
-	s.consumerMu.RLock()
-	directID := append([]byte(nil), s.consumerKV[directKey]...)
-	candidateIDs := make([]string, 0, len(s.consumerReferenceKV[pluginName]))
-	for id := range s.consumerReferenceKV[pluginName] {
-		candidateIDs = append(candidateIDs, id)
-	}
-	s.consumerMu.RUnlock()
-
-	if len(directID) > 0 {
-		consumer, err := s.resolveConsumerForPluginKey(string(directID), pluginName, key)
+	for {
+		consumerGeneration := s.consumerGeneration.Load()
+		secretGeneration := s.secretGeneration.Load()
+		snapshot, err := s.getConsumerLookupSnapshot(consumerGeneration, secretGeneration, pluginName)
+		if consumerGeneration != s.consumerGeneration.Load() || secretGeneration != s.secretGeneration.Load() {
+			continue
+		}
+		if err != nil {
+			return resource.Consumer{}, err
+		}
+		owner, ok := snapshot.owners[key]
+		if !ok {
+			return resource.Consumer{}, ErrNotFound
+		}
+		consumer, err := s.resolveConsumerForPluginKey(owner, pluginName, key)
+		if consumerGeneration != s.consumerGeneration.Load() || secretGeneration != s.secretGeneration.Load() {
+			continue
+		}
 		if err != nil {
 			return resource.Consumer{}, consumerCredentialLookupError(pluginName, err)
 		}
 		return consumer, nil
 	}
+}
 
-	sort.Strings(candidateIDs)
-	var resolveErr error
-	for _, id := range candidateIDs {
-		consumer, err := s.resolveConsumerForPluginKey(id, pluginName, key)
-		if err != nil {
-			resolveErr = err
+const (
+	consumerLookupCacheCapacity = 4096
+	consumerLookupCacheTTL      = 5 * time.Second
+	consumerLookupErrorTTL      = time.Second
+)
+
+type consumerLookupSnapshot struct {
+	owners map[string]string
+	err    error
+}
+
+func (s *Store) getConsumerLookupSnapshot(
+	consumerGeneration, secretGeneration uint64,
+	pluginName string,
+) (consumerLookupSnapshot, error) {
+	cacheKey := fmt.Sprintf("%d\x00%d\x00%s", consumerGeneration, secretGeneration, pluginName)
+	cache := s.getConsumerLookupCache()
+	if cached, ok := cache.Get(cacheKey); ok {
+		return cached, cached.err
+	}
+	value, _, _ := s.consumerLookupGroup.Do(cacheKey, func() (any, error) {
+		if cached, ok := cache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		resolved, cacheFailure := s.buildConsumerLookupSnapshot(pluginName)
+		if resolved.err == nil {
+			cache.Set(cacheKey, resolved, consumerLookupCacheTTL)
+		} else if cacheFailure {
+			cache.Set(cacheKey, resolved, consumerLookupErrorTTL)
+		}
+		return resolved, nil
+	})
+	resolved := value.(consumerLookupSnapshot)
+	return resolved, resolved.err
+}
+
+func (s *Store) getConsumerLookupCache() *cacheutil.BoundedTTLMap[consumerLookupSnapshot] {
+	s.consumerLookupCacheMu.Lock()
+	defer s.consumerLookupCacheMu.Unlock()
+	if s.consumerLookupCache == nil {
+		s.consumerLookupCache = cacheutil.NewBoundedTTLMap[consumerLookupSnapshot](
+			consumerLookupCacheCapacity,
+			time.Now,
+		)
+	}
+	return s.consumerLookupCache
+}
+
+type consumerLookupCandidate struct {
+	id        string
+	lookupKey string
+}
+
+func (s *Store) buildConsumerLookupSnapshot(pluginName string) (consumerLookupSnapshot, bool) {
+	s.consumerMu.RLock()
+	candidates := make([]consumerLookupCandidate, 0)
+	for id, consumer := range s.consumerValues {
+		config, ok := consumer.Plugins[pluginName]
+		if !ok {
 			continue
 		}
-		return consumer, nil
+		lookupKey, err := consumerPluginLookupKey(pluginName, config)
+		if err != nil {
+			s.consumerMu.RUnlock()
+			return consumerLookupSnapshot{err: consumerCredentialLookupError(pluginName, err)}, true
+		}
+		candidates = append(candidates, consumerLookupCandidate{id: id, lookupKey: lookupKey})
 	}
-	if resolveErr != nil {
-		return resource.Consumer{}, consumerCredentialLookupError(pluginName, resolveErr)
+	s.consumerMu.RUnlock()
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].id < candidates[j].id })
+	owners := make(map[string]string, len(candidates))
+	for _, candidate := range candidates {
+		resolvedKey := candidate.lookupKey
+		if isConsumerSecretReference(resolvedKey) {
+			var err error
+			resolvedKey, err = s.resolveConsumerSecretString(resolvedKey)
+			if err != nil {
+				cacheFailure := strings.HasPrefix(candidate.lookupKey, managedSecretPrefix)
+				return consumerLookupSnapshot{err: consumerCredentialLookupError(pluginName, err)}, cacheFailure
+			}
+		}
+		if owner := owners[resolvedKey]; owner != "" && owner != candidate.id {
+			return consumerLookupSnapshot{err: fmt.Errorf(
+				"%w: %s credential matches multiple consumers",
+				ErrNotFound,
+				pluginName,
+			)}, true
+		}
+		owners[resolvedKey] = candidate.id
 	}
-	return resource.Consumer{}, ErrNotFound
+	return consumerLookupSnapshot{owners: owners}, false
 }
 
 func (s *Store) resolveConsumerForPluginKey(id, pluginName, key string) (resource.Consumer, error) {
@@ -598,8 +686,8 @@ func (s *Store) rebuildSSLCertificateIndex() {
 	for _, entry := range entries {
 		ssl, err := ParseSSL(entry.value)
 		if err != nil {
-			logger.Errorf("reject SSL resource: parse: %s", err)
-			return
+			logger.Errorf("skip invalid persisted SSL resource %q: parse: %s", entry.id, err)
+			continue
 		}
 		if ssl.Status == 0 {
 			continue
@@ -609,8 +697,8 @@ func (s *Store) rebuildSSLCertificateIndex() {
 		}
 		certificate, err := buildSSLCertificateConfig(ssl)
 		if err != nil {
-			logger.Errorf("reject SSL resource %q: load: %s", entry.id, err)
-			return
+			logger.Errorf("skip invalid persisted SSL resource %q: load: %s", entry.id, err)
+			continue
 		}
 		id := entry.id
 		if id == "" {
@@ -1087,6 +1175,12 @@ func cloneService(service resource.Service) resource.Service {
 	service.Upstream = cloneUpstream(service.Upstream)
 	service.Hosts = append([]string(nil), service.Hosts...)
 	return service
+}
+
+func cloneConsumer(consumer resource.Consumer) resource.Consumer {
+	consumer.Plugins = clonePluginConfigs(consumer.Plugins)
+	consumer.Labels = cloneAnyMap(consumer.Labels)
+	return consumer
 }
 
 func cloneUpstream(upstream resource.Upstream) resource.Upstream {

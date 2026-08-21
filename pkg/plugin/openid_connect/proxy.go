@@ -94,15 +94,20 @@ func clearOutputHeaders(r *http.Request) {
 }
 
 func tokenActive(claims map[string]any) bool {
+	active, ok := claims["active"].(bool)
+	return ok && active
+}
+
+func locallyVerifiedTokenActive(claims map[string]any) bool {
 	active, ok := claims["active"]
 	if !ok {
 		return true
 	}
-	switch v := active.(type) {
+	switch value := active.(type) {
 	case bool:
-		return v
+		return value
 	case string:
-		return v == "true"
+		return value == "true"
 	default:
 		return false
 	}

@@ -21,6 +21,7 @@ cases:
               logstore: your-logstore
               access_key_id: your_access_key
               access_key_secret: your_access_secret
+              ssl_verify: false
               batch_max_size: 1
               log_format: {case: schema-valid}
           upstream:
@@ -34,7 +35,8 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '^\<46\>1 .* \[logservice project="your-project" logstore="your-logstore" access-key-id="your_access_key" access-key-secret="your_access_secret"\] \{"case":"schema-valid","route_id":"sls-schema-valid"\}\n$'}
+          - payload: {matches: '^\<46\>1 .* \[logservice project="your-project" logstore="your-logstore" access-key-id="your_access_key"\] \{"case":"schema-valid","route_id":"sls-schema-valid"\}\n$'}
+            forbidden_matches: [access-key-secret, your_access_secret]
         network_respond: [{payload: ''}]
     steps:
       - name: accepted-schema-emits-rfc5424
@@ -435,6 +437,7 @@ cases:
               logstore: your_logstore
               access_key_id: your_access_key_id
               access_key_secret: your_access_key_secret
+              ssl_verify: false
               batch_max_size: 1
               log_format: {case: encrypted-secret}
           upstream:
@@ -448,10 +451,11 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '\[logservice project="your_project" logstore="your_logstore" access-key-id="your_access_key_id" access-key-secret="your_access_key_secret"\] \{"case":"encrypted-secret","route_id":"1"\}\n$'}
+          - payload: {matches: '\[logservice project="your_project" logstore="your_logstore" access-key-id="your_access_key_id"\] \{"case":"encrypted-secret","route_id":"1"\}\n$'}
+            forbidden_matches: [access-key-secret, your_access_key_secret]
         network_respond: [{payload: ''}]
     steps:
-      - name: runtime-decrypts-secret-for-delivery
+      - name: runtime-validates-encrypted-secret-without-emitting-it
         input: {method: GET, path: /encrypted}
         output: {status: 200, body: {equals: encrypted}}
         wait: 1s
@@ -461,7 +465,7 @@ cases:
           bucket: routes
           key: '1'
           fields:
-            /plugins/sls-logger/access_key_secret: 1T6nR0fz4yhz/zTuRTvt7Xu3c9ASelDXG2//e/A5OiA=
+            /plugins/sls-logger/access_key_id: your_access_key_id
           forbidden_matches: [your_access_key_secret]
 
   - name: route-log-format-configuration-is-effective

@@ -1,8 +1,10 @@
 package base
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -129,6 +131,17 @@ func TestCaptureAccessLogRequest(t *testing.T) {
 	}
 }
 
+func TestCaptureAccessLogRequestUsesEffectiveRemoteIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	r.RemoteAddr = "10.0.0.2:54321"
+	r = r.WithContext(context.WithValue(r.Context(), apisixctx.RemoteAddrKey, "198.51.100.20"))
+
+	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
+	if request.ClientIP != "198.51.100.20" {
+		t.Fatalf("ClientIP = %q, want effective remote address", request.ClientIP)
+	}
+}
+
 func TestBuildAccessLogSnapshot(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	r = apisixctx.WithApisixVars(r, map[string]string{
@@ -239,6 +252,31 @@ func TestBuildAccessLogDefaultsRedactSensitiveHeaders(t *testing.T) {
 		Finished: time.Unix(101, 0),
 	}, "route-1")
 	assertSafeDefaultAccessLogHeaders(t, detached)
+}
+
+func TestBuildAccessLogSnapshotRedactsQueryRegisteredAfterCapture(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders?keep=yes&ticket=secret&ticket=again", nil)
+	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
+	apisixctx.RegisterSensitiveQueryName(r, "ticket")
+
+	snapshot := BuildAccessLogSnapshot(request, http.StatusOK, nil, 0, "route-1", r, 0)
+	fields := snapshot["request"].(map[string]any)
+	if fields["url"] != "http://gateway.test:9080/orders?keep=yes&ticket=***&ticket=***" {
+		t.Fatalf("legacy access-log URL = %v", fields["url"])
+	}
+	if fields["uri"] != "/orders?keep=yes&ticket=***&ticket=***" {
+		t.Fatalf("legacy access-log URI = %v", fields["uri"])
+	}
+	query := fields["querystring"].(map[string]any)
+	if got := query["ticket"]; !reflect.DeepEqual(got, []string{"***", "***"}) {
+		t.Fatalf("legacy query ticket = %#v", got)
+	}
+	if query["keep"] != "yes" {
+		t.Fatalf("legacy query keep = %#v", query["keep"])
+	}
+	if got := r.URL.RequestURI(); got != "/orders?keep=yes&ticket=secret&ticket=again" {
+		t.Fatalf("legacy access log changed live request: %q", got)
+	}
 }
 
 var testSensitiveAccessLogHeaders = []string{

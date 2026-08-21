@@ -62,6 +62,10 @@ const schema = `
       "type": "integer",
       "exclusiveMinimum": 0,
       "default": 1048576
+    },
+    "keep_sensitive_headers": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": ["host"]
@@ -69,11 +73,12 @@ const schema = `
 `
 
 type Config struct {
-	Host           string  `json:"host"`
-	Path           string  `json:"path,omitempty"`
-	PathConcatMode string  `json:"path_concat_mode,omitempty"`
-	SampleRatio    float64 `json:"sample_ratio,omitempty"`
-	MaxBodySize    int     `json:"max_body_size,omitempty"`
+	Host                 string  `json:"host"`
+	Path                 string  `json:"path,omitempty"`
+	PathConcatMode       string  `json:"path_concat_mode,omitempty"`
+	SampleRatio          float64 `json:"sample_ratio,omitempty"`
+	MaxBodySize          int     `json:"max_body_size,omitempty"`
+	KeepSensitiveHeaders bool    `json:"keep_sensitive_headers,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -160,10 +165,65 @@ func (p *Plugin) buildMirrorRequest(r *http.Request, body []byte) (*http.Request
 	if err != nil {
 		return nil, err
 	}
-	mirrorReq.Header = r.Header.Clone()
-	mirrorReq.Host = r.Host
+	mirrorReq.Header = cloneMirrorHeaders(r.Header, p.config.KeepSensitiveHeaders)
 
 	return mirrorReq, nil
+}
+
+func cloneMirrorHeaders(source http.Header, keepSensitive bool) http.Header {
+	result := source.Clone()
+	connectionTokens := make([]string, 0)
+	for name, values := range source {
+		lowerName := strings.ToLower(name)
+		if lowerName == "connection" {
+			for _, value := range values {
+				for token := range strings.SplitSeq(value, ",") {
+					if token = strings.TrimSpace(token); token != "" {
+						connectionTokens = append(connectionTokens, token)
+					}
+				}
+			}
+		}
+		if isMirrorHopByHopHeader(lowerName) || (!keepSensitive && isMirrorSensitiveHeader(lowerName)) {
+			deleteHeader(result, name)
+		}
+	}
+	for _, token := range connectionTokens {
+		deleteHeader(result, token)
+	}
+	return result
+}
+
+func isMirrorHopByHopHeader(name string) bool {
+	switch name {
+	case "connection", "proxy-connection", "keep-alive", "te", "trailer",
+		"transfer-encoding", "upgrade", "content-length", "host":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMirrorSensitiveHeader(name string) bool {
+	return name == "authorization" ||
+		name == "proxy-authorization" ||
+		name == "cookie" ||
+		name == "set-cookie" ||
+		name == "api-key" ||
+		name == "apikey" ||
+		name == "x-api-key" ||
+		name == "x-functions-key" ||
+		name == "x-goog-api-key" ||
+		name == "x-rbac-token" ||
+		strings.HasPrefix(name, "x-amz-")
+}
+
+func deleteHeader(headers http.Header, name string) {
+	for existing := range headers {
+		if strings.EqualFold(existing, name) {
+			delete(headers, existing)
+		}
+	}
 }
 
 func (p *Plugin) mirrorURL(r *http.Request) (string, error) {

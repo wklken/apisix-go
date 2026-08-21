@@ -685,6 +685,24 @@ func TestRequestVarResolvesExpressionVariables(t *testing.T) {
 	}
 }
 
+func TestRequestVarRedactsRegisteredQueryCredentials(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/orders?keep=yes&token=secret&token=again", nil)
+	apisixctx.RegisterSensitiveQueryName(request, "token")
+
+	if got := RequestVar(request, "$request_uri", 0); got != "/orders?keep=yes&token=***&token=***" {
+		t.Fatalf("request_uri = %q", got)
+	}
+	if got := RequestVar(request, "$args", 0); got != "keep=yes&token=***&token=***" {
+		t.Fatalf("args = %q", got)
+	}
+	if got := RequestVar(request, "$arg_token", 0); got != "***" {
+		t.Fatalf("arg_token = %q", got)
+	}
+	if got := request.URL.RequestURI(); got != "/orders?keep=yes&token=secret&token=again" {
+		t.Fatalf("live request URI = %q", got)
+	}
+}
+
 func TestResponseRecorderStatusAndBodyAccessors(t *testing.T) {
 	recorder := NewResponseRecorder(httptest.NewRecorder(), 1024)
 	if recorder.StatusCode() != 0 || recorder.HasBody() {

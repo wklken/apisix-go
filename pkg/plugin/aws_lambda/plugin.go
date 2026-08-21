@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
@@ -143,20 +144,46 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
-	if r.Header.Get("X-Api-Key") == "" &&
-		p.config.Authorization != nil &&
-		p.config.Authorization.APIKey != "" {
+	if p.config.Authorization == nil {
+		return
+	}
+	if p.config.Authorization.APIKey != "" {
+		deleteHeader(r.Header, "X-Api-Key")
 		r.Header.Set("X-Api-Key", p.config.Authorization.APIKey)
 		return
 	}
-
-	if r.Header.Get("Authorization") != "" ||
-		p.config.Authorization == nil ||
-		p.config.Authorization.IAM == nil {
+	if p.config.Authorization.IAM == nil {
 		return
 	}
 
+	removeClientIAMHeaders(r.Header)
 	p.signIAMRequest(r, p.config.Authorization.IAM)
+}
+
+func removeClientIAMHeaders(headers http.Header) {
+	for name := range headers {
+		if isIAMCredentialHeader(name) {
+			deleteHeader(headers, name)
+		}
+	}
+}
+
+func isIAMCredentialHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "x-amz-credential", "x-amz-date", "x-amz-signature",
+		"x-amz-signedheaders", "x-amz-content-sha256", "x-amz-security-token":
+		return true
+	default:
+		return false
+	}
+}
+
+func deleteHeader(headers http.Header, name string) {
+	for existing := range headers {
+		if strings.EqualFold(existing, name) {
+			delete(headers, existing)
+		}
+	}
 }
 
 func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -115,8 +116,101 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	if got := mirrored.Header.Get("X-Test"); got != "yes" {
 		t.Fatalf("mirror X-Test = %q, want yes", got)
 	}
-	if mirrored.Host != "original.example" {
-		t.Fatalf("mirror Host = %q, want original.example", mirrored.Host)
+	if mirrored.Host != mustParseURL(t, mirror.URL).Host {
+		t.Fatalf("mirror Host = %q, want mirror target host %q", mirrored.Host, mustParseURL(t, mirror.URL).Host)
+	}
+}
+
+func TestMirrorStripsHopByHopAndSensitiveHeadersByDefault(t *testing.T) {
+	mirror, seen := newMirrorServer(t)
+	defer mirror.Close()
+
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	req.Header = http.Header{
+		"Authorization":       {"Bearer secret"},
+		"Proxy-Authorization": {"Basic secret"},
+		"Cookie":              {"session=secret"},
+		"Set-Cookie":          {"session=secret"},
+		"Api-Key":             {"secret"},
+		"apikey":              {"secret"},
+		"X-API-KEY":           {"secret"},
+		"X-Rbac-Token":        {"secret"},
+		"X-Functions-Key":     {"secret"},
+		"X-Goog-Api-Key":      {"secret"},
+		"X-Amz-Signature":     {"secret"},
+		"X-Trace":             {"keep"},
+		"Connection":          {"keep-alive, X-Connection-Token"},
+		"X-Connection-Token":  {"remove"},
+		"Proxy-Connection":    {"remove"},
+		"Keep-Alive":          {"remove"},
+		"TE":                  {"remove"},
+		"Trailer":             {"remove"},
+		"Transfer-Encoding":   {"remove"},
+		"Upgrade":             {"remove"},
+		"Content-Length":      {"remove"},
+		"Host":                {"remove"},
+	}
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	mirrored := waitForMirror(t, seen)
+	for _, name := range []string{
+		"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "Api-Key", "apikey", "X-API-KEY",
+		"X-Rbac-Token", "X-Functions-Key", "X-Goog-Api-Key", "X-Amz-Signature",
+		"Connection", "X-Connection-Token", "Proxy-Connection",
+		"Keep-Alive", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length", "Host",
+	} {
+		if got := mirrored.Header.Get(name); got != "" {
+			t.Errorf("mirrored %s = %q, want stripped", name, got)
+		}
+	}
+	if got := mirrored.Header.Get("X-Trace"); got != "keep" {
+		t.Fatalf("mirrored X-Trace = %q, want keep", got)
+	}
+}
+
+func TestMirrorKeepsSensitiveHeadersWhenExplicitlyEnabled(t *testing.T) {
+	mirror, seen := newMirrorServer(t)
+	defer mirror.Close()
+
+	p := newTestPlugin(t, Config{Host: mirror.URL, KeepSensitiveHeaders: true})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "session=secret")
+	req.Header.Set("X-API-KEY", "secret")
+	req.Header.Set("X-Amz-Signature", "signature")
+	req.Header.Set("Connection", "X-Connection-Token")
+	req.Header.Set("X-Connection-Token", "remove")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := apisixctx.RunBeforeProxyHooks(r); err != nil {
+			t.Fatalf("run before-proxy hook: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	mirrored := waitForMirror(t, seen)
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "Authorization", want: "Bearer secret"},
+		{name: "Cookie", want: "session=secret"},
+		{name: "X-API-KEY", want: "secret"},
+		{name: "X-Amz-Signature", want: "signature"},
+	} {
+		if got := mirrored.Header.Get(test.name); got != test.want {
+			t.Errorf("mirrored %s = %q, want %q", test.name, got, test.want)
+		}
+	}
+	if got := mirrored.Header.Get("X-Connection-Token"); got != "" {
+		t.Errorf("mirrored X-Connection-Token = %q, want stripped", got)
 	}
 }
 
@@ -365,6 +459,16 @@ func performRequest(p *Plugin, rawURL string) *httptest.ResponseRecorder {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 	return rr
+}
+
+func mustParseURL(t *testing.T, rawURL string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse URL %q: %v", rawURL, err)
+	}
+	return parsed
 }
 
 func waitForMirror(t *testing.T, seen <-chan mirrorRequest) mirrorRequest {

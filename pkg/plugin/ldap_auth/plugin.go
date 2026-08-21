@@ -47,7 +47,7 @@ const schema = `
     },
     "tls_verify": {
       "type": "boolean",
-      "default": false
+      "default": true
     },
     "uid": {
       "type": "string",
@@ -73,7 +73,7 @@ type Config struct {
 	BaseDN          string `json:"base_dn"`
 	LDAPURI         string `json:"ldap_uri"`
 	UseTLS          bool   `json:"use_tls,omitempty"`
-	TLSVerify       bool   `json:"tls_verify,omitempty"`
+	TLSVerify       *bool  `json:"tls_verify,omitempty"`
 	UID             string `json:"uid,omitempty"`
 	Realm           string `json:"realm,omitempty"`
 	HideCredentials *bool  `json:"hide_credentials,omitempty"`
@@ -91,6 +91,13 @@ func (p *Plugin) PostInit() error {
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
 		p.config.HideCredentials = &hideCredentials
+	}
+	if p.config.TLSVerify == nil {
+		verify := true
+		p.config.TLSVerify = &verify
+	}
+	if p.config.UseTLS && !*p.config.TLSVerify {
+		logger.Warn("LDAP TLS certificate verification is disabled")
 	}
 	if p.config.UID == "" {
 		p.config.UID = "cn"
@@ -111,21 +118,9 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attachLegacyConsumer(r)
+		ctx.AttachConsumerFromAuthenticationState(r)
 		next.ServeHTTP(w, r)
 	}))
-}
-
-func attachLegacyConsumer(r *http.Request) {
-	state, ok := ctx.AuthenticationStateFrom(r)
-	if !ok {
-		return
-	}
-	consumer := state.Consumer()
-	ctx.RegisterApisixVar(r, "$consumer", consumer)
-	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
-	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
-	r.Header.Set("X-Consumer-Username", consumer.Username)
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
@@ -208,7 +203,11 @@ func removeWhitespace(value string) string {
 }
 
 func (p *Plugin) userDN(username string) string {
-	return p.config.UID + "=" + username + "," + p.config.BaseDN
+	return ldapUserDN(p.config.UID, username, p.config.BaseDN)
+}
+
+func ldapUserDN(uid, username, baseDN string) string {
+	return uid + "=" + ldap.EscapeDN(username) + "," + baseDN
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, message string) {
@@ -235,15 +234,19 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	userDN := cfg.UID + "=" + username + "," + cfg.BaseDN
+	userDN := ldapUserDN(cfg.UID, username, cfg.BaseDN)
 	return conn.Bind(userDN, password)
 }
 
 func ldapTLSConfig(cfg Config) (*tls.Config, error) {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: !cfg.TLSVerify, //nolint:gosec // APISIX tls_verify explicitly controls LDAP verification
+	verify := true
+	if cfg.TLSVerify != nil {
+		verify = *cfg.TLSVerify
 	}
-	if !cfg.TLSVerify {
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: !verify, //nolint:gosec // APISIX tls_verify explicitly controls LDAP verification
+	}
+	if !verify {
 		return tlsConfig, nil
 	}
 	caFile := os.Getenv("SSL_CERT_FILE")

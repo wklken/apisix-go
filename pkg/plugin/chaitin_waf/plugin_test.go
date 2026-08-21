@@ -2,6 +2,7 @@ package chaitin_waf
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -191,6 +193,31 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	}
 	if rr.Header().Get(HeaderChaitinWAFServer) != "" {
 		t.Fatalf("debug server header = %q, want hidden", rr.Header().Get(HeaderChaitinWAFServer))
+	}
+}
+
+func TestHandlerBlocksRejectedRequestWithoutEventID(t *testing.T) {
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:                "block",
+		AppendWAFRespHeader: new(true),
+		Nodes:               []Node{nodeFromURL(t, waf.URL)},
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called for blocked request")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if rr.Header().Get(HeaderChaitinWAFAction) != "reject" {
+		t.Fatalf("action = %q, want reject", rr.Header().Get(HeaderChaitinWAFAction))
 	}
 }
 
@@ -422,6 +449,25 @@ func TestPostInitDefaults(t *testing.T) {
 	p = newTestPlugin(t, Config{Config: WAFConfig{RealClientIP: new(false)}})
 	if p.config.Config.RealClientIP == nil || *p.config.Config.RealClientIP {
 		t.Fatal("real_client_ip = true, want explicit false")
+	}
+}
+
+func TestClientIPDoesNotTrustForwardingHeadersWithoutRealIPContext(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.RemoteAddr = "10.0.0.2:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.40")
+	req.Header.Set("X-Real-IP", "198.51.100.41")
+
+	if got := clientIP(req, true); got != "10.0.0.2" {
+		t.Fatalf("clientIP(real_client_ip=true) = %q, want socket peer", got)
+	}
+	if got := clientIP(req, false); got != "10.0.0.2" {
+		t.Fatalf("clientIP(real_client_ip=false) = %q, want socket peer", got)
+	}
+
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.RemoteAddrKey, "203.0.113.9"))
+	if got := clientIP(req, true); got != "203.0.113.9" {
+		t.Fatalf("clientIP(trusted real-ip context) = %q, want 203.0.113.9", got)
 	}
 }
 

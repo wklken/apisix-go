@@ -155,21 +155,9 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attachLegacyConsumer(r)
+		ctx.AttachConsumerFromAuthenticationState(r)
 		next.ServeHTTP(w, r)
 	}))
-}
-
-func attachLegacyConsumer(r *http.Request) {
-	state, ok := ctx.AuthenticationStateFrom(r)
-	if !ok {
-		return
-	}
-	consumer := state.Consumer()
-	ctx.RegisterApisixVar(r, "$consumer", consumer)
-	ctx.RegisterApisixVar(r, "$consumer_name", consumer.Username)
-	ctx.RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
-	r.Header.Set("X-Consumer-Username", consumer.Username)
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
@@ -223,14 +211,16 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 }
 
 func fetchRBACToken(r *http.Request) string {
+	ctx.RegisterSensitiveQueryName(r, "rbac_token")
+	rbacHeaderToken := ctx.RestoreTrustedRequestHeader(r, "X-Rbac-Token")
 	if token := r.URL.Query().Get("rbac_token"); token != "" {
 		return token
 	}
 	if token := r.Header.Get("Authorization"); token != "" {
 		return token
 	}
-	if token := r.Header.Get("X-Rbac-Token"); token != "" {
-		return token
+	if rbacHeaderToken != "" {
+		return rbacHeaderToken
 	}
 	if cookie, err := r.Cookie("x-rbac-token"); err == nil {
 		return cookie.Value
@@ -312,16 +302,29 @@ func (p *Plugin) checkPermission(
 
 	var body permissionResponse
 	if err := projectjson.NewDecoder(resp.Body).Decode(&body); err != nil {
+		if resp.StatusCode == http.StatusOK {
+			return http.StatusBadGateway, "check permission failed! parse response json failed!", nil, nil
+		}
 		return resp.StatusCode, "check permission failed! parse response json failed!", nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
+	}
+	if !body.OK {
+		reason := strings.TrimSpace(body.Reason)
+		if reason == "" {
+			reason = "permission denied"
+		}
+		return http.StatusForbidden, reason, nil, nil
+	}
+	if err := validateUserInfo(body.Data.UserInfo); err != nil {
+		return http.StatusForbidden, err.Error(), nil, nil
 	}
 	return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
 }
 
 func remoteClientIP(r *http.Request) string {
-	if remoteAddr := ctx.GetString(r.Context(), "remote_addr"); remoteAddr != "" {
-		return base.RemoteIP(remoteAddr)
-	}
-	return base.RemoteIP(r.RemoteAddr)
+	return ctx.EffectiveRemoteIP(r)
 }
 
 func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
@@ -395,6 +398,33 @@ func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix s
 	for key, value := range headers {
 		w.Header().Set(key, value)
 		r.Header.Set(key, value)
+	}
+	return nil
+}
+
+func validateUserInfo(userInfo map[string]any) error {
+	if len(userInfo) == 0 {
+		return fmt.Errorf("wolf-rbac userinfo is missing")
+	}
+
+	userID, err := identityFieldString(userInfo["id"], "id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "id")
+	}
+	username, err := identityFieldString(userInfo["username"], "username")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(username) == "" {
+		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "username")
+	}
+	if nickname, exists := userInfo["nickname"]; exists && nickname != nil {
+		if _, err := identityFieldString(nickname, "nickname"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

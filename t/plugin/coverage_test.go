@@ -663,21 +663,21 @@ func supportedPluginNames(data []byte) ([]string, error) {
 		}
 		fields := strings.Split(strings.Trim(line, "|"), "|")
 		if len(fields) < 6 || strings.TrimSpace(fields[3]) != "yes" ||
-			!strings.HasPrefix(strings.TrimSpace(fields[5]), "Supported") {
+			strings.TrimSpace(fields[5]) != "yes" {
 			continue
 		}
 		match := documentedPluginName.FindStringSubmatch(fields[1])
 		if len(match) != 2 {
-			return nil, fmt.Errorf("supported plugin row has no backtick name: %s", line)
+			return nil, fmt.Errorf("corpus-gated plugin row has no backtick name: %s", line)
 		}
 		if seen[match[1]] {
-			return nil, fmt.Errorf("supported plugin %q is duplicated", match[1])
+			return nil, fmt.Errorf("corpus-gated plugin %q is duplicated", match[1])
 		}
 		seen[match[1]] = true
 		plugins = append(plugins, match[1])
 	}
 	if len(plugins) == 0 {
-		return nil, fmt.Errorf("no supported plugin rows found")
+		return nil, fmt.Errorf("no corpus-gated plugin rows found")
 	}
 	return plugins, nil
 }
@@ -694,7 +694,7 @@ func manifestCoverageProblems(plugins []string, manifests map[string]bool) []str
 			continue
 		}
 		if !manifests[pluginName] {
-			problems = append(problems, fmt.Sprintf("supported plugin %s has no manifest", pluginName))
+			problems = append(problems, fmt.Sprintf("corpus-gated plugin %s has no manifest", pluginName))
 		}
 	}
 	for pluginName := range upstreamSourceAbsences {

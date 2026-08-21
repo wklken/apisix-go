@@ -35,7 +35,8 @@ const (
 	defaultMaxResponseSize  = 4 * 1024 * 1024
 	defaultMaxPipelineItems = 20
 	defaultMaxConcurrency   = 8
-	defaultTimeout          = 30 * time.Second
+	defaultMaxTimeout       = 30000
+	hardMaxTimeout          = 60000
 )
 
 const schema = `{"type":"object"}`
@@ -63,6 +64,12 @@ const metadataSchema = `
       "type": "integer",
       "exclusiveMinimum": 0,
       "default": 4194304
+    },
+    "max_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000,
+      "default": 30000
     }
   }
 }
@@ -85,6 +92,7 @@ type Limits struct {
 	MaxResponseBodySize int64 `json:"max_response_body_size,omitempty"`
 	MaxPipelineItems    int   `json:"max_pipeline_items,omitempty"`
 	MaxConcurrency      int   `json:"max_concurrency,omitempty"`
+	MaxTimeout          int   `json:"max_timeout,omitempty"`
 }
 
 type Request struct {
@@ -124,6 +132,18 @@ type DispatchLease struct {
 type DispatchLeaseFactory func() (DispatchLease, bool)
 
 type dispatchLeaseFactoryContextKey struct{}
+
+// batchSubrequestContextKey marks requests dispatched by a batch handler. It
+// is deliberately private so callers cannot opt into nested batch execution.
+type batchSubrequestContextKey struct{}
+
+func isBatchSubrequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.Context().Value(batchSubrequestContextKey{}).(struct{})
+	return ok
+}
 
 // WithDispatchLeaseFactory attaches a generation-aware subrequest factory to
 // the request context without exposing the context key to other packages.
@@ -227,6 +247,10 @@ func handleBatchRequest(
 	r *http.Request,
 	limits Limits,
 ) ([]PipelineResponse, int, error) {
+	if isBatchSubrequest(r) {
+		return nil, http.StatusBadRequest, fmt.Errorf("nested batch requests are not allowed")
+	}
+	limits = applyLimitDefaults(limits)
 	body, err := readLimitedBody(w, r, limits.MaxBodySize)
 	if err != nil {
 		return nil, http.StatusRequestEntityTooLarge, err
@@ -256,10 +280,13 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 
-	timeout := defaultTimeout
+	timeoutMilliseconds := limits.MaxTimeout
 	if req.Timeout != nil {
-		timeout = time.Duration(*req.Timeout) * time.Millisecond
+		timeoutMilliseconds = *req.Timeout
 	}
+	// applyLimitDefaults caps MaxTimeout at hardMaxTimeout, so this conversion
+	// cannot overflow time.Duration.
+	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
@@ -328,8 +355,14 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]b
 }
 
 func validateRequest(req Request, limits Limits) error {
-	if req.Timeout != nil && *req.Timeout < 1 {
-		return fmt.Errorf("timeout must be at least 1 millisecond")
+	limits = applyLimitDefaults(limits)
+	if req.Timeout != nil {
+		if *req.Timeout < 1 {
+			return fmt.Errorf("timeout must be at least 1 millisecond")
+		}
+		if *req.Timeout > limits.MaxTimeout {
+			return fmt.Errorf("timeout must not exceed %d milliseconds", limits.MaxTimeout)
+		}
 	}
 	if len(req.Pipeline) == 0 {
 		return fmt.Errorf("pipeline must contain at least one request")
@@ -375,6 +408,12 @@ func applyLimitDefaults(limits Limits) Limits {
 	}
 	if limits.MaxConcurrency <= 0 {
 		limits.MaxConcurrency = defaultMaxConcurrency
+	}
+	if limits.MaxTimeout <= 0 {
+		limits.MaxTimeout = defaultMaxTimeout
+	}
+	if limits.MaxTimeout > hardMaxTimeout {
+		limits.MaxTimeout = hardMaxTimeout
 	}
 	return limits
 }
@@ -495,6 +534,7 @@ func dispatchPipelineRequestBounded(
 	// The subrequest context derives from the incoming request so canceling
 	// the parent cancels every subrequest.
 	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
+	ctx = context.WithValue(ctx, batchSubrequestContextKey{}, struct{}{})
 	var cancel func()
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)

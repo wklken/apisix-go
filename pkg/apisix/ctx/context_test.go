@@ -198,6 +198,34 @@ func TestRegisterRequestVarWithoutRequestStateIsNoOp(t *testing.T) {
 	RegisterRequestVar(req, "$status", http.StatusOK)
 }
 
+func TestSensitiveQueryNamesWorkWithAndWithoutRequestState(t *testing.T) {
+	withState := WithRequestVars(httptest.NewRequest(http.MethodGet, "/?token=a", nil))
+	RegisterSensitiveQueryName(withState, "token")
+	RegisterSensitiveQueryName(withState, "token")
+	RegisterSensitiveQueryName(withState, "code")
+	if got := SensitiveQueryNames(withState); len(got) != 2 {
+		t.Fatalf("state-backed sensitive names = %#v, want two names", got)
+	}
+	if !IsSensitiveQueryName(withState, "token") || IsSensitiveQueryName(withState, "safe") {
+		t.Fatal("state-backed sensitive query lookup has wrong membership")
+	}
+
+	direct := httptest.NewRequest(http.MethodGet, "/?ticket=a", nil)
+	RegisterSensitiveQueryName(direct, "ticket")
+	if !IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct request did not retain sensitive query registration")
+	}
+	direct = WithRequestVars(direct)
+	if !IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct registration was not adopted by RequestState")
+	}
+	RecycleVars(direct)
+	if IsSensitiveQueryName(direct, "ticket") {
+		t.Fatal("direct request sensitive query registration survived recycle")
+	}
+	RecycleVars(withState)
+}
+
 func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {
 	original := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	trusted := WithTrustedProxy(original)

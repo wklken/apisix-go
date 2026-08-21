@@ -397,6 +397,9 @@ func TestHandlerUsesAnonymousConsumerForInvalidKeyAndHidesCredentials(t *testing
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ctx.IsSensitiveQueryName(r, "apikey") {
+			t.Fatal("key-auth did not register configured query key")
+		}
 		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-invalid-key-user" {
 			t.Fatalf("consumer_name = %v, want anonymous-invalid-key-user", got)
 		}
@@ -438,6 +441,19 @@ func TestHandlerHideCredentialsRemovesQueryKey(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerRegistersCustomQueryNameForLogging(t *testing.T) {
+	p := newTestPlugin(t, Config{Query: "custom_key"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?custom_key=secret", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid custom key reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if !ctx.IsSensitiveQueryName(req, "custom_key") {
+		t.Fatal("key-auth did not register custom query name")
 	}
 }
 

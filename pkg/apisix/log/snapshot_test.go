@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,105 @@ func TestBuildSnapshotDetachesMutableRequestAndResponseState(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotRedactsRegisteredQueryValuesWithoutChangingLiveRequest(t *testing.T) {
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"https://gateway.test/orders?keep=one&token=first&token=second&keep=two",
+		nil,
+	)
+	originalURI := request.URL.RequestURI()
+	originalRawQuery := request.URL.RawQuery
+	ctx.RegisterSensitiveQueryName(request, "token")
+	ctx.RegisterRequestVar(request, "$args", originalRawQuery)
+	ctx.RegisterRequestVar(request, "$query_string", originalRawQuery)
+	ctx.RegisterRequestVar(request, "$request_uri", originalURI)
+	ctx.RegisterRequestVar(request, "$arg_token", "first")
+	ctx.RegisterRequestVar(request, "$upstream_uri", "/v1/chat?keep=yes&token=upstream-secret")
+	ctx.RegisterApisixVar(request, "$args", originalRawQuery)
+	ctx.RegisterApisixVar(request, "$query_string", originalRawQuery)
+	ctx.RegisterApisixVar(request, "$request_uri", originalURI)
+	ctx.RegisterApisixVar(request, "$arg_token", "first")
+
+	snapshot := BuildSnapshot(request, ResponseSnapshot{}, ctx.ResponseOutcome{}, ctx.ResponseSourceUpstream,
+		time.Unix(1, 0), time.Unix(2, 0))
+	if request.URL.RequestURI() != originalURI || request.URL.RawQuery != originalRawQuery {
+		t.Fatalf("live request query changed: uri=%q raw=%q", request.URL.RequestURI(), request.URL.RawQuery)
+	}
+	if got := snapshot.Request.Query["token"]; !reflect.DeepEqual(got, []string{"***", "***"}) {
+		t.Fatalf("snapshot token query = %#v, want duplicate placeholders", got)
+	}
+	if got := snapshot.Request.Query["keep"]; !reflect.DeepEqual(got, []string{"one", "two"}) {
+		t.Fatalf("snapshot keep query = %#v, want original values", got)
+	}
+	for key, got := range map[string]any{
+		"APISIX $args":          snapshot.Request.APISIXVars["$args"],
+		"APISIX $query_string":  snapshot.Request.APISIXVars["$query_string"],
+		"APISIX $request_uri":   snapshot.Request.APISIXVars["$request_uri"],
+		"APISIX $arg_token":     snapshot.Request.APISIXVars["$arg_token"],
+		"Request $args":         snapshot.Request.RequestVars["$args"],
+		"Request $query_string": snapshot.Request.RequestVars["$query_string"],
+		"Request $request_uri":  snapshot.Request.RequestVars["$request_uri"],
+		"Request $arg_token":    snapshot.Request.RequestVars["$arg_token"],
+		"Request $upstream_uri": snapshot.Request.RequestVars["$upstream_uri"],
+	} {
+		want := any("keep=one&token=***&token=***&keep=two")
+		if strings.HasSuffix(key, "$request_uri") {
+			want = "/orders?keep=one&token=***&token=***&keep=two"
+		}
+		if strings.HasSuffix(key, "$arg_token") {
+			want = "***"
+		}
+		if strings.HasSuffix(key, "$upstream_uri") {
+			want = "/v1/chat?keep=yes&token=***"
+		}
+		if got != want {
+			t.Errorf("snapshot %s = %#v, want %#v", key, got, want)
+		}
+	}
+	for _, value := range []string{
+		snapshot.Request.URI, snapshot.Request.URL,
+		fmt.Sprint(snapshot.Request.APISIXVars["$args"]),
+		fmt.Sprint(snapshot.Request.RequestVars["$query_string"]),
+		fmt.Sprint(snapshot.Request.RequestVars["$request_uri"]),
+		fmt.Sprint(snapshot.Request.RequestVars["$upstream_uri"]),
+	} {
+		if strings.Contains(value, "first") || strings.Contains(value, "second") {
+			t.Fatalf("snapshot leaked sensitive query value: %q", value)
+		}
+	}
+	if got := ValueFromSnapshot(snapshot, "$arg_token"); got != "***" {
+		t.Fatalf("snapshot $arg_token = %#v, want placeholder", got)
+	}
+}
+
+func TestLiveLogFieldsRedactRegisteredQueryValues(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/orders?keep=yes&token=secret&token=again", nil)
+	original := request.URL.RequestURI()
+	ctx.RegisterSensitiveQueryName(request, "token")
+	if got := GetField(request, "$request_uri"); got != "/orders?keep=yes&token=***&token=***" {
+		t.Fatalf("$request_uri = %#v", got)
+	}
+	if got := GetField(request, "$request_line"); got != "GET /orders?keep=yes&token=***&token=*** HTTP/1.1" {
+		t.Fatalf("$request_line = %#v", got)
+	}
+	if got := GetField(request, "$args"); got != "keep=yes&token=***&token=***" {
+		t.Fatalf("$args = %#v", got)
+	}
+	if got := GetField(request, "$arg_token"); got != "***" {
+		t.Fatalf("$arg_token = %#v", got)
+	}
+	if got := GetField(request, "$arg_keep"); got != "yes" {
+		t.Fatalf("$arg_keep = %#v, want yes", got)
+	}
+	ctx.RegisterRequestVar(request, "$upstream_uri", "/v1/chat?keep=yes&token=upstream-secret")
+	if got := GetField(request, "$upstream_uri"); got != "/v1/chat?keep=yes&token=***" {
+		t.Fatalf("$upstream_uri = %#v", got)
+	}
+	if request.URL.RequestURI() != original {
+		t.Fatalf("live request changed by log fields: got %q want %q", request.URL.RequestURI(), original)
+	}
+}
+
 func TestBuildSnapshotFromOwnedInputsUsesCapturedBodyWithoutReadingRequest(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/orders?q=one", nil)
 	request.Body = snapshotPanicBody{}
@@ -93,6 +193,9 @@ func TestBuildSnapshotPreservesEffectiveRealIP(t *testing.T) {
 	if snapshot.Request.APISIXVars["$remote_addr"] != "198.51.100.20" ||
 		snapshot.Request.APISIXVars["$remote_port"] != "8443" {
 		t.Fatalf("effective remote vars = %#v", snapshot.Request.APISIXVars)
+	}
+	if snapshot.Request.RemoteAddr != "198.51.100.20:8443" {
+		t.Fatalf("snapshot remote address = %q, want effective real-ip address", snapshot.Request.RemoteAddr)
 	}
 	fields := GetFieldsFromSnapshot(snapshot, map[string]string{
 		"address": "$remote_addr", "port": "$remote_port",

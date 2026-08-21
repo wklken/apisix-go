@@ -2,6 +2,7 @@ package chaitin_waf
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -447,6 +449,25 @@ func TestPostInitDefaults(t *testing.T) {
 	p = newTestPlugin(t, Config{Config: WAFConfig{RealClientIP: new(false)}})
 	if p.config.Config.RealClientIP == nil || *p.config.Config.RealClientIP {
 		t.Fatal("real_client_ip = true, want explicit false")
+	}
+}
+
+func TestClientIPDoesNotTrustForwardingHeadersWithoutRealIPContext(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.RemoteAddr = "10.0.0.2:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.40")
+	req.Header.Set("X-Real-IP", "198.51.100.41")
+
+	if got := clientIP(req, true); got != "10.0.0.2" {
+		t.Fatalf("clientIP(real_client_ip=true) = %q, want socket peer", got)
+	}
+	if got := clientIP(req, false); got != "10.0.0.2" {
+		t.Fatalf("clientIP(real_client_ip=false) = %q, want socket peer", got)
+	}
+
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.RemoteAddrKey, "203.0.113.9"))
+	if got := clientIP(req, true); got != "203.0.113.9" {
+		t.Fatalf("clientIP(trusted real-ip context) = %q, want 203.0.113.9", got)
 	}
 }
 

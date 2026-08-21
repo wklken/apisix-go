@@ -374,6 +374,10 @@ type RequestState struct {
 	ApisixVars  map[string]any
 	RequestVars map[string]any
 	recycled    atomic.Bool
+	// sensitiveQueryNames is request-local metadata used only at the logging
+	// boundary. It is deliberately not exposed through the APISIX variable
+	// maps, because those maps are also consumed by upstream-facing code.
+	sensitiveQueryNames map[string]struct{}
 
 	Status       int
 	BalancerIP   string
@@ -389,8 +393,71 @@ type RequestState struct {
 }
 
 func GetRequestState(r *http.Request) *RequestState {
+	if r == nil {
+		return nil
+	}
 	state, _ := r.Context().Value(requestStateKey).(*RequestState)
 	return state
+}
+
+// RegisterSensitiveQueryName marks one query parameter as a credential for
+// request logging. It never changes the request URL or query bytes.
+func RegisterSensitiveQueryName(r *http.Request, name string) {
+	if r == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	if state := GetRequestState(r); state != nil {
+		if state.sensitiveQueryNames == nil {
+			state.sensitiveQueryNames = make(map[string]struct{})
+		}
+		state.sensitiveQueryNames[name] = struct{}{}
+		return
+	}
+	// Requests may not have gone through the request lifecycle middleware yet.
+	// Install the same state in place so the
+	// registration follows later request helpers without a process-global
+	// pointer registry or a lifetime leak.
+	state := newRequestState()
+	state.ApisixVars, _ = r.Context().Value(ApisixVarsKey).(map[string]any)
+	state.RequestVars, _ = r.Context().Value(RequestVarsKey).(map[string]any)
+	if state.ApisixVars == nil {
+		state.ApisixVars = newVars()
+	}
+	if state.RequestVars == nil {
+		state.RequestVars = newVars()
+	}
+	state.sensitiveQueryNames = map[string]struct{}{name: {}}
+	*r = *r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
+}
+
+// SensitiveQueryNames returns a detached set of query names registered for
+// request logging. The returned map may be modified by the caller.
+func SensitiveQueryNames(r *http.Request) map[string]struct{} {
+	if r == nil {
+		return nil
+	}
+	if state := GetRequestState(r); state != nil {
+		if len(state.sensitiveQueryNames) == 0 {
+			return nil
+		}
+		result := make(map[string]struct{}, len(state.sensitiveQueryNames))
+		for name := range state.sensitiveQueryNames {
+			result[name] = struct{}{}
+		}
+		return result
+	}
+	return nil
+}
+
+// IsSensitiveQueryName reports whether a query key is registered for logging
+// redaction.
+func IsSensitiveQueryName(r *http.Request, name string) bool {
+	_, ok := SensitiveQueryNames(r)[name]
+	return ok
 }
 
 func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {

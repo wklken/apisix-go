@@ -31,6 +31,45 @@ func TestParseConsumerDecryptsEncryptedAuthPluginFields(t *testing.T) {
 	}
 }
 
+func TestGetConsumerReturnsDeepCloneOnCacheHit(t *testing.T) {
+	consumerStore := &Store{
+		consumerValues: map[string]resource.Consumer{
+			"alice": {
+				Username: "alice",
+				Plugins: map[string]resource.PluginConfig{
+					"key-auth": map[string]any{
+						"key":    "original",
+						"nested": map[string]any{"value": "original"},
+					},
+				},
+				Labels: map[string]any{"team": map[string]any{"name": "platform"}},
+			},
+		},
+	}
+	previous := ReplaceGlobalStoreForTest(consumerStore)
+	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
+
+	got, err := GetConsumer("alice")
+	if err != nil {
+		t.Fatalf("first GetConsumer() error = %v", err)
+	}
+	got.Plugins["key-auth"].(map[string]any)["key"] = "mutated"
+	got.Plugins["key-auth"].(map[string]any)["nested"].(map[string]any)["value"] = "mutated"
+	got.Labels["team"].(map[string]any)["name"] = "mutated"
+
+	again, err := GetConsumer("alice")
+	if err != nil {
+		t.Fatalf("second GetConsumer() error = %v", err)
+	}
+	plugin := again.Plugins["key-auth"].(map[string]any)
+	if plugin["key"] != "original" || plugin["nested"].(map[string]any)["value"] != "original" {
+		t.Fatalf("cached plugin config was mutated: %#v", plugin)
+	}
+	if again.Labels["team"].(map[string]any)["name"] != "platform" {
+		t.Fatalf("cached labels were mutated: %#v", again.Labels)
+	}
+}
+
 func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	data_encryption.Configure(true, []string{key})

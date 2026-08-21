@@ -39,10 +39,7 @@ func RequestValue(r *http.Request, name string) any {
 		}
 		return "http"
 	case name == "remote_addr":
-		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
-			return value
-		}
-		return base.RemoteIP(r.RemoteAddr)
+		return apisixctx.EffectiveRemoteIP(r)
 	case name == "remote_port":
 		if value := apisixctx.GetString(r.Context(), "remote_port"); value != "" {
 			return value

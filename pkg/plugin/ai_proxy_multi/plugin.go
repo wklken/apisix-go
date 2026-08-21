@@ -988,6 +988,7 @@ func (p *Plugin) requestInstance(
 		}
 	}
 	for key, value := range instance.Auth.Query {
+		apisixctx.RegisterSensitiveQueryName(r, key)
 		query.Set(key, value)
 	}
 	req.URL.RawQuery = query.Encode()

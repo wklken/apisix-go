@@ -69,7 +69,7 @@ func CaptureAuthorizationFacts(
 	}
 	headers[http.CanonicalHeaderKey("Host")] = []string{host}
 
-	clientIP := RequestVarFromNginx(r, "remote_addr")
+	clientIP := apisixctx.EffectiveRemoteIP(r)
 	clientPort := apisixctx.GetString(r.Context(), string(apisixctx.RemotePortKey))
 	if clientPort == "" {
 		_, clientPort, _ = net.SplitHostPort(r.RemoteAddr)

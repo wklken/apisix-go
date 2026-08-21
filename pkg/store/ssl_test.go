@@ -7,6 +7,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestParseSSL(t *testing.T) {
@@ -215,6 +216,42 @@ func TestSSLCertificateIndexRejectsInvalidCertificate(t *testing.T) {
 	}
 	if _, err := GetSSLCertificateForSNI("bad.example.test"); err == nil {
 		t.Fatal("invalid certificate was published to the index")
+	}
+}
+
+func TestSSLCertificateIndexRebuildSkipsCorruptPersistedRow(t *testing.T) {
+	path := t.TempDir() + "/ssl-corrupt-rebuild.db"
+	first, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	cert, key := testCertificatePEM(t, "persisted-good.example.test")
+	if err := first.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("ssls"))
+		if err := bucket.Put([]byte("ssl-corrupt"), []byte(`{"id":"ssl-corrupt","cert":`)); err != nil {
+			return err
+		}
+		return bucket.Put(
+			[]byte("ssl-good"),
+			sslValue("ssl-good", []string{"persisted-good.example.test"}, cert, key, 1),
+		)
+	}); err != nil {
+		t.Fatalf("persist corrupt and valid SSL rows: %v", err)
+	}
+	if err := first.Stop(); err != nil {
+		t.Fatalf("first Store.Stop() error = %v", err)
+	}
+
+	second, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = second.Stop() })
+	if _, err := second.GetSSLCertificateForSNI("persisted-good.example.test"); err != nil {
+		t.Fatalf("valid persisted SSL was suppressed by corrupt row: %v", err)
+	}
+	if _, err := second.GetSSLCertificateForSNI("corrupt.example.test"); err == nil {
+		t.Fatal("corrupt persisted SSL was published")
 	}
 }
 

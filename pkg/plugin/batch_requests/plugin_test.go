@@ -33,9 +33,103 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 		{"max_pipeline_items": 0},
 		{"max_concurrency": 0},
 		{"max_response_body_size": 0},
+		{"max_timeout": 60001},
 	} {
 		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
 			t.Fatalf("metadata %#v validated, want positive-limit rejection", metadata)
+		}
+	}
+	if got := applyLimitDefaults(Limits{}).MaxTimeout; got != defaultMaxTimeout {
+		t.Fatalf("default max timeout = %d, want %d", got, defaultMaxTimeout)
+	}
+	if got := applyLimitDefaults(Limits{MaxTimeout: hardMaxTimeout + 1}).MaxTimeout; got != hardMaxTimeout {
+		t.Fatalf("capped max timeout = %d, want %d", got, hardMaxTimeout)
+	}
+}
+
+func TestHandlerRejectsNestedBatchBeforeConcurrencyLease(t *testing.T) {
+	mux := http.NewServeMux()
+	handler := NewHandlerWithLimits(mux, Limits{MaxConcurrency: 1})
+	// The handler is intentionally mounted at a non-default URI. The marker
+	// must follow the dispatched request rather than rely on DefaultURI.
+	mux.Handle("/custom/batch", handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/custom/batch", strings.NewReader(`{
+		"timeout": 20,
+		"pipeline": [{
+			"path": "/custom/batch",
+			"body": "{\"pipeline\":[{\"path\":\"/inner\"}]}"
+		}]
+	}`))
+	res := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(res, req)
+
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("nested batch request took %s, want prompt rejection", elapsed)
+	}
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusBadRequest {
+		t.Fatalf("outer pipeline status = %d, want 400 nested rejection", responses[0].Status)
+	}
+	if !strings.Contains(responses[0].Body, "nested batch requests are not allowed") {
+		t.Fatalf("nested response body = %q, want deterministic rejection", responses[0].Body)
+	}
+}
+
+func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
+	const maxTimeout = 25
+	observed := make(chan time.Duration, 2)
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadline, ok := r.Context().Deadline()
+		if !ok {
+			t.Error("pipeline context has no timeout deadline")
+		} else {
+			observed <- time.Until(deadline)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{MaxTimeout: maxTimeout})
+
+	for _, body := range []string{
+		`{"pipeline":[{"path":"/omitted"}]}`,
+		`{"timeout":25,"pipeline":[{"path":"/exact"}]}`,
+	} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(body)))
+		if res.Code != http.StatusOK {
+			t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+		}
+		if response := decodePipelineResponses(t, res.Body.String())[0]; response.Status != http.StatusNoContent {
+			t.Fatalf("pipeline response = %#v, want 204", response)
+		}
+	}
+	for range 2 {
+		select {
+		case remaining := <-observed:
+			if remaining <= 0 || remaining > 100*time.Millisecond {
+				t.Fatalf("remaining timeout = %s, want a positive value within configured bound", remaining)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for observed timeout")
+		}
+	}
+}
+
+func TestHandlerRejectsTimeoutAboveConfiguredMaximum(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{MaxTimeout: 25})
+	for _, timeout := range []string{"26", "99999999999999999999999999999999"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI,
+			strings.NewReader(fmt.Sprintf(`{"timeout":%s,"pipeline":[{"path":"/inner"}]}`, timeout))))
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("timeout %s response code = %d, want 400; body=%q", timeout, res.Code, res.Body.String())
+		}
+		if !strings.Contains(strings.ToLower(res.Body.String()), "timeout") {
+			t.Fatalf("timeout %s response body = %q, want timeout validation", timeout, res.Body.String())
 		}
 	}
 }

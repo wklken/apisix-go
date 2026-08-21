@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
@@ -37,6 +38,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestHashVariableUsesEffectiveRemoteIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://example.test", nil)
+	r.RemoteAddr = "10.0.0.2:1234"
+	r = r.WithContext(context.WithValue(r.Context(), apisixctx.RemoteAddrKey, "198.51.100.2"))
+
+	if got := hashVariable(r, "remote_addr"); got != "198.51.100.2" {
+		t.Fatalf("hashVariable(remote_addr) = %q, want effective remote address", got)
+	}
 }
 
 func TestSchemaValidatesActiveHealthCheckFields(t *testing.T) {
@@ -1052,7 +1063,10 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 				Name:     "one",
 				Provider: "openai-compatible",
 				Weight:   1,
-				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+				Auth: Auth{
+					Header: map[string]string{"Authorization": "Bearer test-token"},
+					Query:  map[string]string{"api-key": "query-secret"},
+				},
 				Options:  map[string]any{"model": "gpt-4"},
 				Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
 			},
@@ -1086,7 +1100,10 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	upstreamHost, _, _ := strings.Cut(upstreamAddress, ":")
 	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
 	assertLLMRequestVar(t, req, "$upstream_status", "200")
-	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
+	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions?api-key=query-secret")
+	if got := apisixlog.GetField(req, "$upstream_uri"); got != "/v1/chat/completions?api-key=***" {
+		t.Fatalf("logged upstream URI = %#v, want auth query redacted", got)
+	}
 	assertLLMRequestVar(t, req, "$upstream_host", upstreamHost)
 	assertLLMRequestVar(t, req, "$upstream_response_length", int64(len(upstreamResponse)))
 	if got := apisixctx.GetRequestVar(req, "$upstream_response_time"); got == nil || got == "" {

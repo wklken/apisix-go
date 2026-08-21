@@ -2,8 +2,11 @@ package feishu_auth
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -16,7 +19,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client *http.Client
+	client           *http.Client
+	oauthStateReplay base.OAuthStateReplayCache
 }
 
 const (
@@ -26,6 +30,7 @@ const (
 	defaultAccessTokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 	defaultUserInfoURL    = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 	sessionCookieName     = "feishu_session"
+	oauthStateCookieName  = "feishu_oauth_state"
 )
 
 const schema = `
@@ -221,9 +226,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		code := base.CodeFromRequest(r, p.config.CodeHeader, p.config.CodeQuery)
-		if code == "" {
-			http.Redirect(w, r, p.config.RedirectURI, http.StatusFound)
-			return
+		if r.Header.Get(p.config.CodeHeader) == "" {
+			if code == "" {
+				p.redirectToProvider(w, r)
+				return
+			}
+			if !p.verifyAndConsumeOAuthState(r) {
+				http.Error(w, util.BuildMessageResponse("Invalid OAuth state"), http.StatusUnauthorized)
+				return
+			}
+			p.deleteOAuthStateCookie(w)
 		}
 
 		accessToken, err := p.fetchAccessToken(r, code)
@@ -247,6 +259,98 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		base.AttachExternalUser(r, userinfo, p.config.SetUserInfoHeader)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (p *Plugin) redirectToProvider(w http.ResponseWriter, r *http.Request) {
+	state, err := base.NewOAuthState()
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	sealed, err := base.SealOAuthSession(
+		[]byte(state),
+		p.config.Secret,
+		p.oauthStateFingerprint(),
+		now,
+		now.Add(base.OAuthStateLifetime),
+	)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
+		return
+	}
+	redirectURI, err := oauthRedirectWithState(p.config.RedirectURI, state)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("Invalid OAuth redirect URI"), http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, p.oauthStateCookie(sealed))
+	http.Redirect(w, r, redirectURI, http.StatusFound)
+}
+
+func (p *Plugin) verifyAndConsumeOAuthState(r *http.Request) bool {
+	cookie, err := r.Cookie(oauthStateCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	now := time.Now()
+	state, err := base.OpenOAuthSession(
+		cookie.Value,
+		p.config.Secret,
+		p.config.SecretFallbacks,
+		p.oauthStateFingerprint(),
+		now,
+	)
+	stateValues, ok := r.URL.Query()["state"]
+	if err != nil || !ok || len(stateValues) != 1 || stateValues[0] == "" ||
+		subtle.ConstantTimeCompare(state, []byte(stateValues[0])) != 1 {
+		return false
+	}
+	return p.oauthStateReplay.Consume(cookie.Value, now)
+}
+
+func (p *Plugin) oauthStateFingerprint() string {
+	return base.Sha256Hex(strings.Join([]string{
+		name,
+		p.config.AppID,
+		p.config.AppSecret,
+		p.config.AuthRedirectURI,
+		p.config.RedirectURI,
+		p.config.AccessTokenURL,
+		p.config.UserInfoURL,
+		p.config.CodeHeader,
+		p.config.CodeQuery,
+	}, "\x00"))
+}
+
+func (p *Plugin) oauthStateCookie(value string) *http.Cookie {
+	return &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   *p.config.CookieSecure,
+		SameSite: base.CookieSameSite(p.config.CookieSameSite),
+		MaxAge:   int(base.OAuthStateLifetime / time.Second),
+	}
+}
+
+func (p *Plugin) deleteOAuthStateCookie(w http.ResponseWriter) {
+	cookie := p.oauthStateCookie("deleted")
+	cookie.MaxAge = -1
+	cookie.Expires = time.Unix(1, 0).UTC()
+	http.SetCookie(w, cookie)
+}
+
+func oauthRedirectWithState(rawURI string, state string) (string, error) {
+	redirectURI, err := url.Parse(rawURI)
+	if err != nil {
+		return "", err
+	}
+	query := redirectURI.Query()
+	query.Set("state", state)
+	redirectURI.RawQuery = query.Encode()
+	return redirectURI.String(), nil
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, error) {

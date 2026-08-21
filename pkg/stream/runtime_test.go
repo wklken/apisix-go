@@ -2,15 +2,174 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string   { return "temporary accept failure" }
+func (temporaryAcceptError) Temporary() bool { return true }
+func (temporaryAcceptError) Timeout() bool   { return true }
+
+type scriptedAccept struct {
+	conn net.Conn
+	err  error
+}
+
+type scriptedListener struct {
+	addr      net.Addr
+	steps     chan scriptedAccept
+	accepted  chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newScriptedListener(addr string, steps ...scriptedAccept) *scriptedListener {
+	listener := &scriptedListener{
+		addr:     scriptedAddr(addr),
+		steps:    make(chan scriptedAccept, len(steps)),
+		accepted: make(chan struct{}, len(steps)),
+		closed:   make(chan struct{}),
+	}
+	for _, step := range steps {
+		listener.steps <- step
+	}
+	return listener
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	select {
+	case step := <-l.steps:
+		l.accepted <- struct{}{}
+		return step.conn, step.err
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *scriptedListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *scriptedListener) Addr() net.Addr { return l.addr }
+
+type scriptedAddr string
+
+func (a scriptedAddr) Network() string { return "tcp" }
+func (a scriptedAddr) String() string  { return string(a) }
+
+func newTestRuntime(t *testing.T, listeners ...net.Listener) *Runtime {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	router, err := NewRouter(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	runtime := &Runtime{
+		ctx:       ctx,
+		cancel:    cancel,
+		router:    router,
+		listeners: listeners,
+		closeDone: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		_ = runtime.Close(context.Background())
+	})
+	return runtime
+}
+
+func startRuntimeListeners(runtime *Runtime, listeners ...net.Listener) {
+	runtime.wg.Add(len(listeners))
+	for _, listener := range listeners {
+		go runtime.serveListener(listener)
+	}
+}
+
+func waitForAccept(t *testing.T, listener *scriptedListener) {
+	t.Helper()
+	select {
+	case <-listener.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not call Accept")
+	}
+}
+
+func TestServeListenerRetriesTemporaryAcceptErrors(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	listener := newScriptedListener(
+		"127.0.0.1:21001",
+		scriptedAccept{err: temporaryAcceptError{}},
+		scriptedAccept{conn: client},
+	)
+	runtime := newTestRuntime(t, listener)
+	startRuntimeListeners(runtime, listener)
+
+	waitForAccept(t, listener)
+	select {
+	case <-runtime.ctx.Done():
+		t.Fatal("temporary accept failure closed runtime")
+	case <-time.After(10 * time.Millisecond):
+	}
+	waitForAccept(t, listener)
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestServeListenerTerminalErrorClosesRuntimeAndSiblingListeners(t *testing.T) {
+	terminalErr := errors.New("terminal accept failure")
+	failing := newScriptedListener("127.0.0.1:21002", scriptedAccept{err: terminalErr})
+	sibling := newScriptedListener("127.0.0.1:21003")
+	runtime := newTestRuntime(t, failing, sibling)
+	entries := make(chan logger.Entry, 1)
+	stopObserver := logger.ReplaceObserver("stream-runtime-terminal-accept-test", func(entry logger.Entry) {
+		entries <- entry
+	})
+	t.Cleanup(stopObserver)
+	startRuntimeListeners(runtime, failing, sibling)
+
+	select {
+	case <-runtime.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("terminal accept failure did not cancel runtime")
+	}
+	for name, listener := range map[string]*scriptedListener{
+		"failing": failing,
+		"sibling": sibling,
+	} {
+		select {
+		case <-listener.closed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s listener was not closed", name)
+		}
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, failing.Addr().String()) ||
+			!strings.Contains(entry.Message, terminalErr.Error()) {
+			t.Fatalf("terminal log = %q, want listener and error", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal accept failure was not logged")
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("Close() after terminal failure = %v", err)
+	}
+}
 
 func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 	firstUpstream, firstAddr := startStreamUpstream(t, []byte("first-response"))

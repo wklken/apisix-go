@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -29,6 +30,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestRequestVarUsesEffectiveRemoteIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://example.test", nil)
+	r.RemoteAddr = "10.0.0.2:1234"
+	r = r.WithContext(context.WithValue(r.Context(), apisixctx.RemoteAddrKey, "198.51.100.2"))
+
+	if got := requestVar(r, "remote_addr"); got != "198.51.100.2" {
+		t.Fatalf("requestVar(remote_addr) = %q, want effective remote address", got)
+	}
 }
 
 func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {

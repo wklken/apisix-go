@@ -233,6 +233,8 @@ func (c Config) idpEntityID() string {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == base.CallbackPath(p.config.LogoutCallbackURI) {
+			apisixctx.RegisterSensitiveQueryName(r, "SAMLRequest")
+			apisixctx.RegisterSensitiveQueryName(r, "SAMLResponse")
 			switch {
 			case r.FormValue("SAMLRequest") != "":
 				p.handleLogoutRequest(w, r)
@@ -249,9 +251,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.URL.Path == base.CallbackPath(p.config.LoginCallbackURI) && r.FormValue("SAMLResponse") != "" {
-			p.handleCallback(w, r)
-			return
+		if r.URL.Path == base.CallbackPath(p.config.LoginCallbackURI) {
+			apisixctx.RegisterSensitiveQueryName(r, "SAMLResponse")
+			if r.FormValue("SAMLResponse") != "" {
+				p.handleCallback(w, r)
+				return
+			}
 		}
 
 		if user, ok := p.sessionUser(r); ok {
@@ -1009,6 +1014,7 @@ func samlElementBytes(element *etree.Element) ([]byte, error) {
 }
 
 func decodeSAMLMessage(r *http.Request, field string) ([]byte, error) {
+	apisixctx.RegisterSensitiveQueryName(r, field)
 	if value := r.URL.Query().Get(field); value != "" {
 		return decodeSAMLRedirectValue(value)
 	}

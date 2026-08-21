@@ -222,6 +222,7 @@ func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) handleMessage(w http.ResponseWriter, r *http.Request) {
+	apisixctx.RegisterSensitiveQueryName(r, "sessionId")
 	body, err := base.ReadRequestBodyLimited(r, p.config.MaxBodySize)
 	if base.IsBodyTooLarge(err) {
 		w.WriteHeader(http.StatusRequestEntityTooLarge)

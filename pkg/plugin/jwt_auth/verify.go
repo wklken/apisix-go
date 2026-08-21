@@ -51,7 +51,7 @@ func jwtVerificationKey(consumer consumerConfig) (any, error) {
 }
 
 // verifyAPISIXTimeClaims mirrors the APISIX jwt-auth claim semantics: exp is
-// invalid at or before now-leeway and nbf is invalid at or after now+leeway.
+// invalid at or before now-leeway and nbf is invalid strictly after now+leeway.
 // Claims are optional by default; when requiredClaims is configured, a missing
 // claim is rejected.
 func verifyAPISIXTimeClaims(claims jwt.MapClaims, now time.Time, leeway time.Duration, requiredClaims []string) error {
@@ -82,7 +82,7 @@ func verifyAPISIXTimeClaims(claims jwt.MapClaims, now time.Time, leeway time.Dur
 				return fmt.Errorf("claim exp expired")
 			}
 		case "nbf":
-			if ts >= nowUnix+leewaySeconds {
+			if ts > nowUnix+leewaySeconds {
 				return fmt.Errorf("claim nbf not valid yet")
 			}
 		}

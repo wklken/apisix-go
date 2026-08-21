@@ -101,6 +101,46 @@ func TestConsumerRestartRebuildsPersistedPluginLookup(t *testing.T) {
 	}
 }
 
+func TestConsumerRestartPreservesIDAndPluginLookupNamespaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "consumer-namespace-restart.db")
+	first, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	if err := first.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("consumers"))
+		if err := bucket.Put([]byte("key-auth:secret"), []byte(`{"username":"id-owner","plugins":{}}`)); err != nil {
+			return err
+		}
+		return bucket.Put(
+			[]byte("credential-owner"),
+			[]byte(`{"username":"credential-owner","plugins":{"key-auth":{"key":"secret"}}}`),
+		)
+	}); err != nil {
+		t.Fatalf("persist colliding consumer ID and credential: %v", err)
+	}
+	if err := first.Stop(); err != nil {
+		t.Fatalf("first Store.Stop() error = %v", err)
+	}
+
+	second, err := Open(path, make(chan *Event))
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = second.Stop() })
+	gotByID := second.consumerValues["key-auth:secret"]
+	if gotByID.Username != "id-owner" {
+		t.Fatalf("restarted ID owner = %q, want id-owner", gotByID.Username)
+	}
+	gotByCredential, err := second.getConsumerByPluginKey("key-auth", "secret")
+	if err != nil {
+		t.Fatalf("restarted plugin lookup error = %v", err)
+	}
+	if gotByCredential.Username != "credential-owner" {
+		t.Fatalf("restarted credential owner = %q, want credential-owner", gotByCredential.Username)
+	}
+}
+
 func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid-consumer.db")
 	first, err := Open(path, make(chan *Event))

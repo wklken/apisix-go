@@ -242,6 +242,7 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 // checked with the consumer secret or public key, and exp/nbf claims follow
 // APISIX semantics with the configured grace period.
 func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
+	ctx.RegisterSensitiveQueryName(r, p.config.Query)
 	if token := ctx.RestoreTrustedRequestHeader(r, p.config.Header); token != "" {
 		if *p.config.HideCredentials {
 			r.Header.Del(p.config.Header)

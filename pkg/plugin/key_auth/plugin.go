@@ -101,6 +101,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	ctx.RegisterSensitiveQueryName(r, p.config.Query)
 	fromHeader := true
 	key := ctx.RestoreTrustedRequestHeader(r, p.config.Header)
 	if key == "" {

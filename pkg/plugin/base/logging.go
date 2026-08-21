@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	brotli "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 // exprRegexpIndex maps expression pattern strings to their compiled form.
@@ -353,7 +353,9 @@ func RequestVar(r *http.Request, name string, status int) string {
 	case name == "uri":
 		return r.URL.Path
 	case name == "request_uri":
-		return r.URL.RequestURI()
+		return apisixlog.RedactedRequestURI(r)
+	case name == "args", name == "query_string":
+		return apisixlog.RedactedRequestQueryString(r)
 	case name == "method", name == "request_method":
 		return r.Method
 	case name == "host":
@@ -367,13 +369,9 @@ func RequestVar(r *http.Request, name string, status int) string {
 		}
 		return "http"
 	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
+		return apisixctx.EffectiveRemoteIP(r)
 	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+		return fmt.Sprint(apisixlog.GetField(r, "$"+name))
 	case strings.HasPrefix(name, "http_"):
 		header := strings.TrimPrefix(name, "http_")
 		return requestHeaderValue(r.Header, header)

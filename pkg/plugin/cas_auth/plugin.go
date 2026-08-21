@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/cache/memory"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -23,18 +24,20 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client *http.Client
-	opts   sessionOptions
+	client            *http.Client
+	opts              sessionOptions
+	logoutTrustedNets []*net.IPNet
 }
 
 const (
 	priority = 2597
 	name     = "cas-auth"
 
-	requestURICookie = "CAS_REQUEST_URI"
-	sessionPrefix    = "CAS_SESSION_"
-	sessionLifetime  = time.Hour
-	sessionCapacity  = 10_000
+	requestURICookie   = "CAS_REQUEST_URI"
+	sessionPrefix      = "CAS_SESSION_"
+	sessionLifetime    = time.Hour
+	sessionCapacity    = 10_000
+	maxLogoutBodyBytes = 64 * 1024
 )
 
 const schema = `
@@ -49,6 +52,13 @@ const schema = `
     },
     "logout_uri": {
       "type": "string"
+    },
+    "logout_trusted_addresses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "cookie": {
       "type": "object",
@@ -75,10 +85,11 @@ const schema = `
 `
 
 type Config struct {
-	IDPURI         string       `json:"idp_uri"`
-	CASCallbackURI string       `json:"cas_callback_uri"`
-	LogoutURI      string       `json:"logout_uri"`
-	Cookie         CookieConfig `json:"cookie"`
+	IDPURI                 string       `json:"idp_uri"`
+	CASCallbackURI         string       `json:"cas_callback_uri"`
+	LogoutURI              string       `json:"logout_uri"`
+	LogoutTrustedAddresses []string     `json:"logout_trusted_addresses,omitempty"`
+	Cookie                 CookieConfig `json:"cookie"`
 }
 
 type CookieConfig struct {
@@ -159,6 +170,19 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.logoutTrustedNets = nil
+	for _, address := range p.config.LogoutTrustedAddresses {
+		_, network, err := net.ParseCIDR(address)
+		if err != nil {
+			return fmt.Errorf("invalid logout_trusted_addresses entry %q: %w", address, err)
+		}
+		p.logoutTrustedNets = append(p.logoutTrustedNets, network)
+	}
+	if len(p.logoutTrustedNets) == 0 {
+		logger.Warn(
+			"cas-auth back-channel logout is disabled: configure logout_trusted_addresses with trusted IdP CIDRs",
+		)
+	}
 	if p.config.Cookie.Secure == nil {
 		secure := true
 		p.config.Cookie.Secure = &secure
@@ -202,13 +226,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.Method == http.MethodGet && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) &&
-			r.URL.Query().Get("ticket") != "" {
-			p.validateWithCAS(w, r, r.URL.Query().Get("ticket"))
-			return
+		if r.Method == http.MethodGet && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
+			apisixctx.RegisterSensitiveQueryName(r, "ticket")
+			if ticket := r.URL.Query().Get("ticket"); ticket != "" {
+				p.validateWithCAS(w, r, ticket)
+				return
+			}
 		}
 
 		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
+			if !p.trustedLogoutPeer(r) {
+				http.Error(w, util.BuildMessageResponse("untrusted logout request from IdP"), http.StatusForbidden)
+				return
+			}
 			if p.handleIDPLogout(r) {
 				w.WriteHeader(http.StatusOK)
 				return
@@ -226,30 +256,122 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) handleIDPLogout(r *http.Request) bool {
-	body, err := io.ReadAll(r.Body)
+	if r.Body == nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxLogoutBodyBytes+1))
 	if err != nil {
 		return false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) > maxLogoutBodyBytes {
+		return false
+	}
 
 	decoder := xml.NewDecoder(bytes.NewReader(body))
+	decoder.Strict = true
+	rootSeen := false
+	rootClosed := false
+	depth := 0
+	sessionIndexCount := 0
+	sessionIndexDepth := 0
+	xmlDeclarationSeen := false
+	var sessionIndex strings.Builder
 	for {
 		token, err := decoder.Token()
+		if err == io.EOF {
+			if !rootSeen || !rootClosed || depth != 0 || sessionIndexCount != 1 {
+				return false
+			}
+			sessionID := strings.TrimSpace(sessionIndex.String())
+			if sessionID == "" {
+				return false
+			}
+			p.deleteSession(sessionID)
+			return true
+		}
 		if err != nil {
 			return false
 		}
-		start, ok := token.(xml.StartElement)
-		if !ok || localXMLName(start.Name) != "SessionIndex" {
-			continue
-		}
-
-		var sessionID string
-		if err := decoder.DecodeElement(&sessionID, &start); err != nil || sessionID == "" {
+		switch value := token.(type) {
+		case xml.Directive:
 			return false
+		case xml.ProcInst:
+			if rootSeen || xmlDeclarationSeen || !strings.EqualFold(value.Target, "xml") {
+				return false
+			}
+			xmlDeclarationSeen = true
+		case xml.Comment:
+			if rootClosed {
+				return false
+			}
+		case xml.StartElement:
+			if rootClosed {
+				return false
+			}
+			name := localXMLName(value.Name)
+			if sessionIndexDepth != 0 && depth >= sessionIndexDepth {
+				return false
+			}
+			if !rootSeen {
+				if depth != 0 || name != "LogoutRequest" {
+					return false
+				}
+				rootSeen = true
+			} else if name == "SessionIndex" {
+				if depth != 1 || sessionIndexCount != 0 {
+					return false
+				}
+				sessionIndexCount++
+				sessionIndexDepth = depth + 1
+			}
+			depth++
+		case xml.CharData:
+			if !rootSeen && strings.TrimSpace(string(value)) != "" {
+				return false
+			}
+			if rootClosed && strings.TrimSpace(string(value)) != "" {
+				return false
+			}
+			if sessionIndexDepth != 0 {
+				sessionIndex.Write([]byte(value))
+			}
+		case xml.EndElement:
+			if depth == 0 {
+				return false
+			}
+			depth--
+			if depth == 0 {
+				if localXMLName(value.Name) != "LogoutRequest" {
+					return false
+				}
+				rootClosed = true
+			}
+			if sessionIndexDepth != 0 && depth < sessionIndexDepth {
+				sessionIndexDepth = 0
+			}
 		}
-		p.deleteSession(sessionID)
-		return true
 	}
+}
+
+func (p *Plugin) trustedLogoutPeer(r *http.Request) bool {
+	if len(p.logoutTrustedNets) == 0 {
+		return false
+	}
+	host := r.RemoteAddr
+	if parsedHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsedHost
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return false
+	}
+	for _, network := range p.logoutTrustedNets {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {

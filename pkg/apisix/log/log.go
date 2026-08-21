@@ -15,6 +15,10 @@ func GetField(r *http.Request, key string) any {
 		return key
 	}
 
+	if value, redacted := redactedQueryField(r, key); redacted {
+		return value
+	}
+
 	if _, ok := v.NginxVars[key]; ok {
 		return v.GetNginxVar(r, key)
 	}

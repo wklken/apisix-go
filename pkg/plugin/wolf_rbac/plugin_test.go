@@ -118,7 +118,12 @@ func TestPostInitAppliesOfficialDefaults(t *testing.T) {
 
 func TestClientForConfigTLSSecurityMatrix(t *testing.T) {
 	wolf := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"userInfo": map[string]any{"id": "tls-user", "username": "tls-user"},
+			},
+		})
 	}))
 	t.Cleanup(wolf.Close)
 
@@ -312,6 +317,77 @@ func TestHandlerPropagatesWolfDenial(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsSuccessfulHTTPResponsesWithoutWolfPermission(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "business denial",
+			body: map[string]any{
+				"ok":     false,
+				"reason": "permission denied",
+				"data": map[string]any{
+					"userInfo": map[string]any{"id": "u-denied", "username": "denied"},
+				},
+			},
+		},
+		{
+			name: "missing ok",
+			body: map[string]any{
+				"reason": "permission response is incomplete",
+				"data": map[string]any{
+					"userInfo": map[string]any{"id": "u-missing-ok", "username": "missing-ok"},
+				},
+			},
+		},
+		{
+			name: "empty user info",
+			body: map[string]any{
+				"ok":     true,
+				"reason": "permission response has no identity",
+				"data":   map[string]any{"userInfo": map[string]any{}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			t.Cleanup(wolf.Close)
+			appid := "app-invalid-permission-" + strings.ReplaceAll(tc.name, " ", "-")
+			addWolfConsumer(t, "wolf-invalid-permission-"+appid, appid, wolf.URL)
+			p := newTestPlugin(t, Config{})
+
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+			req = ctx.WithApisixVars(req, map[string]string{})
+			req.Header.Set("Authorization", "V1#"+appid+"#wolf-token")
+			rr := httptest.NewRecorder()
+			nextCalls := 0
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				nextCalls++
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+			}
+			if nextCalls != 0 {
+				t.Fatalf("next calls = %d, want 0", nextCalls)
+			}
+			for _, header := range []string{"X-UserId", "X-Username", "X-Nickname"} {
+				if got := rr.Header().Get(header); got != "" {
+					t.Fatalf("response %s = %q, want empty", header, got)
+				}
+				if got := req.Header.Get(header); got != "" {
+					t.Fatalf("request %s = %q, want empty", header, got)
+				}
+			}
+		})
+	}
+}
+
 func TestHandlerClearsForgedIdentityHeaders(t *testing.T) {
 	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -385,8 +461,8 @@ func TestHandlerRejectsEmptyUserInfo(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
 	}
 	if nextCalled {
 		t.Fatal("next handler was called for an empty Wolf userInfo response")
@@ -402,10 +478,12 @@ func TestHandlerRejectsEmptyUserInfo(t *testing.T) {
 }
 
 func TestFetchTokenFromQueryAndCookie(t *testing.T) {
-	if got := fetchRBACToken(
-		httptest.NewRequest(http.MethodGet, "/?rbac_token=V1%23app%23query", nil),
-	); got != "V1#app#query" {
+	queryRequest := httptest.NewRequest(http.MethodGet, "/?rbac_token=V1%23app%23query", nil)
+	if got := fetchRBACToken(queryRequest); got != "V1#app#query" {
 		t.Fatalf("query token = %q", got)
+	}
+	if !ctx.IsSensitiveQueryName(queryRequest, "rbac_token") {
+		t.Fatal("wolf-rbac did not register rbac_token query key")
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -417,7 +495,12 @@ func TestFetchTokenFromQueryAndCookie(t *testing.T) {
 
 func TestCheckPermissionHonorsSSLVerifyFalse(t *testing.T) {
 	wolf := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"userInfo": map[string]any{"id": "tls-user", "username": "tls-user"},
+			},
+		})
 	}))
 	t.Cleanup(wolf.Close)
 

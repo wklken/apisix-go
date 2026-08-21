@@ -139,6 +139,7 @@ func (p *Plugin) beginAuthorization(
 }
 
 func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redirectURI string) {
+	apisixctx.RegisterSensitiveQueryName(r, "code")
 	session, err := p.readSession(r)
 	state := r.URL.Query().Get("state")
 	if err != nil || session == nil || state == "" || session.FlowState == "" ||

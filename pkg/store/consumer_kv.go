@@ -339,6 +339,12 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) error {
 	s.consumerMu.Lock()
 	defer s.consumerMu.Unlock()
+	if s.consumerKV == nil {
+		s.consumerKV = make(map[string][]byte)
+	}
+	if s.consumerIDs == nil {
+		s.consumerIDs = make(map[string][]byte)
+	}
 	key := util.BytesToString(snapshot.id)
 	for _, pluginKey := range snapshot.pluginKeys {
 		if owner := string(s.consumerKV[pluginKey]); owner != "" && owner != key {
@@ -359,7 +365,7 @@ func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) error {
 		}
 	}
 	consumerID := append([]byte(nil), snapshot.id...)
-	s.consumerKV[key] = consumerID
+	s.consumerIDs[key] = consumerID
 	s.consumerToKeys[key] = snapshot.pluginKeys
 	for _, pluginKey := range snapshot.pluginKeys {
 		s.consumerKV[pluginKey] = consumerID
@@ -440,7 +446,7 @@ func (s *Store) consumerKVDelete(id []byte) error {
 	delete(s.consumerToReferences, key)
 
 	// delete self
-	delete(s.consumerKV, key)
+	delete(s.consumerIDs, key)
 	delete(s.consumerValues, key)
 	s.consumerGeneration.Add(1)
 

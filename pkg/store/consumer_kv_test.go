@@ -41,7 +41,8 @@ func TestConsumerPluginLookupKey(t *testing.T) {
 
 func TestConsumerKVDeleteRemovesAllLookupEntries(t *testing.T) {
 	consumerStore := &Store{
-		consumerKV:           map[string][]byte{"alice": []byte("alice"), "key-auth:k1": []byte("alice")},
+		consumerKV:           map[string][]byte{"key-auth:k1": []byte("alice")},
+		consumerIDs:          map[string][]byte{"alice": []byte("alice")},
 		consumerToKeys:       map[string][]string{"alice": {"key-auth:k1"}},
 		consumerReferenceKV:  map[string]map[string][]byte{"jwt-auth": {"alice": []byte("alice")}},
 		consumerToReferences: map[string][]string{"alice": {"jwt-auth"}},

@@ -101,7 +101,7 @@ func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
 	}
 }
 
-func TestHandlerDoesNotOverwriteClientAWSAPIKey(t *testing.T) {
+func TestHandlerOverwritesClientAWSAPIKey(t *testing.T) {
 	var gotAPIKey string
 	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAPIKey = r.Header.Get("X-Api-Key")
@@ -121,8 +121,91 @@ func TestHandlerDoesNotOverwriteClientAWSAPIKey(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
-	if gotAPIKey != "client-key" {
-		t.Fatalf("X-Api-Key = %q, want client-key", gotAPIKey)
+	if gotAPIKey != "configured-key" {
+		t.Fatalf("X-Api-Key = %q, want configured-key", gotAPIKey)
+	}
+}
+
+func TestHandlerReplacesClientIAMCredentialHeaders(t *testing.T) {
+	oldNow := now
+	now = func() time.Time {
+		return time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	}
+	defer func() { now = oldNow }()
+
+	var got http.Header
+	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer lambda.Close()
+
+	p := newTestPlugin(t, Config{
+		FunctionURI: lambda.URL,
+		Authorization: &Authorization{
+			IAM: &IAM{AccessKey: "AKID", SecretKey: "SECRET", AWSRegion: "us-west-2", Service: "lambda"},
+		},
+	})
+
+	res := performRequest(p, http.MethodGet, "/aws", "", map[string]string{
+		"Authorization":        "Bearer client-token",
+		"X-Amz-Date":           "19990101T000000Z",
+		"X-Amz-Credential":     "client-credential",
+		"X-Amz-Signature":      "client-signature",
+		"X-Amz-SignedHeaders":  "host",
+		"X-Amz-Security-Token": "client-session",
+		"X-Trace":              "keep",
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	if got == nil {
+		t.Fatal("lambda did not receive request")
+	}
+	wantCredential := "AWS4-HMAC-SHA256 Credential=AKID/20200102/us-west-2/lambda/aws4_request"
+	if authorization := got.Get("Authorization"); !strings.Contains(authorization, wantCredential) {
+		t.Fatalf("Authorization = %q, want configured credential %q", authorization, wantCredential)
+	}
+	if got.Get("X-Amz-Date") != "20200102T030405Z" {
+		t.Fatalf("X-Amz-Date = %q, want signer value", got.Get("X-Amz-Date"))
+	}
+	for _, name := range []string{"X-Amz-Credential", "X-Amz-Signature", "X-Amz-SignedHeaders", "X-Amz-Security-Token"} {
+		if got.Get(name) != "" {
+			t.Errorf("%s = %q, want client credential removed", name, got.Get(name))
+		}
+	}
+	if got.Get("X-Trace") != "keep" {
+		t.Errorf("X-Trace = %q, want preserved", got.Get("X-Trace"))
+	}
+}
+
+func TestHandlerPreservesClientHeadersWithoutGatewayAuth(t *testing.T) {
+	var got http.Header
+	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer lambda.Close()
+
+	p := newTestPlugin(t, Config{FunctionURI: lambda.URL})
+	res := performRequest(p, http.MethodGet, "/aws", "", map[string]string{
+		"Authorization": "Bearer client-token",
+		"X-Api-Key":     "client-key",
+		"X-Amz-Target":  "client-target",
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	if got.Get("Authorization") != "Bearer client-token" {
+		t.Errorf("Authorization = %q, want client value", got.Get("Authorization"))
+	}
+	if got.Get("X-Api-Key") != "client-key" {
+		t.Errorf("X-Api-Key = %q, want client value", got.Get("X-Api-Key"))
+	}
+	if got.Get("X-Amz-Target") != "client-target" {
+		t.Errorf("X-Amz-Target = %q, want client value", got.Get("X-Amz-Target"))
 	}
 }
 

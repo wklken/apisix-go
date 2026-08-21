@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -165,6 +166,9 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called for callback")
 	})).ServeHTTP(callbackRR, callbackReq)
+	if !apisixctx.IsSensitiveQueryName(callbackReq, "code") {
+		t.Fatal("authz-casdoor did not register code query key")
+	}
 
 	if callbackRR.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302", callbackRR.Code)

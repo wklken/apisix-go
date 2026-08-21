@@ -125,6 +125,29 @@ func TestLDAPSchemaSupportsHideCredentialsAndDefaultsFalse(t *testing.T) {
 	}
 }
 
+func TestLDAPTLSVerifyDefaultsToEnabledAndSupportsExplicitOptOut(t *testing.T) {
+	p := newTestPlugin(t, nil)
+	if p.config.TLSVerify == nil || !*p.config.TLSVerify {
+		t.Fatalf("TLSVerify = %v, want true when omitted", p.config.TLSVerify)
+	}
+	verified, err := ldapTLSConfig(p.config)
+	if err != nil {
+		t.Fatalf("ldapTLSConfig(omitted) error = %v", err)
+	}
+	if verified.InsecureSkipVerify {
+		t.Fatal("ldapTLSConfig(omitted) enabled InsecureSkipVerify")
+	}
+
+	optOut := Config{TLSVerify: new(false)}
+	insecure, err := ldapTLSConfig(optOut)
+	if err != nil {
+		t.Fatalf("ldapTLSConfig(explicit false) error = %v", err)
+	}
+	if !insecure.InsecureSkipVerify {
+		t.Fatal("ldapTLSConfig(explicit false) did not enable InsecureSkipVerify")
+	}
+}
+
 func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 	addLDAPConsumer(t, "ldap-user", "cn=alice,dc=example,dc=org")
 	p := newTestPlugin(t, func(username, password string, cfg Config) error {

@@ -63,6 +63,56 @@ func TestConsumerSnapshotRejectsDuplicatePluginLookupKey(t *testing.T) {
 	}
 }
 
+func TestConsumerIDCanEqualNamespacedPluginLookupKey(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+		consumerValues: make(map[string]resource.Consumer),
+	}
+	consumerID := []byte(`{"username":"key-auth:secret","plugins":{}}`)
+	if err := consumerStore.consumerKVAdd([]byte("key-auth:secret"), consumerID); err != nil {
+		t.Fatalf("add consumer whose ID is a plugin lookup key: %v", err)
+	}
+	credentialOwner := []byte(`{"username":"credential-owner","plugins":{"key-auth":{"key":"secret"}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("credential-owner"), credentialOwner); err != nil {
+		t.Fatalf("add consumer with literal credential: %v", err)
+	}
+	updatedID := []byte(`{"username":"key-auth:secret","plugins":{"key-auth":{"key":"id-key"}}}`)
+	if err := consumerStore.consumerKVAdd([]byte("key-auth:secret"), updatedID); err != nil {
+		t.Fatalf("update consumer whose ID is a plugin lookup key: %v", err)
+	}
+
+	previous := ReplaceGlobalStoreForTest(consumerStore)
+	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
+	gotByID, err := GetConsumer("key-auth:secret")
+	if err != nil {
+		t.Fatalf("GetConsumer() error = %v", err)
+	}
+	if gotByID.Username != "key-auth:secret" {
+		t.Fatalf("GetConsumer() username = %q, want key-auth:secret", gotByID.Username)
+	}
+	gotByCredential, err := GetConsumerByPluginKey("key-auth", "secret")
+	if err != nil {
+		t.Fatalf("GetConsumerByPluginKey() error = %v", err)
+	}
+	if gotByCredential.Username != "credential-owner" {
+		t.Fatalf("GetConsumerByPluginKey() username = %q, want credential-owner", gotByCredential.Username)
+	}
+	if err := consumerStore.consumerKVDelete([]byte("key-auth:secret")); err != nil {
+		t.Fatalf("delete consumer whose ID is a plugin lookup key: %v", err)
+	}
+	gotByCredential, err = GetConsumerByPluginKey("key-auth", "secret")
+	if err != nil {
+		t.Fatalf("GetConsumerByPluginKey() after ID delete error = %v", err)
+	}
+	if gotByCredential.Username != "credential-owner" {
+		t.Fatalf(
+			"GetConsumerByPluginKey() after ID delete username = %q, want credential-owner",
+			gotByCredential.Username,
+		)
+	}
+}
+
 func TestConsumerSnapshotValidatesJWTAuthConsumerSchema(t *testing.T) {
 	tests := []struct {
 		name       string

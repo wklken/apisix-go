@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -168,6 +169,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
+	apisixctx.RegisterSensitiveQueryName(r, "code")
 	session, err := p.openSession(r)
 	if err != nil {
 		logger.Error("no session found")

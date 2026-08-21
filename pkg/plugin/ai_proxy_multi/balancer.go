@@ -135,14 +135,7 @@ func hashVariable(r *http.Request, name string) string {
 		hostname, _ := os.Hostname()
 		return hostname
 	case name == "remote_addr":
-		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
-			return value
-		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
+		return apisixctx.EffectiveRemoteIP(r)
 	case name == "remote_port":
 		_, port, _ := net.SplitHostPort(r.RemoteAddr)
 		return port

@@ -1781,6 +1781,9 @@ func TestHandlerCodeFlowPKCEExchangesMatchingVerifier(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(callbackRecorder, callback)
+	if !apisixctx.IsSensitiveQueryName(callback, "code") {
+		t.Fatal("openid-connect did not register code query key")
+	}
 
 	if callbackRecorder.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 302; body=%s", callbackRecorder.Code, callbackRecorder.Body.String())

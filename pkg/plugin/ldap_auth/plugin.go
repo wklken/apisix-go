@@ -47,7 +47,7 @@ const schema = `
     },
     "tls_verify": {
       "type": "boolean",
-      "default": false
+      "default": true
     },
     "uid": {
       "type": "string",
@@ -73,7 +73,7 @@ type Config struct {
 	BaseDN          string `json:"base_dn"`
 	LDAPURI         string `json:"ldap_uri"`
 	UseTLS          bool   `json:"use_tls,omitempty"`
-	TLSVerify       bool   `json:"tls_verify,omitempty"`
+	TLSVerify       *bool  `json:"tls_verify,omitempty"`
 	UID             string `json:"uid,omitempty"`
 	Realm           string `json:"realm,omitempty"`
 	HideCredentials *bool  `json:"hide_credentials,omitempty"`
@@ -91,6 +91,13 @@ func (p *Plugin) PostInit() error {
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
 		p.config.HideCredentials = &hideCredentials
+	}
+	if p.config.TLSVerify == nil {
+		verify := true
+		p.config.TLSVerify = &verify
+	}
+	if p.config.UseTLS && !*p.config.TLSVerify {
+		logger.Warn("LDAP TLS certificate verification is disabled")
 	}
 	if p.config.UID == "" {
 		p.config.UID = "cn"
@@ -232,10 +239,14 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 }
 
 func ldapTLSConfig(cfg Config) (*tls.Config, error) {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: !cfg.TLSVerify, //nolint:gosec // APISIX tls_verify explicitly controls LDAP verification
+	verify := true
+	if cfg.TLSVerify != nil {
+		verify = *cfg.TLSVerify
 	}
-	if !cfg.TLSVerify {
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: !verify, //nolint:gosec // APISIX tls_verify explicitly controls LDAP verification
+	}
+	if !verify {
 		return tlsConfig, nil
 	}
 	caFile := os.Getenv("SSL_CERT_FILE")

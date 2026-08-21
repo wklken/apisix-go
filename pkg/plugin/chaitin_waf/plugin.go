@@ -506,18 +506,9 @@ func normalizeMatchVars(vars any) []any {
 
 func clientIP(r *http.Request, realClientIP bool) string {
 	if realClientIP {
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			return strings.TrimSpace(strings.Split(forwarded, ",")[0])
-		}
-		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-			return realIP
-		}
+		return apisixctx.EffectiveRemoteIP(r)
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return apisixctx.PeerRemoteIP(r)
 }
 
 func (n Node) hostPort() string {

@@ -130,7 +130,7 @@ func GetConsumer(id string) (resource.Consumer, error) {
 	consumer, ok := s.consumerValues[id]
 	s.consumerMu.RUnlock()
 	if ok {
-		return consumer, nil
+		return cloneConsumer(consumer), nil
 	}
 	config, err := s.GetFromBucket("consumers", util.StringToBytes(id))
 	if err != nil {
@@ -686,8 +686,8 @@ func (s *Store) rebuildSSLCertificateIndex() {
 	for _, entry := range entries {
 		ssl, err := ParseSSL(entry.value)
 		if err != nil {
-			logger.Errorf("reject SSL resource: parse: %s", err)
-			return
+			logger.Errorf("skip invalid persisted SSL resource %q: parse: %s", entry.id, err)
+			continue
 		}
 		if ssl.Status == 0 {
 			continue
@@ -697,8 +697,8 @@ func (s *Store) rebuildSSLCertificateIndex() {
 		}
 		certificate, err := buildSSLCertificateConfig(ssl)
 		if err != nil {
-			logger.Errorf("reject SSL resource %q: load: %s", entry.id, err)
-			return
+			logger.Errorf("skip invalid persisted SSL resource %q: load: %s", entry.id, err)
+			continue
 		}
 		id := entry.id
 		if id == "" {
@@ -1175,6 +1175,12 @@ func cloneService(service resource.Service) resource.Service {
 	service.Upstream = cloneUpstream(service.Upstream)
 	service.Hosts = append([]string(nil), service.Hosts...)
 	return service
+}
+
+func cloneConsumer(consumer resource.Consumer) resource.Consumer {
+	consumer.Plugins = clonePluginConfigs(consumer.Plugins)
+	consumer.Labels = cloneAnyMap(consumer.Labels)
+	return consumer
 }
 
 func cloneUpstream(upstream resource.Upstream) resource.Upstream {

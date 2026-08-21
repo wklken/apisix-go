@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/crewjam/saml"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -248,6 +249,9 @@ func TestUnsignedLogoutCallbackIsRejectedWithoutClearingSession(t *testing.T) {
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(rr, req)
+	if !apisixctx.IsSensitiveQueryName(req, "SAMLResponse") {
+		t.Fatal("saml-auth did not register SAMLResponse query key")
+	}
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rr.Code)

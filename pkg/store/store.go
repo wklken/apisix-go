@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
+	"golang.org/x/sync/singleflight"
 )
 
 // eventUpdateHook is a function that is called when an event is updated.
@@ -58,6 +59,12 @@ type Store struct {
 	// store consumer ID -> plugin names registered in consumerReferenceKV
 	consumerToReferences map[string][]string
 	consumerMu           sync.RWMutex
+	consumerGeneration   atomic.Uint64
+
+	consumerLookupCacheMu sync.Mutex
+	consumerLookupCache   *cacheutil.BoundedTTLMap[consumerLookupSnapshot]
+	consumerLookupGroup   singleflight.Group
+	secretGeneration      atomic.Uint64
 
 	vaultMu      sync.Mutex
 	vaultClient  *http.Client
@@ -609,6 +616,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		s.vaultMu.Lock()
 		s.vaultSecrets = nil
 		s.vaultMu.Unlock()
+		s.secretGeneration.Add(1)
 	}
 	if needsConfigGeneration {
 		s.configGeneration.Add(1)

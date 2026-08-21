@@ -13,6 +13,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -143,11 +144,26 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "ldap-user" {
 			t.Fatalf("consumer_name = %v, want ldap-user", got)
 		}
+		consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
+		if !ok {
+			t.Fatalf("consumer = %T, want resource.Consumer", ctx.GetApisixVar(r, "$consumer"))
+		}
+		if config := consumer.Plugins["ldap-auth"]; config != nil {
+			t.Fatalf("consumer ldap-auth config = %#v, want redacted", config)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUserDNEscapesRFC4514Metacharacters(t *testing.T) {
+	p := newTestPlugin(t, nil)
+
+	if got := p.userDN(`alice,ou=admins`); got != `cn=alice\,ou=admins,dc=example,dc=org` {
+		t.Fatalf("userDN() = %q, want escaped RDN value", got)
 	}
 }
 

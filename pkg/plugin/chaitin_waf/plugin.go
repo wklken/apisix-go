@@ -322,7 +322,7 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 	}
 	headers[HeaderChaitinWAFStatus] = strconv.Itoa(decision.Status)
 
-	if decision.Status != http.StatusOK && decision.EventID != "" {
+	if decision.Status != http.StatusOK {
 		headers[HeaderChaitinWAFAction] = "reject"
 		if effective.Mode == "monitor" {
 			return 0, "", headers

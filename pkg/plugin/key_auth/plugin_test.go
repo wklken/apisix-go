@@ -193,6 +193,20 @@ func TestHandlerRejectsConsumerLookupError(t *testing.T) {
 	event.Key = []byte("/apisix/consumers/broken-ref-user")
 	event.Value = body
 	testEvents <- event
+	t.Cleanup(func() {
+		deleteEvent := store.NewEvent()
+		deleteEvent.Type = store.EventTypeDelete
+		deleteEvent.Key = []byte("/apisix/consumers/broken-ref-user")
+		testEvents <- deleteEvent
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := store.GetConsumer("broken-ref-user"); err != nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Error("broken-ref-user consumer was not removed")
+	})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

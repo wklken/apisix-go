@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -538,9 +539,15 @@ func dispatchPipelineRequestBounded(
 			})
 		}
 	}
+	trustedOuterHeaders := apisixctx.TrustedRequestHeaders(outer)
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
-	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
+	req.Header = mergeHeaders(trustedOuterHeaders, batch.Headers, item.Headers, outer.RemoteAddr)
+	req = apisixctx.WithRequestHeaderProvenance(
+		req,
+		trustedOuterHeaders,
+		pipelineHeaderKeys(batch.Headers, item.Headers),
+	)
 	req.Header.Del("X-Consumer-Username")
 	req.Header.Del("Host")
 	req.Header.Del("X-Forwarded-Host")
@@ -713,13 +720,42 @@ func mergeHeaders(outer http.Header, common map[string]string, item map[string]s
 		headers[key] = append([]string(nil), value...)
 	}
 	for key, value := range common {
-		headers.Set(key, value)
+		if pipelineHeaderOverrideAllowed(key) {
+			headers.Set(key, value)
+		}
 	}
 	for key, value := range item {
-		headers.Set(key, value)
+		if pipelineHeaderOverrideAllowed(key) {
+			headers.Set(key, value)
+		}
 	}
 	if remoteIP := base.RemoteIP(remoteAddr); remoteIP != "" {
 		headers.Set("X-Real-IP", remoteIP)
 	}
 	return headers
+}
+
+func pipelineHeaderOverrideAllowed(key string) bool {
+	key = http.CanonicalHeaderKey(key)
+	if strings.HasPrefix(key, "X-Forwarded-") {
+		return false
+	}
+	switch key {
+	case "Authorization", "Connection", "Cookie", "Forwarded", "Keep-Alive", "Proxy-Authorization",
+		"Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "X-Consumer-Username", "X-Real-Ip":
+		return false
+	default:
+		return true
+	}
+}
+
+func pipelineHeaderKeys(common, item map[string]string) []string {
+	keys := make([]string, 0, len(common)+len(item))
+	for key := range common {
+		keys = append(keys, key)
+	}
+	for key := range item {
+		keys = append(keys, key)
+	}
+	return keys
 }

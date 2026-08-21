@@ -271,9 +271,15 @@ func (s *Store) resolveVaultSecret(id, key string) (string, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", fmt.Errorf("decode Vault response: %w", err)
 	}
-	value, ok := payload.Data[key[lastSlash+1:]].(string)
+	field := key[lastSlash+1:]
+	value, ok := payload.Data[field].(string)
 	if !ok {
-		return "", fmt.Errorf("vault response does not contain string field %q", key[lastSlash+1:])
+		if nested, nestedOK := payload.Data["data"].(map[string]any); nestedOK {
+			value, ok = nested[field].(string)
+		}
+	}
+	if !ok {
+		return "", fmt.Errorf("vault response does not contain string field %q", field)
 	}
 	secretCache.Set(cacheKey, value, vaultSecretCacheTTL)
 	return value, nil

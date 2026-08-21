@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -39,7 +40,72 @@ const (
 	trustedProxyKey        ContextKey = "trusted_proxy"
 )
 
-type authenticationStateKey struct{}
+type (
+	authenticationStateKey     struct{}
+	requestHeaderProvenanceKey struct{}
+)
+
+type requestHeaderProvenance struct {
+	trusted    http.Header
+	overridden map[string]struct{}
+}
+
+// WithRequestHeaderProvenance records which headers were supplied by an
+// internal request overlay and preserves the corresponding outer values for
+// authentication plugins.
+func WithRequestHeaderProvenance(r *http.Request, trusted http.Header, overridden []string) *http.Request {
+	if r == nil || len(overridden) == 0 {
+		return r
+	}
+	keys := make(map[string]struct{}, len(overridden))
+	for _, key := range overridden {
+		keys[http.CanonicalHeaderKey(key)] = struct{}{}
+	}
+	provenance := requestHeaderProvenance{trusted: trusted.Clone(), overridden: keys}
+	return r.WithContext(context.WithValue(r.Context(), requestHeaderProvenanceKey{}, provenance))
+}
+
+// RestoreTrustedRequestHeader replaces an internal overlay with the outer
+// header before authentication and before the request can reach an upstream.
+func RestoreTrustedRequestHeader(r *http.Request, name string) string {
+	if r == nil {
+		return ""
+	}
+	provenance, ok := r.Context().Value(requestHeaderProvenanceKey{}).(requestHeaderProvenance)
+	if !ok {
+		return r.Header.Get(name)
+	}
+	canonicalName := http.CanonicalHeaderKey(name)
+	if _, overridden := provenance.overridden[canonicalName]; !overridden {
+		return r.Header.Get(name)
+	}
+	r.Header.Del(name)
+	for _, value := range provenance.trusted.Values(name) {
+		r.Header.Add(name, value)
+	}
+	return r.Header.Get(name)
+}
+
+// TrustedRequestHeaders returns a clone with internal overlay values replaced
+// by their authenticated outer values. It keeps nested internal requests from
+// promoting a prior overlay into a trusted source.
+func TrustedRequestHeaders(r *http.Request) http.Header {
+	if r == nil {
+		return nil
+	}
+	headers := r.Header.Clone()
+	provenance, ok := r.Context().Value(requestHeaderProvenanceKey{}).(requestHeaderProvenance)
+	if !ok {
+		return headers
+	}
+	for key := range provenance.overridden {
+		headers.Del(key)
+		for _, value := range provenance.trusted.Values(key) {
+			headers.Add(key, value)
+		}
+	}
+	return headers
+}
 
 // AuthenticationState is the clone-safe result published by an explicit
 // consumer authenticator. Source is the exact factory key that authenticated
@@ -384,11 +450,40 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 }
 
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
-	RegisterApisixVar(r, "$consumer", consumer)
+	RegisterApisixVar(r, "$consumer", redactedConsumerView(consumer))
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
 	r.Header.Set("X-Consumer-Username", consumer.Username)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
+}
+
+func AttachConsumerFromAuthenticationState(r *http.Request) {
+	state, ok := AuthenticationStateFrom(r)
+	if !ok {
+		return
+	}
+	AttachConsumer(r, state.Consumer())
+}
+
+func redactedConsumerView(consumer resource.Consumer) resource.Consumer {
+	var plugins map[string]resource.PluginConfig
+	if consumer.Plugins != nil {
+		plugins = make(map[string]resource.PluginConfig, len(consumer.Plugins))
+		for name := range consumer.Plugins {
+			plugins[name] = nil
+		}
+	}
+	var labels map[string]any
+	if consumer.Labels != nil {
+		labels = make(map[string]any, len(consumer.Labels))
+		maps.Copy(labels, consumer.Labels)
+	}
+	return resource.Consumer{
+		Username: consumer.Username,
+		GroupID:  consumer.GroupID,
+		Plugins:  plugins,
+		Labels:   labels,
+	}
 }
 
 func RecycleVars(r *http.Request) {

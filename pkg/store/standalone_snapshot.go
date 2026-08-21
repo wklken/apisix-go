@@ -93,6 +93,7 @@ func (s *Store) rebuildPersistedConsumerIndexes() error {
 	s.consumerValues = consumerValues
 	s.consumerReferenceKV = consumerReferenceKV
 	s.consumerToReferences = consumerToReferences
+	s.consumerGeneration.Add(1)
 	s.consumerMu.Unlock()
 	return nil
 }

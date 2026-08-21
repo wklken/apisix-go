@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -662,6 +663,102 @@ func TestHandlerPinsPipelineHostToOuterRequest(t *testing.T) {
 	}
 	if got := responses[0].Headers["X-Got-Forwarded-Host"]; got != "outer-forwarded.example.com" {
 		t.Fatalf("pipeline forwarded host = %q, want outer-forwarded.example.com", got)
+	}
+}
+
+func TestHandlerDoesNotAllowPipelineHeadersToOverrideOuterTrustAndCredentials(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Got-Authorization", r.Header.Get("Authorization"))
+		w.Header().Set("X-Got-Cookie", r.Header.Get("Cookie"))
+		w.Header().Set("X-Got-Forwarded-For", r.Header.Get("X-Forwarded-For"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"headers": {
+			"Authorization": "Bearer common-attacker",
+			"Cookie": "session=common-attacker",
+			"X-Forwarded-For": "198.51.100.1"
+		},
+		"pipeline": [{
+			"path": "/inner",
+			"headers": {
+				"Authorization": "Bearer item-attacker",
+				"Cookie": "session=item-attacker",
+				"X-Forwarded-For": "198.51.100.2"
+			}
+		}]
+	}`))
+	req.Header.Set("Authorization", "Bearer outer")
+	req.Header.Set("Cookie", "session=outer")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	responses := decodePipelineResponses(t, res.Body.String())
+	for header, want := range map[string]string{
+		"X-Got-Authorization": "Bearer outer",
+		"X-Got-Cookie":        "session=outer",
+		"X-Got-Forwarded-For": "203.0.113.10",
+	} {
+		if got := responses[0].Headers[header]; got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range []string{"apikey", "X-Custom-Key", "X-Custom-JWT", "X-Rbac-Token", "X-Access-Token"} {
+			trusted := apisixctx.RestoreTrustedRequestHeader(r, header)
+			w.Header().Set("X-Got-"+header, trusted)
+			if got := r.Header.Get(header); got != trusted {
+				t.Errorf("restored %s = %q, want %q", header, got, trusted)
+			}
+		}
+		w.Header().Set("X-Got-Backend-Header", r.Header.Get("X-Backend-Header"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"headers": {
+			"apikey": "common-attacker",
+			"X-Custom-Key": "common-attacker",
+			"X-Custom-JWT": "common-attacker",
+			"X-Rbac-Token": "common-attacker",
+			"X-Access-Token": "common-attacker"
+		},
+		"pipeline": [{
+			"path": "/inner",
+			"headers": {
+				"apikey": "item-attacker",
+				"X-Custom-Key": "item-attacker",
+				"X-Custom-JWT": "item-attacker",
+				"X-Rbac-Token": "item-attacker",
+				"X-Access-Token": "item-attacker",
+				"X-Backend-Header": "item-value"
+			}
+		}]
+	}`))
+	req.Header.Set("apikey", "outer-key")
+	req.Header.Set("X-Custom-Key", "outer-custom-key")
+	req.Header.Set("X-Custom-JWT", "outer-custom-jwt")
+	req.Header.Set("X-Rbac-Token", "outer-rbac")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	responses := decodePipelineResponses(t, res.Body.String())
+	for header, want := range map[string]string{
+		"X-Got-Apikey":         "outer-key",
+		"X-Got-X-Custom-Key":   "outer-custom-key",
+		"X-Got-X-Custom-Jwt":   "outer-custom-jwt",
+		"X-Got-X-Rbac-Token":   "outer-rbac",
+		"X-Got-X-Access-Token": "",
+		"X-Got-Backend-Header": "item-value",
+	} {
+		if got := responses[0].Headers[header]; got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
 	}
 }
 

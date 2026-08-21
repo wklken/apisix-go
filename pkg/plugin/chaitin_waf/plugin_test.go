@@ -194,6 +194,31 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerBlocksRejectedRequestWithoutEventID(t *testing.T) {
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:                "block",
+		AppendWAFRespHeader: new(true),
+		Nodes:               []Node{nodeFromURL(t, waf.URL)},
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called for blocked request")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if rr.Header().Get(HeaderChaitinWAFAction) != "reject" {
+		t.Fatalf("action = %q, want reject", rr.Header().Get(HeaderChaitinWAFAction))
+	}
+}
+
 func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-2"})

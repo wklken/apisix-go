@@ -162,6 +162,32 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	}
 }
 
+func TestAttachConsumerRedactsPluginCredentialsFromRequestVars(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = WithApisixVars(req, map[string]string{})
+
+	AttachConsumer(req, resource.Consumer{
+		Username: "bob",
+		GroupID:  "gold",
+		Plugins: map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{"username": "bob", "password": "secret"},
+			"rate-limit": map[string]any{"count": 10},
+		},
+		Labels: map[string]any{"team": "edge"},
+	})
+
+	consumer, ok := GetApisixVar(req, "$consumer").(resource.Consumer)
+	if !ok {
+		t.Fatalf("$consumer = %T, want resource.Consumer", GetApisixVar(req, "$consumer"))
+	}
+	if consumer.Username != "bob" || consumer.GroupID != "gold" || consumer.Labels["team"] != "edge" {
+		t.Fatalf("redacted consumer identity = %#v, want identity and labels preserved", consumer)
+	}
+	if len(consumer.Plugins) != 2 || consumer.Plugins["basic-auth"] != nil || consumer.Plugins["rate-limit"] != nil {
+		t.Fatalf("redacted consumer plugins = %#v, want names without configuration", consumer.Plugins)
+	}
+}
+
 func TestRegisterApisixVarWithoutStateDoesNotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	RegisterApisixVar(req, "$route_id", "route-1")

@@ -43,6 +43,7 @@ func TestMaterializeSecretClonesRedactsAndDestroysValue(t *testing.T) {
 func TestSecretStoreEventInvalidatesVaultCacheAndTriggersHTTPReload(t *testing.T) {
 	secretStore := newConsumerSnapshotStore(t)
 	secretStore.vaultSecretCache().Set("vault/test1/foo/key", "stale", time.Minute)
+	generation := secretStore.secretGeneration.Load()
 	event := &Event{
 		Type:  EventTypePut,
 		Key:   []byte("/apisix/secrets/vault/test1"),
@@ -53,6 +54,9 @@ func TestSecretStoreEventInvalidatesVaultCacheAndTriggersHTTPReload(t *testing.T
 	}
 	if secretStore.vaultSecrets != nil {
 		t.Fatal("Vault cache survived secret resource replacement")
+	}
+	if got := secretStore.secretGeneration.Load(); got != generation+1 {
+		t.Fatalf("secret generation = %d, want %d", got, generation+1)
 	}
 	if bucket, ok := EventBucket(event); !ok || bucket != "secrets" {
 		t.Fatalf("EventBucket(secret) = %q/%t, want secrets/true", bucket, ok)
@@ -272,6 +276,38 @@ func TestResolveVaultSecretReusesClientAndCachesSuccess(t *testing.T) {
 	}
 	if got := deadlineCalls.Load(); got != 1 {
 		t.Fatalf("Vault requests with a deadline context = %d, want 1", got)
+	}
+}
+
+func TestResolveVaultSecretSupportsKVV2Envelope(t *testing.T) {
+	consumerStore := newConsumerSnapshotStore(t)
+	consumerStore.vaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"data":{"data":{"passwd":"bar"},"metadata":{"version":1}}}`,
+			)),
+		}, nil
+	})}
+	config, err := json.Marshal(vaultSecretConfig{
+		URI: "http://vault.example.invalid", Prefix: "kv/data/apisix", Token: "root",
+	})
+	if err != nil {
+		t.Fatalf("encode Vault config: %v", err)
+	}
+	if err := consumerStore.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("secrets")).Put([]byte("vault/test1"), config)
+	}); err != nil {
+		t.Fatalf("store Vault config: %v", err)
+	}
+
+	got, err := consumerStore.resolveVaultSecret("vault/test1", "foo/passwd")
+	if err != nil {
+		t.Fatalf("resolveVaultSecret() error = %v", err)
+	}
+	if got != "bar" {
+		t.Fatalf("resolveVaultSecret() = %q, want bar", got)
 	}
 }
 

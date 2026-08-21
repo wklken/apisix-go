@@ -381,6 +381,7 @@ func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) error {
 	}
 	s.consumerToReferences[key] = snapshot.referencePlugins
 	s.consumerValues[key] = snapshot.consumer
+	s.consumerGeneration.Add(1)
 	return nil
 }
 
@@ -441,6 +442,7 @@ func (s *Store) consumerKVDelete(id []byte) error {
 	// delete self
 	delete(s.consumerKV, key)
 	delete(s.consumerValues, key)
+	s.consumerGeneration.Add(1)
 
 	return nil
 }

@@ -209,7 +209,6 @@ func NewTransport(t TransportOption) *http.Transport {
 	}
 
 	tr := &http.Transport{
-		Proxy:              http.ProxyFromEnvironment,
 		DisableCompression: true,
 		DialContext: (&net.Dialer{
 			Timeout:   t.dialTimeout,

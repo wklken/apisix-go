@@ -86,6 +86,11 @@ type Store struct {
 	afterConfigSnapshotBucketRead func(string)
 	configSnapshotMu              sync.Mutex
 
+	// streamRouteLastGood is the last successfully published stream-route
+	// generation, keyed by durable ID. Prepare recovers damaged rows from
+	// this map; commit happens only after runtime publication succeeds.
+	streamRouteLastGood atomic.Pointer[map[string]resource.StreamRoute]
+
 	// protosGeneration increments on every protos bucket change so consumers
 	// can detect proto resource updates without re-reading the bucket.
 	protosGeneration atomic.Int64
@@ -195,6 +200,22 @@ func ReplaceGlobalStoreForTest(storage *Store) *Store {
 	return previous
 }
 
+// WriteBucketValueForTest writes a raw bucket row, including malformed
+// payloads that PUT validation would reject. Tests use it to simulate durable
+// corruption after an unpublished generation.
+func WriteBucketValueForTest(storage *Store, bucket, id string, value []byte) error {
+	if storage == nil {
+		return ErrNotFound
+	}
+	return storage.db.Update(func(tx *bolt.Tx) error {
+		ref := tx.Bucket([]byte(bucket))
+		if ref == nil {
+			return errBucketNotFound
+		}
+		return ref.Put([]byte(id), value)
+	})
+}
+
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
 }
@@ -276,21 +297,36 @@ func (s *Store) InitBuckets() error {
 }
 
 func (s *Store) GetBucketData(bucketName string) ([][]byte, error) {
-	var data [][]byte
+	entries, err := s.getBucketEntries(bucketName)
+	if err != nil {
+		return nil, err
+	}
+	data := make([][]byte, 0, len(entries))
+	for _, entry := range entries {
+		data = append(data, entry.value)
+	}
+	return data, nil
+}
+
+func (s *Store) getBucketEntries(bucketName string) ([]bucketEntry, error) {
+	var entries []bucketEntry
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return errBucketNotFound
 		}
-		return b.ForEach(func(_, value []byte) error {
-			data = append(data, bytes.Clone(value))
+		return b.ForEach(func(id, value []byte) error {
+			entries = append(entries, bucketEntry{
+				id:    string(bytes.Clone(id)),
+				value: bytes.Clone(value),
+			})
 			return nil
 		})
 	})
 	if err != nil {
 		return nil, err
 	}
-	return data, nil
+	return entries, nil
 }
 
 type bucketEntry struct {
@@ -537,7 +573,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 			switch bucket {
 			case "ssls":
 				resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
-			case "routes", "global_rules", "services", "upstreams", "plugin_configs":
+			case "routes", "global_rules", "services", "upstreams", "plugin_configs", "stream_routes":
 				resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
 			case "consumers":
 				var snapshot consumerSnapshot

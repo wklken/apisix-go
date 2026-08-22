@@ -134,17 +134,25 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 `request_timeout`.
 
 Configuration publication separates deterministic per-resource validation
-from route-scoped and generation-wide semantic validation. New route and global-rule PUTs must
-decode as JSON objects before bbolt mutation; invalid updates return a typed
-resource error, retain the last-good row, and do not schedule a reload. During
-upgrade recovery, a malformed legacy row is represented in immutable snapshot
-quarantine metadata and omitted from that snapshot, allowing valid rows to
-publish without silently declaring readiness. Runtime startup and reload also
-quarantine a complete individual route when its plugin materialization,
-reference resolution, or URI registration fails; URI validation is atomic for
-multi-URI routes and failed plugin initialization rolls back generation public
-API registrations. Global rules, snapshot acquisition, and shared generation
-setup remain fail-closed and keep the previously installed handler on reload.
+from route-scoped and generation-wide semantic validation. New route,
+global-rule, stream-route, plugin-list, and SSL PUTs must decode as valid
+resources before bbolt mutation; invalid updates return a typed resource
+error, retain the last-good row, and do not schedule a reload. During
+snapshot rebuild, a malformed SSL, global-rule, or dynamic plugin-list row
+keeps the previously published version of that ID when one exists and
+publishes the rest of the generation. Stream routes use the same
+last-good-or-fail-closed contract on list and reload; an explicit delete
+drops last-good for that ID, and conflicting listen addresses remain
+generation-fatal. If there is no last-good version (including first
+startup), the generation fails closed and the previously installed handler
+remains. SSL identities, global rules, stream routes, and the dynamic
+plugin list are never omitted to keep the process up, and a failed plugin
+list never falls back to `config.GlobalConfig.Plugins`. Routes, services,
+upstreams, plugin_configs, and plugin_metadata may still quarantine-and-omit
+malformed legacy rows. Runtime startup and reload also quarantine a complete
+individual route when its plugin materialization, reference resolution, or
+URI registration fails; URI validation is atomic for multi-URI routes and
+failed plugin initialization rolls back generation public API registrations.
 `BuildStrict` remains available for strict validation tests, while runtime
 publication uses the route-quarantining build entry point.
 

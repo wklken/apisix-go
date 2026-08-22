@@ -648,6 +648,134 @@ func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
 	}
 }
 
+func TestStreamReloadFailureDoesNotCommitUnpublishedLastGood(t *testing.T) {
+	events := make(chan *store.Event, 4)
+	storage, err := store.Open(t.TempDir()+"/stream-unpublished-last-good.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+
+	applyAcknowledgedStreamRoute(
+		t,
+		events,
+		store.EventTypePut,
+		"/apisix/stream_routes/mqtt",
+		`{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`,
+	)
+	runtime := &fakeStreamRuntime{}
+	server := &Server{storage: storage, streamRuntime: runtime}
+	if err := server.reloadStreamRoutes(); err != nil {
+		t.Fatalf("publish mqtt: %v", err)
+	}
+
+	applyAcknowledgedStreamRoute(t, events, store.EventTypePut, "/apisix/stream_routes/mqtt",
+		`{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream_id":"missing"}`)
+	if err := server.reloadStreamRoutes(); err == nil {
+		t.Fatal("reloadStreamRoutes() accepted missing upstream, want failure without last-good commit")
+	}
+
+	if err := store.WriteBucketValueForTest(storage, "stream_routes", "mqtt", []byte(`{`)); err != nil {
+		t.Fatalf("corrupt unpublished mqtt: %v", err)
+	}
+	if err := server.reloadStreamRoutes(); err != nil {
+		t.Fatalf("reload after unpublished corruption = %v, want originally published mqtt", err)
+	}
+	if len(server.streamRoutes) != 1 || server.streamRoutes[0].ID != "mqtt" ||
+		server.streamRoutes[0].UpstreamID != "" || len(server.streamRoutes[0].Upstream.Nodes) != 1 ||
+		server.streamRoutes[0].ServerPort != 1883 {
+		t.Fatalf("published stream routes = %#v, want originally published mqtt", server.streamRoutes)
+	}
+}
+
+func TestStreamReloadListenConflictDoesNotReplaceLastGood(t *testing.T) {
+	events := make(chan *store.Event, 4)
+	storage, err := store.Open(t.TempDir()+"/stream-conflict-last-good.db", events)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	storage.Start()
+	previousStore := store.ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		store.ReplaceGlobalStoreForTest(previousStore)
+		_ = storage.Stop()
+	})
+
+	applyAcknowledgedStreamRoute(
+		t,
+		events,
+		store.EventTypePut,
+		"/apisix/stream_routes/a",
+		`{"id":"a","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`,
+	)
+	applyAcknowledgedStreamRoute(
+		t,
+		events,
+		store.EventTypePut,
+		"/apisix/stream_routes/b",
+		`{"id":"b","server_addr":"127.0.0.1","server_port":1884,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
+	)
+	runtime := &fakeStreamRuntime{}
+	server := &Server{storage: storage, streamRuntime: runtime}
+	if err := server.reloadStreamRoutes(); err != nil {
+		t.Fatalf("publish A/B: %v", err)
+	}
+
+	applyAcknowledgedStreamRoute(
+		t,
+		events,
+		store.EventTypePut,
+		"/apisix/stream_routes/b",
+		`{"id":"b","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
+	)
+	runtime.reloadErr = errors.New("conflicting listen address")
+	if err := server.reloadStreamRoutes(); err == nil {
+		t.Fatal("reloadStreamRoutes() accepted conflicting B")
+	}
+
+	if err := store.WriteBucketValueForTest(storage, "stream_routes", "b", []byte(`{`)); err != nil {
+		t.Fatalf("corrupt unpublished B: %v", err)
+	}
+	runtime.reloadErr = nil
+	if err := server.reloadStreamRoutes(); err != nil {
+		t.Fatalf("reload after unpublished B corruption = %v, want original B", err)
+	}
+	var recoveredB bool
+	for _, route := range server.streamRoutes {
+		if route.ID == "b" {
+			recoveredB = true
+			if route.ServerPort != 1884 {
+				t.Fatalf("recovered B = %#v, want originally published port 1884", route)
+			}
+		}
+	}
+	if !recoveredB {
+		t.Fatalf("published stream routes = %#v, want recovered B", server.streamRoutes)
+	}
+}
+
+func applyAcknowledgedStreamRoute(
+	t *testing.T,
+	events chan *store.Event,
+	eventType store.EventType,
+	key, value string,
+) {
+	t.Helper()
+	event := store.NewAcknowledgedEvent()
+	event.Type = eventType
+	event.Key = []byte(key)
+	event.Value = []byte(value)
+	events <- event
+	if err := event.Wait(context.Background()); err != nil {
+		t.Fatalf("apply %s: %v", key, err)
+	}
+}
+
 func TestShutdownDoesNotCloseStreamRuntimeDuringAcknowledgedReload(t *testing.T) {
 	events := make(chan *store.Event)
 	storage, err := store.Open(t.TempDir()+"/stream-shutdown-race.db", events)

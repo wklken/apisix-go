@@ -1241,7 +1241,7 @@ func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) 
 	}
 }
 
-func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
+func TestBuilderFailsClosedWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
 	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
 		"routes": {
 			"strict-global-route": []byte(`{"id":"strict-global-route","uri":"/strict-global"}`),
@@ -1266,8 +1266,11 @@ func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testi
 	builder := NewBuilder(storage)
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy global-rule quarantine", handler, err)
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want fail-closed snapshot error", handler, err)
+	}
+	if !strings.Contains(err.Error(), "strict-invalid-global") {
+		t.Fatalf("BuildStrict() error = %q, want strict-invalid-global", err)
 	}
 }
 

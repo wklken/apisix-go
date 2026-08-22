@@ -63,9 +63,10 @@ This ledger records confirmed findings that are intentionally not remediated in 
 ### SEC-09: Malformed legacy SSL rows remain generation-fatal
 
 - Severity: P2
-- Evidence: new SSL writes are certificate-validated before commit, but `ConfigSnapshot` still returns a generation error when a malformed SSL row already exists in the durable store.
+- Status: remediating / fixed
+- Evidence: new SSL writes are certificate-validated before commit, but `ConfigSnapshot` previously returned a generation error when a malformed SSL row already existed in the durable store.
 - Risk: legacy corruption can block startup; silently skipping it can also remove a TLS identity and change network security behavior.
-- Decision: record only; define fail-closed or last-good SSL recovery before changing startup semantics.
+- Decision: last-good-or-fail-closed. Snapshot decode failure keeps the previous SSL for that ID when one exists and publishes the rest; first startup with no last-good fails the generation. SSL is never omitted.
 
 ### SEC-10: Active HTTPS health checks do not enforce their certificate-verification contract
 
@@ -85,15 +86,17 @@ This ledger records confirmed findings that are intentionally not remediated in 
 
 ### ARCH-01: Invalid global-rule isolation versus fail-closed behavior
 
-- Current behavior: a semantically invalid global rule remains generation-fatal, including initial startup.
+- Status: remediating / fixed
+- Current behavior: a malformed global-rule row keeps the previously published version of that ID when one exists; if there is no last-good (including first startup), the generation fails closed and the previously installed handler remains.
 - Tradeoff: skipping one invalid global rule may silently remove a security or compliance control and fail open.
-- Decision needed: define whether last-good global-rule retention, generation rejection, or explicit per-rule quarantine is the required contract.
+- Decision: last-good-or-fail-closed. Global rules are never omitted from a published generation.
 
 ### ARCH-02: Per-resource last-good semantics for stream routes
 
-- Current behavior: one invalid stream route rejects the stream generation during initial startup or reload.
+- Status: remediating / fixed
+- Current behavior: stream-route PUTs retain last-good on decode failure. List/reload keeps the previous version of a corrupted ID when one exists; first startup with no last-good fails closed. Explicit delete drops last-good. Conflicting listen addresses are generation-fatal.
 - Tradeoff: isolation requires stable per-route ownership, delete semantics, listener reconciliation, readiness metrics, and a definition for conflicting listen addresses.
-- Decision needed: design stream-route last-good/quarantine behavior before implementation.
+- Decision: last-good-or-fail-closed with per-route ownership. Stream routes are never omitted to keep the process up.
 
 ### ARCH-03: Central APISIX core route schema enforcement
 
@@ -108,6 +111,7 @@ This ledger records confirmed findings that are intentionally not remediated in 
 
 ### ARCH-05: Malformed legacy dynamic plugin list
 
-- Current behavior: a malformed or structurally inconsistent durable `plugins` entry is generation-fatal.
+- Status: remediating / fixed
+- Current behavior: a malformed durable `plugins` entry keeps the previously published `httpPlugins` when one exists; first startup with no last-good fails the generation. Reload never falls back to `config.GlobalConfig.Plugins`.
 - Tradeoff: skipping it falls back to another plugin allowlist and can unexpectedly enable or disable behavior across every route.
-- Decision needed: define last-good ownership and recovery for the generation-wide plugin list before isolating it.
+- Decision: last-good-or-fail-closed. The dynamic plugin list is never omitted and never replaced by the static config allowlist.

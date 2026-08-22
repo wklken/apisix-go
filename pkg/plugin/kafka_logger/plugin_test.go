@@ -311,6 +311,33 @@ func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsMixedBrokerSASLIdentities(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Brokers: []Broker{
+				{
+					Host:       "127.0.0.1",
+					Port:       9092,
+					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "logger", Password: "one"},
+				},
+				{
+					Host:       "10.0.0.2",
+					Port:       9092,
+					SASLConfig: &SASLConfig{Mechanism: "PLAIN", User: "logger", Password: "two"},
+				},
+			},
+			KafkaTopic: "apisix-logs",
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want mixed SASL identity rejection")
+	}
+}
+
 func TestSendBatchEncodesEntriesAsSingleKafkaMessage(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{

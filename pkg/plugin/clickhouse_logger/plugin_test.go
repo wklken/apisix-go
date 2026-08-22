@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -28,6 +29,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
@@ -110,6 +114,9 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -184,6 +191,36 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	}
 }
 
+func TestMaterializeSecretsOwnsClickHouseUserEnvironmentReference(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "$ENV://CLICK_HOUSE_USER",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+		LogFormat:     map[string]string{"request_id": "$request_id"},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
+	if !strings.Contains(p.config.User, "$ENV://CLICK_HOUSE_USER#sha256:") ||
+		strings.Contains(p.config.User, "fixture-user") {
+		t.Fatalf("user = %q, want safe environment descriptor", p.config.User)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	if got := p.resolvedUser(); got != "fixture-user" {
+		t.Fatalf("resolved user = %q, want fixture-user", got)
+	}
+}
+
 func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
 	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
 
@@ -195,8 +232,12 @@ func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
-	if p.config.User != "fixture-user" {
-		t.Fatalf("user = %q, want resolved environment value", p.config.User)
+	if !strings.Contains(p.config.User, "$ENV://CLICK_HOUSE_USER#sha256:") ||
+		strings.Contains(p.config.User, "fixture-user") {
+		t.Fatalf("user = %q, want safe environment descriptor", p.config.User)
+	}
+	if got := p.resolvedUser(); got != "fixture-user" {
+		t.Fatalf("resolved user = %q, want fixture-user", got)
 	}
 }
 
@@ -219,8 +260,8 @@ func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) 
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
-			if err := p.PostInit(); err == nil {
-				t.Fatalf("PostInit() error = nil, want invalid environment reference rejection")
+			if err := base.MaterializePluginSecrets(p); err == nil {
+				t.Fatalf("MaterializePluginSecrets() error = nil, want invalid environment reference rejection")
 			}
 		})
 	}
@@ -237,8 +278,11 @@ func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
-	if p.config.User != "" {
-		t.Fatalf("user = %q, want preserved empty environment value", p.config.User)
+	if !strings.Contains(p.config.User, "$ENV://CLICK_HOUSE_USER_EMPTY#sha256:") {
+		t.Fatalf("user = %q, want safe empty-environment descriptor", p.config.User)
+	}
+	if got := p.resolvedUser(); got != "" {
+		t.Fatalf("resolved user = %q, want preserved empty environment value", got)
 	}
 }
 

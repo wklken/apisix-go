@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -26,7 +26,9 @@ type Plugin struct {
 
 	client *resty.Client
 
-	clientRelease func()
+	clientRelease  func()
+	userSecret     *store.ResolvedSecret
+	passwordSecret *store.ResolvedSecret
 }
 
 const (
@@ -205,21 +207,17 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
-	user, err := resolveClickHouseUser(p.config.User)
-	if err != nil {
-		return err
+	if p.passwordSecret == nil {
+		keyring, enabled := data_encryption.Keyring()
+		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+			p.config.Password,
+			"clickhouse-logger.password",
+		)
+		if err != nil {
+			return fmt.Errorf("clickhouse-logger password: %w", err)
+		}
+		p.config.Password = resolved
 	}
-	p.config.User = user
-
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
-		p.config.Password,
-		"clickhouse-logger.password",
-	)
-	if err != nil {
-		return fmt.Errorf("clickhouse-logger password: %w", err)
-	}
-	p.config.Password = resolved
 
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
@@ -294,30 +292,64 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) MaterializeSecrets() error {
+	userSecret, err := materializeSecretReference(p.config.User)
+	if err != nil {
+		return err
+	}
+	passwordSecret, err := materializeSecretReference(p.config.Password)
+	if err != nil {
+		userSecret.Destroy()
+		return err
+	}
+	p.userSecret = userSecret
+	p.passwordSecret = passwordSecret
+	if userSecret != nil {
+		p.config.User = userSecret.Descriptor()
+	}
+	if passwordSecret != nil {
+		p.config.Password = passwordSecret.Descriptor()
+	}
+	return nil
+}
+
+func materializeSecretReference(value string) (*store.ResolvedSecret, error) {
+	upper := strings.ToUpper(value)
+	if !strings.HasPrefix(upper, "$ENV://") && !strings.HasPrefix(value, "$secret://") {
+		return nil, nil
+	}
+	secret, err := store.MaterializeSecret(value)
+	if err != nil {
+		return nil, err
+	}
+	return secret, nil
+}
+
+func (p *Plugin) resolvedUser() string {
+	if p.userSecret != nil {
+		return string(p.userSecret.Bytes())
+	}
+	return p.config.User
+}
+
+func (p *Plugin) resolvedPassword() string {
+	if p.passwordSecret != nil {
+		return string(p.passwordSecret.Bytes())
+	}
+	return p.config.Password
+}
+
 func (p *Plugin) Stop() {
 	p.StopWithCleanup(func() {
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
+		p.userSecret.Destroy()
+		p.userSecret = nil
+		p.passwordSecret.Destroy()
+		p.passwordSecret = nil
 	})
-}
-
-func resolveClickHouseUser(user string) (string, error) {
-	const environmentPrefix = "$ENV://"
-	if !strings.HasPrefix(user, environmentPrefix) {
-		return user, nil
-	}
-
-	name := strings.TrimPrefix(user, environmentPrefix)
-	if name == "" {
-		return "", fmt.Errorf("clickhouse-logger user environment variable name is empty")
-	}
-	value, ok := os.LookupEnv(name)
-	if !ok {
-		return "", fmt.Errorf("clickhouse-logger user environment variable %q is not set", name)
-	}
-	return value, nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -381,8 +413,8 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchM
 		SetContext(ctx).
 		SetHeaders(map[string]string{
 			"Content-Type":          "application/json",
-			"X-ClickHouse-User":     p.config.User,
-			"X-ClickHouse-Key":      p.config.Password,
+			"X-ClickHouse-User":     p.resolvedUser(),
+			"X-ClickHouse-Key":      p.resolvedPassword(),
 			"X-ClickHouse-Database": p.config.Database,
 		}).
 		SetBody(body).

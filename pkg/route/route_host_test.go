@@ -143,6 +143,36 @@ func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
 			payload: `{"id":"mixed-hosts-route","uri":"/mixed-hosts","hosts":["api.example.com","*foo.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
 			want:    "invalid",
 		},
+		{
+			name:    "nested wildcard labels",
+			routeID: "nested-wildcard-host-route",
+			payload: `{"id":"nested-wildcard-host-route","uri":"/nested-wildcard","hosts":["*.*.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "wildcard suffix glob",
+			routeID: "suffix-glob-host-route",
+			payload: `{"id":"suffix-glob-host-route","uri":"/suffix-glob","hosts":["*.suffix*"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "wildcard suffix question",
+			routeID: "suffix-question-host-route",
+			payload: `{"id":"suffix-question-host-route","uri":"/suffix-question","hosts":["*.foo?"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "empty wildcard suffix",
+			routeID: "empty-wildcard-host-route",
+			payload: `{"id":"empty-wildcard-host-route","uri":"/empty-wildcard","hosts":["*."],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "mixed valid and nested wildcard",
+			routeID: "mixed-nested-wildcard-route",
+			payload: `{"id":"mixed-nested-wildcard-route","uri":"/mixed-nested","hosts":["api.example.com","*.*.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ensureRouteStore(t)
@@ -159,6 +189,37 @@ func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
 				t.Fatalf("BuildStrict() error = %q, want route ID and %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildStrictAcceptsOneLabelWildcardHost(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	const routeID = "one-label-wildcard-host"
+	putRouteResource(t, routeID, fmt.Appendf(nil,
+		`{"id":%q,"uri":"/wildcard-host","hosts":["*.example.com"],"upstream":{"type":"roundrobin","nodes":{%q:1}}}`,
+		routeID,
+		routePriorityNode(t, upstream.URL),
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		t.Fatalf("BuildStrict() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/wildcard-host", nil)
+	request.Host = "api.example.com"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("Host %q status = %d, want %d", request.Host, response.Code, http.StatusNoContent)
 	}
 }
 

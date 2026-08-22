@@ -360,6 +360,10 @@ func wildcardRouteHostKey(pattern string) (string, bool) {
 	if !strings.HasPrefix(pattern, "*.") {
 		return "", false
 	}
+	suffix := pattern[2:]
+	if suffix == "" || strings.ContainsAny(suffix, "*?[") {
+		return "", false
+	}
 	return pattern[1:], true
 }
 

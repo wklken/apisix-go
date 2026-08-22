@@ -229,18 +229,19 @@ type healthChecker interface {
 // the cluster's verified base transport, never the retry wrapper, so a failing
 // probe cannot trigger retries or consume in-flight tokens.
 type activeHealthChecker struct {
-	config     ActiveHealthConfig
-	targets    []string
-	lb         *HealthAwareLoadBalance
-	observer   ClusterObserver
-	name       string
-	transport  http.RoundTripper
-	semaphore  chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
-	closeOnce  sync.Once
-	wg         sync.WaitGroup
-	httpClient *http.Client
+	config         ActiveHealthConfig
+	targets        []string
+	lb             *HealthAwareLoadBalance
+	observer       ClusterObserver
+	name           string
+	transport      http.RoundTripper
+	semaphore      chan struct{}
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closeOnce      sync.Once
+	wg             sync.WaitGroup
+	httpClient     *http.Client
+	closeProbeIdle func()
 }
 
 func newActiveHealthChecker(
@@ -259,26 +260,28 @@ func newActiveHealthChecker(
 	for target := range targets {
 		targetList = append(targetList, target)
 	}
+	probeTransport, closeProbeIdle := activeHealthProbeTransport(base, config)
 	return &activeHealthChecker{
-		config:    config,
-		targets:   targetList,
-		lb:        lb,
-		name:      name,
-		observer:  observer,
-		transport: base,
-		semaphore: make(chan struct{}, config.Concurrency),
-		ctx:       ctx,
-		cancel:    cancel,
+		config:         config,
+		targets:        targetList,
+		lb:             lb,
+		name:           name,
+		observer:       observer,
+		transport:      base,
+		semaphore:      make(chan struct{}, config.Concurrency),
+		ctx:            ctx,
+		cancel:         cancel,
+		closeProbeIdle: closeProbeIdle,
 		httpClient: &http.Client{
-			Transport: activeHealthProbeTransport(base, config),
+			Transport: probeTransport,
 			Timeout:   0, // per-request context bounds each probe
 		},
 	}
 }
 
-func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfig) http.RoundTripper {
+func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfig) (http.RoundTripper, func()) {
 	if config.Type != "https" {
-		return base
+		return base, nil
 	}
 	var transport *http.Transport
 	if existing, ok := base.(*http.Transport); ok {
@@ -292,7 +295,7 @@ func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfi
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	}
 	transport.TLSClientConfig.InsecureSkipVerify = !config.HTTPSVerifyCertificate
-	return transport
+	return transport, transport.CloseIdleConnections
 }
 
 // Start launches one probe goroutine per target.
@@ -303,11 +306,15 @@ func (c *activeHealthChecker) Start() {
 	}
 }
 
-// Close cancels the root context and waits for every probe goroutine to exit.
+// Close cancels the root context, waits for every probe goroutine to exit,
+// then closes idle connections on a cloned HTTPS probe transport only.
 func (c *activeHealthChecker) Close() {
 	c.closeOnce.Do(func() {
 		c.cancel()
 		c.wg.Wait()
+		if c.closeProbeIdle != nil {
+			c.closeProbeIdle()
+		}
 	})
 }
 

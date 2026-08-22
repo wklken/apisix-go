@@ -1023,6 +1023,100 @@ func TestActiveHealthCheckerCloseStopsProbeGoroutines(t *testing.T) {
 	checker.Close()
 }
 
+func TestActiveHealthCheckerClosesHTTPSProbeIdleConnectionsOnceAfterProbesStop(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	lb, err := NewHealthAwareLoadBalance(map[string]int{upstream.URL: 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:                   "https",
+			HTTPPath:               "/",
+			Timeout:                time.Second,
+			Concurrency:            1,
+			HTTPSVerifyCertificate: false,
+			HealthyStatuses:        map[int]struct{}{http.StatusOK: {}},
+		},
+		lb,
+		map[string]int{upstream.URL: 1},
+		"https-idle-close",
+		NopClusterObserver{},
+		http.DefaultTransport,
+	)
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	original := checker.closeProbeIdle
+	checker.closeProbeIdle = func() {
+		if checker.ctx.Err() == nil {
+			t.Error("HTTPS probe cleanup ran before the checker context was canceled")
+		}
+		select {
+		case <-checker.ctx.Done():
+		default:
+			t.Error("HTTPS probe cleanup ran before probe goroutines were signaled to stop")
+		}
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		if original != nil {
+			original()
+		}
+	}
+	checker.Start()
+	checker.Close()
+	checker.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("HTTPS probe idle cleanup calls = %d, want 1 after Close", calls)
+	}
+}
+
+func TestActiveHealthCheckerDoesNotCloseSharedHTTPTransport(t *testing.T) {
+	base := &sharedHTTPProbeTransport{}
+	lb, err := NewHealthAwareLoadBalance(map[string]int{"http://127.0.0.1:1": 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:        "http",
+			HTTPPath:    "/",
+			Timeout:     time.Second,
+			Concurrency: 1,
+		},
+		lb,
+		map[string]int{"http://127.0.0.1:1": 1},
+		"http-shared-transport",
+		NopClusterObserver{},
+		base,
+	)
+	if checker.httpClient.Transport != base {
+		t.Fatal("HTTP probe reused a cloned transport, want the shared upstream transport")
+	}
+	if checker.closeProbeIdle != nil {
+		t.Fatal("HTTP probe registered idle cleanup; shared upstream transport must stay open")
+	}
+	checker.Start()
+	checker.Close()
+	if checker.httpClient.Transport != base {
+		t.Fatal("HTTP probe Close() replaced the shared upstream transport")
+	}
+}
+
+type sharedHTTPProbeTransport struct{}
+
+func (*sharedHTTPProbeTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+
 func TestActiveHealthCheckerUsesConfiguredHTTPSProbeScheme(t *testing.T) {
 	requestSeen := make(chan struct {
 		tls  bool

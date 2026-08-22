@@ -67,7 +67,6 @@ var supportedRouteMethods = map[string]struct{}{
 	http.MethodPost:    {},
 	http.MethodPut:     {},
 	"PURGE":            {},
-	"QUERY":            {},
 	http.MethodTrace:   {},
 }
 
@@ -135,6 +134,20 @@ func convertURI(uri string) (string, error) {
 	}
 
 	return "", fmt.Errorf("not supported uri: %s", uri)
+}
+
+// effectiveRouteURI returns the routing shape used by chi. Parameter names do
+// not participate in matching, so routes such as /users/:id and
+// /users/:name have the same effective URI and must not be registered twice
+// within one APISIX route.
+func effectiveRouteURI(converted string) string {
+	segments := strings.Split(converted, "/")
+	for index, segment := range segments {
+		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
+			segments[index] = "{}"
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 type routeRegistrar struct {
@@ -853,11 +866,24 @@ func (b *Builder) buildRoutes(quarantineInvalidRoutes bool) (*chi.Mux, error) {
 			uris = []string{routeResource.Uri}
 		}
 		var routeErr error
+		effectiveURIs := make(map[string]string, len(uris))
 		for _, uri := range uris {
-			if _, err := convertURI(uri); err != nil {
+			converted, err := convertURI(uri)
+			if err != nil {
 				routeErr = fmt.Errorf("register URI %q: %w", uri, err)
 				break
 			}
+			identity := effectiveRouteURI(converted)
+			if previous, exists := effectiveURIs[identity]; exists {
+				routeErr = fmt.Errorf(
+					"duplicate effective URI %q (from %q and %q)",
+					identity,
+					previous,
+					uri,
+				)
+				break
+			}
+			effectiveURIs[identity] = uri
 		}
 		if routeErr == nil {
 			var handler http.Handler
@@ -1281,10 +1307,15 @@ func buildTransparentUpgradeHandler(
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {
+	seenMethods := make(map[string]struct{}, len(routeResource.Methods))
 	for _, method := range routeResource.Methods {
-		if _, supported := supportedRouteMethods[strings.ToUpper(method)]; !supported {
+		if _, supported := supportedRouteMethods[method]; !supported {
 			return fmt.Errorf("route %q method %q is unsupported by the Go data plane", routeResource.ID, method)
 		}
+		if _, duplicate := seenMethods[method]; duplicate {
+			return fmt.Errorf("route %q method %q is duplicated", routeResource.ID, method)
+		}
+		seenMethods[method] = struct{}{}
 	}
 	if routeResource.HostConfigured() && routeResource.HostsConfigured() {
 		return fmt.Errorf("route %q host and hosts cannot both be configured", routeResource.ID)

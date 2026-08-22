@@ -379,6 +379,18 @@ func validateConfigResourcePut(bucket, id string, config []byte) error {
 		if _, err := ParseGlobalRule(config); err != nil {
 			return fmt.Errorf("decode global rule %q: %w", id, err)
 		}
+	case "services":
+		if _, err := ParseService(config); err != nil {
+			return fmt.Errorf("decode service %q: %w", id, err)
+		}
+	case "upstreams":
+		if _, err := ParseUpstream(config); err != nil {
+			return fmt.Errorf("decode upstream %q: %w", id, err)
+		}
+	case "plugin_configs":
+		if _, err := ParsePluginConfigRule(config); err != nil {
+			return fmt.Errorf("decode plugin config %q: %w", id, err)
+		}
 	}
 	return nil
 }
@@ -875,8 +887,8 @@ type ConfigSnapshot struct {
 	quarantined    []ConfigQuarantine
 }
 
-// ConfigQuarantine identifies a legacy route or global-rule row that could
-// not be decoded while the remainder of the immutable snapshot was published.
+// ConfigQuarantine identifies a legacy configuration row that could not be
+// decoded while the remainder of the immutable snapshot was published.
 // Callers receive a copy from QuarantinedResources and may not mutate the
 // snapshot's internal state.
 type ConfigQuarantine struct {
@@ -1095,10 +1107,18 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		id := entry.id
 		var metadata map[string]any
 		if err := decodePluginMetadata(entry.value, id, &metadata); err != nil {
-			return nil, fmt.Errorf("decode plugin_metadata/%q: %w", id, err)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "plugin_metadata",
+				ID:     id,
+			})
+			continue
 		}
 		if metadata == nil {
-			return nil, fmt.Errorf("decode plugin_metadata/%q: expected JSON object", id)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "plugin_metadata",
+				ID:     id,
+			})
+			continue
 		}
 		snapshot.pluginMetadata[id] = cloneAnyMap(metadata)
 	}
@@ -1106,21 +1126,33 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 	for _, entry := range entriesByBucket["services"] {
 		service, err := ParseService(entry.value)
 		if err != nil {
-			return nil, fmt.Errorf("decode services/%q: %w", entry.id, err)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "services",
+				ID:     entry.id,
+			})
+			continue
 		}
 		snapshot.services[entry.id] = service
 	}
 	for _, entry := range entriesByBucket["upstreams"] {
 		upstream, err := ParseUpstream(entry.value)
 		if err != nil {
-			return nil, fmt.Errorf("decode upstreams/%q: %w", entry.id, err)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "upstreams",
+				ID:     entry.id,
+			})
+			continue
 		}
 		snapshot.upstreams[entry.id] = upstream
 	}
 	for _, entry := range entriesByBucket["plugin_configs"] {
 		config, err := ParsePluginConfigRule(entry.value)
 		if err != nil {
-			return nil, fmt.Errorf("decode plugin_configs/%q: %w", entry.id, err)
+			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
+				Bucket: "plugin_configs",
+				ID:     entry.id,
+			})
+			continue
 		}
 		snapshot.pluginConfigs[entry.id] = config
 	}

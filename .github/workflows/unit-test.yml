@@ -59,6 +59,9 @@ jobs:
       - name: Run source unit tests and coverage gate
         run: make test-cover
 
+      - name: Run plugin harness unit tests
+        run: make test-plugin-harness
+
   integration-smoke:
     name: Integration Smoke (${{ matrix.case.name }})
     runs-on: ubuntu-latest

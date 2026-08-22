@@ -48,6 +48,7 @@ type standaloneSnapshot map[string]map[string][]byte
 type StandaloneReloadResult struct {
 	ChangedHTTPRouteBuckets []string
 	ChangedStreamBuckets    []string
+	QuarantinedResources    []store.ResourceKey
 }
 
 func (r StandaloneReloadResult) AffectsHTTPRoutes() bool {
@@ -56,6 +57,15 @@ func (r StandaloneReloadResult) AffectsHTTPRoutes() bool {
 
 func (r StandaloneReloadResult) AffectsStreams() bool {
 	return len(r.ChangedStreamBuckets) > 0
+}
+
+func (r StandaloneReloadResult) QuarantinedResourceCount() int {
+	return len(r.QuarantinedResources)
+}
+
+type standaloneResourceQuarantine struct {
+	key store.ResourceKey
+	err error
 }
 
 // StandaloneFileWatcher loads the APISIX file-driven configuration and emits
@@ -140,62 +150,69 @@ func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error)
 }
 
 func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standaloneSnapshot, error) {
-	next, err := readStandaloneSnapshot(w.path, w.provider)
+	next, quarantined, err := readStandaloneSnapshot(w.path, w.provider)
 	if err != nil {
 		return StandaloneReloadResult{}, nil, err
 	}
 
 	w.mu.Lock()
 	previous := w.current
-	result := StandaloneReloadResult{}
-	for _, bucket := range standaloneBuckets {
-		previousBucket := previous[bucket]
-		updated := next[bucket]
-		changed := false
-
-		for _, id := range sortedSnapshotIDs(previousBucket) {
-			if _, ok := updated[id]; !ok {
-				changed = true
-			}
-		}
-		for _, id := range sortedSnapshotIDs(updated) {
-			if previousValue, ok := previousBucket[id]; ok && bytes.Equal(previousValue, updated[id]) {
-				continue
-			}
-			changed = true
-		}
-		if changed && store.IsHTTPRouteReloadBucket(bucket) {
-			result.ChangedHTTPRouteBuckets = append(result.ChangedHTTPRouteBuckets, bucket)
-		}
-		if changed && store.IsStreamReloadBucket(bucket) {
-			result.ChangedStreamBuckets = append(result.ChangedStreamBuckets, bucket)
-		}
-	}
 	w.mu.Unlock()
 
-	mutations := make([]store.Mutation, 0)
-	for _, bucket := range standaloneBuckets {
-		resources := next[bucket]
-		for _, id := range sortedSnapshotIDs(resources) {
-			mutations = append(mutations, store.Mutation{
-				Type:  store.EventTypePut,
-				Key:   []byte("/apisix/" + bucket + "/" + id),
-				Value: resources[id],
-			})
-		}
-	}
-	batch := store.NewAcknowledgedBatch(mutations, store.BatchOptions{ReplaceManaged: true})
-	enqueued, err := w.enqueueAndWait(batch)
-	if err != nil {
-		if !enqueued {
-			store.PutBack(batch)
-		}
-		return result, previous, err
-	}
-	if err := w.contextErr(); err != nil {
-		return result, previous, err
+	preserve := make(map[store.ResourceKey]struct{}, len(quarantined))
+	for _, quarantine := range quarantined {
+		logger.Errorf(
+			"quarantine standalone %s/%s: %s",
+			quarantine.key.Bucket,
+			quarantine.key.ID,
+			quarantine.err,
+		)
+		preserve[quarantine.key] = struct{}{}
+		retainStandaloneLastGood(next, previous, quarantine.key)
 	}
 
+	for {
+		mutations, mutationKeys := standaloneMutations(next, preserve)
+		batch := store.NewAcknowledgedBatch(mutations, store.BatchOptions{
+			ReplaceManaged: true,
+			Preserve:       sortedStandaloneResourceKeys(preserve),
+		})
+		enqueued, applyErr := w.enqueueAndWait(batch)
+		if applyErr == nil {
+			break
+		}
+		if !enqueued {
+			store.PutBack(batch)
+			return StandaloneReloadResult{}, previous, applyErr
+		}
+		var validationErr *store.BatchValidationError
+		if !errors.As(applyErr, &validationErr) {
+			return StandaloneReloadResult{}, previous, applyErr
+		}
+		added := false
+		for _, rejected := range validationErr.Rejected {
+			if rejected.Index < 0 || rejected.Index >= len(mutationKeys) {
+				return StandaloneReloadResult{}, previous, applyErr
+			}
+			key := mutationKeys[rejected.Index]
+			if _, exists := preserve[key]; exists {
+				continue
+			}
+			preserve[key] = struct{}{}
+			quarantined = append(quarantined, standaloneResourceQuarantine{key: key, err: rejected.Err})
+			logger.Errorf("quarantine standalone %s/%s: %s", key.Bucket, key.ID, rejected.Err)
+			retainStandaloneLastGood(next, previous, key)
+			added = true
+		}
+		if !added {
+			return StandaloneReloadResult{}, previous, applyErr
+		}
+	}
+	if err := w.contextErr(); err != nil {
+		return StandaloneReloadResult{}, previous, err
+	}
+
+	result := standaloneReloadResult(previous, next, quarantined)
 	w.mu.Lock()
 	w.current = next
 	w.mu.Unlock()
@@ -393,56 +410,69 @@ func standaloneProviderFromPath(path string) string {
 	return strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 }
 
-func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
+func readStandaloneSnapshot(
+	path, provider string,
+) (standaloneSnapshot, []standaloneResourceQuarantine, error) {
 	if provider != standaloneProviderYAML && provider != standaloneProviderJSON {
-		return nil, fmt.Errorf("unsupported standalone config provider %q", provider)
+		return nil, nil, fmt.Errorf("unsupported standalone config provider %q", provider)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read standalone config %q: %w", path, err)
+		return nil, nil, fmt.Errorf("read standalone config %q: %w", path, err)
 	}
 	if provider == standaloneProviderYAML && !strings.HasSuffix(strings.TrimSpace(string(data)), "#END") {
-		return nil, fmt.Errorf("standalone YAML config %q must end with #END", path)
+		return nil, nil, fmt.Errorf("standalone YAML config %q must end with #END", path)
 	}
 
 	var encoded []byte
 	if provider == standaloneProviderYAML {
 		var document any
 		if err := yaml.Unmarshal(data, &document); err != nil {
-			return nil, fmt.Errorf("parse standalone YAML config %q: %w", path, err)
+			return nil, nil, fmt.Errorf("parse standalone YAML config %q: %w", path, err)
 		}
 		encoded, err = json.Marshal(document)
 		if err != nil {
-			return nil, fmt.Errorf("normalize standalone config %q: %w", path, err)
+			return nil, nil, fmt.Errorf("normalize standalone config %q: %w", path, err)
 		}
 	} else {
 		var document map[string]json.RawMessage
 		if err := json.Unmarshal(data, &document); err != nil {
-			return nil, fmt.Errorf("parse standalone JSON config %q: %w", path, err)
+			return nil, nil, fmt.Errorf("parse standalone JSON config %q: %w", path, err)
 		}
 		encoded = data
 	}
 
 	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &sections); err != nil {
-		return nil, fmt.Errorf("decode standalone resources %q: %w", path, err)
+		return nil, nil, fmt.Errorf("decode standalone resources %q: %w", path, err)
+	}
+	if sections == nil {
+		return nil, nil, fmt.Errorf("decode standalone resources %q: expected object", path)
 	}
 
 	snapshot := make(standaloneSnapshot)
+	var quarantined []standaloneResourceQuarantine
 	for _, bucket := range standaloneBuckets {
 		raw, ok := sections[bucket]
 		if !ok {
 			continue
 		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, nil, fmt.Errorf("decode standalone %s: expected array", bucket)
+		}
 		var resources []json.RawMessage
 		if err := json.Unmarshal(raw, &resources); err != nil {
-			return nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
+			return nil, nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
 		}
 		for _, resource := range resources {
 			id, value, err := normalizeStandaloneResource(bucket, resource)
 			if err != nil {
-				return nil, fmt.Errorf("decode standalone %s resource: %w", bucket, err)
+				quarantined = append(quarantined, standaloneResourceQuarantine{
+					key: store.ResourceKey{Bucket: bucket, ID: id},
+					err: fmt.Errorf("decode standalone %s resource: %w", bucket, err),
+				})
+				continue
 			}
 			if snapshot[bucket] == nil {
 				snapshot[bucket] = make(map[string][]byte)
@@ -450,7 +480,7 @@ func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
 			snapshot[bucket][id] = value
 		}
 	}
-	return snapshot, nil
+	return snapshot, quarantined, nil
 }
 
 func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []byte, error) {
@@ -488,16 +518,16 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 	if rawPlugins, ok := fields["plugins"]; ok {
 		var plugins map[string]any
 		if err := json.Unmarshal(rawPlugins, &plugins); err != nil {
-			return "", nil, fmt.Errorf("decode plugins: %w", err)
+			return id, nil, fmt.Errorf("decode plugins: %w", err)
 		}
 		keyring, enabled := data_encryption.Keyring()
 		if enabled {
 			if err := data_encryption.EncryptPluginConfigs(plugins, keyring); err != nil {
-				return "", nil, fmt.Errorf("encrypt plugin fields: %w", err)
+				return id, nil, fmt.Errorf("encrypt plugin fields: %w", err)
 			}
 			fields["plugins"], err = json.Marshal(plugins)
 			if err != nil {
-				return "", nil, fmt.Errorf("encode encrypted plugins: %w", err)
+				return id, nil, fmt.Errorf("encode encrypted plugins: %w", err)
 			}
 		}
 	}
@@ -506,29 +536,124 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 		if enabled && data_encryption.HasEncryptedPluginMetadata(id) {
 			encoded, err := json.Marshal(fields)
 			if err != nil {
-				return "", nil, fmt.Errorf("encode plugin metadata: %w", err)
+				return id, nil, fmt.Errorf("encode plugin metadata: %w", err)
 			}
 			var metadata map[string]any
 			if err := json.Unmarshal(encoded, &metadata); err != nil {
-				return "", nil, fmt.Errorf("decode plugin metadata: %w", err)
+				return id, nil, fmt.Errorf("decode plugin metadata: %w", err)
 			}
 			if err := data_encryption.EncryptPluginMetadata(id, metadata, keyring); err != nil {
-				return "", nil, fmt.Errorf("encrypt plugin metadata fields: %w", err)
+				return id, nil, fmt.Errorf("encrypt plugin metadata fields: %w", err)
 			}
 			encoded, err = json.Marshal(metadata)
 			if err != nil {
-				return "", nil, fmt.Errorf("encode encrypted plugin metadata: %w", err)
+				return id, nil, fmt.Errorf("encode encrypted plugin metadata: %w", err)
 			}
 			if err := json.Unmarshal(encoded, &fields); err != nil {
-				return "", nil, fmt.Errorf("decode encrypted plugin metadata: %w", err)
+				return id, nil, fmt.Errorf("decode encrypted plugin metadata: %w", err)
 			}
 		}
 	}
 	value, err := json.Marshal(fields)
 	if err != nil {
-		return "", nil, err
+		return id, nil, err
 	}
 	return id, value, nil
+}
+
+func standaloneMutations(
+	snapshot standaloneSnapshot,
+	preserve map[store.ResourceKey]struct{},
+) ([]store.Mutation, []store.ResourceKey) {
+	mutations := make([]store.Mutation, 0)
+	keys := make([]store.ResourceKey, 0)
+	for _, bucket := range standaloneBuckets {
+		resources := snapshot[bucket]
+		for _, id := range sortedSnapshotIDs(resources) {
+			key := store.ResourceKey{Bucket: bucket, ID: id}
+			if _, preserved := preserve[key]; preserved {
+				continue
+			}
+			mutations = append(mutations, store.Mutation{
+				Type:  store.EventTypePut,
+				Key:   []byte("/apisix/" + bucket + "/" + id),
+				Value: resources[id],
+			})
+			keys = append(keys, key)
+		}
+	}
+	return mutations, keys
+}
+
+func retainStandaloneLastGood(next, previous standaloneSnapshot, key store.ResourceKey) {
+	if key.ID == "" {
+		return
+	}
+	previousValue, exists := previous[key.Bucket][key.ID]
+	if !exists {
+		if next[key.Bucket] != nil {
+			delete(next[key.Bucket], key.ID)
+		}
+		return
+	}
+	if next[key.Bucket] == nil {
+		next[key.Bucket] = make(map[string][]byte)
+	}
+	next[key.Bucket][key.ID] = append([]byte(nil), previousValue...)
+}
+
+func sortedStandaloneResourceKeys(keys map[store.ResourceKey]struct{}) []store.ResourceKey {
+	result := make([]store.ResourceKey, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Bucket != result[j].Bucket {
+			return result[i].Bucket < result[j].Bucket
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func standaloneReloadResult(
+	previous, next standaloneSnapshot,
+	quarantined []standaloneResourceQuarantine,
+) StandaloneReloadResult {
+	quarantinedResources := make([]store.ResourceKey, 0, len(quarantined))
+	for _, quarantine := range quarantined {
+		quarantinedResources = append(quarantinedResources, quarantine.key)
+	}
+	sort.Slice(quarantinedResources, func(i, j int) bool {
+		if quarantinedResources[i].Bucket != quarantinedResources[j].Bucket {
+			return quarantinedResources[i].Bucket < quarantinedResources[j].Bucket
+		}
+		return quarantinedResources[i].ID < quarantinedResources[j].ID
+	})
+	result := StandaloneReloadResult{QuarantinedResources: quarantinedResources}
+	for _, bucket := range standaloneBuckets {
+		previousBucket := previous[bucket]
+		updated := next[bucket]
+		changed := false
+		for _, id := range sortedSnapshotIDs(previousBucket) {
+			if _, ok := updated[id]; !ok {
+				changed = true
+			}
+		}
+		for _, id := range sortedSnapshotIDs(updated) {
+			if previousValue, ok := previousBucket[id]; ok && bytes.Equal(previousValue, updated[id]) {
+				continue
+			}
+			changed = true
+		}
+		if changed && store.IsHTTPRouteReloadBucket(bucket) {
+			result.ChangedHTTPRouteBuckets = append(result.ChangedHTTPRouteBuckets, bucket)
+		}
+		if changed && store.IsStreamReloadBucket(bucket) {
+			result.ChangedStreamBuckets = append(result.ChangedStreamBuckets, bucket)
+		}
+	}
+	return result
 }
 
 func standaloneResourceID(raw json.RawMessage) (string, error) {

@@ -115,7 +115,9 @@ const schema = `
       "default": "high"
     },
     "deny_code": {
-      "type": "number",
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599,
       "default": 200
     },
     "deny_message": {

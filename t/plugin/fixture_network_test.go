@@ -71,6 +71,15 @@ func isExactZeroUDPFixture(spec FixtureSpec) bool {
 		spec.Count.AtLeast == 0 && spec.Count.AtMost == 0
 }
 
+func isExactHTTPFixture(spec FixtureSpec) bool {
+	switch spec.Kind {
+	case "http", "https", "h2c", "https-connect":
+	default:
+		return false
+	}
+	return spec.Count == nil && (len(spec.Expect) > 0 || spec.ExpectRequests != nil)
+}
+
 func startHTTPSConnectFixture(spec FixtureSpec) (namedFixture, error) {
 	authority := *spec.Expect[0].Host.Equals
 	hostname, _, err := net.SplitHostPort(authority)

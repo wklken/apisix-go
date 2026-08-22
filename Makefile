@@ -80,6 +80,10 @@ test-cover:
 test-integration:
 	go test ./t/plugin -count=1 -v
 
+.PHONY: test-plugin-harness
+test-plugin-harness:
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1
+
 .PHONY: serve
 serve: build
 	$(BINARY_PATH)

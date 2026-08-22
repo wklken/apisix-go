@@ -163,8 +163,8 @@ func buildTransportOptionWithSSLResolver(
 
 // buildClusterConfig converts the effective route/upstream configuration into
 // the immutable cluster config that owns transport reuse, capacity, health,
-// and retry behavior. The upstream ID/name is only a metric label; cluster
-// identity is derived from the full effective configuration digest.
+// and retry behavior. The upstream ID/name participates in cluster identity
+// because the shared observers capture that bounded label at construction.
 func buildClusterConfigWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
@@ -285,8 +285,9 @@ func normalizeSSLFloat(value float64) (string, error) {
 	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
-// upstreamMetricLabel returns the bounded metric label for a cluster. The
-// upstream ID/name is a label only and never contributes to cluster identity.
+// upstreamMetricLabel returns the bounded metric label for a cluster. It also
+// contributes to identity so an interned cluster cannot retain another
+// upstream's observer label.
 func upstreamMetricLabel(routeResource resource.Route, upstream resource.Upstream) string {
 	if upstream.Name != "" {
 		return upstream.Name

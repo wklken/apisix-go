@@ -73,6 +73,43 @@ func TestClusterConfigKeyChangesWhenTransportChanges(t *testing.T) {
 	}
 }
 
+func TestClusterConfigKeyIncludesNameForObserverIdentity(t *testing.T) {
+	first := testClusterConfig()
+	second := first
+	second.Name = "payments"
+
+	firstKey, err := first.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := second.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey == secondKey {
+		t.Fatal("cluster names with different observer labels produced the same key")
+	}
+
+	registry := NewClusterRegistry(NopClusterObserver{})
+	t.Cleanup(registry.Close)
+	firstLease, err := registry.Acquire(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLease, err := registry.Acquire(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstLease.Cluster() == secondLease.Cluster() {
+		t.Fatal("cluster names with different observer labels reused one cluster")
+	}
+	if got, want := registry.Len(), 2; got != want {
+		t.Fatalf("registry.Len() = %d, want %d", got, want)
+	}
+	firstLease.Stop()
+	secondLease.Stop()
+}
+
 func TestClusterConfigKeyIncludesCleartextHTTP2Mode(t *testing.T) {
 	regular := testClusterConfig()
 	h2c := testClusterConfig()

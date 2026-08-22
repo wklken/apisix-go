@@ -77,6 +77,9 @@ const maxParallelPluginCases = 6
 var integrationStartupMu sync.Mutex
 
 func TestPluginIntegration(t *testing.T) {
+	if os.Getenv("APISIX_GO_SKIP_PLUGIN_INTEGRATION") == "1" {
+		t.Skip("plugin integration cases are disabled for the unit harness")
+	}
 	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover plugin manifests: %v", err)
@@ -1181,17 +1184,18 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 		Source:      CaseSource{Tests: []int{1}},
 		Environment: Environment{environmentVariable: "fixture-user"},
 		Config: map[string]any{
+			"consumers": []any{map[string]any{
+				"username": "fixture-consumer",
+				"plugins": map[string]any{"basic-auth": map[string]any{
+					"username": "fixture-user",
+					"password": "$ENV://APISIX_GO_HARNESS_CLICKHOUSE_USER",
+				}},
+			}},
 			"routes": []any{map[string]any{
 				"id":  "case-environment",
 				"uri": "/probe",
-				"plugins": map[string]any{"clickhouse-logger": map[string]any{
-					"endpoint_addr":    "{{FIXTURE.sink.URL}}",
-					"user":             "$ENV://APISIX_GO_HARNESS_CLICKHOUSE_USER",
-					"password":         "",
-					"database":         "default",
-					"logtable":         "logs",
-					"batch_max_size":   1,
-					"inactive_timeout": 1,
+				"plugins": map[string]any{"basic-auth": map[string]any{
+					"hide_credentials": false,
 				}},
 				"upstream": map[string]any{
 					"type":  "roundrobin",
@@ -1201,27 +1205,23 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 		},
 		Fixtures: []FixtureSpec{
 			{
-				Name:    "primary",
-				Kind:    "http",
-				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "ok"}},
-			},
-			{
-				Name: "sink",
+				Name: "primary",
 				Kind: "http",
 				Expect: []HTTPAssertion{{
-					Method: http.MethodPost,
 					Headers: map[string]Matcher{
-						"X-ClickHouse-User": {Equals: new("fixture-user")},
+						"Authorization": {Equals: new("Basic Zml4dHVyZS11c2VyOmZpeHR1cmUtdXNlcg==")},
 					},
 				}},
-				Respond: []HTTPResponse{{Status: http.StatusOK}},
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "ok"}},
 			},
 		},
 		Steps: []CaseStep{{
-			Name:   "deliver-log",
-			Input:  HTTPInput{Path: "/probe"},
+			Name: "deliver-log",
+			Input: HTTPInput{
+				Path:    "/probe",
+				Headers: map[string]string{"Authorization": "Basic Zml4dHVyZS11c2VyOmZpeHR1cmUtdXNlcg=="},
+			},
 			Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: new("ok")}},
-			Wait:   time.Second,
 		}},
 	}
 
@@ -3514,11 +3514,12 @@ func samlResponseActions(actions []CaseAction) []CaseAction {
 }
 
 func fixtureAssertionAfterShutdown(spec FixtureSpec) bool {
-	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec)
+	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec) || isExactHTTPFixture(spec)
 }
 
 func TestFixtureAssertionAfterShutdown(t *testing.T) {
 	t.Parallel()
+	zero := 0
 
 	for _, tt := range []struct {
 		name string
@@ -3547,6 +3548,31 @@ func TestFixtureAssertionAfterShutdown(t *testing.T) {
 			name: "HTTP fixture remains asserted before child shutdown",
 			spec: FixtureSpec{
 				Kind: "http",
+			},
+			want: false,
+		},
+		{
+			name: "exact HTTP fixture waits for child shutdown",
+			spec: FixtureSpec{
+				Kind:   "http",
+				Expect: []HTTPAssertion{{Method: http.MethodGet}},
+			},
+			want: true,
+		},
+		{
+			name: "zero HTTP fixture waits for child shutdown",
+			spec: FixtureSpec{
+				Kind:           "http",
+				ExpectRequests: &zero,
+			},
+			want: true,
+		},
+		{
+			name: "HTTP count range keeps bounded pre-shutdown assertion",
+			spec: FixtureSpec{
+				Kind:   "http",
+				Count:  &FixtureCountAssertion{AtLeast: 0, AtMost: 1},
+				Expect: []HTTPAssertion{{Method: http.MethodGet}},
 			},
 			want: false,
 		},

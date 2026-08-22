@@ -6,6 +6,7 @@ makefile="$repo_root/Makefile"
 dockerfile="$repo_root/Dockerfile"
 goreleaser="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
+unit_workflow="$repo_root/.github/workflows/unit-test.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
 
@@ -87,6 +88,7 @@ test -f "$workflow"
 test -f "$rc_workflow"
 test -f "$release_workflow"
 test -f "$makefile"
+test -f "$unit_workflow"
 test -f "$dockerfile"
 test -f "$goreleaser"
 
@@ -97,6 +99,8 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.Commit=\$\(COMMIT\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
+require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1' "$makefile"
+require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 require_pattern 'go build[[:space:]]+-trimpath[[:space:]]+-ldflags[[:space:]]+"-s[[:space:]]+-w[[:space:]]+' "$dockerfile"
 require_pattern '^    flags:[[:space:]]*\[[[:space:]]*-trimpath[[:space:]]*\][[:space:]]*$' "$goreleaser"
 require_pattern '^    ldflags:[[:space:]]*$' "$goreleaser"
@@ -141,7 +145,7 @@ require_job_fixed "$workflow" validate-inputs 'contents: read'
 require_job_fixed "$workflow" race-and-vulnerability 'needs: validate-inputs'
 require_job_fixed "$workflow" race-and-vulnerability 'ref: ${{ inputs.source-commit || github.sha }}'
 require_job_fixed "$workflow" race-and-vulnerability 'git rev-parse HEAD'
-require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1'
+require_job_fixed "$workflow" race-and-vulnerability 'go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd ./pkg/stream -count=1'
 require_job_fixed "$workflow" race-and-vulnerability 'govulncheck@v1.7.0'
 require_job_fixed "$workflow" race-and-vulnerability 'contents: read'
 for job in race-and-vulnerability container-evidence etcd-recovery proxy-soak publish-image; do
@@ -283,7 +287,7 @@ reject_job_pattern "$release_workflow" release '--clobber'
 require_job_fixed "$release_workflow" release 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
 require_job_fixed "$release_workflow" release 'gh release upload "$GITHUB_REF_NAME"'
 
-for job in lint build-and-unit integration release; do
+for job in lint build-and-unit integration-smoke release; do
     require_job_fixed "$release_workflow" "$job" 'ref: ${{ github.sha }}'
 done
 

@@ -132,7 +132,7 @@ func TestUpstreamTLSInsecureSkipVerify(t *testing.T) {
 	}
 }
 
-func TestBuildClusterConfigKeyIsStableAndIgnoresUpstreamName(t *testing.T) {
+func TestBuildClusterConfigKeyIncludesUpstreamNameForObserverIdentity(t *testing.T) {
 	servers := map[string]int{"http://127.0.0.1:18091": 1}
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
 		{Host: "127.0.0.1", Port: 18091, Weight: 1},
@@ -158,8 +158,8 @@ func TestBuildClusterConfigKeyIsStableAndIgnoresUpstreamName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstKey != secondKey {
-		t.Fatal("upstream name/id changed the cluster key, want label-only")
+	if firstKey == secondKey {
+		t.Fatal("upstream name changed the observer label without changing the cluster key")
 	}
 	if second.Name != "orders-v2" {
 		t.Fatalf("cluster label = %q, want upstream name", second.Name)

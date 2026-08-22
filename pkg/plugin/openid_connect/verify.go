@@ -226,6 +226,14 @@ func (p *Plugin) usesLocalJWTVerification() bool {
 	return p.config.PublicKey != "" || p.config.UseJWKS
 }
 
+func (p *Plugin) verifyPresentIDToken(r *http.Request, rawToken string) error {
+	if rawToken == "" {
+		return nil
+	}
+	_, err := p.verifyBearerJWT(r, rawToken)
+	return err
+}
+
 func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]any, error) {
 	token, err := base.ParseJWT(rawToken)
 	if err != nil {

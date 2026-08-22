@@ -267,7 +267,9 @@ func (p *Plugin) tokenExpiresAt(now time.Time, expiresIn int64) int64 {
 func (p *Plugin) setSessionHeaders(r *http.Request, session sessionData) {
 	p.setAccessTokenHeader(r, session.AccessToken)
 	if *p.config.SetIDTokenHeader && session.IDToken != "" {
-		r.Header.Set("X-ID-Token", session.IDToken)
+		if err := p.verifyPresentIDToken(r, session.IDToken); err == nil {
+			r.Header.Set("X-ID-Token", session.IDToken)
+		}
 	}
 	if *p.config.SetRefreshTokenHeader && session.RefreshToken != "" {
 		r.Header.Set("X-Refresh-Token", session.RefreshToken)

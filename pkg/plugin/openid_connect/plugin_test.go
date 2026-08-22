@@ -1747,7 +1747,6 @@ func TestHandlerCodeFlowPKCEExchangesMatchingVerifier(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "access-token",
-			"id_token":      "id-token",
 			"refresh_token": "refresh-token",
 			"expires_in":    3600,
 		})
@@ -2015,17 +2014,107 @@ func TestHandlerCodeFlowRejectsMismatchedStateWithoutTokenExchange(t *testing.T)
 	}
 }
 
+func TestHandlerCodeFlowRejectsUnverifiedIDToken(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	valid := signRS256(t, privateKey, map[string]any{
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
+		"iat": timeNowUnix(),
+	})
+	tampered := valid[:len(valid)-4] + "xxxx"
+
+	tests := []struct {
+		name    string
+		idToken string
+	}{
+		{name: "unsigned payload", idToken: "id-token"},
+		{name: "alg none", idToken: "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."},
+		{name: "tampered signature", idToken: tampered},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "access-token",
+					"id_token":     tt.idToken,
+					"expires_in":   3600,
+				})
+			})
+			cfg := codeFlowConfig(idp.URL)
+			if tt.name == "tampered signature" {
+				cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
+			}
+			p := newTestPlugin(t, cfg)
+
+			initial := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called")
+			})).ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
+			authorizationURL, err := url.Parse(initial.Header().Get("Location"))
+			if err != nil {
+				t.Fatalf("parse authorization redirect: %v", err)
+			}
+
+			callback := httptest.NewRequest(
+				http.MethodGet,
+				"https://example.com/orders/.apisix/redirect?code=code-a&state="+url.QueryEscape(
+					authorizationURL.Query().Get("state"),
+				),
+				nil,
+			)
+			callback.AddCookie(initial.Result().Cookies()[0])
+			callbackRecorder := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called")
+			})).ServeHTTP(callbackRecorder, callback)
+
+			if callbackRecorder.Code != http.StatusUnauthorized {
+				t.Fatalf(
+					"callback status = %d, want 401; body=%s",
+					callbackRecorder.Code,
+					callbackRecorder.Body.String(),
+				)
+			}
+			if got := callbackRecorder.Header().
+				Get("WWW-Authenticate"); !strings.Contains(
+				got,
+				`error="invalid_token"`,
+			) {
+				t.Fatalf("WWW-Authenticate = %q, want invalid_token", got)
+			}
+			if cookies := callbackRecorder.Result().Cookies(); len(cookies) != 0 {
+				t.Fatalf("session cookies = %#v, want none after rejected ID token", cookies)
+			}
+		})
+	}
+}
+
 func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	idToken := signRS256(t, privateKey, map[string]any{
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
+		"iat": timeNowUnix(),
+	})
 	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "access-token",
-			"id_token":      "id-token",
+			"id_token":      idToken,
 			"refresh_token": "refresh-token",
 			"expires_in":    3600,
 		})
 	})
-	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+	cfg := codeFlowConfig(idp.URL)
+	cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
+	p := newTestPlugin(t, cfg)
 
 	initial := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2066,8 +2155,8 @@ func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T)
 		if got := r.Header.Get("X-Access-Token"); got != "access-token" {
 			t.Fatalf("X-Access-Token = %q, want session access token", got)
 		}
-		if got := r.Header.Get("X-ID-Token"); got != "id-token" {
-			t.Fatalf("X-ID-Token = %q, want session ID token", got)
+		if got := r.Header.Get("X-ID-Token"); got != idToken {
+			t.Fatalf("X-ID-Token = %q, want verified session ID token", got)
 		}
 		if got := r.Header.Get("X-Refresh-Token"); got != "refresh-token" {
 			t.Fatalf("X-Refresh-Token = %q, want session refresh token", got)
@@ -2139,6 +2228,15 @@ func TestHandlerCodeFlowRedirectsOnlyToSameOriginPath(t *testing.T) {
 }
 
 func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	idToken := signRS256(t, privateKey, map[string]any{
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
+		"iat": timeNowUnix(),
+	})
 	var idp *httptest.Server
 	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2152,7 +2250,7 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 			})
 		case "/token":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token", "id_token": "id-token"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token", "id_token": idToken})
 		case "/userinfo":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"role": "viewer"})
@@ -2163,6 +2261,7 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	t.Cleanup(idp.Close)
 
 	cfg := codeFlowConfig(idp.URL)
+	cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
 	cfg.ClaimSchema = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -2274,7 +2373,6 @@ func TestHandlerRenewsExpiredSessionAccessToken(t *testing.T) {
 		CreatedAt:    time.Now().Add(-time.Hour).Unix(),
 		UpdatedAt:    time.Now().Unix(),
 		AccessToken:  "expired-access-token",
-		IDToken:      "id-token",
 		RefreshToken: "refresh-token",
 		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
 	}); err != nil {
@@ -2311,6 +2409,43 @@ func TestHandlerRenewsExpiredSessionAccessToken(t *testing.T) {
 	if cookies := rr.Result().Cookies(); len(cookies) != 1 ||
 		cookies[0].Value == cookieRecorder.Result().Cookies()[0].Value {
 		t.Fatalf("session cookie = %#v, want a renewed session cookie", cookies)
+	}
+}
+
+func TestHandlerRefreshRejectsUnverifiedIDToken(t *testing.T) {
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "renewed-access-token",
+			"id_token":     "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.",
+			"expires_in":   3600,
+		})
+	})
+	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:    time.Now().Add(-time.Hour).Unix(),
+		UpdatedAt:    time.Now().Unix(),
+		AccessToken:  "expired-access-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called after unverified refresh ID token")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-ID-Token"); got != "" {
+		t.Fatalf("X-ID-Token = %q, want empty", got)
 	}
 }
 

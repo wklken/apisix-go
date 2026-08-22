@@ -1300,13 +1300,15 @@ func (s *Server) startConfigProvider(ctx context.Context) error {
 			return fmt.Errorf("snapshot standalone store: %w", err)
 		}
 		watcher.SeedCurrentSnapshot(snapshot)
-		if err := watcher.Reload(); err != nil {
+		initialResult, err := watcher.ReloadSnapshot()
+		if err != nil {
 			return fmt.Errorf("load standalone config: %w", err)
 		}
 		if err := s.storage.Sync(); err != nil {
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageProvider)
 			return fmt.Errorf("sync initial standalone config: %w", err)
 		}
+		metrics.RecordConfigApplyQuarantine(initialResult.QuarantinedResourceCount())
 		metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageProvider)
 		watcher.SetAcknowledgedReloadCallback(func(result config.StandaloneReloadResult, err error) error {
 			if applyErr := applyStandaloneSnapshot(
@@ -1357,6 +1359,7 @@ func applyStandaloneSnapshot(
 	if err != nil {
 		return err
 	}
+	metrics.RecordConfigApplyQuarantine(result.QuarantinedResourceCount())
 	if err := syncStore(); err != nil {
 		return err
 	}

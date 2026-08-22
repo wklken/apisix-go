@@ -101,7 +101,7 @@ func TestStandaloneReloadDoesNotHoldStateMutexWhileSendBlocked(t *testing.T) {
 	}
 }
 
-func TestStandaloneFailedSecondEventRetainsBaselineForReplay(t *testing.T) {
+func TestStandaloneInvalidSSLDoesNotBlockValidSiblingOrReplay(t *testing.T) {
 	path := writeStandaloneTestConfig(t, `routes:
   - id: route-1
     uri: /orders
@@ -120,11 +120,18 @@ ssls:
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
-	if err := watcher.Reload(); err == nil {
-		t.Fatal("Reload() error = nil, want snapshot acknowledgement failure")
+	result, err := watcher.ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err == nil && len(route) > 0 {
-		t.Fatalf("route after failed snapshot = %q; want atomic rollback", route)
+	if result.QuarantinedResourceCount() != 1 {
+		t.Fatalf("initial quarantine count = %d, want 1", result.QuarantinedResourceCount())
+	}
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+		t.Fatalf("valid route after invalid SSL = %q, %v; want applied", route, err)
+	}
+	if ssl, err := storage.GetFromBucket("ssls", []byte("ssl-1")); err != nil || ssl != nil {
+		t.Fatalf("invalid SSL after first load = %q, %v; want absent", ssl, err)
 	}
 
 	if err := os.WriteFile(path, []byte(`routes:
@@ -139,11 +146,15 @@ ssls:
 `), 0o600); err != nil {
 		t.Fatalf("rewrite standalone config: %v", err)
 	}
-	if err := watcher.Reload(); err == nil {
-		t.Fatal("second Reload() error = nil, want SSL acknowledgement failure")
+	result, err = watcher.ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("second ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err == nil && len(route) > 0 {
-		t.Fatalf("route after replay attempt = %q; want still rolled back", route)
+	if result.QuarantinedResourceCount() != 1 {
+		t.Fatalf("replay quarantine count = %d, want 1", result.QuarantinedResourceCount())
+	}
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+		t.Fatalf("valid route after replay = %q, %v; want retained", route, err)
 	}
 }
 
@@ -162,7 +173,7 @@ func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
 
 func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	snapshot, err := readStandaloneSnapshot(path, "yaml")
+	snapshot, _, err := readStandaloneSnapshot(path, "yaml")
 	if err != nil {
 		t.Fatalf("readStandaloneSnapshot() error = %v", err)
 	}
@@ -856,6 +867,115 @@ plugin_configs:
 	}
 }
 
+func TestStandaloneReloadSnapshotQuarantinesMalformedResourceAndAppliesValidSibling(t *testing.T) {
+	path := writeStandaloneTestConfig(t, `routes:
+  - id: invalid-route
+    uri: /invalid
+    plugins: invalid
+  - uri: /missing-id
+  - id: valid-route
+    uri: /valid
+#END
+`)
+	events := make(chan *store.Event, 4)
+	storage := newStandaloneTestStore(t, events)
+
+	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("ReloadSnapshot() error = %v, want malformed sibling quarantined", err)
+	}
+	if result.QuarantinedResourceCount() != 2 {
+		t.Fatalf("quarantined resources = %d, want 2", result.QuarantinedResourceCount())
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
+		t.Fatalf("valid sibling = %q, %v; want applied", value, err)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("invalid-route")); err != nil || value != nil {
+		t.Fatalf("invalid route = %q, %v; want absent", value, err)
+	}
+}
+
+func TestStandaloneReloadSnapshotPreservesLastGoodMalformedResource(t *testing.T) {
+	path := writeStandaloneTestConfig(t, `services:
+  - id: service-1
+    name: last-good
+routes:
+  - id: stale-route
+    uri: /stale
+#END
+`)
+	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if _, err := watcher.ReloadSnapshot(); err != nil {
+		t.Fatalf("initial ReloadSnapshot() error = %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte(`services:
+  - id: service-1
+    name: rejected
+    plugins: invalid
+routes:
+  - id: valid-route
+    uri: /valid
+#END
+`), 0o600); err != nil {
+		t.Fatalf("write replacement standalone config: %v", err)
+	}
+	result, err := watcher.ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("replacement ReloadSnapshot() error = %v, want resource isolation", err)
+	}
+	if result.QuarantinedResourceCount() != 1 {
+		t.Fatalf("quarantined resources = %d, want 1", result.QuarantinedResourceCount())
+	}
+	serviceValue, err := storage.GetFromBucket("services", []byte("service-1"))
+	if err != nil {
+		t.Fatalf("read retained service: %v", err)
+	}
+	var service map[string]any
+	if err := json.Unmarshal(serviceValue, &service); err != nil {
+		t.Fatalf("decode retained service: %v", err)
+	}
+	if got := service["name"]; got != "last-good" {
+		t.Fatalf("retained service name = %#v, want last-good", got)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("stale-route")); err != nil || value != nil {
+		t.Fatalf("removed sibling = %q, %v; want deleted", value, err)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
+		t.Fatalf("valid replacement sibling = %q, %v; want applied", value, err)
+	}
+
+	if err := os.WriteFile(path, []byte(`services:
+  - id: service-1
+    name: recovered
+routes:
+  - id: valid-route
+    uri: /valid
+#END
+`), 0o600); err != nil {
+		t.Fatalf("write recovered standalone config: %v", err)
+	}
+	recovered, err := watcher.ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("recovered ReloadSnapshot() error = %v", err)
+	}
+	if recovered.QuarantinedResourceCount() != 0 {
+		t.Fatalf("recovered quarantine count = %d, want 0", recovered.QuarantinedResourceCount())
+	}
+	serviceValue, err = storage.GetFromBucket("services", []byte("service-1"))
+	if err != nil {
+		t.Fatalf("read recovered service: %v", err)
+	}
+	if err := json.Unmarshal(serviceValue, &service); err != nil {
+		t.Fatalf("decode recovered service: %v", err)
+	}
+	if got := service["name"]; got != "recovered" {
+		t.Fatalf("recovered service name = %#v, want recovered", got)
+	}
+}
+
 func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"
@@ -1053,14 +1173,17 @@ func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
 			wantError: "unsupported standalone config provider",
 		},
 		{name: "invalid JSON", provider: "json", content: `{`, wantError: "parse standalone JSON config"},
+		{name: "null JSON root", provider: "json", content: `null`, wantError: "expected object"},
 		{
 			name:      "section is not array",
 			provider:  "json",
 			content:   `{"routes":{}}`,
 			wantError: "decode standalone routes",
 		},
-		{name: "resource missing ID", provider: "json", content: `{"routes":[{"uri":"/"}]}`, wantError: "missing id"},
+		{name: "null JSON section", provider: "json", content: `{"routes":null}`, wantError: "expected array"},
 		{name: "invalid YAML", provider: "yaml", content: "routes: [\n#END", wantError: "parse standalone YAML config"},
+		{name: "null YAML root", provider: "yaml", content: "null\n#END", wantError: "expected object"},
+		{name: "null YAML section", provider: "yaml", content: "routes:\n#END", wantError: "expected array"},
 	}
 
 	for _, test := range tests {
@@ -1069,14 +1192,14 @@ func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
 				t.Fatalf("write standalone fixture: %v", err)
 			}
-			_, err := readStandaloneSnapshot(path, test.provider)
+			_, _, err := readStandaloneSnapshot(path, test.provider)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.wantError)
 			}
 		})
 	}
 
-	_, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
+	_, _, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
 	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
 		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
 	}

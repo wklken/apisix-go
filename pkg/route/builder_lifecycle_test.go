@@ -1178,6 +1178,42 @@ func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *tes
 	}
 }
 
+func TestBuildWithRouteQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	putRouteResource(t, "quarantine-method-lowercase", []byte(
+		`{"id":"quarantine-method-lowercase","uri":"/quarantine-method-lowercase","methods":["get"]}`,
+	))
+	putRouteResource(t, "quarantine-method-query", []byte(
+		`{"id":"quarantine-method-query","uri":"/quarantine-method-query","methods":["QUERY"]}`,
+	))
+	putRouteResource(t, "quarantine-method-duplicate", []byte(
+		`{"id":"quarantine-method-duplicate","uri":"/quarantine-method-duplicate","methods":["GET","GET"]}`,
+	))
+	putRouteResource(t, "quarantine-uri-duplicate", []byte(
+		`{"id":"quarantine-uri-duplicate","uris":["/quarantine-uri-duplicate/:id","/quarantine-uri-duplicate/:name"]}`,
+	))
+	putRouteResource(t, "quarantine-method-sibling", []byte(
+		`{"id":"quarantine-method-sibling","uri":"/quarantine-method-sibling","methods":["GET"]}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+	}
+
+	valid := httptest.NewRecorder()
+	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-sibling", nil))
+	if valid.Code == http.StatusNotFound {
+		t.Fatalf("valid sibling status = %d, want registered handler", valid.Code)
+	}
+	if got, want := builder.QuarantinedResourceCount(), 4; got != want {
+		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
+	}
+}
+
 func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) {
 	ensureRouteStore(t)
 	setHTTPPluginAllowlist(t, "kafka-logger")

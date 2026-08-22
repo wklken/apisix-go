@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -447,6 +446,82 @@ func TestConfigSnapshotPublishesValidGlobalRulesAndQuarantinesLegacyMalformedRow
 	}
 }
 
+func TestConfigSnapshotQuarantinesMalformedDependentRowsAndPublishesValidSiblings(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		entries := map[string]map[string]string{
+			"plugin_metadata": {
+				"metadata-bad":  `[]`,
+				"metadata-good": `{"mode":"valid"}`,
+			},
+			"services": {
+				"service-bad":  `{"id":"service-bad","upstream_id":123}`,
+				"service-good": `{"id":"service-good","upstream_id":"upstream-good"}`,
+			},
+			"upstreams": {
+				"upstream-bad":  `{"scheme":"http","nodes":{"bad.test:80":"invalid"}}`,
+				"upstream-good": `{"scheme":"http","nodes":{"good.test:80":1}}`,
+			},
+			"plugin_configs": {
+				"config-bad":  `{"plugins":[]}`,
+				"config-good": `{"plugins":{"request-id":{}}}`,
+			},
+		}
+		for bucket, bucketEntries := range entries {
+			bucketRef := tx.Bucket([]byte(bucket))
+			for id, value := range bucketEntries {
+				if err := bucketRef.Put([]byte(id), []byte(value)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed dependent resources: %v", err)
+	}
+
+	snapshot, err := storage.GetConfigSnapshot()
+	if err != nil {
+		t.Fatalf("GetConfigSnapshot() error = %v", err)
+	}
+	if service, err := snapshot.GetService("service-good"); err != nil || service.UpstreamID != "upstream-good" {
+		t.Fatalf("valid service = %+v/%v, want service-good -> upstream-good", service, err)
+	}
+	if _, err := snapshot.GetService("service-bad"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("malformed service lookup error = %v, want ErrNotFound", err)
+	}
+	upstream, err := snapshot.GetUpstream("upstream-good")
+	if err != nil || len(upstream.Nodes) != 1 || upstream.Nodes[0].Host != "good.test" {
+		t.Fatalf("valid upstream = %+v/%v, want good.test", upstream, err)
+	}
+	if _, err := snapshot.GetUpstream("upstream-bad"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("malformed upstream lookup error = %v, want ErrNotFound", err)
+	}
+	if config, err := snapshot.GetPluginConfigRule("config-good"); err != nil || config.Plugins["request-id"] == nil {
+		t.Fatalf("valid plugin config = %+v/%v, want request-id", config, err)
+	}
+	if _, err := snapshot.GetPluginConfigRule("config-bad"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("malformed plugin config lookup error = %v, want ErrNotFound", err)
+	}
+	if metadata, ok := snapshot.PluginMetadata("metadata-good"); !ok || metadata["mode"] != "valid" {
+		t.Fatalf("valid plugin metadata = %#v/%t, want mode valid", metadata, ok)
+	}
+	if _, ok := snapshot.PluginMetadata("metadata-bad"); ok {
+		t.Fatal("malformed plugin metadata remained in snapshot")
+	}
+
+	quarantined := snapshot.QuarantinedResources()
+	want := []ConfigQuarantine{
+		{Bucket: "plugin_configs", ID: "config-bad"},
+		{Bucket: "plugin_metadata", ID: "metadata-bad"},
+		{Bucket: "services", ID: "service-bad"},
+		{Bucket: "upstreams", ID: "upstream-bad"},
+	}
+	if !slices.Equal(quarantined, want) {
+		t.Fatalf("snapshot quarantine = %+v, want %+v", quarantined, want)
+	}
+}
+
 func TestConfigSnapshotIncludesCompleteHTTPBuildGeneration(t *testing.T) {
 	storage := newConfigSnapshotTestStore(t)
 	if err := storage.db.Update(func(tx *bolt.Tx) error {
@@ -580,7 +655,7 @@ func TestConfigSnapshotDoesNotMixServiceAndUpstreamGenerations(t *testing.T) {
 	}
 }
 
-func TestConfigSnapshotFailsClosedForMalformedPluginMetadata(t *testing.T) {
+func TestConfigSnapshotQuarantinesMalformedPluginMetadata(t *testing.T) {
 	storage := newConfigSnapshotTestStore(t)
 	if err := storage.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("plugin_metadata")).Put(
@@ -591,10 +666,13 @@ func TestConfigSnapshotFailsClosedForMalformedPluginMetadata(t *testing.T) {
 		t.Fatalf("seed malformed plugin metadata: %v", err)
 	}
 
-	if _, err := storage.GetConfigSnapshot(); err == nil ||
-		!strings.Contains(err.Error(), "plugin_metadata") ||
-		!strings.Contains(err.Error(), "metadata-bad") {
-		t.Fatalf("GetConfigSnapshot() error = %v, want plugin_metadata/metadata-bad context", err)
+	snapshot, err := storage.GetConfigSnapshot()
+	if err != nil {
+		t.Fatalf("GetConfigSnapshot() error = %v, want malformed metadata quarantined", err)
+	}
+	want := []ConfigQuarantine{{Bucket: "plugin_metadata", ID: "metadata-bad"}}
+	if got := snapshot.QuarantinedResources(); !slices.Equal(got, want) {
+		t.Fatalf("snapshot quarantine = %+v, want %+v", got, want)
 	}
 }
 

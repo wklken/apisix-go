@@ -50,6 +50,7 @@ type ClusterConfig struct {
 // digest, and the complete transport identity is embedded so any TLS,
 // timeout, idle, or connection-cap change produces a new cluster.
 type clusterKeyIdentity struct {
+	Name              string
 	Targets           []clusterKeyTarget
 	Priorities        []clusterKeyPriority
 	Checks            map[string]any
@@ -77,6 +78,7 @@ type clusterKeyPriority struct {
 // the caller must fail rather than reuse a partial digest.
 func (c ClusterConfig) Key() (ClusterKey, error) {
 	identity := clusterKeyIdentity{
+		Name:              c.Name,
 		Targets:           sortedClusterTargets(c.Targets),
 		Priorities:        sortedClusterPriorities(c.Priorities),
 		Checks:            c.Checks,

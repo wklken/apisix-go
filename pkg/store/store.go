@@ -537,7 +537,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 			switch bucket {
 			case "ssls":
 				resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
-			case "routes", "global_rules":
+			case "routes", "global_rules", "services", "upstreams", "plugin_configs":
 				resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
 			case "consumers":
 				var snapshot consumerSnapshot

@@ -27,6 +27,83 @@ func TestAcknowledgedConsumerValidationErrorIsNotRepeatedBySync(t *testing.T) {
 	}
 }
 
+func TestAcknowledgedMalformedDependentResourceKeepsLastGoodValue(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "dependent-resource-validation.db"), make(chan *Event, 1))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+
+	tests := []struct {
+		name      string
+		bucket    string
+		id        string
+		lastGood  string
+		malformed string
+	}{
+		{
+			name:      "service",
+			bucket:    "services",
+			id:        "service-1",
+			lastGood:  `{"id":"service-1","upstream_id":"upstream-1"}`,
+			malformed: `{"id":"service-1","upstream_id":123}`,
+		},
+		{
+			name:      "upstream",
+			bucket:    "upstreams",
+			id:        "upstream-1",
+			lastGood:  `{"scheme":"http","nodes":{"backend.test:80":1}}`,
+			malformed: `{"scheme":"http","nodes":{"backend.test:80":"invalid"}}`,
+		},
+		{
+			name:      "plugin config",
+			bucket:    "plugin_configs",
+			id:        "config-1",
+			lastGood:  `{"plugins":{"request-id":{}}}`,
+			malformed: `{"plugins":[]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			put := func(value string) error {
+				event := NewAcknowledgedEvent()
+				event.Type = EventTypePut
+				event.Key = []byte("/apisix/" + tt.bucket + "/" + tt.id)
+				event.Value = []byte(value)
+				storage.events <- event
+				return event.Wait(context.Background())
+			}
+			if err := put(tt.lastGood); err != nil {
+				t.Fatalf("seed last-good %s/%s: %v", tt.bucket, tt.id, err)
+			}
+
+			err := put(tt.malformed)
+			var validationErr *ResourceValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("malformed %s/%s error = %v, want ResourceValidationError", tt.bucket, tt.id, err)
+			}
+			if validationErr.Bucket != tt.bucket || validationErr.ID != tt.id {
+				t.Fatalf(
+					"validation context = %q/%q, want %s/%s",
+					validationErr.Bucket,
+					validationErr.ID,
+					tt.bucket,
+					tt.id,
+				)
+			}
+			value, readErr := storage.GetFromBucket(tt.bucket, []byte(tt.id))
+			if readErr != nil {
+				t.Fatalf("read retained %s/%s: %v", tt.bucket, tt.id, readErr)
+			}
+			if string(value) != tt.lastGood {
+				t.Fatalf("retained %s/%s = %q, want %q", tt.bucket, tt.id, value, tt.lastGood)
+			}
+		})
+	}
+}
+
 func TestAcknowledgedConsumerRejectsDuplicatePluginLookupKeyBeforeCommit(t *testing.T) {
 	storage := newConsumerSnapshotStore(t)
 	put := func(id, value string) error {

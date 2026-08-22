@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -30,6 +31,45 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestSchemaValidatesDenyCodeBounds(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	baseConfig := map[string]any{
+		"comprehend": map[string]any{
+			"access_key_id":     "access-key",
+			"secret_access_key": "secret-key",
+			"region":            "us-east-1",
+		},
+	}
+	for _, test := range []struct {
+		name    string
+		value   any
+		wantErr bool
+	}{
+		{name: "below minimum", value: 99, wantErr: true},
+		{name: "minimum", value: 100},
+		{name: "maximum", value: 599},
+		{name: "above maximum", value: 600, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"comprehend": baseConfig["comprehend"],
+				"deny_code":  test.value,
+			}
+			err := util.Validate(config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatalf("Validate() error = nil, want deny_code rejection for %v", test.value)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want deny_code %v accepted", err, test.value)
+			}
+		})
+	}
 }
 
 func TestHandlerCallsComprehendAndPreservesRequestBody(t *testing.T) {

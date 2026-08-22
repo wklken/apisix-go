@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -30,6 +31,48 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSchemaValidatesDenyCodeBounds(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	baseConfig := map[string]any{
+		"endpoint":          "https://moderation.example.com",
+		"region_id":         "cn-shanghai",
+		"access_key_id":     "access-key",
+		"access_key_secret": "secret-key",
+	}
+	for _, test := range []struct {
+		name    string
+		value   any
+		wantErr bool
+	}{
+		{name: "fractional", value: 200.5, wantErr: true},
+		{name: "below minimum", value: 99, wantErr: true},
+		{name: "minimum", value: 100},
+		{name: "maximum", value: 599},
+		{name: "above maximum", value: 600, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"endpoint":          baseConfig["endpoint"],
+				"region_id":         baseConfig["region_id"],
+				"access_key_id":     baseConfig["access_key_id"],
+				"access_key_secret": baseConfig["access_key_secret"],
+				"deny_code":         test.value,
+			}
+			err := util.Validate(config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatalf("Validate() error = nil, want deny_code rejection for %v", test.value)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want deny_code %v accepted", err, test.value)
+			}
+		})
+	}
 }
 
 func TestHandlerCallsAliyunAndPreservesRequestBody(t *testing.T) {

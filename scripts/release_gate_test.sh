@@ -7,6 +7,7 @@ dockerfile="$repo_root/Dockerfile"
 goreleaser="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
 unit_workflow="$repo_root/.github/workflows/unit-test.yml"
+plugin_status_workflow="$repo_root/.github/workflows/plugin-status.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
 
@@ -89,6 +90,7 @@ test -f "$rc_workflow"
 test -f "$release_workflow"
 test -f "$makefile"
 test -f "$unit_workflow"
+test -f "$plugin_status_workflow"
 test -f "$dockerfile"
 test -f "$goreleaser"
 
@@ -105,6 +107,8 @@ require_fixed 'plugin status test %s was not found' "$makefile"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
 require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
+require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
+require_job_fixed "$plugin_status_workflow" plugin-status 'run: bash scripts/plugin_status_gate_test.sh'
 require_job_fixed "$unit_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.selector }}'\'''
 reject_job_pattern "$unit_workflow" integration-smoke 'go test[[:space:]]+\./t/plugin[[:space:]]+-run'
 require_job_fixed "$release_workflow" build-and-unit 'run: make test-plugin-harness'

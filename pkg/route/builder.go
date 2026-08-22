@@ -4040,10 +4040,12 @@ func attachHTTPRetriesCompiled(
 	if override := traffic_split.GetOverride(request); override != nil {
 		return pxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
 			if override.NextRetry == nil {
+				pxy.SetSelectedTarget(retry, "")
 				return false
 			}
 			next := override.NextRetry(retry)
 			if !applyTrafficSplitTarget(retry, next, originalHost) {
+				pxy.SetSelectedTarget(retry, "")
 				return false
 			}
 			applyFinalProxyRewrite(retry)

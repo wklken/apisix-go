@@ -444,8 +444,22 @@ func (lb *HealthAwareLoadBalance) healthStatus(target string) (bool, uint64) {
 func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	return lb.markHealthyLocked(target, 0, false)
+}
+
+func (lb *HealthAwareLoadBalance) markHealthyAtGeneration(target string, expectedGeneration uint64) bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.markHealthyLocked(target, expectedGeneration, true)
+}
+
+func (lb *HealthAwareLoadBalance) markHealthyLocked(
+	target string,
+	expectedGeneration uint64,
+	requireGeneration bool,
+) bool {
 	state, ok := lb.states[target]
-	if !ok || !state.unhealthy {
+	if !ok || !state.unhealthy || requireGeneration && state.generation != expectedGeneration {
 		return false
 	}
 	state.unhealthy = false
@@ -464,8 +478,22 @@ func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
 func (lb *HealthAwareLoadBalance) MarkUnhealthy(target string) bool {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	return lb.markUnhealthyLocked(target, 0, false)
+}
+
+func (lb *HealthAwareLoadBalance) markUnhealthyAtGeneration(target string, expectedGeneration uint64) bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.markUnhealthyLocked(target, expectedGeneration, true)
+}
+
+func (lb *HealthAwareLoadBalance) markUnhealthyLocked(
+	target string,
+	expectedGeneration uint64,
+	requireGeneration bool,
+) bool {
 	state, ok := lb.states[target]
-	if !ok || state.unhealthy {
+	if !ok || state.unhealthy || requireGeneration && state.generation != expectedGeneration {
 		return false
 	}
 	state.healthySuccesses = 0

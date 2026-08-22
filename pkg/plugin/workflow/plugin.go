@@ -337,10 +337,10 @@ func (p *Plugin) PostInit() error {
 					return err
 				}
 			case "return":
-				if action.Return.Code < http.StatusContinue || action.Return.Code > 599 {
+				if action.Return.Code < http.StatusOK || action.Return.Code > 599 {
 					return fmt.Errorf(
 						"workflow return action code must be between %d and 599",
-						http.StatusContinue,
+						http.StatusOK,
 					)
 				}
 			default:

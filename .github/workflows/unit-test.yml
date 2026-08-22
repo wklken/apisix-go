@@ -47,6 +47,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Verify CI and release workflow contracts
+        run: bash scripts/release_gate_test.sh
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:

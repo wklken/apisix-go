@@ -299,21 +299,27 @@ func (c *activeHealthChecker) probeTarget(target string) {
 		if !c.acquireSemaphore() {
 			return
 		}
+		_, probeGeneration := c.lb.healthStatus(target)
 		result := c.probeResult(target)
 		c.releaseSemaphore()
 		if result == activeProbeCanceled || c.ctx.Err() != nil {
 			return
 		}
-		c.applyProbeResult(target, result, &counters)
+		c.applyProbeResultAtGeneration(target, probeGeneration, result, &counters)
 	}
 }
 
-func (c *activeHealthChecker) applyProbeResult(
+func (c *activeHealthChecker) applyProbeResultAtGeneration(
 	target string,
+	expectedGeneration uint64,
 	result activeProbeResult,
 	counters *activeProbeCounters,
 ) {
 	healthy, generation := c.lb.healthStatus(target)
+	if generation != expectedGeneration {
+		*counters = activeProbeCounters{generation: generation}
+		return
+	}
 	if counters.generation != generation {
 		*counters = activeProbeCounters{generation: generation}
 	}
@@ -328,8 +334,10 @@ func (c *activeHealthChecker) applyProbeResult(
 		counters.successes++
 		if counters.successes >= c.config.HealthySuccesses {
 			counters.successes = 0
-			if c.lb.MarkHealthy(target) {
+			if c.lb.markHealthyAtGeneration(target, expectedGeneration) {
 				c.observer.SetHealth(c.name, target, true)
+			} else {
+				c.resetProbeCounters(target, counters)
 			}
 		}
 		return
@@ -364,10 +372,17 @@ func (c *activeHealthChecker) applyProbeResult(
 		counters.httpFailures = 0
 		counters.tcpFailures = 0
 		counters.timeouts = 0
-		if c.lb.MarkUnhealthy(target) {
+		if c.lb.markUnhealthyAtGeneration(target, expectedGeneration) {
 			c.observer.SetHealth(c.name, target, false)
+		} else {
+			c.resetProbeCounters(target, counters)
 		}
 	}
+}
+
+func (c *activeHealthChecker) resetProbeCounters(target string, counters *activeProbeCounters) {
+	_, generation := c.lb.healthStatus(target)
+	*counters = activeProbeCounters{generation: generation}
 }
 
 func (c *activeHealthChecker) acquireSemaphore() bool {

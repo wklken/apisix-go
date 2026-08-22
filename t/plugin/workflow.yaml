@@ -219,9 +219,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-missing-actions
+              uri: /probe-missing-actions
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-missing-actions}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: "missing properties: 'actions'"}}
+        output: {status: 404, logs: {matches: "missing properties: 'actions'"}}
       - name: empty-action-is-rejected
         wait: 100ms
         config:
@@ -230,9 +234,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{actions: [[]]}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-empty-action
+              uri: /probe-empty-action
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-empty-action}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: 'workflow action must contain a name|minimum 1'}}
+        output: {status: 404, logs: {matches: 'workflow action must contain a name|minimum 1'}}
       - name: return-status-key-is-rejected
         wait: 100ms
         config:
@@ -241,9 +249,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{actions: [[return, {status: 403}]]}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-return-status
+              uri: /probe-return-status
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-return-status}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: 'workflow return action code must be between 100 and 599'}}
+        output: {status: 404, logs: {matches: 'workflow return action code must be between 200 and 599'}}
       - name: noninteger-return-code-is-rejected
         wait: 100ms
         config:
@@ -252,9 +264,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{actions: [[return, {code: bad}]]}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-noninteger-code
+              uri: /probe-noninteger-code
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-noninteger-code}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: 'cannot unmarshal|string.*Go value of type int'}}
+        output: {status: 404, logs: {matches: 'cannot unmarshal|string.*Go value of type int'}}
       - name: empty-case-is-rejected
         wait: 100ms
         config:
@@ -263,9 +279,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{case: [], actions: [[return, {code: 403}]]}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-empty-case
+              uri: /probe-empty-case
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-empty-case}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: 'minimum 1'}}
+        output: {status: 404, logs: {matches: 'minimum 1'}}
       - name: unsupported-action-is-rejected
         wait: 100ms
         config:
@@ -274,9 +294,13 @@ cases:
               uri: /schema
               plugins: {workflow: {rules: [{actions: [[fake, {}]]}]}}
               upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        config_probe: {input: {path: /schema}, output: {status: 201}}
+            - id: workflow-probe-unsupported-action
+              uri: /probe-unsupported-action
+              plugins: {workflow: {rules: [{actions: [[return, {code: 202}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /probe-unsupported-action}, output: {status: 202}}
         input: {path: /schema}
-        output: {status: 201, logs: {matches: 'unsupported workflow action \\"fake\\"'}}
+        output: {status: 404, logs: {matches: 'unsupported workflow action \\"fake\\"'}}
 
   - name: return-route-created
     source: {file: t/plugin/workflow.t, tests: [2]}

@@ -209,6 +209,53 @@ func TestAttachHTTPRetriesAdvancesTrafficSplitTargets(t *testing.T) {
 	}
 }
 
+func TestAttachHTTPRetriesDoesNotDoubleReportUnavailableTrafficSplitTarget(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		nextRetry func(*http.Request) *traffic_split.Override
+	}{
+		{name: "nil callback"},
+		{name: "nil result", nextRetry: func(*http.Request) *traffic_split.Override { return nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reporter := &routeHealthRecorder{}
+			override := &traffic_split.Override{
+				Scheme:         "http",
+				Host:           "127.0.0.1:8080",
+				Retries:        1,
+				HealthReporter: reporter,
+				HealthTarget:   "http://127.0.0.1:8080",
+				NextRetry:      test.nextRetry,
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+			request = traffic_split.WithOverride(request, override)
+			if !applyTrafficSplitOverride(request) {
+				t.Fatal("initial traffic-split override was not applied")
+			}
+			request = attachHTTPRetriesCompiled(request, resource.Upstream{}, nil, nil)
+
+			transport := pxy.NewRetryTransport(routeRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return nil, routeNetError{}
+			}))
+			handler := pxy.NewProxyHandler(
+				transport,
+				func(*http.Request) {},
+				nil,
+				newErrorHandler(),
+			)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("response code = %d, want 502; body=%q", response.Code, response.Body.String())
+			}
+			if reporter.tcpCalls != 1 {
+				t.Fatalf("TCP failure reports = %d, want one transport failure", reporter.tcpCalls)
+			}
+		})
+	}
+}
+
 func TestModifyResponseRecordsUpstreamLatency(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	req = apisixctx.WithRequestVars(req)

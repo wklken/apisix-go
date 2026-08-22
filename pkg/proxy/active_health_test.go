@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,6 +72,127 @@ func (o *activeHealthTransitionCounter) SetHealth(_ string, _ string, healthy bo
 		case o.extraUnhealthy <- struct{}{}:
 		default:
 		}
+	}
+}
+
+type activeHealthObserverOrderingProbe struct {
+	NopClusterObserver
+	activeHealthy bool
+	activeStarted chan struct{}
+	activeRelease chan struct{}
+	mu            sync.Mutex
+	states        []bool
+}
+
+func (o *activeHealthObserverOrderingProbe) SetHealth(_ string, _ string, healthy bool) {
+	if healthy == o.activeHealthy {
+		close(o.activeStarted)
+		<-o.activeRelease
+	}
+	o.mu.Lock()
+	o.states = append(o.states, healthy)
+	o.mu.Unlock()
+}
+
+func (o *activeHealthObserverOrderingProbe) lastState() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.states[len(o.states)-1]
+}
+
+func TestActiveHealthCheckerSerializesObserverWithPassiveTransition(t *testing.T) {
+	const target = "http://upstream.example/"
+	for _, test := range []struct {
+		name           string
+		activeHealthy  bool
+		activeResult   activeProbeResult
+		oppositeStatus int
+		prepare        func(*HealthAwareLoadBalance)
+	}{
+		{
+			name:           "active recovery then passive quarantine",
+			activeHealthy:  true,
+			activeResult:   activeProbeSuccess,
+			oppositeStatus: http.StatusInternalServerError,
+			prepare: func(lb *HealthAwareLoadBalance) {
+				lb.ReportHTTP(target, http.StatusInternalServerError)
+			},
+		},
+		{
+			name:           "active quarantine then passive recovery",
+			activeHealthy:  false,
+			activeResult:   activeProbeHTTPFailure,
+			oppositeStatus: http.StatusOK,
+			prepare:        func(*HealthAwareLoadBalance) {},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, map[string]any{
+				"passive": map[string]any{
+					"healthy": map[string]any{
+						"successes":     1,
+						"http_statuses": []any{http.StatusOK},
+					},
+					"unhealthy": map[string]any{
+						"http_failures": 1,
+						"http_statuses": []any{http.StatusInternalServerError},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			observer := &activeHealthObserverOrderingProbe{
+				activeHealthy: test.activeHealthy,
+				activeStarted: make(chan struct{}),
+				activeRelease: make(chan struct{}),
+			}
+			lb.setObserver("active-orders", observer)
+			test.prepare(lb)
+
+			checker := &activeHealthChecker{
+				config: ActiveHealthConfig{
+					HealthySuccesses:   1,
+					UnhealthyHTTPFails: 1,
+				},
+				lb:       lb,
+				name:     "active-orders",
+				observer: observer,
+			}
+			_, generation := lb.healthStatus(target)
+			var counters activeProbeCounters
+			applyDone := make(chan struct{})
+			go func() {
+				checker.applyProbeResultAtGeneration(target, generation, test.activeResult, &counters)
+				close(applyDone)
+			}()
+
+			<-observer.activeStarted
+			if lb.mu.TryLock() {
+				lb.mu.Unlock()
+				close(observer.activeRelease)
+				<-applyDone
+				t.Fatal("active observer notification ran outside the load-balancer critical section")
+			}
+			passiveDone := make(chan struct{})
+			go func() {
+				lb.ReportHTTP(target, test.oppositeStatus)
+				close(passiveDone)
+			}()
+			select {
+			case <-passiveDone:
+				close(observer.activeRelease)
+				<-applyDone
+				t.Fatal("passive transition published before active observer notification completed")
+			default:
+			}
+			close(observer.activeRelease)
+			<-passiveDone
+			<-applyDone
+			if got, want := observer.lastState(), lb.IsHealthy(target); got != want {
+				t.Fatalf("observer final state = %t, load-balancer state = %t", got, want)
+			}
+		})
 	}
 }
 

@@ -334,8 +334,7 @@ func (c *activeHealthChecker) applyProbeResultAtGeneration(
 		counters.successes++
 		if counters.successes >= c.config.HealthySuccesses {
 			counters.successes = 0
-			if c.lb.markHealthyAtGeneration(target, expectedGeneration) {
-				c.observer.SetHealth(c.name, target, true)
+			if c.lb.markHealthyAtGeneration(target, expectedGeneration, c.name, c.observer) {
 			} else {
 				c.resetProbeCounters(target, counters)
 			}
@@ -372,8 +371,7 @@ func (c *activeHealthChecker) applyProbeResultAtGeneration(
 		counters.httpFailures = 0
 		counters.tcpFailures = 0
 		counters.timeouts = 0
-		if c.lb.markUnhealthyAtGeneration(target, expectedGeneration) {
-			c.observer.SetHealth(c.name, target, false)
+		if c.lb.markUnhealthyAtGeneration(target, expectedGeneration, c.name, c.observer) {
 		} else {
 			c.resetProbeCounters(target, counters)
 		}

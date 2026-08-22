@@ -50,6 +50,46 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+type closeRecordingTransport struct {
+	started    chan struct{}
+	release    <-chan struct{}
+	canceled   chan struct{}
+	closed     chan struct{}
+	startOnce  sync.Once
+	cancelOnce sync.Once
+	closeOnce  sync.Once
+	closeCount atomic.Int32
+}
+
+func (t *closeRecordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.started != nil {
+		t.startOnce.Do(func() { close(t.started) })
+	}
+	if t.release != nil {
+		select {
+		case <-t.release:
+		case <-r.Context().Done():
+			if t.canceled != nil {
+				t.cancelOnce.Do(func() { close(t.canceled) })
+			}
+			<-t.release
+		}
+	}
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+		Request:    r,
+	}, nil
+}
+
+func (t *closeRecordingTransport) CloseIdleConnections() {
+	t.closeCount.Add(1)
+	if t.closed != nil {
+		t.closeOnce.Do(func() { close(t.closed) })
+	}
+}
+
 func (b *readSpyBody) Read(p []byte) (int, error) {
 	b.reads++
 	return b.Reader.Read(p)
@@ -477,6 +517,86 @@ func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
 	case <-secondDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("concurrent Stop() did not wait for first Stop()")
+	}
+}
+
+func TestStopClosesIdleConnectionsAfterMirrorsDrain(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseMirrors := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseMirrors)
+
+	clientTransport := &closeRecordingTransport{
+		started:  make(chan struct{}),
+		release:  release,
+		canceled: make(chan struct{}),
+		closed:   make(chan struct{}),
+	}
+	h2cTransport := &closeRecordingTransport{
+		closed: make(chan struct{}),
+	}
+	p.client.Transport = clientTransport
+	p.h2cClient.Transport = h2cTransport
+
+	if err := p.mirrorFinalizedRequest(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/mirror",
+		strings.NewReader("payload"),
+	)); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	select {
+	case <-clientTransport.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mirror transport")
+	}
+
+	stopDone := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			p.Stop()
+			stopDone <- struct{}{}
+		}()
+	}
+
+	select {
+	case <-clientTransport.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not cancel the in-flight mirror")
+	}
+	select {
+	case <-clientTransport.closed:
+		t.Fatal("client idle connections closed before mirrors drained")
+	case <-h2cTransport.closed:
+		t.Fatal("h2c idle connections closed before mirrors drained")
+	case <-stopDone:
+		t.Fatal("Stop() returned before mirrors drained")
+	default:
+	}
+
+	releaseMirrors()
+	for range 2 {
+		select {
+		case <-stopDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Stop() did not finish after mirrors drained")
+		}
+	}
+
+	if got := clientTransport.closeCount.Load(); got != 1 {
+		t.Fatalf("client CloseIdleConnections() calls = %d, want 1", got)
+	}
+	if got := h2cTransport.closeCount.Load(); got != 1 {
+		t.Fatalf("h2c CloseIdleConnections() calls = %d, want 1", got)
+	}
+
+	p.Stop()
+	if got := clientTransport.closeCount.Load(); got != 1 {
+		t.Fatalf("client CloseIdleConnections() calls after repeated Stop() = %d, want 1", got)
+	}
+	if got := h2cTransport.closeCount.Load(); got != 1 {
+		t.Fatalf("h2c CloseIdleConnections() calls after repeated Stop() = %d, want 1", got)
 	}
 }
 

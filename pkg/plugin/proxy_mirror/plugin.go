@@ -232,6 +232,12 @@ func (p *Plugin) Stop() {
 		cancel()
 	}
 	p.mirrorWG.Wait()
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+	}
+	if p.h2cClient != nil && p.h2cClient != p.client {
+		p.h2cClient.CloseIdleConnections()
+	}
 	close(done)
 }
 

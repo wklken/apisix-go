@@ -447,10 +447,21 @@ func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
 	return lb.markHealthyLocked(target, 0, false)
 }
 
-func (lb *HealthAwareLoadBalance) markHealthyAtGeneration(target string, expectedGeneration uint64) bool {
+func (lb *HealthAwareLoadBalance) markHealthyAtGeneration(
+	target string,
+	expectedGeneration uint64,
+	cluster string,
+	observer ClusterObserver,
+) bool {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	return lb.markHealthyLocked(target, expectedGeneration, true)
+	if !lb.markHealthyLocked(target, expectedGeneration, true) {
+		return false
+	}
+	if observer != nil {
+		observer.SetHealth(cluster, target, true)
+	}
+	return true
 }
 
 func (lb *HealthAwareLoadBalance) markHealthyLocked(
@@ -481,10 +492,21 @@ func (lb *HealthAwareLoadBalance) MarkUnhealthy(target string) bool {
 	return lb.markUnhealthyLocked(target, 0, false)
 }
 
-func (lb *HealthAwareLoadBalance) markUnhealthyAtGeneration(target string, expectedGeneration uint64) bool {
+func (lb *HealthAwareLoadBalance) markUnhealthyAtGeneration(
+	target string,
+	expectedGeneration uint64,
+	cluster string,
+	observer ClusterObserver,
+) bool {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	return lb.markUnhealthyLocked(target, expectedGeneration, true)
+	if !lb.markUnhealthyLocked(target, expectedGeneration, true) {
+		return false
+	}
+	if observer != nil {
+		observer.SetHealth(cluster, target, false)
+	}
+	return true
 }
 
 func (lb *HealthAwareLoadBalance) markUnhealthyLocked(

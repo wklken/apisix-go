@@ -2093,16 +2093,121 @@ func TestHandlerCodeFlowRejectsUnverifiedIDToken(t *testing.T) {
 	}
 }
 
+func TestHandlerCodeFlowRejectsSignedIDTokenWithInvalidClaims(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		claims  func(issuer string) map[string]any
+		success bool
+	}{
+		{
+			name: "wrong audience",
+			claims: func(issuer string) map[string]any {
+				return codeFlowIDTokenClaims(issuer, "other-client")
+			},
+		},
+		{
+			name: "wrong issuer",
+			claims: func(string) map[string]any {
+				return codeFlowIDTokenClaims("https://evil.example", "apisix")
+			},
+		},
+		{
+			name: "valid issuer and audience",
+			claims: func(issuer string) map[string]any {
+				return codeFlowIDTokenClaims(issuer, "apisix")
+			},
+			success: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var userinfoCalls atomic.Int32
+			var idToken string
+			idp := newCodeFlowIDPWithUserinfo(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "access-token",
+					"id_token":     idToken,
+					"expires_in":   3600,
+				})
+			}, &userinfoCalls)
+			idToken = signRS256(t, privateKey, tt.claims(idp.URL))
+			cfg := codeFlowConfig(idp.URL)
+			cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
+			p := newTestPlugin(t, cfg)
+
+			callbackRecorder := runCodeFlowCallback(t, p, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler should not be called during callback")
+			}))
+			if tt.success {
+				if callbackRecorder.Code != http.StatusFound {
+					t.Fatalf(
+						"callback status = %d, want 302; body=%s",
+						callbackRecorder.Code,
+						callbackRecorder.Body.String(),
+					)
+				}
+				if cookies := callbackRecorder.Result().Cookies(); len(cookies) == 0 {
+					t.Fatal("session cookies = none, want encrypted session after valid ID token")
+				}
+				if got := userinfoCalls.Load(); got != 1 {
+					t.Fatalf("userinfo calls = %d, want 1 after valid ID token", got)
+				}
+				return
+			}
+			if callbackRecorder.Code != http.StatusUnauthorized {
+				t.Fatalf(
+					"callback status = %d, want 401; body=%s",
+					callbackRecorder.Code,
+					callbackRecorder.Body.String(),
+				)
+			}
+			if cookies := callbackRecorder.Result().Cookies(); len(cookies) != 0 {
+				t.Fatalf("session cookies = %#v, want none after rejected ID token claims", cookies)
+			}
+			if got := userinfoCalls.Load(); got != 0 {
+				t.Fatalf("userinfo calls = %d, want 0 after rejected ID token claims", got)
+			}
+		})
+	}
+}
+
+func TestHandlerCodeFlowAllowsProviderOmittingIDToken(t *testing.T) {
+	var userinfoCalls atomic.Int32
+	idp := newCodeFlowIDPWithUserinfo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access-token",
+			"expires_in":   3600,
+		})
+	}, &userinfoCalls)
+	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+
+	callbackRecorder := runCodeFlowCallback(t, p, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called during callback")
+	}))
+	if callbackRecorder.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302; body=%s", callbackRecorder.Code, callbackRecorder.Body.String())
+	}
+	if cookies := callbackRecorder.Result().Cookies(); len(cookies) == 0 {
+		t.Fatal("session cookies = none, want session when provider omitted ID token")
+	}
+	if got := userinfoCalls.Load(); got != 1 {
+		t.Fatalf("userinfo calls = %d, want 1 when provider omitted ID token", got)
+	}
+}
+
 func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate rsa key: %v", err)
 	}
-	idToken := signRS256(t, privateKey, map[string]any{
-		"sub": "alice",
-		"exp": timeNowUnix() + 3600,
-		"iat": timeNowUnix(),
-	})
+	var idToken string
 	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -2112,6 +2217,7 @@ func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T)
 			"expires_in":    3600,
 		})
 	})
+	idToken = signRS256(t, privateKey, codeFlowIDTokenClaims(idp.URL, "apisix"))
 	cfg := codeFlowConfig(idp.URL)
 	cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
 	p := newTestPlugin(t, cfg)
@@ -2232,11 +2338,7 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate rsa key: %v", err)
 	}
-	idToken := signRS256(t, privateKey, map[string]any{
-		"sub": "alice",
-		"exp": timeNowUnix() + 3600,
-		"iat": timeNowUnix(),
-	})
+	var idToken string
 	var idp *httptest.Server
 	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2259,6 +2361,7 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 		}
 	}))
 	t.Cleanup(idp.Close)
+	idToken = signRS256(t, privateKey, codeFlowIDTokenClaims(idp.URL, "apisix"))
 
 	cfg := codeFlowConfig(idp.URL)
 	cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
@@ -2446,6 +2549,117 @@ func TestHandlerRefreshRejectsUnverifiedIDToken(t *testing.T) {
 	}
 	if got := rr.Header().Get("X-ID-Token"); got != "" {
 		t.Fatalf("X-ID-Token = %q, want empty", got)
+	}
+}
+
+func TestHandlerRefreshRejectsSignedIDTokenWithInvalidClaims(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	tests := []struct {
+		name   string
+		claims func(issuer string) map[string]any
+	}{
+		{
+			name: "wrong audience",
+			claims: func(issuer string) map[string]any {
+				return codeFlowIDTokenClaims(issuer, "other-client")
+			},
+		},
+		{
+			name: "wrong issuer",
+			claims: func(string) map[string]any {
+				return codeFlowIDTokenClaims("https://evil.example", "apisix")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var idToken string
+			idp := newCodeFlowIDP(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "renewed-access-token",
+					"id_token":     idToken,
+					"expires_in":   3600,
+				})
+			})
+			idToken = signRS256(t, privateKey, tt.claims(idp.URL))
+			cfg := codeFlowConfig(idp.URL)
+			cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
+			p := newTestPlugin(t, cfg)
+
+			cookieRecorder := httptest.NewRecorder()
+			if err := p.writeSession(cookieRecorder, sessionData{
+				CreatedAt:    time.Now().Add(-time.Hour).Unix(),
+				UpdatedAt:    time.Now().Unix(),
+				AccessToken:  "expired-access-token",
+				IDToken:      "previous-id-token",
+				RefreshToken: "refresh-token",
+				ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+			}); err != nil {
+				t.Fatalf("writeSession() error = %v", err)
+			}
+			originalCookie := cookieRecorder.Result().Cookies()[0]
+
+			req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+			req.AddCookie(originalCookie)
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler should not be called after invalid refresh ID token claims")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401; body=%s", rr.Code, rr.Body.String())
+			}
+			for _, cookie := range rr.Result().Cookies() {
+				if cookie.Name == originalCookie.Name && cookie.Value != "" && cookie.Value != originalCookie.Value {
+					t.Fatalf("session cookie overwritten with %q, want previous session retained", cookie.Value)
+				}
+			}
+		})
+	}
+}
+
+func TestHandlerSessionOmitsUnverifiedSavedIDToken(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	idp := newCodeFlowIDP(t, nil)
+	invalidIDToken := signRS256(t, privateKey, codeFlowIDTokenClaims(idp.URL, "other-client"))
+	cfg := codeFlowConfig(idp.URL)
+	cfg.PublicKey = publicKeyPEM(t, &privateKey.PublicKey)
+	p := newTestPlugin(t, cfg)
+
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:   time.Now().Unix(),
+		UpdatedAt:   time.Now().Unix(),
+		AccessToken: "access-token",
+		IDToken:     invalidIDToken,
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := r.Header.Get("X-ID-Token"); got != "" {
+			t.Fatalf("X-ID-Token = %q, want empty for saved token with invalid claims", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -2826,6 +3040,73 @@ func codeFlowConfig(discovery string) Config {
 		Session:               SessionConfig{Secret: "0123456789abcdef"},
 		SetRefreshTokenHeader: new(true),
 	}
+}
+
+func codeFlowIDTokenClaims(issuer, audience string) map[string]any {
+	return map[string]any{
+		"iss": issuer,
+		"aud": audience,
+		"sub": "alice",
+		"exp": timeNowUnix() + 3600,
+		"iat": timeNowUnix(),
+	}
+}
+
+func runCodeFlowCallback(t *testing.T, p *Plugin, next http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	initial := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called during authorize")
+	})).ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
+	authorizationURL, err := url.Parse(initial.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization redirect: %v", err)
+	}
+	callback := httptest.NewRequest(
+		http.MethodGet,
+		"https://example.com/orders/.apisix/redirect?code=code-a&state="+url.QueryEscape(
+			authorizationURL.Query().Get("state"),
+		),
+		nil,
+	)
+	callback.AddCookie(initial.Result().Cookies()[0])
+	callbackRecorder := httptest.NewRecorder()
+	p.Handler(next).ServeHTTP(callbackRecorder, callback)
+	return callbackRecorder
+}
+
+func newCodeFlowIDPWithUserinfo(
+	t *testing.T,
+	tokenHandler http.HandlerFunc,
+	userinfoCalls *atomic.Int32,
+) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 "http://" + r.Host,
+				"authorization_endpoint": "http://" + r.Host + "/authorize",
+				"token_endpoint":         "http://" + r.Host + "/token",
+				"userinfo_endpoint":      "http://" + r.Host + "/userinfo",
+				"end_session_endpoint":   "http://" + r.Host + "/logout",
+			})
+		case "/token":
+			if tokenHandler == nil {
+				t.Fatal("unexpected token request")
+			}
+			tokenHandler(w, r)
+		case "/userinfo":
+			userinfoCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "alice"})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
 }
 
 func newCodeFlowIDP(t *testing.T, tokenHandler http.HandlerFunc) *httptest.Server {

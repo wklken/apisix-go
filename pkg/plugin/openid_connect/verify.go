@@ -230,8 +230,14 @@ func (p *Plugin) verifyPresentIDToken(r *http.Request, rawToken string) error {
 	if rawToken == "" {
 		return nil
 	}
-	_, err := p.verifyBearerJWT(r, rawToken)
-	return err
+	claims, err := p.verifyBearerJWT(r, rawToken)
+	if err != nil {
+		return err
+	}
+	if !locallyVerifiedTokenActive(claims) {
+		return fmt.Errorf("JWT token claims invalid")
+	}
+	return nil
 }
 
 func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]any, error) {

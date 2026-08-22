@@ -12,6 +12,7 @@ on:
       - t/plugin/*.yaml
       - t/plugin/coverage_test.go
       - .github/workflows/plugin-status.yml
+      - .github/workflows/unit-test.yml
   workflow_dispatch:
 
 permissions:
@@ -24,6 +25,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Verify plugin status workflow contract
+        run: bash scripts/plugin_status_gate_test.sh
 
       - name: Set up Go
         uses: actions/setup-go@v7

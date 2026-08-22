@@ -74,6 +74,13 @@ This ledger records confirmed findings that are intentionally not remediated in 
 - Risk: an untrusted network peer with an invalid certificate can influence upstream health state and traffic selection.
 - Decision: record only; no TLS transport, schema, or probe behavior change in this PR.
 
+### SEC-11: Network-provided terminal status values are not bounded before response writing
+
+- Severity: P2
+- Evidence: Chaitin WAF JSON `status`, OpenWhisk JSON `statusCode`, and Dubbo upstream HTTP status values can reach `WriteHeader` without a Go-terminal `200..599` contract; the first two paths can also receive values outside the HTTP range from a remote peer.
+- Risk: a malicious or compromised upstream can trigger a request-path panic with an invalid status, while informational statuses can be emitted as interim responses followed by an unintended implicit 200.
+- Decision: record only because these values cross network trust boundaries; no plugin schema, transport, or response-writing change in this PR.
+
 ## Architecture decisions required
 
 ### ARCH-01: Invalid global-rule isolation versus fail-closed behavior

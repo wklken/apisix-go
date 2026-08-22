@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 workflow="$repo_root/.github/workflows/plugin-status.yml"
+unit_workflow="$repo_root/.github/workflows/unit-test.yml"
 
 require_fixed() {
 	local text=$1
@@ -39,6 +40,10 @@ if [[ ! -f "$workflow" ]]; then
 	printf 'missing plugin status workflow: %s\n' "$workflow" >&2
 	exit 1
 fi
+if [[ ! -f "$unit_workflow" ]]; then
+	printf 'missing unit workflow: %s\n' "$unit_workflow" >&2
+	exit 1
+fi
 
 header=$(sed -n '1,/^jobs:$/p' "$workflow")
 require_fixed 'name: Plugin Status Contract' "$header"
@@ -52,6 +57,7 @@ expected_paths=$(printf '%s\n' \
 	scripts/plugin_status_gate_test.sh \
 	't/plugin/*.yaml' \
 	t/plugin/coverage_test.go \
+	.github/workflows/unit-test.yml \
 	.github/workflows/plugin-status.yml | sort)
 
 pull_request_block=$(trigger_block pull_request)
@@ -89,7 +95,12 @@ require_fixed '    runs-on: ubuntu-latest' "$jobs"
 require_fixed 'actions/checkout@v7' "$jobs"
 require_fixed 'actions/setup-go@v7' "$jobs"
 require_fixed '      go-version-file: go.mod' "$jobs"
+require_fixed '      run: bash scripts/plugin_status_gate_test.sh' "$jobs"
 require_fixed '      run: make test-plugin-status' "$jobs"
+if ! grep -Fq -- '      run: bash scripts/release_gate_test.sh' "$unit_workflow"; then
+	printf 'unit workflow does not run its contract test: %s\n' "$unit_workflow" >&2
+	exit 1
+fi
 
 if grep -Eq 'go test ./t/plugin -run|TestPluginIntegration|make test-integration' <<<"$jobs"; then
 	printf 'real-process plugin integration cases are not allowed in %s\n' "$workflow" >&2

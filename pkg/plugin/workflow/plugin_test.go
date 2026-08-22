@@ -393,22 +393,43 @@ func TestStopRetiresChildrenInReverseOrderAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsInvalidReturnCode(t *testing.T) {
-	p := &Plugin{config: Config{
-		Rules: []Rule{
-			{Actions: []Action{{Name: "return", Return: ReturnAction{Code: http.StatusContinue - 1}}}},
-		},
-	}}
-	if err := p.Init(); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if err := base.MaterializePluginSecrets(p); err != nil {
-		t.Fatalf("MaterializePluginSecrets() error = %v", err)
-	}
+func TestPostInitValidatesTerminalReturnCode(t *testing.T) {
+	for _, test := range []struct {
+		code    int
+		wantErr bool
+	}{
+		{code: http.StatusContinue - 1, wantErr: true},
+		{code: http.StatusContinue, wantErr: true},
+		{code: http.StatusEarlyHints, wantErr: true},
+		{code: 199, wantErr: true},
+		{code: http.StatusOK},
+		{code: 599},
+		{code: 600, wantErr: true},
+	} {
+		t.Run(fmt.Sprintf("code-%d", test.code), func(t *testing.T) {
+			p := &Plugin{config: Config{
+				Rules: []Rule{
+					{Actions: []Action{{Name: "return", Return: ReturnAction{Code: test.code}}}},
+				},
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := base.MaterializePluginSecrets(p); err != nil {
+				t.Fatalf("MaterializePluginSecrets() error = %v", err)
+			}
 
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "return action code") {
-		t.Fatalf("PostInit() error = %v, want return action code error", err)
+			err := p.PostInit()
+			if test.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "return action code") {
+					t.Fatalf("PostInit() error = %v, want return action code error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PostInit() error = %v, want nil", err)
+			}
+		})
 	}
 }
 

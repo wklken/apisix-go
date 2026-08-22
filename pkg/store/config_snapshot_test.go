@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -420,7 +421,7 @@ func TestConfigSnapshotPublishesValidRoutesAndQuarantinesLegacyMalformedRows(t *
 	}
 }
 
-func TestConfigSnapshotPublishesValidGlobalRulesAndQuarantinesLegacyMalformedRows(t *testing.T) {
+func TestConfigSnapshotFailsClosedWhenLegacyGlobalRuleHasNoLastGood(t *testing.T) {
 	storage := newConfigSnapshotTestStore(t)
 	if err := storage.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("global_rules"))
@@ -433,17 +434,122 @@ func TestConfigSnapshotPublishesValidGlobalRulesAndQuarantinesLegacyMalformedRow
 	}
 
 	snapshot, err := storage.getConfigSnapshot()
+	if err == nil {
+		t.Fatalf("getConfigSnapshot() = %+v, want fail-closed decode error", snapshot)
+	}
+	if !strings.Contains(err.Error(), "legacy-bad-rule") {
+		t.Fatalf("getConfigSnapshot() error = %q, want legacy-bad-rule", err)
+	}
+}
+
+func TestConfigSnapshotKeepsLastGoodSSLGlobalRuleAndPluginList(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		for bucket, entries := range map[string]map[string]string{
+			"ssls": {
+				"ssl-1": `{"id":"ssl-1","snis":["api.test"],"status":1}`,
+			},
+			"global_rules": {
+				"rule-1": `{"id":"rule-1","plugins":{"request-id":{}}}`,
+			},
+			"plugins": {
+				"plugins": `[{"name":"request-id"},{"name":"gzip"}]`,
+			},
+			"routes": {
+				"route-good": `{"id":"route-good","uri":"/good"}`,
+			},
+		} {
+			bucketRef := tx.Bucket([]byte(bucket))
+			for id, value := range entries {
+				if err := bucketRef.Put([]byte(id), []byte(value)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed last-good generation: %v", err)
+	}
+
+	before, err := storage.getConfigSnapshot()
 	if err != nil {
-		t.Fatalf("getConfigSnapshot() error = %v", err)
+		t.Fatalf("get last-good snapshot: %v", err)
 	}
-	if len(snapshot.GlobalRules()) != 1 || snapshot.GlobalRules()[0].ID != "rule-good" {
-		t.Fatalf("snapshot global rules = %+v, want only rule-good", snapshot.GlobalRules())
+	if ssl, err := before.GetSSL("ssl-1"); err != nil || len(ssl.Snis) != 1 || ssl.Snis[0] != "api.test" {
+		t.Fatalf("last-good SSL = %+v/%v", ssl, err)
 	}
-	quarantined := snapshot.QuarantinedResources()
-	if len(quarantined) != 1 || quarantined[0].Bucket != "global_rules" ||
-		quarantined[0].ID != "legacy-bad-rule" {
-		t.Fatalf("snapshot quarantine = %+v, want global_rules/legacy-bad-rule", quarantined)
+	if rules := before.GlobalRules(); len(rules) != 1 || rules[0].ID != "rule-1" ||
+		rules[0].Plugins["request-id"] == nil {
+		t.Fatalf("last-good global rules = %+v", rules)
 	}
+	if plugins, present := before.HTTPPlugins(); !present || !slices.Equal(plugins, []string{"request-id", "gzip"}) {
+		t.Fatalf("last-good HTTP plugins = %#v/%t", plugins, present)
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket([]byte("ssls")).Put([]byte("ssl-1"), []byte(`[`)); err != nil {
+			return err
+		}
+		if err := tx.Bucket([]byte("global_rules")).
+			Put([]byte("rule-1"), []byte(`{"id":"rule-1","plugins":[]}`)); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte("plugins")).Put([]byte("plugins"), []byte(`[{"name":123}]`))
+	}); err != nil {
+		t.Fatalf("corrupt last-good rows: %v", err)
+	}
+	storage.configGeneration.Add(1)
+
+	after, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() after corruption = %v, want last-good generation", err)
+	}
+	if ssl, err := after.GetSSL("ssl-1"); err != nil || len(ssl.Snis) != 1 || ssl.Snis[0] != "api.test" {
+		t.Fatalf("retained SSL = %+v/%v, want api.test", ssl, err)
+	}
+	if rules := after.GlobalRules(); len(rules) != 1 || rules[0].ID != "rule-1" ||
+		rules[0].Plugins["request-id"] == nil {
+		t.Fatalf("retained global rules = %+v, want last-good request-id", rules)
+	}
+	if plugins, present := after.HTTPPlugins(); !present || !slices.Equal(plugins, []string{"request-id", "gzip"}) {
+		t.Fatalf("retained HTTP plugins = %#v/%t, want last-good list", plugins, present)
+	}
+	if routes := after.Routes(); len(routes) != 1 || routes[0].ID != "route-good" {
+		t.Fatalf("snapshot routes = %+v, want route-good published with last-good siblings", routes)
+	}
+}
+
+func TestConfigSnapshotFailsClosedWithoutLastGoodSSLAndPluginList(t *testing.T) {
+	t.Run("ssl", func(t *testing.T) {
+		storage := newConfigSnapshotTestStore(t)
+		if err := storage.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte("ssls")).Put([]byte("ssl-bad"), []byte(`[`))
+		}); err != nil {
+			t.Fatalf("seed malformed SSL: %v", err)
+		}
+		snapshot, err := storage.getConfigSnapshot()
+		if err == nil {
+			t.Fatalf("getConfigSnapshot() = %+v, want SSL fail-closed", snapshot)
+		}
+		if !strings.Contains(err.Error(), "ssl-bad") {
+			t.Fatalf("getConfigSnapshot() error = %q, want ssl-bad", err)
+		}
+	})
+	t.Run("plugins", func(t *testing.T) {
+		storage := newConfigSnapshotTestStore(t)
+		if err := storage.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte("plugins")).Put([]byte("plugins"), []byte(`[{"name":123}]`))
+		}); err != nil {
+			t.Fatalf("seed malformed plugin list: %v", err)
+		}
+		snapshot, err := storage.getConfigSnapshot()
+		if err == nil {
+			t.Fatalf("getConfigSnapshot() = %+v, want plugin-list fail-closed", snapshot)
+		}
+		if !strings.Contains(err.Error(), "parse dynamic plugin list") {
+			t.Fatalf("getConfigSnapshot() error = %q, want parse dynamic plugin list", err)
+		}
+	})
 }
 
 func TestConfigSnapshotQuarantinesMalformedDependentRowsAndPublishesValidSiblings(t *testing.T) {

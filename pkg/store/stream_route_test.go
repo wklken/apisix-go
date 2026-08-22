@@ -1,6 +1,9 @@
 package store
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -76,5 +79,131 @@ func TestGetStreamRouteReturnsNotFound(t *testing.T) {
 	}
 	if routes != nil {
 		t.Fatalf("ListRoutes() routes = %#v, want nil on decode failure", routes)
+	}
+}
+
+func TestStreamRoutePutValidationRetainsLastGood(t *testing.T) {
+	events := make(chan *Event, 4)
+	storage, err := Open(t.TempDir()+"/stream-put.db", events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	previous := ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		ReplaceGlobalStoreForTest(previous)
+		_ = storage.Stop()
+	})
+
+	good := `{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`
+	applyStreamRouteEvent(t, storage, EventTypePut, "/apisix/stream_routes/mqtt", good)
+
+	bad := NewAcknowledgedEvent()
+	bad.Type = EventTypePut
+	bad.Key = []byte("/apisix/stream_routes/mqtt")
+	bad.Value = []byte(`{"id":"mqtt","plugins":[]}`)
+	storage.events <- bad
+	err = bad.Wait(context.Background())
+	var validationErr *ResourceValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("malformed stream route PUT error = %v, want ResourceValidationError", err)
+	}
+	if validationErr.Bucket != "stream_routes" || validationErr.ID != "mqtt" {
+		t.Fatalf("validation context = %q/%q, want stream_routes/mqtt", validationErr.Bucket, validationErr.ID)
+	}
+	after, err := storage.GetFromBucket("stream_routes", []byte("mqtt"))
+	if err != nil {
+		t.Fatalf("read retained stream route: %v", err)
+	}
+	if !bytes.Equal(after, []byte(good)) {
+		t.Fatalf("retained stream route = %q, want %q", after, good)
+	}
+}
+
+func TestListStreamRoutesKeepsLastGoodAndDropsDeletedIDs(t *testing.T) {
+	events := make(chan *Event, 4)
+	storage, err := Open(t.TempDir()+"/stream-last-good.db", events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	previous := ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		ReplaceGlobalStoreForTest(previous)
+		_ = storage.Stop()
+	})
+
+	applyStreamRouteEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/stream_routes/mqtt",
+		`{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`,
+	)
+	applyStreamRouteEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/stream_routes/other",
+		`{"id":"other","server_addr":"127.0.0.1","server_port":1884,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
+	)
+	routes, err := ListStreamRoutes()
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("ListStreamRoutes() = %+v/%v, want two last-good routes", routes, err)
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("stream_routes")).Put([]byte("mqtt"), []byte(`{`))
+	}); err != nil {
+		t.Fatalf("corrupt mqtt stream route: %v", err)
+	}
+	routes, err = ListStreamRoutes()
+	if err != nil {
+		t.Fatalf("ListStreamRoutes() after corruption = %v, want last-good mqtt", err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("ListStreamRoutes() after corruption = %+v, want two routes", routes)
+	}
+	var foundMQTT bool
+	for _, route := range routes {
+		if route.ID == "mqtt" {
+			foundMQTT = true
+			if route.ServerPort != 1883 || route.ServerAddr != "127.0.0.1" {
+				t.Fatalf("retained mqtt = %#v, want last-good listen", route)
+			}
+		}
+	}
+	if !foundMQTT {
+		t.Fatalf("ListStreamRoutes() = %+v, want retained mqtt", routes)
+	}
+
+	applyStreamRouteEvent(t, storage, EventTypeDelete, "/apisix/stream_routes/mqtt", "")
+	routes, err = ListStreamRoutes()
+	if err != nil {
+		t.Fatalf("ListStreamRoutes() after delete = %v", err)
+	}
+	if len(routes) != 1 || routes[0].ID != "other" {
+		t.Fatalf("ListStreamRoutes() after delete = %+v, want only other", routes)
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("stream_routes")).Put([]byte("mqtt"), []byte(`{`))
+	}); err != nil {
+		t.Fatalf("reinsert deleted mqtt as malformed: %v", err)
+	}
+	if _, err := ListStreamRoutes(); err == nil {
+		t.Fatal("ListStreamRoutes() accepted malformed mqtt after last-good was deleted")
+	}
+}
+
+func applyStreamRouteEvent(t *testing.T, storage *Store, eventType EventType, key, value string) {
+	t.Helper()
+	event := NewAcknowledgedEvent()
+	event.Type = eventType
+	event.Key = []byte(key)
+	event.Value = []byte(value)
+	storage.events <- event
+	if err := event.Wait(context.Background()); err != nil {
+		t.Fatalf("apply %s event: %v", key, err)
 	}
 }

@@ -60,6 +60,10 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 			session.UpdatedAt = now.Unix()
 			session.AccessToken = tokens.AccessToken
 			if tokens.IDToken != "" {
+				if err := p.verifyPresentIDToken(r, tokens.IDToken); err != nil {
+					p.writeInvalidToken(w, err.Error())
+					return
+				}
 				session.IDToken = tokens.IDToken
 			}
 			if tokens.RefreshToken != "" {
@@ -171,6 +175,10 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 		RefreshToken:      tokens.RefreshToken,
 	}
 	newSession.ExpiresAt = p.tokenExpiresAt(now, tokens.ExpiresIn)
+	if err := p.verifyPresentIDToken(r, tokens.IDToken); err != nil {
+		p.writeInvalidToken(w, err.Error())
+		return
+	}
 	if userinfo, err := p.userinfo(r, tokens.AccessToken); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

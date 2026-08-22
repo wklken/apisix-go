@@ -575,7 +575,7 @@
                   "equals": "refreshed-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "refreshed-refresh"
@@ -642,7 +642,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":1}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":1}"
             },
             {
               "status": 200,
@@ -1351,7 +1351,7 @@
                   "equals": "session-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "session-refresh"
@@ -1401,7 +1401,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -1652,7 +1652,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -3332,7 +3332,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -5077,7 +5077,7 @@
                   "equals": "session-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "session-refresh"
@@ -5127,7 +5127,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -5326,7 +5326,7 @@
                   "equals": "session-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "session-refresh"
@@ -5376,7 +5376,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -7154,28 +7154,7 @@
               "body": "openid upstream"
             }
           ],
-          "expect": [
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/oidc/openid-connect2/11"
-              },
-              "headers": {
-                "X-Access-Token": {
-                  "equals": "session-access"
-                },
-                "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
-                },
-                "X-Refresh-Token": {
-                  "equals": "session-refresh"
-                },
-                "X-Userinfo": {
-                  "matches": ".+"
-                }
-              }
-            }
-          ]
+          "expect_requests": 0
         },
         {
           "name": "idp",
@@ -7195,17 +7174,6 @@
               "body": {
                 "matches": "code=good"
               }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/userinfo"
-              },
-              "headers": {
-                "Authorization": {
-                  "equals": "Bearer session-access"
-                }
-              }
             }
           ],
           "respond": [
@@ -7216,10 +7184,6 @@
             {
               "status": 200,
               "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
-            },
-            {
-              "status": 200,
-              "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
             }
           ]
         }
@@ -7251,23 +7215,11 @@
             "path": "/oidc/openid-connect2/11/.apisix/redirect?code=good&state={{CAPTURE.state}}"
           },
           "output": {
-            "status": 302,
+            "status": 401,
             "headers": {
-              "Location": {
-                "equals": "/oidc/openid-connect2/11"
+              "WWW-Authenticate": {
+                "matches": "Bearer"
               }
-            }
-          }
-        },
-        {
-          "name": "use-session-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak",
-          "input": {
-            "path": "/oidc/openid-connect2/11"
-          },
-          "output": {
-            "status": 200,
-            "body": {
-              "equals": "openid upstream"
             }
           }
         }
@@ -7336,28 +7288,7 @@
               "body": "openid upstream"
             }
           ],
-          "expect": [
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/oidc/openid-connect2/12"
-              },
-              "headers": {
-                "X-Access-Token": {
-                  "equals": "session-access"
-                },
-                "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
-                },
-                "X-Refresh-Token": {
-                  "equals": "session-refresh"
-                },
-                "X-Userinfo": {
-                  "matches": ".+"
-                }
-              }
-            }
-          ]
+          "expect_requests": 0
         },
         {
           "name": "idp",
@@ -7377,17 +7308,6 @@
               "body": {
                 "matches": "code=good"
               }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/userinfo"
-              },
-              "headers": {
-                "Authorization": {
-                  "equals": "Bearer session-access"
-                }
-              }
             }
           ],
           "respond": [
@@ -7398,10 +7318,6 @@
             {
               "status": 200,
               "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
-            },
-            {
-              "status": 200,
-              "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
             }
           ]
         }
@@ -7433,23 +7349,11 @@
             "path": "/oidc/openid-connect2/12/.apisix/redirect?code=good&state={{CAPTURE.state}}"
           },
           "output": {
-            "status": 302,
+            "status": 401,
             "headers": {
-              "Location": {
-                "equals": "/oidc/openid-connect2/12"
+              "WWW-Authenticate": {
+                "matches": "Bearer"
               }
-            }
-          }
-        },
-        {
-          "name": "use-session-access-route-without-bearer-token-and-go-through-the-full-oidc-relying-p",
-          "input": {
-            "path": "/oidc/openid-connect2/12"
-          },
-          "output": {
-            "status": 200,
-            "body": {
-              "equals": "openid upstream"
             }
           }
         }
@@ -7530,17 +7434,6 @@
               "body": {
                 "matches": "code=good"
               }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/userinfo"
-              },
-              "headers": {
-                "Authorization": {
-                  "equals": "Bearer session-access"
-                }
-              }
             }
           ],
           "respond": [
@@ -7551,10 +7444,6 @@
             {
               "status": 200,
               "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
-            },
-            {
-              "status": 200,
-              "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
             }
           ]
         }
@@ -7671,17 +7560,6 @@
               "body": {
                 "matches": "code=good"
               }
-            },
-            {
-              "method": "GET",
-              "path": {
-                "equals": "/userinfo"
-              },
-              "headers": {
-                "Authorization": {
-                  "equals": "Bearer session-access"
-                }
-              }
             }
           ],
           "respond": [
@@ -7692,10 +7570,6 @@
             {
               "status": 200,
               "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
-            },
-            {
-              "status": 200,
-              "body": "{\"sub\":\"alice\",\"role\":\"teacher\"}"
             }
           ]
         }
@@ -9539,7 +9413,7 @@
                   "equals": "session-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "session-refresh"
@@ -9589,7 +9463,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,
@@ -9702,7 +9576,7 @@
                   "equals": "session-access"
                 },
                 "X-ID-Token": {
-                  "equals": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0."
+                  "absent": true
                 },
                 "X-Refresh-Token": {
                   "equals": "session-refresh"
@@ -9752,7 +9626,7 @@
             },
             {
               "status": 200,
-              "body": "{\"access_token\":\"session-access\",\"id_token\":\"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ0ZWFjaGVyIn0.\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
+              "body": "{\"access_token\":\"session-access\",\"refresh_token\":\"session-refresh\",\"expires_in\":3600}"
             },
             {
               "status": 200,

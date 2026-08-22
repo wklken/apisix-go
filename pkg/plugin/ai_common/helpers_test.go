@@ -67,20 +67,50 @@ func TestMergeBodyMap(t *testing.T) {
 
 func TestCopyForwardHeadersSkipsHopByHop(t *testing.T) {
 	src := http.Header{
-		"Host":            {"example.com"},
-		"Content-Length":  {"10"},
-		"Accept-Encoding": {"gzip"},
-		"X-Custom":        {"v1", "v2"},
+		"Host":                {"example.com"},
+		"Content-Length":      {"10"},
+		"Accept-Encoding":     {"gzip"},
+		"Connection":          {"keep-alive"},
+		"Keep-Alive":          {"timeout=5"},
+		"Proxy-Authenticate":  {"Basic"},
+		"Proxy-Authorization": {"Basic Zm9v"},
+		"TE":                  {"trailers"},
+		"Trailer":             {"Expires"},
+		"Transfer-Encoding":   {"chunked"},
+		"Upgrade":             {"websocket"},
+		"Cookie":              {"sid=abc"},
+		"Authorization":       {"Bearer client-secret"},
+		"X-Custom":            {"v1", "v2"},
+		"X-Forwarded-For":     {"1.2.3.4"},
 	}
 	dst := http.Header{}
 
 	CopyForwardHeaders(dst, src)
 
-	if len(dst) != 1 {
-		t.Fatalf("copied headers = %#v, want only X-Custom", dst)
-	}
 	if values := dst.Values("X-Custom"); len(values) != 2 || values[0] != "v1" || values[1] != "v2" {
 		t.Fatalf("X-Custom values = %v, want [v1 v2]", values)
+	}
+	if got := dst.Get("X-Forwarded-For"); got != "1.2.3.4" {
+		t.Fatalf("X-Forwarded-For = %q, want 1.2.3.4", got)
+	}
+	for _, field := range []string{
+		"Host",
+		"Content-Length",
+		"Accept-Encoding",
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"TE",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+		"Cookie",
+		"Authorization",
+	} {
+		if values := dst.Values(field); len(values) != 0 {
+			t.Fatalf("%s values = %v, want dropped", field, values)
+		}
 	}
 }
 

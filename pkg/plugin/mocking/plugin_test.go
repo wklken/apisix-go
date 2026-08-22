@@ -30,18 +30,38 @@ func TestSchemaAcceptsResponseSchema(t *testing.T) {
 	}
 }
 
-func TestSchemaRejectsResponseStatusAboveHTTPMaximum(t *testing.T) {
+func TestSchemaValidatesResponseStatusHTTPBounds(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	config := map[string]any{
-		"response_example": "ok",
-		"response_status":  1000,
-	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("response_status=1000 should fail schema validation")
+	for _, test := range []struct {
+		name    string
+		value   any
+		wantErr bool
+	}{
+		{name: "informational", value: 100, wantErr: true},
+		{name: "early informational", value: 103, wantErr: true},
+		{name: "last informational", value: 199, wantErr: true},
+		{name: "minimum", value: 200},
+		{name: "maximum", value: 599},
+		{name: "above maximum", value: 600, wantErr: true},
+		{name: "fractional", value: 200.5, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"response_example": "ok",
+				"response_status":  test.value,
+			}
+			err := util.Validate(config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatalf("response_status=%v should fail schema validation", test.value)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("response_status=%v should validate: %v", test.value, err)
+			}
+		})
 	}
 }
 

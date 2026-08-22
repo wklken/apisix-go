@@ -176,16 +176,22 @@ func TestExitTransformerLuaValueToStatusAcceptsOnlyHTTPIntegers(t *testing.T) {
 		valid bool
 	}{
 		{name: "below minimum", value: lua.LNumber(99)},
+		{name: "informational", value: lua.LNumber(100)},
+		{name: "early informational", value: lua.LNumber(103)},
+		{name: "last informational", value: lua.LNumber(199)},
 		{name: "above maximum", value: lua.LNumber(600)},
 		{name: "far above maximum", value: lua.LNumber(1000)},
 		{name: "nan", value: lua.LNumber(math.NaN())},
 		{name: "fractional", value: lua.LNumber(418.5)},
 		{name: "string below minimum", value: lua.LString("99")},
+		{name: "string informational", value: lua.LString("100")},
+		{name: "string early informational", value: lua.LString("103")},
+		{name: "string last informational", value: lua.LString("199")},
 		{name: "string above maximum", value: lua.LString("600")},
 		{name: "string fractional", value: lua.LString("418.5")},
 		{name: "invalid string", value: lua.LString("not-a-status")},
 		{name: "string integer", value: lua.LString("418"), valid: true},
-		{name: "minimum", value: lua.LNumber(100), valid: true},
+		{name: "minimum", value: lua.LNumber(200), valid: true},
 		{name: "maximum", value: lua.LNumber(599), valid: true},
 	}
 	for _, tt := range tests {

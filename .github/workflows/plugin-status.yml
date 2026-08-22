@@ -6,7 +6,9 @@ on:
     branches:
       - master
     paths:
+      - Makefile
       - docs/plugins.md
+      - scripts/plugin_status_gate_test.sh
       - t/plugin/*.yaml
       - t/plugin/coverage_test.go
       - .github/workflows/plugin-status.yml
@@ -30,4 +32,4 @@ jobs:
           cache: true
 
       - name: Verify supported plugin manifest selection
-        run: go test ./t/plugin -run '^TestSupportedPluginManifestSelection$' -count=1
+        run: make test-plugin-status

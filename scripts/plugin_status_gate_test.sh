@@ -47,7 +47,9 @@ require_fixed 'permissions:' "$header"
 require_fixed '  contents: read' "$header"
 
 expected_paths=$(printf '%s\n' \
+	Makefile \
 	docs/plugins.md \
+	scripts/plugin_status_gate_test.sh \
 	't/plugin/*.yaml' \
 	t/plugin/coverage_test.go \
 	.github/workflows/plugin-status.yml | sort)
@@ -87,9 +89,9 @@ require_fixed '    runs-on: ubuntu-latest' "$jobs"
 require_fixed 'actions/checkout@v7' "$jobs"
 require_fixed 'actions/setup-go@v7' "$jobs"
 require_fixed '      go-version-file: go.mod' "$jobs"
-require_fixed "      run: go test ./t/plugin -run '^TestSupportedPluginManifestSelection$' -count=1" "$jobs"
+require_fixed '      run: make test-plugin-status' "$jobs"
 
-if grep -Eq 'TestPluginIntegration|make test-integration' <<<"$jobs"; then
+if grep -Eq 'go test ./t/plugin -run|TestPluginIntegration|make test-integration' <<<"$jobs"; then
 	printf 'real-process plugin integration cases are not allowed in %s\n' "$workflow" >&2
 	exit 1
 fi

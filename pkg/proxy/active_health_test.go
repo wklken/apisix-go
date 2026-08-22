@@ -149,6 +149,184 @@ func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T
 	if got := timeoutChecker.probeResult("http://upstream.example/"); got != activeProbeTimeout {
 		t.Fatalf("timeout classification = %v, want timeout", got)
 	}
+
+	neutralChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTeapot,
+			Body:       http.NoBody,
+		}, nil
+	}))
+	if got := neutralChecker.probeResult("http://upstream.example/"); got != activeProbeNeutral {
+		t.Fatalf("neutral status classification = %v, want neutral", got)
+	}
+
+	overlappingChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+		}, nil
+	}))
+	overlappingChecker.config.UnhealthyStatuses[http.StatusOK] = struct{}{}
+	if got := overlappingChecker.probeResult("http://upstream.example/"); got != activeProbeSuccess {
+		t.Fatalf("overlapping status classification = %v, want success", got)
+	}
+}
+
+func TestActiveHealthCheckerNeutralProbeDoesNotIncrementFailureCounter(t *testing.T) {
+	const target = "http://upstream.example/"
+	var calls atomic.Int32
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return &http.Response{StatusCode: http.StatusTeapot, Body: http.NoBody}, nil
+		case 2:
+			return &http.Response{StatusCode: http.StatusInternalServerError, Body: http.NoBody}, nil
+		default:
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}
+	})
+	lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:               "http",
+			HTTPPath:           "/",
+			Timeout:            time.Second,
+			Concurrency:        1,
+			HealthyInterval:    time.Millisecond,
+			UnhealthyInterval:  time.Millisecond,
+			HealthySuccesses:   1,
+			UnhealthyHTTPFails: 2,
+			UnhealthyTCPFails:  10,
+			UnhealthyTimeouts:  10,
+			HealthyStatuses:    map[int]struct{}{http.StatusOK: {}},
+			UnhealthyStatuses:  map[int]struct{}{http.StatusInternalServerError: {}},
+		},
+		lb,
+		map[string]int{target: 1},
+		"active-orders",
+		NopClusterObserver{},
+		transport,
+	)
+	checker.Start()
+	t.Cleanup(checker.Close)
+
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("active probe calls = %d, want at least two", calls.Load())
+	}
+	time.Sleep(10 * time.Millisecond)
+	if !lb.IsHealthy(target) {
+		t.Fatal("neutral active probe was counted as an HTTP failure")
+	}
+}
+
+func TestActiveHealthCheckerDoesNotCarryCountersAcrossPassiveTransitions(t *testing.T) {
+	const target = "http://upstream.example/"
+	newChecker := func(t *testing.T) (*activeHealthChecker, *HealthAwareLoadBalance) {
+		t.Helper()
+		lb, err := NewHealthAwareLoadBalance(
+			map[string]int{target: 1},
+			map[string]any{"passive": map[string]any{
+				"healthy": map[string]any{
+					"successes":     1,
+					"http_statuses": []any{http.StatusOK},
+				},
+				"unhealthy": map[string]any{
+					"http_failures": 1,
+					"http_statuses": []any{http.StatusInternalServerError},
+				},
+			}},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &activeHealthChecker{
+			config: ActiveHealthConfig{
+				HealthySuccesses:   2,
+				UnhealthyHTTPFails: 2,
+			},
+			lb:       lb,
+			name:     "active-orders",
+			observer: NopClusterObserver{},
+		}, lb
+	}
+
+	t.Run("successes while healthy do not shorten recovery", func(t *testing.T) {
+		checker, lb := newChecker(t)
+		var counters activeProbeCounters
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+
+		lb.ReportHTTP(target, http.StatusInternalServerError)
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+		if lb.IsHealthy(target) {
+			t.Fatal("target recovered before two successes after passive quarantine")
+		}
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+		if !lb.IsHealthy(target) {
+			t.Fatal("target did not recover after two fresh active successes")
+		}
+	})
+
+	t.Run("failures while unhealthy do not shorten quarantine", func(t *testing.T) {
+		checker, lb := newChecker(t)
+		var counters activeProbeCounters
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+
+		lb.ReportHTTP(target, http.StatusInternalServerError)
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+		lb.ReportHTTP(target, http.StatusOK)
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+		if !lb.IsHealthy(target) {
+			t.Fatal("target was quarantined before two failures after passive recovery")
+		}
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+		if lb.IsHealthy(target) {
+			t.Fatal("target remained healthy after two fresh active failures")
+		}
+	})
+
+	t.Run("passive double transition resets recovery progress", func(t *testing.T) {
+		checker, lb := newChecker(t)
+		var counters activeProbeCounters
+		lb.ReportHTTP(target, http.StatusInternalServerError)
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+
+		lb.ReportHTTP(target, http.StatusOK)
+		lb.ReportHTTP(target, http.StatusInternalServerError)
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+		if lb.IsHealthy(target) {
+			t.Fatal("target recovered with success progress from before two passive transitions")
+		}
+		checker.applyProbeResult(target, activeProbeSuccess, &counters)
+		if !lb.IsHealthy(target) {
+			t.Fatal("target did not recover after two fresh active successes")
+		}
+	})
+
+	t.Run("passive double transition resets quarantine progress", func(t *testing.T) {
+		checker, lb := newChecker(t)
+		var counters activeProbeCounters
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+
+		lb.ReportHTTP(target, http.StatusInternalServerError)
+		lb.ReportHTTP(target, http.StatusOK)
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+		if !lb.IsHealthy(target) {
+			t.Fatal("target was quarantined with failure progress from before two passive transitions")
+		}
+		checker.applyProbeResult(target, activeProbeHTTPFailure, &counters)
+		if lb.IsHealthy(target) {
+			t.Fatal("target remained healthy after two fresh active failures")
+		}
+	})
 }
 
 func TestActiveHealthCheckerUsesTCPThresholdForHTTPTransportFailures(t *testing.T) {

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +30,26 @@ type readSpyBody struct {
 	reads int
 }
 
+type blockingBody struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return 0, io.EOF
+}
+
+func (*blockingBody) Close() error { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func (b *readSpyBody) Read(p []byte) (int, error) {
 	b.reads++
 	return b.Reader.Read(p)
@@ -45,6 +67,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -287,6 +310,210 @@ func TestHandlerRegistersBeforeProxyHookWithoutExecutingIt(t *testing.T) {
 	}
 	if mirrored := waitForMirror(t, seen); mirrored.Path != "/original" {
 		t.Fatalf("mirrored path = %q, want /original", mirrored.Path)
+	}
+}
+
+func TestMirrorAdmissionBoundsInFlightAndStopCancels(t *testing.T) {
+	started := make(chan struct{}, maxInFlightMirrors+1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	activeZero := make(chan struct{}, 1)
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	var totalStarted atomic.Int32
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		totalStarted.Add(1)
+		started <- struct{}{}
+		<-release
+		if active.Add(-1) == 0 {
+			activeZero <- struct{}{}
+		}
+	}))
+	releaseMirrors := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		releaseMirrors()
+		mirror.Close()
+	}()
+
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	for range maxInFlightMirrors {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", strings.NewReader("payload"))
+		if err := p.mirrorFinalizedRequest(req); err != nil {
+			t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+		}
+	}
+	for i := range maxInFlightMirrors {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for mirror %d/%d to start", i+1, maxInFlightMirrors)
+		}
+	}
+
+	body := &readSpyBody{Reader: strings.NewReader("dropped")}
+	dropped := httptest.NewRequest(http.MethodPost, "http://example.com/dropped", body)
+	if err := p.mirrorFinalizedRequest(dropped); err != nil {
+		t.Fatalf("saturated mirrorFinalizedRequest() error = %v", err)
+	}
+	if body.reads != 0 {
+		t.Fatalf("saturated request body reads = %d, want 0", body.reads)
+	}
+	if got := totalStarted.Load(); got != maxInFlightMirrors {
+		t.Fatalf("started mirrors = %d, want %d", got, maxInFlightMirrors)
+	}
+	if got := maxActive.Load(); got > maxInFlightMirrors {
+		t.Fatalf("maximum active mirrors = %d, want <= %d", got, maxInFlightMirrors)
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Plugin.Stop() did not cancel and join blocked mirrors")
+	}
+	releaseMirrors()
+	select {
+	case <-activeZero:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked mirror handlers did not observe cancellation")
+	}
+
+	postStopBody := &readSpyBody{Reader: strings.NewReader("post-stop")}
+	postStop := httptest.NewRequest(http.MethodPost, "http://example.com/post-stop", postStopBody)
+	if err := p.mirrorFinalizedRequest(postStop); err != nil {
+		t.Fatalf("post-stop mirrorFinalizedRequest() error = %v", err)
+	}
+	if postStopBody.reads != 0 {
+		t.Fatalf("post-stop request body reads = %d, want 0", postStopBody.reads)
+	}
+	if got := totalStarted.Load(); got != maxInFlightMirrors {
+		t.Fatalf("post-stop started mirrors = %d, want %d", got, maxInFlightMirrors)
+	}
+	if got := active.Load(); got != 0 {
+		t.Fatalf("active mirrors after Stop() = %d, want 0", got)
+	}
+}
+
+func TestConcurrentStopCallsWaitForInFlightMirrors(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	p.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		close(entered)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})
+	if err := p.mirrorFinalizedRequest(httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/mirror",
+		strings.NewReader("payload"),
+	)); err != nil {
+		t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mirror transport")
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(firstDone)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.mirrorMu.Lock()
+		stopped := p.mirrorStopped
+		p.mirrorMu.Unlock()
+		if stopped {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop() did not mark the plugin stopped")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(secondDone)
+	}()
+	select {
+	case <-firstDone:
+		t.Fatal("first Stop() returned before in-flight mirror completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+	select {
+	case <-secondDone:
+		t.Fatal("concurrent Stop() returned before in-flight mirror completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Stop() did not join in-flight mirror")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Stop() did not wait for first Stop()")
+	}
+}
+
+func TestStopDoesNotWaitForPrimaryRequestBodyRead(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
+	body := &blockingBody{entered: make(chan struct{}), release: make(chan struct{})}
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/mirror", nil)
+	req.Body = body
+	hookDone := make(chan error, 1)
+	go func() {
+		hookDone <- p.mirrorFinalizedRequest(req)
+	}()
+	select {
+	case <-body.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for primary request body read")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() waited for a primary request body read")
+	}
+
+	close(body.release)
+	select {
+	case err := <-hookDone:
+		if err != nil {
+			t.Fatalf("mirrorFinalizedRequest() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("primary request body read did not finish")
 	}
 }
 

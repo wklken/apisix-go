@@ -52,7 +52,10 @@ func TestSchemaValidatesDenyCodeBounds(t *testing.T) {
 	}{
 		{name: "fractional", value: 200.5, wantErr: true},
 		{name: "below minimum", value: 99, wantErr: true},
-		{name: "minimum", value: 100},
+		{name: "informational", value: 100, wantErr: true},
+		{name: "early informational", value: 103, wantErr: true},
+		{name: "last informational", value: 199, wantErr: true},
+		{name: "minimum", value: 200},
 		{name: "maximum", value: 599},
 		{name: "above maximum", value: 600, wantErr: true},
 	} {

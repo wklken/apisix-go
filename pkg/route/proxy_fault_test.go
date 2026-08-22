@@ -287,9 +287,15 @@ func TestProxyFaultActiveHealthRecovers(t *testing.T) {
 	var recovered atomic.Bool
 	var failingRouteHits atomic.Int32
 	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
-			failingRouteHits.Add(1)
+		if r.URL.Path == "/healthz" {
+			if recovered.Load() {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
+		failingRouteHits.Add(1)
 		if recovered.Load() {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -298,7 +304,11 @@ func TestProxyFaultActiveHealthRecovers(t *testing.T) {
 	}))
 	defer failing.Close()
 
-	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer healthy.Close()

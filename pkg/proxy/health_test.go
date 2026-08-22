@@ -141,6 +141,146 @@ func TestHealthAwareLoadBalanceQuarantinesHTTPStatusesAfterThreshold(t *testing.
 	}
 }
 
+func TestHealthAwareLoadBalanceRecoversAfterConfiguredHealthyResponses(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{target: 1},
+		map[string]any{"passive": map[string]any{
+			"healthy": map[string]any{
+				"successes":     2,
+				"http_statuses": []any{200},
+			},
+			"unhealthy": map[string]any{
+				"http_failures": 1,
+				"http_statuses": []any{500},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+	observer := &recordingClusterHealthObserver{}
+	lb.setObserver("orders", observer)
+
+	lb.ReportHTTP(target, 500)
+	if lb.IsHealthy(target) {
+		t.Fatal("target remained healthy after the configured failure")
+	}
+	lb.ReportHTTP(target, 200)
+	if lb.IsHealthy(target) {
+		t.Fatal("target recovered before the healthy-success threshold")
+	}
+	lb.ReportHTTP(target, 418)
+	if lb.IsHealthy(target) {
+		t.Fatal("neutral status unexpectedly recovered the target")
+	}
+	lb.ReportHTTP(target, 200)
+	if !lb.IsHealthy(target) {
+		t.Fatal("target did not recover after the configured healthy responses")
+	}
+	lb.ReportHTTP(target, 200)
+
+	want := []healthTransition{
+		{cluster: "orders", target: target, healthy: false},
+		{cluster: "orders", target: target, healthy: true},
+	}
+	if !reflect.DeepEqual(observer.transitions, want) {
+		t.Fatalf("health transitions = %#v, want %#v", observer.transitions, want)
+	}
+}
+
+func TestHealthAwareLoadBalanceHealthySuccessesZeroDisablesRecovery(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{target: 1},
+		map[string]any{"passive": map[string]any{
+			"healthy": map[string]any{
+				"successes":     0,
+				"http_statuses": []any{200},
+			},
+			"unhealthy": map[string]any{
+				"http_failures": 1,
+				"http_statuses": []any{500},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+
+	lb.ReportHTTP(target, 500)
+	for range 100 {
+		lb.ReportHTTP(target, 200)
+	}
+	if lb.IsHealthy(target) {
+		t.Fatal("healthy.successes=0 unexpectedly recovered the target")
+	}
+	if got := lb.states[target].healthySuccesses; got != 0 {
+		t.Fatalf("healthy success counter = %d, want no-op counter 0", got)
+	}
+}
+
+func TestHealthAwareLoadBalanceTCPFailureResetsPassiveRecoveryProgress(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{target: 1},
+		map[string]any{"passive": map[string]any{
+			"healthy": map[string]any{
+				"successes":     2,
+				"http_statuses": []any{200},
+			},
+			"unhealthy": map[string]any{
+				"http_failures": 1,
+				"http_statuses": []any{500},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+
+	lb.ReportHTTP(target, 500)
+	lb.ReportHTTP(target, 200)
+	lb.ReportTCPFailure(target, false)
+	lb.ReportHTTP(target, 200)
+	if lb.IsHealthy(target) {
+		t.Fatal("TCP failure did not reset passive recovery progress")
+	}
+	lb.ReportHTTP(target, 200)
+	if !lb.IsHealthy(target) {
+		t.Fatal("target did not recover after two consecutive healthy responses")
+	}
+}
+
+func TestActiveHealthTransitionClearsPassiveRecoveryProgress(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	lb, err := NewHealthAwareLoadBalance(
+		map[string]int{target: 1},
+		map[string]any{"passive": map[string]any{
+			"healthy": map[string]any{
+				"successes":     2,
+				"http_statuses": []any{200},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
+	}
+
+	lb.MarkUnhealthy(target)
+	lb.ReportHTTP(target, 200)
+	lb.MarkHealthy(target)
+	lb.MarkUnhealthy(target)
+	lb.ReportHTTP(target, 200)
+	if lb.IsHealthy(target) {
+		t.Fatal("active transition retained stale passive recovery progress")
+	}
+	lb.ReportHTTP(target, 200)
+	if !lb.IsHealthy(target) {
+		t.Fatal("target did not recover after fresh passive success threshold")
+	}
+}
+
 func TestPassiveHealthTransitionsNotifyClusterObserver(t *testing.T) {
 	const target = "http://127.0.0.1:8080"
 	tests := []struct {
@@ -299,13 +439,15 @@ func TestPassiveHealthConfigDefaultsForNilOrEmptyChecks(t *testing.T) {
 			}
 			want := PassiveHealthConfig{
 				Type:              "http",
+				HealthySuccesses:  5,
 				HTTPFailures:      5,
 				TCPFailures:       2,
 				Timeouts:          7,
 				HealthyStatuses:   defaultHealthyStatuses(),
 				UnhealthyStatuses: map[int]struct{}{429: {}, 500: {}, 503: {}},
 			}
-			if config.Type != want.Type || config.HTTPFailures != want.HTTPFailures ||
+			if config.Type != want.Type || config.HealthySuccesses != want.HealthySuccesses ||
+				config.HTTPFailures != want.HTTPFailures ||
 				config.TCPFailures != want.TCPFailures || config.Timeouts != want.Timeouts {
 				t.Fatalf("parsePassiveHealthConfig() = %#v, want defaults %#v", config, want)
 			}
@@ -324,6 +466,7 @@ func TestPassiveHealthConfigParsesOfficialNumericShapes(t *testing.T) {
 		"passive": map[string]any{
 			"type": "HTTPS",
 			"healthy": map[string]any{
+				"successes":     uint16(2),
 				"http_statuses": []int{200, 204},
 			},
 			"unhealthy": map[string]any{
@@ -337,7 +480,8 @@ func TestPassiveHealthConfigParsesOfficialNumericShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsePassiveHealthConfig() error = %v", err)
 	}
-	if config.Type != "https" || config.HTTPFailures != 3 || config.TCPFailures != 4 || config.Timeouts != 5 {
+	if config.Type != "https" || config.HealthySuccesses != 2 || config.HTTPFailures != 3 ||
+		config.TCPFailures != 4 || config.Timeouts != 5 {
 		t.Fatalf("parsed passive config = %#v", config)
 	}
 	for _, status := range []int{200, 204} {
@@ -445,23 +589,44 @@ func TestHealthAwareLoadBalanceResetsFailuresAndIgnoresUnknownTargets(t *testing
 	}
 }
 
-func TestTCPPassiveHealthIgnoresHTTPOutcomes(t *testing.T) {
+func TestTCPPassiveHealthRecoversFromHealthyHTTPOutcomes(t *testing.T) {
+	const target = "tcp://one.example:9000"
 	lb, err := NewHealthAwareLoadBalance(
-		map[string]int{"tcp://one.example:9000": 1},
+		map[string]int{target: 1},
 		map[string]any{"passive": map[string]any{
 			"type": "tcp",
+			"healthy": map[string]any{
+				"successes":     2,
+				"http_statuses": []any{204},
+			},
 			"unhealthy": map[string]any{
-				"http_statuses": []any{500},
-				"http_failures": 1,
+				"tcp_failures": 1,
 			},
 		}},
 	)
 	if err != nil {
 		t.Fatalf("NewHealthAwareLoadBalance() error = %v", err)
 	}
-	target := lb.Next()
-	lb.ReportHTTP(target, 500)
+	observer := &recordingClusterHealthObserver{}
+	lb.setObserver("tcp-orders", observer)
+
+	lb.ReportTCPFailure(target, false)
+	if lb.IsHealthy(target) {
+		t.Fatal("TCP failure did not quarantine the target")
+	}
+	lb.ReportHTTP(target, http.StatusNoContent)
+	if lb.IsHealthy(target) {
+		t.Fatal("TCP target recovered before the healthy-success threshold")
+	}
+	lb.ReportHTTP(target, http.StatusNoContent)
 	if !lb.IsHealthy(target) {
-		t.Fatal("HTTP outcome quarantined a TCP passive-health target")
+		t.Fatal("TCP target did not recover from healthy HTTP outcomes")
+	}
+	want := []healthTransition{
+		{cluster: "tcp-orders", target: target, healthy: false},
+		{cluster: "tcp-orders", target: target, healthy: true},
+	}
+	if !reflect.DeepEqual(observer.transitions, want) {
+		t.Fatalf("health transitions = %#v, want %#v", observer.transitions, want)
 	}
 }

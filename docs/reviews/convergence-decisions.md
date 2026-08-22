@@ -67,6 +67,13 @@ This ledger records confirmed findings that are intentionally not remediated in 
 - Risk: legacy corruption can block startup; silently skipping it can also remove a TLS identity and change network security behavior.
 - Decision: record only; define fail-closed or last-good SSL recovery before changing startup semantics.
 
+### SEC-10: Active HTTPS health checks do not enforce their certificate-verification contract
+
+- Severity: P2
+- Evidence: the active health-check parser ignores APISIX `checks.active.https_verify_certificate`, whose upstream default is `true`; probes reuse the upstream transport, so an omitted or disabled upstream `tls.verify` can also disable certificate verification for an HTTPS health check.
+- Risk: an untrusted network peer with an invalid certificate can influence upstream health state and traffic selection.
+- Decision: record only; no TLS transport, schema, or probe behavior change in this PR.
+
 ## Architecture decisions required
 
 ### ARCH-01: Invalid global-rule isolation versus fail-closed behavior

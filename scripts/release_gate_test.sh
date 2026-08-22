@@ -100,9 +100,13 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
 require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1' "$makefile"
+require_fixed '.PHONY: test-plugin-status' "$makefile"
+require_fixed 'plugin status test %s was not found' "$makefile"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
 require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
+require_job_fixed "$unit_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.selector }}'\'''
+reject_job_pattern "$unit_workflow" integration-smoke 'go test[[:space:]]+\./t/plugin[[:space:]]+-run'
 require_job_fixed "$release_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$rc_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$release_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.pattern }}'\'''

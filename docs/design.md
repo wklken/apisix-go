@@ -148,6 +148,19 @@ setup remain fail-closed and keep the previously installed handler on reload.
 `BuildStrict` remains available for strict validation tests, while runtime
 publication uses the route-quarantining build entry point.
 
+Route publication uses one pre-materialization entrypoint,
+`validateRouteCompatibility`, for the Go data-plane compatibility subset.
+It does not import the full pinned APISIX 3.17 route schema. The subset
+accepts bare routes (`uri` without methods, plugins, or upstream) and
+empty `vars` / `remote_addrs`. Explicit deviations: `script`,
+`script_id`, `filter_func`, non-empty `vars`, `remote_addr`, and
+non-empty `remote_addrs` are rejected; `host` and `hosts` cannot both be
+set; a blank singular `host` is rejected; empty `hosts` and invalid
+wildcard hosts (`*?[` that are not `*.suffix`) are not a compatibility
+allowance and fail the route rather than publishing hostless. Plugin
+materialization, secret ownership, and upstream resolution stay on the
+existing post-entrypoint path.
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -41,6 +42,21 @@ func TestHandlerRedirectsWithRegexURI(t *testing.T) {
 	}
 	if got := res.Header().Get("Location"); got != "/profiles/42" {
 		t.Fatalf("Location = %q, want /profiles/42", got)
+	}
+}
+
+func TestSchemaRejectsRetCodeAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"uri":      "/new",
+		"ret_code": 1000,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("ret_code=1000 should fail schema validation")
 	}
 }
 

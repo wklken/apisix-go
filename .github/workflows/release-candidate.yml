@@ -99,6 +99,9 @@ jobs:
       - name: Run source unit tests and coverage gate
         run: make test-cover
 
+      - name: Run plugin integration harness tests
+        run: make test-plugin-harness
+
   integration-smoke:
     name: RC Integration Smoke (${{ matrix.case.name }})
     needs: resolve-source
@@ -111,13 +114,13 @@ jobs:
       matrix:
         case:
           - name: key-auth
-            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+            pattern: key-auth/valid-consumer-schema
           - name: proxy-rewrite
-            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+            pattern: proxy-rewrite/rewrite-host
           - name: proxy-control
-            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+            pattern: proxy-control/request-buffering-disabled
           - name: uri-blocker
-            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
+            pattern: uri-blocker/one-rule-blocks-query
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -134,7 +137,7 @@ jobs:
           cache: true
 
       - name: Run focused standalone smoke case
-        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
+        run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
   security-release-gates:
     name: RC Security And Operational Qualification

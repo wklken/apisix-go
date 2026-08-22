@@ -327,6 +327,21 @@ func TestSchemaRequiresExternalUserSeparatorForSegmentedParser(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsRejectedCodeAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"allow_labels":  map[string]any{"team": []any{"edge"}},
+		"rejected_code": 1000,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("rejected_code=1000 should fail schema validation")
+	}
+}
+
 func performRequest(p *Plugin, labels map[string]any) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})

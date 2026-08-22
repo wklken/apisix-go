@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -583,6 +584,101 @@ func TestNewRouterRejectsUnknownStreamPlugin(t *testing.T) {
 	}}, []string{"limit-conn"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "not supported by the Go stream owner") {
 		t.Fatalf("NewRouter() error = %v, want unsupported plugin error", err)
+	}
+}
+
+func TestNewRouterDefaultsOmittedStreamNodeWeightToOne(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "omitted-weight",
+		Upstream: resource.Upstream{
+			Type:  "chash",
+			Nodes: []resource.Node{{Host: "omitted.example", Port: 1883}},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	entry := router.routes[0]
+	if len(entry.hashNodes) != 1 {
+		t.Fatalf("hash nodes = %#v, want one omitted-weight node", entry.hashNodes)
+	}
+	if got := entry.hashNodes[0].weight; got != 1 {
+		t.Fatalf("omitted stream node weight = %d, want 1", got)
+	}
+}
+
+func TestNewRouterDisablesExplicitZeroStreamNodeWeightForRRAndChash(t *testing.T) {
+	for _, upstreamType := range []string{"roundrobin", "chash"} {
+		t.Run(upstreamType, func(t *testing.T) {
+			var route resource.StreamRoute
+			if err := json.Unmarshal(fmt.Appendf(nil, `{
+				"id": "zero-weight-%s",
+				"upstream": {
+					"scheme": "tcp",
+					"type": %q,
+					"nodes": [
+						{"host": "disabled.example", "port": 1883, "weight": 0},
+						{"host": "enabled.example", "port": 1884, "weight": 1}
+					]
+				}
+			}`, upstreamType, upstreamType), &route); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			router, err := NewRouter([]resource.StreamRoute{route}, nil, nil)
+			if err != nil {
+				t.Fatalf("NewRouter() error = %v", err)
+			}
+
+			entry := router.routes[0]
+			for _, node := range entry.hashNodes {
+				if node.target == "tcp://disabled.example:1883" {
+					t.Fatalf("explicit zero-weight node remained in hash nodes: %#v", entry.hashNodes)
+				}
+			}
+			for i := range 32 {
+				if got := entry.selectTarget(fmt.Sprintf("client-%d", i)); got == "tcp://disabled.example:1883" {
+					t.Fatalf("selection %d chose disabled zero-weight node", i)
+				}
+			}
+		})
+	}
+}
+
+func TestNewRouterRejectsNegativeStreamNodeWeight(t *testing.T) {
+	_, err := NewRouter([]resource.StreamRoute{{
+		ID: "negative-weight",
+		Upstream: resource.Upstream{
+			Nodes: []resource.Node{{Host: "negative.example", Port: 1883, Weight: -1}},
+		},
+	}}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "weight must be non-negative") {
+		t.Fatalf("NewRouter() error = %v, want negative-weight rejection", err)
+	}
+}
+
+func TestNewRouterRejectsAllZeroStreamUpstreamWeightsForRRAndChash(t *testing.T) {
+	for _, upstreamType := range []string{"roundrobin", "chash"} {
+		t.Run(upstreamType, func(t *testing.T) {
+			var route resource.StreamRoute
+			if err := json.Unmarshal(fmt.Appendf(nil, `{
+				"id": "all-zero-%s",
+				"upstream": {
+					"scheme": "tcp",
+					"type": %q,
+					"nodes": [
+						{"host": "zero-a.example", "port": 1883, "weight": 0},
+						{"host": "zero-b.example", "port": 1884, "weight": 0}
+					]
+				}
+			}`, upstreamType, upstreamType), &route); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if _, err := NewRouter([]resource.StreamRoute{route}, nil, nil); err == nil ||
+				!strings.Contains(err.Error(), "at least one upstream node must have a positive weight") {
+				t.Fatalf("NewRouter() error = %v, want all-zero rejection", err)
+			}
+		})
 	}
 }
 

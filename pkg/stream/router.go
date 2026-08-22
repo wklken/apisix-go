@@ -207,11 +207,27 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		}
 		target := "tcp://" + address
 		weight := node.Weight
-		if weight <= 0 {
+		if !node.WeightConfigured() {
 			weight = 1
+		}
+		if weight < 0 {
+			return routeEntry{}, fmt.Errorf(
+				"stream route %q upstream node %q: weight must be non-negative",
+				route.ID,
+				target,
+			)
+		}
+		if weight == 0 {
+			continue
 		}
 		targets[target] = weight
 		hashNodes = append(hashNodes, hashTarget{target: target, weight: weight})
+	}
+	if len(targets) == 0 {
+		return routeEntry{}, fmt.Errorf(
+			"stream route %q upstream node weights: at least one upstream node must have a positive weight",
+			route.ID,
+		)
 	}
 	entry := routeEntry{
 		route:     route,

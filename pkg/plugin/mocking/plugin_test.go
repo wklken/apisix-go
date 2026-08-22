@@ -30,6 +30,21 @@ func TestSchemaAcceptsResponseSchema(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsResponseStatusAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"response_example": "ok",
+		"response_status":  1000,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("response_status=1000 should fail schema validation")
+	}
+}
+
 func TestHandlerGeneratesJSONFromResponseSchema(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",

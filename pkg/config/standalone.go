@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -271,6 +272,19 @@ func (w *StandaloneFileWatcher) Start() error {
 	return w.startErr
 }
 
+// StartAndReconcile registers the standalone file watcher and then performs a
+// synchronous read. The read closes the gap between the initial snapshot and
+// filesystem watcher registration.
+func (w *StandaloneFileWatcher) StartAndReconcile() error {
+	if err := w.Start(); err != nil {
+		return err
+	}
+	if err := w.reconcile(); err != nil {
+		logger.Errorf("reconcile standalone config %q after watcher registration failed: %s", w.path, err)
+	}
+	return nil
+}
+
 // Stop cancels and joins the file watcher. It never closes the shared Store
 // event channel and is safe before Start or when called repeatedly.
 func (w *StandaloneFileWatcher) Stop() error {
@@ -299,14 +313,9 @@ func (w *StandaloneFileWatcher) Stop() error {
 // Watch preserves the historical logging-only API while Start exposes setup
 // errors to lifecycle owners such as Server.
 func (w *StandaloneFileWatcher) Watch() {
-	if err := w.Start(); err != nil {
+	if err := w.StartAndReconcile(); err != nil {
 		logger.Errorf("watch standalone config %q failed: %s", w.path, err)
-		return
 	}
-	// Preserve the historical Watch behavior of reconciling once immediately
-	// after registration. Server uses Start directly after its explicit initial
-	// load and therefore does not rely on this compatibility pass.
-	w.reloadAndNotify()
 }
 
 func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
@@ -344,11 +353,14 @@ func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
 }
 
 func (w *StandaloneFileWatcher) reloadAndNotify() {
-	w.reloadMu.Lock()
-	result, previous, err := w.reloadSnapshot()
-	if err != nil {
+	if err := w.reconcile(); err != nil {
 		logger.Errorf("reload standalone config %q failed: %s", w.path, err)
 	}
+}
+
+func (w *StandaloneFileWatcher) reconcile() error {
+	w.reloadMu.Lock()
+	result, previous, err := w.reloadSnapshot()
 	w.mu.Lock()
 	callback := w.onReload
 	acknowledgedCallback := w.onAcknowledgedReload
@@ -358,14 +370,19 @@ func (w *StandaloneFileWatcher) reloadAndNotify() {
 		if callback != nil {
 			callback(result, err)
 		}
-		return
+		return err
 	}
-	if applyErr := acknowledgedCallback(result, err); err == nil && applyErr != nil {
+	applyErr := acknowledgedCallback(result, err)
+	if err == nil && applyErr != nil {
 		w.mu.Lock()
 		w.current = previous
 		w.mu.Unlock()
 	}
 	w.reloadMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return applyErr
 }
 
 func (w *StandaloneFileWatcher) enqueueAndWait(event *store.Event) (bool, error) {
@@ -450,6 +467,9 @@ func readStandaloneSnapshot(
 	if sections == nil {
 		return nil, nil, fmt.Errorf("decode standalone resources %q: expected object", path)
 	}
+	if err := validateStandaloneSections(sections); err != nil {
+		return nil, nil, err
+	}
 
 	snapshot := make(standaloneSnapshot)
 	var quarantined []standaloneResourceQuarantine
@@ -481,6 +501,20 @@ func readStandaloneSnapshot(
 		}
 	}
 	return snapshot, quarantined, nil
+}
+
+func validateStandaloneSections(sections map[string]json.RawMessage) error {
+	unknown := make([]string, 0)
+	for section := range sections {
+		if !slices.Contains(standaloneBuckets, section) {
+			unknown = append(unknown, section)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("decode standalone resources: unknown root section %q", unknown[0])
 }
 
 func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []byte, error) {

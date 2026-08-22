@@ -141,6 +141,21 @@ func TestSchemaValidatesAllowedByMethodsEnum(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsRejectedCodeAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"blacklist":     []any{"alice"},
+		"rejected_code": 1000,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("rejected_code=1000 should fail schema validation")
+	}
+}
+
 func newTestPlugin(t *testing.T, config Config) *Plugin {
 	t.Helper()
 

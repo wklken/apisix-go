@@ -2,6 +2,7 @@ package exit_transformer
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	lua "github.com/yuin/gopher-lua"
 )
 
 func TestExitTransformerRunsOneAtomicBufferedBodyCallback(t *testing.T) {
@@ -127,6 +129,72 @@ func TestHandlerRemapsStatusAndBodyWithDocumentedLuaPattern(t *testing.T) {
 	}
 	if got := res.Body.String(); got != "Modified 503 to 502" {
 		t.Fatalf("body = %q, want transformed body", got)
+	}
+}
+
+func TestExitTransformerLuaStatusKeepsPreviousResponseStatusForInvalidValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "below minimum", value: "99"},
+		{name: "above maximum", value: "600"},
+		{name: "far above maximum", value: "1000"},
+		{name: "fractional", value: "418.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := newTestPlugin(t, Config{Functions: []string{
+				"return function(code, body, header) return " + tt.value + ", body, header end",
+			}})
+			res := performRequest(plugin, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+			})
+			if res.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want previous status %d", res.Code, http.StatusAccepted)
+			}
+		})
+	}
+}
+
+func TestExitTransformerLuaStringStatusCanOverridePreviousResponseStatus(t *testing.T) {
+	plugin := newTestPlugin(t, Config{Functions: []string{
+		`return function(code, body, header) return "418", body, header end`,
+	}})
+	res := performRequest(plugin, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	if res.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want string status %d", res.Code, http.StatusTeapot)
+	}
+}
+
+func TestExitTransformerLuaValueToStatusAcceptsOnlyHTTPIntegers(t *testing.T) {
+	tests := []struct {
+		name  string
+		value lua.LValue
+		valid bool
+	}{
+		{name: "below minimum", value: lua.LNumber(99)},
+		{name: "above maximum", value: lua.LNumber(600)},
+		{name: "far above maximum", value: lua.LNumber(1000)},
+		{name: "nan", value: lua.LNumber(math.NaN())},
+		{name: "fractional", value: lua.LNumber(418.5)},
+		{name: "string below minimum", value: lua.LString("99")},
+		{name: "string above maximum", value: lua.LString("600")},
+		{name: "string fractional", value: lua.LString("418.5")},
+		{name: "invalid string", value: lua.LString("not-a-status")},
+		{name: "string integer", value: lua.LString("418"), valid: true},
+		{name: "minimum", value: lua.LNumber(100), valid: true},
+		{name: "maximum", value: lua.LNumber(599), valid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, ok := luaValueToStatus(tt.value)
+			if ok != tt.valid {
+				t.Fatalf("luaValueToStatus() = %d, %t; valid = %t", status, ok, tt.valid)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -341,6 +344,44 @@ func TestHandlerConvertsAbortHandlerToBadGateway(t *testing.T) {
 	}
 	if responses[0].Reason != http.StatusText(http.StatusBadGateway) {
 		t.Fatalf("pipeline reason = %q, want %q", responses[0].Reason, http.StatusText(http.StatusBadGateway))
+	}
+}
+
+func TestHandlerContainsNormalPanicInSubprocess(t *testing.T) {
+	const childEnv = "APISIX_GO_BATCH_PANIC_SUBPROCESS"
+	if os.Getenv(childEnv) == "1" {
+		var logMessage string
+		stop := logger.ReplaceObserver("batch-requests-panic-test", func(entry logger.Entry) {
+			logMessage = entry.Message
+		})
+		defer stop()
+
+		handler := NewHandlerWithLimits(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("normal batch worker panic")
+		}), Limits{})
+		request := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+			"pipeline": [{"path":"/panic"}]
+		}`))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+
+		responses := decodePipelineResponses(t, response.Body.String())
+		if responses[0].Status != http.StatusBadGateway ||
+			responses[0].Reason != http.StatusText(http.StatusBadGateway) {
+			t.Fatalf("pipeline response = %#v, want bounded 502", responses[0])
+		}
+		if !strings.Contains(logMessage, "batch-requests subrequest panic") ||
+			!strings.Contains(logMessage, "goroutine") {
+			t.Fatalf("panic log = %q, want panic marker and stack", logMessage)
+		}
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run", "^TestHandlerContainsNormalPanicInSubprocess$")
+	command.Env = append(os.Environ(), childEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("normal worker panic terminated subprocess: %v\n%s", err, output)
 	}
 }
 

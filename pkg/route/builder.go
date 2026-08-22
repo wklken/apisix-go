@@ -3294,7 +3294,8 @@ func (t routeDubboTerminal) RunExclusiveProtocol(
 	next http.Handler,
 ) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
 	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
-	if t.lb == nil || !serveDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
+	if (t.lb == nil && traffic_split.GetOverride(r) == nil) ||
+		!serveDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
 		if next != nil {
 			next.ServeHTTP(w, r)
 		}
@@ -3314,7 +3315,8 @@ func (t routeHTTPDubboTerminal) RunExclusiveProtocol(
 	next http.Handler,
 ) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
 	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
-	if t.lb == nil || !serveHTTPDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
+	if (t.lb == nil && traffic_split.GetOverride(r) == nil) ||
+		!serveHTTPDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
 		if next != nil {
 			next.ServeHTTP(w, r)
 		}
@@ -3641,8 +3643,8 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			r = attachHTTPRetriesCompiled(r, upstream, lb, compiledTargets)
 			selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
 		}), routeProtocolTerminals{
-			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
-			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: upstream.Retries},
+			dubbo:     routeDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
+			httpDubbo: routeHTTPDubboTerminal{lb: lb, targets: compiledTargets, retries: httpRetryCount(upstream)},
 		}, nil
 }
 
@@ -3762,7 +3764,8 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 	}
 	brokers := make([]string, 0, len(upstream.Nodes))
 	for _, node := range upstream.Nodes {
-		brokers = append(brokers, fmt.Sprintf("kafka://%s:%d", node.Host, node.Port))
+		brokerHost := upstreamNodeHost("kafka", node.Host, strconv.Itoa(node.Port))
+		brokers = append(brokers, "kafka://"+brokerHost)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !kafka_proxy.IsWebSocketUpgrade(r) {
@@ -3831,13 +3834,9 @@ func serveDubboIfConfiguredCompiled(
 		return false
 	}
 
-	retryCount := 0
-	if len(retries) > 0 {
-		retryCount = retries[0]
-	}
-	dubbo_proxy.ServeDubboWithRetries(w, r, func() (string, error) {
-		return selectHTTPDubboTarget(r, lb, targets)
-	}, cfg, retryCount)
+	retryCount := dubboRetryCount(r, retries...)
+	nextTarget := nextDubboTarget(r, lb, targets)
+	dubbo_proxy.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)
 	return true
 }
 
@@ -3853,13 +3852,9 @@ func serveHTTPDubboIfConfiguredCompiled(
 		return false
 	}
 
-	retryCount := 0
-	if len(retries) > 0 {
-		retryCount = retries[0]
-	}
-	http_dubbo.ServeDubboWithRetries(w, r, func() (string, error) {
-		return selectHTTPDubboTarget(r, lb, targets)
-	}, cfg, retryCount)
+	retryCount := dubboRetryCount(r, retries...)
+	nextTarget := nextDubboTarget(r, lb, targets)
+	http_dubbo.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)
 	return true
 }
 
@@ -3922,19 +3917,64 @@ func selectHTTPDubboTarget(
 ) (string, error) {
 	if override := traffic_split.GetOverride(r); override != nil {
 		if override.HealthReporter != nil {
-			r = pxy.WithHealthReporter(r, override.HealthReporter)
-			pxy.SetSelectedTarget(r, override.HealthTarget)
+			enriched := pxy.WithHealthReporter(r, override.HealthReporter)
+			if enriched != r {
+				*r = *enriched
+			}
 		}
+		pxy.SetSelectedTarget(r, override.HealthTarget)
 		return override.Host, nil
 	}
-
-	target := lb.Next()
+	if reporter := healthReporter(lb); reporter != nil {
+		enriched := pxy.WithHealthReporter(r, reporter)
+		if enriched != r {
+			*r = *enriched
+		}
+	}
+	target := pxy.NextTarget(lb, r)
 	pxy.SetSelectedTarget(r, target)
 	compiled, err := resolveCompiledUpstreamTarget(target, targets)
 	if err != nil {
 		return "", err
 	}
 	return compiled.host, nil
+}
+
+func dubboRetryCount(r *http.Request, retries ...int) int {
+	if override := traffic_split.GetOverride(r); override != nil {
+		return override.Retries
+	}
+	if len(retries) > 0 {
+		return retries[0]
+	}
+	return 0
+}
+
+func nextDubboTarget(
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	targets map[string]compiledUpstreamTarget,
+) func() (string, error) {
+	trafficOverride := traffic_split.GetOverride(r)
+	first := true
+	return func() (string, error) {
+		if trafficOverride != nil {
+			if !first {
+				if trafficOverride.NextRetry == nil {
+					pxy.SetSelectedTarget(r, "")
+					return "", fmt.Errorf("traffic-split upstream has no retry target")
+				}
+				trafficOverride = trafficOverride.NextRetry(r)
+				if trafficOverride == nil {
+					pxy.SetSelectedTarget(r, "")
+					return "", fmt.Errorf("traffic-split upstream has no retry target")
+				}
+				*r = *traffic_split.WithOverride(r, trafficOverride)
+			}
+			first = false
+		}
+		return selectHTTPDubboTarget(r, lb, targets)
+	}
 }
 
 func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingHandler http.Handler) http.Handler {

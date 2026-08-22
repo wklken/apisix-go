@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
@@ -65,6 +66,175 @@ func TestServeHTTPDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
 	}
 	if lb.index != 2 {
 		t.Fatalf("selected targets = %d, want 2", lb.index)
+	}
+}
+
+func TestServeHTTPDubboIfConfiguredUsesRequestAwarePriorityRetryTargets(t *testing.T) {
+	upstream := startRouteDubboTestServer(t, routeDubboFrame("1\npriority-fallback\n"))
+	failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed target: %v", err)
+	}
+	failedTarget := failedListener.Addr().String()
+	_ = failedListener.Close()
+	servers := map[string]int{
+		"dubbo://" + failedTarget: 1,
+		"dubbo://" + upstream:     1,
+	}
+	priorities := map[string]int{
+		"dubbo://" + failedTarget: 10,
+		"dubbo://" + upstream:     0,
+	}
+	lb, err := pxy.NewUpstreamLoadBalanceWithPriorities(servers, priorities, nil)
+	if err != nil {
+		t.Fatalf("NewUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	targets, err := compileUpstreamTargets(servers)
+	if err != nil {
+		t.Fatalf("compileUpstreamTargets() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = http_dubbo.WithConfig(req, http_dubbo.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+
+	if !serveHTTPDubboIfConfiguredCompiled(rr, req, lb, targets, 1) {
+		t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "priority-fallback" {
+		t.Fatalf("response = %d/%q, want 200/priority-fallback", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTPDubboIfConfiguredAdvancesTrafficSplitRetryOverride(t *testing.T) {
+	upstream := startRouteDubboTestServer(t, routeDubboFrame("1\ntraffic-split-retry\n"))
+	failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed target: %v", err)
+	}
+	failedTarget := failedListener.Addr().String()
+	_ = failedListener.Close()
+	firstReporter := &recordingDubboHealthReporter{}
+	secondReporter := &recordingDubboHealthReporter{}
+	second := &traffic_split.Override{
+		Scheme:         "http",
+		Host:           upstream,
+		HealthReporter: secondReporter,
+		HealthTarget:   "http://" + upstream,
+	}
+	first := &traffic_split.Override{
+		Scheme:         "http",
+		Host:           failedTarget,
+		Retries:        1,
+		HealthReporter: firstReporter,
+		HealthTarget:   "http://" + failedTarget,
+	}
+	first.NextRetry = func(*http.Request) *traffic_split.Override { return second }
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = traffic_split.WithOverride(req, first)
+	req = http_dubbo.WithConfig(req, http_dubbo.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+
+	if !serveHTTPDubboIfConfiguredCompiled(rr, req, nil, nil) {
+		t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "traffic-split-retry" {
+		t.Fatalf("response = %d/%q, want 200/traffic-split-retry", rr.Code, rr.Body.String())
+	}
+	if len(firstReporter.tcpTargets) != 1 || firstReporter.tcpTargets[0] != first.HealthTarget {
+		t.Fatalf("first retry health targets = %#v, want [%q]", firstReporter.tcpTargets, first.HealthTarget)
+	}
+	if len(secondReporter.httpTargets) != 1 || secondReporter.httpTargets[0] != second.HealthTarget {
+		t.Fatalf("second retry health targets = %#v, want [%q]", secondReporter.httpTargets, second.HealthTarget)
+	}
+}
+
+func TestRouteHTTPDubboTerminalUsesTrafficSplitOverrideWithoutBaseUpstream(t *testing.T) {
+	upstream := startRouteDubboTestServer(t, routeDubboFrame("1\ntraffic-split-only\n"))
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme: "http",
+		Host:   upstream,
+	})
+	req = http_dubbo.WithConfig(req, http_dubbo.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+	fallbackCalled := false
+
+	_, _, _, err := (routeHTTPDubboTerminal{}).RunExclusiveProtocol(
+		rr,
+		req,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { fallbackCalled = true }),
+	)
+	if err != nil {
+		t.Fatalf("RunExclusiveProtocol() error = %v", err)
+	}
+	if fallbackCalled {
+		t.Fatal("fallback handler ran despite traffic-split HTTP-Dubbo override")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "traffic-split-only" {
+		t.Fatalf("response = %d/%q, want 200/traffic-split-only", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTPDubboIfConfiguredDoesNotReattributeMissingTrafficSplitRetryTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		nextRetry func(*http.Request) *traffic_split.Override
+	}{
+		{name: "nil callback"},
+		{name: "nil result", nextRetry: func(*http.Request) *traffic_split.Override { return nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen failed target: %v", err)
+			}
+			failedTarget := failedListener.Addr().String()
+			_ = failedListener.Close()
+			reporter := &recordingDubboHealthReporter{}
+			override := &traffic_split.Override{
+				Scheme:         "http",
+				Host:           failedTarget,
+				Retries:        1,
+				HealthReporter: reporter,
+				HealthTarget:   "http://" + failedTarget,
+				NextRetry:      test.nextRetry,
+			}
+			req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+			req = traffic_split.WithOverride(req, override)
+			req = http_dubbo.WithConfig(req, http_dubbo.Config{
+				ServiceName:    "svc",
+				ServiceVersion: "0.0.0",
+				Method:         "hello",
+			})
+			rr := httptest.NewRecorder()
+
+			if !serveHTTPDubboIfConfiguredCompiled(rr, req, nil, nil) {
+				t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
+			}
+			if rr.Code != http.StatusBadGateway {
+				t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+			}
+			if len(reporter.tcpTargets) != 1 || reporter.tcpTargets[0] != override.HealthTarget {
+				t.Fatalf(
+					"reported TCP targets = %#v, want one actual failure for %q",
+					reporter.tcpTargets,
+					override.HealthTarget,
+				)
+			}
+		})
 	}
 }
 

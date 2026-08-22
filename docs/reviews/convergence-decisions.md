@@ -89,8 +89,7 @@ This ledger records confirmed findings that are intentionally not remediated in 
 
 ### ARCH-04: HTTP fixture observation window
 
-- Current behavior: exact HTTP fixture assertions are made before child shutdown and check for an extra request only non-blockingly.
-- Planned narrow fix: assert exact HTTP fixtures after child shutdown so already-issued and shutdown-flush requests are observable without adding a delay to every case.
+- Current behavior: exact HTTP fixture assertions run after child shutdown so already-issued and shutdown-flush requests are observable without adding a delay to every case. Bounded count ranges remain pre-shutdown checks.
 - Remaining decision: if producers can legitimately outlive child shutdown, define an explicit per-fixture settling window rather than a global sleep.
 
 ### ARCH-05: Malformed legacy dynamic plugin list

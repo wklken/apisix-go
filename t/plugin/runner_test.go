@@ -70,6 +70,8 @@ const fallbackRootsProxyURLEnv = "APISIX_GO_FALLBACK_ROOTS_PROXY_URL"
 
 const integrationFallbackRootsEnv = "APISIX_GO_INTEGRATION_FALLBACK_ROOTS"
 
+const pluginSmokeCaseEnv = "APISIX_GO_PLUGIN_SMOKE_CASE"
+
 const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
 const maxParallelPluginCases = 6
@@ -80,6 +82,11 @@ func TestPluginIntegration(t *testing.T) {
 	if os.Getenv("APISIX_GO_SKIP_PLUGIN_INTEGRATION") == "1" {
 		t.Skip("plugin integration cases are disabled for the unit harness")
 	}
+	rawSmokeCase := os.Getenv(pluginSmokeCaseEnv)
+	smokeCase := strings.TrimSpace(rawSmokeCase)
+	if rawSmokeCase != "" && smokeCase == "" {
+		t.Fatalf("%s must name one <plugin>/<case>", pluginSmokeCaseEnv)
+	}
 	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover plugin manifests: %v", err)
@@ -88,6 +95,7 @@ func TestPluginIntegration(t *testing.T) {
 		t.Fatal("no plugin manifests found")
 	}
 	caseSlots := make(chan struct{}, maxParallelPluginCases)
+	selectedCases := 0
 	for _, path := range files {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -99,6 +107,10 @@ func TestPluginIntegration(t *testing.T) {
 		}
 		pluginName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		for _, spec := range manifest.Cases {
+			if !pluginSmokeCaseMatches(smokeCase, pluginName, spec.Name) {
+				continue
+			}
+			selectedCases++
 			t.Run(pluginName+"/"+spec.Name, func(t *testing.T) {
 				if !spec.Serial {
 					t.Parallel()
@@ -118,6 +130,67 @@ func TestPluginIntegration(t *testing.T) {
 				}
 			})
 		}
+	}
+	if smokeCase != "" && selectedCases != 1 {
+		t.Fatalf("%s=%q selected %d manifest cases, want exactly 1", pluginSmokeCaseEnv, smokeCase, selectedCases)
+	}
+}
+
+func pluginSmokeCaseMatches(expected, pluginName, caseName string) bool {
+	return expected == "" || expected == pluginName+"/"+caseName
+}
+
+func TestPluginSmokeCaseMatchesExactly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		expected   string
+		pluginName string
+		caseName   string
+		want       bool
+	}{
+		{name: "unset selector", pluginName: "key-auth", caseName: "valid", want: true},
+		{
+			name:       "exact match",
+			expected:   "key-auth/valid-consumer-schema",
+			pluginName: "key-auth",
+			caseName:   "valid-consumer-schema",
+			want:       true,
+		},
+		{
+			name:       "prefix is rejected",
+			expected:   "key-auth/valid-consumer",
+			pluginName: "key-auth",
+			caseName:   "valid-consumer-schema",
+		},
+		{
+			name:       "different plugin is rejected",
+			expected:   "proxy-rewrite/valid-consumer-schema",
+			pluginName: "key-auth",
+			caseName:   "valid-consumer-schema",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pluginSmokeCaseMatches(test.expected, test.pluginName, test.caseName); got != test.want {
+				t.Fatalf("pluginSmokeCaseMatches() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPluginSmokeSelectorFailsClosedWhenCaseIsMissing(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestPluginIntegration$", "-test.v")
+	command.Env = childEnvironment(os.Environ(), Environment{
+		"APISIX_GO_SKIP_PLUGIN_INTEGRATION": "0",
+		pluginSmokeCaseEnv:                  "definitely/missing",
+	}, nil)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("missing smoke selector unexpectedly passed:\n%s", output)
+	}
+	want := pluginSmokeCaseEnv + `="definitely/missing" selected 0 manifest cases, want exactly 1`
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("missing smoke selector output = %q, want %q", output, want)
 	}
 }
 

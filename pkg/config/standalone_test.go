@@ -294,6 +294,48 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 	}
 }
 
+func TestStandaloneRejectsUnknownRootSectionWithoutDeletingLastGood(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	initial := `routes:
+  - id: route-1
+    uri: /one
+#END
+`
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("initial Reload() error = %v", err)
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
+
+	unknown := `routs:
+  - id: route-1
+    uri: /wrong
+#END
+`
+	if err := os.WriteFile(path, []byte(unknown), 0o600); err != nil {
+		t.Fatalf("write unknown standalone config: %v", err)
+	}
+	if err := watcher.Reload(); err == nil || !strings.Contains(err.Error(), `unknown root section "routs"`) {
+		t.Fatalf("unknown root Reload() error = %v, want deterministic unknown-section error", err)
+	}
+
+	value, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("read last-good route: %v", err)
+	}
+	if len(value) == 0 {
+		t.Fatal("last-good route was deleted after unknown root section")
+	}
+}
+
 func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := `routes:
@@ -976,7 +1018,7 @@ routes:
 	}
 }
 
-func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
+func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"
 	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
@@ -996,7 +1038,7 @@ func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 
 	updated := "routes:\n  - id: route-1\n    uri: /two\n#END\n"
 	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write update before Watch: %v", err)
+		t.Fatalf("write update before StartAndReconcile: %v", err)
 	}
 	type reloadAttempt struct {
 		result StandaloneReloadResult
@@ -1006,18 +1048,20 @@ func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 	watcher.SetReloadCallback(func(result StandaloneReloadResult, err error) {
 		attempts <- reloadAttempt{result: result, err: err}
 	})
-	watcher.Watch()
+	if err := watcher.StartAndReconcile(); err != nil {
+		t.Fatalf("StartAndReconcile() error = %v", err)
+	}
 
 	select {
 	case attempt := <-attempts:
 		if attempt.err != nil {
-			t.Fatalf("Watch reconciliation error = %v", attempt.err)
+			t.Fatalf("StartAndReconcile reconciliation error = %v", attempt.err)
 		}
 		if got, want := attempt.result.ChangedHTTPRouteBuckets, []string{"routes"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("reconciled HTTP route buckets = %v, want %v", got, want)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Watch did not reconcile the update written before registration")
+		t.Fatal("StartAndReconcile did not reconcile the update written before registration")
 	}
 
 	if err := storage.Sync(); err != nil {
@@ -1033,6 +1077,56 @@ func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 	}
 	if got, want := route["uri"], "/two"; got != want {
 		t.Fatalf("reconciled route URI = %#v, want %q", got, want)
+	}
+}
+
+func TestStandaloneStartAndReconcileKeepsLastGoodOnReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 4)
+	storage := newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("initial Reload() error = %v", err)
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("routes:\n  - id: route-1\n    uri: /bad\n"), 0o600); err != nil {
+		t.Fatalf("write invalid window config: %v", err)
+	}
+	callbackDone := make(chan error, 1)
+	watcher.SetReloadCallback(func(_ StandaloneReloadResult, err error) {
+		callbackDone <- err
+	})
+
+	if err := watcher.StartAndReconcile(); err != nil {
+		t.Fatalf("StartAndReconcile() error = %v, want nil after registered read failure", err)
+	}
+	select {
+	case err := <-callbackDone:
+		if err == nil || !strings.Contains(err.Error(), "must end with #END") {
+			t.Fatalf("callback error = %v, want invalid YAML error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StartAndReconcile() did not invoke callback for invalid window config")
+	}
+
+	raw, err := storage.GetFromBucket("routes", []byte("route-1"))
+	if err != nil {
+		t.Fatalf("read last-good route: %v", err)
+	}
+	var route map[string]any
+	if err := json.Unmarshal(raw, &route); err != nil {
+		t.Fatalf("decode last-good route: %v", err)
+	}
+	if got, want := route["uri"], "/one"; got != want {
+		t.Fatalf("last-good route URI = %#v, want %q", got, want)
 	}
 }
 
@@ -1159,7 +1253,7 @@ func TestStandaloneReloadResultReportsAffectedSubsystems(t *testing.T) {
 	}
 }
 
-func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
+func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 	tests := []struct {
 		name      string
 		provider  string
@@ -1175,6 +1269,12 @@ func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
 		{name: "invalid JSON", provider: "json", content: `{`, wantError: "parse standalone JSON config"},
 		{name: "null JSON root", provider: "json", content: `null`, wantError: "expected object"},
 		{
+			name:      "unknown JSON root section",
+			provider:  "json",
+			content:   `{"zeta":[],"routs":[]}`,
+			wantError: `unknown root section "routs"`,
+		},
+		{
 			name:      "section is not array",
 			provider:  "json",
 			content:   `{"routes":{}}`,
@@ -1183,6 +1283,12 @@ func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
 		{name: "null JSON section", provider: "json", content: `{"routes":null}`, wantError: "expected array"},
 		{name: "invalid YAML", provider: "yaml", content: "routes: [\n#END", wantError: "parse standalone YAML config"},
 		{name: "null YAML root", provider: "yaml", content: "null\n#END", wantError: "expected object"},
+		{
+			name:      "unknown YAML root section",
+			provider:  "yaml",
+			content:   "zeta: []\nrouts: []\n#END",
+			wantError: `unknown root section "routs"`,
+		},
 		{name: "null YAML section", provider: "yaml", content: "routes:\n#END", wantError: "expected array"},
 	}
 
@@ -1202,6 +1308,29 @@ func TestReadStandaloneSnapshotRejectsInvalidDocuments(t *testing.T) {
 	_, _, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
 	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
 		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name     string
+		provider string
+		content  string
+	}{
+		{name: "empty JSON object", provider: "json", content: `{}`},
+		{name: "empty YAML object", provider: "yaml", content: "{}\n#END"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "apisix."+test.provider)
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatalf("write empty standalone fixture: %v", err)
+			}
+			snapshot, quarantined, err := readStandaloneSnapshot(path, test.provider)
+			if err != nil {
+				t.Fatalf("readStandaloneSnapshot() error = %v, want valid empty snapshot", err)
+			}
+			if len(snapshot) != 0 || len(quarantined) != 0 {
+				t.Fatalf("empty snapshot = %#v quarantined = %#v, want both empty", snapshot, quarantined)
+			}
+		})
 	}
 }
 

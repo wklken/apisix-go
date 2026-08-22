@@ -741,13 +741,13 @@ func luaValueToStatus(value lua.LValue) (int, bool) {
 	switch v := value.(type) {
 	case lua.LNumber:
 		status := float64(v)
-		if math.IsNaN(status) || status < 100 || status > 599 || status != math.Trunc(status) {
+		if math.IsNaN(status) || status < 200 || status > 599 || status != math.Trunc(status) {
 			return 0, false
 		}
 		return int(status), true
 	case lua.LString:
 		status, err := strconv.Atoi(string(v))
-		if err != nil || status < 100 || status > 599 {
+		if err != nil || status < 200 || status > 599 {
 			return 0, false
 		}
 		return status, true

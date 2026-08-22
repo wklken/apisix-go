@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,10 +49,16 @@ type Router struct {
 
 type routeEntry struct {
 	route     resource.StreamRoute
-	balancer  pxy.LoadBalancer
+	groups    []streamTargetGroup
 	chash     bool
 	hashNodes []hashTarget
 	serve     func(context.Context, net.Conn, string) (string, string, error)
+}
+
+type streamTargetGroup struct {
+	weights   map[string]int
+	balancer  pxy.LoadBalancer
+	hashNodes []hashTarget
 }
 
 type hashTarget struct {
@@ -198,8 +205,8 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		}
 	}
 
-	targets := make(map[string]int, len(route.Upstream.Nodes))
-	hashNodes := make([]hashTarget, 0, len(route.Upstream.Nodes))
+	groupWeights := make(map[int]map[string]int, len(route.Upstream.Nodes))
+	groupHashNodes := make(map[int][]hashTarget, len(route.Upstream.Nodes))
 	for _, node := range route.Upstream.Nodes {
 		address, err := nodeAddress(node)
 		if err != nil {
@@ -220,18 +227,43 @@ func buildRouteEntry(route resource.StreamRoute, enabledPlugins map[string]struc
 		if weight == 0 {
 			continue
 		}
-		targets[target] = weight
-		hashNodes = append(hashNodes, hashTarget{target: target, weight: weight})
+		weights, ok := groupWeights[node.Priority]
+		if !ok {
+			weights = make(map[string]int)
+			groupWeights[node.Priority] = weights
+		}
+		weights[target] = weight
+		groupHashNodes[node.Priority] = append(
+			groupHashNodes[node.Priority],
+			hashTarget{target: target, weight: weight},
+		)
 	}
-	if len(targets) == 0 {
+	if len(groupWeights) == 0 {
 		return routeEntry{}, fmt.Errorf(
 			"stream route %q upstream node weights: at least one upstream node must have a positive weight",
 			route.ID,
 		)
 	}
+	priorities := make([]int, 0, len(groupWeights))
+	for priority := range groupWeights {
+		priorities = append(priorities, priority)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(priorities)))
+	groups := make([]streamTargetGroup, 0, len(priorities))
+	hashNodes := make([]hashTarget, 0, len(route.Upstream.Nodes))
+	for _, priority := range priorities {
+		weights := groupWeights[priority]
+		priorityHashNodes := groupHashNodes[priority]
+		groups = append(groups, streamTargetGroup{
+			weights:   weights,
+			balancer:  pxy.NewWeightedRRLoadBalance(weights),
+			hashNodes: priorityHashNodes,
+		})
+		hashNodes = append(hashNodes, priorityHashNodes...)
+	}
 	entry := routeEntry{
 		route:     route,
-		balancer:  pxy.NewWeightedRRLoadBalance(targets),
+		groups:    groups,
 		chash:     strings.EqualFold(route.Upstream.Type, "chash"),
 		hashNodes: hashNodes,
 	}
@@ -324,7 +356,44 @@ func (e routeEntry) streamIdleTimeout() time.Duration {
 }
 
 func (e routeEntry) dial(ctx context.Context, key string) (net.Conn, error) {
-	target := e.selectTarget(key)
+	retries := max(e.route.Upstream.Retries, 0)
+	tried := make([]map[string]struct{}, len(e.groups))
+	for i := range tried {
+		tried[i] = make(map[string]struct{})
+	}
+	var lastErr error
+	remaining := retries
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		groupIndex, target := e.nextTarget(key, tried)
+		if target == "" {
+			for i := range tried {
+				clear(tried[i])
+			}
+			groupIndex, target = e.nextTarget(key, tried)
+			if target == "" {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, errors.New("no stream upstream target available")
+			}
+		}
+		tried[groupIndex][target] = struct{}{}
+		conn, err := e.dialTarget(ctx, target)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if remaining == 0 {
+			return nil, err
+		}
+		remaining--
+	}
+}
+
+func (e routeEntry) dialTarget(ctx context.Context, target string) (net.Conn, error) {
 	parsed, err := url.Parse(target)
 	if err != nil || parsed.Scheme != "tcp" || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid stream upstream target %q", target)
@@ -349,28 +418,76 @@ func (e routeEntry) dial(ctx context.Context, key string) (net.Conn, error) {
 }
 
 func (e routeEntry) selectTarget(key string) string {
-	if !e.chash || key == "" || len(e.hashNodes) == 0 {
-		return e.balancer.Next()
+	if len(e.groups) == 0 {
+		return ""
+	}
+	return e.groups[0].selectTarget(e.chash, key, nil)
+}
+
+func (e routeEntry) nextTarget(key string, tried []map[string]struct{}) (int, string) {
+	for i, group := range e.groups {
+		if target := group.selectTarget(e.chash, key, tried[i]); target != "" {
+			return i, target
+		}
+	}
+	return -1, ""
+}
+
+func (g streamTargetGroup) selectTarget(chash bool, key string, tried map[string]struct{}) string {
+	if len(tried) == 0 {
+		if !chash || key == "" || len(g.hashNodes) == 0 {
+			return g.balancer.Next()
+		}
+		return selectHashTarget(g.hashNodes, key)
+	}
+	remaining := make(map[string]int, len(g.weights))
+	for target, weight := range g.weights {
+		if _, ok := tried[target]; !ok {
+			remaining[target] = weight
+		}
+	}
+	if len(remaining) == 0 {
+		return ""
+	}
+	if chash && key != "" {
+		return selectHashTarget(untriedHashNodes(g.hashNodes, tried), key)
+	}
+	return pxy.NewWeightedRRLoadBalance(remaining).Next()
+}
+
+func untriedHashNodes(nodes []hashTarget, tried map[string]struct{}) []hashTarget {
+	untried := make([]hashTarget, 0, len(nodes))
+	for _, node := range nodes {
+		if _, ok := tried[node.target]; !ok {
+			untried = append(untried, node)
+		}
+	}
+	return untried
+}
+
+func selectHashTarget(nodes []hashTarget, key string) string {
+	if len(nodes) == 0 {
+		return ""
 	}
 	var total uint64
-	for _, node := range e.hashNodes {
+	for _, node := range nodes {
 		if node.weight > 0 {
 			total += uint64(node.weight)
 		}
 	}
 	if total == 0 {
-		return e.balancer.Next()
+		return ""
 	}
 	hasher := fnv.New32a()
 	_, _ = hasher.Write([]byte(key))
 	offset := uint64(hasher.Sum32()) % total
-	for _, node := range e.hashNodes {
+	for _, node := range nodes {
 		if offset < uint64(node.weight) {
 			return node.target
 		}
 		offset -= uint64(node.weight)
 	}
-	return e.hashNodes[len(e.hashNodes)-1].target
+	return nodes[len(nodes)-1].target
 }
 
 func nodeAddress(node resource.Node) (string, error) {

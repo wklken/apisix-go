@@ -71,13 +71,13 @@ jobs:
       matrix:
         case:
           - name: key-auth
-            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+            selector: key-auth/valid-consumer-schema
           - name: proxy-rewrite
-            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+            selector: proxy-rewrite/rewrite-host
           - name: proxy-control
-            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+            selector: proxy-control/request-buffering-disabled
           - name: uri-blocker
-            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
+            selector: uri-blocker/one-rule-blocks-query
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -89,4 +89,4 @@ jobs:
           cache: true
 
       - name: Run focused standalone smoke case
-        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
+        run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.selector }}'

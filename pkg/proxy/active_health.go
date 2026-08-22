@@ -35,11 +35,20 @@ type activeProbeResult uint8
 
 const (
 	activeProbeSuccess activeProbeResult = iota
+	activeProbeNeutral
 	activeProbeHTTPFailure
 	activeProbeTCPFailure
 	activeProbeTimeout
 	activeProbeCanceled
 )
+
+type activeProbeCounters struct {
+	successes    int
+	httpFailures int
+	tcpFailures  int
+	timeouts     int
+	generation   uint64
+}
 
 // ParseActiveHealthConfig parses the supported APISIX active HTTP/HTTPS probe
 // subset. The enabled result is false when checks.active is absent, so callers
@@ -275,10 +284,7 @@ func (c *activeHealthChecker) Close() {
 
 func (c *activeHealthChecker) probeTarget(target string) {
 	defer c.wg.Done()
-	var consecutiveSuccesses int
-	var consecutiveHTTPFailures int
-	var consecutiveTCPFailures int
-	var consecutiveTimeouts int
+	var counters activeProbeCounters
 	for {
 		healthy := c.lb.IsHealthy(target)
 		interval := c.config.UnhealthyInterval
@@ -298,39 +304,68 @@ func (c *activeHealthChecker) probeTarget(target string) {
 		if result == activeProbeCanceled || c.ctx.Err() != nil {
 			return
 		}
-		if result == activeProbeSuccess {
-			consecutiveSuccesses++
-			consecutiveHTTPFailures = 0
-			consecutiveTCPFailures = 0
-			consecutiveTimeouts = 0
-			if !healthy && consecutiveSuccesses >= c.config.HealthySuccesses {
-				if c.lb.MarkHealthy(target) {
-					c.observer.SetHealth(c.name, target, true)
-				}
-			}
-			continue
+		c.applyProbeResult(target, result, &counters)
+	}
+}
+
+func (c *activeHealthChecker) applyProbeResult(
+	target string,
+	result activeProbeResult,
+	counters *activeProbeCounters,
+) {
+	healthy, generation := c.lb.healthStatus(target)
+	if counters.generation != generation {
+		*counters = activeProbeCounters{generation: generation}
+	}
+	if result == activeProbeSuccess {
+		counters.httpFailures = 0
+		counters.tcpFailures = 0
+		counters.timeouts = 0
+		if healthy {
+			counters.successes = 0
+			return
 		}
-		consecutiveSuccesses = 0
-		threshold := 0
-		failures := 0
-		switch result {
-		case activeProbeHTTPFailure:
-			consecutiveHTTPFailures++
-			threshold = c.config.UnhealthyHTTPFails
-			failures = consecutiveHTTPFailures
-		case activeProbeTCPFailure:
-			consecutiveTCPFailures++
-			threshold = c.config.UnhealthyTCPFails
-			failures = consecutiveTCPFailures
-		case activeProbeTimeout:
-			consecutiveTimeouts++
-			threshold = c.config.UnhealthyTimeouts
-			failures = consecutiveTimeouts
-		}
-		if healthy && threshold > 0 && failures >= threshold {
-			if c.lb.MarkUnhealthy(target) {
-				c.observer.SetHealth(c.name, target, false)
+		counters.successes++
+		if counters.successes >= c.config.HealthySuccesses {
+			counters.successes = 0
+			if c.lb.MarkHealthy(target) {
+				c.observer.SetHealth(c.name, target, true)
 			}
+		}
+		return
+	}
+	if result == activeProbeNeutral {
+		return
+	}
+	counters.successes = 0
+	if !healthy {
+		counters.httpFailures = 0
+		counters.tcpFailures = 0
+		counters.timeouts = 0
+		return
+	}
+	threshold := 0
+	failures := 0
+	switch result {
+	case activeProbeHTTPFailure:
+		counters.httpFailures++
+		threshold = c.config.UnhealthyHTTPFails
+		failures = counters.httpFailures
+	case activeProbeTCPFailure:
+		counters.tcpFailures++
+		threshold = c.config.UnhealthyTCPFails
+		failures = counters.tcpFailures
+	case activeProbeTimeout:
+		counters.timeouts++
+		threshold = c.config.UnhealthyTimeouts
+		failures = counters.timeouts
+	}
+	if threshold > 0 && failures >= threshold {
+		counters.httpFailures = 0
+		counters.tcpFailures = 0
+		counters.timeouts = 0
+		if c.lb.MarkUnhealthy(target) {
+			c.observer.SetHealth(c.name, target, false)
 		}
 	}
 }
@@ -403,16 +438,15 @@ func (c *activeHealthChecker) probeHTTP(target string) activeProbeResult {
 		return activeProbeTCPFailure
 	}
 	defer func() { _ = response.Body.Close() }()
+	if _, healthy := c.config.HealthyStatuses[response.StatusCode]; healthy {
+		// A status in both sets is healthy by precedence.
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
+		return activeProbeSuccess
+	}
 	if _, unhealthy := c.config.UnhealthyStatuses[response.StatusCode]; unhealthy {
 		return activeProbeHTTPFailure
 	}
-	if _, healthy := c.config.HealthyStatuses[response.StatusCode]; !healthy {
-		return activeProbeHTTPFailure
-	}
-	// Drain at most 4 KiB so the connection is reusable without buffering an
-	// unbounded upstream response.
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
-	return activeProbeSuccess
+	return activeProbeNeutral
 }
 
 func defaultActiveHealthyStatuses() map[int]struct{} {

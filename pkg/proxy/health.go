@@ -148,16 +148,19 @@ type PassiveHealthConfig struct {
 	Type              string
 	HealthyStatuses   map[int]struct{}
 	UnhealthyStatuses map[int]struct{}
+	HealthySuccesses  int
 	HTTPFailures      int
 	TCPFailures       int
 	Timeouts          int
 }
 
 type healthState struct {
-	httpFailures int
-	tcpFailures  int
-	timeouts     int
-	unhealthy    bool
+	httpFailures     int
+	tcpFailures      int
+	timeouts         int
+	healthySuccesses int
+	unhealthy        bool
+	generation       uint64
 }
 
 // HealthAwareLoadBalance preserves weighted round-robin selection while
@@ -314,30 +317,57 @@ func (lb *HealthAwareLoadBalance) refreshHealthySelectorsLocked() {
 
 func (lb *HealthAwareLoadBalance) ReportHTTP(target string, status int) {
 	lb.mu.Lock()
-	if lb.config.Type == "tcp" {
-		lb.mu.Unlock()
-		return
-	}
 	state, ok := lb.states[target]
-	if !ok || state.unhealthy {
+	if !ok {
 		lb.mu.Unlock()
 		return
 	}
+	becameHealthy := false
 	becameUnhealthy := false
-	if _, unhealthy := lb.config.UnhealthyStatuses[status]; unhealthy {
+	_, healthy := lb.config.HealthyStatuses[status]
+	_, unhealthy := lb.config.UnhealthyStatuses[status]
+	if healthy {
+		if state.unhealthy {
+			if lb.config.HealthySuccesses == 0 {
+				lb.mu.Unlock()
+				return
+			}
+			state.healthySuccesses++
+			if state.healthySuccesses >= lb.config.HealthySuccesses {
+				state.unhealthy = false
+				state.generation++
+				state.httpFailures = 0
+				state.tcpFailures = 0
+				state.timeouts = 0
+				state.healthySuccesses = 0
+				lb.refreshHealthySelectorsLocked()
+				becameHealthy = true
+			}
+		} else {
+			state.httpFailures = 0
+			state.tcpFailures = 0
+			state.timeouts = 0
+			state.healthySuccesses = 0
+		}
+	} else if unhealthy {
+		state.healthySuccesses = 0
+		if state.unhealthy {
+			lb.mu.Unlock()
+			return
+		}
 		state.httpFailures++
 		if lb.config.HTTPFailures > 0 && state.httpFailures >= lb.config.HTTPFailures {
 			state.unhealthy = true
+			state.generation++
 			lb.refreshHealthySelectorsLocked()
 			becameUnhealthy = true
 		}
-	} else if _, healthy := lb.config.HealthyStatuses[status]; healthy {
-		state.httpFailures = 0
-		state.tcpFailures = 0
-		state.timeouts = 0
 	}
 	if becameUnhealthy && lb.observer != nil {
 		lb.observer.SetHealth(lb.name, target, false)
+	}
+	if becameHealthy && lb.observer != nil {
+		lb.observer.SetHealth(lb.name, target, true)
 	}
 	lb.mu.Unlock()
 }
@@ -345,7 +375,14 @@ func (lb *HealthAwareLoadBalance) ReportHTTP(target string, status int) {
 func (lb *HealthAwareLoadBalance) ReportTCPFailure(target string, timeout bool) {
 	lb.mu.Lock()
 	state, ok := lb.states[target]
-	if !ok || state.unhealthy {
+	if !ok {
+		lb.mu.Unlock()
+		return
+	}
+	// Any classified failure resets passive recovery progress, including while
+	// the target is already unhealthy.
+	state.healthySuccesses = 0
+	if state.unhealthy {
 		lb.mu.Unlock()
 		return
 	}
@@ -354,6 +391,7 @@ func (lb *HealthAwareLoadBalance) ReportTCPFailure(target string, timeout bool) 
 		state.timeouts++
 		if lb.config.Timeouts > 0 && state.timeouts >= lb.config.Timeouts {
 			state.unhealthy = true
+			state.generation++
 			lb.refreshHealthySelectorsLocked()
 			becameUnhealthy = true
 		}
@@ -361,6 +399,7 @@ func (lb *HealthAwareLoadBalance) ReportTCPFailure(target string, timeout bool) 
 		state.tcpFailures++
 		if lb.config.TCPFailures > 0 && state.tcpFailures >= lb.config.TCPFailures {
 			state.unhealthy = true
+			state.generation++
 			lb.refreshHealthySelectorsLocked()
 			becameUnhealthy = true
 		}
@@ -385,10 +424,18 @@ func (lb *HealthAwareLoadBalance) clearObserver() {
 }
 
 func (lb *HealthAwareLoadBalance) IsHealthy(target string) bool {
+	healthy, _ := lb.healthStatus(target)
+	return healthy
+}
+
+func (lb *HealthAwareLoadBalance) healthStatus(target string) (bool, uint64) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	state, ok := lb.states[target]
-	return ok && !state.unhealthy
+	if !ok {
+		return false, 0
+	}
+	return !state.unhealthy, state.generation
 }
 
 // MarkHealthy recovers a target after a successful active probe. It reports
@@ -402,9 +449,11 @@ func (lb *HealthAwareLoadBalance) MarkHealthy(target string) bool {
 		return false
 	}
 	state.unhealthy = false
+	state.generation++
 	state.httpFailures = 0
 	state.tcpFailures = 0
 	state.timeouts = 0
+	state.healthySuccesses = 0
 	lb.refreshHealthySelectorsLocked()
 	return true
 }
@@ -419,7 +468,9 @@ func (lb *HealthAwareLoadBalance) MarkUnhealthy(target string) bool {
 	if !ok || state.unhealthy {
 		return false
 	}
+	state.healthySuccesses = 0
 	state.unhealthy = true
+	state.generation++
 	lb.refreshHealthySelectorsLocked()
 	return true
 }
@@ -442,6 +493,7 @@ func parsePassiveHealthConfig(checks map[string]any) (PassiveHealthConfig, error
 		Type:              "http",
 		HealthyStatuses:   defaultHealthyStatuses(),
 		UnhealthyStatuses: map[int]struct{}{429: {}, 500: {}, 503: {}},
+		HealthySuccesses:  5,
 		HTTPFailures:      5,
 		TCPFailures:       2,
 		Timeouts:          7,
@@ -478,6 +530,13 @@ func parsePassiveHealthConfig(checks map[string]any) (PassiveHealthConfig, error
 			if err != nil {
 				return config, err
 			}
+		}
+		if rawSuccesses, exists := healthy["successes"]; exists {
+			successes, err := nonNegativeInt(rawSuccesses, "checks.passive.healthy.successes")
+			if err != nil {
+				return config, err
+			}
+			config.HealthySuccesses = successes
 		}
 	}
 	if rawUnhealthy, exists := passiveMap["unhealthy"]; exists && rawUnhealthy != nil {

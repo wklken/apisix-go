@@ -41,7 +41,7 @@ const schema = `
 	  "response_status": {
 		"type": "integer",
 		"default": 200,
-		"minimum": 100,
+		"minimum": 200,
 		"maximum": 599
 	  },
 	  "content_type": {

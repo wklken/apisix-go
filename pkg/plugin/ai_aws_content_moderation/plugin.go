@@ -82,7 +82,7 @@ const schema = `
     },
     "deny_code": {
       "type": "integer",
-      "minimum": 100,
+      "minimum": 200,
       "maximum": 599,
       "default": 200
     },

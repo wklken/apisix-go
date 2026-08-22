@@ -84,6 +84,17 @@ test-integration:
 test-plugin-harness:
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1
 
+PLUGIN_STATUS_TEST ?= TestSupportedPluginManifestSelection
+
+.PHONY: test-plugin-status
+test-plugin-status:
+	@set -eu; \
+		test_name='$(PLUGIN_STATUS_TEST)'; \
+		listed=$$(APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -list "^$${test_name}$$"); \
+		printf '%s\n' "$$listed" | grep -Fxq "$$test_name" || \
+			(printf 'plugin status test %s was not found\n' "$$test_name" >&2; exit 1)
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^$(PLUGIN_STATUS_TEST)$$' -count=1
+
 PLUGIN_SMOKE_CASE ?=
 
 .PHONY: test-plugin-smoke

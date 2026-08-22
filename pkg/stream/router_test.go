@@ -682,6 +682,150 @@ func TestNewRouterRejectsAllZeroStreamUpstreamWeightsForRRAndChash(t *testing.T)
 	}
 }
 
+func TestRouterSelectsOnlyHighestPriorityStreamGroup(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "priority-selection",
+		Upstream: resource.Upstream{
+			Type: "roundrobin",
+			Nodes: []resource.Node{
+				{Host: "high.example", Port: 1883, Weight: 1, Priority: 10},
+				{Host: "low.example", Port: 1883, Weight: 1, Priority: 0},
+			},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	entry := router.routes[0]
+	for range 20 {
+		if got := entry.selectTarget(""); got != "tcp://high.example:1883" {
+			t.Fatalf("selected target = %q, want only highest-priority target", got)
+		}
+	}
+}
+
+func TestRouterRetriesFromClosedHighPriorityStreamNode(t *testing.T) {
+	high, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen high-priority target: %v", err)
+	}
+	highAddr := high.Addr().String()
+	highHost, highPortText, err := net.SplitHostPort(highAddr)
+	if err != nil {
+		t.Fatalf("split high-priority target: %v", err)
+	}
+	highPort, err := strconv.Atoi(highPortText)
+	if err != nil {
+		t.Fatalf("parse high-priority target port: %v", err)
+	}
+
+	low, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen low-priority target: %v", err)
+	}
+	t.Cleanup(func() { _ = low.Close() })
+	if err := high.Close(); err != nil {
+		t.Fatalf("close high-priority target: %v", err)
+	}
+	lowHost, lowPortText, err := net.SplitHostPort(low.Addr().String())
+	if err != nil {
+		t.Fatalf("split low-priority target: %v", err)
+	}
+	lowPort, err := strconv.Atoi(lowPortText)
+	if err != nil {
+		t.Fatalf("parse low-priority target port: %v", err)
+	}
+
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "priority-retry",
+		Upstream: resource.Upstream{
+			Retries: 1,
+			Nodes: []resource.Node{
+				{Host: highHost, Port: highPort, Weight: 1, Priority: 10},
+				{Host: lowHost, Port: lowPort, Weight: 1, Priority: 0},
+			},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	conn, err := router.routes[0].dial(context.Background(), "")
+	if err != nil {
+		t.Fatalf("dial() error = %v, want lower-priority fallback", err)
+	}
+	if got, want := conn.RemoteAddr().String(), low.Addr().String(); got != want {
+		_ = conn.Close()
+		t.Fatalf("dial() connected to %q, want lower-priority target %q", got, want)
+	}
+	_ = conn.Close()
+}
+
+func TestRouterDoesNotRetryWhenStreamRetriesIsZero(t *testing.T) {
+	high, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen high-priority target: %v", err)
+	}
+	highAddr := high.Addr().String()
+	highHost, highPortText, err := net.SplitHostPort(highAddr)
+	if err != nil {
+		t.Fatalf("split high-priority target: %v", err)
+	}
+	highPort, err := strconv.Atoi(highPortText)
+	if err != nil {
+		t.Fatalf("parse high-priority target port: %v", err)
+	}
+
+	low, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen low-priority target: %v", err)
+	}
+	t.Cleanup(func() { _ = low.Close() })
+	if err := high.Close(); err != nil {
+		t.Fatalf("close high-priority target: %v", err)
+	}
+	lowHost, lowPortText, err := net.SplitHostPort(low.Addr().String())
+	if err != nil {
+		t.Fatalf("split low-priority target: %v", err)
+	}
+	lowPort, err := strconv.Atoi(lowPortText)
+	if err != nil {
+		t.Fatalf("parse low-priority target port: %v", err)
+	}
+
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "priority-no-retry",
+		Upstream: resource.Upstream{
+			Retries: 0,
+			Nodes: []resource.Node{
+				{Host: highHost, Port: highPort, Weight: 1, Priority: 10},
+				{Host: lowHost, Port: lowPort, Weight: 1, Priority: 0},
+			},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	if _, err := router.routes[0].dial(context.Background(), ""); err == nil {
+		t.Fatal("dial() error = nil, want closed high-priority target failure")
+	}
+	tcpLow := low.(*net.TCPListener)
+	if err := tcpLow.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("set low-priority listener deadline: %v", err)
+	}
+	conn, acceptErr := tcpLow.Accept()
+	if acceptErr == nil {
+		_ = conn.Close()
+		t.Fatal("dial() fell back to low-priority target with retries=0")
+	}
+	var networkError net.Error
+	if !errors.As(acceptErr, &networkError) || !networkError.Timeout() {
+		t.Fatalf("low-priority Accept() error = %v, want timeout without a connection", acceptErr)
+	}
+}
+
 func TestRouterMatchesExactRemoteAddressAndCIDR(t *testing.T) {
 	for _, remote := range []string{"127.0.0.1", "127.0.0.1/32"} {
 		router, err := NewRouter([]resource.StreamRoute{{
@@ -781,6 +925,31 @@ func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
 	}
 	if first == entry.selectTarget("client-2") && first == entry.selectTarget("client-3") {
 		t.Fatalf("different client IDs all selected %q; expected deterministic distribution", first)
+	}
+}
+
+func TestRouterChashPreservesConfiguredNodeOrderWithinPriority(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID: "mqtt-hash-order",
+		Upstream: resource.Upstream{
+			Type:   "chash",
+			HashOn: "vars",
+			Key:    "mqtt_client_id",
+			Nodes: []resource.Node{
+				{Host: "broker-z", Port: 1883, Weight: 1, Priority: 10},
+				{Host: "broker-a", Port: 1883, Weight: 1, Priority: 10},
+			},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	entry := router.routes[0]
+	if got := entry.groups[0].hashNodes[0].target; got != "tcp://broker-z:1883" {
+		t.Fatalf("first chash target = %q, want configured first target", got)
+	}
+	if got := entry.selectTarget("client-1"); got != "tcp://broker-z:1883" {
+		t.Fatalf("client-1 chash target = %q, want mapping from configured node order", got)
 	}
 }
 

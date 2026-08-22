@@ -147,19 +147,20 @@ func TestListStreamRoutesKeepsLastGoodAndDropsDeletedIDs(t *testing.T) {
 		"/apisix/stream_routes/other",
 		`{"id":"other","server_addr":"127.0.0.1","server_port":1884,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
 	)
-	routes, err := ListStreamRoutes()
+	routes, candidate, err := PrepareStreamRoutes()
 	if err != nil || len(routes) != 2 {
-		t.Fatalf("ListStreamRoutes() = %+v/%v, want two last-good routes", routes, err)
+		t.Fatalf("PrepareStreamRoutes() = %+v/%v, want two last-good routes", routes, err)
 	}
+	CommitStreamRouteLastGood(candidate)
 
 	if err := storage.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("stream_routes")).Put([]byte("mqtt"), []byte(`{`))
 	}); err != nil {
 		t.Fatalf("corrupt mqtt stream route: %v", err)
 	}
-	routes, err = ListStreamRoutes()
+	routes, _, err = PrepareStreamRoutes()
 	if err != nil {
-		t.Fatalf("ListStreamRoutes() after corruption = %v, want last-good mqtt", err)
+		t.Fatalf("PrepareStreamRoutes() after corruption = %v, want last-good mqtt", err)
 	}
 	if len(routes) != 2 {
 		t.Fatalf("ListStreamRoutes() after corruption = %+v, want two routes", routes)
@@ -178,21 +179,142 @@ func TestListStreamRoutesKeepsLastGoodAndDropsDeletedIDs(t *testing.T) {
 	}
 
 	applyStreamRouteEvent(t, storage, EventTypeDelete, "/apisix/stream_routes/mqtt", "")
-	routes, err = ListStreamRoutes()
+	routes, candidate, err = PrepareStreamRoutes()
 	if err != nil {
-		t.Fatalf("ListStreamRoutes() after delete = %v", err)
+		t.Fatalf("PrepareStreamRoutes() after delete = %v", err)
 	}
 	if len(routes) != 1 || routes[0].ID != "other" {
-		t.Fatalf("ListStreamRoutes() after delete = %+v, want only other", routes)
+		t.Fatalf("PrepareStreamRoutes() after delete = %+v, want only other", routes)
 	}
+	CommitStreamRouteLastGood(candidate)
 
 	if err := storage.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("stream_routes")).Put([]byte("mqtt"), []byte(`{`))
 	}); err != nil {
 		t.Fatalf("reinsert deleted mqtt as malformed: %v", err)
 	}
-	if _, err := ListStreamRoutes(); err == nil {
-		t.Fatal("ListStreamRoutes() accepted malformed mqtt after last-good was deleted")
+	if _, _, err := PrepareStreamRoutes(); err == nil {
+		t.Fatal("PrepareStreamRoutes() accepted malformed mqtt after last-good was deleted")
+	}
+}
+
+func TestPrepareStreamRoutesDoesNotCommitUnpublishedGeneration(t *testing.T) {
+	events := make(chan *Event, 4)
+	storage, err := Open(t.TempDir()+"/stream-uncommitted.db", events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	previous := ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		ReplaceGlobalStoreForTest(previous)
+		_ = storage.Stop()
+	})
+
+	const published = `{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`
+	applyStreamRouteEvent(t, storage, EventTypePut, "/apisix/stream_routes/mqtt", published)
+	_, candidate, err := PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() published generation: %v", err)
+	}
+	CommitStreamRouteLastGood(candidate)
+
+	const unresolved = `{"id":"mqtt","server_addr":"127.0.0.1","server_port":1883,"upstream_id":"missing"}`
+	applyStreamRouteEvent(t, storage, EventTypePut, "/apisix/stream_routes/mqtt", unresolved)
+	routes, failedCandidate, err := PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() parse-valid missing upstream = %v", err)
+	}
+	if len(routes) != 1 || routes[0].UpstreamID != "missing" {
+		t.Fatalf("PrepareStreamRoutes() = %#v, want parse-valid missing upstream", routes)
+	}
+	if failedCandidate == nil {
+		t.Fatal("failed generation candidate is nil")
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("stream_routes")).Put([]byte("mqtt"), []byte(`{`))
+	}); err != nil {
+		t.Fatalf("corrupt unpublished mqtt: %v", err)
+	}
+	routes, _, err = PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() after unpublished corruption = %v, want original published mqtt", err)
+	}
+	if len(routes) != 1 || routes[0].ID != "mqtt" || routes[0].ServerPort != 1883 ||
+		routes[0].UpstreamID != "" || len(routes[0].Upstream.Nodes) != 1 {
+		t.Fatalf("recovered mqtt = %#v, want originally published inline upstream", routes)
+	}
+}
+
+func TestPrepareStreamRoutesKeepsLastGoodAfterUnpublishedListenConflict(t *testing.T) {
+	events := make(chan *Event, 4)
+	storage, err := Open(t.TempDir()+"/stream-conflict.db", events)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	storage.Start()
+	previous := ReplaceGlobalStoreForTest(storage)
+	t.Cleanup(func() {
+		ReplaceGlobalStoreForTest(previous)
+		_ = storage.Stop()
+	})
+
+	applyStreamRouteEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/stream_routes/a",
+		`{"id":"a","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}}`,
+	)
+	applyStreamRouteEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/stream_routes/b",
+		`{"id":"b","server_addr":"127.0.0.1","server_port":1884,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
+	)
+	_, candidate, err := PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() published A/B: %v", err)
+	}
+	CommitStreamRouteLastGood(candidate)
+
+	applyStreamRouteEvent(
+		t,
+		storage,
+		EventTypePut,
+		"/apisix/stream_routes/b",
+		`{"id":"b","server_addr":"127.0.0.1","server_port":1883,"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2884":1}}}`,
+	)
+	routes, _, err := PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() conflicting B = %v", err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("PrepareStreamRoutes() = %#v, want parse-valid conflicting pair", routes)
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("stream_routes")).Put([]byte("b"), []byte(`{`))
+	}); err != nil {
+		t.Fatalf("corrupt unpublished B: %v", err)
+	}
+	routes, _, err = PrepareStreamRoutes()
+	if err != nil {
+		t.Fatalf("PrepareStreamRoutes() after unpublished B corruption = %v", err)
+	}
+	var recoveredB bool
+	for _, route := range routes {
+		if route.ID == "b" {
+			recoveredB = true
+			if route.ServerPort != 1884 {
+				t.Fatalf("recovered B = %#v, want originally published port 1884", route)
+			}
+		}
+	}
+	if !recoveredB {
+		t.Fatalf("PrepareStreamRoutes() = %#v, want recovered B", routes)
 	}
 }
 

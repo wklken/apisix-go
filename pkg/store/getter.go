@@ -218,29 +218,41 @@ func routeIDForDecodeError(config []byte) string {
 }
 
 func ListStreamRoutes() ([]resource.StreamRoute, error) {
+	routes, _, err := PrepareStreamRoutes()
+	return routes, err
+}
+
+func PrepareStreamRoutes() ([]resource.StreamRoute, map[string]resource.StreamRoute, error) {
 	if s == nil {
-		return nil, ErrNotFound
+		return nil, nil, ErrNotFound
 	}
 	return s.listStreamRoutes()
 }
 
-func (s *Store) listStreamRoutes() ([]resource.StreamRoute, error) {
+func CommitStreamRouteLastGood(candidate map[string]resource.StreamRoute) {
+	if s == nil {
+		return
+	}
+	s.commitStreamRouteLastGood(candidate)
+}
+
+func (s *Store) listStreamRoutes() ([]resource.StreamRoute, map[string]resource.StreamRoute, error) {
 	entries, err := s.getBucketEntries("stream_routes")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lastGood := s.streamRouteLastGood.Load()
 	routes := make([]resource.StreamRoute, 0, len(entries))
-	published := make(map[string]resource.StreamRoute, len(entries))
+	candidate := make(map[string]resource.StreamRoute, len(entries))
 	for _, entry := range entries {
 		route, err := ParseStreamRoute(entry.value)
 		if err != nil {
 			if lastGood == nil {
-				return nil, fmt.Errorf("parse stream route %q: %w", entry.id, err)
+				return nil, nil, fmt.Errorf("parse stream route %q: %w", entry.id, err)
 			}
 			prev, ok := (*lastGood)[entry.id]
 			if !ok {
-				return nil, fmt.Errorf("parse stream route %q: %w", entry.id, err)
+				return nil, nil, fmt.Errorf("parse stream route %q: %w", entry.id, err)
 			}
 			route = cloneStreamRoute(prev)
 		}
@@ -248,10 +260,17 @@ func (s *Store) listStreamRoutes() ([]resource.StreamRoute, error) {
 			route.ID = entry.id
 		}
 		routes = append(routes, route)
-		published[entry.id] = cloneStreamRoute(route)
+		candidate[entry.id] = cloneStreamRoute(route)
+	}
+	return routes, candidate, nil
+}
+
+func (s *Store) commitStreamRouteLastGood(candidate map[string]resource.StreamRoute) {
+	published := make(map[string]resource.StreamRoute, len(candidate))
+	for id, route := range candidate {
+		published[id] = cloneStreamRoute(route)
 	}
 	s.streamRouteLastGood.Store(&published)
-	return routes, nil
 }
 
 func ListSSLs() ([]resource.SSL, error) {
@@ -927,10 +946,8 @@ func lastGoodGlobalRule(previous *ConfigSnapshot, id string) (resource.GlobalRul
 	if previous == nil {
 		return resource.GlobalRule{}, false
 	}
-	for _, rule := range previous.globalRules {
-		if rule.ID == id {
-			return cloneGlobalRule(rule), true
-		}
+	if rule, ok := previous.globalRulesByKey[id]; ok {
+		return cloneGlobalRule(rule), true
 	}
 	return resource.GlobalRule{}, false
 }
@@ -946,17 +963,18 @@ func lastGoodHTTPPlugins(previous *ConfigSnapshot) ([]string, bool) {
 // It is constructed from one bbolt read transaction and published once per
 // Store generation. Callers receive cloned values from every accessor.
 type ConfigSnapshot struct {
-	generation     uint64
-	routes         []resource.Route
-	globalRules    []resource.GlobalRule
-	pluginMetadata map[string]map[string]any
-	services       map[string]resource.Service
-	upstreams      map[string]resource.Upstream
-	pluginConfigs  map[string]resource.PluginConfigRule
-	ssls           map[string]resource.SSL
-	httpPlugins    []string
-	dynamicPlugins bool
-	quarantined    []ConfigQuarantine
+	generation       uint64
+	routes           []resource.Route
+	globalRules      []resource.GlobalRule
+	pluginMetadata   map[string]map[string]any
+	services         map[string]resource.Service
+	upstreams        map[string]resource.Upstream
+	pluginConfigs    map[string]resource.PluginConfigRule
+	ssls             map[string]resource.SSL
+	globalRulesByKey map[string]resource.GlobalRule
+	httpPlugins      []string
+	dynamicPlugins   bool
+	quarantined      []ConfigQuarantine
 }
 
 // ConfigQuarantine identifies a legacy configuration row that could not be
@@ -1114,12 +1132,13 @@ func (s *Store) getConfigSnapshot() (*ConfigSnapshot, error) {
 
 func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) {
 	snapshot := &ConfigSnapshot{
-		generation:     generation,
-		pluginMetadata: map[string]map[string]any{},
-		services:       map[string]resource.Service{},
-		upstreams:      map[string]resource.Upstream{},
-		pluginConfigs:  map[string]resource.PluginConfigRule{},
-		ssls:           map[string]resource.SSL{},
+		generation:       generation,
+		pluginMetadata:   map[string]map[string]any{},
+		services:         map[string]resource.Service{},
+		upstreams:        map[string]resource.Upstream{},
+		pluginConfigs:    map[string]resource.PluginConfigRule{},
+		ssls:             map[string]resource.SSL{},
+		globalRulesByKey: map[string]resource.GlobalRule{},
 	}
 
 	entriesByBucket := make(map[string][]bucketEntry, len(configSnapshotBuckets))
@@ -1173,9 +1192,11 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 				return nil, fmt.Errorf("decode global_rules/%q: %w", entry.id, err)
 			}
 			snapshot.globalRules = append(snapshot.globalRules, lastGood)
+			snapshot.globalRulesByKey[entry.id] = lastGood
 			continue
 		}
 		snapshot.globalRules = append(snapshot.globalRules, rule)
+		snapshot.globalRulesByKey[entry.id] = cloneGlobalRule(rule)
 	}
 
 	for _, entry := range entriesByBucket["plugin_metadata"] {

@@ -519,6 +519,44 @@ func TestConfigSnapshotKeepsLastGoodSSLGlobalRuleAndPluginList(t *testing.T) {
 	}
 }
 
+func TestConfigSnapshotKeepsLastGoodGlobalRuleByDurableKey(t *testing.T) {
+	storage := newConfigSnapshotTestStore(t)
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("global_rules")).Put(
+			[]byte("durable-rule"),
+			[]byte(`{"id":"logical-rule","plugins":{"request-id":{}}}`),
+		)
+	}); err != nil {
+		t.Fatalf("seed mismatched global-rule identity: %v", err)
+	}
+
+	before, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("get last-good snapshot: %v", err)
+	}
+	if rules := before.GlobalRules(); len(rules) != 1 || rules[0].ID != "logical-rule" ||
+		rules[0].Plugins["request-id"] == nil {
+		t.Fatalf("last-good global rules = %+v, want logical-rule", rules)
+	}
+
+	if err := storage.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("global_rules")).
+			Put([]byte("durable-rule"), []byte(`{"id":"logical-rule","plugins":[]}`))
+	}); err != nil {
+		t.Fatalf("corrupt durable-rule: %v", err)
+	}
+	storage.configGeneration.Add(1)
+
+	after, err := storage.getConfigSnapshot()
+	if err != nil {
+		t.Fatalf("getConfigSnapshot() after durable-rule corruption = %v, want last-good logical-rule", err)
+	}
+	if rules := after.GlobalRules(); len(rules) != 1 || rules[0].ID != "logical-rule" ||
+		rules[0].Plugins["request-id"] == nil {
+		t.Fatalf("retained global rules = %+v, want last-good logical-rule by durable-rule", rules)
+	}
+}
+
 func TestConfigSnapshotFailsClosedWithoutLastGoodSSLAndPluginList(t *testing.T) {
 	t.Run("ssl", func(t *testing.T) {
 		storage := newConfigSnapshotTestStore(t)

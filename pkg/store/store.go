@@ -86,9 +86,9 @@ type Store struct {
 	afterConfigSnapshotBucketRead func(string)
 	configSnapshotMu              sync.Mutex
 
-	// streamRouteLastGood is the last successfully listed stream-route
-	// generation, keyed by durable ID. Explicit deletes drop an ID; a
-	// failed list leaves this pointer unchanged.
+	// streamRouteLastGood is the last successfully published stream-route
+	// generation, keyed by durable ID. Prepare recovers damaged rows from
+	// this map; commit happens only after runtime publication succeeds.
 	streamRouteLastGood atomic.Pointer[map[string]resource.StreamRoute]
 
 	// protosGeneration increments on every protos bucket change so consumers
@@ -198,6 +198,22 @@ func ReplaceGlobalStoreForTest(storage *Store) *Store {
 	previous := s
 	s = storage
 	return previous
+}
+
+// WriteBucketValueForTest writes a raw bucket row, including malformed
+// payloads that PUT validation would reject. Tests use it to simulate durable
+// corruption after an unpublished generation.
+func WriteBucketValueForTest(storage *Store, bucket, id string, value []byte) error {
+	if storage == nil {
+		return ErrNotFound
+	}
+	return storage.db.Update(func(tx *bolt.Tx) error {
+		ref := tx.Bucket([]byte(bucket))
+		if ref == nil {
+			return errBucketNotFound
+		}
+		return ref.Put([]byte(id), value)
+	})
 }
 
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {

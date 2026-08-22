@@ -360,7 +360,24 @@ func wildcardRouteHostKey(pattern string) (string, bool) {
 	if !strings.HasPrefix(pattern, "*.") {
 		return "", false
 	}
+	suffix := pattern[2:]
+	if suffix == "" || strings.ContainsAny(suffix, "*?[") {
+		return "", false
+	}
 	return pattern[1:], true
+}
+
+func validateRouteHost(host string) error {
+	normalized := normalizeRouteHost(strings.TrimSpace(host))
+	if normalized == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if strings.ContainsAny(normalized, "*?[") {
+		if _, ok := wildcardRouteHostKey(normalized); !ok {
+			return fmt.Errorf("wildcard must be *.suffix")
+		}
+	}
+	return nil
 }
 
 func wildcardHostKey(host string) string {
@@ -1322,6 +1339,14 @@ func validateRouteSemantics(routeResource resource.Route) error {
 	}
 	if routeResource.HostConfigured() && strings.TrimSpace(routeResource.Host) == "" {
 		return fmt.Errorf("route %q host must not be empty", routeResource.ID)
+	}
+	if routeResource.HostsConfigured() && len(routeResource.EffectiveHosts()) == 0 {
+		return fmt.Errorf("route %q hosts must not be empty", routeResource.ID)
+	}
+	for _, host := range routeResource.EffectiveHosts() {
+		if err := validateRouteHost(host); err != nil {
+			return fmt.Errorf("route %q host %q is invalid: %w", routeResource.ID, host, err)
+		}
 	}
 	if routeResource.RemoteAddrConfigured() {
 		return fmt.Errorf("route %q remote_addr is unsupported by the Go data plane", routeResource.ID)

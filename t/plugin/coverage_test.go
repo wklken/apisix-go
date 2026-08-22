@@ -538,33 +538,113 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 	for caseIndex := range manifest.Cases {
 		caseSpec := &manifest.Cases[caseIndex]
 		if len(caseSpec.Variants) == 0 {
-			if !caseExercisesTargetPlugin(
+			activates := caseExercisesTargetPlugin(
 				caseSpec.Runtime,
 				caseSpec.Config,
 				caseSpec.Steps,
 				pluginName,
-			) {
-				t.Errorf("%s case %q never activates target plugin %q", file, caseSpec.Name, pluginName)
+			)
+			if err := validateTargetPluginExemption(caseSpec.TargetPluginExemptReason, activates); err != nil {
+				t.Errorf("%s case %q target plugin %q: %v", file, caseSpec.Name, pluginName, err)
 			}
 			continue
 		}
 		for variantIndex := range caseSpec.Variants {
 			variant := &caseSpec.Variants[variantIndex]
-			if !caseExercisesTargetPlugin(
+			activates := caseExercisesTargetPlugin(
 				variant.Runtime,
 				variant.Config,
 				variant.Steps,
 				pluginName,
-			) {
+			)
+			if err := validateTargetPluginExemption(variant.TargetPluginExemptReason, activates); err != nil {
 				t.Errorf(
-					"%s case %q variant %q never activates target plugin %q",
+					"%s case %q variant %q target plugin %q: %v",
 					file,
 					caseSpec.Name,
 					variant.Name,
 					pluginName,
+					err,
 				)
 			}
 		}
+	}
+}
+
+func validateTargetPluginExemption(reason string, activates bool) error {
+	if activates {
+		if strings.TrimSpace(reason) != "" {
+			return fmt.Errorf("target_plugin_exempt_reason must be empty when the target plugin is activated")
+		}
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("target_plugin_exempt_reason is required when the target plugin is not activated")
+	}
+	return nil
+}
+
+func TestTargetPluginExemptionRequiresReasonForInactiveScenario(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{name: "missing reason", want: "target_plugin_exempt_reason is required"},
+		{name: "blank reason", reason: "  \t", want: "target_plugin_exempt_reason is required"},
+		{name: "valid reason", reason: "intentional negative coverage case"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTargetPluginExemption(tt.reason, false)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validateTargetPluginExemption() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateTargetPluginExemption() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestTargetPluginExemptionRejectedWhenScenarioActivatesTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		runtime  map[string]any
+		config   map[string]any
+		steps    []CaseStep
+		exempted string
+	}{
+		{
+			name: "case",
+			config: map[string]any{
+				"routes": []any{map[string]any{
+					"plugins": map[string]any{"error-log-logger": map[string]any{}},
+				}},
+			},
+			exempted: "stale exemption",
+		},
+		{
+			name: "variant",
+			runtime: map[string]any{
+				"plugins": []any{"error-log-logger"},
+			},
+			exempted: "stale exemption",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !caseExercisesTargetPlugin(tt.runtime, tt.config, tt.steps, "error-log-logger") {
+				t.Fatal("caseExercisesTargetPlugin() = false, want active target plugin")
+			}
+			err := validateTargetPluginExemption(tt.exempted, true)
+			if err == nil || !strings.Contains(err.Error(), "must be empty") {
+				t.Fatalf("validateTargetPluginExemption() error = %v, want stale exemption rejection", err)
+			}
+		})
 	}
 }
 

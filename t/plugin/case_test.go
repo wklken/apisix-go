@@ -21,6 +21,88 @@ func TestLoadManifestRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsTargetPluginExemptionField(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 2
+cases:
+  - name: exempted
+    target_plugin_exempt_reason: intentional negative coverage case
+    source:
+      tests: [1]
+    config:
+      routes: []
+    input:
+      path: /exempted
+    output:
+      status: 404
+  - name: variants
+    source:
+      tests: [2]
+    variants:
+      - name: exempted-variant
+        target_plugin_exempt_reason: variant does not activate target
+        config:
+          routes: []
+        input:
+          path: /variant
+        output:
+          status: 404
+`)
+
+	manifest, err := loadManifest("target-plugin-exemption.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if got := manifest.Cases[0].TargetPluginExemptReason; got != "intentional negative coverage case" {
+		t.Fatalf("case target_plugin_exempt_reason = %q", got)
+	}
+	if got := manifest.Cases[1].Variants[0].TargetPluginExemptReason; got != "variant does not activate target" {
+		t.Fatalf("variant target_plugin_exempt_reason = %q", got)
+	}
+}
+
+func TestManifestRejectsParentTargetPluginExemptionWithVariants(t *testing.T) {
+	tests := []struct {
+		name       string
+		reason     string
+		wantReject bool
+	}{
+		{name: "nonblank reason", reason: "set on the variant instead", wantReject: true},
+		{name: "whitespace is empty", reason: " \t\n ", wantReject: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := validManifest()
+			caseSpec := &manifest.Cases[0]
+			variant := CaseVariant{
+				Name:   "variant",
+				Config: caseSpec.Config,
+				Input:  caseSpec.Input,
+				Output: caseSpec.Output,
+			}
+			caseSpec.Config = nil
+			caseSpec.Input = HTTPInput{}
+			caseSpec.Output = HTTPOutput{}
+			caseSpec.TargetPluginExemptReason = tt.reason
+			caseSpec.Variants = []CaseVariant{variant}
+
+			err := manifest.validate()
+			if tt.wantReject {
+				if err == nil || !strings.Contains(err.Error(), "target_plugin_exempt_reason") {
+					t.Fatalf("validate() error = %v, want parent exemption rejection", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validate() error = %v, want whitespace reason treated as empty", err)
+			}
+		})
+	}
+}
+
 func TestManifestAcceptsCaseLevelSerialFlag(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix

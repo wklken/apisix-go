@@ -240,6 +240,7 @@ var sensitiveAccessLogHeaders = map[string]struct{}{
 	"proxy-authorization":  {},
 	"cookie":               {},
 	"set-cookie":           {},
+	"apikey":               {},
 	"x-api-key":            {},
 	"x-functions-key":      {},
 	"x-amz-security-token": {},

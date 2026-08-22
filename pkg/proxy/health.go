@@ -251,11 +251,25 @@ func (lb *HealthAwareLoadBalance) NextForRequest(request *http.Request) string {
 	selectable := func(target string) bool {
 		return !anyHealthy || !lb.states[target].unhealthy
 	}
-	for _, group := range lb.groups {
-		if target := group.nextUntried(state.tried, selectable); target != "" {
-			state.last = target
-			return target
+	next := func() string {
+		for _, group := range lb.groups {
+			if target := group.nextUntried(state.tried, selectable); target != "" {
+				return target
+			}
 		}
+		return ""
+	}
+	if target := next(); target != "" {
+		state.last = target
+		return target
+	}
+	// A request may have more retries than there are eligible healthy nodes.
+	// Start another cycle while retaining the healthy-only filter; only the
+	// no-healthy-node case above intentionally falls open to all targets.
+	clear(state.tried)
+	if target := next(); target != "" {
+		state.last = target
+		return target
 	}
 	return ""
 }

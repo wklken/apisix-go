@@ -267,6 +267,7 @@ func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
 				Header:     make(http.Header),
 				Request:    request,
 			}
+			response.Header.Set("X-APISIX-Upstream-Status", "spoofed-by-upstream")
 			if err := newModifyResponse()(response); err != nil {
 				t.Fatalf("newModifyResponse() error = %v", err)
 			}
@@ -318,6 +319,7 @@ func TestDirectorFailureDoesNotExposeSyntheticUpstreamStatus(t *testing.T) {
 			proxy.RecordUpstreamStatus(request, http.StatusBadGateway)
 
 			response := httptest.NewRecorder()
+			response.Header().Set("X-APISIX-Upstream-Status", "spoofed-by-upstream")
 			newErrorHandler()(response, request, errors.New("unsupported protocol scheme"))
 			if got := response.Header().Get("X-APISIX-Upstream-Status"); got != "" {
 				t.Fatalf("upstream status header = %q, want absent for local director failure", got)

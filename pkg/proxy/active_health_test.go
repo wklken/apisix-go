@@ -1,13 +1,22 @@
 package proxy
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestParseActiveHealthConfigDefaultsWhenActiveAbsent(t *testing.T) {
 	config, enabled, err := ParseActiveHealthConfig(map[string]any{})
@@ -39,6 +48,7 @@ func TestParseActiveHealthConfigParsesOfficialShape(t *testing.T) {
 				"interval":      2,
 				"http_failures": 3,
 				"tcp_failures":  1,
+				"timeouts":      4,
 				"http_statuses": []any{500, 503},
 			},
 		},
@@ -58,16 +68,172 @@ func TestParseActiveHealthConfigParsesOfficialShape(t *testing.T) {
 	if config.HealthyInterval != 3*time.Second || config.HealthySuccesses != 2 {
 		t.Fatalf("active healthy = %s/%d", config.HealthyInterval, config.HealthySuccesses)
 	}
-	if config.UnhealthyInterval != 2*time.Second || config.UnhealthyHTTPFails != 3 || config.UnhealthyTCPFails != 1 {
+	if config.UnhealthyInterval != 2*time.Second || config.UnhealthyHTTPFails != 3 ||
+		config.UnhealthyTCPFails != 1 || config.UnhealthyTimeouts != 4 {
 		t.Fatalf(
-			"active unhealthy = %s/%d/%d",
+			"active unhealthy = %s/%d/%d/%d",
 			config.UnhealthyInterval,
 			config.UnhealthyHTTPFails,
 			config.UnhealthyTCPFails,
+			config.UnhealthyTimeouts,
 		)
 	}
 	if len(config.HealthyStatuses) != 2 || len(config.UnhealthyStatuses) != 2 {
 		t.Fatalf("active status sets = %v/%v", config.HealthyStatuses, config.UnhealthyStatuses)
+	}
+}
+
+func TestParseActiveHealthConfigUsesAPISIXActiveDefaults(t *testing.T) {
+	config, enabled, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("ParseActiveHealthConfig() error = %v", err)
+	}
+	if !enabled {
+		t.Fatal("ParseActiveHealthConfig() enabled = false for an active block")
+	}
+	if config.UnhealthyHTTPFails != 5 || config.UnhealthyTCPFails != 2 || config.UnhealthyTimeouts != 3 {
+		t.Fatalf(
+			"active failure defaults = HTTP:%d TCP:%d timeout:%d, want 5/2/3",
+			config.UnhealthyHTTPFails,
+			config.UnhealthyTCPFails,
+			config.UnhealthyTimeouts,
+		)
+	}
+	wantHealthy := map[int]struct{}{http.StatusOK: {}, http.StatusFound: {}}
+	if !reflect.DeepEqual(config.HealthyStatuses, wantHealthy) {
+		t.Fatalf("active healthy statuses = %#v, want %#v", config.HealthyStatuses, wantHealthy)
+	}
+}
+
+func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer statusServer.Close()
+
+	newChecker := func(transport http.RoundTripper) *activeHealthChecker {
+		return &activeHealthChecker{
+			config: ActiveHealthConfig{
+				Type:     "http",
+				HTTPPath: "/",
+				Timeout:  time.Second,
+				HealthyStatuses: map[int]struct{}{
+					http.StatusOK: {},
+				},
+				UnhealthyStatuses: map[int]struct{}{
+					http.StatusInternalServerError: {},
+				},
+			},
+			ctx:        context.Background(),
+			httpClient: &http.Client{Transport: transport},
+		}
+	}
+
+	statusChecker := newChecker(http.DefaultTransport)
+	if got := statusChecker.probeResult(statusServer.URL); got != activeProbeHTTPFailure {
+		t.Fatalf("HTTP failure classification = %v, want HTTP failure", got)
+	}
+
+	transportChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection reset by peer")
+	}))
+	if got := transportChecker.probeResult("http://upstream.example/"); got != activeProbeTCPFailure {
+		t.Fatalf("transport failure classification = %v, want TCP failure", got)
+	}
+
+	timeoutChecker := newChecker(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	}))
+	if got := timeoutChecker.probeResult("http://upstream.example/"); got != activeProbeTimeout {
+		t.Fatalf("timeout classification = %v, want timeout", got)
+	}
+}
+
+func TestActiveHealthCheckerUsesTCPThresholdForHTTPTransportFailures(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	target := upstream.URL
+	upstream.Close()
+
+	lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:               "http",
+			HTTPPath:           "/",
+			Timeout:            20 * time.Millisecond,
+			Concurrency:        1,
+			HealthyInterval:    time.Millisecond,
+			UnhealthyInterval:  time.Millisecond,
+			HealthySuccesses:   1,
+			UnhealthyHTTPFails: 10,
+			UnhealthyTCPFails:  1,
+			UnhealthyTimeouts:  10,
+			HealthyStatuses:    map[int]struct{}{http.StatusOK: {}},
+			UnhealthyStatuses:  map[int]struct{}{http.StatusInternalServerError: {}},
+		},
+		lb,
+		map[string]int{target: 1},
+		"active-orders",
+		NopClusterObserver{},
+		http.DefaultTransport,
+	)
+	checker.Start()
+	t.Cleanup(checker.Close)
+
+	deadline := time.Now().Add(time.Second)
+	for lb.IsHealthy(target) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if lb.IsHealthy(target) {
+		t.Fatal("TCP threshold was not applied to an HTTP transport failure")
+	}
+}
+
+func TestActiveHealthCheckerUsesTimeoutThresholdForHTTPProbeTimeouts(t *testing.T) {
+	const target = "http://upstream.example/"
+	lb, err := NewHealthAwareLoadBalance(map[string]int{target: 1}, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})
+	checker := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:               "http",
+			HTTPPath:           "/",
+			Timeout:            time.Second,
+			Concurrency:        1,
+			HealthyInterval:    time.Millisecond,
+			UnhealthyInterval:  time.Millisecond,
+			HealthySuccesses:   1,
+			UnhealthyHTTPFails: 10,
+			UnhealthyTCPFails:  10,
+			UnhealthyTimeouts:  1,
+			HealthyStatuses:    map[int]struct{}{http.StatusOK: {}},
+			UnhealthyStatuses:  map[int]struct{}{http.StatusInternalServerError: {}},
+		},
+		lb,
+		map[string]int{target: 1},
+		"active-orders",
+		NopClusterObserver{},
+		transport,
+	)
+	checker.Start()
+	t.Cleanup(checker.Close)
+
+	deadline := time.Now().Add(time.Second)
+	for lb.IsHealthy(target) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if lb.IsHealthy(target) {
+		t.Fatal("timeout threshold was not applied to an HTTP probe timeout")
 	}
 }
 
@@ -137,7 +303,7 @@ func TestActiveHealthCheckerRecoversAfterConsecutiveSuccesses(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
@@ -246,7 +412,7 @@ func TestActiveHealthCheckerQuarantinesConfiguredHTTPFailure(t *testing.T) {
 
 func TestActiveHealthCheckerCloseStopsProbeGoroutines(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
@@ -290,7 +456,7 @@ func TestActiveHealthCheckerUsesConfiguredHTTPSProbeScheme(t *testing.T) {
 			path string
 			host string
 		}{tls: r.TLS != nil, path: r.URL.Path, host: r.Host}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 

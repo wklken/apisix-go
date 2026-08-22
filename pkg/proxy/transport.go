@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"net"
 	"net/http"
 	"time"
@@ -156,8 +157,17 @@ func (t TransportOption) keyIdentity() transportKeyIdentity {
 }
 
 func tlsClientCertificateFingerprint(certificate tls.Certificate) [sha256.Size]byte {
-	if len(certificate.Certificate) > 0 && len(certificate.Certificate[0]) > 0 {
-		return sha256.Sum256(certificate.Certificate[0])
+	if len(certificate.Certificate) > 0 {
+		hash := sha256.New()
+		var length [8]byte
+		for _, der := range certificate.Certificate {
+			binary.BigEndian.PutUint64(length[:], uint64(len(der)))
+			_, _ = hash.Write(length[:])
+			_, _ = hash.Write(der)
+		}
+		var fingerprint [sha256.Size]byte
+		copy(fingerprint[:], hash.Sum(nil))
+		return fingerprint
 	}
 	if certificate.Leaf != nil && len(certificate.Leaf.Raw) > 0 {
 		return sha256.Sum256(certificate.Leaf.Raw)

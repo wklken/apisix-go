@@ -104,6 +104,10 @@ func TestClusterConfigKeyIncludesTLSClientCertificateFingerprint(t *testing.T) {
 	rotated.Transport = (&TransportOptionBuilder{}).
 		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-b")}}).
 		Build()
+	intermediateChanged := testClusterConfig()
+	intermediateChanged.Transport = (&TransportOptionBuilder{}).
+		WithTLSClientCertificate(tls.Certificate{Certificate: [][]byte{[]byte("leaf-a"), []byte("intermediate-b")}}).
+		Build()
 	privateMaterialChanged := testClusterConfig()
 	privateMaterialChanged.Transport = (&TransportOptionBuilder{}).
 		WithTLSClientCertificate(tls.Certificate{
@@ -124,6 +128,10 @@ func TestClusterConfigKeyIncludesTLSClientCertificateFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	intermediateChangedKey, err := intermediateChanged.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
 	privateMaterialChangedKey, err := privateMaterialChanged.Key()
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +141,9 @@ func TestClusterConfigKeyIncludesTLSClientCertificateFingerprint(t *testing.T) {
 	}
 	if baseKey == rotatedKey {
 		t.Fatal("rotated client certificate produced the same cluster key")
+	}
+	if baseKey == intermediateChangedKey {
+		t.Fatal("changed intermediate certificate produced the same cluster key")
 	}
 	if baseKey != privateMaterialChangedKey {
 		t.Fatal("private material changed the cluster key")
@@ -420,6 +431,7 @@ func TestCleartextHTTP2ClusterRetriesReplayableGRPCAndObservesOutcome(t *testing
 		t.Fatalf("NewRequest() error = %v", err)
 	}
 	request.Header.Set("Content-Type", "application/grpc")
+	request.Header.Set("Idempotency-Key", "h2c-retry-1")
 	request = WithRetries(request, 1, func(retry *http.Request) bool {
 		retry.URL.Host = address
 		return true

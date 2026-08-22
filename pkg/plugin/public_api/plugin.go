@@ -2,6 +2,7 @@ package public_api
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 
@@ -43,11 +44,62 @@ type Registry struct {
 	ownerIdentity map[string]string
 }
 
+// RegistryCheckpoint captures a registry generation's mutable public API
+// state so a route build can be rolled back without affecting other routes.
+type RegistryCheckpoint struct {
+	handlers      map[registryKey]http.Handler
+	ownerIdentity map[string]string
+}
+
 func NewRegistry() *Registry {
 	return &Registry{
 		handlers:      make(map[registryKey]http.Handler),
 		ownerIdentity: make(map[string]string),
 	}
+}
+
+// Checkpoint returns a consistent snapshot of the registry's handlers and
+// owner claims. Handler values are immutable references; only the maps are
+// copied so a rollback cannot retain later registrations.
+func (r *Registry) Checkpoint() RegistryCheckpoint {
+	if r == nil {
+		return RegistryCheckpoint{}
+	}
+	r.RLock()
+	defer r.RUnlock()
+	return RegistryCheckpoint{
+		handlers:      cloneHandlers(r.handlers),
+		ownerIdentity: cloneOwnerIdentity(r.ownerIdentity),
+	}
+}
+
+// Rollback restores a previously captured registry checkpoint.
+func (r *Registry) Rollback(checkpoint RegistryCheckpoint) {
+	if r == nil {
+		return
+	}
+	r.Lock()
+	defer r.Unlock()
+	r.handlers = cloneHandlers(checkpoint.handlers)
+	r.ownerIdentity = cloneOwnerIdentity(checkpoint.ownerIdentity)
+}
+
+func cloneHandlers(source map[registryKey]http.Handler) map[registryKey]http.Handler {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[registryKey]http.Handler, len(source))
+	maps.Copy(clone, source)
+	return clone
+}
+
+func cloneOwnerIdentity(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(source))
+	maps.Copy(clone, source)
+	return clone
 }
 
 // ClaimOwner rejects conflicting registrations from instances that own the

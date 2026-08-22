@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,9 +26,20 @@ type ActiveHealthConfig struct {
 	HealthySuccesses   int
 	UnhealthyHTTPFails int
 	UnhealthyTCPFails  int
+	UnhealthyTimeouts  int
 	HealthyStatuses    map[int]struct{}
 	UnhealthyStatuses  map[int]struct{}
 }
+
+type activeProbeResult uint8
+
+const (
+	activeProbeSuccess activeProbeResult = iota
+	activeProbeHTTPFailure
+	activeProbeTCPFailure
+	activeProbeTimeout
+	activeProbeCanceled
+)
 
 // ParseActiveHealthConfig parses the supported APISIX active HTTP/HTTPS probe
 // subset. The enabled result is false when checks.active is absent, so callers
@@ -55,7 +67,8 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 		HealthySuccesses:   2,
 		UnhealthyHTTPFails: 5,
 		UnhealthyTCPFails:  2,
-		HealthyStatuses:    defaultHealthyStatuses(),
+		UnhealthyTimeouts:  3,
+		HealthyStatuses:    defaultActiveHealthyStatuses(),
 		UnhealthyStatuses:  map[int]struct{}{429: {}, 500: {}, 503: {}},
 	}
 
@@ -160,6 +173,7 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 		}{
 			{key: "http_failures", dest: &config.UnhealthyHTTPFails},
 			{key: "tcp_failures", dest: &config.UnhealthyTCPFails},
+			{key: "timeouts", dest: &config.UnhealthyTimeouts},
 		} {
 			if rawValue, exists := unhealthy[item.key]; exists {
 				value, err := nonNegativeInt(rawValue, "checks.active.unhealthy."+item.key)
@@ -261,7 +275,10 @@ func (c *activeHealthChecker) Close() {
 
 func (c *activeHealthChecker) probeTarget(target string) {
 	defer c.wg.Done()
-	var consecutiveSuccesses, consecutiveFails int
+	var consecutiveSuccesses int
+	var consecutiveHTTPFailures int
+	var consecutiveTCPFailures int
+	var consecutiveTimeouts int
 	for {
 		healthy := c.lb.IsHealthy(target)
 		interval := c.config.UnhealthyInterval
@@ -276,11 +293,16 @@ func (c *activeHealthChecker) probeTarget(target string) {
 		if !c.acquireSemaphore() {
 			return
 		}
-		ok := c.probeOnce(target)
+		result := c.probeResult(target)
 		c.releaseSemaphore()
-		if ok {
+		if result == activeProbeCanceled || c.ctx.Err() != nil {
+			return
+		}
+		if result == activeProbeSuccess {
 			consecutiveSuccesses++
-			consecutiveFails = 0
+			consecutiveHTTPFailures = 0
+			consecutiveTCPFailures = 0
+			consecutiveTimeouts = 0
 			if !healthy && consecutiveSuccesses >= c.config.HealthySuccesses {
 				if c.lb.MarkHealthy(target) {
 					c.observer.SetHealth(c.name, target, true)
@@ -288,13 +310,24 @@ func (c *activeHealthChecker) probeTarget(target string) {
 			}
 			continue
 		}
-		consecutiveFails++
 		consecutiveSuccesses = 0
-		threshold := c.config.UnhealthyHTTPFails
-		if c.config.Type == "tcp" {
+		threshold := 0
+		failures := 0
+		switch result {
+		case activeProbeHTTPFailure:
+			consecutiveHTTPFailures++
+			threshold = c.config.UnhealthyHTTPFails
+			failures = consecutiveHTTPFailures
+		case activeProbeTCPFailure:
+			consecutiveTCPFailures++
 			threshold = c.config.UnhealthyTCPFails
+			failures = consecutiveTCPFailures
+		case activeProbeTimeout:
+			consecutiveTimeouts++
+			threshold = c.config.UnhealthyTimeouts
+			failures = consecutiveTimeouts
 		}
-		if healthy && consecutiveFails >= threshold {
+		if healthy && threshold > 0 && failures >= threshold {
 			if c.lb.MarkUnhealthy(target) {
 				c.observer.SetHealth(c.name, target, false)
 			}
@@ -316,20 +349,24 @@ func (c *activeHealthChecker) releaseSemaphore() {
 }
 
 func (c *activeHealthChecker) probeOnce(target string) bool {
-	if c.config.Type == "tcp" {
-		return c.probeTCP(target)
+	return c.probeResult(target) == activeProbeSuccess
+}
+
+func (c *activeHealthChecker) probeResult(target string) activeProbeResult {
+	if c.ctx.Err() != nil {
+		return activeProbeCanceled
 	}
 	return c.probeHTTP(target)
 }
 
-func (c *activeHealthChecker) probeHTTP(target string) bool {
+func (c *activeHealthChecker) probeHTTP(target string) activeProbeResult {
 	targetURL, err := url.Parse(target)
 	if err != nil {
-		return false
+		return activeProbeTCPFailure
 	}
 	probePath, err := url.Parse(c.config.HTTPPath)
 	if err != nil {
-		return false
+		return activeProbeTCPFailure
 	}
 	targetURL.Scheme = c.config.Type
 	targetURL.Path = probePath.Path
@@ -342,7 +379,7 @@ func (c *activeHealthChecker) probeHTTP(target string) bool {
 
 	request, err := http.NewRequestWithContext(c.ctx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
-		return false
+		return activeProbeTCPFailure
 	}
 	if c.config.Host != "" {
 		request.Host = c.config.Host
@@ -353,27 +390,31 @@ func (c *activeHealthChecker) probeHTTP(target string) bool {
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return false
+		if c.ctx.Err() != nil {
+			return activeProbeCanceled
+		}
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			return activeProbeTimeout
+		}
+		var networkError net.Error
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+			return activeProbeTimeout
+		}
+		return activeProbeTCPFailure
 	}
 	defer func() { _ = response.Body.Close() }()
 	if _, unhealthy := c.config.UnhealthyStatuses[response.StatusCode]; unhealthy {
-		return false
+		return activeProbeHTTPFailure
 	}
 	if _, healthy := c.config.HealthyStatuses[response.StatusCode]; !healthy {
-		return false
+		return activeProbeHTTPFailure
 	}
 	// Drain at most 4 KiB so the connection is reusable without buffering an
 	// unbounded upstream response.
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
-	return true
+	return activeProbeSuccess
 }
 
-func (c *activeHealthChecker) probeTCP(target string) bool {
-	dialer := &net.Dialer{Timeout: c.config.Timeout}
-	conn, err := dialer.DialContext(c.ctx, "tcp", target)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
+func defaultActiveHealthyStatuses() map[int]struct{} {
+	return map[int]struct{}{http.StatusOK: {}, http.StatusFound: {}}
 }

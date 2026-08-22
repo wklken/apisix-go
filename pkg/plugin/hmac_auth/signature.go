@@ -73,7 +73,7 @@ func generateSignature(r *http.Request, secretKey string, params signatureParams
 			signingString.WriteString(r.Method + " " + requestURI(r) + "\n")
 			continue
 		}
-		if value := r.Header.Get(header); value != "" {
+		if value := signedHeaderValue(r, header); value != "" {
 			signingString.WriteString(header + ": " + value + "\n")
 		}
 	}
@@ -85,6 +85,13 @@ func generateSignature(r *http.Request, secretKey string, params signatureParams
 	mac := hmac.New(hashFunc, []byte(secretKey))
 	mac.Write([]byte(signingString.String()))
 	return mac.Sum(nil), nil
+}
+
+func signedHeaderValue(r *http.Request, header string) string {
+	if strings.EqualFold(header, "host") {
+		return r.Host
+	}
+	return r.Header.Get(header)
 }
 
 func hashForAlgorithm(algorithm string) (func() hash.Hash, error) {

@@ -263,6 +263,47 @@ func TestFailedBuildDoesNotPolluteEarlierPublicAPIRegistry(t *testing.T) {
 	}
 }
 
+func TestQuarantinedRouteRollsBackPublicAPIRegistryMutations(t *testing.T) {
+	previousConfig := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previousConfig })
+	config.GlobalConfig = &config.Config{Plugins: []string{"example-plugin", "public-api", "wolf-rbac", "workflow"}}
+	ensureRouteStore(t)
+	putRouteResource(t, "public-api-quarantine-invalid", []byte(
+		`{"id":"public-api-quarantine-invalid","uri":"/quarantine-invalid-public-api","methods":["GET"],"priority":1,"plugins":{"example-plugin":{"i":1},"wolf-rbac":{"server":"http://127.0.0.1:19101"},"workflow":{"rules":[{"case":[["uri","bogus","/bad"]],"actions":[["return",{"code":200}]]}]}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
+	))
+	putRouteResource(t, "public-api-quarantine-valid", []byte(
+		`{"id":"public-api-quarantine-valid","uri":"/quarantine-valid-public-api","methods":["GET"],"priority":2,"plugins":{"wolf-rbac":{"server":"http://127.0.0.1:19100"}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
+	))
+	putRouteResource(t, "public-api-quarantine-exposure", []byte(
+		`{"id":"public-api-quarantine-exposure","uri":"/quarantine-example-exposure","methods":["GET"],"priority":3,"plugins":{"public-api":{"uri":"/v1/plugin/example-plugin/hello"}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want published generation", handler, err)
+	}
+	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
+		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
+	}
+
+	validRoute := httptest.NewRecorder()
+	handler.ServeHTTP(validRoute, httptest.NewRequest(http.MethodGet, "/quarantine-valid-public-api", nil))
+	if got, want := validRoute.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("successful route status = %d, want %d", got, want)
+	}
+
+	quarantinedExposure := httptest.NewRecorder()
+	handler.ServeHTTP(
+		quarantinedExposure,
+		httptest.NewRequest(http.MethodGet, "/quarantine-example-exposure", nil),
+	)
+	if got, want := quarantinedExposure.Code, http.StatusNotFound; got != want {
+		t.Fatalf("rolled-back public API exposure status = %d, want %d", got, want)
+	}
+}
+
 func putRouteConsumerForPublicAPI(t *testing.T) {
 	t.Helper()
 	consumer := map[string]any{

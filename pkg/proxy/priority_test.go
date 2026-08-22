@@ -172,6 +172,34 @@ func TestSamePriorityLoadBalanceSkipsTriedTargetOnRetry(t *testing.T) {
 	}
 }
 
+func TestPriorityHealthAwareLoadBalanceCyclesHealthyTargetsAfterExhaustion(t *testing.T) {
+	lb, err := newUpstreamLoadBalanceWithPriorities(
+		map[string]int{lowPriorityTarget: 1, highPriorityTarget: 1},
+		map[string]int{lowPriorityTarget: 0, highPriorityTarget: 0},
+		map[string]any{"passive": map[string]any{}},
+	)
+	if err != nil {
+		t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	healthAware, ok := lb.(*HealthAwareLoadBalance)
+	if !ok {
+		t.Fatalf("priority health-aware load balancer = %T, want *HealthAwareLoadBalance", lb)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	first := healthAware.NextForRequest(request)
+	second := healthAware.NextForRequest(request)
+	third := healthAware.NextForRequest(request)
+	if first == "" || second == "" {
+		t.Fatalf("initial request targets = %q then %q, want both healthy nodes", first, second)
+	}
+	if first == second {
+		t.Fatalf("initial request targets = %q then %q, want distinct healthy nodes", first, second)
+	}
+	if third != first && third != second {
+		t.Fatalf("third request target = %q, want a retry cycle over %q and %q", third, first, second)
+	}
+}
+
 func TestPriorityGroupNextUntriedUsesFreshWeightedRoundRobinPick(t *testing.T) {
 	group := priorityGroup{
 		targets:  []string{"a", "b", "c"},

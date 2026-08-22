@@ -57,6 +57,20 @@ const (
 
 var parameterInPathRegexp = regexp.MustCompile(`^:[A-Za-z_][A-Za-z0-9_]*$`)
 
+var supportedRouteMethods = map[string]struct{}{
+	http.MethodConnect: {},
+	http.MethodDelete:  {},
+	http.MethodGet:     {},
+	http.MethodHead:    {},
+	http.MethodOptions: {},
+	http.MethodPatch:   {},
+	http.MethodPost:    {},
+	http.MethodPut:     {},
+	"PURGE":            {},
+	"QUERY":            {},
+	http.MethodTrace:   {},
+}
+
 // ConvertURI convert the apisix uri to chi compatible uri
 // NOTE:
 // 1. full path match: /blog/bar   same
@@ -686,6 +700,12 @@ type servicePluginKey struct {
 	config    string
 }
 
+type routeBuildCheckpoint struct {
+	publicAPIRegistry public_api.RegistryCheckpoint
+	stopperCount      int
+	servicePlugins    map[servicePluginKey]plugin.Plugin
+}
+
 func NewBuilder(storage *store.Store) *Builder {
 	return NewBuilderWithServerAddr(storage, "")
 }
@@ -725,6 +745,41 @@ func (b *Builder) Stop() {
 	})
 }
 
+func (b *Builder) checkpointRouteBuild(publicAPIRegistry *public_api.Registry) routeBuildCheckpoint {
+	b.stopperMu.Lock()
+	stopperCount := len(b.stoppers)
+	b.stopperMu.Unlock()
+
+	b.servicePluginMu.Lock()
+	servicePlugins := maps.Clone(b.servicePlugins)
+	b.servicePluginMu.Unlock()
+
+	return routeBuildCheckpoint{
+		publicAPIRegistry: publicAPIRegistry.Checkpoint(),
+		stopperCount:      stopperCount,
+		servicePlugins:    servicePlugins,
+	}
+}
+
+func (b *Builder) rollbackRouteBuild(
+	publicAPIRegistry *public_api.Registry,
+	checkpoint routeBuildCheckpoint,
+) {
+	publicAPIRegistry.Rollback(checkpoint.publicAPIRegistry)
+
+	b.servicePluginMu.Lock()
+	b.servicePlugins = checkpoint.servicePlugins
+	b.servicePluginMu.Unlock()
+
+	b.stopperMu.Lock()
+	stoppers := append([]pluginStopper(nil), b.stoppers[checkpoint.stopperCount:]...)
+	b.stoppers = b.stoppers[:checkpoint.stopperCount]
+	b.stopperMu.Unlock()
+	for _, stopper := range slices.Backward(stoppers) {
+		stopper.Stop()
+	}
+}
+
 func (b *Builder) Build() *chi.Mux {
 	mux, err := b.BuildStrict()
 	if err != nil {
@@ -735,6 +790,17 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) BuildStrict() (*chi.Mux, error) {
+	return b.buildRoutes(false)
+}
+
+// BuildWithRouteQuarantine publishes every valid route while omitting routes
+// that fail route-scoped validation, materialization, or URI registration.
+// Generation-wide failures remain fatal and are returned to the caller.
+func (b *Builder) BuildWithRouteQuarantine() (*chi.Mux, error) {
+	return b.buildRoutes(true)
+}
+
+func (b *Builder) buildRoutes(quarantineInvalidRoutes bool) (*chi.Mux, error) {
 	publicAPIRegistry := public_api.NewRegistry()
 	if err := registerPrometheusPublicEndpoint(publicAPIRegistry); err != nil {
 		return nil, fmt.Errorf("register prometheus public endpoint: %w", err)
@@ -778,24 +844,48 @@ func (b *Builder) BuildStrict() (*chi.Mux, error) {
 		if routeResource.Disabled() {
 			continue
 		}
-		handler, hosts, buildErr := b.materializeRouteStrict(routeResource, publicAPIRegistry)
-		if buildErr != nil {
-			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, buildErr)
+		var routeCheckpoint routeBuildCheckpoint
+		if quarantineInvalidRoutes {
+			routeCheckpoint = b.checkpointRouteBuild(publicAPIRegistry)
 		}
 		uris := routeResource.Uris
 		if len(uris) == 0 && routeResource.Uri != "" {
 			uris = []string{routeResource.Uri}
 		}
+		var routeErr error
 		for _, uri := range uris {
-			if registerErr := registrar.registerRouteWithHosts(
-				routeResource.Methods,
-				uri,
-				hosts,
-				handler,
-			); registerErr != nil {
-				return nil, fmt.Errorf("register route %s URI %q: %w", routeResource.ID, uri, registerErr)
+			if _, err := convertURI(uri); err != nil {
+				routeErr = fmt.Errorf("register URI %q: %w", uri, err)
+				break
 			}
 		}
+		if routeErr == nil {
+			var handler http.Handler
+			var hosts []string
+			handler, hosts, routeErr = b.materializeRouteStrict(routeResource, publicAPIRegistry)
+			if routeErr == nil {
+				for _, uri := range uris {
+					if registerErr := registrar.registerRouteWithHosts(
+						routeResource.Methods,
+						uri,
+						hosts,
+						handler,
+					); registerErr != nil {
+						routeErr = fmt.Errorf("register URI %q: %w", uri, registerErr)
+						break
+					}
+				}
+			}
+		}
+		if routeErr == nil {
+			continue
+		}
+		if !quarantineInvalidRoutes {
+			return nil, fmt.Errorf("build route %s: %w", routeResource.ID, routeErr)
+		}
+		b.rollbackRouteBuild(publicAPIRegistry, routeCheckpoint)
+		b.snapshotQuarantineCount++
+		logger.Errorf("build route %s fail: %s", routeResource.ID, routeErr)
 	}
 	notFoundHandler, err := b.buildGlobalNotFoundHandler(snapshot.GlobalRules(), publicAPIRegistry)
 	if err != nil {
@@ -870,9 +960,9 @@ func (b *Builder) getSSL(id string) (resource.SSL, error) {
 	return store.GetSSL(id)
 }
 
-// QuarantinedResourceCount reports the number of malformed legacy route or
-// global-rule rows in the last BuildStrict snapshot. The server records this
-// value after installing the returned handler.
+// QuarantinedResourceCount reports malformed legacy snapshot rows plus invalid
+// routes omitted by the last quarantining build. The server records this value
+// after installing the returned handler.
 func (b *Builder) QuarantinedResourceCount() int {
 	return b.snapshotQuarantineCount
 }
@@ -1191,6 +1281,11 @@ func buildTransparentUpgradeHandler(
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {
+	for _, method := range routeResource.Methods {
+		if _, supported := supportedRouteMethods[strings.ToUpper(method)]; !supported {
+			return fmt.Errorf("route %q method %q is unsupported by the Go data plane", routeResource.ID, method)
+		}
+	}
 	if routeResource.HostConfigured() && routeResource.HostsConfigured() {
 		return fmt.Errorf("route %q host and hosts cannot both be configured", routeResource.ID)
 	}
@@ -4010,6 +4105,7 @@ func newModifyResponse() pxy.ModifyResponse {
 			resp.Header = make(http.Header)
 		}
 		resp.Header.Del("Server")
+		resp.Header.Del("X-APISIX-Upstream-Status")
 		if showUpstreamStatusInResponseHeader() ||
 			(status >= http.StatusInternalServerError && status <= 599) {
 			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
@@ -4160,6 +4256,7 @@ func newErrorHandler() pxy.ErrorHandler {
 			}
 		}
 
+		w.Header().Del("X-APISIX-Upstream-Status")
 		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
 			if showUpstreamStatusInResponseHeader() ||
 				(status >= http.StatusInternalServerError && status <= 599) {

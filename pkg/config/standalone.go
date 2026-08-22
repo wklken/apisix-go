@@ -130,7 +130,8 @@ func (w *StandaloneFileWatcher) Reload() error {
 	return err
 }
 
-// ReloadSnapshot emits the complete resource diff before returning its result.
+// ReloadSnapshot applies the complete authoritative resource snapshot before
+// returning its result.
 func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error) {
 	w.reloadMu.Lock()
 	defer w.reloadMu.Unlock()
@@ -147,7 +148,6 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standa
 	w.mu.Lock()
 	previous := w.current
 	result := StandaloneReloadResult{}
-	events := make([]*store.Event, 0)
 	for _, bucket := range standaloneBuckets {
 		previousBucket := previous[bucket]
 		updated := next[bucket]
@@ -155,7 +155,6 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standa
 
 		for _, id := range sortedSnapshotIDs(previousBucket) {
 			if _, ok := updated[id]; !ok {
-				events = append(events, newStandaloneEvent(store.EventTypeDelete, bucket, id, nil))
 				changed = true
 			}
 		}
@@ -163,7 +162,6 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standa
 			if previousValue, ok := previousBucket[id]; ok && bytes.Equal(previousValue, updated[id]) {
 				continue
 			}
-			events = append(events, newStandaloneEvent(store.EventTypePut, bucket, id, updated[id]))
 			changed = true
 		}
 		if changed && store.IsHTTPRouteReloadBucket(bucket) {
@@ -175,24 +173,24 @@ func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standa
 	}
 	w.mu.Unlock()
 
-	if len(events) > 0 {
-		mutations := make([]store.Mutation, 0, len(events))
-		for _, event := range events {
+	mutations := make([]store.Mutation, 0)
+	for _, bucket := range standaloneBuckets {
+		resources := next[bucket]
+		for _, id := range sortedSnapshotIDs(resources) {
 			mutations = append(mutations, store.Mutation{
-				Type:  event.Type,
-				Key:   event.Key,
-				Value: event.Value,
+				Type:  store.EventTypePut,
+				Key:   []byte("/apisix/" + bucket + "/" + id),
+				Value: resources[id],
 			})
-			store.PutBack(event)
 		}
-		batch := store.NewAcknowledgedBatch(mutations, store.BatchOptions{})
-		enqueued, err := w.enqueueAndWait(batch)
-		if err != nil {
-			if !enqueued {
-				store.PutBack(batch)
-			}
-			return result, previous, err
+	}
+	batch := store.NewAcknowledgedBatch(mutations, store.BatchOptions{ReplaceManaged: true})
+	enqueued, err := w.enqueueAndWait(batch)
+	if err != nil {
+		if !enqueued {
+			store.PutBack(batch)
 		}
+		return result, previous, err
 	}
 	if err := w.contextErr(); err != nil {
 		return result, previous, err
@@ -213,7 +211,7 @@ func (w *StandaloneFileWatcher) SetReloadCallback(callback func(StandaloneReload
 
 // SetAcknowledgedReloadCallback installs a serialized apply callback. A
 // non-nil callback error keeps the previous snapshot so the next file event
-// replays the complete diff.
+// reapplies the complete authoritative snapshot.
 func (w *StandaloneFileWatcher) SetAcknowledgedReloadCallback(
 	callback func(StandaloneReloadResult, error) error,
 ) {
@@ -373,14 +371,6 @@ func (w *StandaloneFileWatcher) contextErr() error {
 
 func (w *StandaloneFileWatcher) closeDone() {
 	w.doneOnce.Do(func() { close(w.done) })
-}
-
-func newStandaloneEvent(eventType store.EventType, bucket, id string, value []byte) *store.Event {
-	event := store.NewAcknowledgedEvent()
-	event.Type = eventType
-	event.Key = []byte("/apisix/" + bucket + "/" + id)
-	event.Value = append([]byte(nil), value...)
-	return event
 }
 
 func cloneStandaloneSnapshot(snapshot map[string]map[string][]byte) standaloneSnapshot {

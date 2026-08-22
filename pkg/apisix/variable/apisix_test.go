@@ -15,9 +15,10 @@ func TestGetApisixVarResolvesMatchedURIRouteID(t *testing.T) {
 	routeContext := chi.NewRouteContext()
 	routeContext.RoutePatterns = []string{"/orders/{id}"}
 	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+	request = ctx.WithApisixVars(request, map[string]string{"$matched_uri": "/orders/:id"})
 
-	if got := GetApisixVar(request, "$matched_uri"); got != "/orders/{id}" {
-		t.Fatalf("$matched_uri = %q, want /orders/{id}", got)
+	if got := GetApisixVar(request, "$matched_uri"); got != "/orders/:id" {
+		t.Fatalf("$matched_uri = %q, want /orders/:id", got)
 	}
 
 	request = ctx.WithApisixVars(request, map[string]string{"$route_id": "route-1"})
@@ -29,7 +30,7 @@ func TestGetApisixVarResolvesMatchedURIRouteID(t *testing.T) {
 	}
 }
 
-func TestGetApisixVarHandlesMissingRouteContext(t *testing.T) {
+func TestGetApisixVarHandlesMissingApisixContext(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/orders/42", nil)
 	if got := GetApisixVar(request, "$matched_uri"); got != "" {
 		t.Fatalf("$matched_uri = %q, want empty without route context", got)

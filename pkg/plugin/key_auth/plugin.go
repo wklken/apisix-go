@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -91,6 +93,79 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() any {
 	return &p.config
+}
+
+// SanitizeLogSnapshot removes key-auth credentials from the detached logging
+// representation. It deliberately does not alter the live request, so the
+// logging guarantee also applies when a higher-priority plugin stops the
+// request before key-auth's request phase runs.
+func (p *Plugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
+	if snapshot == nil {
+		return errors.New("cannot sanitize a nil log snapshot")
+	}
+	snapshot.Request.Header.Del(p.config.Header)
+	snapshot.Request.Query.Del(p.config.Query)
+
+	var err error
+	if snapshot.Request.URI, err = removeQueryFromRequestTarget(
+		snapshot.Request.URI,
+		p.config.Query,
+		true,
+	); err != nil {
+		return fmt.Errorf("sanitize detached request URI: %w", err)
+	}
+	if snapshot.Request.URL, err = removeQueryFromRequestTarget(
+		snapshot.Request.URL,
+		p.config.Query,
+		false,
+	); err != nil {
+		return fmt.Errorf("sanitize detached request URL: %w", err)
+	}
+
+	headerVariable := "$http_" + strings.ToLower(strings.ReplaceAll(p.config.Header, "-", "_"))
+	queryVariable := "$arg_" + p.config.Query
+	for _, variables := range []map[string]any{snapshot.Request.APISIXVars, snapshot.Request.RequestVars} {
+		if variables == nil {
+			continue
+		}
+		delete(variables, headerVariable)
+		delete(variables, queryVariable)
+		if _, ok := variables["$args"]; ok {
+			variables["$args"] = snapshot.Request.Query.Encode()
+		}
+		if _, ok := variables["$query_string"]; ok {
+			variables["$query_string"] = snapshot.Request.Query.Encode()
+		}
+		if _, ok := variables["$request_uri"]; ok {
+			variables["$request_uri"] = snapshot.Request.URI
+		}
+		if upstreamURI, ok := variables["$upstream_uri"].(string); ok {
+			upstreamURI, err = removeQueryFromRequestTarget(upstreamURI, p.config.Query, false)
+			if err != nil {
+				return fmt.Errorf("sanitize detached upstream URI: %w", err)
+			}
+			variables["$upstream_uri"] = upstreamURI
+		}
+	}
+	return nil
+}
+
+func removeQueryFromRequestTarget(raw, queryName string, requestURI bool) (string, error) {
+	if raw == "" {
+		return raw, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	query := parsed.Query()
+	query.Del(queryName)
+	parsed.RawQuery = query.Encode()
+	parsed.ForceQuery = false
+	if requestURI {
+		return parsed.RequestURI(), nil
+	}
+	return parsed.String(), nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

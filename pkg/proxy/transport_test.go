@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -150,6 +151,38 @@ func TestTransportClientCertificateIsImmutableAfterBuild(t *testing.T) {
 		t.Fatalf("mTLS GET after caller mutation: %v", err)
 	}
 	_ = response.Body.Close()
+}
+
+func TestTLSClientCertificateFingerprintIncludesOrderedChain(t *testing.T) {
+	leaf := []byte("leaf")
+	intermediateA := []byte("intermediate-a")
+	intermediateB := []byte("intermediate-b")
+
+	first := tlsClientCertificateFingerprint(tls.Certificate{
+		Certificate: [][]byte{leaf, intermediateA},
+	})
+	second := tlsClientCertificateFingerprint(tls.Certificate{
+		Certificate: [][]byte{leaf, intermediateB},
+	})
+	if first == second {
+		t.Fatal("changing an intermediate certificate did not change the client certificate fingerprint")
+	}
+
+	reordered := tlsClientCertificateFingerprint(tls.Certificate{
+		Certificate: [][]byte{intermediateA, leaf},
+	})
+	if first == reordered {
+		t.Fatal("reordering the client certificate chain did not change the fingerprint")
+	}
+}
+
+func TestTLSClientCertificateFingerprintFallsBackToLeaf(t *testing.T) {
+	leaf := []byte("leaf")
+	got := tlsClientCertificateFingerprint(tls.Certificate{Leaf: &x509.Certificate{Raw: leaf}})
+	want := sha256.Sum256(leaf)
+	if got != want {
+		t.Fatalf("leaf fallback fingerprint = %x, want %x", got, want)
+	}
 }
 
 func testMutualTLSCertificates(t *testing.T) (tls.Certificate, tls.Certificate, *x509.CertPool) {

@@ -1041,7 +1041,7 @@ type failingStrictRouteBuilder struct {
 	stopped bool
 }
 
-func (*failingStrictRouteBuilder) BuildStrict() (*chi.Mux, error) {
+func (*failingStrictRouteBuilder) BuildWithRouteQuarantine() (*chi.Mux, error) {
 	return nil, errors.New("invalid initial snapshot")
 }
 

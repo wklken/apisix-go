@@ -178,6 +178,10 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 
 // WriteResponse writes the decoded upstream response.
 func WriteResponse(w http.ResponseWriter, response Response) {
+	if _, ok := util.TerminalStatus(response.Status); !ok {
+		WriteError(w, http.StatusBadGateway, "invalid upstream status")
+		return
+	}
 	for field, values := range response.Headers {
 		for _, value := range values {
 			w.Header().Add(field, value)

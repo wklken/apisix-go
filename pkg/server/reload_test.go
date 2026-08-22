@@ -432,6 +432,7 @@ func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
 		storage: storage,
 		routes:  newRouteHandler(oldHandler, func() { oldStops.Add(1) }),
 	}
+	t.Cleanup(server.routes.Close)
 
 	err = server.reload(context.Background())
 	if err != nil {
@@ -444,6 +445,10 @@ func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
 	}
 	if got := response.Header().Get("X-Handler"); got != "" {
 		t.Fatalf("handler marker after quarantined reload = %q, want empty", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for oldStops.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
 	if got, want := oldStops.Load(), int32(1); got != want {
 		t.Fatalf("last-good handler stopper calls = %d, want %d", got, want)

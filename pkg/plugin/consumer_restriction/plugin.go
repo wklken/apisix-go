@@ -69,6 +69,7 @@ const schema = `
 	  "rejected_code": {
 		"type": "integer",
 		"minimum": 200,
+		"maximum": 599,
 		"default": 403
 	  },
 	  "rejected_msg": {

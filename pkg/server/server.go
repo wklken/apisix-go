@@ -694,7 +694,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 	if s.standaloneWatcher != nil {
-		if err := s.standaloneWatcher.Start(); err != nil {
+		if err := s.standaloneWatcher.StartAndReconcile(); err != nil {
 			return fmt.Errorf("start standalone config watcher: %w", err)
 		}
 		provider := standaloneConfigProvider(config.GlobalConfig)

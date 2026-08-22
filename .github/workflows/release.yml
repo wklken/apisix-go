@@ -68,6 +68,9 @@ jobs:
       - name: Run source unit tests and coverage gate
         run: make test-cover
 
+      - name: Run plugin integration harness tests
+        run: make test-plugin-harness
+
   integration-smoke:
     name: Release Integration Smoke (${{ matrix.case.name }})
     runs-on: ubuntu-latest
@@ -79,13 +82,13 @@ jobs:
       matrix:
         case:
           - name: key-auth
-            pattern: TestPluginIntegration/key-auth/valid-consumer-schema
+            pattern: key-auth/valid-consumer-schema
           - name: proxy-rewrite
-            pattern: TestPluginIntegration/proxy-rewrite/rewrite-host
+            pattern: proxy-rewrite/rewrite-host
           - name: proxy-control
-            pattern: TestPluginIntegration/proxy-control/request-buffering-disabled
+            pattern: proxy-control/request-buffering-disabled
           - name: uri-blocker
-            pattern: TestPluginIntegration/uri-blocker/one-rule-blocks-query
+            pattern: uri-blocker/one-rule-blocks-query
     steps:
       - name: Checkout selected source ref
         uses: actions/checkout@v7.0.1
@@ -102,7 +105,7 @@ jobs:
           cache: true
 
       - name: Run focused standalone smoke case
-        run: go test ./t/plugin -run '${{ matrix.case.pattern }}' -count=1 -v
+        run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
   security-release-gates:
     name: Release Security And Operational Qualification
@@ -245,10 +248,11 @@ jobs:
                 "make lint",
                 "make build",
                 "make test-cover",
-                "go test ./t/plugin -run TestPluginIntegration/key-auth/valid-consumer-schema -count=1 -v",
-                "go test ./t/plugin -run TestPluginIntegration/proxy-rewrite/rewrite-host -count=1 -v",
-                "go test ./t/plugin -run TestPluginIntegration/proxy-control/request-buffering-disabled -count=1 -v",
-                "go test ./t/plugin -run TestPluginIntegration/uri-blocker/one-rule-blocks-query -count=1 -v",
+                "make test-plugin-harness",
+                "make test-plugin-smoke PLUGIN_SMOKE_CASE=key-auth/valid-consumer-schema",
+                "make test-plugin-smoke PLUGIN_SMOKE_CASE=proxy-rewrite/rewrite-host",
+                "make test-plugin-smoke PLUGIN_SMOKE_CASE=proxy-control/request-buffering-disabled",
+                "make test-plugin-smoke PLUGIN_SMOKE_CASE=uri-blocker/one-rule-blocks-query",
                 "go test -race ./pkg/config ./cmd ./pkg/server ./pkg/route ./pkg/proxy ./pkg/store ./pkg/etcd -count=1",
                 "go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...",
                 "bash scripts/container_smoke.sh",

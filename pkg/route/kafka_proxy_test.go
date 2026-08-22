@@ -123,6 +123,29 @@ func TestBuildKafkaPubSubHandlerFetchesKafkaMessages(t *testing.T) {
 	}
 }
 
+func TestBuildKafkaPubSubHandlerUsesBracketedIPv6BrokerURL(t *testing.T) {
+	brokers := make(chan []string, 1)
+	factory := func(_ context.Context, configured []string, _ kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
+		brokers <- append([]string(nil), configured...)
+		return fakeKafkaPubSubConsumer{}, nil
+	}
+	handler := buildKafkaPubSubProxyHandler(resource.Upstream{
+		Nodes: []resource.Node{{Host: "::1", Port: 9092, Weight: 1}},
+	}, factory)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	_ = dialKafkaWebSocket(t, server.URL)
+
+	select {
+	case got := <-brokers:
+		if len(got) != 1 || got[0] != "kafka://[::1]:9092" {
+			t.Fatalf("Kafka brokers = %#v, want [kafka://[::1]:9092]", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Kafka broker configuration")
+	}
+}
+
 func TestBuildKafkaPubSubHandlerListsOffset(t *testing.T) {
 	factory := func(context.Context, []string, kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
 		return fakeKafkaPubSubConsumer{listOffset: 42}, nil

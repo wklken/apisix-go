@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func TestBlockedURIDefaultResponseHasNoBody(t *testing.T) {
@@ -72,6 +74,42 @@ func TestPostInitRejectsInvalidRegularExpression(t *testing.T) {
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want invalid regular expression rejected")
+	}
+}
+
+func TestSchemaRejectsEmptyBlockRules(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{"block_rules": []any{}}, p.GetSchema()); err == nil {
+		t.Fatal("empty block_rules should fail schema validation")
+	}
+}
+
+func TestPostInitRejectsEmptyBlockRules(t *testing.T) {
+	p := &Plugin{config: Config{BlockRules: []string{}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want empty block_rules rejected")
+	}
+}
+
+func TestSchemaRejectsRejectedCodeAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"block_rules":   []any{"^/blocked"},
+		"rejected_code": 1000,
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("rejected_code=1000 should fail schema validation")
 	}
 }
 

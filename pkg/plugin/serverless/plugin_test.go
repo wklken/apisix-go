@@ -2,6 +2,7 @@ package serverless
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	lua "github.com/yuin/gopher-lua"
 )
 
 func TestServerlessDescriptorSelectsOneConfiguredStageOrPhase(t *testing.T) {
@@ -149,6 +151,84 @@ func TestServerlessResponsePhaseCallbackMutatesOnlySelectedState(t *testing.T) {
 	}
 	if got := state.Header.Get("Content-Length"); got != "" {
 		t.Fatalf("Content-Length = %q, want invalidated", got)
+	}
+}
+
+func TestServerlessLuaStatusKeepsPreviousResponseStatusForInvalidValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "below minimum", value: "99"},
+		{name: "above maximum", value: "600"},
+		{name: "far above maximum", value: "1000"},
+		{name: "fractional", value: "418.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := newTestPlugin(t, NewPostFunction(), Config{
+				Phase:     "body_filter",
+				Functions: []string{"return function() ngx.status = " + tt.value + " end"},
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+			req = apisixctx.WithRequestVars(req)
+			apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+			state := base.ResponseState{Status: http.StatusAccepted, Header: http.Header{}}
+
+			if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+				t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+			}
+			if state.Status != http.StatusAccepted {
+				t.Fatalf("status = %d, want previous status %d", state.Status, http.StatusAccepted)
+			}
+		})
+	}
+}
+
+func TestServerlessLuaStringStatusCanOverridePreviousResponseStatus(t *testing.T) {
+	plugin := newTestPlugin(t, NewPostFunction(), Config{
+		Phase:     "body_filter",
+		Functions: []string{`return function() ngx.status = "418" end`},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.SetRequestResponseSource(req, apisixctx.ResponseSourceAPISIX)
+	state := base.ResponseState{Status: http.StatusAccepted, Header: http.Header{}}
+
+	if err := plugin.RunBufferedBodyFilter(req, &state); err != nil {
+		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
+	}
+	if state.Status != http.StatusTeapot {
+		t.Fatalf("status = %d, want string status %d", state.Status, http.StatusTeapot)
+	}
+}
+
+func TestServerlessLuaValueToStatusAcceptsOnlyHTTPIntegers(t *testing.T) {
+	tests := []struct {
+		name  string
+		value lua.LValue
+		valid bool
+	}{
+		{name: "below minimum", value: lua.LNumber(99)},
+		{name: "above maximum", value: lua.LNumber(600)},
+		{name: "far above maximum", value: lua.LNumber(1000)},
+		{name: "nan", value: lua.LNumber(math.NaN())},
+		{name: "fractional", value: lua.LNumber(418.5)},
+		{name: "string below minimum", value: lua.LString("99")},
+		{name: "string above maximum", value: lua.LString("600")},
+		{name: "string fractional", value: lua.LString("418.5")},
+		{name: "invalid string", value: lua.LString("not-a-status")},
+		{name: "string integer", value: lua.LString("418"), valid: true},
+		{name: "minimum", value: lua.LNumber(100), valid: true},
+		{name: "maximum", value: lua.LNumber(599), valid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, ok := luaValueToStatus(tt.value)
+			if ok != tt.valid {
+				t.Fatalf("luaValueToStatus() = %d, %t; valid = %t", status, ok, tt.valid)
+			}
+		})
 	}
 }
 

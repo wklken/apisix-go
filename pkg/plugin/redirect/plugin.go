@@ -36,6 +36,7 @@ const schema = `
 	  "ret_code": {
 		"type": "integer",
 		"minimum": 200,
+		"maximum": 599,
 		"default": 302
 	  },
 	  "uri": {

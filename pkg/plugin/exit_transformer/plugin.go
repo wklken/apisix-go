@@ -2,6 +2,7 @@ package exit_transformer
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -376,10 +377,17 @@ func responseValues(l *lua.LState, resp exitResponse) (lua.LValue, lua.LValue, l
 func luaValueToStatus(value lua.LValue) (int, bool) {
 	switch v := value.(type) {
 	case lua.LNumber:
-		return int(v), true
+		status := float64(v)
+		if math.IsNaN(status) || status < 100 || status > 599 || status != math.Trunc(status) {
+			return 0, false
+		}
+		return int(status), true
 	case lua.LString:
 		status, err := strconv.Atoi(string(v))
-		return status, err == nil
+		if err != nil || status < 100 || status > 599 {
+			return 0, false
+		}
+		return status, true
 	default:
 		return 0, false
 	}

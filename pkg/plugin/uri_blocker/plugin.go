@@ -30,6 +30,7 @@ const schema = `
 	"properties": {
 	  "block_rules": {
 		"type": "array",
+		"minItems": 1,
 		"items": {
 		  "type": "string",
 		  "minLength": 1,
@@ -40,6 +41,7 @@ const schema = `
 	  "rejected_code": {
 		"type": "integer",
 		"minimum": 200,
+		"maximum": 599,
 		"default": 403
 	  },
 	  "rejected_msg": {
@@ -73,6 +75,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if len(p.config.BlockRules) == 0 {
+		return fmt.Errorf("block_rules must contain at least one rule")
+	}
+
 	// set the default
 	if p.config.RejectedCode == 0 {
 		p.config.RejectedCode = 403

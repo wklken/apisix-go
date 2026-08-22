@@ -84,6 +84,13 @@ test-integration:
 test-plugin-harness:
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1
 
+PLUGIN_SMOKE_CASE ?=
+
+.PHONY: test-plugin-smoke
+test-plugin-smoke:
+	@test -n "$(strip $(PLUGIN_SMOKE_CASE))" || (printf 'PLUGIN_SMOKE_CASE is required\n' >&2; exit 1)
+	APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '^TestPluginIntegration$$' -count=1 -v
+
 .PHONY: serve
 serve: build
 	$(BINARY_PATH)

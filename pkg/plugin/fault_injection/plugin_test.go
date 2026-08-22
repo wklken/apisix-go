@@ -8,6 +8,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func TestAbortPercentageZeroFallsThrough(t *testing.T) {
@@ -289,6 +290,22 @@ func TestPostInitRejectsInvalidVarsExpressions(t *testing.T) {
 		if err := p.PostInit(); err == nil {
 			t.Fatalf("PostInit(%+v) error = nil, want invalid vars rejected", config)
 		}
+	}
+}
+
+func TestSchemaRejectsAbortStatusAboveHTTPMaximum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"abort": map[string]any{
+			"http_status": 1000,
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("abort.http_status=1000 should fail schema validation")
 	}
 }
 

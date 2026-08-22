@@ -12,8 +12,23 @@ import (
 
 	"github.com/apache/dubbo-go-hessian2"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type recordingDubboHealthReporter struct {
+	tcpTargets  []string
+	httpTargets []string
+}
+
+func (r *recordingDubboHealthReporter) ReportHTTP(target string, _ int) {
+	r.httpTargets = append(r.httpTargets, target)
+}
+
+func (r *recordingDubboHealthReporter) ReportTCPFailure(target string, _ bool) {
+	r.tcpTargets = append(r.tcpTargets, target)
+}
 
 func TestServeDubboIfConfiguredUsesRouteUpstreamTarget(t *testing.T) {
 	upstream := startRouteHessianDubboTestServer(t)
@@ -66,6 +81,205 @@ func TestServeDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
 	}
 	if lb.index != 2 {
 		t.Fatalf("selected targets = %d, want 2", lb.index)
+	}
+}
+
+func TestServeDubboAndHTTPDubboUseDefaultRetryCountForRouteTerminals(t *testing.T) {
+	builder := &Builder{}
+	t.Cleanup(builder.Stop)
+	upstream := resource.Upstream{
+		Scheme: "dubbo",
+		Nodes: []resource.Node{
+			{Host: "first.example", Port: 20880, Weight: 1},
+			{Host: "second.example", Port: 20880, Weight: 1},
+		},
+	}
+	_, terminals, err := builder.buildReverseHandlerWithTerminals(resource.Route{}, resource.Service{}, upstream)
+	if err != nil {
+		t.Fatalf("buildReverseHandlerWithTerminals() error = %v", err)
+	}
+	dubboTerminal, ok := terminals.dubbo.(routeDubboTerminal)
+	if !ok {
+		t.Fatalf("Dubbo terminal = %T, want routeDubboTerminal", terminals.dubbo)
+	}
+	if dubboTerminal.retries != 1 {
+		t.Fatalf("Dubbo terminal retries = %d, want nodes-1 (1)", dubboTerminal.retries)
+	}
+	httpDubboTerminal, ok := terminals.httpDubbo.(routeHTTPDubboTerminal)
+	if !ok {
+		t.Fatalf("HTTP-Dubbo terminal = %T, want routeHTTPDubboTerminal", terminals.httpDubbo)
+	}
+	if httpDubboTerminal.retries != 1 {
+		t.Fatalf("HTTP-Dubbo terminal retries = %d, want nodes-1 (1)", httpDubboTerminal.retries)
+	}
+}
+
+func TestServeDubboIfConfiguredUsesRequestAwarePriorityRetryTargets(t *testing.T) {
+	upstream := startRouteHessianDubboTestServer(t)
+	failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed target: %v", err)
+	}
+	failedTarget := failedListener.Addr().String()
+	_ = failedListener.Close()
+	servers := map[string]int{
+		"dubbo://" + failedTarget: 1,
+		"dubbo://" + upstream:     1,
+	}
+	priorities := map[string]int{
+		"dubbo://" + failedTarget: 10,
+		"dubbo://" + upstream:     0,
+	}
+	lb, err := pxy.NewUpstreamLoadBalanceWithPriorities(servers, priorities, nil)
+	if err != nil {
+		t.Fatalf("NewUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	targets, err := compileUpstreamTargets(servers)
+	if err != nil {
+		t.Fatalf("compileUpstreamTargets() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = dubbo_proxy.WithConfig(req, dubbo_proxy.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "1.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+
+	if !serveDubboIfConfiguredCompiled(rr, req, lb, targets, 1) {
+		t.Fatal("serveDubboIfConfiguredCompiled() = false, want true")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "from hessian upstream" {
+		t.Fatalf("response = %d/%q, want 200/from hessian upstream", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeDubboIfConfiguredAdvancesTrafficSplitRetryOverride(t *testing.T) {
+	upstream := startRouteHessianDubboTestServer(t)
+	failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed target: %v", err)
+	}
+	failedTarget := failedListener.Addr().String()
+	_ = failedListener.Close()
+	firstReporter := &recordingDubboHealthReporter{}
+	secondReporter := &recordingDubboHealthReporter{}
+	second := &traffic_split.Override{
+		Scheme:         "dubbo",
+		Host:           upstream,
+		HealthReporter: secondReporter,
+		HealthTarget:   "dubbo://" + upstream,
+	}
+	first := &traffic_split.Override{
+		Scheme:         "dubbo",
+		Host:           failedTarget,
+		Retries:        1,
+		HealthReporter: firstReporter,
+		HealthTarget:   "dubbo://" + failedTarget,
+	}
+	first.NextRetry = func(*http.Request) *traffic_split.Override { return second }
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = traffic_split.WithOverride(req, first)
+	req = dubbo_proxy.WithConfig(req, dubbo_proxy.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "1.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+
+	if !serveDubboIfConfiguredCompiled(rr, req, nil, nil) {
+		t.Fatal("serveDubboIfConfiguredCompiled() = false, want true")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "from hessian upstream" {
+		t.Fatalf("response = %d/%q, want 200/from hessian upstream", rr.Code, rr.Body.String())
+	}
+	if len(firstReporter.tcpTargets) != 1 || firstReporter.tcpTargets[0] != first.HealthTarget {
+		t.Fatalf("first retry health targets = %#v, want [%q]", firstReporter.tcpTargets, first.HealthTarget)
+	}
+	if len(secondReporter.httpTargets) != 1 || secondReporter.httpTargets[0] != second.HealthTarget {
+		t.Fatalf("second retry health targets = %#v, want [%q]", secondReporter.httpTargets, second.HealthTarget)
+	}
+}
+
+func TestRouteDubboTerminalUsesTrafficSplitOverrideWithoutBaseUpstream(t *testing.T) {
+	upstream := startRouteHessianDubboTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme: "dubbo",
+		Host:   upstream,
+	})
+	req = dubbo_proxy.WithConfig(req, dubbo_proxy.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "1.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+	fallbackCalled := false
+
+	_, _, _, err := (routeDubboTerminal{}).RunExclusiveProtocol(
+		rr,
+		req,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { fallbackCalled = true }),
+	)
+	if err != nil {
+		t.Fatalf("RunExclusiveProtocol() error = %v", err)
+	}
+	if fallbackCalled {
+		t.Fatal("fallback handler ran despite traffic-split Dubbo override")
+	}
+	if rr.Code != http.StatusOK || rr.Body.String() != "from hessian upstream" {
+		t.Fatalf("response = %d/%q, want 200/from hessian upstream", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeDubboIfConfiguredDoesNotReattributeMissingTrafficSplitRetryTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		nextRetry func(*http.Request) *traffic_split.Override
+	}{
+		{name: "nil callback"},
+		{name: "nil result", nextRetry: func(*http.Request) *traffic_split.Override { return nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			failedListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen failed target: %v", err)
+			}
+			failedTarget := failedListener.Addr().String()
+			_ = failedListener.Close()
+			reporter := &recordingDubboHealthReporter{}
+			override := &traffic_split.Override{
+				Scheme:         "dubbo",
+				Host:           failedTarget,
+				Retries:        1,
+				HealthReporter: reporter,
+				HealthTarget:   "dubbo://" + failedTarget,
+				NextRetry:      test.nextRetry,
+			}
+			req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+			req = traffic_split.WithOverride(req, override)
+			req = dubbo_proxy.WithConfig(req, dubbo_proxy.Config{
+				ServiceName:    "svc",
+				ServiceVersion: "1.0.0",
+				Method:         "hello",
+			})
+			rr := httptest.NewRecorder()
+
+			if !serveDubboIfConfiguredCompiled(rr, req, nil, nil) {
+				t.Fatal("serveDubboIfConfiguredCompiled() = false, want true")
+			}
+			if rr.Code != http.StatusBadGateway {
+				t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+			}
+			if len(reporter.tcpTargets) != 1 || reporter.tcpTargets[0] != override.HealthTarget {
+				t.Fatalf(
+					"reported TCP targets = %#v, want one actual failure for %q",
+					reporter.tcpTargets,
+					override.HealthTarget,
+				)
+			}
+		})
 	}
 }
 

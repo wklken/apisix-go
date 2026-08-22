@@ -4,6 +4,8 @@ package ai_common
 import (
 	"net/http"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 // CloneJSONValue deep-clones a JSON-decoded value.
@@ -96,17 +98,28 @@ func JSONValueEqual(left any, right any) bool {
 }
 
 // CopyForwardHeaders copies request headers that are safe to forward to the
-// provider, skipping hop-by-hop headers.
+// provider, skipping hop-by-hop and credential headers so provider auth
+// stays the configured credential.
 func CopyForwardHeaders(dst, src http.Header) {
 	for field, values := range src {
-		switch strings.ToLower(field) {
-		case "host", "content-length", "accept-encoding":
+		if !safeToForwardHeader(field) {
 			continue
 		}
 		for _, value := range values {
 			dst.Add(field, value)
 		}
 	}
+}
+
+func safeToForwardHeader(field string) bool {
+	if base.IsHopByHopHeader(field) {
+		return false
+	}
+	switch strings.ToLower(field) {
+	case "host", "content-length", "accept-encoding", "authorization", "cookie":
+		return false
+	}
+	return true
 }
 
 // ProviderUsesOpenAIChat reports whether the provider speaks the OpenAI chat

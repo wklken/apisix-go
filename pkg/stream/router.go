@@ -85,6 +85,9 @@ func NewRouter(
 }
 
 func (r *Router) Reload(routes []resource.StreamRoute) error {
+	if err := rejectConflictingStreamListens(routes); err != nil {
+		return err
+	}
 	entries := make([]routeEntry, 0, len(routes))
 	for _, route := range routes {
 		entry, err := buildRouteEntry(route, r.enabledPlugins)
@@ -97,6 +100,31 @@ func (r *Router) Reload(routes []resource.StreamRoute) error {
 	r.routes = entries
 	r.mu.Unlock()
 	return nil
+}
+
+func rejectConflictingStreamListens(routes []resource.StreamRoute) error {
+	seen := make(map[string]string, len(routes))
+	for _, route := range routes {
+		if route.ServerAddr == "" && route.ServerPort == 0 {
+			continue
+		}
+		key := streamListenKey(route)
+		if previous, ok := seen[key]; ok {
+			return fmt.Errorf(
+				"conflicting stream listen address %s:%d between %q and %q",
+				route.ServerAddr,
+				route.ServerPort,
+				previous,
+				route.ID,
+			)
+		}
+		seen[key] = route.ID
+	}
+	return nil
+}
+
+func streamListenKey(route resource.StreamRoute) string {
+	return route.ServerAddr + "\x00" + strconv.Itoa(route.ServerPort)
 }
 
 func (r *Router) Serve(ctx context.Context, listener net.Listener, client net.Conn) error {

@@ -221,6 +221,28 @@ func TestHandlerBlocksRejectedRequestWithoutEventID(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsNonTerminalWAFStatus(t *testing.T) {
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: 600, EventID: "evt-bad"})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:                "block",
+		AppendWAFRespHeader: new(true),
+		Nodes:               []Node{nodeFromURL(t, waf.URL)},
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called for invalid WAF status")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
 func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-2"})

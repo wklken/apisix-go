@@ -265,6 +265,26 @@ func TestHandlerRejectsSelfSignedAPIWhenSSLVerifyDefaultsTrue(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsNonTerminalActionStatus(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"statusCode":600,"body":"should not write"}`))
+	}))
+	defer api.Close()
+
+	p := newTestPlugin(t, Config{
+		APIHost:      api.URL,
+		ServiceToken: "user:pass",
+		Namespace:    "guest",
+		Action:       "hello",
+	})
+
+	res := performRequest(p, "")
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestPostInitAppliesKeepaliveTransportOptions(t *testing.T) {
 	sslVerify := false
 	keepalive := false

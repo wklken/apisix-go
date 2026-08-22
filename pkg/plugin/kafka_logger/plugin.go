@@ -303,6 +303,9 @@ func (p *Plugin) PostInit() error {
 	if err := p.resolveSecrets(); err != nil {
 		return err
 	}
+	if err := p.validateSharedSASLIdentity(); err != nil {
+		return err
+	}
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
@@ -365,6 +368,29 @@ func (p *Plugin) Stop() {
 			}
 		})
 	})
+}
+
+func (p *Plugin) validateSharedSASLIdentity() error {
+	if len(p.config.Brokers) == 0 {
+		return nil
+	}
+	canonical := func(config *SASLConfig) string {
+		if config == nil {
+			return ""
+		}
+		mechanism := strings.ToUpper(config.Mechanism)
+		if mechanism == "" {
+			mechanism = "PLAIN"
+		}
+		return mechanism + "\x00" + config.User + "\x00" + config.Password
+	}
+	first := canonical(p.config.Brokers[0].SASLConfig)
+	for _, broker := range p.config.Brokers[1:] {
+		if canonical(broker.SASLConfig) != first {
+			return fmt.Errorf("kafka-logger brokers must share one SASL identity")
+		}
+	}
+	return nil
 }
 
 func (p *Plugin) resolveSecrets() error {

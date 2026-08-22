@@ -1241,7 +1241,7 @@ func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) 
 	}
 }
 
-func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
+func TestBuilderFailsClosedWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
 	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
 		"routes": {
 			"strict-global-route": []byte(`{"id":"strict-global-route","uri":"/strict-global"}`),
@@ -1266,8 +1266,11 @@ func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testi
 	builder := NewBuilder(storage)
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
-	if err != nil || handler == nil {
-		t.Fatalf("BuildStrict() = (%T, %v), want valid handler with legacy global-rule quarantine", handler, err)
+	if err == nil || handler != nil {
+		t.Fatalf("BuildStrict() = (%T, %v), want fail-closed snapshot error", handler, err)
+	}
+	if !strings.Contains(err.Error(), "strict-invalid-global") {
+		t.Fatalf("BuildStrict() error = %q, want strict-invalid-global", err)
 	}
 }
 
@@ -1564,6 +1567,36 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironm
 	}
 	if len(plugins) != 0 {
 		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestClickHouseLoggerEnvironmentUserPublishesAfterSecretOwnership(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"clickhouse-logger": map[string]any{
+				"endpoint_addr": "http://127.0.0.1:8123",
+				"user":          "$ENV://CLICK_HOUSE_USER",
+				"password":      "secret",
+				"database":      "default",
+				"logtable":      "apisix_logs",
+				"log_format":    map[string]any{"request_id": "$request_id"},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-clickhouse-env-user"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v, want owned ClickHouse environment user to publish", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1 published clickhouse-logger binding", len(plugins))
+	}
+	for _, published := range plugins {
+		if stopper, ok := published.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 )
 
 type ConfigUID struct {
@@ -19,8 +20,9 @@ func NewConfigUID() *ConfigUID {
 func (uid *ConfigUID) Add(parts ...any) {
 	for _, part := range parts {
 		s := fmt.Sprintf("%s", part)
+		uid.buffer.WriteString(strconv.Itoa(len(s)))
+		uid.buffer.WriteByte(':')
 		uid.buffer.WriteString(s)
-		uid.buffer.WriteString(":")
 	}
 }
 

@@ -118,6 +118,111 @@ func TestBuildStrictRejectsBlankHost(t *testing.T) {
 	}
 }
 
+func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		routeID string
+		payload string
+		want    string
+	}{
+		{
+			name:    "empty hosts array",
+			routeID: "empty-hosts-route",
+			payload: `{"id":"empty-hosts-route","uri":"/empty-hosts","hosts":[],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "hosts must not be empty",
+		},
+		{
+			name:    "invalid wildcard",
+			routeID: "invalid-wildcard-host-route",
+			payload: `{"id":"invalid-wildcard-host-route","uri":"/invalid-wildcard","hosts":["*foo.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "mixed valid and invalid hosts",
+			routeID: "mixed-hosts-route",
+			payload: `{"id":"mixed-hosts-route","uri":"/mixed-hosts","hosts":["api.example.com","*foo.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "nested wildcard labels",
+			routeID: "nested-wildcard-host-route",
+			payload: `{"id":"nested-wildcard-host-route","uri":"/nested-wildcard","hosts":["*.*.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "wildcard suffix glob",
+			routeID: "suffix-glob-host-route",
+			payload: `{"id":"suffix-glob-host-route","uri":"/suffix-glob","hosts":["*.suffix*"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "wildcard suffix question",
+			routeID: "suffix-question-host-route",
+			payload: `{"id":"suffix-question-host-route","uri":"/suffix-question","hosts":["*.foo?"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "empty wildcard suffix",
+			routeID: "empty-wildcard-host-route",
+			payload: `{"id":"empty-wildcard-host-route","uri":"/empty-wildcard","hosts":["*."],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "mixed valid and nested wildcard",
+			routeID: "mixed-nested-wildcard-route",
+			payload: `{"id":"mixed-nested-wildcard-route","uri":"/mixed-nested","hosts":["api.example.com","*.*.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ensureRouteStore(t)
+			setHTTPPluginAllowlist(t)
+			putRouteResource(t, test.routeID, []byte(test.payload))
+
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			handler, err := builder.BuildStrict()
+			if err == nil || handler != nil {
+				t.Fatalf("BuildStrict() = (%T, %v), want nil handler and host rejection", handler, err)
+			}
+			if !strings.Contains(err.Error(), test.routeID) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("BuildStrict() error = %q, want route ID and %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildStrictAcceptsOneLabelWildcardHost(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	const routeID = "one-label-wildcard-host"
+	putRouteResource(t, routeID, fmt.Appendf(nil,
+		`{"id":%q,"uri":"/wildcard-host","hosts":["*.example.com"],"upstream":{"type":"roundrobin","nodes":{%q:1}}}`,
+		routeID,
+		routePriorityNode(t, upstream.URL),
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildStrict()
+	if err != nil {
+		t.Fatalf("BuildStrict() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/wildcard-host", nil)
+	request.Host = "api.example.com"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("Host %q status = %d, want %d", request.Host, response.Code, http.StatusNoContent)
+	}
+}
+
 func TestRouteHostRankMatchesOneLabelWildcardAndBareIPv6(t *testing.T) {
 	if got := routeHostRank([]string{"*.example.com"}, "foo.example.com"); got != 1 {
 		t.Fatalf("one-label wildcard rank = %d, want 1", got)

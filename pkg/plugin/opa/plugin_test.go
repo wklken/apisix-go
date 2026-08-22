@@ -2,9 +2,11 @@ package opa
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -265,6 +267,31 @@ func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 	}
 	if got := strings.TrimSpace(res.Body.String()); got != "no token" {
 		t.Fatalf("body = %q, want no token", got)
+	}
+}
+
+func TestHandlerRejectsNonTerminalOPAStatus(t *testing.T) {
+	for _, code := range []int{99, 100, 600} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"result":{"allow":false,"status_code":%d,"reason":"bad status"}}`, code)
+			}))
+			t.Cleanup(opa.Close)
+
+			p := newTestPlugin(t, Config{
+				Host:   opa.URL,
+				Policy: "authz",
+			})
+
+			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("next handler should not be called")
+			})
+
+			if res.Code != http.StatusServiceUnavailable {
+				t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 

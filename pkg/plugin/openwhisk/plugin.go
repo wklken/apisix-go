@@ -16,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -259,6 +260,10 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response, 
 	status := res.StatusCode
 	if result.StatusCode != 0 {
 		status = result.StatusCode
+	}
+	if _, ok := util.TerminalStatus(status); !ok {
+		http.Error(w, "failed to parse openwhisk response data", http.StatusServiceUnavailable)
+		return
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(resultBody(result.Body, body))

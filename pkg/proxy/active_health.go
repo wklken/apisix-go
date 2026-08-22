@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -16,19 +17,20 @@ import (
 // ActiveHealthConfig is the bounded subset of APISIX checks.active used by the
 // Go-native active probe owner. Zero thresholds select the official defaults.
 type ActiveHealthConfig struct {
-	Type               string
-	HTTPPath           string
-	Host               string
-	Timeout            time.Duration
-	Concurrency        int
-	HealthyInterval    time.Duration
-	UnhealthyInterval  time.Duration
-	HealthySuccesses   int
-	UnhealthyHTTPFails int
-	UnhealthyTCPFails  int
-	UnhealthyTimeouts  int
-	HealthyStatuses    map[int]struct{}
-	UnhealthyStatuses  map[int]struct{}
+	Type                   string
+	HTTPPath               string
+	Host                   string
+	Timeout                time.Duration
+	Concurrency            int
+	HealthyInterval        time.Duration
+	UnhealthyInterval      time.Duration
+	HealthySuccesses       int
+	UnhealthyHTTPFails     int
+	UnhealthyTCPFails      int
+	UnhealthyTimeouts      int
+	HealthyStatuses        map[int]struct{}
+	UnhealthyStatuses      map[int]struct{}
+	HTTPSVerifyCertificate bool
 }
 
 type activeProbeResult uint8
@@ -90,6 +92,14 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 	}
 	if config.Type != "http" && config.Type != "https" {
 		return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.type %q is unsupported", config.Type)
+	}
+	config.HTTPSVerifyCertificate = config.Type == "https"
+	if rawVerify, exists := active["https_verify_certificate"]; exists {
+		value, ok := rawVerify.(bool)
+		if !ok {
+			return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.https_verify_certificate must be a boolean")
+		}
+		config.HTTPSVerifyCertificate = value
 	}
 
 	for _, item := range []struct {
@@ -219,18 +229,19 @@ type healthChecker interface {
 // the cluster's verified base transport, never the retry wrapper, so a failing
 // probe cannot trigger retries or consume in-flight tokens.
 type activeHealthChecker struct {
-	config     ActiveHealthConfig
-	targets    []string
-	lb         *HealthAwareLoadBalance
-	observer   ClusterObserver
-	name       string
-	transport  http.RoundTripper
-	semaphore  chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
-	closeOnce  sync.Once
-	wg         sync.WaitGroup
-	httpClient *http.Client
+	config         ActiveHealthConfig
+	targets        []string
+	lb             *HealthAwareLoadBalance
+	observer       ClusterObserver
+	name           string
+	transport      http.RoundTripper
+	semaphore      chan struct{}
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closeOnce      sync.Once
+	wg             sync.WaitGroup
+	httpClient     *http.Client
+	closeProbeIdle func()
 }
 
 func newActiveHealthChecker(
@@ -249,21 +260,42 @@ func newActiveHealthChecker(
 	for target := range targets {
 		targetList = append(targetList, target)
 	}
+	probeTransport, closeProbeIdle := activeHealthProbeTransport(base, config)
 	return &activeHealthChecker{
-		config:    config,
-		targets:   targetList,
-		lb:        lb,
-		name:      name,
-		observer:  observer,
-		transport: base,
-		semaphore: make(chan struct{}, config.Concurrency),
-		ctx:       ctx,
-		cancel:    cancel,
+		config:         config,
+		targets:        targetList,
+		lb:             lb,
+		name:           name,
+		observer:       observer,
+		transport:      base,
+		semaphore:      make(chan struct{}, config.Concurrency),
+		ctx:            ctx,
+		cancel:         cancel,
+		closeProbeIdle: closeProbeIdle,
 		httpClient: &http.Client{
-			Transport: base,
+			Transport: probeTransport,
 			Timeout:   0, // per-request context bounds each probe
 		},
 	}
+}
+
+func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfig) (http.RoundTripper, func()) {
+	if config.Type != "https" {
+		return base, nil
+	}
+	var transport *http.Transport
+	if existing, ok := base.(*http.Transport); ok {
+		transport = existing.Clone()
+	} else {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = !config.HTTPSVerifyCertificate
+	return transport, transport.CloseIdleConnections
 }
 
 // Start launches one probe goroutine per target.
@@ -274,11 +306,15 @@ func (c *activeHealthChecker) Start() {
 	}
 }
 
-// Close cancels the root context and waits for every probe goroutine to exit.
+// Close cancels the root context, waits for every probe goroutine to exit,
+// then closes idle connections on a cloned HTTPS probe transport only.
 func (c *activeHealthChecker) Close() {
 	c.closeOnce.Do(func() {
 		c.cancel()
 		c.wg.Wait()
+		if c.closeProbeIdle != nil {
+			c.closeProbeIdle()
+		}
 	})
 }
 

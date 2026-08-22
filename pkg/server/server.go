@@ -977,7 +977,7 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	// the published runtime, or completes first and is included by this read.
 	s.streamReloadMu.Lock()
 	defer s.streamReloadMu.Unlock()
-	routes, err := s.loadStreamRoutes()
+	routes, candidate, err := s.loadStreamRoutes()
 	if err != nil {
 		return fail(fmt.Errorf("load stream routes: %w", err))
 	}
@@ -1000,6 +1000,7 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 	s.streamRuntime = runtime
 	s.lifecycleMu.Unlock()
 	s.streamRoutes = routes
+	store.CommitStreamRouteLastGood(candidate)
 	metrics.SetStreamRoutes(streamRouteIDs(routes))
 	metrics.RecordConfigApplyStageSuccess(metrics.ConfigApplyStageStreams)
 	logger.Infof("stream proxy listening on %v", runtime.Addresses())
@@ -1059,12 +1060,16 @@ func prometheusEnabled(cfg *config.Config) bool {
 	return cfg != nil && slices.Contains(cfg.Plugins, "prometheus")
 }
 
-func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, error) {
-	routes, err := store.ListStreamRoutes()
+func (s *Server) loadStreamRoutes() ([]resource.StreamRoute, map[string]resource.StreamRoute, error) {
+	routes, candidate, err := store.PrepareStreamRoutes()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resolveStreamRoutesWithServices(routes, store.GetUpstream, store.GetService)
+	resolved, err := resolveStreamRoutesWithServices(routes, store.GetUpstream, store.GetService)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resolved, candidate, nil
 }
 
 func (s *Server) reloadStreamRoutes() error {
@@ -1078,17 +1083,19 @@ func (s *Server) reloadStreamRoutesIfStarted() (bool, error) {
 	if s.streamRuntime == nil {
 		return false, nil
 	}
-	routes, err := s.loadStreamRoutes()
+	routes, candidate, err := s.loadStreamRoutes()
 	if err != nil {
 		return true, err
 	}
 	if reflect.DeepEqual(routes, s.streamRoutes) {
+		store.CommitStreamRouteLastGood(candidate)
 		return true, nil
 	}
 	if err := s.streamRuntime.Reload(routes); err != nil {
 		return true, err
 	}
 	s.streamRoutes = routes
+	store.CommitStreamRouteLastGood(candidate)
 	metrics.SetStreamRoutes(streamRouteIDs(routes))
 	return true, nil
 }

@@ -899,6 +899,53 @@ func TestRouterPreservesResourceOrder(t *testing.T) {
 	}
 }
 
+func TestRouterReloadRejectsConflictingListenAddresses(t *testing.T) {
+	router, err := NewRouter([]resource.StreamRoute{{
+		ID:         "first",
+		ServerAddr: "127.0.0.1",
+		ServerPort: 1883,
+		Upstream: resource.Upstream{
+			Scheme: "tcp",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	err = router.Reload([]resource.StreamRoute{
+		{
+			ID:         "alpha",
+			ServerAddr: "127.0.0.1",
+			ServerPort: 1883,
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
+		},
+		{
+			ID:         "beta",
+			ServerAddr: "127.0.0.1",
+			ServerPort: 1883,
+			Upstream: resource.Upstream{
+				Scheme: "tcp",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 2, Weight: 1}},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("Reload() error = nil, want conflicting listen address")
+	}
+	if !strings.Contains(err.Error(), "conflicting stream listen address") ||
+		!strings.Contains(err.Error(), "alpha") ||
+		!strings.Contains(err.Error(), "beta") {
+		t.Fatalf("Reload() error = %q, want both route IDs", err)
+	}
+	entry, ok := router.matchEntry("127.0.0.1:1883", "192.0.2.1:1000")
+	if !ok || entry.route.ID != "first" {
+		t.Fatalf("matched route after rejected reload = %#v, want last-good first", entry.route)
+	}
+}
+
 func TestRouterUsesDeterministicClientIDHashForChashUpstream(t *testing.T) {
 	router, err := NewRouter([]resource.StreamRoute{{
 		ID: "mqtt-hash",

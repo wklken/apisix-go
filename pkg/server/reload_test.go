@@ -326,12 +326,12 @@ func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBl
 	})
 	storage, events := openLegacyReloadStore(t, map[string]map[string][]byte{
 		"routes": {
-			"valid-route":   []byte(`{"id":"valid-route","uri":"/valid"}`),
-			"invalid-route": []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`),
+			"valid-route":     []byte(`{"id":"valid-route","uri":"/valid"}`),
+			"invalid-route":   []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`),
+			"invalid-route-2": []byte(`{"id":"invalid-route-2","uri":"/invalid-2","plugins":[]}`),
 		},
 		"global_rules": {
-			"valid-global":   []byte(`{"id":"valid-global","plugins":{}}`),
-			"invalid-global": []byte(`{"id":"invalid-global","plugins":[]}`),
+			"valid-global": []byte(`{"id":"valid-global","plugins":{}}`),
 		},
 	})
 
@@ -371,7 +371,7 @@ func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBl
 	events <- replacement
 	deletion := store.NewEvent()
 	deletion.Type = store.EventTypeDelete
-	deletion.Key = []byte("/apisix/global_rules/invalid-global")
+	deletion.Key = []byte("/apisix/routes/invalid-route-2")
 	events <- deletion
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("recover legacy rows: %v", err)
@@ -388,6 +388,34 @@ func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBl
 	metrics.RecordConfigApplyQuarantine(0)
 	if !metrics.GetReadiness().ConfigApplyReady {
 		t.Fatal("config readiness = false after provider and store quarantines clear")
+	}
+}
+
+func TestReloadFailsClosedWhenGlobalRuleHasNoLastGood(t *testing.T) {
+	storage, _ := openLegacyReloadStore(t, map[string]map[string][]byte{
+		"routes": {
+			"valid-route": []byte(`{"id":"valid-route","uri":"/valid"}`),
+		},
+		"global_rules": {
+			"invalid-global": []byte(`{"id":"invalid-global","plugins":[]}`),
+		},
+	})
+	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Handler", "last-good")
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		storage: storage,
+		routes:  newRouteHandler(oldHandler, nil),
+	}
+	if err := server.reload(context.Background()); err == nil {
+		t.Fatal("reload() error = nil, want fail-closed global-rule generation")
+	}
+	response := httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
+	if got := response.Header().Get("X-Handler"); got != "last-good" {
+		t.Fatalf("handler marker after fail-closed reload = %q, want last-good", got)
 	}
 }
 

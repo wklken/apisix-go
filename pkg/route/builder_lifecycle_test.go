@@ -1567,6 +1567,36 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironm
 	}
 }
 
+func TestClickHouseLoggerEnvironmentUserPublishesAfterSecretOwnership(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"clickhouse-logger": map[string]any{
+				"endpoint_addr": "http://127.0.0.1:8123",
+				"user":          "$ENV://CLICK_HOUSE_USER",
+				"password":      "secret",
+				"database":      "default",
+				"logtable":      "apisix_logs",
+				"log_format":    map[string]any{"request_id": "$request_id"},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-clickhouse-env-user"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v, want owned ClickHouse environment user to publish", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1 published clickhouse-logger binding", len(plugins))
+	}
+	for _, published := range plugins {
+		if stopper, ok := published.(interface{ Stop() }); ok {
+			stopper.Stop()
+		}
+	}
+}
+
 func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testing.T) {
 	ensureRouteStore(t)
 	setHTTPPluginAllowlist(t, "workflow")

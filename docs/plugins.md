@@ -24,8 +24,10 @@ The standalone integration suite under [`t/plugin`](../t/plugin/README.md) is
 pinned to Apache APISIX commit
 `c3d7d5ec69774121f53d2e20d29d09c816795dd7`. It contains 99 manifest files for
 the 98 source-backed rows whose **Corpus gate** is `yes` plus supplemental
-`redirect2`. Every manifest activates its target plugin in standalone resources
-and passes the semantic coverage gate. Every scenario writes fresh
+`redirect2`. Every manifest has at least one scenario that activates its target
+plugin and passes the semantic coverage gate. Intentional negative scenarios
+that keep it disabled require a nonblank, non-stale
+`target_plugin_exempt_reason`. Every scenario writes fresh
 `config.yaml` and `apisix.yaml`, starts the real APISIX-Go CLI in standalone
 YAML-provider mode, sends requests, and asserts the response, fixture request,
 or startup log. External services are replaced by deterministic per-case

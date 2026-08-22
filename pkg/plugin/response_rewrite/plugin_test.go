@@ -544,6 +544,46 @@ func TestHandlerDecodesBrotliBodyBeforeFilters(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesGzipBodyWhenDecompressedBodyExceedsLimit(t *testing.T) {
+	testOversizedEncodedBodyIsPreserved(t, "gzip")
+}
+
+func TestHandlerPreservesBrotliBodyWhenDecompressedBodyExceedsLimit(t *testing.T) {
+	testOversizedEncodedBodyIsPreserved(t, "br")
+}
+
+func testOversizedEncodedBodyIsPreserved(t *testing.T, encoding string) {
+	t.Helper()
+	expanded := bytes.Repeat([]byte("secret"), int(base.DefaultBufferedResponseMaxBytes/int64(len("secret")))+1)
+	var encoded []byte
+	if encoding == "gzip" {
+		encoded = gzipBytesBody(t, expanded)
+	} else {
+		encoded = brotliBytesBody(t, expanded)
+	}
+
+	p := newTestPlugin(t, Config{
+		Filters: []Filter{{Regex: `secret`, Replace: "redacted", Scope: "global"}},
+	})
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", encoding)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encoded)
+	})
+
+	if got := res.Header().Get("Content-Encoding"); got != encoding {
+		t.Fatalf("Content-Encoding = %q, want %q", got, encoding)
+	}
+	if got := res.Body.Bytes(); !bytes.Equal(got, encoded) {
+		t.Fatalf(
+			"body changed after oversized %s decode: got %d bytes, want original %d bytes",
+			encoding,
+			len(got),
+			len(encoded),
+		)
+	}
+}
+
 func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -773,10 +813,15 @@ func encryptResponseBodyForTest(t *testing.T, key string, value string) string {
 
 func gzipBody(t *testing.T, value string) []byte {
 	t.Helper()
+	return gzipBytesBody(t, []byte(value))
+}
+
+func gzipBytesBody(t *testing.T, value []byte) []byte {
+	t.Helper()
 
 	var buf bytes.Buffer
 	writer := gzip.NewWriter(&buf)
-	if _, err := writer.Write([]byte(value)); err != nil {
+	if _, err := writer.Write(value); err != nil {
 		t.Fatalf("write gzip body: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -787,10 +832,15 @@ func gzipBody(t *testing.T, value string) []byte {
 
 func brotliBody(t *testing.T, value string) []byte {
 	t.Helper()
+	return brotliBytesBody(t, []byte(value))
+}
+
+func brotliBytesBody(t *testing.T, value []byte) []byte {
+	t.Helper()
 
 	var buf bytes.Buffer
 	writer := brotlienc.NewWriter(&buf)
-	if _, err := writer.Write([]byte(value)); err != nil {
+	if _, err := writer.Write(value); err != nil {
 		t.Fatalf("write brotli body: %v", err)
 	}
 	if err := writer.Close(); err != nil {

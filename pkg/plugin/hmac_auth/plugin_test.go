@@ -380,6 +380,70 @@ func TestHandlerValidatesRequestTargetOnlySignature(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsSignedHeaderWithoutRequestValue(t *testing.T) {
+	addHMACConsumer(t, "missing-header-user", "missing-header-key", "missing-header-secret")
+	p := newTestPlugin(t, Config{
+		SignedHeaders: []string{"date", "x-tenant"},
+		ClockSkew:     1_000_000_000,
+	})
+	date := "Thu, 24 Sep 2020 06:39:52 GMT"
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", date)
+	params := signatureParams{
+		KeyID:     "missing-header-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"date", "x-tenant"},
+	}
+	generated, err := generateSignature(req, "missing-header-secret", params)
+	if err != nil {
+		t.Fatalf("generateSignature() error = %v", err)
+	}
+	auth := fmt.Sprintf(
+		`Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"`,
+		params.KeyID,
+		params.Algorithm,
+		strings.Join(params.Headers, " "),
+		base64.StdEncoding.EncodeToString(generated),
+	)
+	req.Header.Set("Authorization", auth)
+	recorder := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing signed header reached downstream")
+	})).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d; body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+	}
+}
+
+func TestHandlerAcceptsRequiredHostFromRequestAuthority(t *testing.T) {
+	addHMACConsumer(t, "host-header-user", "host-header-key", "host-header-secret")
+	p := newTestPlugin(t, Config{
+		SignedHeaders: []string{"date", "host"},
+		ClockSkew:     1_000_000_000,
+	})
+	date := "Thu, 24 Sep 2020 06:39:52 GMT"
+	auth := signatureHeader(
+		t,
+		"host-header-key",
+		"host-header-secret",
+		"hmac-sha256",
+		[]string{"date", "host"},
+		map[string]string{"date": date, "host": "example.com"},
+	)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", date)
+	req.Header.Set("Authorization", auth)
+	recorder := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+}
+
 func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 	addHMACConsumer(t, "hide-user", "hide-hmac-key", "hmac-secret")
 	hideCredentials := true

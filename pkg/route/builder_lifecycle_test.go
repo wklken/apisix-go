@@ -1092,6 +1092,119 @@ func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	}
 }
 
+func TestBuildWithRouteQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	putRouteResource(t, "quarantine-valid", []byte(
+		`{"id":"quarantine-valid","uri":"/quarantine-valid"}`,
+	))
+	putRouteResource(t, "quarantine-invalid", []byte(
+		`{"id":"quarantine-invalid","uri":"/quarantine-invalid","plugins":{"not-a-plugin":{}}}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+	}
+
+	valid := httptest.NewRecorder()
+	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-valid", nil))
+	if valid.Code == http.StatusNotFound {
+		t.Fatalf("valid route status = %d, want registered handler", valid.Code)
+	}
+
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/quarantine-invalid", nil))
+	if invalid.Code != http.StatusNotFound {
+		t.Fatalf("invalid route status = %d, want 404", invalid.Code)
+	}
+	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
+		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
+	}
+}
+
+func TestBuildWithRouteQuarantineDoesNotPartiallyPublishMultiURIRoute(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	putRouteResource(t, "quarantine-multi-uri", []byte(
+		`{"id":"quarantine-multi-uri","uris":["/quarantine-first","/quarantine/:id/:id"]}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+	}
+
+	for _, path := range []string{"/quarantine-first", "/quarantine/value/value"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("quarantined route path %q status = %d, want 404", path, response.Code)
+		}
+	}
+	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
+		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
+	}
+}
+
+func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t)
+	putRouteResource(t, "quarantine-method-invalid", []byte(
+		`{"id":"quarantine-method-invalid","uri":"/quarantine-method/:id","methods":["BOGUS"]}`,
+	))
+	putRouteResource(t, "quarantine-method-valid", []byte(
+		`{"id":"quarantine-method-valid","uri":"/quarantine-method-valid","methods":["GET"]}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+	}
+
+	valid := httptest.NewRecorder()
+	handler.ServeHTTP(valid, httptest.NewRequest(http.MethodGet, "/quarantine-method-valid", nil))
+	if valid.Code == http.StatusNotFound {
+		t.Fatalf("valid route status = %d, want registered handler", valid.Code)
+	}
+	if got, want := builder.QuarantinedResourceCount(), 1; got != want {
+		t.Fatalf("QuarantinedResourceCount() = %d, want %d", got, want)
+	}
+}
+
+func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) {
+	ensureRouteStore(t)
+	setHTTPPluginAllowlist(t, "kafka-logger")
+	putHTTPAllowlistResource(t, "services", "quarantine-lifecycle-service", []byte(
+		`{"id":"quarantine-lifecycle-service","plugins":{"kafka-logger":{"broker_list":{"127.0.0.1":9092},"kafka_topic":"quarantine","producer_type":"sync"}}}`,
+	))
+	putRouteResource(t, "quarantine-lifecycle", []byte(
+		`{"id":"quarantine-lifecycle","uri":"/quarantine-lifecycle","service_id":"quarantine-lifecycle-service","upstream":{"nodes":{"127.0.0.1:1":0}}}`,
+	))
+
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	handler, err := builder.BuildWithRouteQuarantine()
+	if err != nil || handler == nil {
+		t.Fatalf("BuildWithRouteQuarantine() = (%T, %v), want valid generation", handler, err)
+	}
+	builder.stopperMu.Lock()
+	stopperCount := len(builder.stoppers)
+	builder.stopperMu.Unlock()
+	if stopperCount != 0 {
+		t.Fatalf("quarantined route retained %d lifecycle stopper(s), want zero", stopperCount)
+	}
+	if got := len(builder.servicePlugins); got != 0 {
+		t.Fatalf("quarantined route retained %d service plugin(s), want zero", got)
+	}
+}
+
 func TestBuilderPublishesValidRouteWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
 	storage := openLegacyRouteStore(t, map[string]map[string][]byte{
 		"routes": {

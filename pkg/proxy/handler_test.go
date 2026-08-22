@@ -124,7 +124,7 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 	}
 }
 
-func TestRetryTransportRetriesReplayableGRPCPost(t *testing.T) {
+func TestRetryTransportDoesNotRetryReplayableGRPCPostWithoutIdempotencyKey(t *testing.T) {
 	attempts := 0
 	transport := NewRetryTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		attempts++
@@ -141,12 +141,14 @@ func TestRetryTransportRetriesReplayableGRPCPost(t *testing.T) {
 	request = WithRetries(request, 1, func(*http.Request) bool { return true })
 
 	response, err := transport.RoundTrip(request)
-	if err != nil {
-		t.Fatalf("RoundTrip() error = %v", err)
+	if err == nil {
+		t.Fatal("RoundTrip() error = nil, want transport failure")
 	}
-	_ = response.Body.Close()
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
+	if response != nil {
+		t.Fatalf("response = %#v, want nil", response)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
@@ -226,9 +228,9 @@ func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "POST with unary gRPC content type",
+			name:    "POST with unary gRPC content type still requires idempotency key",
 			request: withContentType(replayableRequest(http.MethodPost), "application/grpc+proto; charset=utf-8"),
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "POST with gRPC-Web content type still requires idempotency key",

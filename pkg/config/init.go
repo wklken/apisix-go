@@ -143,6 +143,24 @@ func validateRuntimeConfig(cfg *Config) error {
 			return profileAwareRuntimeError(cfg, fmt.Errorf("%s must be positive, got %d", limit.field, limit.value))
 		}
 	}
+	for index, address := range cfg.Apisix.TrustedAddresses {
+		address = strings.TrimSpace(address)
+		if address == "" {
+			continue
+		}
+		if net.ParseIP(address) != nil {
+			continue
+		}
+		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
+			return profileAwareRuntimeError(
+				cfg,
+				fmt.Errorf(
+					"apisix.trusted_addresses[%d] must be a valid CIDR or IP address",
+					index,
+				),
+			)
+		}
+	}
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
 		return profileAwareRuntimeError(cfg, fmt.Errorf(
 			"nginx_config.http.client_max_body_size must be positive, got %d",

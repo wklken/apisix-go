@@ -103,7 +103,7 @@ func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T)
 		{
 			factory: "key-auth",
 			plan:    "Plan 14",
-			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal,
+			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal | CapabilityLogSanitizer,
 		},
 		{
 			factory: "proxy-cache",
@@ -130,6 +130,20 @@ func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T)
 				t.Fatalf("Capabilities = %#x, want bits %#x", spec.Capabilities, test.bits)
 			}
 		})
+	}
+}
+
+func TestKeyAuthSanitizerStaysInPlan14AndDataMaskRemainsExact(t *testing.T) {
+	keyAuth, ok := CapabilitySpecForFactory("key-auth")
+	if !ok || keyAuth.PrimaryPlan != "Plan 14" {
+		t.Fatalf("key-auth spec = %#v/%v, want Plan 14", keyAuth, ok)
+	}
+	if keyAuth.Capabilities&CapabilityLogSanitizer == 0 {
+		t.Fatalf("key-auth capabilities = %#x, want log sanitizer ownership", keyAuth.Capabilities)
+	}
+	dataMask, ok := CapabilitySpecForFactory("data-mask")
+	if !ok || dataMask.PrimaryPlan != "Plan 20" || dataMask.Capabilities != CapabilityLogSanitizer {
+		t.Fatalf("data-mask spec = %#v/%v, want only Plan 20 log sanitizer", dataMask, ok)
 	}
 }
 

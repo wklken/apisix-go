@@ -393,6 +393,7 @@ cases:
 
   - name: global-plugin-not-enabled-does-not-observe-errors
     source: {file: t/plugin/error-log-logger.t, tests: [1]}
+    target_plugin_exempt_reason: intentional negative case keeps error-log-logger disabled
     runtime: {plugins: [basic-auth]}
     config:
       plugin_metadata:

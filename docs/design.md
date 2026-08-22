@@ -134,14 +134,19 @@ process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 `request_timeout`.
 
 Configuration publication separates deterministic per-resource validation
-from generation-wide semantic validation. New route and global-rule PUTs must
+from route-scoped and generation-wide semantic validation. New route and global-rule PUTs must
 decode as JSON objects before bbolt mutation; invalid updates return a typed
 resource error, retain the last-good row, and do not schedule a reload. During
 upgrade recovery, a malformed legacy row is represented in immutable snapshot
 quarantine metadata and omitted from that snapshot, allowing valid rows to
-publish without silently declaring readiness. Disabled plugins, broken
-references, and other `BuildStrict` semantic failures remain generation-wide
-fail-closed errors and keep the previously installed handler.
+publish without silently declaring readiness. Runtime startup and reload also
+quarantine a complete individual route when its plugin materialization,
+reference resolution, or URI registration fails; URI validation is atomic for
+multi-URI routes and failed plugin initialization rolls back generation public
+API registrations. Global rules, snapshot acquisition, and shared generation
+setup remain fail-closed and keep the previously installed handler on reload.
+`BuildStrict` remains available for strict validation tests, while runtime
+publication uses the route-quarantining build entry point.
 
 ## APISIX 3.17 Protocol Bridge Design
 
@@ -154,8 +159,9 @@ bounded raw-TCP stream listener/route snapshot with cancellation and result/log
 callbacks. Stream startup is fail-closed: stream mode requires at least one
 TCP listener, and unsupported UDP, TLS, PROXY protocol, unresolved upstream,
 and unsupported plugin configuration is rejected before the server begins
-serving. An invalid route reload is rejected without replacing the last-good
-router generation. It does not yet expose a general stream-variable/plugin-chain
+serving. HTTP route-scoped failures follow the quarantine contract above;
+invalid stream generation reloads are rejected without replacing the last-good
+stream runtime. It does not yet expose a general stream-variable/plugin-chain
 API, active health probes, TLS/UDP stream owner, or Kafka-specific stream
 binding. The runtime exposes `/livez` and `/readyz`; startup failures are
 returned to the process entrypoint, and readiness remains unavailable until

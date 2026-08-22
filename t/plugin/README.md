@@ -9,9 +9,12 @@ uses a fresh loopback upstream fixture.
 The corpus is pinned to Apache APISIX commit
 `c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The catalog contains 99 manifests:
 the 98 source-backed plugins marked Supported in `docs/plugins.md` plus the
-supplemental `redirect2` source file. Every manifest contains standalone
-resources that activate its target plugin and assertions produced by the real
-APISIX-Go process; no generated placeholder manifest is counted as coverage.
+supplemental `redirect2` source file. Every manifest contains at least one
+standalone scenario that activates its target plugin and assertions produced
+by the real APISIX-Go process. An intentional negative scenario may keep the
+target plugin disabled only when it declares a nonblank
+`target_plugin_exempt_reason`; the gate rejects missing, blank, or stale
+exemptions. No generated placeholder manifest is counted as coverage.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
@@ -56,6 +59,9 @@ fixture so the behavior remains executable.
 An HTTP case contains:
 
 - `source.tests`: source `TEST` numbers represented by the case;
+- optional `target_plugin_exempt_reason`: required only for an intentional
+  negative case that does not activate the manifest's target plugin; variants
+  declare this independently rather than on their parent case;
 - optional `runtime`: recursive overrides written to generated
   `conf/config.yaml`;
 - `config`: standalone resources written to generated `conf/apisix.yaml`;

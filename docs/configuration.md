@@ -71,12 +71,15 @@ route continue serving; readiness must return to 200 after recovery and a
 newer revision must apply. See the [production release runbook](runbooks/production-release.md)
 for the evidence and operator-supplied deployment step.
 
-Deterministically invalid route, global-rule, consumer, and SSL updates are
-rejected before replacing their last-good store value. A malformed route or
-global-rule row left by an older database is skipped only from the immutable
-HTTP build snapshot: valid resources still publish, while the no-label
-`config_apply_quarantined_resources` gauge stays non-zero and `/readyz` remains
-503. Provider-side and legacy-store quarantine counts are aggregated
+Deterministically invalid route, global-rule, consumer, and SSL payloads are
+rejected before replacing their last-good store value. During HTTP generation
+build, a semantic failure scoped to one route quarantines that complete route;
+the remaining valid routes still publish. A malformed route or global-rule row
+left by an older database is likewise omitted from the immutable build
+snapshot. Every omission keeps the no-label
+`config_apply_quarantined_resources` gauge non-zero and `/readyz` at 503.
+Global-rule and shared generation setup failures remain fail-closed.
+Provider-side and build-snapshot quarantine counts are aggregated
 independently, so clearing one source cannot hide the other.
 
 Plugin support status is verified by a separate read-only `Plugin Status
@@ -264,7 +267,9 @@ do not include request/response start lines and headers as NGINX's
   gRPCS upstream unless `tls.verify: true`.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
-- An invalid initial route generation stops startup. An invalid reload retains the last successfully published generation.
+- An invalid individual route is quarantined as a unit at initial build and
+  reload: it receives 404 while valid routes publish. A generation-wide error
+  stops initial startup or retains the last successfully published reload.
 - A singular route `host` uses the same exact and wildcard dispatcher as a
   one-element `hosts` list. Simultaneous `host` and `hosts`, or a blank
   singular `host`, is rejected; a request with the wrong host receives 404.
@@ -284,7 +289,7 @@ do not include request/response start lines and headers as NGINX's
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.
-- The supported `checks.active` HTTP/HTTPS probe subset (`type`, `http_path`, `host`, `timeout`, `concurrency`, `healthy.interval`/`successes`/`http_statuses`, and `unhealthy.interval`/`http_failures`/`tcp_failures`/`http_statuses`) recovers and quarantines targets. When every target is unhealthy the pool fails open and keeps forwarding, with the state exposed through metrics and logs.
+- The supported `checks.active` HTTP/HTTPS probe subset (`type`, `http_path`, `host`, `timeout`, `concurrency`, `healthy.interval`/`successes`/`http_statuses`, and `unhealthy.interval`/`http_failures`/`tcp_failures`/`timeouts`/`http_statuses`) recovers and quarantines targets. Active defaults are healthy statuses `{200,302}` and HTTP/TCP/timeout failure thresholds `5/2/3`; the passive status defaults remain separate. When every target is unhealthy the pool fails open and keeps forwarding, with the state exposed through metrics and logs.
 - `apisix.disable_upstream_healthcheck: true` omits active probes from cluster configuration while retaining ordinary weighted selection.
 - Route generations are retired asynchronously: publishing a new handler never blocks behind a long-lived request on the previous generation.
 
@@ -304,6 +309,11 @@ The YAML provider reads `conf/apisix.yaml` and requires the file to end with
 marker. Both providers use the existing APISIX resource shapes for routes,
 upstreams, services, plugin metadata, SSLs, stream routes, consumers, consumer
 groups, global rules, plugin configs, and protos.
+
+Every standalone reload applies the complete file as the authoritative managed
+Store snapshot in one validated replacement batch. This includes an empty
+snapshot, so a resource committed by a candidate whose runtime publication
+later failed cannot survive after it is removed from the file.
 
 The loader also recognizes the remaining official top-level sections and
 nested fields, including `nginx_config`, `ext-plugin`, `wasm`, `xrpc`, `events`,

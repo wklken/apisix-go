@@ -254,7 +254,16 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 		return writeSimpleRESP(writer, "PONG")
 	case "HELLO":
 		return writeRESPError(writer, "unknown command 'HELLO'")
-	case "AUTH", "SELECT", "CLIENT", "READONLY", "READ_ONLY", "ASKING":
+	case "AUTH", "CLIENT", "READONLY", "READ_ONLY", "ASKING":
+		return writeSimpleRESP(writer, "OK")
+	case "SELECT":
+		if len(command) < 2 {
+			return writeRESPError(writer, "wrong number of arguments for SELECT")
+		}
+		database, err := strconv.Atoi(command[1])
+		if err != nil || database < 0 || database > 15 {
+			return writeRESPError(writer, "DB index is out of range")
+		}
 		return writeSimpleRESP(writer, "OK")
 	case "QUIT":
 		return writeSimpleRESP(writer, "OK")
@@ -2088,6 +2097,37 @@ return {allowed, remaining, ttl}
 	}
 
 	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureRejectsOutOfRangeDatabaseSelection(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "redis-database-selection",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			IgnoreNegotiation:       true,
+		},
+	}
+	started, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	fixture := started.(*redisFixture)
+	t.Cleanup(fixture.close)
+
+	client := redis.NewClient(&redis.Options{Addr: fixture.address()})
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Do(context.Background(), "SELECT", "999999").Err(); err == nil ||
+		!strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("out-of-range SELECT error = %v, want DB index is out of range", err)
+	}
+	if err := client.Do(context.Background(), "SELECT", "15").Err(); err != nil {
+		t.Fatalf("highest supported SELECT failed: %v", err)
+	}
+	if err := client.Do(context.Background(), "SELECT", "16").Err(); err == nil ||
+		!strings.Contains(err.Error(), "DB index is out of range") {
+		t.Fatalf("upper-bound SELECT error = %v, want DB index is out of range", err)
+	}
 }
 
 func equalRedisIntegers(values []any, expected ...int64) bool {

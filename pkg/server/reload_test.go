@@ -397,7 +397,7 @@ func openLegacyReloadStore(t *testing.T, seed map[string]map[string][]byte) (*st
 	return storage, events
 }
 
-func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {
+func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
 	previousConfig := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previousConfig })
 	config.GlobalConfig = &config.Config{}
@@ -415,9 +415,7 @@ func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {
 	event := store.NewEvent()
 	event.Type = store.EventTypePut
 	event.Key = []byte("/apisix/routes/disabled-route")
-	// Use an unregistered plugin as a deterministic route-build failure on the
-	// pre-allowlist baseline; the combined WU-02 tests cover a known disabled
-	// factory with the same reload transaction.
+	// Use an unregistered plugin as a deterministic route-scoped build failure.
 	event.Value = []byte(`{"id":"disabled-route","uri":"/disabled","plugins":{"disabled-test-plugin":{}}}`)
 	events <- event
 	if err := storage.Sync(); err != nil {
@@ -436,19 +434,19 @@ func TestReloadRetainsLastGoodHandlerAndReportsDisabledPlugin(t *testing.T) {
 	}
 
 	err = server.reload(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "disabled-test-plugin") {
-		t.Fatalf("reload() error = %v, want disabled-test-plugin error", err)
+	if err != nil {
+		t.Fatalf("reload() error = %v, want quarantined route generation", err)
 	}
 	response := httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/any", nil))
-	if got, want := response.Code, http.StatusUnauthorized; got != want {
-		t.Fatalf("status after failed reload = %d, want retained handler status %d", got, want)
+	if got, want := response.Code, http.StatusNotFound; got != want {
+		t.Fatalf("status after quarantined reload = %d, want %d", got, want)
 	}
-	if got, want := response.Header().Get("X-Handler"), "last-good"; got != want {
-		t.Fatalf("handler marker after failed reload = %q, want %q", got, want)
+	if got := response.Header().Get("X-Handler"); got != "" {
+		t.Fatalf("handler marker after quarantined reload = %q, want empty", got)
 	}
-	if got := oldStops.Load(); got != 0 {
-		t.Fatalf("last-good handler stopper calls = %d, want 0", got)
+	if got, want := oldStops.Load(), int32(1); got != want {
+		t.Fatalf("last-good handler stopper calls = %d, want %d", got, want)
 	}
 }
 
@@ -477,12 +475,12 @@ func TestAcknowledgedHTTPRouteWaitsForSuccessfulPublication(t *testing.T) {
 
 	event := store.NewAcknowledgedEvent()
 	event.Type = store.EventTypePut
-	event.Key = []byte("/apisix/routes/disabled-route")
-	event.Value = []byte(`{"id":"disabled-route","uri":"/disabled","plugins":{"disabled-test-plugin":{}}}`)
+	event.Key = []byte("/apisix/global_rules/disabled-global")
+	event.Value = []byte(`{"id":"disabled-global","plugins":{"disabled-test-plugin":{}}}`)
 	events <- event
 	err = event.Wait(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "disabled-test-plugin") {
-		t.Fatalf("acknowledged route error = %v, want publication failure", err)
+		t.Fatalf("acknowledged global-rule error = %v, want generation publication failure", err)
 	}
 }
 
@@ -602,17 +600,26 @@ func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
 	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
 	t.Cleanup(func() { _ = storage.Stop() })
 
-	putRoute := func(value []byte) {
+	putGlobalRule := func(value []byte) {
 		event := store.NewEvent()
 		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/routes/reload-route")
+		event.Key = []byte("/apisix/global_rules/reload-global")
 		event.Value = value
 		events <- event
 		if err := storage.Sync(); err != nil {
 			t.Fatalf("store sync: %v", err)
 		}
 	}
-	putRoute([]byte(`{"id":"reload-route","uri":"/reload","plugins":{"disabled-test-plugin":{}}}`))
+	deleteGlobalRule := func() {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/global_rules/reload-global")
+		events <- event
+		if err := storage.Sync(); err != nil {
+			t.Fatalf("store sync: %v", err)
+		}
+	}
+	putGlobalRule([]byte(`{"id":"reload-global","plugins":{"disabled-test-plugin":{}}}`))
 
 	server := &Server{
 		addr:            "127.0.0.1:9080",
@@ -644,7 +651,7 @@ func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
 		t.Fatalf("ready after provider-only success = %v, want 0", got)
 	}
 
-	putRoute([]byte(`{"id":"reload-route","uri":"/reload"}`))
+	deleteGlobalRule()
 	server.SendReloadEvent()
 	waitForConfigApplyMetric(t, metrics.ConfigApplyReady, 1)
 	if got := configApplyCounterValue(t, metrics.ConfigApplyFailures); got != 1 {

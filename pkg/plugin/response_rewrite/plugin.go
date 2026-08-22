@@ -580,20 +580,20 @@ func decodeFilterBody(resp *base.BufferedResponseWriter) ([]byte, bool) {
 			return nil, false
 		}
 		defer func() { _ = reader.Close() }()
-		decoded, err := io.ReadAll(reader)
-		if err != nil {
-			return nil, false
-		}
-		return decoded, true
+		return readLimitedDecodedBody(reader)
 	case "br":
-		decoded, err := io.ReadAll(brotlidec.NewReader(bytes.NewReader(resp.Body())))
-		if err != nil {
-			return nil, false
-		}
-		return decoded, true
+		return readLimitedDecodedBody(brotlidec.NewReader(bytes.NewReader(resp.Body())))
 	default:
 		return nil, false
 	}
+}
+
+func readLimitedDecodedBody(reader io.Reader) ([]byte, bool) {
+	decoded, err := io.ReadAll(io.LimitReader(reader, base.DefaultBufferedResponseMaxBytes+1))
+	if err != nil || int64(len(decoded)) > base.DefaultBufferedResponseMaxBytes {
+		return nil, false
+	}
+	return decoded, true
 }
 
 func expressionString(value any) string {

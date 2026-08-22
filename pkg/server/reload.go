@@ -156,7 +156,7 @@ func (s *Server) reload(ctx context.Context) (reloadErr error) {
 		}
 	}()
 
-	handler, err := builder.BuildStrict()
+	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil {
 		reloadErr = fmt.Errorf("reload routes: %w", err)
 		logger.Errorf("reload routes fail, keeping the current handler: %s", reloadErr)

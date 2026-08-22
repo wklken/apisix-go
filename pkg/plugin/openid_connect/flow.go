@@ -133,8 +133,9 @@ func (p *Plugin) beginAuthorization(
 		return
 	}
 
-	client.oauth2Config.RedirectURL = redirectURI
-	authorizationURL := client.oauth2Config.AuthCodeURL(state, options...)
+	oauth2Config := client.oauth2Config
+	oauth2Config.RedirectURL = redirectURI
+	authorizationURL := oauth2Config.AuthCodeURL(state, options...)
 	http.Redirect(w, r, authorizationURL, http.StatusFound)
 }
 
@@ -211,7 +212,8 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 		if err != nil {
 			return tokenResponse{}, err
 		}
-		client.oauth2Config.RedirectURL = redirectURI
+		oauth2Config := client.oauth2Config
+		oauth2Config.RedirectURL = redirectURI
 		options := []oauth2.AuthCodeOption{}
 		if p.config.UsePKCE {
 			if verifier == "" {
@@ -219,7 +221,7 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 			}
 			options = append(options, oauth2.VerifierOption(verifier))
 		}
-		token, err := client.oauth2Config.Exchange(r.Context(), code, options...)
+		token, err := oauth2Config.Exchange(r.Context(), code, options...)
 		if err != nil {
 			return tokenResponse{}, err
 		}

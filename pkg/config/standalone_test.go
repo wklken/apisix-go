@@ -166,7 +166,9 @@ func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readStandaloneSnapshot() error = %v", err)
 	}
-	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event))
+	events := make(chan *store.Event)
+	newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
 	watcher.SeedCurrentSnapshot(snapshot)
 	callbackEntered := make(chan struct{})
 	releaseCallback := make(chan struct{})
@@ -278,6 +280,68 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 		if !attempt.AffectsHTTPRoutes() {
 			t.Fatalf("reload attempt %d did not replay the route change", index+1)
 		}
+	}
+}
+
+func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	initial := `routes:
+  - id: route-1
+    uri: /one
+#END
+`
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 8)
+	storage := newStandaloneTestStore(t, events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("initial Reload() error = %v", err)
+	}
+	if err := storage.Sync(); err != nil {
+		t.Fatalf("initial Store.Sync() error = %v", err)
+	}
+
+	var attempts int
+	watcher.SetAcknowledgedReloadCallback(func(StandaloneReloadResult, error) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("runtime publication failed")
+		}
+		return nil
+	})
+	failing := `routes:
+  - id: route-1
+    uri: /one
+  - id: route-x
+    uri: /x
+#END
+`
+	if err := os.WriteFile(path, []byte(failing), 0o600); err != nil {
+		t.Fatalf("write failing standalone config: %v", err)
+	}
+	watcher.reloadAndNotify()
+	if attempts != 1 {
+		t.Fatalf("publication attempts after failing snapshot = %d, want 1", attempts)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil || len(value) == 0 {
+		t.Fatalf("route-x after failed publication = %q, %v; want durable candidate snapshot", value, err)
+	}
+
+	complete := initial
+	if err := os.WriteFile(path, []byte(complete), 0o600); err != nil {
+		t.Fatalf("write converging standalone config: %v", err)
+	}
+	watcher.reloadAndNotify()
+	if attempts != 2 {
+		t.Fatalf("publication attempts after converging snapshot = %d, want 2", attempts)
+	}
+	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil {
+		t.Fatalf("read route-x after converging snapshot: %v", err)
+	} else if value != nil {
+		t.Fatalf("route-x after converging snapshot = %q, want deleted", value)
 	}
 }
 

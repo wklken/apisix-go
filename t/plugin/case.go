@@ -39,38 +39,40 @@ type SourceSpec struct {
 }
 
 type Case struct {
-	Name             string          `yaml:"name"`
-	Source           CaseSource      `yaml:"source"`
-	Serial           bool            `yaml:"serial,omitempty"`
-	Variants         []CaseVariant   `yaml:"variants,omitempty"`
-	Environment      Environment     `yaml:"environment,omitempty"`
-	EnvironmentUnset []string        `yaml:"environment_unset,omitempty"`
-	Runtime          map[string]any  `yaml:"runtime,omitempty"`
-	Config           map[string]any  `yaml:"config,omitempty"`
-	Input            HTTPInput       `yaml:"input,omitempty"`
-	Upstream         *UpstreamSpec   `yaml:"upstream,omitempty"`
-	Output           HTTPOutput      `yaml:"output,omitempty"`
-	Fixtures         []FixtureSpec   `yaml:"fixtures,omitempty"`
-	Files            []ScenarioFile  `yaml:"files,omitempty"`
-	Steps            []CaseStep      `yaml:"steps,omitempty"`
-	TLS              *FrontendTLS    `yaml:"frontend_tls,omitempty"`
-	AfterShutdown    []FileAssertion `yaml:"after_shutdown,omitempty"`
+	Name                     string          `yaml:"name"`
+	Source                   CaseSource      `yaml:"source"`
+	TargetPluginExemptReason string          `yaml:"target_plugin_exempt_reason,omitempty"`
+	Serial                   bool            `yaml:"serial,omitempty"`
+	Variants                 []CaseVariant   `yaml:"variants,omitempty"`
+	Environment              Environment     `yaml:"environment,omitempty"`
+	EnvironmentUnset         []string        `yaml:"environment_unset,omitempty"`
+	Runtime                  map[string]any  `yaml:"runtime,omitempty"`
+	Config                   map[string]any  `yaml:"config,omitempty"`
+	Input                    HTTPInput       `yaml:"input,omitempty"`
+	Upstream                 *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output                   HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures                 []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files                    []ScenarioFile  `yaml:"files,omitempty"`
+	Steps                    []CaseStep      `yaml:"steps,omitempty"`
+	TLS                      *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown            []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type CaseVariant struct {
-	Name             string          `yaml:"name"`
-	Environment      Environment     `yaml:"environment,omitempty"`
-	EnvironmentUnset []string        `yaml:"environment_unset,omitempty"`
-	Runtime          map[string]any  `yaml:"runtime,omitempty"`
-	Config           map[string]any  `yaml:"config,omitempty"`
-	Input            HTTPInput       `yaml:"input,omitempty"`
-	Upstream         *UpstreamSpec   `yaml:"upstream,omitempty"`
-	Output           HTTPOutput      `yaml:"output,omitempty"`
-	Fixtures         []FixtureSpec   `yaml:"fixtures,omitempty"`
-	Files            []ScenarioFile  `yaml:"files,omitempty"`
-	Steps            []CaseStep      `yaml:"steps,omitempty"`
-	TLS              *FrontendTLS    `yaml:"frontend_tls,omitempty"`
-	AfterShutdown    []FileAssertion `yaml:"after_shutdown,omitempty"`
+	Name                     string          `yaml:"name"`
+	TargetPluginExemptReason string          `yaml:"target_plugin_exempt_reason,omitempty"`
+	Environment              Environment     `yaml:"environment,omitempty"`
+	EnvironmentUnset         []string        `yaml:"environment_unset,omitempty"`
+	Runtime                  map[string]any  `yaml:"runtime,omitempty"`
+	Config                   map[string]any  `yaml:"config,omitempty"`
+	Input                    HTTPInput       `yaml:"input,omitempty"`
+	Upstream                 *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output                   HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures                 []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files                    []ScenarioFile  `yaml:"files,omitempty"`
+	Steps                    []CaseStep      `yaml:"steps,omitempty"`
+	TLS                      *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown            []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type FrontendTLS struct {
@@ -674,6 +676,9 @@ func sourceHasTest(source SourceSpec, number int) bool {
 
 func (c *Case) validate() error {
 	if len(c.Variants) > 0 {
+		if strings.TrimSpace(c.TargetPluginExemptReason) != "" {
+			return errors.New("case with variants must not declare target_plugin_exempt_reason; set it on each variant")
+		}
 		if c.hasScenario() {
 			return errors.New("case with variants must not declare an inline scenario")
 		}
@@ -735,19 +740,20 @@ func (c *Case) hasScenario() bool {
 
 func (v *CaseVariant) caseSpec() *Case {
 	return &Case{
-		Name:             v.Name,
-		Environment:      v.Environment,
-		EnvironmentUnset: v.EnvironmentUnset,
-		Runtime:          v.Runtime,
-		Config:           v.Config,
-		Input:            v.Input,
-		Upstream:         v.Upstream,
-		Output:           v.Output,
-		Fixtures:         v.Fixtures,
-		Files:            v.Files,
-		Steps:            v.Steps,
-		TLS:              v.TLS,
-		AfterShutdown:    v.AfterShutdown,
+		Name:                     v.Name,
+		TargetPluginExemptReason: v.TargetPluginExemptReason,
+		Environment:              v.Environment,
+		EnvironmentUnset:         v.EnvironmentUnset,
+		Runtime:                  v.Runtime,
+		Config:                   v.Config,
+		Input:                    v.Input,
+		Upstream:                 v.Upstream,
+		Output:                   v.Output,
+		Fixtures:                 v.Fixtures,
+		Files:                    v.Files,
+		Steps:                    v.Steps,
+		TLS:                      v.TLS,
+		AfterShutdown:            v.AfterShutdown,
 	}
 }
 

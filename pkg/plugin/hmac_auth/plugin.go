@@ -265,7 +265,7 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 	if err := p.validateClockSkew(params.Date); err != nil {
 		return resource.Consumer{}, http.StatusUnauthorized, err
 	}
-	if err := p.validateSignedHeaders(params.Headers); err != nil {
+	if err := p.validateSignedHeaders(r, params.Headers); err != nil {
 		return resource.Consumer{}, http.StatusUnauthorized, err
 	}
 	if err := validateSignature(r, cfg.SecretKey, params); err != nil {
@@ -305,7 +305,7 @@ func (p *Plugin) validateClockSkew(date string) error {
 	return nil
 }
 
-func (p *Plugin) validateSignedHeaders(headers []string) error {
+func (p *Plugin) validateSignedHeaders(r *http.Request, headers []string) error {
 	paramsHeaders := map[string]struct{}{}
 	for _, header := range headers {
 		paramsHeaders[header] = struct{}{}
@@ -314,6 +314,9 @@ func (p *Plugin) validateSignedHeaders(headers []string) error {
 	for _, header := range p.config.SignedHeaders {
 		if _, ok := paramsHeaders[header]; !ok {
 			return fmt.Errorf("expected header %q missing in signing", header)
+		}
+		if header != "@request-target" && signedHeaderValue(r, header) == "" {
+			return fmt.Errorf("expected header %q missing in request", header)
 		}
 	}
 	return nil

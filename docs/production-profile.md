@@ -177,18 +177,22 @@ of generation shutdown.
   config-apply and provider-reachability state.
 - The container image does not define a Docker healthcheck. Orchestrators must
   configure liveness on `/livez` and readiness on `/readyz` explicitly.
-- A configuration or route startup failure is returned to the process entrypoint
-  instead of producing a silently degraded profile.
+- A generation-wide configuration or route startup failure is returned to the
+  process entrypoint. An invalid individual HTTP route is quarantined instead:
+  valid routes start, the invalid route receives 404, and readiness remains 503
+  until the quarantine is cleared.
 - `SIGHUP` performs graceful shutdown and returns an unsupported-reload error.
   It is not an in-process reload; start a new process with the new merged
   configuration after the old generation has drained.
 
 ## Candidate authentication and TLS admission
 
-When `deployment.profile` is `http-data-plane-v1`, route compilation rejects
-unsafe effective configuration before constructing the handler. The policy
+When `deployment.profile` is `http-data-plane-v1`, route compilation
+quarantines a route with unsafe effective configuration before constructing
+its handler. The policy
 checks route/plugin-config/service winners and global rules; shadowed entries
-do not become an independent requirement.
+do not become an independent requirement. A global-rule policy failure remains
+generation-wide and fail-closed.
 
 - Enabled `key-auth`, `jwt-auth`, and `basic-auth` configurations must set
   `hide_credentials: true` so validated credentials are not forwarded
@@ -203,15 +207,16 @@ The empty compatibility profile retains APISIX-compatible authentication and
 upstream-TLS defaults, including omitted or false `hide_credentials` and
 `tls.verify`; this candidate policy does not change compatibility mode.
 
-Route compilation also fails closed for configured `remote_addr`, non-empty
+Route compilation also quarantines an individual route configured with
+`remote_addr`, non-empty
 `remote_addrs` or `vars`, non-null `script_id`, `script`, and non-empty
 `filter_func`. A singular `host` is supported by the same exact/wildcard
 dispatcher as a one-element `hosts`; `host` and `hosts` cannot both be set.
 Do not enable request loggers, `sls-logger`, stream, or `gm` under this profile.
 Strip unsupported route fields before migration. Keep `status: 0` only for
 routes that are intentionally disabled; those routes are accepted but omitted
-from the HTTP route table. The data plane rejects unsupported semantics instead
-of approximating them.
+from the HTTP route table. The data plane quarantines unsupported route
+semantics instead of approximating them or blocking unrelated valid routes.
 
 ## Qualification status
 

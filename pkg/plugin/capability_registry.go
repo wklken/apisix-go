@@ -304,7 +304,6 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		"hmac-auth",
 		"ip-restriction",
 		"jwt-auth",
-		"key-auth",
 		"ldap-auth",
 		"limit-count",
 		"limit-req",
@@ -319,6 +318,11 @@ func capabilityManifestEntries() map[string]capabilityManifestEntry {
 		"uri-blocker",
 		"wolf-rbac",
 		"workflow",
+	)
+	add(
+		"Plan 14",
+		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityLogSanitizer,
+		"key-auth",
 	)
 	add(
 		"Plan 15",

@@ -737,13 +737,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.shutdown(ctx)
 }
 
-type strictRouteBuilder interface {
-	BuildStrict() (*chi.Mux, error)
+type runtimeRouteBuilder interface {
+	BuildWithRouteQuarantine() (*chi.Mux, error)
 	Stop()
 }
 
-func buildAndInstallInitialRoutes(routes *routeHandler, builder strictRouteBuilder) error {
-	handler, err := builder.BuildStrict()
+func buildAndInstallInitialRoutes(routes *routeHandler, builder runtimeRouteBuilder) error {
+	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil {
 		builder.Stop()
 		return fmt.Errorf("build initial routes: %w", err)

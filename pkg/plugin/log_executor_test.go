@@ -14,6 +14,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	keyauth "github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	requestcontext "github.com/wklken/apisix-go/pkg/plugin/request_context"
 )
 
@@ -900,7 +901,7 @@ func TestRequestPipelineAuthStopWithBufferedResponseRegistersLogComposite(t *tes
 		responseTestConfig{stage: "none", body: true},
 	)
 	bindings := []Binding{
-		pipelineBinding("key-auth", auth, ScopeRoute, 10),
+		pipelineBinding("basic-auth", auth, ScopeRoute, 10),
 		checkedResponseBinding(t, "response-rewrite", bounded, ScopeRoute, "route-1"),
 		BindPlugin(
 			"http-logger",
@@ -936,6 +937,68 @@ func TestRequestPipelineAuthStopWithBufferedResponseRegistersLogComposite(t *tes
 	}
 	if len(loggerPlugin.seen) != 1 {
 		t.Fatalf("log callback count = %d, want 1", len(loggerPlugin.seen))
+	}
+}
+
+func TestRequestPipelineAuthStopStillSanitizesKeyAuthLogSnapshot(t *testing.T) {
+	keyAuth := &keyauth.Plugin{}
+	if err := keyAuth.Init(); err != nil {
+		t.Fatalf("key-auth Init() error = %v", err)
+	}
+	if err := keyAuth.PostInit(); err != nil {
+		t.Fatalf("key-auth PostInit() error = %v", err)
+	}
+	stopper := newExecutorRequestPlugin(
+		"higher-priority-stop",
+		3000,
+		func(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			w.WriteHeader(http.StatusForbidden)
+			return base.StopRequestWithSource(r, ctx.ResponseSourceAPISIX)
+		},
+	)
+	logger := newLogExecutorTestPlugin("logger", 1, nil)
+	bindings := []Binding{
+		pipelineBinding("basic-auth", stopper, ScopeRoute, 3000),
+		pipelineBinding("key-auth", keyAuth, ScopeRoute, 2500),
+		pipelineBinding("http-logger", logger, ScopeRoute, 1),
+	}
+	logExecutor, err := NewLogExecutorFromBindings(bindings)
+	if err != nil {
+		t.Fatalf("NewLogExecutorFromBindings() error = %v", err)
+	}
+
+	request, lifecycle := ctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders?apikey=secret&keep=yes", nil),
+		time.Unix(1, 0),
+	)
+	request.Header.Set("apikey", "secret")
+	response := httptest.NewRecorder()
+	NewRequestPipeline(bindings, nil).
+		WithLogExecutor(&logExecutor).
+		Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("terminal called after higher-priority stop")
+		})).
+		ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	lifecycle.Complete(
+		ctx.ResponseOutcome{Kind: ctx.RequestOutcomeCompleted, Status: http.StatusForbidden},
+		time.Unix(2, 0),
+	)
+	if failures := lifecycle.Finalize(); len(failures) != 0 {
+		t.Fatalf("Finalize() failures = %#v", failures)
+	}
+	if len(logger.seen) != 1 {
+		t.Fatalf("logger snapshot count = %d, want 1", len(logger.seen))
+	}
+	snapshot := logger.seen[0]
+	if got := snapshot.Request.Header.Get("apikey"); got != "" {
+		t.Fatalf("sanitized apikey header = %q, want removed", got)
+	}
+	if snapshot.Request.URI != "/orders?keep=yes" {
+		t.Fatalf("sanitized request URI = %q, want apikey removed", snapshot.Request.URI)
 	}
 }
 

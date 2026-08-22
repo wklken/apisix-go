@@ -61,6 +61,23 @@ func TestLookupRequiresExactMethodAndURI(t *testing.T) {
 	}
 }
 
+func TestRegistryCheckpointRollbackRestoresHandlersAndOwnerClaims(t *testing.T) {
+	registry := NewRegistry()
+	checkpoint := registry.Checkpoint()
+	registry.Register(http.MethodGet, "/temporary", http.NotFoundHandler())
+	if err := registry.ClaimOwner("temporary-owner", "first"); err != nil {
+		t.Fatalf("ClaimOwner() error = %v", err)
+	}
+
+	registry.Rollback(checkpoint)
+	if got := registry.Lookup(http.MethodGet, "/temporary"); got != nil {
+		t.Fatal("rolled-back registry retained temporary handler")
+	}
+	if err := registry.ClaimOwner("temporary-owner", "second"); err != nil {
+		t.Fatalf("ClaimOwner() after rollback error = %v", err)
+	}
+}
+
 func TestPublicAPIHandlerDispatch(t *testing.T) {
 	registry := NewRegistry()
 

@@ -275,9 +275,7 @@ func TestHandlerRejectsNonTerminalOPAStatus(t *testing.T) {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(
-					[]byte(fmt.Sprintf(`{"result":{"allow":false,"status_code":%d,"reason":"bad status"}}`, code)),
-				)
+				_, _ = fmt.Fprintf(w, `{"result":{"allow":false,"status_code":%d,"reason":"bad status"}}`, code)
 			}))
 			t.Cleanup(opa.Close)
 

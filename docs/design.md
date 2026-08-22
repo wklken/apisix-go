@@ -156,6 +156,17 @@ failed plugin initialization rolls back generation public API registrations.
 `BuildStrict` remains available for strict validation tests, while runtime
 publication uses the route-quarantining build entry point.
 
+Route publication uses one pre-materialization entrypoint,
+`validateRouteCompatibility`, for the Go data-plane compatibility subset.
+It does not import the full pinned APISIX 3.17 route schema. The subset
+accepts bare routes (`uri` without methods, plugins, or upstream) and
+empty `vars` / `remote_addrs`. Explicit deviations: `script`,
+`script_id`, `filter_func`, non-empty `vars`, `remote_addr`, and
+non-empty `remote_addrs` are rejected. Empty `hosts` fail closed, and
+invalid wildcard host patterns are rejected before publication. Plugin
+materialization, secret ownership, and upstream resolution stay on the
+existing post-entrypoint path.
+
 ## APISIX 3.17 Protocol Bridge Design
 
 > Status: design baseline plus bounded Dubbo/Kafka slices and a TCP/MQTT stream owner, 2026-07-12

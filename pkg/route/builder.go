@@ -1086,7 +1086,7 @@ func (b *Builder) buildHandlerStrict(
 	r resource.Route,
 	registries ...*public_api.Registry,
 ) (http.Handler, error) {
-	if err := validateRouteSemantics(r); err != nil {
+	if err := validateRouteCompatibility(r); err != nil {
 		return nil, err
 	}
 	service, err := b.loadRouteService(r)
@@ -1100,7 +1100,7 @@ func (b *Builder) materializeRouteStrict(
 	r resource.Route,
 	registries ...*public_api.Registry,
 ) (http.Handler, []string, error) {
-	if err := validateRouteSemantics(r); err != nil {
+	if err := validateRouteCompatibility(r); err != nil {
 		return nil, nil, err
 	}
 	service, err := b.loadRouteService(r)
@@ -1321,6 +1321,13 @@ func buildTransparentUpgradeHandler(
 	}
 	terminalOnly := streaming.Then(terminal)
 	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
+}
+
+// validateRouteCompatibility is the single pre-materialization entrypoint for
+// the documented Go data-plane route subset. It does not import the full
+// APISIX 3.17 schema.
+func validateRouteCompatibility(routeResource resource.Route) error {
+	return validateRouteSemantics(routeResource)
 }
 
 func validateRouteSemantics(routeResource resource.Route) error {

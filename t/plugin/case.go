@@ -205,6 +205,7 @@ type FixtureSpec struct {
 	Redis           *RedisFixtureAssertion    `yaml:"redis,omitempty"`
 	Kafka           *KafkaFixtureConfig       `yaml:"kafka,omitempty"`
 	RocketMQ        *RocketMQFixtureAssertion `yaml:"rocketmq,omitempty"`
+	Settle          time.Duration             `yaml:"settle,omitempty"`
 }
 
 type FixtureCountAssertion struct {

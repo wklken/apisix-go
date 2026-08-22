@@ -145,9 +145,10 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 							"scheme": "http",
 							"checks": map[string]any{
 								"active": map[string]any{
-									"type":      "https",
-									"http_path": "/healthz",
-									"healthy":   map[string]any{"interval": 1, "successes": 1},
+									"type":                     "https",
+									"http_path":                "/healthz",
+									"https_verify_certificate": false,
+									"healthy":                  map[string]any{"interval": 1, "successes": 1},
 								},
 							},
 							"nodes": []any{map[string]any{

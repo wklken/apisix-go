@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -16,19 +17,20 @@ import (
 // ActiveHealthConfig is the bounded subset of APISIX checks.active used by the
 // Go-native active probe owner. Zero thresholds select the official defaults.
 type ActiveHealthConfig struct {
-	Type               string
-	HTTPPath           string
-	Host               string
-	Timeout            time.Duration
-	Concurrency        int
-	HealthyInterval    time.Duration
-	UnhealthyInterval  time.Duration
-	HealthySuccesses   int
-	UnhealthyHTTPFails int
-	UnhealthyTCPFails  int
-	UnhealthyTimeouts  int
-	HealthyStatuses    map[int]struct{}
-	UnhealthyStatuses  map[int]struct{}
+	Type                   string
+	HTTPPath               string
+	Host                   string
+	Timeout                time.Duration
+	Concurrency            int
+	HealthyInterval        time.Duration
+	UnhealthyInterval      time.Duration
+	HealthySuccesses       int
+	UnhealthyHTTPFails     int
+	UnhealthyTCPFails      int
+	UnhealthyTimeouts      int
+	HealthyStatuses        map[int]struct{}
+	UnhealthyStatuses      map[int]struct{}
+	HTTPSVerifyCertificate bool
 }
 
 type activeProbeResult uint8
@@ -90,6 +92,14 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 	}
 	if config.Type != "http" && config.Type != "https" {
 		return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.type %q is unsupported", config.Type)
+	}
+	config.HTTPSVerifyCertificate = config.Type == "https"
+	if rawVerify, exists := active["https_verify_certificate"]; exists {
+		value, ok := rawVerify.(bool)
+		if !ok {
+			return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.https_verify_certificate must be a boolean")
+		}
+		config.HTTPSVerifyCertificate = value
 	}
 
 	for _, item := range []struct {
@@ -260,10 +270,29 @@ func newActiveHealthChecker(
 		ctx:       ctx,
 		cancel:    cancel,
 		httpClient: &http.Client{
-			Transport: base,
+			Transport: activeHealthProbeTransport(base, config),
 			Timeout:   0, // per-request context bounds each probe
 		},
 	}
+}
+
+func activeHealthProbeTransport(base http.RoundTripper, config ActiveHealthConfig) http.RoundTripper {
+	if config.Type != "https" {
+		return base
+	}
+	var transport *http.Transport
+	if existing, ok := base.(*http.Transport); ok {
+		transport = existing.Clone()
+	} else {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = !config.HTTPSVerifyCertificate
+	return transport
 }
 
 // Start launches one probe goroutine per target.

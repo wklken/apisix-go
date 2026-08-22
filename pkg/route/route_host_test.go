@@ -118,6 +118,50 @@ func TestBuildStrictRejectsBlankHost(t *testing.T) {
 	}
 }
 
+func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		routeID string
+		payload string
+		want    string
+	}{
+		{
+			name:    "empty hosts array",
+			routeID: "empty-hosts-route",
+			payload: `{"id":"empty-hosts-route","uri":"/empty-hosts","hosts":[],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "hosts must not be empty",
+		},
+		{
+			name:    "invalid wildcard",
+			routeID: "invalid-wildcard-host-route",
+			payload: `{"id":"invalid-wildcard-host-route","uri":"/invalid-wildcard","hosts":["*foo.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+		{
+			name:    "mixed valid and invalid hosts",
+			routeID: "mixed-hosts-route",
+			payload: `{"id":"mixed-hosts-route","uri":"/mixed-hosts","hosts":["api.example.com","*foo.example.com"],"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}}`,
+			want:    "invalid",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ensureRouteStore(t)
+			setHTTPPluginAllowlist(t)
+			putRouteResource(t, test.routeID, []byte(test.payload))
+
+			builder := NewBuilder(nil)
+			t.Cleanup(builder.Stop)
+			handler, err := builder.BuildStrict()
+			if err == nil || handler != nil {
+				t.Fatalf("BuildStrict() = (%T, %v), want nil handler and host rejection", handler, err)
+			}
+			if !strings.Contains(err.Error(), test.routeID) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("BuildStrict() error = %q, want route ID and %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRouteHostRankMatchesOneLabelWildcardAndBareIPv6(t *testing.T) {
 	if got := routeHostRank([]string{"*.example.com"}, "foo.example.com"); got != 1 {
 		t.Fatalf("one-label wildcard rank = %d, want 1", got)

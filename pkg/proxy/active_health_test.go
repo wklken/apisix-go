@@ -423,6 +423,86 @@ func TestParseActiveHealthConfigUsesAPISIXActiveDefaults(t *testing.T) {
 	}
 }
 
+func TestParseActiveHealthConfigHTTPSVerifyCertificateDefaultsTrue(t *testing.T) {
+	config, enabled, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{"type": "https"},
+	})
+	if err != nil {
+		t.Fatalf("ParseActiveHealthConfig() error = %v", err)
+	}
+	if !enabled {
+		t.Fatal("ParseActiveHealthConfig() enabled = false for https")
+	}
+	if !config.HTTPSVerifyCertificate {
+		t.Fatal("https_verify_certificate omitted, want default true")
+	}
+
+	disabled, _, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{"type": "https", "https_verify_certificate": false},
+	})
+	if err != nil {
+		t.Fatalf("ParseActiveHealthConfig() error = %v", err)
+	}
+	if disabled.HTTPSVerifyCertificate {
+		t.Fatal("https_verify_certificate = true, want explicit false")
+	}
+
+	httpConfig, _, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{"type": "http"},
+	})
+	if err != nil {
+		t.Fatalf("ParseActiveHealthConfig() error = %v", err)
+	}
+	if httpConfig.HTTPSVerifyCertificate {
+		t.Fatal("http probes should not enable HTTPS certificate verification")
+	}
+}
+
+func TestActiveHealthHTTPSProbeHonorsCertificateVerification(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	verified := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:                   "https",
+			HTTPPath:               "/",
+			Timeout:                time.Second,
+			Concurrency:            1,
+			HTTPSVerifyCertificate: true,
+			HealthyStatuses:        map[int]struct{}{http.StatusOK: {}},
+		},
+		nil,
+		map[string]int{upstream.URL: 1},
+		"https-verify",
+		nil,
+		NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(true).Build()),
+	)
+	if got := verified.probeResult(upstream.URL); got != activeProbeTCPFailure {
+		t.Fatalf("verified HTTPS probe = %v, want TLS failure against untrusted cert", got)
+	}
+
+	skipped := newActiveHealthChecker(
+		ActiveHealthConfig{
+			Type:                   "https",
+			HTTPPath:               "/",
+			Timeout:                time.Second,
+			Concurrency:            1,
+			HTTPSVerifyCertificate: false,
+			HealthyStatuses:        map[int]struct{}{http.StatusOK: {}},
+		},
+		nil,
+		map[string]int{upstream.URL: 1},
+		"https-skip",
+		nil,
+		NewTransport((&TransportOptionBuilder{}).WithInsecureSkipVerify(false).Build()),
+	)
+	if got := skipped.probeResult(upstream.URL); got != activeProbeSuccess {
+		t.Fatalf("explicit skip HTTPS probe = %v, want success", got)
+	}
+}
+
 func TestActiveHealthProbeClassifiesHTTPTransportAndTimeoutFailures(t *testing.T) {
 	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -776,6 +856,11 @@ func TestParseActiveHealthConfigRejectsMalformedFields(t *testing.T) {
 			name:  "bad unhealthy status",
 			block: map[string]any{"unhealthy": map[string]any{"http_statuses": []any{700}}},
 			want:  "checks.active.unhealthy.http_statuses",
+		},
+		{
+			name:  "bad https verify flag",
+			block: map[string]any{"type": "https", "https_verify_certificate": "yes"},
+			want:  "checks.active.https_verify_certificate",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

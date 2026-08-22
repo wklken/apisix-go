@@ -1175,9 +1175,6 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 			snapshot.globalRules = append(snapshot.globalRules, lastGood)
 			continue
 		}
-		if rule.ID == "" {
-			rule.ID = entry.id
-		}
 		snapshot.globalRules = append(snapshot.globalRules, rule)
 	}
 

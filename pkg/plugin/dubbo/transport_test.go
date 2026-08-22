@@ -278,3 +278,26 @@ func TestAttemptHonorsConcurrencySlot(t *testing.T) {
 		t.Fatalf("result = %+v, want canceled concurrency error", result)
 	}
 }
+
+func TestWriteResponseRejectsNonTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	rr := httptest.NewRecorder()
+	WriteResponse(rr, Response{Status: 600, Body: []byte("should not write")})
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rr.Code)
+	}
+}
+
+func TestWriteResponseWritesTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	rr := httptest.NewRecorder()
+	WriteResponse(rr, Response{Status: http.StatusCreated, Body: []byte("ok")})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if got := rr.Body.String(); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
+	}
+}

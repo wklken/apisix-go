@@ -327,6 +327,10 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 		if effective.Mode == "monitor" {
 			return 0, "", headers
 		}
+		if _, ok := util.TerminalStatus(decision.Status); !ok {
+			headers[HeaderChaitinWAF] = "waf-err"
+			return http.StatusInternalServerError, "", headers
+		}
 		return decision.Status,
 			fmt.Sprintf(
 				`{"code": %d, "success":false, "message": "blocked by Chaitin SafeLine Web Application Firewall", "event_id": "%s"}`+"\n",

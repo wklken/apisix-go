@@ -73,6 +73,34 @@ plugin_attr:
 	}
 }
 
+func TestParseDocumentTreatsEmptyDocumentsAsEmptyMappings(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+	}{
+		{name: "empty", data: ""},
+		{name: "comment only", data: "# local overrides are intentionally empty\n  # another comment\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc, err := parseDocument([]byte(test.data), FieldSource{Kind: SourceOverrideFile}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.kind != nodeMapping || len(doc.mapping) != 0 {
+				t.Fatalf("empty document = %#v, want empty mapping", doc)
+			}
+		})
+	}
+
+	doc, err := parseDocument([]byte("null\n"), FieldSource{Kind: SourceOverrideFile}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.kind != nodeNull {
+		t.Fatalf("explicit null kind = %d, want nodeNull", doc.kind)
+	}
+}
+
 func TestParseDocumentNormalizesYAMLNumbers(t *testing.T) {
 	tests := []struct {
 		name string
@@ -252,22 +280,55 @@ quoted_false: '${{FALSE_VALUE}}'
 large: "${{LARGE}}"
 decimal: "${{DECIMAL}}"
 prefix: "prefix-${{PORT}}"
+legacy_leading_zero: "${{LEGACY_LEADING_ZERO}}"
+leading_zero_eight: "${{LEADING_ZERO_EIGHT}}"
+yaml_octal: "${{YAML_OCTAL}}"
+yaml_binary: "${{YAML_BINARY}}"
+underscored: "${{UNDERSCORED}}"
+positive_fraction: "${{POSITIVE_FRACTION}}"
+exponent: "${{EXPONENT}}"
+hex: "${{HEX}}"
+positive_hex: "${{POSITIVE_HEX}}"
+negative_hex: "${{NEGATIVE_HEX}}"
+spaced_number: "${{SPACED_NUMBER}}"
 `), FieldSource{Kind: SourceOverrideFile}, map[string]string{
-		"TRUE_VALUE":  "true",
-		"FALSE_VALUE": "false",
-		"LARGE":       "184467440737095516160000000000000000000",
-		"DECIMAL":     "-.5000000000000000000000001",
-		"PORT":        "9080",
+		"TRUE_VALUE":          "true",
+		"FALSE_VALUE":         "false",
+		"LARGE":               "184467440737095516160000000000000000000",
+		"DECIMAL":             "-.5000000000000000000000001",
+		"PORT":                "9080",
+		"LEGACY_LEADING_ZERO": "077",
+		"LEADING_ZERO_EIGHT":  "08",
+		"YAML_OCTAL":          "0o17",
+		"YAML_BINARY":         "0b10",
+		"UNDERSCORED":         "1_000",
+		"POSITIVE_FRACTION":   "+1.25",
+		"EXPONENT":            "+01.50e+03",
+		"HEX":                 "0x10",
+		"POSITIVE_HEX":        "+0x10",
+		"NEGATIVE_HEX":        "-0x10",
+		"SPACED_NUMBER":       "  42 \t",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]any{
-		"quoted_true":  true,
-		"quoted_false": false,
-		"large":        json.Number("184467440737095516160000000000000000000"),
-		"decimal":      json.Number("-0.5000000000000000000000001"),
-		"prefix":       "prefix-9080",
+		"quoted_true":         true,
+		"quoted_false":        false,
+		"large":               json.Number("184467440737095516160000000000000000000"),
+		"decimal":             json.Number("-0.5000000000000000000000001"),
+		"prefix":              "prefix-9080",
+		"legacy_leading_zero": json.Number("77"),
+		"leading_zero_eight":  json.Number("8"),
+		"yaml_octal":          "0o17",
+		"yaml_binary":         "0b10",
+		"underscored":         "1_000",
+		"positive_fraction":   json.Number("1.25"),
+		"exponent":            json.Number("1.50e+03"),
+		"hex":                 json.Number("16"),
+		"positive_hex":        json.Number("16"),
+		"negative_hex":        json.Number("-16"),
+		"spaced_number":       json.Number("42"),
 	} {
 		if got := doc.mapping[key].scalar; got != want {
 			t.Fatalf("%s = %#v, want %#v", key, got, want)
@@ -291,12 +352,23 @@ root:
 		t.Fatal(err)
 	}
 	expanded := doc.mapping["root"].mapping["b-a"]
+	if got := expanded.source; got != (FieldSource{
+		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
+	}) {
+		t.Fatalf("expanded mapping source = %+v", got)
+	}
 	if got := expanded.mapping["plain"].source; got != (FieldSource{
 		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
 	}) {
 		t.Fatalf("plain source = %+v", got)
 	}
-	sequenceLeaf := expanded.mapping["sequence"].sequence[0]
+	sequence := expanded.mapping["sequence"]
+	if got := sequence.source; got != (FieldSource{
+		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
+	}) {
+		t.Fatalf("sequence source = %+v", got)
+	}
+	sequenceLeaf := sequence.sequence[0]
 	if got := sequenceLeaf.source; got != (FieldSource{
 		Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B,VALUE_A,VALUE_B", Explicit: true,
 	}) {
@@ -367,6 +439,27 @@ func TestParseDocumentRejectsAnchorsAliasesAndMergeKeys(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), secret) {
 				t.Fatalf("parseDocument() leaked referenced scalar: %q", err)
+			}
+		})
+	}
+}
+
+func TestParseDocumentAllowsLiteralDoubleAngleMappingKeys(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "quoted", yaml: "\"<<\": quoted\n", want: "quoted"},
+		{name: "explicit string tag", yaml: "!!str <<: explicit\n", want: "explicit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc, err := parseDocument([]byte(test.yaml), FieldSource{Kind: SourceOverrideFile}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := doc.mapping["<<"].scalar; got != test.want {
+				t.Fatalf("literal << value = %#v, want %q", got, test.want)
 			}
 		})
 	}

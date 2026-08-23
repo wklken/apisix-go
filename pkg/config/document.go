@@ -34,7 +34,10 @@ func parseDocument(data []byte, source FieldSource, env map[string]string) (*val
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil {
 		if err == io.EOF {
-			return &valueNode{kind: nodeNull, source: source, pathBase: documentPathBase(source)}, nil
+			return &valueNode{
+				kind: nodeMapping, mapping: map[string]*valueNode{},
+				source: source, pathBase: documentPathBase(source),
+			}, nil
 		}
 		return nil, fmt.Errorf("decode YAML document: invalid YAML")
 	}
@@ -114,7 +117,7 @@ func findForbiddenYAML(node *yaml.Node, path string, kind forbiddenYAMLKind) (st
 		for index := 0; index+1 < len(node.Content); index += 2 {
 			key := node.Content[index]
 			value := node.Content[index+1]
-			if kind == forbiddenMerge && (key.ShortTag() == "!!merge" || key.Value == "<<") {
+			if kind == forbiddenMerge && key.ShortTag() == "!!merge" {
 				return path, true
 			}
 			keyPath := yamlKeyPath(path, key)
@@ -155,11 +158,8 @@ func convertYAMLNode(
 		return convertYAMLMapping(node, path, source, pathBase, env, inheritedNames)
 	case yaml.SequenceNode:
 		converted := &valueNode{
-			kind: nodeSequence, source: source, pathBase: pathBase,
+			kind: nodeSequence, source: sourceForTemplateNames(source, inheritedNames), pathBase: pathBase,
 			sequence: make([]*valueNode, len(node.Content)),
-		}
-		if len(node.Content) == 0 {
-			converted.source = sourceForTemplateNames(source, inheritedNames)
 		}
 		for index, child := range node.Content {
 			childNode, err := convertYAMLNode(
@@ -205,11 +205,8 @@ func convertYAMLMapping(
 	}
 
 	converted := &valueNode{
-		kind: nodeMapping, source: source, pathBase: pathBase,
+		kind: nodeMapping, source: sourceForTemplateNames(source, inheritedNames), pathBase: pathBase,
 		mapping: make(map[string]*valueNode, len(node.Content)/2),
-	}
-	if len(node.Content) == 0 {
-		converted.source = sourceForTemplateNames(source, inheritedNames)
 	}
 	keySources := make(map[string][]string, len(node.Content)/2)
 	for index := 0; index < len(node.Content); index += 2 {
@@ -297,11 +294,7 @@ func convertYAMLScalar(
 	}
 	allNames := unionTemplateNames(inheritedNames, expanded.names)
 	converted.source = sourceForTemplateNames(source, allNames)
-	value, err := retypeExpandedScalar(expanded.value, path)
-	if err != nil {
-		return nil, err
-	}
-	converted.scalar = value
+	converted.scalar = retypeExpandedScalar(expanded.value)
 	return converted, nil
 }
 
@@ -379,22 +372,72 @@ func isEnvironmentNameStart(value byte) bool {
 	return value == '_' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 }
 
-func retypeExpandedScalar(value, path string) (any, error) {
+func retypeExpandedScalar(value string) any {
 	if value == "true" {
-		return true, nil
+		return true
 	}
 	if value == "false" {
-		return false, nil
+		return false
 	}
-	if integer, ok := normalizeYAMLInteger(value); ok {
-		return integer, nil
+	if number, ok := normalizeAPISIXNumber(value); ok {
+		return number
 	}
-	if number, ok, nonFinite := normalizeYAMLFloat(value); nonFinite {
-		return nil, fmt.Errorf("non-finite number at %s is not supported", displayFieldPath(path))
-	} else if ok {
-		return number, nil
+	return value
+}
+
+func normalizeAPISIXNumber(value string) (json.Number, bool) {
+	cleaned := strings.Trim(value, " \t\n\r\v\f")
+	negative := false
+	if cleaned != "" && (cleaned[0] == '+' || cleaned[0] == '-') {
+		negative = cleaned[0] == '-'
+		cleaned = cleaned[1:]
 	}
-	return value, nil
+	if cleaned == "" {
+		return "", false
+	}
+
+	if strings.HasPrefix(cleaned, "0x") || strings.HasPrefix(cleaned, "0X") {
+		digits := cleaned[2:]
+		if digits == "" || !allHexDigits(digits) {
+			return "", false
+		}
+		integer, ok := new(big.Int).SetString(digits, 16)
+		if !ok {
+			return "", false
+		}
+		if negative {
+			integer.Neg(integer)
+		}
+		return json.Number(integer.String()), true
+	}
+
+	mantissa := cleaned
+	exponent := ""
+	if exponentIndex := strings.IndexAny(cleaned, "eE"); exponentIndex >= 0 {
+		if strings.ContainsAny(cleaned[exponentIndex+1:], "eE") {
+			return "", false
+		}
+		mantissa = cleaned[:exponentIndex]
+		exponent = cleaned[exponentIndex+1:]
+		if !validExponent(exponent) {
+			return "", false
+		}
+	}
+
+	normalizedMantissa, ok := normalizeDecimalMantissa(mantissa, exponent != "")
+	if !ok && exponent == "" && allDecimalDigits(mantissa) {
+		normalizedMantissa, ok = trimLeadingZeros(mantissa), true
+	}
+	if !ok {
+		return "", false
+	}
+	if negative {
+		normalizedMantissa = "-" + normalizedMantissa
+	}
+	if exponent != "" {
+		normalizedMantissa += "e" + exponent
+	}
+	return json.Number(normalizedMantissa), true
 }
 
 func normalizeYAMLInteger(value string) (json.Number, bool) {
@@ -526,6 +569,18 @@ func allDecimalDigits(value string) bool {
 		}
 	}
 	return true
+}
+
+func allHexDigits(value string) bool {
+	for index := range len(value) {
+		if value[index] >= '0' && value[index] <= '9' ||
+			value[index] >= 'a' && value[index] <= 'f' ||
+			value[index] >= 'A' && value[index] <= 'F' {
+			continue
+		}
+		return false
+	}
+	return value != ""
 }
 
 func trimLeadingZeros(value string) string {

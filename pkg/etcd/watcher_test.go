@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,12 +13,539 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+func TestDesiredBatchFromEtcdSnapshotReplacesManagedNamespace(t *testing.T) {
+	value := []byte(`{"id":"r1"}`)
+	batch, err := desiredBatchFromEtcdSnapshot("apisix", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 71},
+		Kvs: []*mvccpb.KeyValue{
+			{Key: []byte("/apisix/routes/r1"), Value: value, ModRevision: 69},
+			{Key: []byte("/apisix/data_plane/server_info/node-1"), Value: []byte(`{"id":"node-1"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Cursor != (generation.ProviderCursor{
+		Provider: etcdProviderID(0xabc, "/apisix/"), Revision: "71",
+	}) {
+		t.Fatalf("cursor = %+v", batch.Cursor)
+	}
+	if !batch.ReplaceManaged {
+		t.Fatal("ReplaceManaged = false, want authoritative replacement")
+	}
+	if !slices.Equal(batch.RequiredDomains, []generation.Domain{
+		generation.DomainHTTP, generation.DomainStream,
+	}) {
+		t.Fatalf("required domains = %v", batch.RequiredDomains)
+	}
+	if len(batch.Mutations) != 1 || batch.Mutations[0].Type != generation.MutationPut ||
+		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "routes", ID: "r1"}) ||
+		string(batch.Mutations[0].Value) != string(value) {
+		t.Fatalf("mutations = %+v", batch.Mutations)
+	}
+	value[0] = 'x'
+	if string(batch.Mutations[0].Value) != `{"id":"r1"}` {
+		t.Fatalf("mutation value aliases etcd response: %q", batch.Mutations[0].Value)
+	}
+}
+
+func TestDesiredBatchFromEtcdSnapshotPreservesNilAndEmptyPutValues(t *testing.T) {
+	batch, err := desiredBatchFromEtcdSnapshot("/apisix", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1},
+		Kvs: []*mvccpb.KeyValue{
+			{Key: []byte("/apisix/routes/nil"), Value: nil},
+			{Key: []byte("/apisix/routes/empty"), Value: []byte{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Mutations[0].Value != nil {
+		t.Fatalf("nil value = %#v, want nil", batch.Mutations[0].Value)
+	}
+	if batch.Mutations[1].Value == nil || len(batch.Mutations[1].Value) != 0 {
+		t.Fatalf("empty value = %#v, want non-nil empty bytes", batch.Mutations[1].Value)
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchCarriesRevisionDeleteAndDomains(t *testing.T) {
+	batch, err := desiredBatchFromEtcdWatch("/apisix/", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 71},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.DELETE,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/stream_routes/mqtt"), ModRevision: 71},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Cursor != (generation.ProviderCursor{
+		Provider: etcdProviderID(0xabc, "/apisix/"), Revision: "71",
+	}) || batch.ReplaceManaged || len(batch.Mutations) != 1 ||
+		batch.Mutations[0].Type != generation.MutationDelete || batch.Mutations[0].Value != nil ||
+		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "stream_routes", ID: "mqtt"}) ||
+		!slices.Equal(batch.RequiredDomains, []generation.Domain{generation.DomainStream}) {
+		t.Fatalf("batch = %+v", batch)
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchUsesLastEventRevisionNotDelayedHeader(t *testing.T) {
+	watchPut := func(modRevision int64, id string) clientv3.WatchResponse {
+		return clientv3.WatchResponse{
+			Header: etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 100},
+			Events: []*clientv3.Event{{
+				Type: mvccpb.PUT,
+				Kv: &mvccpb.KeyValue{
+					Key: []byte("/apisix/routes/" + id), Value: []byte(`{"id":"` + id + `"}`),
+					ModRevision: modRevision,
+				},
+			}},
+		}
+	}
+	first, err := desiredBatchFromEtcdWatch("/apisix", watchPut(91, "r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := desiredBatchFromEtcdWatch("/apisix/", watchPut(95, "r2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Cursor.Revision != "91" || second.Cursor.Revision != "95" {
+		t.Fatalf("cursors = %q/%q, want 91/95", first.Cursor.Revision, second.Cursor.Revision)
+	}
+	if first.Cursor.Provider != second.Cursor.Provider {
+		t.Fatalf("canonical prefix changed provider: %q != %q", first.Cursor.Provider, second.Cursor.Provider)
+	}
+}
+
+func TestDesiredBatchFromEtcdBindsClusterPrefixAndTranslationVersion(t *testing.T) {
+	base := etcdProviderID(0xabc, "/apisix-a/")
+	if !strings.HasPrefix(base, "etcd/v1/0000000000000abc/") {
+		t.Fatalf("provider = %q, want versioned zero-padded cluster identity", base)
+	}
+	if base != etcdProviderID(0xabc, "//apisix-a//") {
+		t.Fatal("canonical-equivalent prefixes produced different providers")
+	}
+	if base == etcdProviderID(0xdef, "/apisix-a/") || base == etcdProviderID(0xabc, "/apisix-b/") {
+		t.Fatal("etcd provider authority identity collision")
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchNormalizesConservativeDomains(t *testing.T) {
+	batch, err := desiredBatchFromEtcdWatch("/apisix", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 12},
+		Events: []*clientv3.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/stream_routes/s1"), ModRevision: 10}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/routes/r1"), ModRevision: 11}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/apisix/upstreams/u1"), ModRevision: 12}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(batch.RequiredDomains, []generation.Domain{
+		generation.DomainHTTP, generation.DomainStream,
+	}) {
+		t.Fatalf("required domains = %v", batch.RequiredDomains)
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchAdvancesPastUnmanagedEvents(t *testing.T) {
+	batch, err := desiredBatchFromEtcdWatch("/apisix", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 30},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key: []byte("/apisix/data_plane/server_info/node-1"), ModRevision: 29,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Cursor.Revision != "29" || len(batch.Mutations) != 0 || len(batch.RequiredDomains) != 0 {
+		t.Fatalf("batch = %+v, want cursor-only consumed boundary", batch)
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchAcceptsOnlyProgressForEmptyCursor(t *testing.T) {
+	progress, err := desiredBatchFromEtcdWatch("/apisix", clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 15},
+	})
+	if err != nil {
+		t.Fatalf("progress translation: %v", err)
+	}
+	if progress.Cursor.Revision != "15" || len(progress.Mutations) != 0 ||
+		len(progress.RequiredDomains) != 0 || progress.ReplaceManaged {
+		t.Fatalf("progress batch = %+v", progress)
+	}
+
+	for name, response := range map[string]clientv3.WatchResponse{
+		"created":       {Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 15}, Created: true},
+		"zero revision": {Header: etcdserverpb.ResponseHeader{ClusterId: 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := desiredBatchFromEtcdWatch("/apisix", response); err == nil {
+				t.Fatal("error = nil, want empty non-progress rejection")
+			}
+		})
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchRejectsInvalidEventBoundaries(t *testing.T) {
+	validEvent := func(revision int64) *clientv3.Event {
+		return &clientv3.Event{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/apisix/routes/r1"), ModRevision: revision},
+		}
+	}
+	tests := map[string]clientv3.WatchResponse{
+		"missing cluster": {
+			Header: etcdserverpb.ResponseHeader{Revision: 1}, Events: []*clientv3.Event{validEvent(1)},
+		},
+		"nil event": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1}, Events: []*clientv3.Event{nil},
+		},
+		"nil key value": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1}, Events: []*clientv3.Event{{}},
+		},
+		"zero event revision": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1}, Events: []*clientv3.Event{validEvent(0)},
+		},
+		"decreasing event revision": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 5},
+			Events: []*clientv3.Event{validEvent(5), validEvent(4)},
+		},
+		"header behind event": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 4}, Events: []*clientv3.Event{validEvent(5)},
+		},
+		"unknown managed event type": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 5},
+			Events: []*clientv3.Event{{Type: mvccpb.Event_EventType(99), Kv: validEvent(5).Kv}},
+		},
+		"created event batch": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 5},
+			Events: []*clientv3.Event{validEvent(5)}, Created: true,
+		},
+		"canceled event batch": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 5},
+			Events: []*clientv3.Event{validEvent(5)}, Canceled: true,
+		},
+		"compacted event batch": {
+			Header: etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 5},
+			Events: []*clientv3.Event{validEvent(5)}, CompactRevision: 4,
+		},
+	}
+	for name, response := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := desiredBatchFromEtcdWatch("/apisix", response); err == nil {
+				t.Fatal("error = nil, want invalid boundary rejection")
+			}
+		})
+	}
+}
+
+func TestDesiredBatchFromEtcdSnapshotRejectsInvalidEnvelope(t *testing.T) {
+	for name, response := range map[string]*clientv3.GetResponse{
+		"nil response":    nil,
+		"missing header":  {},
+		"missing cluster": {Header: &etcdserverpb.ResponseHeader{Revision: 1}},
+		"zero revision":   {Header: &etcdserverpb.ResponseHeader{ClusterId: 1}},
+		"nil key value": {
+			Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1}, Kvs: []*mvccpb.KeyValue{nil},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := desiredBatchFromEtcdSnapshot("/apisix", response); err == nil {
+				t.Fatal("error = nil, want invalid snapshot rejection")
+			}
+		})
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchCommitsDelayedHeadersInEventOrder(t *testing.T) {
+	journal, err := store.OpenJournal(t.TempDir()+"/journal.db", store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	engine := &etcdCoordinatorTestEngine{}
+	coordinator := generation.NewCoordinator(journal, engine)
+
+	first, err := desiredBatchFromEtcdWatch("/apisix", etcdWatchPut(0xabc, 100, 91, "/apisix/routes/r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAck, err := coordinator.Apply(context.Background(), first)
+	if err != nil {
+		t.Fatalf("apply first delayed response: %v", err)
+	}
+	second, err := desiredBatchFromEtcdWatch("/apisix", etcdWatchPut(0xabc, 100, 95, "/apisix/routes/r2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAck, err := coordinator.Apply(context.Background(), second)
+	if err != nil {
+		t.Fatalf("apply second delayed response: %v", err)
+	}
+
+	if firstAck.Revisions != (generation.RevisionSet{Desired: 1, HTTP: 1}) ||
+		secondAck.Revisions != (generation.RevisionSet{Desired: 2, HTTP: 2}) {
+		t.Fatalf("ack revisions = %+v then %+v", firstAck.Revisions, secondAck.Revisions)
+	}
+	if engine.prepareCalls != 2 || engine.activateCalls != 2 || engine.finalizeCalls != 2 ||
+		engine.confirmCalls != 0 {
+		t.Fatalf("engine calls prepare/activate/finalize/confirm = %d/%d/%d/%d",
+			engine.prepareCalls, engine.activateCalls, engine.finalizeCalls, engine.confirmCalls)
+	}
+}
+
+func TestDesiredBatchFromEtcdProviderAuthorityRequiresSnapshotTransfer(t *testing.T) {
+	journal, err := store.OpenJournal(t.TempDir()+"/journal.db", store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	engine := &etcdCoordinatorTestEngine{}
+	coordinator := generation.NewCoordinator(journal, engine)
+
+	clusterA, err := desiredBatchFromEtcdWatch(
+		"/apisix-a", etcdWatchPut(0xaaa, 71, 71, "/apisix-a/routes/r1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Apply(context.Background(), clusterA); err != nil {
+		t.Fatal(err)
+	}
+
+	clusterB, err := desiredBatchFromEtcdWatch(
+		"/apisix-a", etcdWatchPut(0xbbb, 71, 71, "/apisix-a/routes/r1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Apply(context.Background(), clusterB); !errors.Is(err, generation.ErrProviderConflict) {
+		t.Fatalf("cluster B incremental apply error = %v, want ErrProviderConflict", err)
+	}
+
+	prefixB, err := desiredBatchFromEtcdWatch(
+		"/apisix-b", etcdWatchPut(0xaaa, 71, 71, "/apisix-b/routes/r1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Apply(context.Background(), prefixB); !errors.Is(err, generation.ErrProviderConflict) {
+		t.Fatalf("prefix B incremental apply error = %v, want ErrProviderConflict", err)
+	}
+	for name, cursor := range map[string]generation.ProviderCursor{
+		"cluster B": clusterB.Cursor,
+		"prefix B":  prefixB.Cursor,
+	} {
+		if _, err := journal.LoadAcknowledgement(
+			context.Background(),
+			cursor,
+		); !errors.Is(
+			err,
+			generation.ErrNotFound,
+		) {
+			t.Fatalf("%s acknowledgement error = %v, want ErrNotFound", name, err)
+		}
+	}
+	if revisions, err := journal.Revisions(context.Background()); err != nil ||
+		revisions != (generation.RevisionSet{Desired: 1, HTTP: 1}) {
+		t.Fatalf("revisions after rejected incrementals = %+v, %v", revisions, err)
+	}
+
+	transfer, err := desiredBatchFromEtcdSnapshot("/apisix-a", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 0xbbb, Revision: 71},
+		Kvs: []*mvccpb.KeyValue{{
+			Key: []byte("/apisix-a/routes/r1"), Value: []byte(`{"id":"r1"}`), ModRevision: 71,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := coordinator.Apply(context.Background(), transfer)
+	if err != nil {
+		t.Fatalf("full snapshot authority transfer: %v", err)
+	}
+	if ack.Cursor.Provider != etcdProviderID(0xbbb, "/apisix-a") ||
+		ack.Revisions != (generation.RevisionSet{Desired: 2, HTTP: 2, Stream: 2}) {
+		t.Fatalf("transfer acknowledgement = %+v", ack)
+	}
+	if engine.prepareCalls != 2 {
+		t.Fatalf("prepare calls = %d, want initial apply plus full transfer only", engine.prepareCalls)
+	}
+}
+
+func TestDesiredBatchFromEtcdRestartSnapshotReplaysCommittedWatchCursor(t *testing.T) {
+	path := t.TempDir() + "/journal.db"
+	journal, err := store.OpenJournal(path, store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchBatch, err := desiredBatchFromEtcdWatch(
+		"/apisix", etcdWatchPut(0xabc, 100, 91, "/apisix/routes/r1"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialEngine := &etcdCoordinatorTestEngine{}
+	committed, err := generation.NewCoordinator(journal, initialEngine).Apply(context.Background(), watchBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.OpenJournal(path, store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fullSnapshot, err := desiredBatchFromEtcdSnapshot("/apisix/", &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 91},
+		Kvs: []*mvccpb.KeyValue{{
+			Key: []byte("/apisix/routes/r1"), Value: []byte(`{"id":"r1"}`), ModRevision: 91,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fullSnapshot.ReplaceManaged || fullSnapshot.Cursor != watchBatch.Cursor {
+		t.Fatalf("restart representations do not share cursor: watch=%+v snapshot=%+v", watchBatch, fullSnapshot)
+	}
+	replayEngine := &etcdCoordinatorTestEngine{}
+	replayed, err := generation.NewCoordinator(reopened, replayEngine).Apply(context.Background(), fullSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Cursor != committed.Cursor || replayed.Revisions != committed.Revisions {
+		t.Fatalf("replayed acknowledgement = %+v, want %+v", replayed, committed)
+	}
+	if replayEngine.prepareCalls != 0 || replayEngine.activateCalls != 0 || replayEngine.finalizeCalls != 0 ||
+		replayEngine.confirmCalls != 1 {
+		t.Fatalf("replay engine calls prepare/activate/finalize/confirm = %d/%d/%d/%d",
+			replayEngine.prepareCalls, replayEngine.activateCalls,
+			replayEngine.finalizeCalls, replayEngine.confirmCalls)
+	}
+	if replayEngine.confirmed.DesiredRevision != 1 ||
+		len(replayEngine.confirmed.Domains) != 1 ||
+		replayEngine.confirmed.Domains[generation.DomainHTTP].Artifact.Revision != 1 {
+		t.Fatalf("confirmed publication set = %+v", replayEngine.confirmed)
+	}
+}
+
+type etcdCoordinatorTestEngine struct {
+	prepareCalls  int
+	activateCalls int
+	finalizeCalls int
+	confirmCalls  int
+	confirmed     generation.PublicationSet
+}
+
+func (e *etcdCoordinatorTestEngine) Prepare(
+	_ context.Context,
+	ticket generation.ApplyTicket,
+	desired generation.Snapshot,
+	_ map[generation.Domain]generation.PublishedGeneration,
+) (generation.PublicationSet, error) {
+	e.prepareCalls++
+	closure := make([]generation.ResourceKey, 0, len(desired.Resources())+len(desired.Tombstones()))
+	decisions := make([]generation.ResourceDecision, 0, cap(closure))
+	for _, resource := range desired.Resources() {
+		closure = append(closure, resource.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "test-published",
+		})
+	}
+	for _, tombstone := range desired.Tombstones() {
+		closure = append(closure, tombstone.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "test-deleted",
+		})
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: ticket.DesiredRevision,
+		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(ticket.RequiredDomains)),
+	}
+	for _, domain := range ticket.RequiredDomains {
+		set.Domains[domain] = generation.PublicationCandidate{
+			Artifact: generation.GenerationArtifact{
+				Domain: domain, Revision: ticket.DesiredRevision,
+				Digest: desired.Digest(), Snapshot: desired.SnapshotID(),
+			},
+			Snapshot:  desired.Clone(),
+			Closure:   slices.Clone(closure),
+			Decisions: slices.Clone(decisions),
+		}
+	}
+	return set, nil
+}
+
+func (*etcdCoordinatorTestEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
+	return nil
+}
+
+func (e *etcdCoordinatorTestEngine) Activate(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	e.activateCalls++
+	return nil
+}
+
+func (*etcdCoordinatorTestEngine) RollbackActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (e *etcdCoordinatorTestEngine) FinalizeActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) {
+	e.finalizeCalls++
+}
+
+func (e *etcdCoordinatorTestEngine) ConfirmActive(
+	_ context.Context,
+	set generation.PublicationSet,
+) error {
+	e.confirmCalls++
+	e.confirmed = set
+	return nil
+}
+
+func etcdWatchPut(clusterID uint64, headerRevision, modRevision int64, key string) clientv3.WatchResponse {
+	id := key[strings.LastIndexByte(key, '/')+1:]
+	return clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{ClusterId: clusterID, Revision: headerRevision},
+		Events: []*clientv3.Event{{
+			Type: mvccpb.PUT,
+			Kv: &mvccpb.KeyValue{
+				Key: []byte(key), Value: []byte(`{"id":"` + id + `"}`), ModRevision: modRevision,
+			},
+		}},
+	}
+}
 
 func TestNewConfigClientWithOptionsAppliesRuntimeSettings(t *testing.T) {
 	client, err := NewConfigClientWithOptions(

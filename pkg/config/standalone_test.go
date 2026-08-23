@@ -13,8 +13,246 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+func TestDesiredBatchFromStandaloneUsesContentDigestCursor(t *testing.T) {
+	batch := desiredBatchFromStandalone(standaloneSnapshot{
+		"routes": {"r1": []byte(`{"id":"r1","uri":"/"}`)},
+	})
+	if !batch.ReplaceManaged || batch.Cursor.Provider != "standalone/v1" ||
+		batch.Cursor.Revision != "sha256:12bf10e04f88b65767a860dc08d95d6295c4b578d98fb1930564ec4c040b0c6b" {
+		t.Fatalf("batch cursor = %+v, replace = %t", batch.Cursor, batch.ReplaceManaged)
+	}
+	if len(batch.Mutations) != 1 || batch.Mutations[0].Type != generation.MutationPut ||
+		batch.Mutations[0].Key != (generation.ResourceKey{Kind: "routes", ID: "r1"}) {
+		t.Fatalf("batch mutations = %+v", batch.Mutations)
+	}
+}
+
+func TestDesiredBatchFromStandaloneSortsMutationsAndConservativelyRequiresDomains(t *testing.T) {
+	snapshot := standaloneSnapshot{
+		"stream_routes": {"z": []byte(`{"id":"z"}`)},
+		"services": {
+			"s2": []byte(`{"id":"s2"}`),
+			"s1": []byte(`{"id":"s1"}`),
+		},
+		"routes": {
+			"r2": []byte(`{"id":"r2"}`),
+			"r1": []byte(`{"id":"r1"}`),
+		},
+	}
+	batch := desiredBatchFromStandalone(snapshot)
+	wantKeys := []generation.ResourceKey{
+		{Kind: "routes", ID: "r1"},
+		{Kind: "routes", ID: "r2"},
+		{Kind: "services", ID: "s1"},
+		{Kind: "services", ID: "s2"},
+		{Kind: "stream_routes", ID: "z"},
+	}
+	gotKeys := make([]generation.ResourceKey, 0, len(batch.Mutations))
+	for _, mutation := range batch.Mutations {
+		if mutation.Type != generation.MutationPut {
+			t.Fatalf("mutation type = %q, want put", mutation.Type)
+		}
+		gotKeys = append(gotKeys, mutation.Key)
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("mutation keys = %+v, want %+v", gotKeys, wantKeys)
+	}
+	if !reflect.DeepEqual(batch.RequiredDomains, []generation.Domain{
+		generation.DomainHTTP,
+		generation.DomainStream,
+	}) {
+		t.Fatalf("required domains = %v, want http and stream", batch.RequiredDomains)
+	}
+}
+
+func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t *testing.T) {
+	const key = "qeddd145sfvddff3"
+	raw := json.RawMessage(`{
+		"id":"r1",
+		"uri":"/",
+		"plugins":{"key-auth":{"key":"plaintext-secret"}}
+	}`)
+	encryption := data_encryption.NewService(true, []string{key})
+	firstID, firstValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, secondValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID != secondID || string(firstValue) == string(secondValue) {
+		t.Fatalf("encrypted normalizations = %q/%q and %q/%q, want same ID and distinct nonce bytes",
+			firstID, firstValue, secondID, secondValue)
+	}
+	first := desiredBatchFromStandalone(standaloneSnapshot{
+		"routes": {firstID: firstValue},
+	})
+	second := desiredBatchFromStandalone(standaloneSnapshot{
+		"routes": {secondID: secondValue},
+	})
+	if first.Cursor == second.Cursor {
+		t.Fatalf("distinct translated states share cursor %q", first.Cursor.Revision)
+	}
+
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := store.OpenJournal(path, store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTicket, err := journal.ApplyDesired(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.OpenJournal(path, store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	secondTicket, err := reopened.ApplyDesired(context.Background(), second)
+	if err != nil {
+		t.Fatalf("encrypted retry ApplyDesired() error = %v", err)
+	}
+	if firstTicket.DesiredRevision != 1 || secondTicket.DesiredRevision != 2 {
+		t.Fatalf("desired revisions = %d/%d, want 1/2", firstTicket.DesiredRevision, secondTicket.DesiredRevision)
+	}
+}
+
+func TestDesiredBatchFromStandaloneVersionTransfer(t *testing.T) {
+	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"), store.JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	engine := &standaloneVersionTransferEngine{}
+	coordinator := generation.NewCoordinator(journal, engine)
+	snapshot := standaloneSnapshot{
+		"routes": {"r1": []byte(`{"id":"r1","uri":"/"}`)},
+	}
+	v1 := desiredBatchFromStandalone(snapshot)
+	first, err := coordinator.Apply(context.Background(), v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Cursor != v1.Cursor || first.Revisions != (generation.RevisionSet{
+		Desired: 1,
+		HTTP:    1,
+		Stream:  1,
+	}) {
+		t.Fatalf("v1 acknowledgement = %+v", first)
+	}
+
+	v2 := desiredBatchFromStandalone(snapshot)
+	v2.Cursor.Provider = "standalone/v2"
+	if v2.Cursor.Revision != v1.Cursor.Revision {
+		t.Fatalf("versioned cursors changed content digest: v1=%q v2=%q", v1.Cursor.Revision, v2.Cursor.Revision)
+	}
+	if _, err := journal.LoadAcknowledgement(context.Background(), v2.Cursor); !errors.Is(err, generation.ErrNotFound) {
+		t.Fatalf("LoadAcknowledgement(v2) error = %v, want ErrNotFound", err)
+	}
+	second, err := coordinator.Apply(context.Background(), v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Cursor != v2.Cursor || second.Revisions != (generation.RevisionSet{
+		Desired: 2,
+		HTTP:    2,
+		Stream:  2,
+	}) {
+		t.Fatalf("v2 acknowledgement = %+v", second)
+	}
+	if engine.prepareCalls != 2 || engine.confirmCalls != 0 {
+		t.Fatalf("prepare/confirm calls = %d/%d, want 2/0", engine.prepareCalls, engine.confirmCalls)
+	}
+}
+
+type standaloneVersionTransferEngine struct {
+	prepareCalls int
+	confirmCalls int
+}
+
+func (e *standaloneVersionTransferEngine) Prepare(
+	_ context.Context,
+	ticket generation.ApplyTicket,
+	desired generation.Snapshot,
+	_ map[generation.Domain]generation.PublishedGeneration,
+) (generation.PublicationSet, error) {
+	e.prepareCalls++
+	closure := make([]generation.ResourceKey, 0, len(desired.Resources())+len(desired.Tombstones()))
+	decisions := make([]generation.ResourceDecision, 0, cap(closure))
+	for _, resource := range desired.Resources() {
+		closure = append(closure, resource.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "standalone-test-published",
+		})
+	}
+	for _, tombstone := range desired.Tombstones() {
+		closure = append(closure, tombstone.Key)
+		decisions = append(decisions, generation.ResourceDecision{
+			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "standalone-test-deleted",
+		})
+	}
+	set := generation.PublicationSet{
+		DesiredRevision: ticket.DesiredRevision,
+		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(ticket.RequiredDomains)),
+	}
+	for _, domain := range ticket.RequiredDomains {
+		set.Domains[domain] = generation.PublicationCandidate{
+			Artifact: generation.GenerationArtifact{
+				Domain: domain, Revision: ticket.DesiredRevision,
+				Digest: desired.Digest(), Snapshot: desired.SnapshotID(),
+			},
+			Snapshot: desired.Clone(), Closure: append([]generation.ResourceKey(nil), closure...),
+			Decisions: append([]generation.ResourceDecision(nil), decisions...),
+		}
+	}
+	return set, nil
+}
+
+func (*standaloneVersionTransferEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
+	return nil
+}
+
+func (*standaloneVersionTransferEngine) Activate(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*standaloneVersionTransferEngine) RollbackActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*standaloneVersionTransferEngine) FinalizeActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) {
+}
+
+func (e *standaloneVersionTransferEngine) ConfirmActive(
+	context.Context,
+	generation.PublicationSet,
+) error {
+	e.confirmCalls++
+	return nil
+}
 
 func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")

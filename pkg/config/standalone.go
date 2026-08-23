@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -113,6 +116,85 @@ func StandaloneConfigFile(provider string) string {
 // file. The returned slice is independent from the package-level definition.
 func StandaloneBuckets() []string {
 	return append([]string(nil), standaloneBuckets...)
+}
+
+// desiredBatchFromStandalone translates an already-normalized standalone file
+// snapshot without selecting it as a production apply path. The cursor binds
+// the translation contract to the exact canonical mutation bytes.
+func desiredBatchFromStandalone(snapshot standaloneSnapshot) generation.DesiredBatch {
+	batch := generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{
+			Provider: "standalone/v1",
+		},
+		ReplaceManaged: true,
+	}
+	for kind, resources := range snapshot {
+		for id, value := range resources {
+			batch.Mutations = append(batch.Mutations, generation.Mutation{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: kind, ID: id},
+				Value: bytes.Clone(value),
+			})
+		}
+	}
+	sort.Slice(batch.Mutations, func(i, j int) bool {
+		if batch.Mutations[i].Key.Kind != batch.Mutations[j].Key.Kind {
+			return batch.Mutations[i].Key.Kind < batch.Mutations[j].Key.Kind
+		}
+		return batch.Mutations[i].Key.ID < batch.Mutations[j].Key.ID
+	})
+	digest := digestStandaloneMutations(batch.Mutations)
+	batch.Cursor.Revision = fmt.Sprintf("sha256:%x", digest)
+
+	// Replacement implicitly deletes omitted resources, so domain impact comes
+	// from every managed standalone kind rather than only the resources present.
+	domainSet := make(map[generation.Domain]struct{})
+	for _, kind := range standaloneBuckets {
+		for _, domain := range desiredDomains(kind) {
+			domainSet[domain] = struct{}{}
+		}
+	}
+	for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
+		if _, ok := domainSet[domain]; ok {
+			batch.RequiredDomains = append(batch.RequiredDomains, domain)
+		}
+	}
+	return batch
+}
+
+func digestStandaloneMutations(mutations []generation.Mutation) [sha256.Size]byte {
+	canonical := binary.AppendUvarint(nil, uint64(len(mutations)))
+	for _, mutation := range mutations {
+		canonical = appendStandaloneDigestString(canonical, mutation.Key.Kind)
+		canonical = appendStandaloneDigestString(canonical, mutation.Key.ID)
+		if mutation.Value == nil {
+			canonical = append(canonical, 0)
+			continue
+		}
+		canonical = append(canonical, 1)
+		canonical = binary.AppendUvarint(canonical, uint64(len(mutation.Value)))
+		canonical = append(canonical, mutation.Value...)
+	}
+	return sha256.Sum256(canonical)
+}
+
+func appendStandaloneDigestString(canonical []byte, value string) []byte {
+	canonical = binary.AppendUvarint(canonical, uint64(len(value)))
+	return append(canonical, value...)
+}
+
+func desiredDomains(kind string) []generation.Domain {
+	switch kind {
+	case "stream_routes":
+		return []generation.Domain{generation.DomainStream}
+	case "services", "upstreams", "secrets":
+		return []generation.Domain{generation.DomainHTTP, generation.DomainStream}
+	case "routes", "global_rules", "plugin_configs", "plugin_metadata", "plugins",
+		"ssls", "consumers", "consumer_groups", "protos":
+		return []generation.Domain{generation.DomainHTTP}
+	default:
+		return nil
+	}
 }
 
 func NewStandaloneFileWatcher(

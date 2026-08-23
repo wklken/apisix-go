@@ -2,19 +2,23 @@ package etcd
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
 	"math/rand"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -287,6 +291,159 @@ func isManagedEtcdBucket(bucket string) bool {
 	default:
 		return false
 	}
+}
+
+func etcdProviderID(clusterID uint64, prefix string) string {
+	canonicalPrefix := canonicalEtcdPrefix(prefix)
+	prefixDigest := sha256.Sum256([]byte(canonicalPrefix))
+	return fmt.Sprintf("etcd/v1/%016x/%x", clusterID, prefixDigest)
+}
+
+func desiredDomains(kind string) []generation.Domain {
+	switch kind {
+	case "stream_routes":
+		return []generation.Domain{generation.DomainStream}
+	case "services", "upstreams", "secrets":
+		return []generation.Domain{generation.DomainHTTP, generation.DomainStream}
+	case "routes", "global_rules", "plugin_configs", "plugin_metadata", "plugins",
+		"ssls", "consumers", "consumer_groups", "protos":
+		return []generation.Domain{generation.DomainHTTP}
+	default:
+		return nil
+	}
+}
+
+func normalizeRequiredDomains(domains []generation.Domain) []generation.Domain {
+	hasHTTP := slices.Contains(domains, generation.DomainHTTP)
+	hasStream := slices.Contains(domains, generation.DomainStream)
+	normalized := make([]generation.Domain, 0, 2)
+	if hasHTTP {
+		normalized = append(normalized, generation.DomainHTTP)
+	}
+	if hasStream {
+		normalized = append(normalized, generation.DomainStream)
+	}
+	return normalized
+}
+
+func desiredMutationFromEtcdEvent(
+	prefix string,
+	event *clientv3.Event,
+) (generation.Mutation, []generation.Domain, bool, error) {
+	client := ConfigClient{prefix: canonicalEtcdPrefix(prefix)}
+	bucket, id, managed := client.managedKey(event.Kv.Key)
+	if !managed {
+		return generation.Mutation{}, nil, false, nil
+	}
+
+	mutation := generation.Mutation{Key: generation.ResourceKey{Kind: bucket, ID: id}}
+	switch event.Type {
+	case mvccpb.PUT:
+		mutation.Type = generation.MutationPut
+		mutation.Value = cloneEtcdValue(event.Kv.Value)
+	case mvccpb.DELETE:
+		mutation.Type = generation.MutationDelete
+	default:
+		return generation.Mutation{}, nil, false, fmt.Errorf("unsupported etcd event type %d", event.Type)
+	}
+	return mutation, desiredDomains(bucket), true, nil
+}
+
+func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse) (generation.DesiredBatch, error) {
+	if response == nil || response.Header == nil {
+		return generation.DesiredBatch{}, errors.New("etcd snapshot is missing a response header")
+	}
+	if response.Header.ClusterId == 0 {
+		return generation.DesiredBatch{}, errors.New("etcd response requires cluster identity")
+	}
+	if response.Header.Revision <= 0 {
+		return generation.DesiredBatch{}, errors.New("etcd snapshot requires a positive revision")
+	}
+
+	client := ConfigClient{prefix: canonicalEtcdPrefix(prefix)}
+	mutations := make([]generation.Mutation, 0, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		if kv == nil {
+			return generation.DesiredBatch{}, errors.New("etcd snapshot contains a nil key-value")
+		}
+		bucket, id, managed := client.managedKey(kv.Key)
+		if !managed {
+			continue
+		}
+		mutations = append(mutations, generation.Mutation{
+			Type:  generation.MutationPut,
+			Key:   generation.ResourceKey{Kind: bucket, ID: id},
+			Value: cloneEtcdValue(kv.Value),
+		})
+	}
+
+	return generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{
+			Provider: etcdProviderID(response.Header.ClusterId, prefix),
+			Revision: strconv.FormatInt(response.Header.Revision, 10),
+		},
+		ReplaceManaged:  true,
+		Mutations:       mutations,
+		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+	}, nil
+}
+
+func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (generation.DesiredBatch, error) {
+	if response.Header.ClusterId == 0 {
+		return generation.DesiredBatch{}, errors.New("etcd response requires cluster identity")
+	}
+	if response.Canceled || response.CompactRevision != 0 || response.Created {
+		return generation.DesiredBatch{}, errors.New("etcd watch response is not an applicable event batch")
+	}
+
+	batch := generation.DesiredBatch{}
+	lastEventRevision := int64(0)
+	for _, event := range response.Events {
+		if event == nil || event.Kv == nil {
+			return generation.DesiredBatch{}, errors.New("etcd watch response contains a nil event")
+		}
+		if event.Kv.ModRevision <= 0 || event.Kv.ModRevision < lastEventRevision {
+			return generation.DesiredBatch{}, errors.New("invalid non-monotonic etcd watch event revision")
+		}
+		lastEventRevision = event.Kv.ModRevision
+		mutation, domains, managed, err := desiredMutationFromEtcdEvent(prefix, event)
+		if err != nil {
+			return generation.DesiredBatch{}, err
+		}
+		if !managed {
+			continue
+		}
+		batch.Mutations = append(batch.Mutations, mutation)
+		batch.RequiredDomains = append(batch.RequiredDomains, domains...)
+	}
+
+	provider := etcdProviderID(response.Header.ClusterId, prefix)
+	if lastEventRevision != 0 {
+		if response.Header.Revision < lastEventRevision {
+			return generation.DesiredBatch{}, errors.New("etcd watch header precedes its events")
+		}
+		batch.Cursor = generation.ProviderCursor{
+			Provider: provider,
+			Revision: strconv.FormatInt(lastEventRevision, 10),
+		}
+	} else {
+		if !response.IsProgressNotify() {
+			return generation.DesiredBatch{}, errors.New("empty etcd watch response is not progress")
+		}
+		batch.Cursor = generation.ProviderCursor{
+			Provider: provider,
+			Revision: strconv.FormatInt(response.Header.Revision, 10),
+		}
+	}
+	batch.RequiredDomains = normalizeRequiredDomains(batch.RequiredDomains)
+	return batch, nil
+}
+
+func cloneEtcdValue(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	return append(make([]byte, 0, len(value)), value...)
 }
 
 func storeMutationKey(key []byte, bucket, id string) []byte {

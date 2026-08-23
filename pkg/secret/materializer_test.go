@@ -5,44 +5,283 @@ import (
 	"crypto/sha256"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
 
-type referenceResolverFunc func(context.Context, string) (string, error)
-
-func (resolve referenceResolverFunc) Resolve(ctx context.Context, raw string) (string, error) {
-	return resolve(ctx, raw)
+type testAttemptResolver struct {
+	resolve func(context.Context, Scope, string) (string, error)
+	close   func(context.Context) error
 }
 
-type passthroughResolver struct{}
+type countingAttemptRegistration struct {
+	id    AttemptID
+	mu    sync.Mutex
+	calls int
+}
 
-func (passthroughResolver) Resolve(_ context.Context, raw string) (string, error) {
+func (registration *countingAttemptRegistration) AttemptID() AttemptID {
+	return registration.id
+}
+
+func (registration *countingAttemptRegistration) Materialize(context.Context, Scope, string) (Value, error) {
+	registration.mu.Lock()
+	registration.calls++
+	registration.mu.Unlock()
+	return newValue("delegated"), nil
+}
+
+func (registration *countingAttemptRegistration) Close(context.Context) error {
+	return nil
+}
+
+func (registration *countingAttemptRegistration) callCount() int {
+	registration.mu.Lock()
+	defer registration.mu.Unlock()
+	return registration.calls
+}
+
+func (resolver *testAttemptResolver) ResolveScoped(ctx context.Context, scope Scope, raw string) (string, error) {
+	if resolver.resolve == nil {
+		return raw, nil
+	}
+	return resolver.resolve(ctx, scope, raw)
+}
+
+func (resolver *testAttemptResolver) Close(ctx context.Context) error {
+	if resolver.close == nil {
+		return nil
+	}
+	return resolver.close(ctx)
+}
+
+type testResolverFactory struct {
+	mu            sync.Mutex
+	openErr       error
+	openResolver  AttemptResolver
+	openCalls     int
+	closeCalls    int
+	lastCandidate generation.PublicationSet
+	lastRecovery  map[generation.Domain]generation.PublishedGeneration
+}
+
+func (factory *testResolverFactory) OpenCandidate(
+	_ context.Context,
+	_ AttemptID,
+	_ generation.ApplyTicket,
+	set generation.PublicationSet,
+) (AttemptResolver, error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	factory.openCalls++
+	factory.lastCandidate = clonePublicationSet(set)
+	if factory.openErr != nil {
+		return factory.openResolver, factory.openErr
+	}
+	return factory.newResolver(), nil
+}
+
+func (factory *testResolverFactory) OpenRecovery(
+	_ context.Context,
+	_ AttemptID,
+	_ generation.RevisionSet,
+	published map[generation.Domain]generation.PublishedGeneration,
+) (AttemptResolver, error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	factory.openCalls++
+	factory.lastRecovery = clonePublishedGenerations(published)
+	if factory.openErr != nil {
+		return factory.openResolver, factory.openErr
+	}
+	return factory.newResolver(), nil
+}
+
+func (factory *testResolverFactory) newResolver() AttemptResolver {
+	return &testAttemptResolver{
+		resolve: func(_ context.Context, _ Scope, raw string) (string, error) { return raw, nil },
+		close: func(context.Context) error {
+			factory.mu.Lock()
+			defer factory.mu.Unlock()
+			factory.closeCalls++
+			return nil
+		},
+	}
+}
+
+type testScopedBroker struct {
+	mu                      sync.Mutex
+	authorized              map[AttemptID]bool
+	revoked                 map[AttemptID]bool
+	authorizeErr            error
+	revokeErr               error
+	authorizeCandidateCalls int
+	authorizeRecoveryCalls  int
+	revokeCalls             int
+	resolveCalls            int
+	resolve                 func(context.Context, Scope, string) (string, error)
+	resolveCall             chan struct{}
+	closeCtx                context.Context
+}
+
+func (broker *testScopedBroker) AuthorizeCandidate(
+	_ context.Context,
+	id AttemptID,
+	_ generation.ApplyTicket,
+	_ generation.PublicationSet,
+) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.authorizeCandidateCalls++
+	return broker.authorizeLocked(id)
+}
+
+func (broker *testScopedBroker) authorizeLocked(id AttemptID) error {
+	if broker.authorizeErr != nil {
+		return broker.authorizeErr
+	}
+	if broker.authorized == nil {
+		broker.authorized = make(map[AttemptID]bool)
+	}
+	broker.authorized[id] = true
+	return nil
+}
+
+func (broker *testScopedBroker) AuthorizeRecovery(
+	_ context.Context,
+	id AttemptID,
+	_ generation.RevisionSet,
+	_ map[generation.Domain]generation.PublishedGeneration,
+) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.authorizeRecoveryCalls++
+	return broker.authorizeLocked(id)
+}
+
+func (broker *testScopedBroker) ResolveScoped(ctx context.Context, scope Scope, raw string) (string, error) {
+	broker.mu.Lock()
+	broker.resolveCalls++
+	broker.mu.Unlock()
+	if broker.resolveCall != nil {
+		select {
+		case broker.resolveCall <- struct{}{}:
+		default:
+		}
+	}
+	if broker.resolve != nil {
+		return broker.resolve(ctx, scope, raw)
+	}
 	return raw, nil
 }
 
-type captureScopedResolver struct {
-	scope     Scope
-	raw       string
-	plaintext string
-	err       error
-}
-
-func (resolver *captureScopedResolver) ResolveScoped(_ context.Context, scope Scope, raw string) (string, error) {
-	resolver.scope = scope
-	resolver.raw = raw
-	return resolver.plaintext, resolver.err
-}
-
-func ownedScope() Scope {
-	return Scope{
-		Generation: 9,
-		Plugin:     "http-logger",
-		Resource:   generation.ResourceKey{Kind: "routes", ID: "r1"},
-		Field:      "auth_header",
+func (broker *testScopedBroker) RevokeAttempt(ctx context.Context, id AttemptID) error {
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	broker.revokeCalls++
+	broker.closeCtx = ctx
+	if broker.revokeErr != nil {
+		return broker.revokeErr
 	}
+	if broker.revoked == nil {
+		broker.revoked = make(map[AttemptID]bool)
+	}
+	broker.revoked[id] = true
+	return nil
+}
+
+func testCatalog(t *testing.T) *capability.SecretDeclarationCatalog {
+	t.Helper()
+	manifest := &capability.Manifest{Plugins: []capability.PluginCapability{{
+		Name: "test-secrets",
+		Factories: []capability.Factory{
+			{Key: "http-logger"},
+			{Key: "key-auth"},
+			{Key: "metadata-plugin"},
+		},
+		SecretDeclarations: []capability.SecretDeclaration{
+			{Factory: "http-logger", Source: capability.SecretPluginConfig, Field: "token", Strict: true},
+			{Factory: "key-auth", Source: capability.SecretPluginConfig, Field: "key"},
+			{Factory: "metadata-plugin", Source: capability.SecretPluginConfig, Field: "token"},
+			{Factory: "metadata-plugin", Source: capability.SecretPluginMetadata, Field: "token", Strict: true},
+		},
+	}}}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func testService(
+	t *testing.T,
+	enabled bool,
+	keyring ...string,
+) (data_encryption.Service, *capability.SecretDeclarationCatalog) {
+	t.Helper()
+	catalog := testCatalog(t)
+	return data_encryption.NewService(enabled, keyring, catalog), catalog
+}
+
+func testPublication(
+	t *testing.T,
+	revision uint64,
+	domain generation.Domain,
+	key generation.ResourceKey,
+) (generation.ApplyTicket, generation.PublicationSet) {
+	t.Helper()
+	snapshot, err := generation.NewSnapshot(revision, []generation.Resource{{Key: key, Value: []byte("resource")}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain: domain, Revision: revision, Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure:  []generation.ResourceKey{key},
+		Decisions: []generation.ResourceDecision{{
+			Key: key, Disposition: generation.DispositionPublished, Code: "ok",
+		}},
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: revision,
+		DesiredDigest:   snapshot.Digest(),
+		Cursor:          generation.ProviderCursor{Provider: "test", Revision: "cursor"},
+		RequiredDomains: []generation.Domain{domain},
+	}
+	return ticket, generation.PublicationSet{
+		DesiredRevision: revision,
+		Domains:         map[generation.Domain]generation.PublicationCandidate{domain: candidate},
+	}
+}
+
+func testScope(
+	registration AttemptRegistration,
+	domain generation.Domain,
+	plugin string,
+	resource generation.ResourceKey,
+	source capability.SecretDeclarationSource,
+	field string,
+) Scope {
+	return Scope{
+		Generation: testGenerationForRegistration(registration),
+		Attempt:    registration.AttemptID(),
+		Domain:     domain,
+		Plugin:     plugin,
+		Resource:   resource,
+		Source:     source,
+		Field:      field,
+	}
+}
+
+func testGenerationForRegistration(_ AttemptRegistration) uint64 {
+	return 9
 }
 
 func valuePlaintext(t *testing.T, value Value) string {
@@ -58,363 +297,940 @@ func valuePlaintext(t *testing.T, value Value) string {
 }
 
 func TestMaterializerRequiresOwnedScopeAndNeverLeaksPlaintext(t *testing.T) {
-	const plaintext = "credential-value"
-	refs := referenceResolverFunc(func(context.Context, string) (string, error) {
-		return plaintext, nil
-	})
-	materializer := NewMaterializer(data_encryption.NewService(false, nil), refs)
-
-	_, err := materializer.Materialize(context.Background(), Scope{}, "$ENV://TOKEN")
-	if err == nil || strings.Contains(err.Error(), plaintext) {
-		t.Fatalf("Materialize() error = %v, want redacted scope error", err)
-	}
-
-	value, err := materializer.Materialize(context.Background(), ownedScope(), "$ENV://TOKEN")
+	service, catalog := testService(t, false)
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got string
-	if err := value.Use(func(value string) error {
-		got = value
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	if _, err := registration.Materialize(
+		context.Background(),
+		Scope{},
+		"credential-value",
+	); !errors.Is(
+		err,
+		ErrInvalidScope,
+	) {
+		t.Fatalf("invalid scope error = %v, want ErrInvalidScope", err)
 	}
-	if got != plaintext {
-		t.Fatalf("materialized plaintext = %q, want %q", got, plaintext)
-	}
-	if gotDigest, wantDigest := value.Digest(), sha256.Sum256([]byte(plaintext)); gotDigest != wantDigest {
-		t.Fatalf("materialized digest = %x, want %x", gotDigest, wantDigest)
-	}
-}
-
-func TestGenerationCapabilityRejectsCrossGenerationScope(t *testing.T) {
-	base := NewMaterializer(data_encryption.NewService(false, nil), passthroughResolver{})
-	capability, err := NewGenerationCapability(base, 9)
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	value, err := registration.Materialize(context.Background(), scope, "$ENV://TOKEN")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := ownedScope()
-	scope.Generation = 10
-	_, err = capability.Materialize(context.Background(), scope, "value")
-	if !errors.Is(err, ErrCapabilityScopeMismatch) {
-		t.Fatalf("Materialize() error = %v, want ErrCapabilityScopeMismatch", err)
+	if got, want := valuePlaintext(t, value), "$ENV://TOKEN"; got != want {
+		t.Fatalf("plaintext = %q, want %q", got, want)
 	}
-}
-
-func TestScopedMaterializerPassesOwnedScopeAndRedactsResolverError(t *testing.T) {
-	const plaintext = "credential-value"
-	scope := ownedScope()
-	resolver := &captureScopedResolver{plaintext: plaintext}
-	materializer := NewScopedMaterializer(resolver)
-
-	value, err := materializer.Materialize(context.Background(), scope, "$secret://logger/token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolver.scope != scope || resolver.raw != "$secret://logger/token" {
-		t.Fatalf("resolver input = %#v/%q, want %#v/%q", resolver.scope, resolver.raw, scope, "$secret://logger/token")
-	}
-	if got, want := value.Digest(), sha256.Sum256([]byte(plaintext)); got != want {
+	if got, want := value.Digest(), sha256.Sum256([]byte("$ENV://TOKEN")); got != want {
 		t.Fatalf("digest = %x, want %x", got, want)
 	}
-
-	resolver.err = errors.New("backend included " + plaintext)
-	_, err = materializer.Materialize(context.Background(), scope, "$secret://logger/token")
-	if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), plaintext) {
-		t.Fatalf("Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
-	}
+	_ = catalog
 }
 
-func TestMaterializerUsesCanonicalAtRestContextAcrossGenerations(t *testing.T) {
-	const key = "0123456789abcdef"
-	service := data_encryption.NewService(true, []string{key})
-	configs := map[string]any{
-		"error-log-logger": map[string]any{
-			"clickhouse": map[string]any{"password": "credential-value"},
-		},
-	}
-	if err := service.EncryptPluginConfigs(configs); err != nil {
-		t.Fatal(err)
-	}
-	ciphertext := configs["error-log-logger"].(map[string]any)["clickhouse"].(map[string]any)["password"].(string)
-	materializer := NewMaterializer(service, passthroughResolver{})
-
-	baseScope := Scope{
-		Plugin:   "error-log-logger",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
-		Field:    "clickhouse.password",
-	}
-	for _, generationNumber := range []uint64{9, 10} {
-		capability, err := NewGenerationCapability(materializer, generationNumber)
-		if err != nil {
-			t.Fatal(err)
-		}
-		scope := baseScope
-		scope.Generation = generationNumber
-		value, err := capability.Materialize(context.Background(), scope, ciphertext)
-		if err != nil {
-			t.Fatalf("generation %d Materialize() error = %v", generationNumber, err)
-		}
-		var got string
-		if err := value.Use(func(value string) error { got = value; return nil }); err != nil {
-			t.Fatal(err)
-		}
-		if got != "credential-value" {
-			t.Fatalf("generation %d plaintext = %q, want credential-value", generationNumber, got)
-		}
-	}
-
-	wrongField := baseScope
-	wrongField.Generation = 9
-	wrongField.Field = "kafka.brokers.*.sasl_config.password"
-	_, err := materializer.Materialize(context.Background(), wrongField, ciphertext)
-	if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), ciphertext) {
-		t.Fatalf("wrong-field Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
-	}
-}
-
-func TestMaterializerPreservesStrictAndOptionalPluginFieldSemantics(t *testing.T) {
-	const key = "0123456789abcdef"
-	service := data_encryption.NewService(true, []string{key})
-	configs := map[string]any{
-		"http-logger": map[string]any{"auth_header": "strict-secret"},
-		"key-auth":    map[string]any{"key": "optional-secret"},
-	}
-	if err := service.EncryptPluginConfigs(configs); err != nil {
-		t.Fatal(err)
-	}
-	strictCiphertext := configs["http-logger"].(map[string]any)["auth_header"].(string)
-	optionalCiphertext := configs["key-auth"].(map[string]any)["key"].(string)
-	materializer := NewMaterializer(service, passthroughResolver{})
-	strictScope := Scope{
-		Generation: 9, Plugin: "http-logger",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "auth_header",
-	}
-	optionalScope := Scope{
-		Generation: 9, Plugin: "key-auth",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "key",
-	}
-
-	tests := []struct {
-		name    string
-		scope   Scope
-		raw     string
-		want    string
-		wantErr bool
-	}{
-		{
-			name: "strict bare literal rejected", scope: strictScope,
-			raw: "strict-secret", wantErr: true,
-		},
-		{
-			name: "strict ciphertext resolved", scope: strictScope,
-			raw: strictCiphertext, want: "strict-secret",
-		},
-		{
-			name: "strict invalid ciphertext rejected", scope: strictScope,
-			raw: "$encrypted://strict-secret", wantErr: true,
-		},
-		{
-			name: "optional bare literal preserved", scope: optionalScope,
-			raw: "optional-secret", want: "optional-secret",
-		},
-		{
-			name: "optional ciphertext resolved", scope: optionalScope,
-			raw: optionalCiphertext, want: "optional-secret",
-		},
-		{
-			name: "optional invalid ciphertext preserved", scope: optionalScope,
-			raw: "$encrypted://optional-secret", want: "$encrypted://optional-secret",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			value, err := materializer.Materialize(context.Background(), test.scope, test.raw)
-			if test.wantErr {
-				if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), test.raw) {
-					t.Fatalf("Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
+func TestMaterializerUsesCanonicalDecryptThenReferenceResolution(t *testing.T) {
+	service, _ := testService(t, true, "0123456789abcdef")
+	resolverCalls := 0
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(
+		service,
+		&testResolverFactoryWithResolver{
+			factory: factory,
+			resolve: func(_ context.Context, _ Scope, raw string) (string, error) {
+				resolverCalls++
+				if raw != "$ENV://TOKEN" {
+					t.Fatalf("resolver raw = %q, want $ENV://TOKEN", raw)
 				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := valuePlaintext(t, value); got != test.want {
-				t.Fatalf("plaintext = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestMaterializerUsesMetadataStrictRegistryAndCanonicalPaths(t *testing.T) {
-	const key = "0123456789abcdef"
-	service := data_encryption.NewService(true, []string{key})
-	strictMetadata := map[string]any{"clickhouse": map[string]any{"password": "strict-secret"}}
-	if err := service.EncryptPluginMetadata("error-log-logger", strictMetadata); err != nil {
-		t.Fatal(err)
-	}
-	strictCiphertext := strictMetadata["clickhouse"].(map[string]any)["password"].(string)
-	optionalMetadata := map[string]any{"master_apikey": "optional-secret"}
-	if err := service.EncryptPluginMetadata("azure-functions", optionalMetadata); err != nil {
-		t.Fatal(err)
-	}
-	optionalCiphertext := optionalMetadata["master_apikey"].(string)
-	materializer := NewMaterializer(service, passthroughResolver{})
-	strictScope := Scope{
-		Generation: 9, Plugin: "error-log-logger",
-		Resource: generation.ResourceKey{Kind: "plugin_metadata", ID: "error-log-logger"},
-		Field:    "clickhouse.password",
-	}
-	optionalScope := Scope{
-		Generation: 9, Plugin: "azure-functions",
-		Resource: generation.ResourceKey{Kind: "plugin_metadata", ID: "azure-functions"}, Field: "master_apikey",
-	}
-
-	for _, test := range []struct {
-		name    string
-		scope   Scope
-		raw     string
-		want    string
-		wantErr bool
-	}{
-		{
-			name: "strict metadata bare literal rejected", scope: strictScope,
-			raw: "strict-secret", wantErr: true,
+				return "credential-value", nil
+			},
 		},
-		{
-			name: "strict metadata ciphertext resolved", scope: strictScope,
-			raw: strictCiphertext, want: "strict-secret",
-		},
-		{
-			name: "optional metadata bare literal preserved", scope: optionalScope,
-			raw: "optional-secret", want: "optional-secret",
-		},
-		{
-			name: "optional metadata ciphertext resolved", scope: optionalScope,
-			raw: optionalCiphertext, want: "optional-secret",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			value, err := materializer.Materialize(context.Background(), test.scope, test.raw)
-			if test.wantErr {
-				if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), test.raw) {
-					t.Fatalf("Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := valuePlaintext(t, value); got != test.want {
-				t.Fatalf("plaintext = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestMaterializerResolvesReferencesBeforeOrAfterAtRestDecryption(t *testing.T) {
-	const key = "0123456789abcdef"
-	service := data_encryption.NewService(true, []string{key})
-	scope := Scope{
-		Generation: 9,
-		Plugin:     "key-auth",
-		Resource:   generation.ResourceKey{Kind: "routes", ID: "r1"},
-		Field:      "key",
-	}
-	configs := map[string]any{"key-auth": map[string]any{"key": "$ENV://TOKEN"}}
-	if err := service.EncryptPluginConfigs(configs); err != nil {
-		t.Fatal(err)
-	}
-	encryptedReference := configs["key-auth"].(map[string]any)["key"].(string)
-
-	for _, test := range []struct {
-		name string
-		raw  string
-	}{
-		{name: "bare reference", raw: "$ENV://TOKEN"},
-		{name: "encrypted reference", raw: encryptedReference},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			materializer := NewMaterializer(service, referenceResolverFunc(
-				func(_ context.Context, raw string) (string, error) {
-					if raw != "$ENV://TOKEN" {
-						t.Fatalf("Resolve() raw = %q, want $ENV://TOKEN", raw)
-					}
-					return "credential-value", nil
-				},
-			))
-			value, err := materializer.Materialize(context.Background(), scope, test.raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got string
-			if err := value.Use(func(value string) error { got = value; return nil }); err != nil {
-				t.Fatal(err)
-			}
-			if got != "credential-value" {
-				t.Fatalf("plaintext = %q, want credential-value", got)
-			}
-		})
-	}
-
-	literalConfigs := map[string]any{"key-auth": map[string]any{"key": "literal-value"}}
-	if err := service.EncryptPluginConfigs(literalConfigs); err != nil {
-		t.Fatal(err)
-	}
-	encryptedLiteral := literalConfigs["key-auth"].(map[string]any)["key"].(string)
-	materializer := NewMaterializer(service, referenceResolverFunc(func(context.Context, string) (string, error) {
-		t.Fatal("literal must not be sent to the reference resolver")
-		return "", nil
-	}))
-	value, err := materializer.Materialize(context.Background(), scope, encryptedLiteral)
+	)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got string
-	if err := value.Use(func(value string) error { got = value; return nil }); err != nil {
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	contextualCiphertext, err := service.EncryptForContext("$ENV://TOKEN", "http-logger.token")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "literal-value" {
-		t.Fatalf("plaintext = %q, want literal-value", got)
+	value, err := registration.Materialize(context.Background(), scope, contextualCiphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := valuePlaintext(t, value); got != "credential-value" {
+		t.Fatalf("plaintext = %q, want credential-value", got)
+	}
+	if resolverCalls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolverCalls)
 	}
 }
 
-func TestMaterializerRejectsInvalidCapabilityAndUse(t *testing.T) {
-	materializer := NewMaterializer(data_encryption.NewService(false, nil), passthroughResolver{})
-	if _, err := NewGenerationCapability(nil, 9); !errors.Is(err, ErrInvalidCapability) {
-		t.Fatalf("nil materializer error = %v, want ErrInvalidCapability", err)
+func TestMaterializerPreservesStrictAndOptionalDeclarationPolicies(t *testing.T) {
+	service, _ := testService(t, true, "0123456789abcdef")
+	materializer := NewMaterializer(service, &testResolverFactory{})
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := NewGenerationCapability(materializer, 0); !errors.Is(err, ErrInvalidCapability) {
-		t.Fatalf("zero generation error = %v, want ErrInvalidCapability", err)
-	}
-	if err := (Value{}).Use(nil); err == nil {
-		t.Fatal("Value.Use(nil) error = nil, want error")
-	}
-}
-
-func TestMaterializerErrorsNeverContainRawOrPlaintext(t *testing.T) {
-	const (
-		raw       = "$secret://credential-value"
-		plaintext = "credential-value"
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	resource := generation.ResourceKey{Kind: "routes", ID: "r1"}
+	strictScope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		resource,
+		capability.SecretPluginConfig,
+		"token",
 	)
-	scope := ownedScope()
-	materializer := NewMaterializer(data_encryption.NewService(false, nil), referenceResolverFunc(
-		func(context.Context, string) (string, error) {
-			return "", errors.New("resolver exposed " + raw + " and " + plaintext)
-		},
-	))
-	_, err := materializer.Materialize(context.Background(), scope, raw)
-	if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), raw) ||
-		strings.Contains(err.Error(), plaintext) {
-		t.Fatalf("reference Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
+	strictCiphertext, err := service.EncryptForContext("strict-secret", "http-logger.token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := registration.Materialize(context.Background(), strictScope, strictCiphertext)
+	if err != nil || valuePlaintext(t, value) != "strict-secret" {
+		t.Fatalf("strict ciphertext materialization = %q/%v", valuePlaintext(t, value), err)
+	}
+	if _, err := registration.Materialize(
+		context.Background(),
+		strictScope,
+		"strict-secret",
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("strict plaintext error = %v, want ErrCredentialUnavailable", err)
 	}
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	optionalScope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"key-auth",
+		resource,
+		capability.SecretPluginConfig,
+		"key",
+	)
+	optionalCiphertext, err := service.EncryptForContext("optional-secret", "key-auth.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err = registration.Materialize(context.Background(), optionalScope, optionalCiphertext)
+	if err != nil || valuePlaintext(t, value) != "optional-secret" {
+		t.Fatalf("optional ciphertext materialization = %q/%v", valuePlaintext(t, value), err)
+	}
+	value, err = registration.Materialize(context.Background(), optionalScope, "legacy-plaintext")
+	if err != nil || valuePlaintext(t, value) != "legacy-plaintext" {
+		t.Fatalf("optional plaintext materialization = %q/%v", valuePlaintext(t, value), err)
+	}
+}
+
+func TestRegistrationOwnsDefensivePublicationInputs(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	key := generation.ResourceKey{Kind: "routes", ID: "r1"}
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, key)
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	ticket.RequiredDomains[0] = generation.DomainStream
+	set.Domains[generation.DomainHTTP] = generation.PublicationCandidate{}
+	set.Domains = nil
+	scope := testScope(registration, generation.DomainHTTP, "http-logger", key, capability.SecretPluginConfig, "token")
+	if _, err := registration.Materialize(context.Background(), scope, "$ENV://TOKEN"); err != nil {
+		t.Fatalf("materialization after caller mutation = %v", err)
+	}
+}
+
+type testResolverFactoryWithResolver struct {
+	factory *testResolverFactory
+	resolve func(context.Context, Scope, string) (string, error)
+}
+
+func (factory *testResolverFactoryWithResolver) OpenCandidate(
+	ctx context.Context,
+	id AttemptID,
+	ticket generation.ApplyTicket,
+	set generation.PublicationSet,
+) (AttemptResolver, error) {
+	resolver, err := factory.factory.OpenCandidate(ctx, id, ticket, set)
+	if err != nil {
+		return nil, err
+	}
+	return &testAttemptResolver{resolve: factory.resolve, close: resolver.Close}, nil
+}
+
+func (factory *testResolverFactoryWithResolver) OpenRecovery(
+	ctx context.Context,
+	id AttemptID,
+	revisions generation.RevisionSet,
+	published map[generation.Domain]generation.PublishedGeneration,
+) (AttemptResolver, error) {
+	resolver, err := factory.factory.OpenRecovery(ctx, id, revisions, published)
+	if err != nil {
+		return nil, err
+	}
+	return &testAttemptResolver{resolve: factory.resolve, close: resolver.Close}, nil
+}
+
+func TestMaterializerRejectsUndeclaredAndWrongSourceBeforeBackend(t *testing.T) {
+	service, _ := testService(t, false)
+	resolverCalls := 0
+	factory := &testResolverFactoryWithResolver{
+		factory: &testResolverFactory{},
+		resolve: func(_ context.Context, _ Scope, raw string) (string, error) {
+			resolverCalls++
+			return raw, nil
+		},
+	}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	for _, scope := range []Scope{
+		testScope(registration, generation.DomainHTTP, "http-logger", generation.ResourceKey{Kind: "routes", ID: "r1"}, capability.SecretPluginMetadata, "token"),
+		testScope(registration, generation.DomainHTTP, "http-logger", generation.ResourceKey{Kind: "routes", ID: "r1"}, capability.SecretPluginConfig, "missing"),
+	} {
+		if _, err := registration.Materialize(
+			context.Background(),
+			scope,
+			"$ENV://TOKEN",
+		); !errors.Is(
+			err,
+			ErrInvalidScope,
+		) {
+			t.Fatalf("Materialize() error = %v, want ErrInvalidScope", err)
+		}
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver calls = %d, want zero", resolverCalls)
+	}
+}
+
+func TestScopedMaterializerAuthorizesAndUsesExactCatalog(t *testing.T) {
+	catalog := testCatalog(t)
+	broker := &testScopedBroker{
+		resolve: func(_ context.Context, _ Scope, _ string) (string, error) { return "credential-value", nil },
+	}
+	materializer := NewScopedMaterializer(broker, catalog)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	value, err := registration.Materialize(context.Background(), scope, "$secret://manager/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := valuePlaintext(t, value); got != "credential-value" {
+		t.Fatalf("plaintext = %q, want credential-value", got)
+	}
+	if err := registration.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	broker.mu.Lock()
+	revoked := broker.revoked[registration.AttemptID()]
+	broker.mu.Unlock()
+	if !revoked {
+		t.Fatal("attempt was not revoked")
+	}
+}
+
+func TestCandidateAndRecoverySameRevisionHaveDistinctAttempts(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	candidate, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := candidate.Close(context.Background()); err != nil {
+			t.Errorf("candidate Close() error = %v", err)
+		}
+	}()
+	published := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
+	}
+	recovery, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 9},
+		published,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := recovery.Close(context.Background()); err != nil {
+			t.Errorf("recovery Close() error = %v", err)
+		}
+	}()
+	if candidate.AttemptID() == recovery.AttemptID() {
+		t.Fatal("candidate and recovery attempts aliased")
+	}
+}
+
+func TestDuplicateAttemptReleasesAfterSuccessfulCloseAndQuarantinesAfterFailure(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	first, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrAttemptAlreadyRegistered,
+	) {
+		t.Fatalf("duplicate error = %v, want ErrAttemptAlreadyRegistered", err)
+	}
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := second.Close(context.Background()); err != nil {
+			t.Errorf("second Close() error = %v", err)
+		}
+	}()
+}
+
+func TestOpenAndAuthorizeFailuresReleaseReservation(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactory{openErr: errors.New("open failed")}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("open error = %v, want ErrCredentialUnavailable", err)
+	}
+	factory.openErr = nil
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = registration.Close(context.Background())
+
+	broker := &testScopedBroker{authorizeErr: errors.New("authorization failed")}
+	scoped := NewScopedMaterializer(broker, testCatalog(t))
+	if _, err := scoped.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("authorization error = %v, want ErrCredentialUnavailable", err)
+	}
+	broker.authorizeErr = nil
+	registration, err = scoped.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = registration.Close(context.Background())
+}
+
+func TestAuthorizeFailuresDoNotRevokeCandidateOrRecovery(t *testing.T) {
+	_, _ = testService(t, false)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	broker := &testScopedBroker{authorizeErr: errors.New("authorization failed")}
+	materializer := NewScopedMaterializer(broker, testCatalog(t))
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("candidate authorization error = %v, want ErrCredentialUnavailable", err)
+	}
+	published := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
+	}
+	if _, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 9},
+		published,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("recovery authorization error = %v, want ErrCredentialUnavailable", err)
+	}
+	broker.mu.Lock()
+	revokeCalls := broker.revokeCalls
+	authorizeCandidateCalls := broker.authorizeCandidateCalls
+	authorizeRecoveryCalls := broker.authorizeRecoveryCalls
+	broker.mu.Unlock()
+	if revokeCalls != 0 {
+		t.Fatalf("revoke calls after authorization failures = %d, want zero", revokeCalls)
+	}
+	if authorizeCandidateCalls != 1 || authorizeRecoveryCalls != 1 {
+		t.Fatalf(
+			"authorization calls = candidate %d/recovery %d, want one each",
+			authorizeCandidateCalls,
+			authorizeRecoveryCalls,
+		)
+	}
+}
+
+func TestMalformedRegistrationsDoNotReachResolverOrBroker(t *testing.T) {
+	service, _ := testService(t, false)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	set.Domains[generation.DomainHTTP] = generation.PublicationCandidate{}
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrInvalidCapability,
+	) {
+		t.Fatalf("malformed candidate error = %v, want ErrInvalidCapability", err)
+	}
+	published := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
+	}
+	if _, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 9},
+		published,
+	); !errors.Is(
+		err,
+		ErrInvalidCapability,
+	) {
+		t.Fatalf("malformed recovery error = %v, want ErrInvalidCapability", err)
+	}
+	factory.mu.Lock()
+	openCalls := factory.openCalls
+	factory.mu.Unlock()
+	if openCalls != 0 {
+		t.Fatalf("resolver factory calls = %d, want zero", openCalls)
+	}
+
+	broker := &testScopedBroker{}
+	scoped := NewScopedMaterializer(broker, testCatalog(t))
+	if _, err := scoped.RegisterCandidate(context.Background(), ticket, set); !errors.Is(err, ErrInvalidCapability) {
+		t.Fatalf("scoped malformed candidate error = %v, want ErrInvalidCapability", err)
+	}
+	if _, err := scoped.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 9},
+		published,
+	); !errors.Is(
+		err,
+		ErrInvalidCapability,
+	) {
+		t.Fatalf("scoped malformed recovery error = %v, want ErrInvalidCapability", err)
+	}
+	broker.mu.Lock()
+	authorizeCandidateCalls := broker.authorizeCandidateCalls
+	authorizeRecoveryCalls := broker.authorizeRecoveryCalls
+	broker.mu.Unlock()
+	if authorizeCandidateCalls != 0 || authorizeRecoveryCalls != 0 {
+		t.Fatalf(
+			"broker authorization calls = candidate %d/recovery %d, want zero",
+			authorizeCandidateCalls,
+			authorizeRecoveryCalls,
+		)
+	}
+}
+
+func TestOpenCleanupFailureQuarantinesCandidateAndRecoveryIDs(t *testing.T) {
+	service, _ := testService(t, false)
+	_, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	ticket := generation.ApplyTicket{
+		DesiredRevision: 9,
+		DesiredDigest:   set.Domains[generation.DomainHTTP].Snapshot.Digest(),
+		Cursor:          generation.ProviderCursor{Provider: "test", Revision: "cursor"},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	cleanupErr := errors.New("cleanup included credential-value")
+	factory := &testResolverFactory{
+		openErr: cleanupErr,
+		openResolver: &testAttemptResolver{close: func(context.Context) error {
+			return cleanupErr
+		}},
+	}
+	materializer := NewMaterializer(service, factory)
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("candidate open error = %v, want ErrCredentialUnavailable", err)
+	}
+	factory.openErr = nil
+	if _, err := materializer.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrAttemptAlreadyRegistered,
+	) {
+		t.Fatalf("candidate retry error = %v, want ErrAttemptAlreadyRegistered", err)
+	}
+
+	published := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
+	}
+	revisions := generation.RevisionSet{Desired: 9, HTTP: 9}
+	recoveryFactory := &testResolverFactory{
+		openErr: cleanupErr,
+		openResolver: &testAttemptResolver{close: func(context.Context) error {
+			return cleanupErr
+		}},
+	}
+	recoveryMaterializer := NewMaterializer(service, recoveryFactory)
+	if _, err := recoveryMaterializer.RegisterRecovery(
+		context.Background(),
+		revisions,
+		published,
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("recovery open error = %v, want ErrCredentialUnavailable", err)
+	}
+	recoveryFactory.openErr = nil
+	if _, err := recoveryMaterializer.RegisterRecovery(
+		context.Background(),
+		revisions,
+		published,
+	); !errors.Is(
+		err,
+		ErrAttemptAlreadyRegistered,
+	) {
+		t.Fatalf("recovery retry error = %v, want ErrAttemptAlreadyRegistered", err)
+	}
+}
+
+func TestClosureIsDomainAndDispositionBound(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactoryWithResolver{
+		factory: &testResolverFactory{},
+		resolve: func(_ context.Context, _ Scope, raw string) (string, error) { return raw, nil },
+	}
+	materializer := NewMaterializer(service, factory)
+	key := generation.ResourceKey{Kind: "routes", ID: "r1"}
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, key)
+	_, streamSet := testPublication(t, 9, generation.DomainStream, key)
+	ticket.RequiredDomains = []generation.Domain{generation.DomainHTTP, generation.DomainStream}
+	ticket.DesiredDigest = set.Domains[generation.DomainHTTP].Snapshot.Digest()
+	set.Domains[generation.DomainStream] = streamSet.Domains[generation.DomainStream]
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	if _, err := registration.Materialize(
+		context.Background(),
+		testScope(registration, generation.DomainStream, "http-logger", key, capability.SecretPluginConfig, "token"),
+		"value",
+	); err != nil {
+		t.Fatal(err)
+	}
+	wrong := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "missing"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	if _, err := registration.Materialize(
+		context.Background(),
+		wrong,
+		"value",
+	); !errors.Is(
+		err,
+		ErrCapabilityScopeMismatch,
+	) {
+		t.Fatalf("ungranted resource error = %v, want ErrCapabilityScopeMismatch", err)
+	}
+}
+
+func TestGenerationCapabilityRejectsCrossGenerationAndAttempt(t *testing.T) {
+	service, _ := testService(t, false)
+	materializer := NewMaterializer(service, &testResolverFactory{})
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	capabilityValue, err := NewGenerationCapability(registration, 9)
+	if err != nil || !capabilityValue.Valid() {
+		t.Fatalf("NewGenerationCapability() = %#v/%v", capabilityValue, err)
+	}
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	scope.Generation++
+	if _, err := capabilityValue.Materialize(
+		context.Background(),
+		scope,
+		"value",
+	); !errors.Is(
+		err,
+		ErrCapabilityScopeMismatch,
+	) {
+		t.Fatalf("generation mismatch error = %v", err)
+	}
+	scope = testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	scope.Attempt[0]++
+	if _, err := capabilityValue.Materialize(
+		context.Background(),
+		scope,
+		"value",
+	); !errors.Is(
+		err,
+		ErrCapabilityScopeMismatch,
+	) {
+		t.Fatalf("attempt mismatch error = %v", err)
+	}
+	if err := registration.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !capabilityValue.Valid() {
+		t.Fatal("closed registration should remain structurally valid")
+	}
+	if _, err := capabilityValue.Materialize(
+		context.Background(),
+		testScope(
+			registration,
+			generation.DomainHTTP,
+			"http-logger",
+			generation.ResourceKey{Kind: "routes", ID: "r1"},
+			capability.SecretPluginConfig,
+			"token",
+		),
+		"value",
+	); !errors.Is(
+		err,
+		ErrCredentialUnavailable,
+	) {
+		t.Fatalf("closed capability error = %v", err)
+	}
+}
+
+func TestGenerationCapabilityRejectsMismatchesBeforeDelegation(t *testing.T) {
+	registration := &countingAttemptRegistration{id: AttemptID{1}}
+	capabilityValue, err := NewGenerationCapability(registration, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseScope := Scope{
+		Generation: 9,
+		Attempt:    registration.AttemptID(),
+		Domain:     generation.DomainHTTP,
+		Plugin:     "http-logger",
+		Resource:   generation.ResourceKey{Kind: "routes", ID: "r1"},
+		Source:     capability.SecretPluginConfig,
+		Field:      "token",
+	}
+	wrongGeneration := baseScope
+	wrongGeneration.Generation++
+	if _, err := capabilityValue.Materialize(
+		context.Background(),
+		wrongGeneration,
+		"value",
+	); !errors.Is(
+		err,
+		ErrCapabilityScopeMismatch,
+	) {
+		t.Fatalf("generation mismatch error = %v, want ErrCapabilityScopeMismatch", err)
+	}
+	wrongAttempt := baseScope
+	wrongAttempt.Attempt[0]++
+	if _, err := capabilityValue.Materialize(
+		context.Background(),
+		wrongAttempt,
+		"value",
+	); !errors.Is(
+		err,
+		ErrCapabilityScopeMismatch,
+	) {
+		t.Fatalf("attempt mismatch error = %v, want ErrCapabilityScopeMismatch", err)
+	}
+	if got := registration.callCount(); got != 0 {
+		t.Fatalf("delegation calls after mismatches = %d, want zero", got)
+	}
+	if _, err := capabilityValue.Materialize(context.Background(), baseScope, "value"); err != nil {
+		t.Fatal(err)
+	}
+	if got := registration.callCount(); got != 1 {
+		t.Fatalf("delegation calls after matching scope = %d, want one", got)
+	}
+}
+
+func TestCloseWaitsForMaterializationAndUsesNonCancelledContext(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	broker := &testScopedBroker{resolve: func(_ context.Context, _ Scope, raw string) (string, error) {
+		close(entered)
+		<-release
+		return raw, nil
+	}}
+	materializer := NewScopedMaterializer(broker, testCatalog(t))
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	materializeDone := make(chan struct{})
+	go func() {
+		value, materializeErr := registration.Materialize(context.Background(), scope, "$ENV://TOKEN")
+		if materializeErr != nil {
+			t.Errorf("Materialize() error = %v", materializeErr)
+		}
+		_ = value
+		close(materializeDone)
+	}()
+	select {
+	case <-entered:
+	case <-materializeDone:
+		t.Fatal("materialization returned before entering the blocking resolver")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = materializer.Materialize(cancelled, scope, raw)
-	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), raw) ||
-		strings.Contains(err.Error(), plaintext) {
-		t.Fatalf("cancelled Materialize() error = %v, want redacted context cancellation", err)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- registration.Close(canceled) }()
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before in-flight materialization completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := registration.Materialize(context.Background(), scope, "$ENV://SECOND")
+		secondDone <- err
+	}()
+	close(release)
+	<-materializeDone
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; !errors.Is(err, ErrCredentialUnavailable) {
+		t.Fatalf("second Materialize() error = %v, want ErrCredentialUnavailable", err)
+	}
+	broker.mu.Lock()
+	closeContext := broker.closeCtx
+	resolveCalls := broker.resolveCalls
+	broker.mu.Unlock()
+	if closeContext == nil || closeContext.Err() != nil {
+		t.Fatalf("revoke context = %v, want non-cancelled context", closeContext)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolver calls = %d, want only the in-flight call", resolveCalls)
+	}
+}
+
+func TestCloseFailureQuarantinesAndRedactsError(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactory{}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace the resolver cleanup behavior through a scoped broker, where the
+	// close failure is directly controllable.
+	_ = registration.Close(context.Background())
+	broker := &testScopedBroker{revokeErr: errors.New("backend included credential-value")}
+	scoped := NewScopedMaterializer(broker, testCatalog(t))
+	registration, err = scoped.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registration.Close(
+		context.Background(),
+	); !errors.Is(err, ErrCredentialUnavailable) ||
+		strings.Contains(err.Error(), "credential-value") {
+		t.Fatalf("Close() error = %v, want redacted ErrCredentialUnavailable", err)
+	}
+	if _, err := scoped.RegisterCandidate(
+		context.Background(),
+		ticket,
+		set,
+	); !errors.Is(
+		err,
+		ErrAttemptAlreadyRegistered,
+	) {
+		t.Fatalf("quarantined duplicate error = %v, want ErrAttemptAlreadyRegistered", err)
+	}
+}
+
+func TestRecoveryValidationRejectsInvalidRevisionAndEmptyMap(t *testing.T) {
+	service, _ := testService(t, false)
+	materializer := NewMaterializer(service, &testResolverFactory{})
+	if _, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{},
+		nil,
+	); !errors.Is(
+		err,
+		ErrInvalidCapability,
+	) {
+		t.Fatalf("empty recovery error = %v", err)
+	}
+	_, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	published := map[generation.Domain]generation.PublishedGeneration{
+		generation.DomainHTTP: generation.PublishedGeneration(set.Domains[generation.DomainHTTP]),
+	}
+	if _, err := materializer.RegisterRecovery(
+		context.Background(),
+		generation.RevisionSet{Desired: 9, HTTP: 8},
+		published,
+	); !errors.Is(
+		err,
+		ErrInvalidCapability,
+	) {
+		t.Fatalf("revision mismatch error = %v", err)
+	}
+}
+
+func TestValueUseAndErrorsAreRedacted(t *testing.T) {
+	if err := (Value{}).Use(nil); err == nil {
+		t.Fatal("Value.Use(nil) returned nil")
+	}
+	service, _ := testService(t, false)
+	factory := &testResolverFactoryWithResolver{
+		factory: &testResolverFactory{},
+		resolve: func(_ context.Context, _ Scope, raw string) (string, error) {
+			return "", errors.New("backend included " + raw + " credential-value")
+		},
+	}
+	materializer := NewMaterializer(service, factory)
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	scope := testScope(
+		registration,
+		generation.DomainHTTP,
+		"http-logger",
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		capability.SecretPluginConfig,
+		"token",
+	)
+	_, err = registration.Materialize(context.Background(), scope, "$secret://credential-value")
+	if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), "credential-value") {
+		t.Fatalf("Materialize() error = %v, want redacted ErrCredentialUnavailable", err)
 	}
 }

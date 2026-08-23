@@ -319,10 +319,18 @@ func TestCompilerPublicationIsAcceptedByRealJournalStage(t *testing.T) {
 	}
 }
 
-type panicMaterializer struct{}
+type panicAttemptRegistration struct{}
 
-func (panicMaterializer) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
+func (panicAttemptRegistration) AttemptID() secret.AttemptID {
+	return secret.AttemptID{1}
+}
+
+func (panicAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
 	panic("pure compiler materialized a secret")
+}
+
+func (panicAttemptRegistration) Close(context.Context) error {
+	return nil
 }
 
 func newTestCompiler(t *testing.T) *Compiler {
@@ -347,9 +355,13 @@ func testRuntimeDependencies(t *testing.T) runtime.RuntimeDependencies {
 	if residuals, err := tasks.Stop(context.Background()); err != nil || len(residuals) != 0 {
 		t.Fatalf("stop task sentinel = %v/%v", residuals, err)
 	}
+	secrets, err := secret.NewGenerationCapability(panicAttemptRegistration{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return runtime.RuntimeDependencies{
 		Config:    &config.EffectiveConfig{},
-		Secrets:   panicMaterializer{},
+		Secrets:   secrets,
 		Resources: resources,
 		Tasks:     tasks,
 	}

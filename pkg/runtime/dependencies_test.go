@@ -8,10 +8,33 @@ import (
 	"github.com/wklken/apisix-go/pkg/secret"
 )
 
+type testAttemptRegistration struct{}
+
+func (testAttemptRegistration) AttemptID() secret.AttemptID {
+	return secret.AttemptID{1}
+}
+
+func (testAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
+	panic("runtime dependency validation materialized a secret")
+}
+
+func (testAttemptRegistration) Close(context.Context) error {
+	return nil
+}
+
+func testGenerationCapability(t *testing.T) secret.GenerationCapability {
+	t.Helper()
+	capability, err := secret.NewGenerationCapability(testAttemptRegistration{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capability
+}
+
 func TestRuntimeDependenciesValidateRejectsMissingDependencies(t *testing.T) {
 	complete := RuntimeDependencies{
 		Config:    &config.EffectiveConfig{},
-		Secrets:   secret.NewScopedMaterializer(nil),
+		Secrets:   testGenerationCapability(t),
 		Resources: NewResourceRegistry(),
 		Tasks:     NewTaskRegistry(context.Background(), nil),
 	}
@@ -37,7 +60,7 @@ func TestRuntimeDependenciesValidateRejectsMissingDependencies(t *testing.T) {
 				Resources: complete.Resources,
 				Tasks:     complete.Tasks,
 			},
-			want: "runtime dependencies: secret materializer is required",
+			want: "runtime dependencies: generation secret capability is required",
 		},
 		{
 			name: "resource registry",
@@ -74,7 +97,7 @@ func TestRuntimeDependenciesValidateReportsFirstMissingDependencyInOrder(t *test
 		Config: &config.EffectiveConfig{},
 	}
 	configAndSecrets := configOnly
-	configAndSecrets.Secrets = secret.NewScopedMaterializer(nil)
+	configAndSecrets.Secrets = testGenerationCapability(t)
 	configSecretsAndResources := configAndSecrets
 	configSecretsAndResources.Resources = NewResourceRegistry()
 
@@ -90,7 +113,7 @@ func TestRuntimeDependenciesValidateReportsFirstMissingDependencyInOrder(t *test
 		{
 			name:         "config only reports secret materializer next",
 			dependencies: configOnly,
-			want:         "runtime dependencies: secret materializer is required",
+			want:         "runtime dependencies: generation secret capability is required",
 		},
 		{
 			name:         "config and secrets report resource registry next",
@@ -114,10 +137,11 @@ func TestRuntimeDependenciesValidateReportsFirstMissingDependencyInOrder(t *test
 	}
 }
 
-func TestRuntimeDependenciesValidateAcceptsCompleteDependencies(t *testing.T) {
+func TestRuntimeDependenciesValidateAcceptsEmptyMetadataView(t *testing.T) {
 	dependencies := RuntimeDependencies{
 		Config:    &config.EffectiveConfig{},
-		Secrets:   secret.NewScopedMaterializer(nil),
+		Secrets:   testGenerationCapability(t),
+		Metadata:  MetadataView{},
 		Resources: NewResourceRegistry(),
 		Tasks:     NewTaskRegistry(context.Background(), nil),
 	}

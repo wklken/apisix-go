@@ -175,6 +175,11 @@ func TestAPISIXGOAppliesKnownStringValuesWithoutAmbientReads(t *testing.T) {
 			t.Errorf("provenance[%s] = %+v, want %+v", path, got, want)
 		}
 	}
+	if got, want := flattenProvenance(root)["ext-plugin"], (FieldSource{
+		Kind: SourceAPISIXGOEnv, Origin: "APISIXGO_EXT_PLUGIN_CMD", Explicit: true,
+	}); got != want {
+		t.Errorf("provenance[ext-plugin] = %+v, want %+v", got, want)
+	}
 	if !reflect.DeepEqual(env, envBefore) {
 		t.Fatalf("environment input mutated: %#v", env)
 	}
@@ -210,6 +215,7 @@ func TestCLIAcceptsKnownLeafAndNestedValuesWithExactConversion(t *testing.T) {
 		"proxy":       map[string]any{"max_in_flight": 32},
 		"plugin_attr": map[string]any{},
 	}, FieldSource{Kind: SourceDefaultFile, Origin: "default.yaml"})
+	root.mapping["proxy"].pathBase = "/defaults"
 	nested := map[string]any{"custom": map[string]any{"limit": uint64(math.MaxUint64), "items": []string{"a"}}}
 	cli := map[string]any{
 		"proxy.max_in_flight":              int64(math.MinInt64),
@@ -225,6 +231,19 @@ func TestCLIAcceptsKnownLeafAndNestedValuesWithExactConversion(t *testing.T) {
 	}
 	if got := root.mapping["apisix_go"].mapping["runtime_paths"].mapping["data_dir"].scalar; got != "relative/data" {
 		t.Fatalf("runtime data path = %#v", got)
+	}
+	runtimeLeaf := root.mapping["apisix_go"].mapping["runtime_paths"].mapping["data_dir"]
+	for path, container := range map[string]*valueNode{
+		"apisix_go":               root.mapping["apisix_go"],
+		"apisix_go.runtime_paths": root.mapping["apisix_go"].mapping["runtime_paths"],
+	} {
+		if container.source != runtimeLeaf.source || container.pathBase != runtimeLeaf.pathBase {
+			t.Errorf("%s metadata = %+v/%q, want %+v/%q", path,
+				container.source, container.pathBase, runtimeLeaf.source, runtimeLeaf.pathBase)
+		}
+	}
+	if proxy := root.mapping["proxy"]; proxy.source.Kind != SourceDefaultFile || proxy.pathBase != "/defaults" {
+		t.Errorf("existing proxy metadata was overwritten: %+v/%q", proxy.source, proxy.pathBase)
 	}
 	if got := root.mapping["deployment"].mapping["etcd"].mapping["user"].kind; got != nodeNull {
 		t.Fatalf("nil CLI kind = %d", got)
@@ -338,6 +357,22 @@ func TestSetPathValidatesRootSegmentsCrossingsAndClonesValue(t *testing.T) {
 	value.mapping["nested"].sequence[0].scalar = "changed"
 	if got := root.mapping["plugin_attr"].mapping["nested"].sequence[0].scalar; got != "a" {
 		t.Fatalf("setPath aliased value: %#v", got)
+	}
+	intermediateValue := mustNodeFromAny("value", FieldSource{
+		Kind: SourceCLI, Origin: "new.container.leaf", Explicit: true,
+	})
+	intermediateValue.pathBase = "/cli"
+	if err := setPath(root, "new.container.leaf", intermediateValue); err != nil {
+		t.Fatal(err)
+	}
+	for path, container := range map[string]*valueNode{
+		"new":           root.mapping["new"],
+		"new.container": root.mapping["new"].mapping["container"],
+	} {
+		if container.source != intermediateValue.source || container.pathBase != intermediateValue.pathBase {
+			t.Errorf("%s metadata = %+v/%q, want %+v/%q", path,
+				container.source, container.pathBase, intermediateValue.source, intermediateValue.pathBase)
+		}
 	}
 
 	for name, test := range map[string]struct {

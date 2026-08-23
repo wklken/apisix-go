@@ -209,7 +209,10 @@ func setPath(root *valueNode, path string, value *valueNode) error {
 	for _, segment := range segments[:len(segments)-1] {
 		next := current.mapping[segment]
 		if next == nil {
-			next = &valueNode{kind: nodeMapping, mapping: make(map[string]*valueNode)}
+			next = &valueNode{
+				kind: nodeMapping, mapping: make(map[string]*valueNode),
+				source: value.source, pathBase: value.pathBase,
+			}
 			current.mapping[segment] = next
 		}
 		if next.kind != nodeMapping {

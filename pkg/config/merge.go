@@ -65,7 +65,11 @@ func appendProvenanceKey(parent, key string) string {
 		}
 		return parent + "." + key
 	}
-	return parent + "[" + strconv.Quote(key) + "]"
+	encoded, err := json.Marshal(key)
+	if err != nil {
+		panic("encode provenance mapping key")
+	}
+	return parent + "[" + string(encoded) + "]"
 }
 
 func nodeFromAny(value any, source FieldSource) (*valueNode, error) {

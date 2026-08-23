@@ -187,6 +187,7 @@ func TestFlattenProvenanceRecordsEveryNodeWithCanonicalPaths(t *testing.T) {
 		"items[0]":    {kind: nodeScalar, scalar: "literal-index", source: source},
 		"quote\"":     {kind: nodeScalar, scalar: "quote", source: source},
 		"back\\slash": {kind: nodeScalar, scalar: "backslash", source: source},
+		"control\x01": {kind: nodeScalar, scalar: "control", source: source},
 		"":            {kind: nodeScalar, scalar: "empty", source: source},
 	}}
 
@@ -194,7 +195,7 @@ func TestFlattenProvenanceRecordsEveryNodeWithCanonicalPaths(t *testing.T) {
 	wantPaths := []string{
 		"safe-key", "empty_map", "empty_list", "items", "items[0]", "items[1]", "items[1].child",
 		"items[2]", "items[2][0]", `["tenant.a"]`, "nested", `nested["0"]`, `["items[0]"]`,
-		`["quote\""]`, `["back\\slash"]`, `[""]`, "tenant", "tenant.a",
+		`["quote\""]`, `["back\\slash"]`, `["control\u0001"]`, `[""]`, "tenant", "tenant.a",
 	}
 	if len(got) != len(wantPaths) {
 		t.Fatalf("provenance paths = %#v, want %d entries", got, len(wantPaths))
@@ -210,6 +211,14 @@ func TestFlattenProvenanceRecordsEveryNodeWithCanonicalPaths(t *testing.T) {
 	if got[`["items[0]"]`] != source || got["items[0]"] != source ||
 		got[`["tenant.a"]`] != source || got["tenant.a"] != source {
 		t.Fatalf("unsafe literal paths collided: %#v", got)
+	}
+	const controlPath = `["control\u0001"]`
+	var decodedControlKey string
+	if err := json.Unmarshal([]byte(controlPath[1:len(controlPath)-1]), &decodedControlKey); err != nil {
+		t.Fatalf("canonical control key is not JSON: %v", err)
+	}
+	if decodedControlKey != "control\x01" {
+		t.Fatalf("decoded control key = %q", decodedControlKey)
 	}
 }
 

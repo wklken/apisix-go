@@ -773,19 +773,21 @@ func parseMutationKey(key []byte) (string, string, error) {
 			return "", "", fmt.Errorf("invalid resource key %q", key)
 		}
 	}
+	var bucket, id string
 	if len(parts) == 2 && string(parts[0]) == "apisix" && string(parts[1]) == "plugins" {
-		return "plugins", "plugins", nil
-	}
-	bucket := string(parts[len(parts)-2])
-	id := string(parts[len(parts)-1])
-	if bucket == "plugins" {
-		return "", "", fmt.Errorf("unsupported dynamic plugin key %q", key)
-	}
-	if len(parts) >= 3 && string(parts[len(parts)-3]) == "secrets" {
-		bucket = "secrets"
-		id = string(parts[len(parts)-2]) + "/" + id
-	} else if bucket == "secrets" {
-		return "", "", fmt.Errorf("invalid secret resource key %q", key)
+		bucket, id = "plugins", "plugins"
+	} else {
+		bucket = string(parts[len(parts)-2])
+		id = string(parts[len(parts)-1])
+		if bucket == "plugins" {
+			return "", "", fmt.Errorf("unsupported dynamic plugin key %q", key)
+		}
+		if len(parts) >= 3 && string(parts[len(parts)-3]) == "secrets" {
+			bucket = "secrets"
+			id = string(parts[len(parts)-2]) + "/" + id
+		} else if bucket == "secrets" {
+			return "", "", fmt.Errorf("invalid secret resource key %q", key)
+		}
 	}
 	if !generation.IsManagedResourceKind(bucket) {
 		return "", "", fmt.Errorf("unsupported resource bucket %q", bucket)

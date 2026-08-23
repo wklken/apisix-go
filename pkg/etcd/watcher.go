@@ -268,19 +268,24 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 	if slices.Contains(parts, "") {
 		return "", "", false
 	}
-	if len(parts) == 1 && parts[0] == "plugins" {
-		return "plugins", "plugins", true
-	}
-	if len(parts) == 2 {
-		if !generation.IsManagedResourceKind(parts[0]) || parts[0] == "secrets" {
+	var bucket, id string
+	switch {
+	case len(parts) == 1 && parts[0] == "plugins":
+		bucket, id = "plugins", "plugins"
+	case len(parts) == 2:
+		bucket, id = parts[0], parts[1]
+		if bucket == "secrets" {
 			return "", "", false
 		}
-		return parts[0], parts[1], true
+	case len(parts) == 3 && parts[0] == "secrets":
+		bucket, id = "secrets", parts[1]+"/"+parts[2]
+	default:
+		return "", "", false
 	}
-	if len(parts) == 3 && parts[0] == "secrets" {
-		return "secrets", parts[1] + "/" + parts[2], true
+	if !generation.IsManagedResourceKind(bucket) {
+		return "", "", false
 	}
-	return "", "", false
+	return bucket, id, true
 }
 
 func etcdProviderID(clusterID uint64, prefix string) string {

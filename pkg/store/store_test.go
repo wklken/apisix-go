@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
@@ -723,6 +725,47 @@ func TestGetTypeAndIDFromKeyPreservesPrefixWithoutLeadingSlash(t *testing.T) {
 	if got, want := string(id), "route-1"; got != want {
 		t.Fatalf("id = %q, want %q", got, want)
 	}
+}
+
+func TestParseMutationKeySuccessfulShapesUseCanonicalMembership(t *testing.T) {
+	for _, key := range []string{
+		"/apisix/routes/route-1",
+		"/apisix/plugins",
+		"/apisix/secrets/vault/item",
+	} {
+		bucket, _, err := parseMutationKey([]byte(key))
+		if err != nil {
+			t.Fatalf("parseMutationKey(%q) error = %v", key, err)
+		}
+		if !generation.IsManagedResourceKind(bucket) {
+			t.Errorf("parseMutationKey(%q) returned noncanonical bucket %q", key, bucket)
+		}
+	}
+
+	body := storeSourceFunction(t, "store.go", "func parseMutationKey")
+	predicate := strings.Index(body, "generation.IsManagedResourceKind(bucket)")
+	success := strings.Index(body, "return bucket, id, nil")
+	if predicate < 0 || success < 0 || predicate > success || strings.Count(body, ", nil") != 1 {
+		t.Fatalf("parseMutationKey must have one successful exit after the canonical predicate:\n%s", body)
+	}
+}
+
+func storeSourceFunction(t *testing.T, filename, declaration string) string {
+	t.Helper()
+	source, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("read %s: %v", filename, err)
+	}
+	start := strings.Index(string(source), declaration)
+	if start < 0 {
+		t.Fatalf("declaration %q not found in %s", declaration, filename)
+	}
+	body := string(source[start:])
+	end := strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatalf("end of declaration %q not found in %s", declaration, filename)
+	}
+	return body[:end+2]
 }
 
 func TestProcessEventRejectsMalformedKeysWithoutPanic(t *testing.T) {

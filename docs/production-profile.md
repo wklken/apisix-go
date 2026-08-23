@@ -42,9 +42,12 @@ still fail closed in every selection.
 Strict security is independent of qualification. An empty qualification
 profile makes no qualification claim. Selection of `http-data-plane-v1` fails
 closed when any required manifest evidence is blocked. The capability manifest
-owns the required set; the qualified set contains only entries in the APISIX
-namespace with full behavior, the selected domain, and every required evidence
-claim verified or concretely not applicable. A required-set/qualified-set
+owns the ordered `required_plugins` sequence. The effective HTTP plugin
+sequence must exactly equal the manifest `required_plugins` sequence, including
+order. Qualification derives from that ordered sequence and its required
+evidence. The qualified sequence retains, in manifest order, only entries in
+the APISIX namespace with full behavior, the selected domain, and every
+required evidence claim verified or concretely not applicable. Any sequence
 mismatch fails closed.
 
 ## Exact profile requirements
@@ -69,10 +72,10 @@ of the following:
   `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
   Go applies it together with the header timeout as `net/http`'s combined
   `ReadTimeout`, because `net/http` has no body-only server deadline.
-- The effective HTTP plugin list matches the required set owned by
-  `pkg/capability/manifest.yaml`. This document does not maintain a second
-  plugin inventory; current membership, qualification result, and blockers are
-  in the [generated plugin capability status](plugins.md).
+- The effective HTTP plugin sequence exactly equals the manifest
+  `required_plugins` sequence, including order. This document does not maintain
+  a second plugin inventory; current membership, qualification result, and
+  blockers are in the [generated plugin capability status](plugins.md).
 
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
@@ -94,10 +97,11 @@ of the following:
   `metric_prefix: apisix_`, this is
   `apisix_http_metric_series_overflow_total{metric}`. These series are not
   reset during route reload.
-- Kafka PubSub and upstreams with `scheme: kafka` are outside the HTTP
-  qualification contract and carry no `http-data-plane-v1` evidence claim.
-  The APISIX 3.17 compatibility owner remains available regardless of the
-  independently selected security or qualification axis.
+- Kafka PubSub and upstreams with `scheme: kafka` carry no
+  `http-data-plane-v1` evidence claim. Qualification selection does not disable
+  the Kafka compatibility owner. `security_profile: strict` permits plaintext
+  Kafka. When Kafka TLS is configured, `security_profile: strict` requires
+  `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
 the etcd endpoint empty so an operator must supply a real endpoint through an
@@ -159,10 +163,13 @@ Explicit activation of these unsupported features fails startup:
 Route and upstream discovery fields are retained by the resource decoder for
 compatibility, but HTTP and stream compilation rejects discovery types or
 service references that require an unsupported discovery runtime. The
-qualification contract also excludes general stream-plugin chaining, stream
-metrics, Lua/OpenResty runtime behavior, Kafka PubSub/upstream `scheme: kafka`,
-external plugin runners, and process access-log claims. Exclusion from
-qualification does not disable the Kafka compatibility owner.
+qualification contract excludes general stream-plugin chaining, stream
+metrics, Lua/OpenResty runtime behavior, external plugin runners, and process
+access-log claims. It carries no Kafka PubSub or upstream `scheme: kafka`
+evidence claim, but qualification selection does not disable the Kafka
+compatibility owner. Plaintext Kafka remains permitted under strict security;
+strict requires verified TLS only when Kafka TLS is configured, while compat
+permits unverified Kafka TLS.
 
 The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
@@ -260,5 +267,5 @@ The current selection result and every blocking evidence claim are derived from
 the manifest and published in the
 [generated plugin capability status](plugins.md). Do not copy its numeric
 summary or per-plugin evidence rows here; selection fails closed until that
-generated projection shows that the manifest-owned required set equals the
-qualified set.
+generated projection shows that the effective plugin sequence and qualified
+sequence both exactly equal the manifest `required_plugins` sequence in order.

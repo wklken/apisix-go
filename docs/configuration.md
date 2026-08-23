@@ -50,17 +50,21 @@ TCP/UDP stream listeners and `stream_plugins`, at least one valid
 no process access-log settings. The checked-in production override uses a
 60-second `client_body_timeout`.
 Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
-be explicitly `true` under strict security. The qualification profile's
-required plugin set comes from `pkg/capability/manifest.yaml`, not this prose;
-the effective HTTP plugin list must match that set. Under strict security,
+be explicitly `true` under strict security. The effective HTTP plugin sequence
+must exactly equal the manifest `required_plugins` sequence, including order.
+Qualification derives from that ordered sequence and its required evidence.
+Under strict security,
 enabled effective `key-auth`, `basic-auth`, and `jwt-auth` configurations must
 set `hide_credentials: true`; `jwt-auth` must also include literal `exp` in
 `claims_to_verify`. Effective HTTPS and gRPCS upstreams must set
 `tls.verify: true` after inline, ID, or service resolution. Disabled auth
 configurations remain inert. `security_profile: compat` retains the
-APISIX-compatible defaults for these dynamic fields. Kafka PubSub and upstreams
-with `scheme: kafka` remain APISIX compatibility owners but are outside the
-HTTP qualification contract, independent of security selection.
+APISIX-compatible defaults for these dynamic fields. Qualification selection
+does not disable the Kafka compatibility owner. `security_profile: strict`
+permits plaintext Kafka. When Kafka TLS is configured,
+`security_profile: strict` requires `tls.verify: true`;
+`security_profile: compat` permits `tls.verify: false`. Kafka remains outside
+the HTTP qualification evidence claim.
 
 NGINX HTTP and stream process access-log settings are unsupported in every
 profile, not only in `http-data-plane-v1`: any explicitly non-zero boolean or
@@ -68,7 +72,7 @@ numeric value, or non-empty string value, fails configuration load. Route/plugin
 loggers are the supported compatibility/general-plugin request-logging
 mechanism, whose output is owned by the Go request pipeline. Qualification
 selection makes no request-logging egress claim; consult the generated status
-for the current required plugin set.
+for the current `required_plugins` sequence.
 
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
@@ -104,8 +108,9 @@ the manifest/ADR/generated-document contract without writing files:
 go run ./cmd/capability-gen -repo-root . -check
 ```
 
-Selection derives the required set and evidence result from the manifest and
-fails closed on any mismatch or blocked requirement.
+Selection derives the ordered `required_plugins` sequence and evidence result
+from the manifest and fails closed on any sequence mismatch or blocked
+requirement.
 
 ## Applied by the Go runtime
 
@@ -114,7 +119,7 @@ fails closed on any mismatch or blocked requirement.
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
 | `compatibility_target` | Selects the pinned observable compatibility contract. The current accepted value is `apisix-3.17`; other values fail startup. |
 | `security_profile` | Selects `compat` or `strict` security behavior independently from compatibility and qualification. |
-| `qualification_profile` | Empty makes no qualification claim. `http-data-plane-v1` is selectable only when its manifest-owned required set has complete required evidence; otherwise startup fails closed. |
+| `qualification_profile` | Empty makes no qualification claim. `http-data-plane-v1` is selectable only when its manifest `required_plugins` sequence exactly matches the effective plugins, including order, and every entry has complete required evidence; otherwise startup fails closed. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
 | `plugins`, `stream_plugins`, and `plugin_attr` | Control plugin registration, stream plugin selection, and plugin-specific settings. The Prometheus lifetime and cardinality contract is documented below. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
@@ -305,10 +310,11 @@ do not include request/response start lines and headers as NGINX's
   compilation. This is independent of SSL `status`, which already skips
   `status == 0`.
 - HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
-- `qualification_profile: http-data-plane-v1` excludes `scheme: kafka`
-  upstreams because Kafka PubSub is a separate compatibility subsystem. The
-  Kafka owner remains available under the selected compatibility target,
-  independent of the security and qualification axes.
+- `qualification_profile: http-data-plane-v1` makes no Kafka evidence claim,
+  but does not disable upstreams with `scheme: kafka` or the Kafka PubSub
+  compatibility owner. Security is orthogonal: strict permits plaintext Kafka
+  and requires `tls.verify: true` only when Kafka TLS is configured; compat
+  permits `tls.verify: false`.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.

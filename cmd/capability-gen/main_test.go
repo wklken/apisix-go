@@ -371,6 +371,11 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 			"Strict security is independent of qualification.",
 			"An empty qualification profile makes no qualification claim.",
 			"fails closed when any required manifest evidence is blocked",
+			"Qualification selection does not disable the Kafka compatibility owner.",
+			"`security_profile: strict` permits plaintext Kafka.",
+			"When Kafka TLS is configured, `security_profile: strict` requires `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.",
+			"The effective HTTP plugin sequence must exactly equal the manifest `required_plugins` sequence, including order.",
+			"Qualification derives from that ordered sequence and its required evidence.",
 		)
 		reject(
 			path,
@@ -381,6 +386,10 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 			"exact six-plugin",
 			"six-plugin allowlist",
 			"| `basic-auth` | `converted_upstream=stale`",
+			"effective HTTP plugin list must match that set",
+			"effective HTTP plugin list matches the required set",
+			"manifest-owned required set",
+			"required-set/qualified-set",
 		)
 	}
 

@@ -66,11 +66,22 @@ var (
 	_ base.RequestPhasePlugin = (*scopedRewriteTestPlugin)(nil)
 )
 
+func bindScopedTestPlugin(
+	factory string,
+	p plugin.Plugin,
+	scope plugin.Scope,
+	provenance plugin.ResourceProvenance,
+) plugin.Binding {
+	binding := plugin.BindPlugin(factory, p, scope, provenance)
+	binding.Priority = p.GetPriority()
+	return binding
+}
+
 func TestScopedRewriteRunsSystemThenGlobalThenRoute(t *testing.T) {
 	order := []string{}
 	executor := assembleRouteExecutor(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "route", priority: 10000, order: &order},
 				plugin.ScopeRoute,
@@ -78,7 +89,7 @@ func TestScopedRewriteRunsSystemThenGlobalThenRoute(t *testing.T) {
 			),
 		},
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "global", priority: 1, order: &order},
 				plugin.ScopeGlobal,
@@ -86,7 +97,7 @@ func TestScopedRewriteRunsSystemThenGlobalThenRoute(t *testing.T) {
 			),
 		},
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-context",
 				&scopedRewriteTestPlugin{name: "system", priority: 1, order: &order},
 				plugin.ScopeSystem,
@@ -109,13 +120,13 @@ func TestScopedRewriteUsesPriorityOnlyWithinScope(t *testing.T) {
 	order := []string{}
 	executor := assembleRouteExecutor(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "route-low", priority: 1, order: &order},
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-low"},
 			),
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "route-high", priority: 100, order: &order},
 				plugin.ScopeRoute,
@@ -123,7 +134,7 @@ func TestScopedRewriteUsesPriorityOnlyWithinScope(t *testing.T) {
 			),
 		},
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "global-low", priority: -100, order: &order},
 				plugin.ScopeGlobal,
@@ -264,7 +275,7 @@ func TestScopedRewriteFilterAndErrorResponse(t *testing.T) {
 	}
 	executor := assembleRouteExecutor(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				wrapped,
 				plugin.ScopeRoute,
@@ -301,13 +312,13 @@ func TestScopedRewriteEarlyStopSkipsLegacyAndUpstream(t *testing.T) {
 	order := []string{}
 	executor := assembleRouteExecutor(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "stop", priority: 1, order: &order, stop: true},
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-stop"},
 			),
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"response-rewrite",
 				&recordingPlugin{name: "legacy", priority: 200, order: &order},
 				plugin.ScopeRoute,
@@ -335,7 +346,7 @@ func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 	handler := assembleRouteExecutor(
 		nil,
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				&scopedRewriteTestPlugin{name: "global", priority: 1, order: &order},
 				plugin.ScopeGlobal,
@@ -343,7 +354,7 @@ func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 			),
 		},
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-context",
 				&scopedRewriteTestPlugin{name: "system", priority: 1, order: &order},
 				plugin.ScopeSystem,

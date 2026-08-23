@@ -73,8 +73,14 @@ func TestStreamingExecutorRunsWrapperAndPreservesSource(t *testing.T) {
 	p := &plan16StreamingPlugin{}
 	p.Name = "streaming-test"
 	binding := Binding{
-		Plugin: p, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "route"}, factoryName: "proxy-buffering",
+		Plugin: p,
+		Scope:  ScopeRoute,
+
+		Provenance: ResourceProvenance{
+			Kind: ResourceRoute,
+			ID:   "route",
+		},
+		Descriptor: Descriptor{Factory: "proxy-buffering"},
 	}
 	executor, err := NewStreamingResponseExecutor([]Binding{binding})
 	if err != nil {
@@ -102,8 +108,14 @@ func TestStreamingExecutorFinishesWrapperExactlyOnceOnNormalCompletion(t *testin
 	p := &plan16StreamingPlugin{closes: &closes, finishes: &finishes}
 	p.Name = "streaming-finish"
 	binding := Binding{
-		Plugin: p, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "finish-route"}, factoryName: "proxy-buffering",
+		Plugin: p,
+		Scope:  ScopeRoute,
+
+		Provenance: ResourceProvenance{
+			Kind: ResourceRoute,
+			ID:   "finish-route",
+		},
+		Descriptor: Descriptor{Factory: "proxy-buffering"},
 	}
 	executor, err := NewStreamingResponseExecutor([]Binding{binding})
 	if err != nil {
@@ -193,12 +205,12 @@ func TestStreamingExecutorRegistersCompressionAndWrapsOnlyFrozenWinner(t *testin
 	gzipPlugin.Name, brPlugin.Name = "gzip", "brotli"
 	executor, err := NewStreamingResponseExecutor([]Binding{
 		{
-			Plugin: gzipPlugin, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip"}, factoryName: "gzip",
+			Plugin: gzipPlugin, Scope: ScopeRoute,
+			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip"}, Descriptor: Descriptor{Factory: "gzip"},
 		},
 		{
-			Plugin: brPlugin, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "br"}, factoryName: "brotli",
+			Plugin: brPlugin, Scope: ScopeRoute,
+			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "br"}, Descriptor: Descriptor{Factory: "brotli"},
 		},
 	})
 	if err != nil {
@@ -235,8 +247,8 @@ func TestStreamingExecutorDefersCompressionDecisionUntilFinalStatus(t *testing.T
 	}
 	plugin.Name = "gzip"
 	executor, err := NewStreamingResponseExecutor([]Binding{{
-		Plugin: plugin, Scope: ScopeRoute, Stage: RequestStageLegacy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip-204"}, factoryName: "gzip",
+		Plugin: plugin, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip-204"}, Descriptor: Descriptor{Factory: "gzip"},
 	}})
 	if err != nil {
 		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
@@ -256,8 +268,8 @@ func TestStreamingExecutorRejectsUnacceptableEncodingWithBodyless406(t *testing.
 	plugin := &plan16CompressionPlugin{coding: compression.Gzip, rank: 1}
 	plugin.Name = "gzip"
 	executor, err := NewStreamingResponseExecutor([]Binding{{
-		Plugin: plugin, Scope: ScopeRoute, Stage: RequestStageLegacy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip-406"}, factoryName: "gzip",
+		Plugin: plugin, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "gzip-406"}, Descriptor: Descriptor{Factory: "gzip"},
 	}})
 	if err != nil {
 		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
@@ -345,10 +357,18 @@ func TestBuildResponsePlanSeparatesStreamingAndConditionalOwnership(t *testing.T
 	stream := &plan16StreamingPlugin{}
 	stream.Name = "stream"
 	stream.SetPriority(10)
-	plan, err := BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{{
-		Plugin: stream, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "stream-route"}, factoryName: "streaming-test",
-	}}})
+	plan, err := BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{
+		{
+			Plugin: stream,
+			Scope:  ScopeRoute,
+
+			Provenance: ResourceProvenance{
+				Kind: ResourceRoute,
+				ID:   "stream-route",
+			},
+			Descriptor: Descriptor{Factory: "proxy-buffering"},
+		},
+	}})
 	if err != nil {
 		t.Fatalf("BuildResponsePlan() error = %v", err)
 	}
@@ -434,8 +454,14 @@ func TestStreamingExecutorRejectsDynamicConsumerResponseOwner(t *testing.T) {
 	plugin := &plan16StreamingPlugin{}
 	plugin.Name = "consumer-streaming"
 	binding := Binding{
-		Plugin: plugin, Scope: ScopeConsumer, Stage: RequestStageAccess,
-		Provenance: ResourceProvenance{Kind: ResourceConsumer, ID: "consumer-1"}, factoryName: "proxy-buffering",
+		Plugin: plugin,
+		Scope:  ScopeConsumer,
+
+		Provenance: ResourceProvenance{
+			Kind: ResourceConsumer,
+			ID:   "consumer-1",
+		},
+		Descriptor: Descriptor{Factory: "proxy-buffering"},
 	}
 	_, err = executor.PostResolutionHook(
 		httptest.NewRequest(http.MethodGet, "/", nil),
@@ -650,10 +676,18 @@ func TestBuildResponsePlanAcceptsRouteOwnedTerminalCandidate(t *testing.T) {
 	terminal := &plan16ProtocolPlugin{disposition: base.ProtocolResponded}
 	terminal.Name = "dubbo-owner"
 	plan, err := BuildResponsePlan(ResponsePlanInput{
-		StaticBindings: []Binding{{
-			Plugin: prep, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "dubbo-route"}, factoryName: "dubbo-proxy",
-		}},
+		StaticBindings: []Binding{
+			{
+				Plugin: prep,
+				Scope:  ScopeRoute,
+
+				Provenance: ResourceProvenance{
+					Kind: ResourceRoute,
+					ID:   "dubbo-route",
+				},
+				Descriptor: Descriptor{Factory: "dubbo-proxy"},
+			},
+		},
 		RouteTerminals: []RouteTerminalCandidate{{
 			Identity: "dubbo-proxy", Scope: ScopeRoute, Priority: 1,
 			Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "dubbo-route"},
@@ -695,8 +729,14 @@ func TestStreamingExecutorExclusiveProtocolRespondsExactlyOnce(t *testing.T) {
 	owner := &plan16ProtocolPlugin{disposition: base.ProtocolResponded}
 	owner.Name = "owner"
 	binding := Binding{
-		Plugin: owner, Scope: ScopeRoute, Stage: RequestStageBeforeProxy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "protocol-route"}, factoryName: "protocol-test",
+		Plugin: owner,
+		Scope:  ScopeRoute,
+
+		Provenance: ResourceProvenance{
+			Kind: ResourceRoute,
+			ID:   "protocol-route",
+		},
+		Descriptor: Descriptor{Factory: "ai-proxy"},
 	}
 	executor, err := NewStreamingResponseExecutor([]Binding{binding})
 	if err != nil {

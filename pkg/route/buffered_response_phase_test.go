@@ -13,6 +13,18 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
+func newTestMetadataPlugin(
+	factoryName string,
+	p plugin.Plugin,
+	metadata pluginMetadata,
+) (plugin.Plugin, error) {
+	descriptor, err := plugin.ResolveDescriptorForFactory(factoryName, p)
+	if err != nil {
+		return nil, err
+	}
+	return newMetadataPluginWithDescriptor(factoryName, p, metadata, descriptor)
+}
+
 type metadataResponseContractPlugin struct {
 	name        string
 	descriptor  base.BindingPhaseDescriptor
@@ -121,9 +133,9 @@ func TestMetadataWrappersForwardOnlyRegistryDeclaredRequestAndResponseInterfaces
 		name:       "echo",
 		descriptor: base.BindingPhaseDescriptor{RequestStage: "none", Header: true},
 	}
-	wrapped, err := newMetadataPlugin("echo", echo, pluginMetadata{})
+	wrapped, err := newTestMetadataPlugin("echo", echo, pluginMetadata{})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin() error = %v", err)
+		t.Fatalf("newTestMetadataPlugin() error = %v", err)
 	}
 	if wrapped != echo {
 		t.Fatalf("metadata without options returned %T, want original plugin", wrapped)
@@ -132,9 +144,9 @@ func TestMetadataWrappersForwardOnlyRegistryDeclaredRequestAndResponseInterfaces
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapped, err = newMetadataPlugin("echo", echo, pluginMetadata{filter: filter})
+	wrapped, err = newTestMetadataPlugin("echo", echo, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin() error = %v", err)
+		t.Fatalf("newTestMetadataPlugin() error = %v", err)
 	}
 	if _, ok := wrapped.(base.HeaderFilterPlugin); !ok {
 		t.Fatalf("wrapped echo does not expose declared header callback: %T", wrapped)
@@ -162,9 +174,9 @@ func TestMetadataWrappersForwardOnlyRegistryDeclaredRequestAndResponseInterfaces
 	}
 
 	cache := &metadataResponseContractPlugin{name: "proxy-cache"}
-	cacheWrapped, err := newMetadataPlugin("proxy-cache", cache, pluginMetadata{filter: filter})
+	cacheWrapped, err := newTestMetadataPlugin("proxy-cache", cache, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(proxy-cache) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(proxy-cache) error = %v", err)
 	}
 	if _, ok := cacheWrapped.(base.RequestPhasePlugin); !ok {
 		t.Fatalf("wrapped proxy-cache does not expose declared request callback: %T", cacheWrapped)
@@ -182,9 +194,9 @@ func TestMetadataWrappersPreservePlan16StreamingAndProtocolCallbacks(t *testing.
 	streaming := &metadataStreamingContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "gzip",
 	}}
-	wrapped, err := newMetadataPlugin("gzip", streaming, pluginMetadata{filter: filter})
+	wrapped, err := newTestMetadataPlugin("gzip", streaming, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(gzip) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(gzip) error = %v", err)
 	}
 	header, headerOK := wrapped.(base.StreamingHeaderFilterPlugin)
 	body, bodyOK := wrapped.(base.StreamingBodyFilterPlugin)
@@ -212,9 +224,9 @@ func TestMetadataWrappersPreservePlan16StreamingAndProtocolCallbacks(t *testing.
 	protocol := &metadataStreamingContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "ai-proxy",
 	}}
-	wrapped, err = newMetadataPlugin("ai-proxy", protocol, pluginMetadata{filter: filter})
+	wrapped, err = newTestMetadataPlugin("ai-proxy", protocol, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(ai-proxy) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(ai-proxy) error = %v", err)
 	}
 	terminal, ok := wrapped.(base.ExclusiveProtocolTerminal)
 	if !ok {
@@ -241,12 +253,12 @@ func TestMetadataResponseFilterPriorityAndErrorResponseRemainExact(t *testing.T)
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapped, err := newMetadataPlugin("body-transformer", bodyPlugin, pluginMetadata{
+	wrapped, err := newTestMetadataPlugin("body-transformer", bodyPlugin, pluginMetadata{
 		filter:        filter,
 		errorResponse: map[string]any{"message": "denied"},
 	})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(body-transformer) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(body-transformer) error = %v", err)
 	}
 	if wrapped.GetPriority() != 321 {
 		t.Fatalf("priority = %d, want 321", wrapped.GetPriority())
@@ -283,7 +295,7 @@ func TestStrictRouteMaterializationUsesBindPluginCheckedForStaticAndConsumer(t *
 	if err != nil {
 		t.Fatalf("static binding initialization error = %v", err)
 	}
-	if len(bindings) != 1 || bindings[0].Stage != plugin.RequestStageRewrite {
+	if len(bindings) != 1 || bindings[0].Descriptor.RequestStage() != plugin.RequestStageRewrite {
 		t.Fatalf("static binding = %#v, want one rewrite-stage checked binding", bindings)
 	}
 	consumerSources := consumerPluginSources(
@@ -300,7 +312,7 @@ func TestStrictRouteMaterializationUsesBindPluginCheckedForStaticAndConsumer(t *
 	if err != nil {
 		t.Fatalf("consumer binding initialization error = %v", err)
 	}
-	if len(consumerBindings) != 1 || consumerBindings[0].Stage != plugin.RequestStageRewrite {
+	if len(consumerBindings) != 1 || consumerBindings[0].Descriptor.RequestStage() != plugin.RequestStageRewrite {
 		t.Fatalf("consumer binding = %#v, want one rewrite-stage checked binding", consumerBindings)
 	}
 }

@@ -638,7 +638,9 @@ func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
 	if setter, ok := p.(interface{ SetPriority(int) }); ok {
 		setter.SetPriority(priority)
 	}
-	return BindPlugin(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+	binding := BindPlugin(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
+	binding.Priority = priority
+	return binding
 }
 
 func TestRequestPipelineRunsPlan14V2Order(t *testing.T) {
@@ -1231,7 +1233,7 @@ func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T)
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { order = append(order, "terminal") }),
 		func(r *http.Request, effective EffectiveBindingSet) (*http.Request, error) {
 			order = append(order, "hook")
-			if len(effective.merged) != 4 || effective.merged[1].factoryName != "proxy-rewrite" ||
+			if len(effective.merged) != 4 || effective.merged[1].Descriptor.Factory != "proxy-rewrite" ||
 				effective.merged[1].Plugin != consumerRewrite {
 				t.Fatalf("effective winners = %#v", effective.merged)
 			}
@@ -1289,10 +1291,16 @@ func TestEffectiveBindingSetClonePreservesPrivateFactoryStageScopeProvenance(t *
 	merged := pipelineBinding("body-transformer", newExecutorRequestPlugin("merged", 1, nil), ScopeRoute, 1)
 	set := EffectiveBindingSet{global: []Binding{global}, merged: []Binding{merged}}
 	clone := cloneEffectiveBindingSet(set)
-	set.global[0].factoryName = "mutated"
+	set.global[0].Descriptor.Factory = "mutated"
+	set.global[0].Descriptor.Phases[0] = PhaseLog
+	set.global[0].Descriptor.Scopes[0] = ScopeConsumer
 	set.merged[0].Provenance.ID = "mutated"
-	if clone.global[0].factoryName != "proxy-cache" || clone.global[0].Stage != global.Stage ||
-		clone.global[0].Scope != ScopeGlobal || clone.merged[0].Provenance.ID == "mutated" {
+	if clone.global[0].Descriptor.Factory != "proxy-cache" ||
+		clone.global[0].Descriptor.Phases[0] == PhaseLog ||
+		clone.global[0].Descriptor.Scopes[0] == ScopeConsumer ||
+		clone.global[0].Descriptor.RequestStage() != global.Descriptor.RequestStage() ||
+		clone.global[0].Scope != ScopeGlobal ||
+		clone.merged[0].Provenance.ID == "mutated" {
 		t.Fatalf("clone = %#v", clone)
 	}
 }

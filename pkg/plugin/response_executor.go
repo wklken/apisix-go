@@ -167,13 +167,10 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 	selected := base.RequestResponseMode(0)
 	dualCount := 0
 	for _, binding := range s.plan {
-		capability, err := responseCapabilityForBinding(Binding{
-			Plugin: binding.Plugin, Scope: binding.Scope, Provenance: binding.Provenance,
-			factoryName: binding.factoryKey,
-		})
-		if err != nil {
-			return err
+		if !binding.Descriptor.resolved {
+			return fmt.Errorf("factory %q has no resolved descriptor", binding.factoryKey)
 		}
+		capability := binding.Descriptor.responseCapability
 		if !isDualModeResponseBinding(Binding{Plugin: binding.Plugin}, capability) {
 			continue
 		}
@@ -772,19 +769,19 @@ func validateBoundedConflicts(
 				plan[0].factoryKey,
 				plan[0].Provenance.Kind,
 				plan[0].Provenance.ID,
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
 		}
-		if (binding.factoryName == "serverless-pre-function" || binding.factoryName == "serverless-post-function") &&
-			binding.Stage == RequestStageLegacy {
+		if (binding.Descriptor.Factory == "serverless-pre-function" || binding.Descriptor.Factory == "serverless-post-function") &&
+			binding.Descriptor.requestStage == RequestStageLegacy {
 			return fmt.Errorf(
 				"bounded response identity=%q resource=%s/%s conflicts with %q log phase resource=%s/%s",
 				plan[0].factoryKey,
 				plan[0].Provenance.Kind,
 				plan[0].Provenance.ID,
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)

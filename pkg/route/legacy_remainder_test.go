@@ -35,13 +35,13 @@ func TestLegacyRemainderPreservesEnterAndUnwindAroundScopedRewrite(t *testing.T)
 	legacy := &legacyRemainderTestPlugin{name: "legacy", order: &order}
 	handler := assembleRouteExecutor(
 		[]plugin.Binding{
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"request-id",
 				rewrite,
 				plugin.ScopeRoute,
 				plugin.ResourceProvenance{Kind: plugin.ResourceRoute, ID: "route-rewrite"},
 			),
-			plugin.BindPlugin(
+			bindScopedTestPlugin(
 				"response-rewrite",
 				legacy,
 				plugin.ScopeRoute,

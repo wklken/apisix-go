@@ -1950,10 +1950,6 @@ func (b *Builder) validatePluginConfigSource(
 	return nil
 }
 
-type pluginPrioritySetter interface {
-	SetPriority(priority int)
-}
-
 type metadataPlugin struct {
 	plugin.Plugin
 	filter        *pluginexpr.Expression
@@ -2386,72 +2382,38 @@ const (
 	metadataResponseStore
 )
 
-func metadataResponseMask(factoryName string, p plugin.Plugin) (int, error) {
-	if p == nil {
-		return 0, fmt.Errorf("factory %q has nil plugin", factoryName)
-	}
+func metadataResponseMask(factoryName string, descriptor plugin.Descriptor) int {
 	switch factoryName {
 	case "body-transformer":
-		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
-		if err != nil {
-			return 0, err
-		}
-		if descriptor.BufferedBody {
-			return metadataResponseBody, nil
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
+			return metadataResponseBody
 		}
 	case "echo":
-		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
-		if err != nil {
-			return 0, err
-		}
 		mask := 0
-		if descriptor.Header {
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerHeaderFilter) {
 			mask |= metadataResponseHeader
 		}
-		if descriptor.BufferedBody {
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
 			mask |= metadataResponseBody
 		}
-		return mask, nil
+		return mask
 	case "error-page", "exit-transformer", "response-rewrite":
-		return metadataResponseBody, nil
+		return metadataResponseBody
 	case "proxy-cache", "graphql-proxy-cache":
-		return metadataResponseStore, nil
+		return metadataResponseStore
 	case "serverless-pre-function", "serverless-post-function":
-		descriptor, err := metadataBindingPhaseDescriptor(p, factoryName)
-		if err != nil {
-			return 0, err
-		}
 		mask := 0
-		if descriptor.Header {
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerHeaderFilter) {
 			mask |= metadataResponseHeader
 		}
-		if descriptor.BufferedBody {
+		if descriptor.HasResponseOwner(plugin.ResponseOwnerBufferedBodyFilter) {
 			mask |= metadataResponseBody
 		}
-		return mask, nil
+		return mask
 	default:
-		return 0, nil
+		return 0
 	}
-	return 0, nil
-}
-
-func metadataBindingPhaseDescriptor(p plugin.Plugin, factoryName string) (base.BindingPhaseDescriptor, error) {
-	describer, ok := p.Config().(base.BindingPhaseDescriber)
-	if !ok {
-		return base.BindingPhaseDescriptor{}, fmt.Errorf(
-			"factory %q requires a binding phase descriptor",
-			factoryName,
-		)
-	}
-	descriptor, err := describer.DescribeBindingPhases()
-	if err != nil {
-		return base.BindingPhaseDescriptor{}, fmt.Errorf(
-			"factory %q binding phase descriptor: %w",
-			factoryName,
-			err,
-		)
-	}
-	return descriptor, nil
+	return 0
 }
 
 func metadataErrorResponseWriter(w http.ResponseWriter, value any) http.ResponseWriter {
@@ -2827,6 +2789,13 @@ func (b *Builder) initServicePluginBindingsStrict(
 			if bindErr != nil {
 				return nil, bindErr
 			}
+			_, metadata, metadataErr := parsePluginMetadata(source.config)
+			if metadataErr != nil {
+				return nil, metadataErr
+			}
+			if metadata.priority != nil {
+				binding.Priority = *metadata.priority
+			}
 			bindings = append(bindings, binding)
 		}
 	}
@@ -2962,13 +2931,6 @@ func (b *Builder) initPluginBindingsStrict(
 		if setter, ok := p.(pluginTrafficSplitUpstreamResolverSetter); ok {
 			setter.SetUpstreamResolver(b.getUpstream)
 		}
-		if metadata.priority != nil {
-			setter, ok := p.(pluginPrioritySetter)
-			if !ok {
-				return nil, sourceError(fmt.Errorf("plugin %s does not support _meta.priority", name))
-			}
-			setter.SetPriority(*metadata.priority)
-		}
 		if err := p.PostInit(); err != nil {
 			return nil, sourceError(fmt.Errorf("initialize plugin %s: %w", name, err))
 		}
@@ -2977,13 +2939,20 @@ func (b *Builder) initPluginBindingsStrict(
 			pendingStoppers = append(pendingStoppers, stopper)
 		}
 
-		initialized, metadataErr := newMetadataPlugin(name, p, metadata)
+		descriptor, descriptorErr := plugin.ResolveDescriptorForFactory(name, p)
+		if descriptorErr != nil {
+			return nil, sourceError(descriptorErr)
+		}
+		initialized, metadataErr := newMetadataPluginWithDescriptor(name, p, metadata, descriptor)
 		if metadataErr != nil {
 			return nil, sourceError(metadataErr)
 		}
-		binding, bindErr := plugin.BindPluginChecked(name, initialized, source.scope, source.provenance)
+		binding, bindErr := plugin.BindResolvedPlugin(descriptor, initialized, source.scope, source.provenance)
 		if bindErr != nil {
 			return nil, sourceError(bindErr)
+		}
+		if metadata.priority != nil {
+			binding.Priority = *metadata.priority
 		}
 		bindings = append(bindings, binding)
 	}
@@ -2997,23 +2966,21 @@ func (b *Builder) initPluginBindingsStrict(
 	return bindings, nil
 }
 
-func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetadata) (plugin.Plugin, error) {
-	wrapped, err := newMetadataRequestAndBufferedPlugin(factoryName, p, metadata)
+func newMetadataPluginWithDescriptor(
+	factoryName string,
+	p plugin.Plugin,
+	metadata pluginMetadata,
+	descriptor plugin.Descriptor,
+) (plugin.Plugin, error) {
+	wrapped, err := newMetadataRequestAndBufferedPluginWithDescriptor(factoryName, p, metadata, descriptor)
 	if err != nil || wrapped == p {
 		return wrapped, err
 	}
-	phaseSpec, classified := plugin.CapabilitySpecForFactory(factoryName)
-	if classified {
-		ownsSanitizer := phaseSpec.Capabilities&plugin.CapabilityLogSanitizer != 0
-		ownsLog := phaseSpec.Capabilities&plugin.CapabilityLog != 0
-		if ownsLog && (factoryName == "serverless-pre-function" || factoryName == "serverless-post-function") {
-			descriptor, descriptorErr := metadataBindingPhaseDescriptor(p, factoryName)
-			if descriptorErr != nil {
-				return nil, descriptorErr
-			}
-			ownsLog = descriptor.Log
-		}
-		ownsSnapshot := phaseSpec.Finalizer == plugin.FinalizerSnapshot
+	{
+		_, sanitizerCallback := p.(base.LogSnapshotSanitizerPlugin)
+		ownsSanitizer := descriptor.HasPhase(plugin.PhaseLog) && sanitizerCallback
+		ownsLog := descriptor.HasPhase(plugin.PhaseLog)
+		ownsSnapshot := descriptor.OwnsSnapshotFinalizer()
 		switch {
 		case ownsSanitizer:
 			return metadataSnapshotSanitizerPlugin{
@@ -3036,8 +3003,10 @@ func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetad
 			}, nil
 		}
 	}
-	capability, declared := plugin.ResponseCapabilityFor(factoryName)
-	if !declared {
+	capability := descriptor.ResponseCapability()
+	if !descriptor.HasPhase(plugin.PhaseHeaderFilter) &&
+		!descriptor.HasPhase(plugin.PhaseBodyFilter) &&
+		!descriptor.HasPhase(plugin.PhaseProtocol) {
 		return wrapped, nil
 	}
 	streaming := metadataStreamingPlugin{Plugin: wrapped, target: p, filter: metadata.filter}
@@ -3051,10 +3020,11 @@ func newMetadataPlugin(factoryName string, p plugin.Plugin, metadata pluginMetad
 	return wrapped, nil
 }
 
-func newMetadataRequestAndBufferedPlugin(
+func newMetadataRequestAndBufferedPluginWithDescriptor(
 	factoryName string,
 	p plugin.Plugin,
 	metadata pluginMetadata,
+	descriptor plugin.Descriptor,
 ) (plugin.Plugin, error) {
 	if metadata.filter == nil && metadata.errorResponse == nil {
 		return p, nil
@@ -3064,16 +3034,8 @@ func newMetadataRequestAndBufferedPlugin(
 		filter:        metadata.filter,
 		errorResponse: metadata.errorResponse,
 	}
-	responseMask, err := metadataResponseMask(factoryName, p)
-	if err != nil {
-		return nil, err
-	}
-	requestStage := plugin.RequestStageLegacy
-	if spec, known, resolveErr := plugin.ResolveRequestStage(factoryName, p.Config()); resolveErr != nil {
-		return nil, resolveErr
-	} else if known {
-		requestStage = spec.Stage
-	}
+	responseMask := metadataResponseMask(factoryName, descriptor)
+	requestStage := descriptor.RequestStage()
 	header, hasHeader := p.(base.HeaderFilterPlugin)
 	body, hasBody := p.(base.BufferedBodyFilterPlugin)
 	store, hasStore := p.(base.FinalResponseStorePlugin)

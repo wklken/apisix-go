@@ -17,10 +17,12 @@ import (
 )
 
 type LogBinding struct {
-	Plugin     Plugin
-	Scope      Scope
-	Provenance ResourceProvenance
-	Policy     base.LogCapturePolicy
+	Plugin      Plugin
+	Priority    int
+	Scope       Scope
+	Provenance  ResourceProvenance
+	Policy      base.LogCapturePolicy
+	prioritySet bool
 }
 
 type LogExecutor struct {
@@ -58,6 +60,9 @@ func NewLogExecutor(bindings []LogBinding) (LogExecutor, error) {
 		if err := base.ValidateLogCapturePolicy(cloned[i].Policy); err != nil {
 			return LogExecutor{}, fmt.Errorf("log binding %q: %w", cloned[i].Plugin.GetName(), err)
 		}
+		if !cloned[i].prioritySet {
+			cloned[i].Priority = cloned[i].Plugin.GetPriority()
+		}
 		requestBodyMax = max(requestBodyMax, cloned[i].Policy.RequestBodyBytes)
 		responseBodyMax = max(responseBodyMax, cloned[i].Policy.ResponseBodyBytes)
 	}
@@ -79,7 +84,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 	logBindings := make([]LogBinding, 0)
 	routePrometheus := false
 	for _, binding := range bindings {
-		if binding.factoryName == "prometheus" &&
+		if binding.Descriptor.Factory == "prometheus" &&
 			binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal {
 			routePrometheus = true
 			break
@@ -90,16 +95,23 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 		if binding.Plugin == nil {
 			return LogExecutor{}, fmt.Errorf(
 				"log materialization has nil plugin (factory=%q resource=%s/%s)",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
 		}
-		spec, ok := CapabilitySpecForFactory(binding.factoryName)
-		if !ok {
-			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.factoryName)
+		descriptor := binding.Descriptor
+		if !descriptor.resolved && binding.Descriptor.Factory != "" {
+			var descriptorErr error
+			descriptor, descriptorErr = descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
+			if descriptorErr != nil {
+				return LogExecutor{}, descriptorErr
+			}
 		}
-		if binding.factoryName == "prometheus" {
+		if descriptor.Factory == "" {
+			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.Descriptor.Factory)
+		}
+		if descriptor.Factory == "prometheus" {
 			if binding.Scope == ScopeGlobal || binding.Scope == ScopeSystem {
 				if routePrometheus || globalPrometheusAdded {
 					continue
@@ -107,16 +119,19 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 				globalPrometheusAdded = true
 			}
 		}
-		ownsLog := spec.Capabilities&CapabilityLog != 0
-		ownsSanitizer := spec.Capabilities&CapabilityLogSanitizer != 0
-		if ownsLog && isServerlessIdentity(binding.factoryName) {
-			phase, err := configuredPhase(binding.Plugin.Config())
-			if err != nil {
-				return LogExecutor{}, fmt.Errorf("factory %q log phase: %w", binding.factoryName, err)
-			}
-			ownsLog = phase == "log"
+		_, ownsLog := binding.Plugin.(base.LogPhasePlugin)
+		ownsLog = ownsLog && descriptor.HasPhase(PhaseLog)
+		_, ownsSanitizer := binding.Plugin.(base.LogSnapshotSanitizerPlugin)
+		ownsSanitizer = ownsSanitizer && descriptor.HasPhase(PhaseLog)
+		ownsSnapshotFinalizer := descriptor.finalizer == FinalizerSnapshot
+		if descriptor.HasPhase(PhaseLog) && !ownsLog && !ownsSanitizer && !ownsSnapshotFinalizer {
+			return LogExecutor{}, fmt.Errorf(
+				"factory %q declares log ownership without callback (resource=%s/%s)",
+				descriptor.Factory,
+				binding.Provenance.Kind,
+				binding.Provenance.ID,
+			)
 		}
-		ownsSnapshotFinalizer := spec.Finalizer == FinalizerSnapshot
 		if !ownsSanitizer && !ownsLog && !ownsSnapshotFinalizer {
 			continue
 		}
@@ -124,7 +139,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.LogSnapshotSanitizerPlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares log sanitizer ownership without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
@@ -134,7 +149,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.LogPhasePlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares log ownership without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
@@ -144,7 +159,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			if _, ok := binding.Plugin.(base.SnapshotFinalizerPlugin); !ok {
 				return LogExecutor{}, fmt.Errorf(
 					"factory %q declares snapshot finalizer without callback (resource=%s/%s)",
-					binding.factoryName,
+					binding.Descriptor.Factory,
 					binding.Provenance.Kind,
 					binding.Provenance.ID,
 				)
@@ -155,10 +170,12 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			policy = provider.LogCapturePolicy()
 		}
 		logBindings = append(logBindings, LogBinding{
-			Plugin:     binding.Plugin,
-			Scope:      binding.Scope,
-			Provenance: binding.Provenance,
-			Policy:     policy,
+			Plugin:      binding.Plugin,
+			Priority:    binding.Priority,
+			Scope:       binding.Scope,
+			Provenance:  binding.Provenance,
+			Policy:      policy,
+			prioritySet: true,
 		})
 	}
 	return NewLogExecutor(logBindings)
@@ -385,7 +402,7 @@ func (e LogExecutor) runComposite(
 		if a.Plugin == nil || b.Plugin == nil {
 			return 0
 		}
-		return b.Plugin.GetPriority() - a.Plugin.GetPriority()
+		return b.Priority - a.Priority
 	})
 	selectedSanitizers := make([]bool, len(bindings))
 	var preSanitizedSnapshot base.LogSnapshot

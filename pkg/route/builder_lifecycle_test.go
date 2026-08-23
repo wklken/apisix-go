@@ -700,22 +700,23 @@ func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
 
 func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
 	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins, err := builder.initPluginsStrict(
-		map[string]resource.PluginConfig{
+	bindings, err := builder.initPluginBindingsStrict(
+		materializedPluginSources(map[string]resource.PluginConfig{
 			"request-id": map[string]any{
 				"_meta": map[string]any{"priority": 3210},
 			},
-		},
+		}, pluginpkg.ResourceProvenance{}),
 		builder.pluginRouteContext(resource.Route{ID: "meta-priority"}),
+		pluginInitOptions{},
 	)
 	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v", err)
+		t.Fatalf("initPluginBindingsStrict() error = %v", err)
 	}
-	if len(plugins) != 1 {
-		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	if len(bindings) != 1 {
+		t.Fatalf("bindings len = %d, want 1", len(bindings))
 	}
-	if got := plugins[0].GetPriority(); got != 3210 {
-		t.Fatalf("plugin priority = %d, want 3210", got)
+	if got := bindings[0].Priority; got != 3210 {
+		t.Fatalf("binding priority = %d, want 3210", got)
 	}
 }
 

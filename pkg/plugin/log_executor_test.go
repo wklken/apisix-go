@@ -1080,7 +1080,7 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 		{
 			name: "nil materialized plugin",
 			run: func() error {
-				_, err := NewLogExecutorFromBindings([]Binding{{factoryName: "http-logger"}})
+				_, err := NewLogExecutorFromBindings([]Binding{{Descriptor: Descriptor{Factory: "http-logger"}}})
 				return err
 			},
 		},
@@ -1088,7 +1088,7 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 			name: "unknown factory",
 			run: func() error {
 				_, err := NewLogExecutorFromBindings([]Binding{{
-					factoryName: "unknown", Plugin: valid,
+					Descriptor: Descriptor{Factory: "unknown"}, Plugin: valid,
 				}})
 				return err
 			},
@@ -1097,7 +1097,7 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 			name: "missing log callback",
 			run: func() error {
 				_, err := NewLogExecutorFromBindings([]Binding{{
-					factoryName: "http-logger", Plugin: &logExecutorNoCallbackPlugin{},
+					Descriptor: Descriptor{Factory: "http-logger"}, Plugin: &logExecutorNoCallbackPlugin{},
 				}})
 				return err
 			},
@@ -1106,7 +1106,7 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 			name: "missing prometheus log callback",
 			run: func() error {
 				_, err := NewLogExecutorFromBindings([]Binding{{
-					factoryName: "prometheus", Plugin: &logExecutorNoCallbackPlugin{},
+					Descriptor: Descriptor{Factory: "prometheus"}, Plugin: &logExecutorNoCallbackPlugin{},
 				}})
 				return err
 			},
@@ -1115,8 +1115,8 @@ func TestLogExecutorRejectsInvalidMaterializationAndLifecycleInputs(t *testing.T
 			name: "serverless phase descriptor",
 			run: func() error {
 				_, err := NewLogExecutorFromBindings([]Binding{{
-					factoryName: "serverless-pre-function",
-					Plugin:      &logExecutorNoCallbackPlugin{config: failingBindingPhaseConfig{}},
+					Descriptor: Descriptor{Factory: "serverless-pre-function"},
+					Plugin:     &logExecutorNoCallbackPlugin{config: failingBindingPhaseConfig{}},
 				}})
 				return err
 			},

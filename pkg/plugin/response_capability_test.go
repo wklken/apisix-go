@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -208,10 +209,7 @@ func TestResponseModeDescriptorCannotInventUndeclaredCallbacksOrRemoveProtocolOw
 		modes: base.ResponseModeBounded | base.ResponseModeStreaming,
 	}}
 	owner.Name = "response-owner"
-	binding := Binding{
-		Plugin: owner, Scope: ScopeRoute, Stage: RequestStageAccess,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "route"}, factoryName: "ai-proxy",
-	}
+	binding := checkedResponseBinding(t, "ai-proxy", owner, ScopeRoute, "route")
 	capability, err := responseCapabilityForBinding(binding)
 	if err != nil {
 		t.Fatalf("responseCapabilityForBinding() error = %v", err)
@@ -283,8 +281,8 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	if len(plan) != 1 || plan[0].factoryKey != "echo" || plan[0].Plugin.GetName() != "not-echo" {
 		t.Fatalf("plan = %#v", plan)
 	}
-	if calls := config.calls.Load(); calls != 1 {
-		t.Fatalf("DescribeBindingPhases calls = %d, want 1 per materialization", calls)
+	if calls := config.calls.Load(); calls != 0 {
+		t.Fatalf("DescribeBindingPhases calls = %d, want immutable descriptor reuse", calls)
 	}
 }
 
@@ -347,10 +345,7 @@ func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
 			if got := len(plan.StreamingBindings()); got != test.wantStreaming {
 				t.Fatalf("streaming bindings = %d, want %d", got, test.wantStreaming)
 			}
-			phases, err := ResolveResponsePhases("response-rewrite", test.config)
-			if err != nil {
-				t.Fatalf("ResolveResponsePhases() error = %v", err)
-			}
+			phases := binding.Descriptor.response
 			if !slices.Equal(phases.Owners, []ResponseOwnerKind{test.wantMetadataOwner}) {
 				t.Fatalf("metadata owners = %v, want [%v]", phases.Owners, test.wantMetadataOwner)
 			}
@@ -427,10 +422,14 @@ func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 	registryWant = append(registryWant, "grpc-transcode")
 	slices.Sort(registryWant)
 	got := make([]string, 0, len(responseFactoryRegistry))
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for identity := range responseFactoryRegistry {
 		got = append(got, identity)
-		if _, ok := requestStageRegistry[identity]; !ok {
-			t.Fatalf("request-stage registry missing %q", identity)
+		if _, err := DescriptorForFactory(manifest, identity); err != nil {
+			t.Fatalf("manifest descriptor missing %q: %v", identity, err)
 		}
 	}
 	slices.Sort(got)
@@ -442,8 +441,8 @@ func TestResponseRegistryHasExactDeclaredIdentities(t *testing.T) {
 func TestMaterializeResponseBindingsRejectsUndeclaredCallback(t *testing.T) {
 	plugin := newResponseTestPlugin("unknown", 1, nil)
 	_, err := MaterializeResponseBindings(EffectiveBindingSet{merged: []Binding{{
-		Plugin: plugin, Scope: ScopeRoute, Stage: RequestStageLegacy,
-		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"}, factoryName: "unknown",
+		Plugin: plugin, Scope: ScopeRoute,
+		Provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"}, Descriptor: Descriptor{Factory: "unknown"},
 	}}})
 	if err == nil || !strings.Contains(err.Error(), "undeclared") {
 		t.Fatalf("MaterializeResponseBindings() error = %v, want undeclared callback", err)

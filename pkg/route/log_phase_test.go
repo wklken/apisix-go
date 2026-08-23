@@ -450,9 +450,9 @@ func TestMetadataRequestContextOwnsOnlyRequestPhase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapper, err := newMetadataPlugin("request-context", target, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("request-context", target, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin() error = %v", err)
+		t.Fatalf("newTestMetadataPlugin() error = %v", err)
 	}
 	requestPhase, ok := wrapper.(base.RequestPhasePlugin)
 	if !ok {
@@ -511,9 +511,9 @@ func TestMetadataLogSanitizerPreservesExactOwnerAndDetachedFilter(t *testing.T) 
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrapper, err := newMetadataPlugin("data-mask", target, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("data-mask", target, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(data-mask) error = %v", err)
 	}
 	sanitizer, ok := wrapper.(base.LogSnapshotSanitizerPlugin)
 	if !ok {
@@ -569,9 +569,9 @@ func TestMetadataLogSanitizersEvaluateFiltersAgainstSamePreSanitizedSnapshot(t *
 	if err != nil {
 		t.Fatalf("compile filter: %v", err)
 	}
-	wrappedRoute, err := newMetadataPlugin("data-mask", route, pluginMetadata{filter: filter})
+	wrappedRoute, err := newTestMetadataPlugin("data-mask", route, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(data-mask) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(data-mask) error = %v", err)
 	}
 	logger := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "http-logger",
@@ -620,9 +620,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 	logger := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "http-logger",
 	}}
-	wrapper, err := newMetadataPlugin("http-logger", logger, pluginMetadata{filter: filter})
+	wrapper, err := newTestMetadataPlugin("http-logger", logger, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(http-logger) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(http-logger) error = %v", err)
 	}
 	if _, ok := wrapper.(base.LogPhasePlugin); !ok {
 		t.Fatalf("metadata http-logger lost log phase: %T", wrapper)
@@ -643,9 +643,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 			Header:       true,
 		}},
 	}
-	wrapper, err = newMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
+	wrapper, err = newTestMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(serverless-pre-function) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(serverless-pre-function) error = %v", err)
 	}
 	header, ok := wrapper.(base.HeaderFilterPlugin)
 	if !ok {
@@ -667,9 +667,9 @@ func TestMetadataLoggerPreservesExactOwnerAndServerlessResponseMethods(t *testin
 		RequestStage: "none",
 		Log:          true,
 	}}
-	wrapper, err = newMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
+	wrapper, err = newTestMetadataPlugin("serverless-pre-function", serverless, pluginMetadata{filter: filter})
 	if err != nil {
-		t.Fatalf("newMetadataPlugin(serverless log) error = %v", err)
+		t.Fatalf("newTestMetadataPlugin(serverless log) error = %v", err)
 	}
 	logPhase, ok := wrapper.(base.LogPhasePlugin)
 	if !ok {

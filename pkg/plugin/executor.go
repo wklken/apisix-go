@@ -56,15 +56,13 @@ type ResourceProvenance struct {
 }
 
 // Binding is the immutable executor input for one materialized plugin.
-// factoryName is intentionally private: callers must provide the exact
-// registry/config key through BindPlugin rather than deriving it from GetName.
 type Binding struct {
-	Plugin     Plugin
-	Scope      Scope
-	Stage      RequestStage
-	Provenance ResourceProvenance
-
-	factoryName string
+	Plugin      Plugin
+	Descriptor  Descriptor
+	Priority    int
+	Scope       Scope
+	Provenance  ResourceProvenance
+	InstanceKey InstanceKey
 }
 
 type ConsumerIdentity struct {
@@ -255,18 +253,17 @@ func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 	systemRewrite := make([]Binding, 0)
 	for _, binding := range p.bindings {
 		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Scope == ScopeRoute {
-			if binding.factoryName == "cors" {
+			if binding.Descriptor.Factory == "cors" {
 				if binding.Plugin != nil {
 					corsBindings = append(corsBindings, binding)
 				}
 				continue
 			}
-			spec, ok := RequestStageFor(binding.factoryName)
-			if ok && spec.AuthenticatesConsumer {
+			if binding.Descriptor.authenticatesConsumer {
 				bindings = append(bindings, binding)
 				continue
 			}
-			if ok && binding.Stage == RequestStageRewrite {
+			if binding.Descriptor.requestStage == RequestStageRewrite {
 				switch binding.Scope {
 				case ScopeGlobal:
 					globalRewrite = append(globalRewrite, binding)
@@ -660,12 +657,7 @@ func wrapRequestStageBindings(next http.Handler, bindings []Binding) http.Handle
 		return next
 	}
 	ordered := append([]Binding(nil), bindings...)
-	slices.SortStableFunc(ordered, func(a, b Binding) int {
-		if a.Plugin == nil || b.Plugin == nil {
-			return 0
-		}
-		return cmp.Compare(b.Plugin.GetPriority(), a.Plugin.GetPriority())
-	})
+	slices.SortStableFunc(ordered, compareBindings)
 	for _, binding := range slices.Backward(ordered) {
 		if binding.Plugin == nil {
 			continue
@@ -678,10 +670,10 @@ func wrapRequestStageBindings(next http.Handler, bindings []Binding) http.Handle
 func wrapScopedRequestStage(next http.Handler, bindings []Binding, stage RequestStage, scope Scope) http.Handler {
 	selected := make([]Binding, 0)
 	for _, binding := range bindings {
-		if binding.Scope != scope || binding.Stage != stage || binding.Plugin == nil {
+		if binding.Scope != scope || binding.Descriptor.requestStage != stage || binding.Plugin == nil {
 			continue
 		}
-		if spec, ok := RequestStageFor(binding.factoryName); ok && spec.AuthenticatesConsumer {
+		if binding.Descriptor.authenticatesConsumer {
 			continue
 		}
 		selected = append(selected, binding)
@@ -693,29 +685,27 @@ func requestStageHandler(binding Binding, next http.Handler) http.Handler {
 	if phase, ok := binding.Plugin.(base.RequestPhasePlugin); ok {
 		return base.AdaptRequestPhase(phase, next)
 	}
-	if spec, ok := RequestStageFor(binding.factoryName); ok && spec.AdaptLegacyHandler {
-		return base.AdaptRequestPhase(
-			newRewriteOnlyAdapter(binding.factoryName, binding.Plugin, binding.Provenance),
-			next,
-		)
+	handler := binding.Plugin.Handler(next)
+	if handler != nil {
+		return handler
 	}
-	return base.AdaptRequestPhase(newUnregisteredRewriteAdapter(binding.factoryName, binding.Provenance), next)
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	})
 }
 
 func legacyRemainderBindings(bindings []Binding) []Binding {
 	legacy := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
-		if binding.Plugin == nil || binding.Stage != RequestStageLegacy {
+		if binding.Plugin == nil || binding.Descriptor.requestStage != RequestStageLegacy {
 			continue
 		}
-		if spec, ok := RequestStageFor(binding.factoryName); ok && spec.AuthenticatesConsumer {
+		if binding.Descriptor.authenticatesConsumer {
 			continue
 		}
 		legacy = append(legacy, binding)
 	}
-	slices.SortStableFunc(legacy, func(a, b Binding) int {
-		return cmp.Compare(b.Plugin.GetPriority(), a.Plugin.GetPriority())
-	})
+	slices.SortStableFunc(legacy, compareBindings)
 	return legacy
 }
 
@@ -747,7 +737,7 @@ func mergeEffectiveBindingSet(static, resolved []Binding) EffectiveBindingSet {
 }
 
 func appendEffectiveBinding(bindings *[]Binding, indexes map[string]int, binding Binding) {
-	key := binding.factoryName
+	key := binding.Descriptor.Factory
 	if key == "" {
 		*bindings = append(*bindings, binding)
 		return
@@ -764,7 +754,16 @@ func cloneBindings(bindings []Binding) []Binding {
 	if bindings == nil {
 		return nil
 	}
-	return append([]Binding(nil), bindings...)
+	cloned := append([]Binding(nil), bindings...)
+	for index := range cloned {
+		cloned[index].Descriptor.Phases = append([]Phase(nil), bindings[index].Descriptor.Phases...)
+		cloned[index].Descriptor.Scopes = append([]Scope(nil), bindings[index].Descriptor.Scopes...)
+		cloned[index].Descriptor.response.Owners = append(
+			[]ResponseOwnerKind(nil),
+			bindings[index].Descriptor.response.Owners...,
+		)
+	}
+	return cloned
 }
 
 // BindPlugin records the exact factory name and resolves its audited request
@@ -775,16 +774,19 @@ func BindPlugin(
 	scope Scope,
 	provenance ResourceProvenance,
 ) Binding {
-	stage := RequestStageLegacy
-	if spec, ok := RequestStageFor(factoryName); ok {
-		stage = spec.Stage
+	if binding, err := BindPluginChecked(factoryName, p, scope, provenance); err == nil {
+		return binding
+	}
+	priority := 0
+	if p != nil {
+		priority = p.GetPriority()
 	}
 	return Binding{
-		Plugin:      p,
-		Scope:       scope,
-		Stage:       stage,
-		Provenance:  provenance,
-		factoryName: factoryName,
+		Plugin:     p,
+		Descriptor: Descriptor{Factory: factoryName, Priority: priority},
+		Priority:   priority,
+		Scope:      scope,
+		Provenance: provenance,
 	}
 }
 
@@ -820,34 +822,48 @@ func BindPluginChecked(
 			provenance.ID,
 		)
 	}
-	spec, ok := RequestStageFor(factoryName)
-	if !ok {
+	descriptor, err := descriptorForRuntimeFactory(factoryName, p)
+	if err != nil {
 		return Binding{}, fmt.Errorf(
-			"checked plugin binding has no request owner (factory=%q resource=%s/%s)",
+			"checked plugin binding rejected factory=%q resource=%s/%s: %w",
 			factoryName,
 			provenance.Kind,
 			provenance.ID,
+			err,
 		)
 	}
-	if spec.ConfigAware {
-		resolved, _, err := ResolveRequestStage(factoryName, p.Config())
-		if err != nil {
-			return Binding{}, fmt.Errorf(
-				"checked plugin binding rejected factory=%q resource=%s/%s: %w",
-				factoryName,
-				provenance.Kind,
-				provenance.ID,
-				err,
-			)
-		}
-		spec = resolved
+	return BindResolvedPlugin(descriptor, p, scope, provenance)
+}
+
+// BindResolvedPlugin constructs a binding from the descriptor resolved once
+// during plugin materialization. Wrappers may preserve callbacks, but cannot
+// re-read config to change the immutable phase selection.
+func BindResolvedPlugin(
+	descriptor Descriptor,
+	p Plugin,
+	scope Scope,
+	provenance ResourceProvenance,
+) (Binding, error) {
+	if p == nil {
+		return Binding{}, fmt.Errorf("resolved plugin binding %q has nil plugin", descriptor.Factory)
+	}
+	if !descriptor.resolved || descriptor.Factory == "" {
+		return Binding{}, fmt.Errorf("plugin descriptor %q is not resolved", descriptor.Factory)
+	}
+	descriptor.Phases = append([]Phase(nil), descriptor.Phases...)
+	descriptor.Scopes = append([]Scope(nil), descriptor.Scopes...)
+	descriptor.response.Owners = append([]ResponseOwnerKind(nil), descriptor.response.Owners...)
+	key, err := NewInstanceKey(descriptor, scope, provenance, p.Config())
+	if err != nil {
+		return Binding{}, err
 	}
 	return Binding{
 		Plugin:      p,
+		Descriptor:  descriptor,
+		Priority:    descriptor.Priority,
 		Scope:       scope,
-		Stage:       spec.Stage,
 		Provenance:  provenance,
-		factoryName: factoryName,
+		InstanceKey: key,
 	}, nil
 }
 
@@ -929,14 +945,19 @@ func (e Executor) legacyBindings() []Binding {
 		}
 		legacy = append(legacy, binding)
 	}
-	slices.SortStableFunc(legacy, func(a, b Binding) int {
-		return cmp.Compare(b.Plugin.GetPriority(), a.Plugin.GetPriority())
-	})
+	slices.SortStableFunc(legacy, compareLegacyBindings)
 	return legacy
 }
 
+func compareLegacyBindings(a, b Binding) int {
+	if priority := cmp.Compare(b.Priority, a.Priority); priority != 0 {
+		return priority
+	}
+	return cmp.Compare(a.Descriptor.Factory, b.Descriptor.Factory)
+}
+
 func (e Executor) isScopedRewrite(binding Binding) bool {
-	if binding.Stage != RequestStageRewrite {
+	if binding.Descriptor.requestStage != RequestStageRewrite {
 		return false
 	}
 	switch binding.Scope {
@@ -955,9 +976,7 @@ func (e Executor) thenScopedRewrite(next http.Handler, scope Scope) http.Handler
 		}
 		rewrites = append(rewrites, binding)
 	}
-	slices.SortStableFunc(rewrites, func(a, b Binding) int {
-		return cmp.Compare(b.Plugin.GetPriority(), a.Plugin.GetPriority())
-	})
+	slices.SortStableFunc(rewrites, compareBindings)
 	for _, binding := range slices.Backward(rewrites) {
 		next = e.scopedRewriteHandler(binding, next)
 	}
@@ -965,22 +984,7 @@ func (e Executor) thenScopedRewrite(next http.Handler, scope Scope) http.Handler
 }
 
 func (e Executor) scopedRewriteHandler(binding Binding, next http.Handler) http.Handler {
-	if spec, ok := RequestStageFor(binding.factoryName); ok {
-		if spec.AdaptLegacyHandler {
-			return base.AdaptRequestPhase(
-				newRewriteOnlyAdapter(binding.factoryName, binding.Plugin, binding.Provenance),
-				next,
-			)
-		}
-		if phase, ok := binding.Plugin.(base.RequestPhasePlugin); ok {
-			return base.AdaptRequestPhase(phase, next)
-		}
-		return base.AdaptRequestPhase(newUnregisteredRewriteAdapter(binding.factoryName, binding.Provenance), next)
-	}
-	if phase, ok := binding.Plugin.(base.RequestPhasePlugin); ok {
-		return base.AdaptRequestPhase(phase, next)
-	}
-	return base.AdaptRequestPhase(newUnregisteredRewriteAdapter(binding.factoryName, binding.Provenance), next)
+	return requestStageHandler(binding, next)
 }
 
 func terminalHandler(terminal http.Handler) http.Handler {

@@ -50,15 +50,34 @@ func TestCapabilityManifestWindowsPlatformsCrossBuild(t *testing.T) {
 }
 
 func TestCapabilityManifestCoversEveryFactory(t *testing.T) {
+	const (
+		expectedFactoryRegistrations = 115
+		expectedDefaultFactories     = 100
+	)
 	m, err := capability.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := map[string]string{}
+	defaultFactories := 0
 	for _, entry := range m.Plugins {
 		for _, factory := range entry.Factories {
 			seen[factory.Key] = entry.Name
+			if entry.APISIXDefault {
+				defaultFactories++
+			}
 		}
+	}
+	if len(pluginRegistry) != expectedFactoryRegistrations || len(seen) != expectedFactoryRegistrations {
+		t.Fatalf(
+			"factory registration count = runtime:%d manifest:%d, want %d",
+			len(pluginRegistry),
+			len(seen),
+			expectedFactoryRegistrations,
+		)
+	}
+	if defaultFactories != expectedDefaultFactories {
+		t.Fatalf("default factory count = %d, want %d", defaultFactories, expectedDefaultFactories)
 	}
 	var missing, extra []string
 	for key := range pluginRegistry {
@@ -115,59 +134,16 @@ func TestCapabilityManifestMatchesRuntimeFacts(t *testing.T) {
 			)
 		}
 
-		spec, ok := CapabilitySpecForFactory(key)
-		if !ok {
-			t.Fatalf("factory %s has no runtime capability spec", key)
+		descriptor, err := DescriptorForFactory(m, key)
+		if err != nil {
+			t.Fatalf("factory %s descriptor: %v", key, err)
 		}
-		if stage, ok := RequestStageFor(key); ok && !stage.ConfigAware {
-			phase := manifestPhaseForRequestStage(stage.Stage)
-			if phase != "" && !slices.Contains(entry.Phases, phase) {
-				t.Fatalf("%s request stage %s is absent from manifest phases %v", key, phase, entry.Phases)
-			}
+		wantPhases := make([]string, len(descriptor.Phases))
+		for index, phase := range descriptor.Phases {
+			wantPhases[index] = string(phase)
 		}
-		wantPhases := manifestPhasesForRuntimeSpec(spec)
 		if !slices.Equal(entry.Phases, wantPhases) {
-			t.Fatalf("%s phases = %v, runtime = %v", key, entry.Phases, wantPhases)
+			t.Fatalf("%s phases = %v, descriptor = %v", key, entry.Phases, wantPhases)
 		}
 	}
-}
-
-func manifestPhaseForRequestStage(stage RequestStage) string {
-	switch stage {
-	case RequestStageRewrite:
-		return "rewrite"
-	case RequestStageConsumerRewrite:
-		return "consumer_rewrite"
-	case RequestStageAccess:
-		return "access"
-	case RequestStageBeforeProxy:
-		return "before_proxy"
-	default:
-		return ""
-	}
-}
-
-func manifestPhasesForRuntimeSpec(spec CapabilitySpec) []string {
-	phases := make([]string, 0, 9)
-	appendIf := func(phase string, capabilities Capability) {
-		if spec.Capabilities&capabilities != 0 {
-			phases = append(phases, phase)
-		}
-	}
-	appendIf("rewrite", CapabilityRequestRewrite)
-	appendIf("consumer_rewrite", CapabilityConsumerRewrite)
-	appendIf("access", CapabilityRequestAccess)
-	appendIf("before_proxy", CapabilityBeforeProxy)
-	appendIf("header_filter", CapabilityHeaderFilter)
-	appendIf(
-		"body_filter",
-		CapabilityBufferedBodyFilter|CapabilityFinalResponseStore|CapabilityStreamingBodyFilter,
-	)
-	appendIf("log", CapabilityLog|CapabilityLogSanitizer)
-	appendIf("finalizer", CapabilityFinalizer)
-	appendIf(
-		"protocol",
-		CapabilityStreamingResponseOwner|CapabilityExclusiveProtocolOwner|CapabilityProtocolOwner,
-	)
-	return phases
 }

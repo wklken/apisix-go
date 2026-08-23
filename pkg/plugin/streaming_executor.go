@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -82,18 +83,23 @@ func (f *streamingFinish) finish(cause error) error {
 func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecutor, error) {
 	cloned := cloneBindings(bindings)
 	executor := &StreamingResponseExecutor{bindings: cloned}
-	for _, binding := range cloned {
+	for index := range executor.bindings {
+		binding := &executor.bindings[index]
 		if binding.Plugin == nil {
 			return nil, fmt.Errorf(
 				"streaming binding has nil plugin (factory=%q resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
-		capability, err := responseCapabilityForBinding(binding)
-		if err != nil {
-			return nil, err
+		if !binding.Descriptor.resolved {
+			descriptor, err := descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
+			if err != nil {
+				return nil, err
+			}
+			binding.Descriptor = descriptor
 		}
-		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.factoryName != "mqtt-proxy") {
+		capability := binding.Descriptor.responseCapability
+		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.Descriptor.Factory != "mqtt-proxy") {
 			executor.hasStaticHeaderFilter = true
 		}
 		if capability.ExclusiveProtocol != ProtocolNone {
@@ -102,7 +108,7 @@ func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecuto
 				continue // route-owned protocol terminals are supplied separately
 			}
 			executor.terminals = append(executor.terminals, RouteTerminalCandidate{
-				Identity: binding.factoryName, Scope: binding.Scope, Priority: binding.Plugin.GetPriority(),
+				Identity: binding.Descriptor.Factory, Scope: binding.Scope, Priority: binding.Priority,
 				Provenance: binding.Provenance, Protocol: capability.ExclusiveProtocol, Terminal: terminal,
 			})
 		}
@@ -233,7 +239,7 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 			(len(buffered) > 0 && !bufferStreamingHeader) {
 			return r, fmt.Errorf(
 				"dynamic response identity=%q resource=%s/%s is not supported",
-				binding.factoryName,
+				binding.Descriptor.Factory,
 				binding.Provenance.Kind,
 				binding.Provenance.ID,
 			)
@@ -296,11 +302,11 @@ func (e *StreamingResponseExecutor) runHeaderFilters(r *http.Request, state *bas
 		if !ok {
 			return fmt.Errorf(
 				"factory %q declares streaming header filter without callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
 		if err := plugin.RunStreamingHeaderFilter(r, state); err != nil {
-			return fmt.Errorf("factory %q streaming header filter: %w", binding.factoryName, err)
+			return fmt.Errorf("factory %q streaming header filter: %w", binding.Descriptor.Factory, err)
 		}
 	}
 	return nil
@@ -409,17 +415,17 @@ func (e *StreamingResponseExecutor) wrapBody(
 		if !ok {
 			return nil, fmt.Errorf(
 				"factory %q declares streaming body filter without callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
 		wrapped, err := plugin.WrapStreamingResponse(current, r)
 		if err != nil {
 			_ = finish.finish(err)
-			return nil, fmt.Errorf("factory %q streaming body wrapper: %w", binding.factoryName, err)
+			return nil, fmt.Errorf("factory %q streaming body wrapper: %w", binding.Descriptor.Factory, err)
 		}
 		if wrapped == nil {
 			_ = finish.finish(nil)
-			return nil, fmt.Errorf("factory %q streaming body wrapper returned nil", binding.factoryName)
+			return nil, fmt.Errorf("factory %q streaming body wrapper returned nil", binding.Descriptor.Factory)
 		}
 		if closer, ok := wrapped.(io.Closer); ok {
 			finish.closers = append(finish.closers, closer)
@@ -505,7 +511,7 @@ func (e *StreamingResponseExecutor) registerCompressionOffers(
 		if !ok {
 			return r, nil, fmt.Errorf(
 				"factory %q declares compression offer without structural callback (resource=%s/%s)",
-				binding.factoryName, binding.Provenance.Kind, binding.Provenance.ID,
+				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
 		}
 		offers := plugin.RegisterCompressionOffers(request, state)
@@ -675,7 +681,8 @@ func (e *StreamingResponseExecutor) phaseBindingsFor(
 	selected := make([]Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		capability, err := responseCapabilityForBinding(binding)
-		if err != nil || !want(capability) || capability.SeparateSubsystem && binding.factoryName == "mqtt-proxy" {
+		if err != nil || !want(capability) ||
+			capability.SeparateSubsystem && binding.Descriptor.Factory == "mqtt-proxy" {
 			continue
 		}
 		selected = append(selected, binding)
@@ -688,18 +695,18 @@ func mergeStreamingBindings(static, dynamic []Binding) []Binding {
 	merged := cloneBindings(static)
 	indexes := make(map[string]int, len(merged))
 	for index, binding := range merged {
-		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.factoryName == "" {
+		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Descriptor.Factory == "" {
 			continue
 		}
-		indexes[binding.factoryName] = index
+		indexes[binding.Descriptor.Factory] = index
 	}
 	for _, binding := range dynamic {
-		if index, ok := indexes[binding.factoryName]; ok {
+		if index, ok := indexes[binding.Descriptor.Factory]; ok {
 			merged[index] = binding
 			continue
 		}
-		if binding.factoryName != "" {
-			indexes[binding.factoryName] = len(merged)
+		if binding.Descriptor.Factory != "" {
+			indexes[binding.Descriptor.Factory] = len(merged)
 		}
 		merged = append(merged, binding)
 	}
@@ -708,27 +715,25 @@ func mergeStreamingBindings(static, dynamic []Binding) []Binding {
 
 func compareBindings(a, b Binding) int {
 	if a.Scope != b.Scope {
-		if a.Scope < b.Scope {
-			return -1
-		}
-		return 1
+		return cmp.Compare(a.Scope, b.Scope)
 	}
-	if a.Stage != b.Stage {
-		if a.Stage < b.Stage {
-			return -1
-		}
-		return 1
+	if phase := compareDescriptorPhase(a.Descriptor, b.Descriptor); phase != 0 {
+		return phase
 	}
-	if a.Plugin == nil || b.Plugin == nil {
-		return 0
+	if priority := cmp.Compare(b.Priority, a.Priority); priority != 0 {
+		return priority
 	}
-	if a.Plugin.GetPriority() > b.Plugin.GetPriority() {
-		return -1
+	if factory := cmp.Compare(a.Descriptor.Factory, b.Descriptor.Factory); factory != 0 {
+		return factory
 	}
-	if a.Plugin.GetPriority() < b.Plugin.GetPriority() {
-		return 1
+	if kind := cmp.Compare(a.Provenance.Kind, b.Provenance.Kind); kind != 0 {
+		return kind
 	}
-	return 0
+	return cmp.Compare(a.Provenance.ID, b.Provenance.ID)
+}
+
+func compareDescriptorPhase(a, b Descriptor) int {
+	return cmp.Compare(a.requestStage, b.requestStage)
 }
 
 func (e *StreamingResponseExecutor) RunExclusiveProtocol(

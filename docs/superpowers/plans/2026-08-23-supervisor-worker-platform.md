@@ -126,6 +126,8 @@ type RevisionFence struct {
 	ArtifactDigests map[generation.Domain][32]byte
 }
 func FenceFor(generation.PublicationSet) RevisionFence
+func RecoveryFence(generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration) (RevisionFence, error)
 func (f RevisionFence) Equal(RevisionFence) bool
 type Command struct { ID string; Kind CommandKind; Fence RevisionFence; Deadline time.Time }
 type Status struct {
@@ -175,6 +177,9 @@ const (
 	MessageArtifactChunk MessageType = "artifact-chunk"
 	MessageArtifactEnd MessageType = "artifact-end"
 	MessageReady MessageType = "ready"
+	MessageSecretAttemptOpen MessageType = "secret-attempt-open"
+	MessageSecretAttemptOpenResponse MessageType = "secret-attempt-open-response"
+	MessageSecretAttemptClose MessageType = "secret-attempt-close"
 	MessageSecretRequest MessageType = "secret-request"
 	MessageSecretResponse MessageType = "secret-response"
 	MessageCommand MessageType = "command"
@@ -234,16 +239,35 @@ type WorkerBootstrapInput struct {
 	EffectiveConfig    ArtifactDescriptor
 	CapabilityManifest ArtifactDescriptor
 }
+type LoadMode string
+const (
+	LoadCandidate LoadMode = "candidate"
+	LoadRecovery  LoadMode = "recovery"
+)
 type LoadRequest struct {
-	Ticket          generation.ApplyTicket
-	Desired         ArtifactDescriptor
-	Published       ArtifactDescriptor
-	Listeners       []ListenerDescriptor
+	Mode      LoadMode
+	Ticket    *generation.ApplyTicket
+	Revisions *generation.RevisionSet
+	Desired   *ArtifactDescriptor
+	Published ArtifactDescriptor
+	Listeners []ListenerDescriptor
 }
 type Ready struct {
 	Fence       RevisionFence
 	Publication ArtifactDescriptor
 }
+type SecretAttemptOpen struct {
+	RequestID   string
+	Mode        LoadMode
+	Attempt     secret.AttemptID
+	Publication ArtifactDescriptor
+}
+type SecretAttemptOpenResponse struct {
+	RequestID string
+	Attempt   secret.AttemptID
+	ErrorCode string
+}
+type SecretAttemptClose struct { Attempt secret.AttemptID }
 type SecretRequest struct {
 	RequestID       string
 	DesiredRevision uint64
@@ -271,11 +295,19 @@ func (a *ArtifactAssembler) Close() error
 func NewIPCTelemetrySink(*Codec) WorkerTelemetrySink
 
 // package secret; plan 04 exposes this constructor so the worker can create
-// Value inside package secret without receiving a keyring or encryption service.
+// registration-bound Value owners without receiving a keyring or encryption service.
 type ScopedResolver interface {
 	ResolveScoped(context.Context, Scope, string) (string, error)
 }
-func NewScopedMaterializer(ScopedResolver) Materializer
+type ScopedAttemptBroker interface {
+	ScopedResolver
+	AuthorizeCandidate(context.Context, AttemptID, generation.ApplyTicket,
+		generation.PublicationSet) error
+	AuthorizeRecovery(context.Context, AttemptID, generation.RevisionSet,
+		map[generation.Domain]generation.PublishedGeneration) error
+	RevokeAttempt(context.Context, AttemptID) error
+}
+func NewScopedMaterializer(ScopedAttemptBroker, *capability.SecretDeclarationCatalog) Materializer
 
 // package platform
 var ErrLifecycleUnsupported error
@@ -362,6 +394,7 @@ type Supervisor struct {
 }
 func New(config *config.EffectiveConfig, journal generation.Journal,
 	sink lifecycle.WorkerTelemetrySink, audit lifecycle.AuditSink) (*Supervisor, error)
+func (s *Supervisor) InstallRecovery(context.Context, generation.RecoveryState) error
 func (s *Supervisor) Prepare(context.Context, generation.ApplyTicket, generation.Snapshot,
 	map[generation.Domain]generation.PublishedGeneration) (generation.PublicationSet, error)
 func (s *Supervisor) DiscardPrepared(context.Context, generation.PublicationSet) error
@@ -374,9 +407,13 @@ func (s *Supervisor) Execute(context.Context, lifecycle.Command) (lifecycle.Stat
 func (s *Supervisor) Status() lifecycle.Status
 ```
 
-The first authenticated `MessageHello` contains the only `WorkerBootstrapInput` for the exec-created worker. `LoadRequest` contains only the apply ticket, desired/published artifact descriptors, and listener descriptors; it cannot repeat or override bootstrap metadata. `LoadRequest` and `Ready` contain metadata only. Desired, published predecessors, effective configuration, capability manifest, and the resulting `generation.PublicationSet` are each canonical-encoded and transferred as `ArtifactBegin` → ordered `ArtifactChunk` frames → `ArtifactEnd`; no single frame may contain a `generation.Snapshot`, `generation.PublishedGeneration`, `generation.PublicationSet`, keyring, compiler, registry, process pointer, or secret resolver. `generation.Snapshot` and values containing one are never encoded or decoded directly with `encoding/json`: the sender uses `CanonicalBytes()` and accessors to populate an explicit wire DTO, while the receiver reconstructs the value with `generation.NewSnapshot(...)` and verifies canonical bytes, digest, and artifact ID before use. `ArtifactAssembler` rejects duplicate IDs, gaps, overlaps, declared or observed size above `MaxArtifactBytes`, extra bytes, truncated end, and digest mismatch; it streams into a mode-0600 temporary spool and unlinks it on every error. Because JSON base64 expands `ArtifactChunk.Data`, `MaxArtifactChunkBytes` returns `floor((maxFrameBytes-256)/4)*3`, and the codec still enforces the final encoded frame limit.
+The first authenticated `MessageHello` contains the only `WorkerBootstrapInput` for the exec-created worker. `LoadRequest`, `SecretAttemptOpen` and `Ready` contain metadata only and cannot repeat or override bootstrap metadata or load identity. Strict decoding enforces exactly one load shape: `LoadCandidate` requires non-nil `Ticket` and `Desired`, forbids `Revisions`, and streams desired plus published predecessors; `LoadRecovery` requires non-nil committed `Revisions`, forbids `Ticket` and `Desired`, and streams only verified published predecessors. Both require the published descriptor and listener descriptors. Desired, published predecessors, effective configuration, capability manifest, and the resulting `generation.PublicationSet` are each canonical-encoded and transferred as `ArtifactBegin` → ordered `ArtifactChunk` frames → `ArtifactEnd`; no single frame may contain a `generation.Snapshot`, `generation.PublishedGeneration`, `generation.PublicationSet`, keyring, compiler, registry, process pointer, or secret resolver. The resulting publication set is transferred exactly once before `SecretAttemptOpen`; the successful authorization pins that spool/descriptor, and later READY may only repeat the same descriptor rather than streaming replacement bytes. `generation.Snapshot` and values containing one are never encoded or decoded directly with `encoding/json`: the sender uses `CanonicalBytes()` and accessors to populate an explicit wire DTO, while the receiver reconstructs the value with `generation.NewSnapshot(...)` and verifies canonical bytes, digest, and artifact ID before use. `ArtifactAssembler` rejects duplicate IDs, gaps, overlaps, declared or observed size above `MaxArtifactBytes`, extra bytes, truncated end, and digest mismatch; it streams into a mode-0600 temporary spool and unlinks it on every error. Because JSON base64 expands `ArtifactChunk.Data`, `MaxArtifactChunkBytes` returns `floor((maxFrameBytes-256)/4)*3`, and the codec still enforces the final encoded frame limit.
 
-`WorkerBootstrapInput` is the complete cross-exec bootstrap contract. After reconstructing and strictly decoding its effective-config and capability-manifest artifacts, the worker creates its scoped secret materializer and calls plan 04's exact `compiler.NewWorkerCompilerFactory(manifest, effective, materializer)` locally; that factory creates its worker-local resource registry and each `NewGeneration` call creates the generation task registry and `compiler.Compiler`. The supervisor never attempts to marshal a Go interface or pointer across exec. Before launch, the supervisor derives a per-candidate secret grant from the immutable desired snapshot and trusted capability manifest: exact desired revision, plugin, resource key, declared secret field, and raw reference digest. A request must match that grant byte-for-byte; before READY is accepted, every requested `Scope.Resource` must appear in the returned dependency closure while its plugin/field/reference remain covered by the original grant. The supervisor returns only the requested material, never a keyring or encryption service. Both endpoints redact `Reference` and `Value`, bind responses to `RequestID`, verify `ValueDigest`, zero transient plaintext buffers after materialization, and reject requests after discard/rollback/retirement.
+`WorkerBootstrapInput` is the complete cross-exec bootstrap contract. After reconstructing and strictly decoding its effective-config and capability-manifest artifacts, the worker constructs Task 6's manifest-derived `capability.SecretDeclarationCatalog`, creates `secret.NewScopedMaterializer(scopedAttemptBroker, catalog)` and calls plan 04's exact `compiler.NewWorkerCompilerFactory(manifest, effective, materializer)` locally; the factory verifies the catalog digest, owns its worker-local resource registry and atomically returns an owned `PreparedGeneration` from `PrepareGeneration` or `PrepareRecovery`. The scoped materializer implements `RegisterCandidate`/`RegisterRecovery` locally: it recomputes the canonical mode-specific `AttemptID`, derives only the exact allowed closure from those arguments, and calls the broker's mode-specific authorization before returning a registration. The IPC broker canonical-encodes that exact `PublicationSet`, streams it as a bounded artifact, sends `SecretAttemptOpen`, and waits for the matching successful response before any `SecretRequest` can be emitted. For candidate mode the supervisor verifies ticket/digest identity, reconstructs the exact set, recomputes `CandidateAttemptID`, verifies every candidate snapshot/decision/closure key is backed by the already-streamed desired or predecessor artifacts, and intersects that closure with the manifest-derived desired grant. For recovery it recomputes the exact set from committed revisions plus verified published artifacts and requires `RecoveryAttemptID`. Only then does it install an attempt grant and answer success; rejection closes the candidate without returning secret material. Final READY must reference byte-identical preauthorized publication bytes, not a later replacement. `RevokeAttempt` sends `SecretAttemptClose` and removes only that process/attempt grant.
+
+The supervisor never attempts to marshal a Go interface, bare compiler or pointer across exec. Both candidate and recovery grants bind attempt ID, exact desired revision (`Ticket.DesiredRevision` or `Revisions.Desired`), plugin, resource key, explicit `Scope.Source`, field, strict policy and raw reference digest. Every later secret request must match the already-authorized attempt and grant byte-for-byte; source is never inferred from resource kind, and no response is sent based on a closure learned only at READY. The supervisor returns only the requested material, never a keyring or encryption service. Both endpoints redact `Reference` and `Value`, bind responses to `RequestID`, verify `ValueDigest`, zero transient plaintext buffers after materialization, and reject requests after failed authorization, discard, rollback, retirement or attempt close. Candidate and recovery workers at the same desired revision may coexist because process identity plus distinct domain-separated attempt IDs keep their A/B grants and responses isolated.
+
+`Supervisor.InstallRecovery` validates the complete `RecoveryState` before launching anything: every present candidate must match its domain revision; every absent domain with a non-zero committed revision must have an exact recovery failure and remains unavailable. It sends `LoadRecovery` only when at least one verified published candidate exists. An empty published map creates no process; a true zero-domain commit installs only the initialized desired fence, while all-domains-damaged recovery records terminal/unready failures and cannot confirm a non-empty publication.
 
 Plan 06 consumes `worker.HTTPRuntime`, `ListenerSet.RegisterHTTP`, `ListenerSet.Serve`, and `ListenerSet.Shutdown` exactly as declared here. Plan 07 consumes `lifecycle.StatusProvider`, `AuditSink`, `WorkerTelemetry`, `WorkerTelemetrySink`, stable states/reason codes including `ReasonMemoryPressureHard`, and command/event identities exactly as declared here.
 
@@ -489,7 +526,7 @@ func TestProtocolPayloadTypesCannotEmbedGenerationObjects(t *testing.T) {
 	if _, ok := reflect.TypeOf(LoadRequest{}).FieldByName("Bootstrap"); ok {
 		t.Fatal("LoadRequest duplicates WorkerBootstrapInput from HELLO")
 	}
-	for _, typ := range []reflect.Type{reflect.TypeOf(LoadRequest{}), reflect.TypeOf(Ready{})} {
+	for _, typ := range []reflect.Type{reflect.TypeOf(LoadRequest{}), reflect.TypeOf(SecretAttemptOpen{}), reflect.TypeOf(Ready{})} {
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
 			if field.Type == reflect.TypeOf(generation.Snapshot{}) ||
@@ -502,7 +539,7 @@ func TestProtocolPayloadTypesCannotEmbedGenerationObjects(t *testing.T) {
 }
 ```
 
-Cover monotonic sequence, truncated prefix/payload, unknown type, duplicate sequence, deadline cancellation, invalid state transition, one HELLO bootstrap followed by any number of LOAD generations, rejection of a second HELLO, stable reason-code format including `ReasonMemoryPressureHard`, and secret-free error frames. Artifact cases cover begin/chunk/end success, `MaxArtifactChunkBytes` with JSON expansion, exact `MaxArtifactBytes`, duplicate transfer ID, gaps, overlaps, truncated end, too many bytes, wrong digest, mode-0600 spool, cleanup after every failure, and round-tripping canonical desired/published/publication encodings without holding the complete bytes in memory. Secret message tests prove diagnostics never format request references or response values.
+Cover monotonic sequence, truncated prefix/payload, unknown type, duplicate sequence, deadline cancellation, invalid state transition, one HELLO bootstrap followed by any number of LOAD generations, rejection of a second HELLO, stable reason-code format including `ReasonMemoryPressureHard`, and secret-free error frames. Artifact cases cover begin/chunk/end success, `MaxArtifactChunkBytes` with JSON expansion, exact `MaxArtifactBytes`, duplicate transfer ID, gaps, overlaps, truncated end, too many bytes, wrong digest, mode-0600 spool, cleanup after every failure, and round-tripping canonical desired/published/publication encodings without holding the complete bytes in memory. Secret-attempt tests prove open carries only mode/attempt/publication metadata, never repeats ticket/revisions, requires the publication artifact to complete first, matches response request/attempt IDs, and makes close idempotent. Secret message tests prove diagnostics never format request references or response values.
 
 - [ ] **Step 2: Run and confirm RED**
 
@@ -512,9 +549,9 @@ Expected: FAIL because the package does not exist.
 
 - [ ] **Step 3: Implement the frame format and transition table**
 
-Wire format is `uint32 payload_length | uint16 version | uint64 sequence | uint8 type_length | type | JSON payload`, network byte order. Length covers bytes after the prefix; validate length/version/type/sequence before JSON decode. Valid transitions are starting→loading→catching-up→ready→active→quiesced→active, active/quiesced→draining→stopped, and any non-stopped state→failed; all others return `ErrInvalidTransition`. `FenceFor` copies desired plus independent HTTP/stream revisions and every domain artifact digest; `Equal` compares all four components, including map cardinality, without accepting a higher/lower partial fence.
+Wire format is `uint32 payload_length | uint16 version | uint64 sequence | uint8 type_length | type | JSON payload`, network byte order. Length covers bytes after the prefix; validate length/version/type/sequence before JSON decode. Valid transitions are starting→loading→catching-up→ready→active→quiesced→active, active/quiesced→draining→stopped, and any non-stopped state→failed; all others return `ErrInvalidTransition`. `FenceFor` copies desired plus independent HTTP/stream revisions and every domain artifact digest; `Equal` compares all components including map cardinality and never treats one fence as an implicit subset of another. `RecoveryFence` deliberately projects the complete committed `RevisionSet` onto only the verified `PublishedGeneration` entries: it keeps `Revisions.Desired`, validates each present artifact against its domain revision, and omits failed/missing domains. Therefore a partial-damaged recovery has one exact projected fence, while `RecoveryState.Failures` separately proves why a non-zero committed domain is absent.
 
-Implement `ArtifactAssembler` as a single-pass state machine. `ArtifactBegin` reserves one descriptor after validating ID, digest, and `Size <= MaxArtifactBytes`; chunks must use the same transfer ID and exact next offset, and are hashed while written to a private temporary file; `ArtifactEnd` must repeat the declared size and digest, fsync/rewind the completed spool, and transfer file ownership to the caller. Canonical decode reads from that spool and verifies the decoded generation identity against `LoadRequest` or `Ready` metadata before use. Never call `io.ReadAll` for these artifacts and never place a full generation value in `Frame.Payload`.
+Implement `ArtifactAssembler` as a single-pass state machine. `ArtifactBegin` reserves one descriptor after validating ID, digest, and `Size <= MaxArtifactBytes`; chunks must use the same transfer ID and exact next offset, and are hashed while written to a private temporary file; `ArtifactEnd` must repeat the declared size and digest, fsync/rewind the completed spool, and transfer file ownership to the caller. Canonical decode reads from that spool and verifies the decoded generation identity against `LoadRequest`, `SecretAttemptOpen` or `Ready` metadata before use. The attempt-open state machine accepts only a completed publication spool tied to the current LOAD, consumes one matching response before permitting secret requests, and retains that exact descriptor for READY equality. Never call `io.ReadAll` for these artifacts and never place a full generation value in `Frame.Payload`.
 
 - [ ] **Step 4: Run race tests and commit**
 
@@ -579,7 +616,7 @@ git commit -m "feat(supervisor): own worker IPC and listeners"
 **Files:**
 - Create: `pkg/worker/bootstrap.go`, `bootstrap_test.go`, `listeners.go`, `listeners_test.go`, `secrets.go`, `secrets_test.go`
 - Modify: `pkg/compiler/types.go`, `compiler_test.go`
-- Modify: `pkg/secret/materializer.go`, `materializer_test.go` — add only `ScopedResolver`/`NewScopedMaterializer`; keep `secret.Value` construction inside `pkg/secret`.
+- Modify: `pkg/secret/materializer.go`, `materializer_test.go` — add `ScopedAttemptBroker`/`NewScopedMaterializer` plus local `RegisterCandidate`/`RegisterRecovery` attempt views; keep `secret.Value` construction inside `pkg/secret`.
 
 **Interfaces:**
 - Consumes: cross-exec `lifecycle.WorkerBootstrapInput`, chunked artifact spools, `compiler.PreparedGeneration`, scoped secret IPC, and inherited descriptor manifest.
@@ -622,23 +659,66 @@ func TestWorkerBuildsCompilerLocallyAndRequestsOnlyScopedSecrets(t *testing.T) {
 		CapabilityManifest: fixture.CapabilityManifestDescriptor(),
 	})
 	fixture.SendBootstrapArtifacts(validEffectiveConfigBytes(t), validCapabilityManifestBytes(t))
+	ticket := ticketForRevision(42)
+	desired := fixture.DesiredDescriptor(42)
 	fixture.SendLoad(lifecycle.LoadRequest{
-		Ticket:    ticketForRevision(42),
-		Desired:   fixture.DesiredDescriptor(42),
+		Mode:      lifecycle.LoadCandidate,
+		Ticket:    &ticket,
+		Desired:   &desired,
 		Published: fixture.PublishedDescriptor(41),
 		Listeners: fixture.ListenerDescriptors(),
 	})
-	fixture.SendGenerationArtifacts(desiredWithSecretRef(t, "$secret://route/r1"), emptyPublished(t))
+	fixture.SendGenerationArtifacts(desiredWithSecretRef(t, "$secret://vault/test1/route/key"), emptyPublished(t))
+	open := fixture.ExpectCandidateAttemptOpen()
+	wantAttempt := secret.CandidateAttemptID(ticket, fixture.ExpectedCandidatePublicationSet(t))
+	if open.Attempt != wantAttempt { t.Fatalf("attempt open = %x, want %x", open.Attempt, wantAttempt) }
+	fixture.ApproveSecretAttempt(open)
 	request := fixture.ReceiveSecretRequest()
-	wantScope := secret.Scope{Generation: 42, Plugin: "key-auth",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "key"}
-	if request.DesiredRevision != 42 || request.Scope != wantScope || request.Reference != "$secret://route/r1" {
+	wantScope := secret.Scope{Generation: 42, Attempt: wantAttempt, Plugin: "key-auth",
+		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
+		Source: capability.SecretPluginConfig, Field: "key"}
+	if request.DesiredRevision != 42 || request.Scope != wantScope || request.Reference != "$secret://vault/test1/route/key" {
 		t.Fatalf("secret request = %+v", request)
 	}
 	fixture.SendSecretResponse(request.RequestID, []byte("resolved"))
 	fixture.ExpectStatus(lifecycle.StateReady)
 	fixture.AssertWorkerCreatedResourceAndTaskRegistries()
 	fixture.AssertNoParentPointerOrKeyringTransferred()
+}
+
+func TestWorkerRecoveryLoadsOnlyCommittedPublishedArtifacts(t *testing.T) {
+	fixture := newBootstrappedWorkerFixture(t)
+	revisions := generation.RevisionSet{Desired: 42, HTTP: 40, Stream: 41}
+	fixture.SendLoad(lifecycle.LoadRequest{Mode: lifecycle.LoadRecovery, Revisions: &revisions,
+		Published: fixture.PublishedDescriptorForRevisions(revisions), Listeners: fixture.ListenerDescriptors()})
+	fixture.SendPublishedArtifacts(publishedWithSecretRef(t, revisions, "$secret://vault/test1/route/key"))
+	open := fixture.ExpectRecoveryAttemptOpen()
+	wantAttempt := secret.RecoveryAttemptID(revisions, fixture.VerifiedPublished(t))
+	if open.Attempt != wantAttempt { t.Fatalf("recovery attempt open = %x, want %x", open.Attempt, wantAttempt) }
+	fixture.ApproveSecretAttempt(open)
+	request := fixture.ReceiveSecretRequest()
+	if request.DesiredRevision != revisions.Desired || request.Scope.Attempt != wantAttempt {
+		t.Fatalf("secret request revision/attempt = %d/%x", request.DesiredRevision, request.Scope.Attempt)
+	}
+	fixture.SendSecretResponse(request.RequestID, []byte("resolved"))
+	ready := fixture.ExpectReady()
+	fixture.AssertPublicationMatchesCommittedRevisions(ready.Publication, revisions)
+	fixture.AssertNoDesiredArtifactTransferred()
+}
+
+func TestSupervisorRecoveryUsesVerifiedSubsetFenceAndKeepsMissingDomainUnready(t *testing.T) {
+	recovery := recoveryFixture(t, generation.RevisionSet{Desired: 42, HTTP: 40, Stream: 41},
+		map[generation.Domain]generation.PublishedGeneration{generation.DomainHTTP: publishedHTTP(t, 40)},
+		[]generation.RecoveryFailure{{Domain: generation.DomainStream, Code: "artifact-corrupt"}})
+	fixture := newSupervisorFixture(t)
+	if err := fixture.supervisor.InstallRecovery(context.Background(), recovery); err != nil { t.Fatal(err) }
+	ready := fixture.ExpectRecoveryReady()
+	want, err := lifecycle.RecoveryFence(recovery.Revisions, recovery.Published)
+	if err != nil { t.Fatal(err) }
+	if !ready.Fence.Equal(want) { t.Fatalf("READY fence = %#v, want %#v", ready.Fence, want) }
+	fixture.AssertDomainActive(generation.DomainHTTP, 40)
+	fixture.AssertDomainUnavailable(generation.DomainStream)
+	fixture.AssertReadinessFalse("artifact-corrupt")
 }
 
 func TestWorkerRejectsSecondHelloInsteadOfReplacingBootstrap(t *testing.T) {
@@ -652,7 +732,7 @@ func TestWorkerRejectsSecondHelloInsteadOfReplacingBootstrap(t *testing.T) {
 }
 ```
 
-Cover duplicate/missing runtime IDs, a runtime registered for the wrong descriptor, Serve before/after activation, shutdown order and joined errors, invalid descriptor manifest, bootstrap config/manifest digest mismatch, unknown config fields, load/compile/probe failure, chunk gaps/truncation/oversize, READY publication digest mismatch, stale/lower fence, duplicate command ID idempotency, secret response request-ID/digest mismatch, secret request after candidate discard, parent channel EOF, and cancellation.
+Cover duplicate/missing runtime IDs, a runtime registered for the wrong descriptor, Serve before/after activation, shutdown order and joined errors, invalid descriptor manifest, bootstrap config/manifest digest mismatch, unknown config fields, load/compile/probe failure, chunk gaps/truncation/oversize, READY publication digest mismatch, stale/lower fence, duplicate command ID idempotency, secret attempt-open response/request-ID/digest mismatch, secret response request-ID/digest mismatch, secret request before attempt authorization or after candidate discard, parent channel EOF, and cancellation. Add a table that rejects unknown mode, candidate without ticket/desired, candidate with revisions, recovery without revisions, recovery with ticket/desired, recovery artifact revision mismatch, attempt-ID mismatch/change, candidate publication resources outside desired/predecessor inputs, READY bytes different from the authorized set and recovery grant requests outside committed closures. Add an overlap test that keeps recovery Published=B active while launching a same-desired-revision candidate=A; assert different attempt IDs, correct per-process values, cross-attempt response rejection and no premature revocation of B during candidate rollback.
 
 - [ ] **Step 2: Run and confirm RED**
 
@@ -662,11 +742,11 @@ Expected: FAIL because worker bootstrap does not exist.
 
 - [ ] **Step 3: Implement load→compile→probe→READY→ACTIVATE**
 
-The hidden worker command receives only inherited FD numbers plus exactly one first HELLO containing `WorkerBootstrapInput`. `Bootstrap.Run` rejects LOAD before HELLO and rejects every later HELLO as `ReasonProtocolViolation`; it never merges or replaces bootstrap state. It reconstructs the effective-config and capability-manifest spools named by that HELLO through the artifact state machine, strictly decodes both, constructs the IPC-backed `secret.NewScopedMaterializer`, and calls `compiler.NewWorkerCompilerFactory` locally. `WorkerCompilerFactory.NewGeneration` then creates the worker-local task registry and compiler for each LOAD. No registry, compiler, materializer implementation, keyring, journal handle, or process pointer crosses exec.
+The hidden worker command receives only inherited FD numbers plus exactly one first HELLO containing `WorkerBootstrapInput`. `Bootstrap.Run` rejects LOAD before HELLO and rejects every later HELLO as `ReasonProtocolViolation`; it never merges or replaces bootstrap state. It reconstructs the effective-config and capability-manifest spools named by that HELLO through the artifact state machine, strictly decodes both, constructs the manifest-derived declaration catalog plus IPC-backed `secret.NewScopedMaterializer(scopedAttemptBroker, catalog)`, and calls `compiler.NewWorkerCompilerFactory` locally. A `LoadCandidate` request reconstructs its desired snapshot and calls the single atomic `WorkerCompilerFactory.PrepareGeneration`; that factory computes the effective set, calls local `RegisterCandidate`, blocks in `AuthorizeCandidate` until the supervisor has verified and installed the exact attempt grant, constructs `GenerationCapability` from the returned registration and sends only scopes bearing its `CandidateAttemptID`. A `LoadRecovery` request has no desired artifact and calls `PrepareRecovery(ctx, *request.Revisions, published, onFailure)`; it analogously calls local `RegisterRecovery`/`AuthorizeRecovery` and uses `RecoveryAttemptID`. Any mixed, missing or mode-incompatible field is a protocol violation. No registry, bare compiler, materializer implementation, keyring, journal handle, or process pointer crosses exec.
 
 The worker reconstructs descriptors and registers every compiler-produced HTTP listener runtime by descriptor ID before serving; duplicate, missing, and unused IDs fail preparation. `ListenerSet.Serve` starts each registered runtime on its matching inherited listener but holds accepts behind the common gate. `RegisterHTTP` is forbidden after Serve begins. `ListenerSet.Shutdown` closes the gate, invokes every registered runtime's `Shutdown` in sorted descriptor-ID order, waits all Serve calls, and joins exact errors so plan 06 has one HTTP drain owner.
 
-LOAD carries only the apply ticket, desired/published artifact descriptors, and listener descriptors. The supervisor then streams canonical desired and published-predecessor bytes with bounded begin/chunk/end frames. The worker decodes the verified spools, calls `Compiler.Prepare`, probes the result, enters catching-up, canonical-encodes the resulting `PublicationSet` to a private spool, streams that result to the supervisor, and finally sends READY containing only the publication descriptor and fence. The supervisor reconstructs and verifies the publication bytes before marking the process READY. Worker and supervisor both validate that `FenceFor(set)` equals the ticket's desired revision and independent domain revisions/digests. ACTIVATE opens gates only after exact fence equality. Replacing or discarding a catching-up candidate closes its `PreparedGeneration`, disables its secret capability, sends STOP, waits through `TerminateGrace`, and kills it if necessary.
+For candidate LOAD, the supervisor streams canonical desired and published-predecessor bytes; for recovery LOAD, it streams only verified published predecessors and the committed `RevisionSet` remains metadata. The worker calls the mode-specific atomic factory entrypoint, which returns a fully owned prepared generation or cleans up on failure. Candidate preparation emits the Task 5 publication set; recovery reconstructs the exact committed set with `DesiredRevision = Revisions.Desired` and byte-identical verified published candidates, rejecting any present HTTP/stream artifact revision that differs from the matching `RevisionSet` field. The worker probes it, enters catching-up, canonical-encodes that `PublicationSet` to a private spool, streams it to the supervisor, and finally sends READY containing only the publication descriptor and fence. The supervisor reconstructs and verifies the publication bytes before marking the process READY. Both sides validate candidate fences against the ticket; for recovery both compute `RecoveryFence(revisions, verifiedPublished)` and require READY/FenceFor(reconstructedSet) to equal that projected fence exactly. Missing non-zero domains are validated only through `RecoveryState.Failures` and keep readiness false; they are never forged into the worker's partial set. ACTIVATE opens gates only after exact fence equality. Replacing or discarding a catching-up candidate closes its `PreparedGeneration`, disables its secret capability, sends STOP, waits through `TerminateGrace`, and kills it if necessary.
 
 - [ ] **Step 4: Run race tests and commit**
 
@@ -727,7 +807,7 @@ func TestSupervisorFinalizeOnlyEnqueuesRetirement(t *testing.T) {
 }
 ```
 
-Also prove activation failure after old QUIESCE resumes old; stale READY is killed; repeated `DiscardPrepared` is success without touching the active worker; candidate stop failure is joined with Stage failure; commit success calls finalize and acknowledges before the retirement loop performs DRAIN; no ack precedes ACTIVE+commit+finalize; only one worker accepts at every observed transition. Secret tests authorize a request only when `DesiredRevision`, `Scope.Generation`, plugin/resource/field scope, and reference digest match the supervisor-derived candidate grant and the returned closure covers the scope; cross-generation, post-discard, unknown field/reference, duplicate request ID, closure omission, and active-predecessor borrowing all return stable redacted error codes.
+Also prove activation failure after old QUIESCE resumes old; stale READY is killed; repeated `DiscardPrepared` is success without touching the active worker; candidate stop failure is joined with Stage failure; commit success calls finalize and acknowledges before the retirement loop performs DRAIN; no ack precedes ACTIVE+commit+finalize; only one worker accepts at every observed transition. Secret tests first require a successful `SecretAttemptOpen` handshake whose bounded canonical publication artifact produces the exact mode-specific attempt ID and closure grant; no `SecretRequest` may receive material before that acknowledgement. After authorization, require `DesiredRevision`, `Scope.Generation`, `Scope.Attempt`, plugin/resource/source/field scope and reference digest to match the installed grant. Cross-generation/attempt/source, post-discard/revoke, unknown field/reference, duplicate request ID, closure omission, changed READY publication and active-predecessor borrowing all return stable redacted error codes.
 
 Add `TestSupervisorPublicationEngineConfirmActive` subtests for an exact requested-domain subset, a missing/mismatched artifact, a canceled context, an initialized zero-domain fence, and an active worker containing an additional independently active older domain. Include a deterministic lock-wait cancellation case: hold the supervisor mutex, start ConfirmActive, cancel, then unlock. Assert success only for exact requested identities, `generation.ErrActiveGenerationMismatch` for identity failures, context cancellation precedence before and immediately after the lock, and zero IPC/process/activation/retirement calls in every confirmation case.
 
@@ -741,7 +821,7 @@ Expected: FAIL because process activation is not the publication owner.
 
 - [ ] **Step 3: Implement the exact transaction**
 
-For an empty required-domain ticket, `Prepare` creates only a synthetic pending record and returns an empty `PublicationSet`; it does not derive a grant, launch a worker or perform IPC. For a non-empty ticket, `Prepare` derives the candidate secret grant, launches a worker, and transfers bootstrap/config/manifest/desired/predecessor data using metadata plus bounded artifact frames. The worker locally creates and retains its `compiler.PreparedGeneration`; the supervisor reconstructs the returned publication artifact, checks that all secret requests are covered by its closure/decisions, validates exact `PublicationSet` identity and READY fence, and retains the candidate process plus predecessor process. The grant is keyed by pending worker identity and desired revision and exists only from launch through discard, rollback, process exit, or successful activation ownership transfer.
+For an empty required-domain ticket, `Prepare` creates only a synthetic pending record and returns an empty `PublicationSet`; it does not derive a grant, launch a worker or perform IPC. For a non-empty ticket, `Prepare` derives only the manifest/declaration/reference grant candidates, launches a worker, and transfers bootstrap/config/manifest/desired/predecessor data using metadata plus bounded artifact frames. Before materialization, `SecretAttemptOpen` supplies the exact candidate publication artifact; the supervisor verifies it as specified above, narrows the candidates to its exact closure/decisions, installs a grant keyed by pending worker identity plus `AttemptID`, and only then acknowledges authorization. The worker locally creates and retains its `compiler.PreparedGeneration`; READY must repeat the preauthorized descriptor, and the supervisor rechecks byte identity plus the exact `PublicationSet` fence without performing a second or retrospective authorization. The attempt grant exists only from successful open through discard, rollback, process exit, explicit revoke, or successful activation ownership transfer.
 
 For a synthetic empty publication, `DiscardPrepared` atomically removes only the exact pending record and performs no grant, process or IPC operation. For a non-empty publication, it atomically removes the matching pending record, disables its secret capability, then sends STOP, waits through `TerminateGrace`, kills if necessary, and waits for process exit so the worker closes its `PreparedGeneration`. It is idempotent after successful removal and never affects active/predecessor processes. A mismatched publication identity returns `ErrPreparedWorkerNotFound`. Coordinator calls it with `context.WithoutCancel`; stop/kill/wait errors are returned so `errors.Join` retains both Stage and cleanup evidence.
 
@@ -842,7 +922,7 @@ git commit -m "feat(worker): drain requests hijacks and owned tasks"
 - Modify: `pkg/observability/metrics/config_apply.go`, `config_apply_test.go`
 
 **Interfaces:**
-- Consumes: `LifecyclePolicy` restart fields, committed recovery generation, worker exit/status.
+- Consumes: `LifecyclePolicy` restart fields, committed `RevisionSet` plus `PublishedGeneration` artifacts loaded through `WorkerCompilerFactory.PrepareRecovery`, worker exit/status.
 - Produces: deterministic restart ledger and terminal `lifecycle.Status` projection.
 
 - [ ] **Step 1: Write failing crash-loop tests**
@@ -872,7 +952,7 @@ Expected: FAIL because restart/probation ownership is absent.
 
 - [ ] **Step 3: Implement bounded policy**
 
-A candidate is probationary until `ProbationPeriod` elapses active without crash. Crashes inside `RestartWindow` consume the candidate budget; exhaustion rolls back to the last committed healthy predecessor. If no predecessor can load/activate, status becomes terminal/unready with `no-healthy-generation`; no infinite restart goroutine remains.
+A candidate is probationary until `ProbationPeriod` elapses active without crash. Crashes inside `RestartWindow` consume the candidate budget; exhaustion rolls back to the last committed healthy predecessor. A restart or rollback of committed state sends only `LoadRecovery` with the predecessor's committed `RevisionSet` and verified published artifacts, then reconstructs the worker through `WorkerCompilerFactory.PrepareRecovery`; it never streams desired state into candidate preparation or reruns publication policy. If no predecessor can load/activate, status becomes terminal/unready with `no-healthy-generation`; no infinite restart goroutine remains.
 
 - [ ] **Step 4: Run race tests and commit**
 

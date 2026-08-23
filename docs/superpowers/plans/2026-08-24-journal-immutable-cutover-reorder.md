@@ -118,7 +118,7 @@ git commit -m "refactor(plugin): derive runtime descriptors from manifest"
 After A1–A3 are merged, complete the remaining half of Immutable Task 1:
 
 - create `pkg/runtime/dependencies.go` and its test;
-- use the real `secret.Materializer`, `ResourceRegistry` and `TaskRegistry` types;
+- use the real attempt-bound `secret.GenerationCapability`, `ResourceRegistry` and `TaskRegistry` types;
 - reject incomplete dependencies.
 
 This split removes the original Task 1 ↔ Task 3 compile-time cycle without temporary types.
@@ -150,10 +150,11 @@ Execute Durable Task 9 and Immutable Task 9 as one reviewed integration unit in 
 The unit must:
 
 1. Open and recover the journal before provider startup.
-2. Compile only verified committed published artifacts for serving; never rebuild serving state from desired state during recovery.
-3. Make the only publication path `provider -> Coordinator.Apply -> Compiler.Prepare -> Journal.Stage -> GenerationEngine.Activate -> Journal.Commit -> FinalizeActivation -> acknowledgement`.
+2. Recover serving state only through `WorkerCompilerFactory.PrepareRecovery(ctx, recovery.Revisions, recovery.Published, onTaskFailure)`; compile only verified committed published artifacts and never rebuild serving state from `recovery.Desired`.
+3. Make the only publication path `provider -> Coordinator.Apply -> GenerationEngine.Prepare -> WorkerCompilerFactory.PrepareGeneration -> Journal.Stage -> GenerationEngine.Activate -> Journal.Commit -> FinalizeActivation -> acknowledgement`.
 4. Advance etcd/standalone local cursor and decision state only from an acknowledgement.
 5. Bind HTTP handler, TLS selector, consumer credentials/groups, metadata, proto, materialized secrets, plugin instances, upstream leases and stream router to the owning prepared generation.
+   The materializer opens domain-separated `CandidateAttemptID`/`RecoveryAttemptID` views from `GenerationSecretResolver` using only Task 5's effective candidate publication or verified recovery Published closures; same-desired-revision A/B attempts may overlap but cannot cross-read. The cutover deletes the transitional Store resolver before legacy resource buckets.
 6. Retain the predecessor through journal commit, restore it on partial activation or commit failure, and retire it only after finalize.
 7. Preserve old-generation resources for draining requests and naturally closing hijacked connections.
 8. Delete Event/hooks, legacy resource buckets, in-memory last-good state, package-global production Store getters, `route.Builder`, `ClusterRegistry`, mutable stream `Reload`, and proxy-only lifecycle facades in the same integration unit.

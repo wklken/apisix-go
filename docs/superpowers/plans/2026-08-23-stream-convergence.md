@@ -19,7 +19,7 @@
 - First startup with no valid stream predecessor fails closed. A later invalid stream resource may use per-resource last-good only when the journal supplies a valid predecessor and records the exact `ResourceDecision`. Explicit delete is never resurrected as last-good.
 - Listener addresses are static effective configuration. The supervisor binds them once; workers inherit descriptors/FDs and never call `net.Listen` for production listeners. TLS policy, routes, plugins, and upstream connections are generation-owned.
 - Linux `amd64/arm64` is the production stream platform. Native macOS `amd64/arm64` runs stream smoke. Windows remains source-buildable experimental with no official artifact. UDP/QUIC, NGINX/OpenResty stream phases, Lua filters/scripts, external plugin runners, shared-dict exactness, and kernel eBPF/socket-routing behavior remain explicit deferred native/runtime gaps.
-- No new global config/store/plugin/TLS/metric singleton is allowed. Secrets use `secret.Materializer`; shared clients use `runtime.ResourceRegistry`; all goroutines use `runtime.TaskRegistry` or request/connection-owned task groups.
+- No new global config/store/plugin/TLS/metric singleton is allowed. Secrets use the prepared generation's `secret.GenerationCapability`; shared clients use `runtime.ResourceRegistry`; all goroutines use `runtime.TaskRegistry` or request/connection-owned task groups.
 - Every Go/Make command runs through `bash -lc 'source .envrc && ...'`. Verification is impact-scoped; real-process stream integration cases run one selector at a time.
 - Decision 196C applies: atomically delete the mutable `Server.startStreamProxy`/`stream.Runtime.Reload` path, MQTT-only router construction, direct listener ownership, and their tests. No legacy adapter, fallback switch, or dual publication path remains.
 
@@ -220,8 +220,8 @@ func (r *ConnectionRegistry) Admit(*Connection) (release func(), err error)
 func (r *ConnectionRegistry) Quiesce()
 func (r *ConnectionRegistry) Drain(context.Context) (DrainSnapshot, error)
 
-func CompileListenerPolicies(*config.EffectiveConfig, []resource.SSL, secret.Materializer) ([]ListenerPolicy, error)
-func CompileUpstreamTLS(resource.StreamRoute, *config.EffectiveConfig, []resource.SSL, secret.Materializer) (UpstreamTLSPlan, error)
+func CompileListenerPolicies(*config.EffectiveConfig, []resource.SSL, secret.GenerationCapability) ([]ListenerPolicy, error)
+func CompileUpstreamTLS(resource.StreamRoute, *config.EffectiveConfig, []resource.SSL, secret.GenerationCapability) (UpstreamTLSPlan, error)
 func CompileChain([]Binding, ProtocolOwner) (*Chain, error)
 func CompileProtocolOwner(string, plugin.Plugin) (ProtocolOwner, error)
 ```
@@ -293,8 +293,12 @@ type PublicationEngine interface {
 }
 
 // package compiler
-func (c *Compiler) Prepare(context.Context, generation.ApplyTicket, generation.Snapshot,
-	map[generation.Domain]generation.PublishedGeneration) (*PreparedGeneration, error)
+func (f *WorkerCompilerFactory) PrepareGeneration(context.Context, generation.ApplyTicket,
+	generation.Snapshot, map[generation.Domain]generation.PublishedGeneration,
+	func(runtime.TaskFailure)) (*PreparedGeneration, error)
+func (f *WorkerCompilerFactory) PrepareRecovery(context.Context, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+	func(runtime.TaskFailure)) (*PreparedGeneration, error)
 func (p *PreparedGeneration) Stream() (*StreamSnapshot, bool)
 
 // package qualification
@@ -323,7 +327,7 @@ func TestCompileListenerPoliciesCoversTCPAndTLSProxyMatrix(t *testing.T) {
 		{Addr: "127.0.0.1:9001", ProxyProtocol: true},
 		{Addr: "127.0.0.1:9002", ProxyProtocolToUpstream: true},
 	})
-	policies, err := CompileListenerPolicies(effective, streamSSLFixtures(t), fixtureMaterializer(t))
+	policies, err := CompileListenerPolicies(effective, streamSSLFixtures(t), fixtureGenerationCapability(t))
 	if err != nil { t.Fatal(err) }
 	if len(policies) != 4 { t.Fatalf("policies = %d", len(policies)) }
 	if policies[1].Transport != TransportTLS || policies[2].ProxyProtocol != ProxyProtocolAccept || !policies[3].ProxyToUpstream {
@@ -417,7 +421,7 @@ git commit -m "feat(stream): enforce proxy protocol boundaries"
 - Modify: `pkg/worker/bootstrap.go`, `bootstrap_test.go`
 - Modify: `pkg/generation/dependency.go`, `dependency_test.go`
 
-**Interfaces:** Consumes exact plan 03 `Snapshot`, `PublishedGeneration`, `ResourceDecision`, `PublicationSet`, and `PublicationEngine` including `DiscardPrepared`; plan 04 `Compiler.Prepare`/`PreparedGeneration`; and plan 05 `supervisor.Supervisor` publication ownership. Produces additive `StreamSnapshot.ListenerPolicies()` while retaining `Revision()`/`Router()`. It does not recreate or extend `server.GenerationEngine`.
+**Interfaces:** Consumes exact plan 03 `Snapshot`, `PublishedGeneration`, `ResourceDecision`, `PublicationSet`, and `PublicationEngine` including `DiscardPrepared`; plan 04 `WorkerCompilerFactory.PrepareGeneration`/`PrepareRecovery` and `PreparedGeneration`; and plan 05 `supervisor.Supervisor` publication ownership. Produces additive `StreamSnapshot.ListenerPolicies()` while retaining `Revision()`/`Router()`. It does not recreate or extend `server.GenerationEngine`.
 
 - [ ] **Step 1: Write failing independent-domain publication tests**
 
@@ -425,8 +429,8 @@ git commit -m "feat(stream): enforce proxy protocol boundaries"
 func TestPrepareKeepsHTTPAndPublishesIndependentStreamRevision(t *testing.T) {
 	previous := publishedFixture(t, generation.DomainHTTP, 40)
 	ticket, desired := streamDesiredFixture(t, 41)
-	prepared, err := compilerFixture(t).Prepare(context.Background(), ticket, desired,
-		map[generation.Domain]generation.PublishedGeneration{generation.DomainHTTP: previous})
+	prepared, err := workerCompilerFactoryFixture(t).PrepareGeneration(context.Background(), ticket, desired,
+		map[generation.Domain]generation.PublishedGeneration{generation.DomainHTTP: previous}, ignoreTaskFailure)
 	if err != nil { t.Fatal(err) }
 	streamSnapshot, ok := prepared.Stream()
 	if !ok || streamSnapshot.Revision() != 41 { t.Fatalf("stream snapshot = %#v/%t", streamSnapshot, ok) }
@@ -674,14 +678,14 @@ git commit -m "feat(stream): own inherited listeners and connection drain"
 - Modify: `pkg/resource/route.go`, `ssl.go`, tests
 - Modify: `pkg/compiler/stream.go`, `stream_test.go`
 
-**Interfaces:** Produces `CompileUpstreamTLS` and consumes plan 04 `secret.Materializer`. Downstream listener TLS remains `ListenerPolicy.TLS`; upstream TLS is per compiled route/target.
+**Interfaces:** Produces `CompileUpstreamTLS` and consumes the plan 04 attempt-bound `secret.GenerationCapability`. Every materialization scope uses both its fixed generation and `capability.AttemptID()`; downstream listener TLS remains `ListenerPolicy.TLS`, while upstream TLS is per compiled route/target.
 
 - [ ] **Step 1: Write failing TLS trust/SNI tests**
 
 ```go
 func TestCompileUpstreamTLSSeparatesDialHostTrustSNIAndClientIdentity(t *testing.T) {
 	route := streamRouteTLSFixture(t, "10.0.0.8", 9443, "broker.example.test", "client-cert-1")
-	plan, err := CompileUpstreamTLS(route, effectiveTLSFixture(t), sslFixtures(t), fixtureMaterializer(t))
+	plan, err := CompileUpstreamTLS(route, effectiveTLSFixture(t), sslFixtures(t), fixtureGenerationCapability(t))
 	if err != nil { t.Fatal(err) }
 	if !plan.Enabled || !plan.Verify || plan.ServerName != "broker.example.test" || plan.RootCAs == nil || plan.ClientCertificate == nil {
 		t.Fatalf("TLS plan = %#v", plan)

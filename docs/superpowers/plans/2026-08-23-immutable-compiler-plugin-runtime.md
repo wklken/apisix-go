@@ -71,8 +71,8 @@
 
 **Modify:**
 
-- `pkg/plugin/base/types.go` — replace raw encryption dependency with scoped `secret.Materializer`; retain configuration and phase callback implementations.
-- `pkg/plugin/base/secrets.go` — accept a scope and materializer; reject unowned references before `PostInit`.
+- `pkg/plugin/base/types.go` — replace raw encryption dependency with attempt-bound `secret.GenerationCapability`; retain configuration and phase callback implementations.
+- `pkg/plugin/base/secrets.go` — accept a scope and attempt-bound `GenerationCapability`; reject unowned references before `PostInit`.
 - `pkg/plugin/types.go` — reduce the universal plugin contract and declare optional lifecycle/handler interfaces.
 - `pkg/plugin/init.go` — construct plugins with immutable dependencies while consuming generated factory facts.
 - `pkg/plugin/executor.go`, `request_stage_registry.go`, `capability_registry.go`, `response_executor.go`, `streaming_executor.go`, `log_executor.go` — carry immutable manifest descriptors on bindings and guard every plugin callback.
@@ -102,11 +102,55 @@ Delete the old `Builder`, `NewBuilder`, `NewBuilderWithServerAddr`, `NewBuilderW
 These names and signatures are consumed by plans 05–09. If implementation evidence requires changing one, amend this plan, the total program plan and every consuming child plan in one documentation change before code is written.
 
 ```go
+// package capability
+type SecretDeclarationSource string
+const (
+	SecretPluginConfig   SecretDeclarationSource = "plugin_config"
+	SecretPluginMetadata SecretDeclarationSource = "plugin_metadata"
+)
+
+type SecretDeclaration struct {
+	Factory string                  `yaml:"factory"`
+	Source  SecretDeclarationSource `yaml:"source"`
+	Field   string                  `yaml:"field"`
+	Strict  bool                    `yaml:"strict"`
+}
+
+// PluginCapability.SecretDeclarations is the only editable field-level secret declaration source.
+// Parse requires Factory to name a factory owned by the same capability and rejects unknown
+// sources, non-canonical/duplicate factory-source-fields and conflicting strict policies.
+type PluginCapability struct {
+	// existing manifest-owned runtime fields omitted here
+	SecretDeclarations []SecretDeclaration `yaml:"secret_declarations"`
+}
+
+type SecretDeclarationCatalog struct { declarations []SecretDeclaration }
+func NewSecretDeclarationCatalog(*Manifest) (*SecretDeclarationCatalog, error)
+func (c *SecretDeclarationCatalog) Declarations() []SecretDeclaration
+func (c *SecretDeclarationCatalog) Lookup(string, SecretDeclarationSource, string) (SecretDeclaration, bool)
+func (c *SecretDeclarationCatalog) Digest() [32]byte
+
+// package data_encryption
+type Service struct {
+	enabled bool
+	keyring []string
+	catalog *capability.SecretDeclarationCatalog
+}
+func NewService(bool, []string, *capability.SecretDeclarationCatalog) Service
+func (s Service) DeclarationDigest() [32]byte
+func (s Service) HasEncryptedPluginMetadata(string) bool
+func (s Service) ValidateDeclaration(string, capability.SecretDeclarationSource, string) (capability.SecretDeclaration, error)
+func (s Service) ResolveDeclared(string, capability.SecretDeclarationSource, string, string) (string, error)
+
 // package secret
+type AttemptID [32]byte
+
 type Scope struct {
 	Generation uint64
+	Attempt    AttemptID
 	Plugin     string
 	Resource   generation.ResourceKey
+	Source     capability.SecretDeclarationSource
 	Field      string
 }
 
@@ -118,46 +162,90 @@ type Value struct {
 func (v Value) Use(func(string) error) error
 func (v Value) Digest() [32]byte
 
-type ReferenceResolver interface {
-	Resolve(context.Context, string) (string, error)
-}
-
 type ScopedResolver interface {
 	ResolveScoped(context.Context, Scope, string) (string, error)
 }
 
-type Materializer interface {
+type ScopedAttemptBroker interface {
+	ScopedResolver
+	AuthorizeCandidate(context.Context, AttemptID, generation.ApplyTicket,
+		generation.PublicationSet) error
+	AuthorizeRecovery(context.Context, AttemptID, generation.RevisionSet,
+		map[generation.Domain]generation.PublishedGeneration) error
+	RevokeAttempt(context.Context, AttemptID) error
+}
+
+type AttemptRegistration interface {
+	AttemptID() AttemptID
 	Materialize(context.Context, Scope, string) (Value, error)
+	Close(context.Context) error
+}
+
+type Materializer interface {
+	RegisterCandidate(context.Context, generation.ApplyTicket,
+		generation.PublicationSet) (AttemptRegistration, error)
+	RegisterRecovery(context.Context, generation.RevisionSet,
+		map[generation.Domain]generation.PublishedGeneration) (AttemptRegistration, error)
+	DeclarationDigest() [32]byte
+}
+
+func CandidateAttemptID(generation.ApplyTicket, generation.PublicationSet) AttemptID
+func RecoveryAttemptID(generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration) AttemptID
+
+type AttemptResolver interface {
+	ScopedResolver
+	Close(context.Context) error
+}
+
+type AttemptResolverFactory interface {
+	OpenCandidate(context.Context, AttemptID, generation.ApplyTicket,
+		generation.PublicationSet) (AttemptResolver, error)
+	OpenRecovery(context.Context, AttemptID, generation.RevisionSet,
+		map[generation.Domain]generation.PublishedGeneration) (AttemptResolver, error)
 }
 
 type materializer struct {
 	encryption data_encryption.Service
-	references ReferenceResolver
+	resolvers  AttemptResolverFactory
+	registry   *attemptRegistry
 }
 
 type scopedMaterializer struct {
-	resolver ScopedResolver
+	resolver  ScopedAttemptBroker
+	catalog   *capability.SecretDeclarationCatalog
+	registry  *attemptRegistry
 }
 
-func NewMaterializer(data_encryption.Service, ReferenceResolver) Materializer
-func NewScopedMaterializer(ScopedResolver) Materializer
+func NewMaterializer(data_encryption.Service, AttemptResolverFactory) Materializer
+func NewScopedMaterializer(ScopedAttemptBroker, *capability.SecretDeclarationCatalog) Materializer
+
+type GenerationSecretResolver struct { /* attempt registrations plus external clients */ }
+func NewGenerationSecretResolver(*http.Client, func(string) (string, bool)) *GenerationSecretResolver
+func (r *GenerationSecretResolver) OpenCandidate(context.Context, AttemptID, generation.ApplyTicket,
+	generation.PublicationSet) (AttemptResolver, error)
+func (r *GenerationSecretResolver) OpenRecovery(context.Context, AttemptID, generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration) (AttemptResolver, error)
+func (r *GenerationSecretResolver) Close(context.Context) error
 
 type GenerationCapability struct {
 	generation   uint64
-	materializer Materializer
+	attempt      AttemptRegistration
 }
 
-func NewGenerationCapability(Materializer, uint64) (GenerationCapability, error)
+func NewGenerationCapability(AttemptRegistration, uint64) (GenerationCapability, error)
+func (c GenerationCapability) AttemptID() AttemptID
+func (c GenerationCapability) Valid() bool
 func (c GenerationCapability) Materialize(context.Context, Scope, string) (Value, error)
 ```
 
-`Value` deliberately exposes plaintext only inside `Use`; errors, digests, resource identities and logs never contain it. Both materializers reject an empty plugin/resource/field scope before resolving. `NewMaterializer` is the in-process plan-02 adapter; `NewScopedMaterializer` wraps plan 05's scoped IPC client and computes `Value.digest` worker-side from the returned plaintext. `GenerationCapability.Materialize` additionally rejects a `Scope.Generation` different from its fixed generation before delegating; workers create it locally and never receive a supervisor pointer or raw keyring.
+`Strict` preserves the current compatibility contract: it controls whether an already-present value must be valid contextual ciphertext; it never makes a field present. Field presence and shape remain owned by the plugin config/metadata schema. `Scope.Source` is mandatory and is the only discriminator between `plugin_config` and `plugin_metadata`; it is never inferred from `Resource.Kind`, and materializer, IPC grant builder and supervisor all validate the exact `(Plugin, Source, Field)` catalog tuple. `Value` deliberately exposes plaintext only inside `Use`; errors, digests, resource identities and logs never contain it. Both materializers reject an empty or undeclared plugin/source/field scope before resolving and expose their catalog digest. `CandidateAttemptID` hashes a versioned canonical encoding of the complete ticket and effective publication set under a `candidate` domain separator; `RecoveryAttemptID` hashes committed revisions plus the sorted verified published map under a distinct `recovery` separator. Neither uses Go map iteration or string concatenation. `RegisterCandidate` and `RegisterRecovery` recompute those IDs and each returns a distinct registration-bound materializer that owns an immutable closure index and resolver attempt. Candidate and recovery for the same desired revision therefore coexist with different IDs and cannot read one another. `NewMaterializer` obtains the catalog from the in-process plan-02 encryption service and opens resolver attempts through `GenerationSecretResolver`; `NewScopedMaterializer` receives the exact decoded worker manifest catalog and creates the same view-bound registrations around plan 05's scoped IPC resolver. `GenerationCapability` owns one registration and rejects a generation or `AttemptID` mismatch before delegating; workers create it locally and never receive a supervisor pointer or raw keyring.
 
 ```go
 // package runtime
 type RuntimeDependencies struct {
 	Config    *config.EffectiveConfig
-	Secrets   secret.Materializer
+	Secrets   secret.GenerationCapability
 	Resources *ResourceRegistry
 	Tasks     *TaskRegistry
 }
@@ -328,6 +416,7 @@ type WorkerCompilerFactory struct {
 	manifest     *capability.Manifest
 	config       *config.EffectiveConfig
 	materializer secret.Materializer
+	declarations *capability.SecretDeclarationCatalog
 	resources    *runtime.ResourceRegistry
 	mu           sync.Mutex
 	closed       bool
@@ -337,13 +426,21 @@ func New(*capability.Manifest, runtime.RuntimeDependencies) (*Compiler, error)
 func NewWorkerCompilerFactory(*capability.Manifest, *config.EffectiveConfig, secret.Materializer) (*WorkerCompilerFactory, error)
 func (f *WorkerCompilerFactory) PrepareGeneration(context.Context, generation.ApplyTicket, generation.Snapshot,
 	map[generation.Domain]generation.PublishedGeneration, func(runtime.TaskFailure)) (*PreparedGeneration, error)
+func (f *WorkerCompilerFactory) PrepareRecovery(context.Context,
+	generation.RevisionSet, map[generation.Domain]generation.PublishedGeneration,
+	func(runtime.TaskFailure)) (*PreparedGeneration, error)
 func (f *WorkerCompilerFactory) Close(context.Context) error
-func (c *Compiler) Prepare(
+func (c *Compiler) prepare(
 	context.Context,
 	generation.ApplyTicket,
 	generation.Snapshot,
 	map[generation.Domain]generation.PublishedGeneration,
 ) (*PreparedGeneration, error)
+
+// package server; cmd/root constructs these bootstrap owners exactly once.
+func NewServer(*config.EffectiveConfig, *capability.Manifest,
+	*capability.SecretDeclarationCatalog, data_encryption.Service,
+	*secret.GenerationSecretResolver) (*Server, error)
 
 type HTTPSnapshot struct {
 	artifact generation.GenerationArtifact
@@ -369,6 +466,7 @@ type PreparedGeneration struct {
 	publication generation.PublicationSet
 	http        *HTTPSnapshot
 	stream      *StreamSnapshot
+	registration secret.AttemptRegistration
 	leases      []preparedLease
 	tasks       *runtime.TaskRegistry
 	probes      []func(context.Context) error
@@ -385,9 +483,9 @@ func (p *PreparedGeneration) Close(context.Context) error
 
 All returned slices, maps, resource bytes and publication values are defensive copies. `HTTPSnapshot.TLSConfig` returns nil or `s.tlsConfig.Clone()` so plan 06 can select certificates without mutating generation state. `PreparedGeneration.Close` is idempotent, stops generation tasks before releasing resource leases in reverse acquisition order, and never closes a shared resource while another generation holds a lease. `DiscardPrepared` first compares canonical publication identity and returns `ErrPreparedSetMismatch` without closing on mismatch; on a match it delegates to the same idempotent `Close` path.
 
-`generation.Journal` remains the only durable writer. `Compiler.Prepare` consumes `generation.PublishedGeneration` values supplied by `generation.Coordinator`; it never calls `Journal.Stage`, `Commit` or `Abort`. The `generation.PublicationEngine` contract gains `DiscardPrepared(context.Context, generation.PublicationSet) error`; the coordinator calls it when staging fails after a successful prepare. `server.GenerationEngine` implements that method by removing the matching pending prepared generation and calling its `DiscardPrepared`, which verifies the defensive-copy publication set and then closes candidate tasks and leases.
+`generation.Journal` remains the only durable writer. The package-private `Compiler.prepare` consumes only values supplied by its owning factory; it never calls `Journal.Stage`, `Commit` or `Abort`, and no production/recovery caller can bypass `PrepareGeneration`/`PrepareRecovery`. The `generation.PublicationEngine` contract gains `DiscardPrepared(context.Context, generation.PublicationSet) error`; the coordinator calls it when staging fails after a successful prepare. `server.GenerationEngine` implements that method by removing the matching pending prepared generation and calling its `DiscardPrepared`, which verifies the defensive-copy publication set and then closes candidate tasks and leases.
 
-An exec-created worker reconstructs `WorkerCompilerFactory` from its local effective config, manifest and the plan 05 scoped IPC client implementing `secret.Materializer`. The constructor creates its own `ResourceRegistry`; it accepts no supervisor object, `data_encryption.Service`, reference resolver or raw keyring. Before the exec cutover, the in-process owner adapts plan 02 with `secret.NewMaterializer(data_encryption.Service, resolver)` and passes only that interface to the same factory. `PrepareGeneration` atomically wraps the supplied materializer in a `GenerationCapability`, creates a fresh generation-owned `TaskRegistry`, constructs the compiler, prepares the candidate and transfers task ownership to the successful `PreparedGeneration`; every constructor or prepare failure stops the task registry before returning. `RuntimeDependencies.Resources` is worker-owned and shared; `RuntimeDependencies.Tasks` is never reused across prepared generations. `WorkerCompilerFactory.Close` first prevents new generations, then closes the worker registry; the plan 05 cutover deletes every worker-side raw encryption-service/keyring path.
+An exec-created worker reconstructs `WorkerCompilerFactory` from its local effective config, manifest and `secret.NewScopedMaterializer(scopedAttemptBroker, catalog)`. The constructor creates its own `ResourceRegistry`, derives the immutable `capability.SecretDeclarationCatalog` from that same validated manifest and rejects any materializer whose `DeclarationDigest` differs; it accepts no supervisor object, `data_encryption.Service`, Store or raw keyring. Before the joint cutover, Task 6's temporary in-process owner constructs `data_encryption.NewService(enabled, keyring, catalog)` for Store/standalone and passes that Store instance through `secret.NewScopedMaterializer(store, catalog)`; Task 9 replaces it with `secret.NewMaterializer(dataEncryptionService, generationSecretResolver)` and deletes the Store resolver. The Store/standalone at-rest encryption owner receives the same service, and the supervisor independently derives the same catalog only from the exact manifest artifact sent to the worker. No private field table is retained. `PrepareGeneration` atomically runs desired publication preparation, registers only its effective publication snapshots/closures, creates a generation capability and fresh `TaskRegistry`, performs runtime materialization, and transfers registration/task/lease ownership only to a successful `PreparedGeneration`. `PrepareRecovery` additionally receives the committed `RevisionSet`, verifies each published artifact revision, registers only verified published snapshots/closures and reconstructs the exact `PublicationSet{DesiredRevision: revisions.Desired}` without reading desired state, rerunning disposition or changing artifact/closure/decision bytes. Every constructor, registration, decode, materialize, prepare or recovery failure revokes the registration, stops the task registry and releases acquired leases in reverse order before returning. `RuntimeDependencies.Resources` is worker-owned and shared; `RuntimeDependencies.Tasks` is never reused across prepared generations. `WorkerCompilerFactory.Close` first prevents new generations, then closes prepared registrations/resources; the plan 05 cutover deletes every worker-side raw encryption-service/keyring path.
 
 ---
 
@@ -405,24 +503,31 @@ An exec-created worker reconstructs `WorkerCompilerFactory` from its local effec
 
 **Interfaces:**
 
-- Consumes: immutable `data_encryption.Service` plus `ReferenceResolver` for the in-process phase, and plan 05 `secret.ScopedResolver` for the exec-worker phase.
-- Produces: exact `secret.Materializer`, `secret.ScopedResolver`, `NewScopedMaterializer`, `secret.GenerationCapability`, `secret.Scope`, `secret.Value` and `runtime.RuntimeDependencies` interfaces above.
+- Consumes: immutable `data_encryption.Service` plus an `AttemptResolverFactory` for the in-process phase, and plan 05 `secret.ScopedAttemptBroker` for the exec-worker phase.
+- Produces: exact `secret.Materializer`, `secret.ScopedResolver`, `secret.ScopedAttemptBroker`, `NewScopedMaterializer`, `secret.GenerationCapability`, `secret.Scope`, `secret.Value` and `runtime.RuntimeDependencies` interfaces above.
 
 - [ ] **Step 1: Write the failing materializer scope and redaction tests**
 
 ```go
 func TestMaterializerRequiresOwnedScopeAndNeverLeaksPlaintext(t *testing.T) {
 	want := "credential-value"
-	refs := referenceResolverFunc(func(context.Context, string) (string, error) { return want, nil })
-	materializer := NewMaterializer(data_encryption.NewService(false, nil), refs)
-	_, err := materializer.Materialize(context.Background(), Scope{}, "$ENV://TOKEN")
+	refs := scopedResolverFunc(func(context.Context, Scope, string) (string, error) { return want, nil })
+	catalog := testSecretDeclarationCatalog(t)
+	materializer := NewMaterializer(data_encryption.NewService(false, nil, catalog), newTestAttemptResolverFactory(refs))
+	ticket, set := testSecretPublication(t, 9, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil { t.Fatal(err) }
+	defer registration.Close(context.Background())
+	_, err = registration.Materialize(context.Background(), Scope{}, "$ENV://TOKEN")
 	if err == nil || strings.Contains(err.Error(), want) {
 		t.Fatalf("Materialize() error = %v, want redacted scope error", err)
 	}
-	value, err := materializer.Materialize(context.Background(), Scope{
+	value, err := registration.Materialize(context.Background(), Scope{
 		Generation: 9,
+		Attempt: registration.AttemptID(),
 		Plugin: "http-logger",
 		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
+		Source: capability.SecretPluginConfig,
 		Field: "token",
 	}, "$ENV://TOKEN")
 	if err != nil { t.Fatal(err) }
@@ -434,42 +539,65 @@ func TestMaterializerRequiresOwnedScopeAndNeverLeaksPlaintext(t *testing.T) {
 }
 
 func TestGenerationCapabilityRejectsCrossGenerationScope(t *testing.T) {
-	base := NewMaterializer(data_encryption.NewService(false, nil), passthroughResolver{})
-	capability, err := NewGenerationCapability(base, 9)
+	catalog := testSecretDeclarationCatalog(t)
+	base := NewMaterializer(data_encryption.NewService(false, nil, catalog), newTestAttemptResolverFactory(passthroughResolver{}))
+	ticket, set := testSecretPublication(t, 9, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := base.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil { t.Fatal(err) }
-	_, err = capability.Materialize(context.Background(), Scope{Generation: 10, Plugin: "http-logger",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "token"}, "value")
+	defer registration.Close(context.Background())
+	capability, err := NewGenerationCapability(registration, 9)
+	if err != nil { t.Fatal(err) }
+	_, err = capability.Materialize(context.Background(), Scope{Generation: 10, Attempt: capability.AttemptID(), Plugin: "http-logger",
+		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Source: capability.SecretPluginConfig, Field: "token"}, "value")
 	if !errors.Is(err, ErrCapabilityScopeMismatch) { t.Fatalf("Materialize() error = %v", err) }
 }
 
-type captureScopedResolver struct {
+type captureScopedBroker struct {
 	scope     Scope
 	raw       string
 	plaintext string
 	err       error
+	authorized bool
+	revoked    bool
 }
 
-func (r *captureScopedResolver) ResolveScoped(_ context.Context, scope Scope, raw string) (string, error) {
+func (r *captureScopedBroker) AuthorizeCandidate(_ context.Context, _ AttemptID,
+	_ generation.ApplyTicket, _ generation.PublicationSet) error { r.authorized = true; return nil }
+func (r *captureScopedBroker) AuthorizeRecovery(context.Context, AttemptID,
+	generation.RevisionSet, map[generation.Domain]generation.PublishedGeneration) error {
+	r.authorized = true; return nil
+}
+func (r *captureScopedBroker) ResolveScoped(_ context.Context, scope Scope, raw string) (string, error) {
+	if !r.authorized { panic("ResolveScoped before attempt authorization") }
 	r.scope, r.raw = scope, raw
 	return r.plaintext, r.err
 }
+func (r *captureScopedBroker) RevokeAttempt(context.Context, AttemptID) error { r.revoked = true; return nil }
 
 func TestScopedMaterializerPassesOwnedScopeAndRedactsResolverError(t *testing.T) {
-	wantScope := Scope{Generation: 9, Plugin: "http-logger",
-		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "token"}
-	resolver := &captureScopedResolver{plaintext: "credential-value"}
-	materializer := NewScopedMaterializer(resolver)
-	value, err := materializer.Materialize(context.Background(), wantScope, "$secret://logger/token")
+	resolver := &captureScopedBroker{plaintext: "credential-value"}
+	materializer := NewScopedMaterializer(resolver, testSecretDeclarationCatalog(t))
+	ticket, set := testSecretPublication(t, 9, generation.ResourceKey{Kind: "routes", ID: "r1"})
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil { t.Fatal(err) }
+	defer registration.Close(context.Background())
+	wantScope := Scope{Generation: 9, Attempt: registration.AttemptID(), Plugin: "http-logger",
+		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Source: capability.SecretPluginConfig, Field: "token"}
+	value, err := registration.Materialize(context.Background(), wantScope, "$secret://logger/token")
 	if err != nil { t.Fatal(err) }
 	if resolver.scope != wantScope || resolver.raw != "$secret://logger/token" { t.Fatalf("resolver input = %#v/%q", resolver.scope, resolver.raw) }
 	if value.Digest() != sha256.Sum256([]byte("credential-value")) { t.Fatal("digest mismatch") }
 	resolver.err = errors.New("backend included credential-value")
-	_, err = materializer.Materialize(context.Background(), wantScope, "$secret://logger/token")
+	_, err = registration.Materialize(context.Background(), wantScope, "$secret://logger/token")
 	if !errors.Is(err, ErrCredentialUnavailable) || strings.Contains(err.Error(), "credential-value") {
 		t.Fatalf("Materialize() error = %v", err)
 	}
+	if err := registration.Close(context.Background()); err != nil { t.Fatal(err) }
+	if !resolver.revoked { t.Fatal("attempt was not revoked") }
 }
 ```
+
+Also add `TestAttemptIDsUseCanonicalDomainSeparatedIdentity`: permute the published map insertion order and assert a stable recovery ID, then construct recovery Published=B and candidate=A with the same desired revision and assert distinct IDs. Add `TestMaterializerRequiresExactDeclarationSource`: declare the same field under config and metadata with different strict policies, prove each exact source selects its own policy, and reject empty/cross-source scopes before resolver access. Add `TestMaterializerRejectsDuplicateLiveAttemptAndReleasesIDOnClose`: the second exact registration fails while the first is live, closing the first permits a new identical registration, and failed resolver open does not strand the ID. Add `TestAttemptCloseLocallyRevokesBeforeBackendAndRacesSafely`: hold one materialization in the resolver, start close, prove new materialization cannot enter, release the first, force backend revoke failure, and assert the capability remains locally invalid while the exact ID stays quarantined. Run the same table against `NewMaterializer` and `NewScopedMaterializer`, including `-race`.
 
 - [ ] **Step 2: Run the materializer test and confirm RED**
 
@@ -480,57 +608,107 @@ Expected: FAIL because `pkg/secret` and `NewMaterializer` do not exist.
 - [ ] **Step 3: Implement the exact scoped materializer**
 
 ```go
-func (m materializer) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
+type attemptRegistration struct {
+	id         AttemptID
+	generation uint64
+	allowed    immutableClosureIndex
+	resolve    func(context.Context, Scope, string) (string, error)
+	closeAttempt func(context.Context) error
+	unregister func(AttemptID)
+	gate       sync.RWMutex
+	closed     bool
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func (m materializer) RegisterCandidate(ctx context.Context, ticket generation.ApplyTicket,
+	set generation.PublicationSet) (AttemptRegistration, error) {
+	if err := validateCandidateIdentity(ticket, set); err != nil { return nil, ErrInvalidCapability }
+	id := CandidateAttemptID(ticket, set)
+	if err := m.registry.Reserve(id); err != nil { return nil, err }
+	resolver, err := m.resolvers.OpenCandidate(ctx, id, ticket, set)
+	if err != nil {
+		m.registry.Release(id)
+		return nil, ErrCredentialUnavailable
+	}
+	registration, err := newAttemptRegistration(id, ticket.DesiredRevision, set,
+		m.inProcessResolve(resolver), resolver.Close, m.registry.Release)
+	if err != nil {
+		m.registry.Release(id)
+		return nil, errors.Join(err, resolver.Close(context.WithoutCancel(ctx)))
+	}
+	return registration, nil
+}
+
+func (r *attemptRegistration) AttemptID() AttemptID { return r.id }
+
+func (r *attemptRegistration) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
+	r.gate.RLock()
+	defer r.gate.RUnlock()
+	if r.closed { return Value{}, ErrCredentialUnavailable }
 	if err := validateScope(scope); err != nil { return Value{}, err }
 	if err := ctx.Err(); err != nil { return Value{}, err }
-	resolved := raw
-	if strings.HasPrefix(raw, "$secret://") || strings.HasPrefix(strings.ToUpper(raw), "$ENV://") {
-		value, err := m.references.Resolve(ctx, raw)
-		if err != nil { return Value{}, ErrCredentialUnavailable }
-		resolved = value
+	if scope.Generation != r.generation || scope.Attempt != r.id || !r.allowed.Contains(scope.Resource) {
+		return Value{}, ErrCapabilityScopeMismatch
 	}
-	plaintext, err := m.encryption.Resolver().ResolveForContext(resolved, materializationContext(scope))
+	resolved, err := r.resolve(ctx, scope, raw)
 	if err != nil { return Value{}, ErrCredentialUnavailable }
-	return Value{plaintext: plaintext, digest: sha256.Sum256([]byte(plaintext))}, nil
+	return Value{plaintext: resolved, digest: sha256.Sum256([]byte(resolved))}, nil
 }
+
+func (r *attemptRegistration) Close(ctx context.Context) error {
+	r.closeOnce.Do(func() {
+		r.gate.Lock()
+		r.closed = true
+		r.gate.Unlock()
+		r.closeErr = r.closeAttempt(context.WithoutCancel(ctx))
+		if r.closeErr == nil { r.unregister(r.id) }
+	})
+	return r.closeErr
+}
+
+func (m materializer) DeclarationDigest() [32]byte { return m.encryption.DeclarationDigest() }
 
 func (v Value) Use(use func(string) error) error {
 	if use == nil { return errors.New("secret use callback is required") }
 	return use(v.plaintext)
 }
 
-func NewGenerationCapability(materializer Materializer, generation uint64) (GenerationCapability, error) {
-	if materializer == nil || generation == 0 { return GenerationCapability{}, ErrInvalidCapability }
-	return GenerationCapability{generation: generation, materializer: materializer}, nil
+func NewGenerationCapability(attempt AttemptRegistration, generation uint64) (GenerationCapability, error) {
+	if attempt == nil || generation == 0 { return GenerationCapability{}, ErrInvalidCapability }
+	return GenerationCapability{generation: generation, attempt: attempt}, nil
 }
 
 func (c GenerationCapability) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
-	if scope.Generation != c.generation { return Value{}, ErrCapabilityScopeMismatch }
-	return c.materializer.Materialize(ctx, scope, raw)
+	if scope.Generation != c.generation || scope.Attempt != c.attempt.AttemptID() {
+		return Value{}, ErrCapabilityScopeMismatch
+	}
+	return c.attempt.Materialize(ctx, scope, raw)
 }
 
-func NewScopedMaterializer(resolver ScopedResolver) Materializer {
-	return scopedMaterializer{resolver: resolver}
+func (c GenerationCapability) Valid() bool {
+	return c.generation != 0 && c.attempt != nil && c.attempt.AttemptID() != (AttemptID{})
 }
 
-func (m scopedMaterializer) Materialize(ctx context.Context, scope Scope, raw string) (Value, error) {
-	if err := validateScope(scope); err != nil { return Value{}, err }
-	if err := ctx.Err(); err != nil { return Value{}, err }
-	if m.resolver == nil { return Value{}, ErrCredentialUnavailable }
-	plaintext, err := m.resolver.ResolveScoped(ctx, scope, raw)
-	if err != nil { return Value{}, ErrCredentialUnavailable }
-	return Value{plaintext: plaintext, digest: sha256.Sum256([]byte(plaintext))}, nil
-}
+// scopedMaterializer implements both Register methods locally. Each computes the
+// canonical mode-specific AttemptID, derives the allowed closure from its exact
+// arguments, calls AuthorizeCandidate/AuthorizeRecovery before returning, and creates
+// an attemptRegistration whose resolve closure first checks the manifest catalog and
+// then calls the fixed IPC resolver. Its close closure calls RevokeAttempt but does not
+// close the worker's shared IPC channel. materializer instead
+// supplies a resolve closure that calls Service.ValidateDeclaration/ResolveDeclared,
+// then the opened AttemptResolver for references, and closes that resolver per attempt.
+// RegisterRecovery never fabricates desired bytes or widens the verified set.
 ```
 
-Define `ErrCredentialUnavailable`, `ErrInvalidCapability` and `ErrCapabilityScopeMismatch` with constant redacted messages. `materializationContext` contains only generation, plugin, resource kind/ID and field; it never includes `raw` or plaintext.
+`RegisterRecovery` mirrors `RegisterCandidate` but computes `RecoveryAttemptID`, derives the closure only from verified published candidates and uses `Revisions.Desired` as the scope generation. Both constructors reject malformed identities before opening a resolver; duplicate live registration of the exact same `AttemptID` within one materializer is rejected, while candidate and recovery registrations with different canonical identities may coexist even when their desired revision is equal. `Close` takes the exclusive gate, marks the registration locally revoked before backend cleanup, waits any in-flight materialization and uses a non-cancelled cleanup context for broker/resolver revocation. No materialization can start after close begins, and a failed backend revoke never re-enables the local capability; the exact ID remains quarantined in the materializer registry until the owning resolver/materializer process is closed, so a stale backend view cannot collide with a replacement. A successful revoke releases the ID. Define `ErrCredentialUnavailable`, `ErrInvalidCapability` and `ErrCapabilityScopeMismatch` with constant redacted messages. `materializationContext` contains only attempt ID, generation, plugin, resource kind/ID, declaration source and field; it never includes `raw` or plaintext.
 
 - [ ] **Step 4: Add runtime dependency validation**
 
 ```go
 func (d RuntimeDependencies) Validate() error {
 	if d.Config == nil { return errors.New("runtime dependencies: effective config is required") }
-	if d.Secrets == nil { return errors.New("runtime dependencies: secret materializer is required") }
+	if !d.Secrets.Valid() { return errors.New("runtime dependencies: generation secret capability is required") }
 	if d.Resources == nil { return errors.New("runtime dependencies: resource registry is required") }
 	if d.Tasks == nil { return errors.New("runtime dependencies: task registry is required") }
 	return nil
@@ -539,7 +717,7 @@ func (d RuntimeDependencies) Validate() error {
 
 - [ ] **Step 5: Run focused tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/secret ./pkg/runtime -run "^(TestMaterializer|TestRuntimeDependencies)" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/secret ./pkg/runtime -run "^(TestMaterializer|TestAttempt|TestRuntimeDependencies)" -count=1'`
 
 Expected: PASS; cancellation and resolver errors contain no plaintext or raw reference.
 
@@ -675,7 +853,6 @@ git commit -m "feat(runtime): own generation and request tasks"
 - Create: `pkg/runtime/resource_registry_test.go`
 - Modify: `pkg/proxy/cluster.go` (`newCluster` → `NewCluster`)
 - Modify: `pkg/proxy/cluster_test.go`
-- Modify: `pkg/route/upstream_options.go` (`ClusterConfig.Key` consumption)
 - Modify temporarily: `pkg/proxy/registry.go`, `pkg/proxy/registry_test.go`, `pkg/proxy/registry_metrics_test.go` (keep the production owner buildable until Task 9; final deletion happens only with the production cutover)
 
 **Interfaces:**
@@ -911,7 +1088,7 @@ git commit -m "refactor(plugin): derive runtime descriptors from manifest"
 
 > **Execution amendment:** The detailed steps below are superseded where they conflict with `2026-08-24-immutable-task5-execution-brief.md`. In particular, execute C0 first; do not create `worker_factory.go` in this task, do not acquire clusters, cover all managed resource kinds, and preserve raw/exact-generic/typed representations.
 
-Execute only the linked brief. Task 5 produces `PreparePublication`; Task 6 composes it behind the stable `Prepare(...)(*PreparedGeneration, error)` and atomic worker-factory lifecycle.
+Execute only the linked brief. Task 5 produces `PreparePublication`; Task 6 composes it behind package-private `Compiler.prepare` and the two atomic worker-factory lifecycle entrypoints.
 
 <!-- Superseded Task 5 reference retained for historical context only. Do not execute.
 
@@ -940,7 +1117,7 @@ func TestCompilerRejectsInvalidDependencyBeforeMaterialization(t *testing.T) {
 	deps, calls := runtimeDependenciesWithSpies(t)
 	compiler, err := New(testManifest(t), deps); if err != nil { t.Fatal(err) }
 	desired := snapshotWithRouteReferencingMissingUpstream(t, 11, "r1", "missing")
-	prepared, err := compiler.Prepare(context.Background(), ticketFor(desired, generation.DomainHTTP), desired, nil)
+	prepared, err := compiler.prepare(context.Background(), ticketFor(desired, generation.DomainHTTP), desired, nil)
 	if err != nil { t.Fatal(err) }
 	decision := findDecision(prepared.PublicationSet(), generation.DomainHTTP,
 		generation.ResourceKey{Kind: "routes", ID: "r1"})
@@ -952,23 +1129,23 @@ func TestCompilerRejectsInvalidDependencyBeforeMaterialization(t *testing.T) {
 	}
 }
 
-type panicMaterializer struct{}
-
-func (panicMaterializer) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
-	panic("generation capability must reject before delegation")
-}
-
 func TestWorkerCompilerFactoryCreatesScopedGenerationOwnersLocally(t *testing.T) {
-	factory, err := NewWorkerCompilerFactory(testManifest(t), testEffectiveConfig(t), panicMaterializer{})
+	materializer := newRecordingMaterializer(t)
+	factory, err := NewWorkerCompilerFactory(testManifest(t), testEffectiveConfig(t), materializer)
 	if err != nil { t.Fatal(err) }
 	defer factory.Close(context.Background())
-	compiler, err := factory.NewGeneration(context.Background(), generation.ApplyTicket{DesiredRevision: 11}, nil)
+	ticket, desired := validDesiredForRevision(t, 11)
+	prepared, err := factory.PrepareGeneration(context.Background(), ticket, desired, nil, nil)
 	if err != nil { t.Fatal(err) }
-	if compiler.dependencies.Resources != factory.resources || compiler.dependencies.Tasks == nil {
+	defer prepared.Close(context.Background())
+	if materializer.candidateRegistrations != 1 || prepared.registration == nil || prepared.tasks == nil {
 		t.Fatal("worker/generation ownership was not constructed locally")
 	}
-	if _, err := compiler.dependencies.Secrets.Materialize(context.Background(), secret.Scope{Generation: 12,
-		Plugin: "request-id", Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Field: "value"}, "x");
+	capability := prepared.testSecrets(t)
+	if _, err := capability.Materialize(context.Background(), secret.Scope{Generation: 12,
+		Attempt: capability.AttemptID(), Plugin: "request-id",
+		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Source: capability.SecretPluginConfig,
+		Field: "value"}, "x");
 		!errors.Is(err, secret.ErrCapabilityScopeMismatch) { t.Fatalf("cross-generation secret error = %v", err) }
 }
 ```
@@ -989,26 +1166,19 @@ func NewWorkerCompilerFactory(manifest *capability.Manifest, effective *config.E
 		materializer: materializer, resources: runtime.NewResourceRegistry()}, nil
 }
 
-func (f *WorkerCompilerFactory) NewGeneration(ctx context.Context, ticket generation.ApplyTicket,
-	onFailure func(runtime.TaskFailure)) (*Compiler, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.closed { return nil, ErrWorkerCompilerFactoryClosed }
-	secrets, err := secret.NewGenerationCapability(f.materializer, ticket.DesiredRevision)
-	if err != nil { return nil, err }
-	tasks := runtime.NewTaskRegistry(ctx, onFailure)
-	compiler, err := New(f.manifest, runtime.RuntimeDependencies{
-		Config: f.config, Secrets: secrets, Resources: f.resources, Tasks: tasks,
-	})
-	if err != nil {
-		_, stopErr := tasks.Stop(context.WithoutCancel(ctx))
-		return nil, errors.Join(err, stopErr)
-	}
-	return compiler, nil
+func (f *WorkerCompilerFactory) PrepareGeneration(ctx context.Context, ticket generation.ApplyTicket,
+	desired generation.Snapshot, previous map[generation.Domain]generation.PublishedGeneration,
+	onFailure func(runtime.TaskFailure)) (*PreparedGeneration, error) {
+	// 1. Lock out Close and run the pure Task 5 publication preparation.
+	// 2. Register that exact effective PublicationSet and immediately own its cleanup.
+	// 3. Build GenerationCapability from the returned AttemptRegistration.
+	// 4. Create a fresh TaskRegistry, compile/materialize, probe, then transfer the
+	//    registration, tasks and leases to PreparedGeneration atomically.
+	// Every error closes the registration, tasks and leases in reverse order.
 }
 ```
 
-`panicMaterializer` is a compiler-test implementation whose `Materialize` panics if called; the generation-scope rejection happens before delegation. `Close` locks, marks `closed`, unlocks and calls `resources.Close(ctx)`; it never closes a generation task registry because each successful `PreparedGeneration` owns that registry. The exec worker passes the plan 05 scoped IPC materializer, not an IPC pointer to the supervisor, local service, resolver callback or raw keyring. `New` validates dependencies and stores the exact manifest/dependency values plus non-nil `compileHTTP` and `compileStream` function fields.
+`newRecordingMaterializer` returns registration-bound test attempts and panics if a scope reaches the resolver with a mismatched generation or `AttemptID`; the `GenerationCapability` rejection therefore occurs before delegation. `PrepareRecovery` performs the same ownership transaction using `RegisterRecovery(revisions, verifiedPublished)` and never calls Task 5 disposition. `Close` locks, marks `closed`, unlocks and calls `resources.Close(ctx)`; it never closes a generation task registry already transferred to a successful `PreparedGeneration`. The exec worker passes the plan 05 scoped IPC materializer, not an IPC pointer to the supervisor, local service, resolver callback or raw keyring. `New` validates dependencies and stores the exact manifest/dependency values plus non-nil `compileHTTP` and `compileStream` function fields.
 
 - [ ] **Step 4: Implement strict normalization from snapshot bytes**
 
@@ -1087,7 +1257,7 @@ git commit -m "feat(compiler): resolve immutable domain closures"
 
 ### Task 6: Materialize Scoped Plugin Instances and Prepared Generations
 
-> **Execution amendment:** Task 6 also owns `WorkerCompilerFactory`. Expose only atomic `PrepareGeneration`, which stops its new generation task registry on every failure and transfers ownership to `PreparedGeneration` only on success. Do not expose `NewGeneration(...)(*Compiler, error)`.
+> **Execution amendment:** Task 6 also owns `WorkerCompilerFactory`. Expose only the two atomic owner entrypoints `PrepareGeneration` and `PrepareRecovery`; each stops its new generation task registry on every failure and transfers ownership to `PreparedGeneration` only on success. Do not expose `NewGeneration(...)(*Compiler, error)`.
 
 > **Execution amendment:** The implementation file scope includes every still-live Builder, server and plugin caller affected by the new explicit plugin/secret dependencies, including direct `store.MaterializeSecret` and runtime `store.Get*` consumers. The task must keep the current production owner buildable without a global-secret fallback.
 
@@ -1095,15 +1265,38 @@ git commit -m "feat(compiler): resolve immutable domain closures"
 
 - Create: `pkg/compiler/materialize.go`
 - Create: `pkg/compiler/materialize_test.go`
+- Create: `pkg/compiler/worker_factory.go`
+- Create: `pkg/compiler/worker_factory_test.go`
+- Create: `pkg/secret/declarations.go`
+- Create: `pkg/secret/declarations_test.go`
 - Modify: `pkg/compiler/types.go`, `compiler.go`
+- Modify: `pkg/capability/types.go`, `load.go`, `manifest.yaml`, focused manifest tests
+- Modify: `cmd/capability-gen/main.go`, `main_test.go` when needed to preserve manifest validation/check generation
+- Modify: `pkg/data_encryption/data_encryption.go`, focused declaration/compatibility tests
+- Modify: `pkg/data_encryption/service.go`, `service_test.go`
+- Modify: `cmd/root.go`, focused root startup tests
+- Modify: `pkg/config/standalone.go`, focused standalone encryption tests
+- Modify: `pkg/store/getter.go`, `published_view.go`, focused encryption tests and service fixtures
+- Modify: `pkg/store/consumer_secret.go`, focused resolver tests (temporary in-process `secret.ScopedAttemptBroker` on `*Store`; no package-global production lookup)
+- Modify: every remaining production/test fixture returned by `rg -l 'data_encryption\.(NewService|Service\{)' cmd pkg --glob '*.go'`; no nil-catalog production or test constructor remains
 - Modify: `pkg/plugin/base/types.go`, `base/secrets.go`, `types.go`, `init.go`
 - Modify: all production plugin files returned by `rg -l 'DataEncryption\(\)|MaterializeSecrets\(\)' pkg/plugin --glob '*.go' --glob '!*_test.go'`
 - Modify: `pkg/plugin/secret_materialization_guard_test.go`
 
 **Interfaces:**
 
-- Consumes: validated plugin sources, manifest `Descriptor`, `runtime.RuntimeDependencies`, `secret.Materializer` and `runtime.ResourceRegistry`.
-- Produces: exact reduced plugin interfaces, scoped secret injection, digest-keyed plugin leases and `PreparedGeneration.Close` ownership.
+- Consumes: Task 5 `PreparePublication`, validated plugin sources, manifest `Descriptor`, `runtime.RuntimeDependencies`, `secret.Materializer` and `runtime.ResourceRegistry`.
+- Produces: atomic `WorkerCompilerFactory.PrepareGeneration`/`PrepareRecovery`, the manifest-derived enumerable `capability.SecretDeclarationCatalog`, exact reduced plugin interfaces, scoped secret injection, metadata admission, digest-keyed plugin leases and `PreparedGeneration.Close` ownership.
+
+- [ ] **Step 0: Make factory and secret declarations atomic and enumerable**
+
+Move every currently private plugin-config and plugin-metadata encrypted/secret field declaration into the capability manifest and expose it only through a defensive `capability.SecretDeclarationCatalog` constructed from the validated manifest. The catalog enumerates factory, source (`plugin_config` or `plugin_metadata`), canonical wildcard field path and strict/optional ciphertext policy; the data-encryption service, both materializers, plugin admission and supervisor grant builder all consume this same value and compare its digest at owner boundaries. `Strict` preserves current semantics only when a declared value is present; it never makes the field or metadata object required. For `plugin_metadata`, first use the manifest-resolved factory to construct the generation-owned plugin instance, validate an existing immutable metadata object with that instance's `GetMetadataSchema`, then resolve only fields declared by the catalog. A schema-invalid object fails before any secret request; an absent optional metadata object stays absent. No separate metadata-schema map, plugin-private field table, supervisor field table or `pkg/data_encryption` field registry may exist.
+
+Change `data_encryption.NewService` to require the catalog; store its defensive identity and include the catalog digest in `SameConfiguration`. Change low-level config/metadata encrypt/decrypt helpers to consume the catalog instead of package globals, change `Service.HasEncryptedPluginMetadata`, `ValidateDeclaration` and every `Service.Encrypt*/Decrypt*` method to use its owned catalog, and migrate `cmd/root.go`, standalone ingestion, Store getters/published views and their fixtures to pass the manifest-derived catalog. The temporary in-process `secret.NewScopedMaterializer(store, catalog)` and permanent `secret.NewMaterializer(service, generationResolver)` use that exact catalog identity; the exec worker separately derives the same catalog from its decoded manifest. All paths validate the declaration before branching on literal/ciphertext/reference form, reject undeclared source/field scopes (including a bare `$secret://` or `$ENV://` reference), and expose `DeclarationDigest`; `NewWorkerCompilerFactory` rejects a mismatch with its manifest. Delete `pluginFields`, `strictPluginFields`, `pluginMetadataFields`, `strictPluginMetadataFields`, `IsStrictPluginField`, `IsStrictPluginMetadataField` and the global `HasEncryptedPluginMetadata` only after parity tests prove the manifest catalog exactly preserves all four accepted sets and current strict/optional ciphertext behavior.
+
+For the pre-exec in-process owner, implement the temporary `secret.ScopedAttemptBroker` on `*store.Store`: `AuthorizeCandidate`/`AuthorizeRecovery` recompute the supplied mode-specific ID, defensively retain only the exact allowed closure for that attempt, and permit same-revision attempts with different IDs; `ResolveScoped` requires the exact live attempt plus closure before using only that Store instance and its owned encryption service; `RevokeAttempt` idempotently deletes the view. All methods honor cancellation before I/O and replace every production call to package-global `store.ResolveSecretReference`. Do not add a fallback to the global Store. Add candidate/recovery overlap, cross-attempt rejection, revoke and close-race tests. The joint cutover deletes this entire transitional broker and replaces it with `secret.GenerationSecretResolver` before deleting legacy resource buckets.
+
+Implement `WorkerCompilerFactory.PrepareGeneration` as one ownership transaction: create the task registry, call Task 5 `PreparePublication`, register that exact effective publication set with the materializer, create the generation capability, materialize plugins/metadata/resources, build the prepared generation, and transfer registration/tasks/leases only on success. Implement `PrepareRecovery` from a committed `RevisionSet` plus verified `PublishedGeneration` artifact/snapshot/closure/decision values; it never reads `RecoveryState.Desired`, runs Task 5 disposition, or changes committed candidate identity. It validates the domain revision entries, reconstructs the exact committed publication set/fence from `Revisions.Desired` plus the published candidates, then registers only those verified published snapshots/closures before materialization. Both paths append the attempt registration to candidate cleanup immediately, stop tasks and close registrations/leases in reverse order for every failure and factory close race. Discard and rollback close the rejected candidate registration; finalize transfers the still-live registration with the active `PreparedGeneration`; retirement or engine close finally revokes it. Add declaration-catalog tests for deterministic defensive enumeration, config/metadata source separation, strict/optional policy, digest stability and exact parity with every removed legacy field table. Add materializer tests proving both a bare reference and ciphertext/literal on an undeclared field fail before resolver/decryption calls, and that any literal/reference scope outside the live registration's closure fails before access. Add metadata admission tests for schema-owned presence, an absent optional object, invalid instance-owned schema before secret access and valid metadata materialization. Add factory tests for catalog-digest mismatch, constructor failure, Task 5 failure, third-plugin failure, registration failure/revocation, recovery revision mismatch, recovery decode/materialize failure, factory close race and successful ownership transfer.
 
 - [ ] **Step 1: Write the failing admission-order test**
 
@@ -1138,7 +1331,7 @@ Use the exact `Plugin`, `Initializer`, `PostInitializer`, `Middleware`, `Stopper
 ```go
 type Dependencies struct {
 	Config  *config.EffectiveConfig
-	Secrets secret.Materializer
+	Secrets secret.GenerationCapability
 	Tasks   *runtime.TaskRegistry
 }
 
@@ -1150,7 +1343,7 @@ func New(name string, deps Dependencies) Plugin {
 }
 ```
 
-This task deletes `base.Dependencies.DataEncryption` and `BasePlugin.DataEncryption()`. It consumes plan 02's `data_encryption.Service` only through `secret.NewMaterializer`; no plugin may retain the raw service/resolver.
+This task deletes `base.Dependencies.DataEncryption` and `BasePlugin.DataEncryption()`. Store/standalone owns plan 02's `data_encryption.Service`; plugins consume only the attempt-bound `GenerationCapability` created from the temporary scoped materializer. Task 9 switches the permanent compiler path to `secret.NewMaterializer(service, generationResolver)`. No plugin may retain the raw service/resolver.
 
 - [ ] **Step 4: Implement exact plugin admission order**
 
@@ -1196,6 +1389,9 @@ func (p *PreparedGeneration) Close(ctx context.Context) error {
 			if err != nil { errs = append(errs, err) }
 			if len(residuals) != 0 { errs = append(errs, fmt.Errorf("prepared generation residual tasks: %v", residuals)) }
 		}
+		if p.registration != nil {
+			if err := p.registration.Close(ctx); err != nil { errs = append(errs, err) }
+		}
 		for i := len(p.leases) - 1; i >= 0; i-- {
 			if err := p.leases[i].Release(ctx); err != nil { errs = append(errs, err) }
 		}
@@ -1214,8 +1410,11 @@ Extend `pkg/plugin/secret_materialization_guard_test.go` to reject imports of `p
 - [ ] **Step 9: Run materialization and affected plugin tests**
 
 ```bash
-bash -lc 'source .envrc && go test -race ./pkg/compiler ./pkg/plugin -run "^(TestMaterialize|TestPreparedGeneration|TestSecret|TestDescriptor|TestInstance)" -count=1'
+bash -lc 'source .envrc && go test -race ./pkg/compiler ./pkg/plugin -run "^(TestMaterialize|TestPreparedGeneration|TestWorkerCompilerFactory|TestPrepareGeneration|TestPrepareRecovery|TestSecret|TestDescriptor|TestInstance)" -count=1'
+bash -lc 'source .envrc && go test -race ./pkg/capability ./pkg/secret ./pkg/data_encryption -run "(Declaration|Manifest|Metadata|Secret|Strict|Optional|SameConfiguration)" -count=1'
+bash -lc 'source .envrc && go test -race ./cmd ./pkg/config ./pkg/store -run "(Encryption|DeclarationCatalog|PluginMetadata|PublishedView)" -count=1'
 bash -lc 'source .envrc && go test ./pkg/plugin/ai_rate_limiting ./pkg/plugin/clickhouse_logger ./pkg/plugin/csrf ./pkg/plugin/elasticsearch_logger ./pkg/plugin/error_log_logger ./pkg/plugin/google_cloud_logging ./pkg/plugin/http_logger ./pkg/plugin/kafka_logger ./pkg/plugin/kafka_proxy ./pkg/plugin/lago ./pkg/plugin/loggly ./pkg/plugin/response_rewrite ./pkg/plugin/rocketmq_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging ./pkg/plugin/tencent_cloud_cls -run "(Secret|Resolve|PostInit|Materialize|Config)" -count=1'
+bash -lc 'source .envrc && go run ./cmd/capability-gen -check'
 ```
 
 Expected: PASS; no plugin imports or retains a raw global/static encryption resolver.
@@ -1223,7 +1422,7 @@ Expected: PASS; no plugin imports or retains a raw global/static encryption reso
 - [ ] **Step 10: Commit scoped plugin materialization**
 
 ```bash
-git add pkg/compiler pkg/plugin pkg/secret pkg/runtime
+git add cmd pkg
 git commit -m "refactor(plugin): own scoped materialization and instances"
 ```
 
@@ -1245,7 +1444,7 @@ git commit -m "refactor(plugin): own scoped materialization and instances"
 
 **Interfaces:**
 
-- Consumes: normalized dependency-closed HTTP resources, pre-materialized bindings and leased upstream clusters.
+- Consumes: normalized dependency-closed HTTP resources, pre-materialized bindings, normalized upstream closure and `RuntimeDependencies.Resources`.
 - Produces: `route.CompileHTTP(context.Context, CompileInput) (*Snapshot, error)` and immutable `compiler.HTTPSnapshot`.
 
 - [ ] **Step 1: Write a failing immutable input/equivalence test**
@@ -1307,7 +1506,9 @@ Move `routeRegistrar`, wildcard dispatcher, URI conversion, host matching and me
 
 - [ ] **Step 6: Acquire every upstream resource during prepare**
 
-Move reverse-proxy construction to `upstream_compile.go`; it receives an already-acquired cluster lease and never creates a cluster or starts health tasks itself. Traffic-split uses the same `ResourceRegistry` identity rules and appends its leases to the prepared generation.
+Before calling `route.CompileHTTP`, Task 7 derives the canonical `proxy.ClusterConfig` from the normalized effective upstream closure and calls `runtime.Acquire(..., proxy.NewCluster)` through `RuntimeDependencies.Resources`. Append each lease to the candidate `PreparedGeneration` immediately; any later failure releases leases in reverse order. Move reverse-proxy construction to `upstream_compile.go`; it receives only an already-acquired cluster handle and never creates a cluster, owns a lease or starts health tasks itself. Traffic-split uses the same registry identity and immediate ownership rule.
+
+Add `TestPrepareHTTPAcquiresEachCanonicalClusterOnceAndPassesOnlyHandlesToRouteCompile`, including a route upstream and traffic-split upstream that share one canonical config. Add `TestPrepareHTTPOwnsLeaseImmediatelyAndReleasesInReverseOrderAfterLaterCompileFailure`: make the third acquisition succeed and route compilation fail, then assert all three leases release exactly once in reverse acquisition order and no cluster/task survives. Add an AST guard that rejects `proxy.NewCluster`, `runtime.Acquire` and resource-lease ownership from `pkg/route`; those calls belong only to compiler prepare code.
 
 - [ ] **Step 7: Preserve request/response phase equivalence**
 
@@ -1335,7 +1536,7 @@ func (s *HTTPSnapshot) TLSConfig() *tls.Config {
 
 - [ ] **Step 9: Run focused HTTP compilation tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/compiler ./pkg/route ./pkg/plugin -run "^(TestCompileHTTP|TestCompilerHTTP|TestRoute|TestScoped|TestConsumer|TestPublicAPI|TestResponsePlan|TestRequestPipeline)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/compiler ./pkg/route ./pkg/plugin -run "^(TestCompileHTTP|TestCompilerHTTP|TestPrepareHTTP|TestRoute|TestScoped|TestConsumer|TestPublicAPI|TestResponsePlan|TestRequestPipeline)" -count=1'`
 
 Expected: PASS; no request handler uses a mutable compiler or store getter.
 
@@ -1444,12 +1645,16 @@ git commit -m "refactor(stream): compile immutable router snapshots"
 
 **Files:**
 
+- Create: `pkg/secret/generation_resolver.go`
+- Create: `pkg/secret/generation_resolver_test.go`
+- Modify: `cmd/root.go`, focused startup tests (construct one manifest/catalog/service/resolver bootstrap)
 - Modify: `pkg/server/generation_engine.go`
 - Modify: `pkg/server/generation_engine_test.go`
-- Modify: `pkg/server/server.go` (`Server` construction, recovery and runtime ownership)
+- Modify: `pkg/server/server.go`, `server_test.go` (`Server` construction, recovery, runtime ownership and shutdown close-once)
 - Modify: `pkg/server/route_handler.go`, `route_handler_test.go`
 - Modify: `pkg/server/reload.go`, `reload_test.go`
 - Modify: `pkg/server/stream_test.go`
+- Modify: `pkg/store/consumer_secret.go`, focused tests (delete transitional Store `ResolveScoped` production adapter)
 - Modify: `pkg/generation/coordinator.go`, `coordinator_test.go` only for the accepted activation rollback/finalize extension
 - Delete: `pkg/route/builder.go`
 - Delete: `pkg/proxy/registry.go`, `pkg/proxy/registry_test.go`, `pkg/proxy/registry_metrics_test.go`
@@ -1457,8 +1662,14 @@ git commit -m "refactor(stream): compile immutable router snapshots"
 
 **Interfaces:**
 
-- Consumes: `compiler.Compiler`, `compiler.PreparedGeneration`, `generation.PublicationEngine` including read-only `ConfirmActive`, journal publication token/set and recovered `generation.PublishedGeneration` artifacts.
-- Produces: the only production path `Coordinator → Compiler.Prepare → Journal.Stage → GenerationEngine.Activate → Journal.Commit → activation finalize`; no builder/runtime dual path.
+- Consumes: `compiler.WorkerCompilerFactory`, `compiler.PreparedGeneration`, generation-scoped secret attempt registration, `generation.PublicationEngine` including read-only `ConfirmActive`, journal publication token/set and recovered `generation.PublishedGeneration` artifacts.
+- Produces: the only production path `Coordinator → GenerationEngine.Prepare → WorkerCompilerFactory.PrepareGeneration → Journal.Stage → GenerationEngine.Activate → Journal.Commit → activation finalize`; recovery uses only `WorkerCompilerFactory.PrepareRecovery`; no builder/runtime or Store-resolver dual path.
+
+- [ ] **Step 0: Bind secret resolution to the exact prepared generation**
+
+Implement `secret.GenerationSecretResolver` as the in-process `AttemptResolverFactory` by moving environment/Vault parsing, bounded client/cache ownership and redaction out of the legacy Store resolver. `OpenCandidate` accepts the precomputed `CandidateAttemptID` plus only the Task 5 effective `PublicationSet`; `OpenRecovery` accepts the precomputed `RecoveryAttemptID` plus only committed revisions and verified published candidates. Each recomputes and constant-time verifies its mode-specific ID, defensively indexes resource bytes only for keys in that attempt's closure, verifies every `$secret://manager/id/path` target is backed by an indexed `secrets` resource, and returns an independent `AttemptResolver`. Its `ResolveScoped` requires exact `Scope.Attempt` and generation equality, requires the plugin owner resource and referenced secret resource to belong to that attempt's closure, and reads manager configuration only from those immutable indexed bytes. Closing an attempt revokes and zeroes only that view; closing the factory prevents opens, closes all remaining attempts and then closes shared clients/caches. It never reads Store, `RecoveryState.Desired`, package globals or another attempt. Candidate and recovery attempts at the same desired revision are deliberately allowed to overlap because their domain-separated canonical IDs bind different A/B closures. Server owns the resolver factory after successful construction; shutdown closes the generation engine first (revoking registrations), then closes the resolver/client/cache, then closes the journal.
+
+Add `TestRecoverySecretResolverUsesPublishedClosureNotDesired`: desired revision 42 contains secret configuration/value A, verified committed HTTP publication revision 40 contains B, and recovery materialization must return B while a spy on desired/Store access remains at zero calls. While that B recovery attempt remains active, register a retry candidate at the same desired revision 42 with A; assert both resolve their own value, their `AttemptID`s differ, and using either ID in the other's scope fails before backend access. Add candidate closure, missing secret target, cross-generation/attempt scope, duplicate exact-attempt registration, revoke-before-resolve, discard, rollback, finalize-transfer, retirement and engine-close tests. `TestServerShutdownClosesGenerationEngineAndFactoryOnce` must cover normal shutdown, recovery-install failure and an earlier `NewServer` failure after resolver construction; cleanup errors are joined and remain discoverable with `errors.Is` rather than discarded.
 
 - [ ] **Step 1: Write the failing journal-commit rollback test**
 
@@ -1481,11 +1692,11 @@ Add `TestGenerationEngineRollsBackPartiallyActivatedGenerationWhenActivateFails`
 
 Add `TestCoordinatorDiscardsPreparedGenerationWhenStageFails`: prepare a candidate with one running generation task and two counted leases, make `Journal.Stage` return `errStage`, and assert `DiscardPrepared` is called once with the exact set, the task stops, leases close in reverse order, no activation/commit/abort occurs, and `errors.Is` preserves both `errStage` and a forced discard error.
 
-Add zero-domain normal-publication tests for first commit, commit failure plus same-cursor retry, and committed replay. `GenerationEngine.Prepare` must return a synthetic empty set without invoking `Compiler.Prepare`; Activate/Rollback/Finalize must perform no snapshot swap, close or retirement, while successful finalize sets the initialized fence and replay calls only `ConfirmActive`.
+Add zero-domain normal-publication tests for first commit, commit failure plus same-cursor retry, and committed replay. `GenerationEngine.Prepare` must return a synthetic empty set without invoking `WorkerCompilerFactory.PrepareGeneration`; Activate/Rollback/Finalize must perform no snapshot swap, close or retirement, while successful finalize sets the initialized fence and replay calls only `ConfirmActive`.
 
 - [ ] **Step 2: Run activation tests and confirm RED**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/server -run "^(TestCoordinator|TestGenerationEngine)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/secret ./pkg/server -run "^(TestCoordinator|TestGenerationEngine|TestRecoverySecretResolver|TestServerShutdown)" -count=1'`
 
 Expected: FAIL until `GenerationEngine` implements the plan 03 reversible lifecycle and the tests prove partial-activation rollback, staged-token abort, joined cleanup errors and context-bearing finalization.
 
@@ -1531,9 +1742,17 @@ type activation struct {
 	next *compiler.PreparedGeneration
 	previous *compiler.PreparedGeneration
 }
+
+type GenerationEngine struct {
+	factory *compiler.WorkerCompilerFactory
+	// active, pending, activations, retiring and fences are guarded by one engine mutex
+}
+func NewGenerationEngine(*Server, *compiler.WorkerCompilerFactory) (*GenerationEngine, error)
+func (e *GenerationEngine) InstallRecovery(context.Context, generation.RecoveryState) error
+func (e *GenerationEngine) Close(context.Context) error
 ```
 
-For a non-empty publication, `Prepare` stores one prepared generation keyed by revision/domain digests and returns only its defensive-copy `PublicationSet`; `Activate` removes it from pending, probes it, installs the new HTTP/stream snapshots under one engine mutex and records `activation`. For an empty publication, Prepare stores only the synthetic identity and Activate only binds its token, with no compiler or owner work. Neither path closes nor drains `previous` before commit.
+`NewGenerationEngine` rejects a nil factory and takes ownership on success. `Close` prevents new preparation, closes pending/activation/retiring/active generations exactly once, then closes the factory; Server stores the engine and invokes this method before journal close on every shutdown path. For a non-empty publication, `Prepare` calls `WorkerCompilerFactory.PrepareGeneration`, stores the returned prepared generation keyed by revision/domain digests and returns only its defensive-copy `PublicationSet`; `Activate` removes it from pending, probes it, installs the new HTTP/stream snapshots under one engine mutex and records `activation`. For an empty publication, Prepare stores only the synthetic identity and Activate only binds its token, with no factory or owner work. Neither path closes nor drains `previous` before commit.
 
 - [ ] **Step 5: Finalize or rollback the activation**
 
@@ -1541,7 +1760,7 @@ Implement `DiscardPrepared(context.Context, generation.PublicationSet) error`, `
 
 - [ ] **Step 6: Recover only committed published artifacts**
 
-At startup, compile each verified `RecoveryState.Published` domain into one prepared recovery generation before connecting to the provider. Install all successfully verified domain owners and their exact artifact identities even when their revisions differ; set the separate initialized active fence after the installation succeeds. Never compile `RecoveryState.Desired` for serving. Missing/corrupt required domains remain absent and readiness stays false as defined by plan 03.
+At startup, pass `RecoveryState.Revisions` plus the complete verified `RecoveryState.Published` map to `WorkerCompilerFactory.PrepareRecovery` before connecting to the provider. That entrypoint verifies HTTP/stream artifact revisions, reconstructs the exact committed publication set using `Revisions.Desired`, opens one `RecoveryAttemptID`-bound registration through the materializer using only its verified published snapshots/closures, and compiles one prepared recovery generation without Task 5 disposition or desired snapshot input. Install all successfully verified domain owners and their exact artifact identities even when their revisions differ; set the separate initialized active fence after the installation succeeds. Never compile or register `RecoveryState.Desired` for serving. Missing/corrupt required domains remain absent and readiness stays false as defined by plan 03.
 
 - [ ] **Step 7: Replace `routeHandler.Replace` with prepared snapshot activation**
 
@@ -1553,7 +1772,7 @@ Delete the file and all symbols listed in File and Responsibility Map. Move any 
 
 - [ ] **Step 9: Run the cutover race gate**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/generation ./pkg/compiler ./pkg/runtime ./pkg/route ./pkg/stream ./pkg/server -run "^(TestCoordinator|TestCompiler|TestPreparedGeneration|TestGenerationEngine|TestRouteHandler|TestStream)" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/generation ./pkg/secret ./pkg/compiler ./pkg/runtime ./pkg/route ./pkg/stream ./pkg/server -run "^(TestCoordinator|TestCompiler|TestPreparedGeneration|TestGenerationEngine|TestRecoverySecretResolver|TestServerShutdown|TestRouteHandler|TestStream)" -count=1'`
 
 Expected: PASS, including prepare failure, activate failure, journal commit failure rollback, commit finalize, concurrent request handoff and natural WebSocket lifetime.
 
@@ -1570,7 +1789,7 @@ Expected: PASS.
 - [ ] **Step 11: Commit the atomic production cutover**
 
 ```bash
-git add pkg/generation pkg/compiler pkg/runtime pkg/route pkg/stream pkg/server pkg/plugin pkg/proxy
+git add cmd pkg/generation pkg/secret pkg/compiler pkg/runtime pkg/route pkg/stream pkg/server pkg/store pkg/plugin pkg/proxy
 git commit -m "refactor(runtime): activate immutable compiled generations"
 ```
 
@@ -1836,8 +2055,8 @@ Skip the commit when Tasks 1–11 and the documentation update leave no diff; ne
 
 - **Spec coverage:** Tasks 1–2 establish explicit runtime, secret and task dependencies; Task 3 generalizes equal-config resource reuse; Task 4 makes manifest phase/priority/scope/identity authoritative; Tasks 5–8 implement normalize, validate, closure, materialize, prepare, HTTP/stream compile and probe inputs; Task 9 publishes and rolls back immutable generations while deleting Builder; Task 10 separates plugin and core panic policy while retaining exactly-once finalizers; Task 11 assigns every current production goroutine an owner; Task 12 performs moved/deleted-symbol, stale-call-site, race, lint, build and platform audits.
 - **No-adapter coverage:** `route.Builder`, `ClusterRegistry`, mutable `Router.Reload`, handwritten request/capability registries and their proxy-only helpers are removed in the same task that switches the final production caller. Inert compiler foundations may land earlier, but there is never a selectable second production runtime.
-- **Dependency consistency:** `RuntimeDependencies` has the exact total-plan fields. Plan 02's immutable `data_encryption.Service` is consumed only to construct `secret.Materializer`, and raw plugin access is removed atomically. Compiler receives previous state only as `generation.PublishedGeneration`; journal staging/commit remains with coordinator/engine. Prepared generation outputs are the exact inputs expected by plans 05–09.
-- **Type consistency:** `ResourceKey` is used by `Acquire` and `ResourceLease`; `TaskSpec` is used by `TaskRegistry.Go`; plugin `Descriptor` and `InstanceKey` are stored on every `Binding`; `Compiler.Prepare` always returns `*PreparedGeneration`; `PublicationSet`, `HTTP`, `Stream`, `Probe` and `Close` use identical names in every later task.
+- **Dependency consistency:** `RuntimeDependencies` has the exact total-plan fields and carries only an attempt-bound `GenerationCapability`. Plan 02's immutable `data_encryption.Service` is owned by Store/standalone during the temporary bridge and by the permanent `secret.Materializer` after Task 9; raw plugin access is removed atomically. Compiler receives previous state only as `generation.PublishedGeneration`; journal staging/commit remains with coordinator/engine. Prepared generation outputs are the exact inputs expected by plans 05–09.
+- **Type consistency:** `ResourceKey` is used by `Acquire` and `ResourceLease`; `TaskSpec` is used by `TaskRegistry.Go`; plugin `Descriptor` and `InstanceKey` are stored on every `Binding`; Task 5 `PreparePublication` returns only the pure set, Task 6 package-private `Compiler.prepare` returns `*PreparedGeneration`, and production/recovery owners enter only through the factory's atomic methods; `PublicationSet`, `HTTP`, `Stream`, `Probe` and `Close` use identical names in every later task.
 - **Completeness scan:** The plan contains no deferred implementation marker, unspecified test request, generic error-handling instruction or undefined neighboring interface. Every code-producing task names concrete files, functions, red/green commands, expected outcomes and commit scope.
 
 ## Execution Handoff

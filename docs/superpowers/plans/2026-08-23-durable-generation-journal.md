@@ -2538,31 +2538,74 @@ Etcd `knownKeys`, quarantine and `lastRevision` advance only from the acknowledg
 - [ ] **Step 5: Open and recover the journal before starting a provider**
 
 ```go
-journalPath := config.JournalPath(effective)
-if journalPath == "" {
-	return errors.New("resolve generation journal path: effective config is nil")
+func (server *Server) installGenerationRuntime(ctx context.Context, effective *config.EffectiveConfig,
+	manifest *capability.Manifest, catalog *capability.SecretDeclarationCatalog,
+	encryption data_encryption.Service, secretResolver *secret.GenerationSecretResolver) (retErr error) {
+	if secretResolver == nil {
+		return errors.New("install generation runtime: invalid shared bootstrap owners")
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	resolverOwned := true
+	defer func() {
+		if resolverOwned {
+			retErr = errors.Join(retErr, secretResolver.Close(cleanupCtx))
+		}
+	}()
+	if effective == nil || manifest == nil || catalog == nil ||
+		encryption.DeclarationDigest() != catalog.Digest() {
+		return errors.New("install generation runtime: invalid shared bootstrap owners")
+	}
+	materializer := secret.NewMaterializer(encryption, secretResolver)
+	workerCompilerFactory, err := compiler.NewWorkerCompilerFactory(manifest, effective, materializer)
+	if err != nil {
+		return fmt.Errorf("create worker compiler factory: %w", err)
+	}
+	factoryOwned := true
+	defer func() {
+		if factoryOwned {
+			retErr = errors.Join(retErr, workerCompilerFactory.Close(cleanupCtx))
+		}
+	}()
+
+	journalPath := config.JournalPath(effective)
+	if journalPath == "" {
+		return errors.New("resolve generation journal path: effective config is nil")
+	}
+	journal, err := store.OpenJournal(journalPath, store.JournalOptions{
+		LegacyResourceBuckets: generation.ManagedResourceKinds(),
+	})
+	if err != nil {
+		return fmt.Errorf("open generation journal: %w", err)
+	}
+	journalOwned := true
+	defer func() {
+		if journalOwned {
+			retErr = errors.Join(retErr, journal.Close())
+		}
+	}()
+	recovery, err := journal.Recover(ctx)
+	if err != nil {
+		return fmt.Errorf("recover generation journal: %w", err)
+	}
+	engine, err := NewGenerationEngine(server, workerCompilerFactory)
+	if err != nil {
+		return fmt.Errorf("create generation engine: %w", err)
+	}
+	factoryOwned = false // successful construction transfers factory ownership to engine immediately
+	if err := engine.InstallRecovery(ctx, recovery); err != nil {
+		return errors.Join(fmt.Errorf("install recovered generations: %w", err), engine.Close(cleanupCtx))
+	}
+	server.generationEngine = engine
+	server.secretResolver = secretResolver
+	server.journal = journal
+	server.coordinator = generation.NewCoordinator(journal, engine)
+	resolverOwned = false
+	journalOwned = false
+	return nil
 }
-journal, err := store.OpenJournal(journalPath, store.JournalOptions{
-	LegacyResourceBuckets: generation.ManagedResourceKinds(),
-})
-if err != nil {
-	return fmt.Errorf("open generation journal: %w", err)
-}
-recovery, err := journal.Recover(ctx)
-if err != nil {
-	_ = journal.Close()
-	return fmt.Errorf("recover generation journal: %w", err)
-}
-engine := NewGenerationEngine(server)
-if err := server.installRecovery(recovery, engine); err != nil {
-	_ = journal.Close()
-	return fmt.Errorf("install recovered generations: %w", err)
-}
-server.journal = journal
-server.coordinator = generation.NewCoordinator(journal, engine)
 ```
 
-When a verified HTTP or stream publication exists, install it before constructing the Coordinator or connecting to the provider, record every verified recovered domain's exact active artifact identity, set the separate initialized `activeReady` fence, and allow traffic to use it. Recovered domains may legitimately have different published revisions; none is dropped merely because it differs from another domain or the latest desired revision. `ConfirmActive` later verifies only the domains requested by the replayed `PublicationSet` and permits other independently active domains. Recovery installation is fallible and must prevent provider startup on any owner/fence mismatch. Record provider stage unhealthy until the authoritative provider completes a fresh acknowledged or safely replayed apply; therefore offline last-good can serve while readiness remains false/degraded. A missing or corrupt required domain stays unready and is never rebuilt from desired state during offline startup. Crash before Commit has no committed marker and retries the normal lifecycle; crash after Commit but before provider-local acknowledgement uses the installed recovery fence plus the durable marker to replay the acknowledgement without same-revision activation. A committed zero-domain replay is confirmed by `activeReady` even when the per-domain identity map is empty.
+`cmd/root.go` loads the manifest once, constructs its catalog once, constructs one encryption service from that catalog, constructs one `secret.GenerationSecretResolver` with its owned bounded HTTP client/cache and environment lookup, and passes those exact owners to `server.NewServer`; Server passes the same encryption service to Store/standalone before any provider starts and passes the generation resolver directly to `installGenerationRuntime`. This startup path never reloads the manifest/catalog/service, never constructs a Store resolver and never calls a package-global Store resolver. `NewGenerationEngine` is the permanent immutable owner and takes ownership of Task 6's `WorkerCompilerFactory` as soon as its constructor succeeds. An install error closes engine (therefore factory and every secret attempt registration), resolver and journal; successful startup stores `server.generationEngine` and `server.secretResolver`, and Server shutdown closes engine, then resolver, then journal exactly once. When `recovery.Published` is non-empty, `InstallRecovery` calls `WorkerCompilerFactory.PrepareRecovery(ctx, recovery.Revisions, recovery.Published, onTaskFailure)`; that method opens one `RecoveryAttemptID`-bound registration through the materializer using only verified published snapshots/closures and never calls candidate `PrepareGeneration` or reads `recovery.Desired`. Each present candidate must match its HTTP/stream revision entry. An absent candidate with a non-zero committed revision is allowed only when `RecoveryState.Failures` contains that exact domain; it remains unavailable and readiness stays false. When the published map is empty, no factory generation or secret registration is created: the engine installs the desired fence and records any verified missing-domain failures; a true zero-domain commit has zero HTTP/stream revisions, while an all-domains-damaged recovery has non-zero revisions paired with failures and cannot satisfy a non-empty `ConfirmActive`. Every bootstrap, factory, journal, engine or recovery error closes only the owners already created, exactly once. When a verified HTTP or stream publication exists, install it before constructing the Coordinator or connecting to the provider, record every verified recovered domain's exact active artifact identity, set the separate initialized `activeReady` fence, and allow traffic to use it. Recovered domains may legitimately have different published revisions; none is dropped merely because it differs from another domain or the latest desired revision. `ConfirmActive` later verifies only the domains requested by the replayed `PublicationSet` and permits other independently active domains. Recovery installation is fallible and must prevent provider startup on any owner/fence mismatch. Record provider stage unhealthy until the authoritative provider completes a fresh acknowledged or safely replayed apply; therefore offline last-good can serve while readiness remains false/degraded. A missing or corrupt required domain stays unready and is never rebuilt from desired state during offline startup. Crash before Commit has no committed marker and retries the normal lifecycle; crash after Commit but before provider-local acknowledgement uses the installed recovery fence plus the durable marker to replay the acknowledgement without same-revision activation. If that retry uses the same desired revision with different desired bytes, its domain-separated `CandidateAttemptID` may coexist with the still-active recovery attempt until commit/rollback decides ownership; cross-attempt scope use is rejected. A committed zero-domain replay is confirmed by `activeReady` even when the per-domain identity map is empty.
 
 - [ ] **Step 6: Delete the legacy event, bucket and in-memory last-good implementation**
 

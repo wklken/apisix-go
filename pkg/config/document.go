@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -338,7 +339,11 @@ func expandAPISIXTemplates(value, path string, env map[string]string) (expandedT
 		expanded = true
 		cursor = tokenEnd
 	}
-	return expandedTemplate{value: result.String(), names: sortedTemplateNames(names), expanded: expanded}, nil
+	expandedValue := result.String()
+	if !utf8.ValidString(expandedValue) {
+		return expandedTemplate{}, fmt.Errorf("expand APISIX environment at %s: result is not valid UTF-8", path)
+	}
+	return expandedTemplate{value: expandedValue, names: sortedTemplateNames(names), expanded: expanded}, nil
 }
 
 func parseTemplateExpression(expression string) (name, fallback string, hasFallback, valid bool) {

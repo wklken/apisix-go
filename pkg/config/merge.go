@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"strconv"
+	"unicode/utf8"
 )
 
 var (
@@ -59,6 +60,9 @@ func flattenNodeProvenance(node *valueNode, path string, root bool, provenance P
 }
 
 func appendProvenanceKey(parent, key string) string {
+	if !utf8.ValidString(key) {
+		panic("encode provenance mapping key: invalid UTF-8")
+	}
 	if safeProvenanceSegment.MatchString(key) {
 		if parent == "" {
 			return key
@@ -88,6 +92,9 @@ func nodeFromAny(value any, source FieldSource) (*valueNode, error) {
 	case reflect.Bool:
 		return &valueNode{kind: nodeScalar, scalar: reflected.Bool(), source: source}, nil
 	case reflect.String:
+		if !utf8.ValidString(reflected.String()) {
+			return nil, fmt.Errorf("configuration value type %s contains invalid UTF-8", reflected.Type())
+		}
 		return &valueNode{kind: nodeScalar, scalar: reflected.String(), source: source}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		number := json.Number(strconv.FormatInt(reflected.Int(), 10))
@@ -105,11 +112,17 @@ func nodeFromAny(value any, source FieldSource) (*valueNode, error) {
 		mapping := make(map[string]*valueNode, reflected.Len())
 		iterator := reflected.MapRange()
 		for iterator.Next() {
+			key := iterator.Key().String()
+			if !utf8.ValidString(key) {
+				return nil, fmt.Errorf(
+					"configuration value type %s contains an invalid UTF-8 map key", reflected.Type(),
+				)
+			}
 			child, err := nodeFromAny(iterator.Value().Interface(), source)
 			if err != nil {
 				return nil, err
 			}
-			mapping[iterator.Key().String()] = child
+			mapping[key] = child
 		}
 		return &valueNode{kind: nodeMapping, mapping: mapping, source: source}, nil
 	case reflect.Slice:

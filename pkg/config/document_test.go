@@ -273,6 +273,27 @@ func TestParseDocumentReportsFirstMissingAPISIXEnvironment(t *testing.T) {
 	}
 }
 
+func TestParseDocumentRejectsInvalidUTF8FromAPISIXEnvironment(t *testing.T) {
+	invalidUTF8 := string([]byte{0xff})
+	for _, test := range []struct {
+		data string
+		want string
+	}{
+		{data: "'${{VALUE}}': safe\n", want: "expand APISIX environment at <root>: result is not valid UTF-8"},
+		{data: "value: '${{VALUE}}'\n", want: "expand APISIX environment at value: result is not valid UTF-8"},
+	} {
+		_, err := parseDocument([]byte(test.data), FieldSource{Kind: SourceOverrideFile}, map[string]string{
+			"VALUE": invalidUTF8,
+		})
+		if err == nil || err.Error() != test.want {
+			t.Fatalf("parseDocument() error = %v", err)
+		}
+		if strings.Contains(err.Error(), invalidUTF8) {
+			t.Fatalf("parseDocument() leaked invalid value: %q", err)
+		}
+	}
+}
+
 func TestParseDocumentRetypesCompleteExpandedScalars(t *testing.T) {
 	doc, err := parseDocument([]byte(`
 quoted_true: "${{TRUE_VALUE}}"

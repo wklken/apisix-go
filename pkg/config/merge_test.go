@@ -305,6 +305,7 @@ func TestNodeFromAnyDeepCopiesMapsSlicesAndArrays(t *testing.T) {
 
 func TestNodeFromAnyRejectsUnsupportedValuesWithoutLeakage(t *testing.T) {
 	const secret = "C3_NODE_SENTINEL_7E34"
+	invalidUTF8 := string([]byte{0xff})
 	tests := []struct {
 		name string
 		in   any
@@ -316,6 +317,8 @@ func TestNodeFromAnyRejectsUnsupportedValuesWithoutLeakage(t *testing.T) {
 		{name: "pointer", in: func() *string { value := secret; return &value }()},
 		{name: "struct", in: struct{ Value string }{Value: secret}},
 		{name: "non-string map key", in: map[int]string{1: secret}},
+		{name: "invalid UTF-8 string", in: invalidUTF8},
+		{name: "invalid UTF-8 map key", in: map[string]any{invalidUTF8: secret, "�": secret}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

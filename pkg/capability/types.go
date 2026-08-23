@@ -72,22 +72,23 @@ type Evidence struct {
 }
 
 type PluginCapability struct {
-	Name               string         `yaml:"name"`
-	Implementation     string         `yaml:"implementation"`
-	Namespace          Namespace      `yaml:"namespace"`
-	Domains            []Domain       `yaml:"domains"`
-	APISIXDefault      bool           `yaml:"apisix_default"`
-	Factories          []Factory      `yaml:"factories"`
-	Phases             []string       `yaml:"phases"`
-	Priority           int            `yaml:"priority"`
-	Scopes             []string       `yaml:"scopes"`
-	InstanceScope      string         `yaml:"instance_scope"`
-	Behavior           BehaviorStatus `yaml:"behavior"`
-	BehaviorSummary    string         `yaml:"behavior_summary"`
-	KnownGaps          []string       `yaml:"known_gaps"`
-	Evidence           Evidence       `yaml:"evidence"`
-	DivergenceIDs      []string       `yaml:"divergence_ids"`
-	SupportedPlatforms []string       `yaml:"supported_platforms"`
+	Name                string         `yaml:"name"`
+	Implementation      string         `yaml:"implementation"`
+	Namespace           Namespace      `yaml:"namespace"`
+	Domains             []Domain       `yaml:"domains"`
+	APISIXDefault       bool           `yaml:"apisix_default"`
+	Factories           []Factory      `yaml:"factories"`
+	Phases              []string       `yaml:"phases"`
+	Priority            int            `yaml:"priority"`
+	Scopes              []string       `yaml:"scopes"`
+	InstanceScope       string         `yaml:"instance_scope"`
+	ConditionalTerminal bool           `yaml:"conditional_terminal"`
+	Behavior            BehaviorStatus `yaml:"behavior"`
+	BehaviorSummary     string         `yaml:"behavior_summary"`
+	KnownGaps           []string       `yaml:"known_gaps"`
+	Evidence            Evidence       `yaml:"evidence"`
+	DivergenceIDs       []string       `yaml:"divergence_ids"`
+	SupportedPlatforms  []string       `yaml:"supported_platforms"`
 }
 
 type QualificationProfile struct {

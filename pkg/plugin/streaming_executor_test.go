@@ -375,6 +375,10 @@ func TestBuildResponsePlanSeparatesStreamingAndConditionalOwnership(t *testing.T
 	if len(plan.StreamingBindings()) != 1 || len(plan.BufferedBindings()) != 0 {
 		t.Fatalf("plan streaming=%d buffered=%d", len(plan.StreamingBindings()), len(plan.BufferedBindings()))
 	}
+	if static := plan.StaticBindings(); len(static) != 1 || !static[0].Descriptor.resolved ||
+		static[0].InstanceKey == (InstanceKey{}) {
+		t.Fatalf("static bindings were not normalized into the plan: %#v", static)
+	}
 	bindings := plan.StreamingBindings()
 	bindings[0].Provenance.ID = "mutated"
 	if plan.StreamingBindings()[0].Provenance.ID != "stream-route" {
@@ -699,6 +703,10 @@ func TestBuildResponsePlanAcceptsRouteOwnedTerminalCandidate(t *testing.T) {
 	}
 	if len(plan.RouteTerminals()) != 1 || plan.RouteTerminals()[0].Terminal != terminal {
 		t.Fatalf("route terminals = %#v, want supplied route owner", plan.RouteTerminals())
+	}
+	if static := plan.StaticBindings(); len(static) != 1 || !static[0].Descriptor.resolved ||
+		static[0].InstanceKey == (InstanceKey{}) {
+		t.Fatalf("static bindings were not normalized into the plan: %#v", static)
 	}
 }
 

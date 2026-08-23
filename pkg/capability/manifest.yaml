@@ -51,6 +51,7 @@ plugins:
     priority: 900
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "`uri` rewriting with `$var` / `${var}` / `\\$` expansion; `regex_uri` with compile-time validation; `http_to_https` with forwarded HTTPS detection; method-specific 301/308 responses and query appending without an empty trailing `?`"
     known_gaps: ["The official `uri` pattern constraint is not enforced during config validation."]
@@ -294,6 +295,7 @@ plugins:
     priority: 10000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "Lua chunks returning functions with sequential execution; `code` / `body` return short-circuiting; `ngx.log`, `ngx.say`, `ngx.req.set_header`, `ngx.header`, `ngx.status`, `ngx.arg`; `cjson` and selected `apisix.core` helpers"
     known_gaps: ["User Lua that depends on `ngx.ctx`, functional `ngx.log`, custom variables, or other unavailable `ngx_lua` APIs behaves differently."]
@@ -321,6 +323,7 @@ plugins:
     priority: -2000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "request-phase execution; response capture for `header_filter` / `body_filter` / `log`; response header/status/body mutation; documented JSON body-filter rewrite pattern"
     known_gaps: ["User Lua that depends on streaming body chunks, custom variables, or unavailable `ngx_lua` APIs behaves differently after the buffered response."]
@@ -348,6 +351,7 @@ plugins:
     priority: -1900
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "method/query/body/header forwarding with wildcard `:ext` paths; client/route/metadata authorization precedence; encrypted API keys and header injection; shared progress-timeout transport with streamed response/error accounting"
     known_gaps: []
@@ -375,6 +379,7 @@ plugins:
     priority: -1902
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "method/query/body/header forwarding with wildcard `:ext` paths; encrypted Basic authorization; status/body/header relaying with HTTP/2 filtering; shared progress-timeout transport with streamed response/error accounting"
     known_gaps: []
@@ -402,6 +407,7 @@ plugins:
     priority: -1901
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "action endpoint construction with optional package; POST body forwarding with Basic auth from encrypted `service_token`; default `blocking` / `result` / `timeout` query parameters; JSON result `statusCode` / scalar-or-list `headers` / body values, with `body: false` falling back to the original JSON response"
     known_gaps: []
@@ -429,6 +435,7 @@ plugins:
     priority: -1899
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "method/query/body/header forwarding with wildcard `:ext` paths; encrypted API-key/IAM credentials and SigV4 signing; status/body/header relaying with HTTP/2 filtering; shared progress-timeout transport with streamed response/error accounting"
     known_gaps: []
@@ -625,6 +632,7 @@ plugins:
     priority: 506
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "cached `.pb`/`.proto` bindings with imports; GET/POST JSON-to-protobuf mapping; unary gRPC framing, integer deadlines, trailers, and HTTP status mapping; enum/int64/default/detail JSON options"
     known_gaps: ["`pb_option = enable_hooks` is accepted but Lua protobuf hooks are not executed."]
@@ -652,6 +660,7 @@ plugins:
     priority: 505
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "CORS/preflight and wildcard route rewriting; binary/text request translation; streamed binary responses with cancellation; response/trailer framing and content-type restoration"
     known_gaps: ["Text responses encode each write and trailer independently instead of using one response-lifetime Base64 stream."]
@@ -679,6 +688,7 @@ plugins:
     priority: 11000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "`abort` and `delay`; omitted-vs-explicit `percentage`; empty abort bodies; string/numeric response headers"
     known_gaps: ["Expression rules that require PCRE-only syntax or NGINX variables outside the Go catalog can differ."]
@@ -706,6 +716,7 @@ plugins:
     priority: 10900
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "`response_example` preferred over `response_schema`; schema object generation with `example` values; JSON/plain-text/XML schema bodies; response headers with bounded variable resolution"
     known_gaps: ["Example-less string schemas produce an empty string instead of the official random lowercase value."]
@@ -733,6 +744,7 @@ plugins:
     priority: 509
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "bounded GraphQL syntax/structure validation; multiple-operation `operation_name` enforcement; GET/POST rewriting to `query`, `variables`, `operationName`"
     known_gaps: []
@@ -787,6 +799,7 @@ plugins:
     priority: 2500
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "encrypted consumer fields; header/query API key lookup; APISIX-style missing/invalid key errors; consumer attachment"
     known_gaps: []
@@ -814,6 +827,7 @@ plugins:
     priority: 2510
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`HS*`, `RS*`, `ES*`, `PS*`, `EdDSA` signature verification; header/query/cookie token lookup; `exp` / `nbf` claim verification; `base64_secret` and PEM/PKIX/PKCS1 key parsing"
     known_gaps: []
@@ -841,6 +855,7 @@ plugins:
     priority: 2509
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "compact direct AES-256-GCM JWE parsing; `Bearer` token extraction; `kid` consumer lookup; required 32-byte plain/base64url consumer secrets; APISIX-compatible selection by `kid` without validating `alg`, `enc`, or encrypted-key declarations"
     known_gaps: []
@@ -868,6 +883,7 @@ plugins:
     priority: 2520
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "Basic credential extraction; APISIX-compatible removal of ASCII space/tab/CR/LF/form-feed/vertical-tab from decoded credentials (Unicode whitespace is preserved); consumer attachment; password validation"
     known_gaps: []
@@ -895,6 +911,7 @@ plugins:
     priority: 2000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "explicit `token_endpoint` or discovery-derived endpoint; static `permissions` and lazy path resource lookup; UMA decision requests; `http_method_as_scope`"
     known_gaps: []
@@ -922,6 +939,7 @@ plugins:
     priority: 2559
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "OAuth authorize redirect; per-`client_id` session cookie; callback state validation; AES-GCM stateless session state, independent of route generation and process-local maps"
     known_gaps: []
@@ -949,6 +967,7 @@ plugins:
     priority: 2430
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "no-code redirect to `redirect_uri`; code extraction from configurable header/query names; APISIX-style invalid-code JSON errors; access token POST with TTL caching"
     known_gaps: ["Session cookies are signed but not encrypted, so their storage confidentiality differs from `resty.session`."]
@@ -976,6 +995,7 @@ plugins:
     priority: 2420
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "no-code redirect to `redirect_uri`; code extraction from configurable header/query names; OAuth token POST with `auth_redirect_uri`; userinfo GET with Bearer token"
     known_gaps: ["Session cookies are signed but not encrypted, so their storage confidentiality differs from `resty.session`."]
@@ -1003,6 +1023,7 @@ plugins:
     priority: 2598
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "HTTP-Redirect and HTTP-POST authentication requests; SP-signed SAML requests; ACS `SAMLResponse` parsing, signature and condition validation through `github.com/crewjam/saml`; signed local SAML session cookies"
     known_gaps: []
@@ -1030,6 +1051,7 @@ plugins:
     priority: 2555
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`V1#appid#wolf_token` parsing; token extraction from query/header/cookie; consumer lookup by `appid`; Wolf `/wolf/rbac/access_check`"
     known_gaps: []
@@ -1057,6 +1079,7 @@ plugins:
     priority: 2599
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "Bearer token extraction from `Authorization` and `X-Access-Token`; discovery fallback for `introspection_endpoint`; token introspection; local JWT issuer validation through discovery or `claim_validator.issuer.valid_issuers`; local JWT audience validation against `client_id` or `claim_validator.audience.valid_audiences`; `client_secret_basic` / `client_secret_post` / `private_key_jwt` / `client_secret_jwt` client authentication"
     known_gaps: []
@@ -1084,6 +1107,7 @@ plugins:
     priority: 2597
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "CAS login redirect; absolute/relative `cas_callback_uri`; ticket `serviceValidate`; HMAC-signed initiation cookie"
     known_gaps: []
@@ -1111,6 +1135,7 @@ plugins:
     priority: 2530
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`hmac-sha1`, `hmac-sha256`, `hmac-sha512` verification; `signed_headers`; `clock_skew`; request body digest validation"
     known_gaps: []
@@ -1138,6 +1163,7 @@ plugins:
     priority: 2560
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "Casbin `model` / `policy` text config; `model_path` / `policy_path` file config; plugin-metadata `model` / `policy` fallback with reload on update; configured username header"
     known_gaps: []
@@ -1165,6 +1191,7 @@ plugins:
     priority: 2540
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "HTTP Basic credential extraction; LDAP bind using configured `base_dn`; host/URL `ldap_uri`; `uid` attribute for user DN construction"
     known_gaps: []
@@ -1192,6 +1219,7 @@ plugins:
     priority: 2001
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "OPA HTTP decision calls; custom deny status/body/headers; `send_headers_upstream`; `with_consumer`"
     known_gaps: []
@@ -1219,6 +1247,7 @@ plugins:
     priority: 2002
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`GET` / `POST` with body and transport metadata forwarding; `request_headers`; `extra_headers` with variable resolution; APISIX header precedence: generated headers first, `extra_headers` override, and `request_headers` fill only absent values; `upstream_headers` and `client_headers`"
     known_gaps: []
@@ -1246,6 +1275,7 @@ plugins:
     priority: 2600
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "ordered fallback across every 3.17 `type = auth` plugin: `basic-auth`, `key-auth`, `jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`, `wolf-rbac`; every plugin in each `auth_plugins` array object is initialized and executed; request passes when any configured auth plugin succeeds; generic final 401 `Authorization Failed` denial; per-plugin schema validation"
     known_gaps: []
@@ -1273,6 +1303,7 @@ plugins:
     priority: 4000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`allow_origins` with defaults; default wildcard omits the plugin-added `Vary: Origin` while preserving existing/downstream `Vary` values; `allow_origins = \"**\"` request-origin echo; `allow_origins_by_regex`; `allow_origins_by_metadata`"
     known_gaps: []
@@ -1300,6 +1331,7 @@ plugins:
     priority: 2410
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "authenticated consumer `labels`; string, JSON/segmented-text, numeric, boolean, and array label values; `$external_user` label extraction with bounded dotted fields; `$..field[.suffix]` recursive lookup"
     known_gaps: ["Configured JSONPath expressions using bracket or array syntax outside the enumerated Go forms are rejected."]
@@ -1327,6 +1359,7 @@ plugins:
     priority: 2900
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "`block_rules`; safe invalid-regex rejection; normalized-path matching with original query arguments; concatenated-rule diagnostics"
     known_gaps: ["Configured PCRE-only rules such as lookarounds or backreferences cannot be represented by Go RE2."]
@@ -1354,6 +1387,7 @@ plugins:
     priority: 3000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`whitelist` / `blacklist`; CIDR/IP matching; custom messages; `response_code` 403/404 selection"
     known_gaps: []
@@ -1381,6 +1415,7 @@ plugins:
     priority: 2999
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "mutually exclusive `allowlist` or `denylist` schema branches; allow-before-deny matching; `bypass_missing`; trimmed User-Agent matching"
     known_gaps: ["Configured PCRE-only allowlist or denylist rules such as lookarounds or backreferences cannot be represented by Go RE2."]
@@ -1408,6 +1443,7 @@ plugins:
     priority: 2990
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`whitelist` / `blacklist`; `bypass_missing` including malformed bare-host Referer values; custom rejection messages; APISIX-style JSON rejection bodies"
     known_gaps: []
@@ -1435,6 +1471,7 @@ plugins:
     priority: 2400
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`consumer_name`, `service_id`, `route_id`, `consumer_group_id`; blacklist and whitelist matching; `allowed_by_methods` with the official 10-method enum; custom rejection status/message"
     known_gaps: []
@@ -1462,6 +1499,7 @@ plugins:
     priority: 2980
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "token cookie/header presence and equality checks; safe-method bypass; expiry and keyed/plain SHA256 signature validation (`sha256(\"{expires,random,key}\")`); `expires = 0` no-expiry validation"
     known_gaps: []
@@ -1489,6 +1527,7 @@ plugins:
     priority: 501
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "method+URI registry with `Register` / `Lookup`; optional `uri` override; `node-status` at `/apisix/status`; `server-info` at `/v1/server_info`"
     known_gaps: []
@@ -1543,6 +1582,7 @@ plugins:
     priority: 2700
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "off/monitor/block modes and expressions; metadata/config node selection and quarantine; bounded inspection copy with full upstream-body replay; official decision headers and block response"
     known_gaps: []
@@ -1597,6 +1637,7 @@ plugins:
     priority: 512
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "inline/remote OpenAPI specs with secret-backed headers; bounded external-reference graph with cycle rejection; SSRF-safe fetch, redirects, address allowlist, and origin-scoped headers; kin-openapi request validation with refresh and last-good retention"
     known_gaps: []
@@ -1624,6 +1665,7 @@ plugins:
     priority: 1001
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "local, Redis, and Redis Cluster token buckets; bounded ref-counted local stores and shared Redis clients; route-scoped variable/header keys; rejection, `nodelay`, and degradation controls"
     known_gaps: []
@@ -1651,6 +1693,7 @@ plugins:
     priority: 1003
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "local, Redis, and Redis Cluster connection limits; atomic admission and request-finalizer release; route/rule variable keys and adaptive delay; rejection and degradation controls"
     known_gaps: []
@@ -1678,6 +1721,7 @@ plugins:
     priority: 1002
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "local, Redis, and Redis Cluster fixed windows; bounded ref-counted groups and shared backends; dynamic rule/variable quotas; quota headers, rejection, and degradation controls"
     known_gaps: []
@@ -1705,6 +1749,7 @@ plugins:
     priority: 1004
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "bounded JSON/GraphQL parsing and depth cost; fragment-cycle and undefined-fragment rejection; local/Redis/Cluster quotas with shared backends; bounded ref-counted groups and config mismatch rejection"
     known_gaps: []
@@ -1732,6 +1777,7 @@ plugins:
     priority: 1085
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "memory/disk zones with versioned envelopes; shared reload, `Vary`, `PURGE`, and expiry lifecycle; cache-control/TTL/cookie/consumer policies; GET reuse and HEAD-miss store safety"
     known_gaps: []
@@ -1759,6 +1805,7 @@ plugins:
     priority: 1009
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "GET/POST validation bounded by `graphql.max_size`; grammar parsing for operations, variables, types, args, directives, fragments, aliases, values, strings, numbers; JSON and `application/graphql` bodies; mutation bypass with `Apisix-Cache-Status: BYPASS`"
     known_gaps: []
@@ -1786,6 +1833,7 @@ plugins:
     priority: 2800
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "JSON/form body and header schemas; missing/blank body and decode rejection; `UseNumber` JSON normalization with exact replay; config-time nested-schema validation"
     known_gaps: ["Secret references used as `header_schema` or `body_schema` are not materialized before validation."]
@@ -1921,6 +1969,7 @@ plugins:
     priority: 1005
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "`break_response_code`, `break_response_body`; `break_response_headers` with bounded variable resolution; `max_breaker_sec` with exponential backoff; `unhealthy.http_statuses` / `unhealthy.failures`"
     known_gaps: ["Breaker counters are route-local instead of shared by host and URI across routes, which can change trip and recovery behavior."]
@@ -1948,6 +1997,7 @@ plugins:
     priority: 966
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "compiled match expressions and bounded form reads; resolved inline/upstream-ID weighted targets with node-priority fallback; APISIX-compatible ketama/variable hashing; cluster-owned retries, progress timeouts, and active health probes"
     known_gaps: ["`match.vars` expressions that require unsupported NGINX variables or PCRE-only semantics can differ."]
@@ -2002,6 +2052,7 @@ plugins:
     priority: 12015
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "custom header names via `header_name`; response header opt-out via `include_in_response`; incoming request ID preservation; `uuid`, `uuidv7`, `nanoid`, `ksuid`, `range_id` algorithms"
     known_gaps: []
@@ -2083,6 +2134,7 @@ plugins:
     priority: 22000
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "route-level `max_body_size` enforcement; 413 for declared/chunked overflow; 500 for non-size body-read failures; exact accepted-body replay"
     known_gaps: []
@@ -2110,6 +2162,7 @@ plugins:
     priority: 1006
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "official action-array config shape (`[\"name\", config]`); first matching `case` with config-time expression compile; bounded APISIX expression operators and request variables; validated `return` actions with configured status code"
     known_gaps: ["`limit-count` actions with `group` are rejected, and `case` expressions using unsupported NGINX variables or PCRE-only semantics can differ."]
@@ -2843,6 +2896,7 @@ plugins:
     priority: 1029
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "request and response moderation with protocol-aware content extraction; `stream_check_mode` realtime/final_packet with cache size and interval; Aliyun TextModerationPlus HMAC-SHA1 signing with session nonce reuse; `risk_level_bar`, `deny_code`, `deny_message`, `check_request`, `check_response`"
     known_gaps: []
@@ -2870,6 +2924,7 @@ plugins:
     priority: 1050
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "AWS Comprehend request checks; SigV4 with static and session credentials; encrypted secrets; endpoint override and TLS controls"
     known_gaps: []
@@ -2897,6 +2952,7 @@ plugins:
     priority: 1060
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`embeddings_provider.azure_openai` and `vector_search_provider.azure_ai_search` schema; body `ai_rag` field validation; embeddings request and vector search with `api-key` auth; search result injected as a user message via protocol append"
     known_gaps: []
@@ -2924,6 +2980,7 @@ plugins:
     priority: 1070
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`prepend` / `append` prompt arrays with role/content schema; protocol detection and message injection; JSON body rewrite and replace"
     known_gaps: []
@@ -2951,6 +3008,7 @@ plugins:
     priority: 1072
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "allow/deny regex policy evaluation with compiled patterns; shared extraction across all six AI protocols; nested content blocks via Responses API parts; `match_all_roles`, `match_all_conversation_history`, `fail_mode`"
     known_gaps: ["Configured PCRE-only guard patterns cannot be represented by Go RE2."]
@@ -2978,6 +3036,7 @@ plugins:
     priority: 1071
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "named `templates` array with model/messages; `template_name` body lookup with official missing/unknown-template errors; `{{ expr }}` rendering with nested dotted and bounded indexed lookup; request body replacement and continuation upstream"
     known_gaps: []
@@ -3005,6 +3064,7 @@ plugins:
     priority: 1073
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "`prompt` / `provider` / `auth` schema with a ten-provider enum; LLM call and body replacement with extracted text; AWS SigV4 and GCP token auth paths; `$llm_request_body` / `$ai_request_body_changed` variable registration"
     known_gaps: []
@@ -3032,6 +3092,7 @@ plugins:
     priority: 1030
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "global, per-instance, rule, and expression quotas; local, Redis, and Sentinel atomic fixed windows; four token strategies with two-phase charging; non-buffering stream charging, fallback, and quota headers"
     known_gaps: []
@@ -3059,6 +3120,7 @@ plugins:
     priority: 1040
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "six-protocol detection including passthrough; Anthropic-to-OpenAI request/response/SSE conversion with tools; OpenAI Responses and Embeddings; Vertex embeddings conversion both directions; provider 429/5xx responses return status only without provider body/headers; transport timeout maps to 504 and other transport errors to 500 without raw error text"
     known_gaps: []
@@ -3086,6 +3148,7 @@ plugins:
     priority: 1041
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "partial"
     behavior_summary: "weighted priorities with descending sort; round-robin and APISIX 3.17-compatible 160-point ketama chash across vars/header/cookie/consumer/variable-combination keys with remote-address fallback; HTTP/rate fallback and retries with `max_retries` / `retry_on_failure_within_ms`; active health schema with threshold/interval behavior"
     known_gaps: ["Domains are not expanded into per-IP nodes, so DNS snapshots and per-address health/failover behavior can differ."]
@@ -3113,6 +3176,7 @@ plugins:
     priority: 510
     scopes: ["global_rule", "route", "service"]
     instance_scope: "effective-config"
+    conditional_terminal: true
     behavior: "full"
     behavior_summary: "stdio subprocess launch with `command` / `args`; `GET {base_uri}/sse` with advertised message endpoints; 30-second JSON-RPC ping keepalives; bounded `POST {base_uri}/message` forwarding with 413 rejection"
     known_gaps: []

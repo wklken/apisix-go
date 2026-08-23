@@ -470,9 +470,10 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 	}
 
 	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
-	plugins := builder.initPlugins(
-		map[string]resource.PluginConfig{
-			"error-log-logger": map[string]any{
+	bindings, err := builder.initPluginBindingsStrict(
+		[]materializedPluginSource{{
+			name: "error-log-logger",
+			config: map[string]any{
 				"tcp": map[string]any{
 					"host": host,
 					"port": port,
@@ -482,9 +483,16 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 				"buffer_duration":  60,
 				"inactive_timeout": 60,
 			},
-		},
+			scope:      pluginpkg.ScopeSystem,
+			provenance: pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceSystem, ID: "error-log-logger"},
+		}},
 		pluginRouteContext{},
+		pluginInitOptions{},
 	)
+	if err != nil {
+		t.Fatalf("init system plugin bindings: %v", err)
+	}
+	plugins := pluginsFromBindings(bindings)
 	if len(plugins) != 1 {
 		t.Fatalf("plugins len = %d, want 1", len(plugins))
 	}
@@ -717,6 +725,60 @@ func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
 	}
 	if got := bindings[0].Priority; got != 3210 {
 		t.Fatalf("binding priority = %d, want 3210", got)
+	}
+}
+
+func TestInitPluginBindingsStrictInstanceKeyIncludesBehaviorMetadata(t *testing.T) {
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
+	buildKey := func(metadata map[string]any) pluginpkg.InstanceKey {
+		t.Helper()
+		bindings, err := builder.initPluginBindingsStrict(
+			materializedPluginSources(map[string]resource.PluginConfig{
+				"request-id": map[string]any{
+					"header_name": "X-Request-ID",
+					"_meta":       metadata,
+				},
+			}, pluginpkg.ResourceProvenance{Kind: pluginpkg.ResourceRoute, ID: "identity-route"}),
+			builder.pluginRouteContext(resource.Route{ID: "identity-route"}),
+			pluginInitOptions{},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(bindings) != 1 {
+			t.Fatalf("bindings len = %d, want 1", len(bindings))
+		}
+		return bindings[0].InstanceKey
+	}
+
+	base := buildKey(map[string]any{
+		"priority":       1,
+		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
+		"error_response": map[string]any{"message": "denied"},
+	})
+	priorityOnly := buildKey(map[string]any{
+		"priority":       999,
+		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
+		"error_response": map[string]any{"message": "denied"},
+	})
+	if base != priorityOnly {
+		t.Fatalf("priority-only metadata changed instance key: %#v %#v", base, priorityOnly)
+	}
+	filterChanged := buildKey(map[string]any{
+		"priority":       1,
+		"filter":         []any{[]any{"route_id", "==", "other-route"}},
+		"error_response": map[string]any{"message": "denied"},
+	})
+	if base == filterChanged {
+		t.Fatal("filter change did not change instance key")
+	}
+	errorChanged := buildKey(map[string]any{
+		"priority":       1,
+		"filter":         []any{[]any{"route_id", "==", "identity-route"}},
+		"error_response": map[string]any{"message": "other"},
+	})
+	if base == errorChanged {
+		t.Fatal("error_response change did not change instance key")
 	}
 }
 

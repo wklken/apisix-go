@@ -71,7 +71,10 @@ func NewBufferedResponseExecutor(
 	if config.MaxBytes <= 0 {
 		return nil, fmt.Errorf("buffered response max bytes must be positive: %d", config.MaxBytes)
 	}
-	cloned := cloneBindings(static)
+	cloned, err := resolveBindingsForPlan(static)
+	if err != nil {
+		return nil, err
+	}
 	set := bindingsToEffectiveSet(cloned)
 	plan, err := materializeResponseBindings(set, hasConditionalTerminalBinding(cloned))
 	if err != nil {

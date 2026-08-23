@@ -166,13 +166,14 @@ func DescriptorForFactory(manifest *capability.Manifest, factory string) (Descri
 		return Descriptor{}, fmt.Errorf("plugin descriptor %q: %w", factory, err)
 	}
 	return Descriptor{
-		Factory:        factory,
-		Implementation: entry.Implementation,
-		Phases:         phases,
-		Priority:       entry.Priority,
-		Scopes:         scopes,
-		InstanceScope:  instanceScope,
-		requestStage:   requestStageForPhases(phases),
+		Factory:             factory,
+		Implementation:      entry.Implementation,
+		Phases:              phases,
+		Priority:            entry.Priority,
+		Scopes:              scopes,
+		InstanceScope:       instanceScope,
+		requestStage:        requestStageForPhases(phases),
+		conditionalTerminal: entry.ConditionalTerminal,
 	}, nil
 }
 
@@ -204,7 +205,12 @@ func parseManifestScopes(values []string) ([]Scope, error) {
 		case "global_rule":
 			scope = ScopeGlobal
 		case "route", "service":
-			scope = ScopeRoute
+			for _, candidate := range []Scope{ScopeRoute, ScopeConsumer} {
+				if !slices.Contains(scopes, candidate) {
+					scopes = append(scopes, candidate)
+				}
+			}
+			continue
 		case "consumer", "consumer_group":
 			scope = ScopeConsumer
 		default:
@@ -361,7 +367,6 @@ func ResolveDescriptor(descriptor Descriptor, p Plugin) (Descriptor, error) {
 		resolved.requestStage = stage
 	}
 	resolved.authenticatesConsumer = authenticatesConsumerFactory(resolved.Factory)
-	resolved.conditionalTerminal = resolved.requestStage != RequestStageNone
 	resolved.finalizer = FinalizerNone
 	if resolved.HasPhase(PhaseFinalizer) {
 		if _, ok := p.(base.SnapshotFinalizerPlugin); ok {

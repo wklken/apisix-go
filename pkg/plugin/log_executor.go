@@ -81,6 +81,11 @@ func (e LogExecutor) enabled() bool {
 // finalizer owners from one materialized binding set. Dynamic finalizers
 // register their own lifecycle callbacks and never enter this executor.
 func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
+	resolved, err := resolveBindingsForPlan(bindings)
+	if err != nil {
+		return LogExecutor{}, err
+	}
+	bindings = resolved
 	logBindings := make([]LogBinding, 0)
 	routePrometheus := false
 	for _, binding := range bindings {
@@ -101,13 +106,6 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 			)
 		}
 		descriptor := binding.Descriptor
-		if !descriptor.resolved && binding.Descriptor.Factory != "" {
-			var descriptorErr error
-			descriptor, descriptorErr = descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
-			if descriptorErr != nil {
-				return LogExecutor{}, descriptorErr
-			}
-		}
 		if descriptor.Factory == "" {
 			return LogExecutor{}, fmt.Errorf("log materialization has unknown factory %q", binding.Descriptor.Factory)
 		}

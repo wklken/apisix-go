@@ -81,7 +81,10 @@ func (f *streamingFinish) finish(cause error) error {
 }
 
 func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecutor, error) {
-	cloned := cloneBindings(bindings)
+	cloned, err := resolveBindingsForPlan(bindings)
+	if err != nil {
+		return nil, err
+	}
 	executor := &StreamingResponseExecutor{bindings: cloned}
 	for index := range executor.bindings {
 		binding := &executor.bindings[index]
@@ -90,13 +93,6 @@ func NewStreamingResponseExecutor(bindings []Binding) (*StreamingResponseExecuto
 				"streaming binding has nil plugin (factory=%q resource=%s/%s)",
 				binding.Descriptor.Factory, binding.Provenance.Kind, binding.Provenance.ID,
 			)
-		}
-		if !binding.Descriptor.resolved {
-			descriptor, err := descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
-			if err != nil {
-				return nil, err
-			}
-			binding.Descriptor = descriptor
 		}
 		capability := binding.Descriptor.responseCapability
 		if capability.HeaderFilter && (!capability.SeparateSubsystem || binding.Descriptor.Factory != "mqtt-proxy") {

@@ -222,7 +222,10 @@ func BuildResponsePlan(input any) (ResponsePlan, error) {
 			"buffered response max bytes must not be negative: %d", spec.BufferedConfig.MaxBytes,
 		)
 	}
-	static := cloneBindings(spec.StaticBindings)
+	static, err := resolveBindingsForPlan(spec.StaticBindings)
+	if err != nil {
+		return ResponsePlan{}, err
+	}
 	for _, binding := range static {
 		if binding.Plugin == nil {
 			return ResponsePlan{}, fmt.Errorf(
@@ -621,13 +624,6 @@ func materializeResponseBindings(
 					binding.Provenance.ID,
 				)
 			}
-			if !binding.Descriptor.resolved {
-				descriptor, err := descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
-				if err != nil {
-					return nil, err
-				}
-				binding.Descriptor = descriptor
-			}
 			responseSpec, known := responseFactoryRegistry[binding.Descriptor.Factory]
 			if !known {
 				if hasResponseCallbacks(binding.Plugin) {
@@ -639,6 +635,14 @@ func materializeResponseBindings(
 					)
 				}
 				continue
+			}
+			if !binding.Descriptor.resolved {
+				return nil, fmt.Errorf(
+					"response binding has no resolved descriptor (factory=%q resource=%s/%s)",
+					binding.Descriptor.Factory,
+					binding.Provenance.Kind,
+					binding.Provenance.ID,
+				)
 			}
 			phases := responseSpec.mask
 			if responseSpec.configAware {

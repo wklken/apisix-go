@@ -766,6 +766,45 @@ func cloneBindings(bindings []Binding) []Binding {
 	return cloned
 }
 
+// resolveBindingsForPlan normalizes legacy construction inputs exactly once.
+// Request-time executors only receive the returned resolved bindings.
+func resolveBindingsForPlan(bindings []Binding) ([]Binding, error) {
+	resolved := cloneBindings(bindings)
+	for index := range resolved {
+		binding := resolved[index]
+		if binding.Plugin == nil {
+			return nil, fmt.Errorf(
+				"plugin plan binding has nil plugin (factory=%q resource=%s/%s)",
+				binding.Descriptor.Factory,
+				binding.Provenance.Kind,
+				binding.Provenance.ID,
+			)
+		}
+		if binding.Descriptor.resolved {
+			continue
+		}
+		descriptor, err := descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
+		if err != nil {
+			return nil, err
+		}
+		normalized, err := BindResolvedPlugin(
+			descriptor,
+			binding.Plugin,
+			binding.Scope,
+			binding.Provenance,
+			InstanceIdentityInput{PluginConfig: binding.Plugin.Config()},
+		)
+		if err != nil {
+			return nil, err
+		}
+		if binding.Priority != 0 {
+			normalized.Priority = binding.Priority
+		}
+		resolved[index] = normalized
+	}
+	return resolved, nil
+}
+
 // BindPlugin records the exact factory name and resolves its audited request
 // stage. Unknown names remain in the legacy remainder for compatibility.
 func BindPlugin(
@@ -775,6 +814,7 @@ func BindPlugin(
 	provenance ResourceProvenance,
 ) Binding {
 	if binding, err := BindPluginChecked(factoryName, p, scope, provenance); err == nil {
+		binding.Priority = p.GetPriority()
 		return binding
 	}
 	priority := 0
@@ -832,7 +872,13 @@ func BindPluginChecked(
 			err,
 		)
 	}
-	return BindResolvedPlugin(descriptor, p, scope, provenance)
+	return BindResolvedPlugin(
+		descriptor,
+		p,
+		scope,
+		provenance,
+		InstanceIdentityInput{PluginConfig: p.Config()},
+	)
 }
 
 // BindResolvedPlugin constructs a binding from the descriptor resolved once
@@ -843,6 +889,7 @@ func BindResolvedPlugin(
 	p Plugin,
 	scope Scope,
 	provenance ResourceProvenance,
+	identity InstanceIdentityInput,
 ) (Binding, error) {
 	if p == nil {
 		return Binding{}, fmt.Errorf("resolved plugin binding %q has nil plugin", descriptor.Factory)
@@ -850,10 +897,20 @@ func BindResolvedPlugin(
 	if !descriptor.resolved || descriptor.Factory == "" {
 		return Binding{}, fmt.Errorf("plugin descriptor %q is not resolved", descriptor.Factory)
 	}
+	if !slices.Contains(descriptor.Scopes, scope) {
+		return Binding{}, fmt.Errorf(
+			"plugin descriptor %q rejects scope %d (resource=%s/%s allowed=%v)",
+			descriptor.Factory,
+			scope,
+			provenance.Kind,
+			provenance.ID,
+			descriptor.Scopes,
+		)
+	}
 	descriptor.Phases = append([]Phase(nil), descriptor.Phases...)
 	descriptor.Scopes = append([]Scope(nil), descriptor.Scopes...)
 	descriptor.response.Owners = append([]ResponseOwnerKind(nil), descriptor.response.Owners...)
-	key, err := NewInstanceKey(descriptor, scope, provenance, p.Config())
+	key, err := NewInstanceKey(descriptor, scope, provenance, identity)
 	if err != nil {
 		return Binding{}, err
 	}

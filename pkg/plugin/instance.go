@@ -14,16 +14,25 @@ type InstanceKey struct {
 	ConfigDigest [32]byte
 }
 
+// InstanceIdentityInput contains only configuration that changes the behavior
+// of one materialized plugin instance. Ordering-only and enablement metadata
+// deliberately remain outside the identity.
+type InstanceIdentityInput struct {
+	PluginConfig  any `json:"plugin_config"`
+	Filter        any `json:"filter,omitempty"`
+	ErrorResponse any `json:"error_response,omitempty"`
+}
+
 func NewInstanceKey(
 	descriptor Descriptor,
 	scope Scope,
 	owner ResourceProvenance,
-	config any,
+	identity InstanceIdentityInput,
 ) (InstanceKey, error) {
 	if descriptor.Factory == "" {
 		return InstanceKey{}, fmt.Errorf("plugin instance key: factory is required")
 	}
-	encoded, err := json.Marshal(config)
+	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return InstanceKey{}, fmt.Errorf(
 			"plugin instance key %q: canonicalize config: %w",

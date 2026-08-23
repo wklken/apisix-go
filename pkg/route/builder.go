@@ -2473,10 +2473,19 @@ func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
 }
 
 type pluginMetadata struct {
-	disabled      bool
-	priority      *int
-	filter        *pluginexpr.Expression
-	errorResponse any
+	disabled       bool
+	priority       *int
+	filter         *pluginexpr.Expression
+	identityFilter any
+	errorResponse  any
+}
+
+func (m pluginMetadata) instanceIdentity(config any) plugin.InstanceIdentityInput {
+	return plugin.InstanceIdentityInput{
+		PluginConfig:  config,
+		Filter:        m.identityFilter,
+		ErrorResponse: m.errorResponse,
+	}
 }
 
 func parsePluginMetadata(config resource.PluginConfig) (resource.PluginConfig, pluginMetadata, error) {
@@ -2520,6 +2529,7 @@ func parsePluginMetadata(config resource.PluginConfig) (resource.PluginConfig, p
 			return nil, pluginMetadata{}, fmt.Errorf("_meta.filter: %w", err)
 		}
 		metadata.filter = filter
+		metadata.identityFilter = value
 	}
 	if value, ok := metadataValues["error_response"]; ok {
 		switch value.(type) {
@@ -2780,18 +2790,23 @@ func (b *Builder) initServicePluginBindingsStrict(
 		}
 		b.servicePluginMu.Unlock()
 		if initialized != nil {
-			binding, bindErr := plugin.BindPluginChecked(
-				source.name,
-				initialized,
-				source.scope,
-				source.provenance,
-			)
-			if bindErr != nil {
-				return nil, bindErr
-			}
 			_, metadata, metadataErr := parsePluginMetadata(source.config)
 			if metadataErr != nil {
 				return nil, metadataErr
+			}
+			descriptor, descriptorErr := plugin.ResolveDescriptorForFactory(source.name, initialized)
+			if descriptorErr != nil {
+				return nil, descriptorErr
+			}
+			binding, bindErr := plugin.BindResolvedPlugin(
+				descriptor,
+				initialized,
+				source.scope,
+				source.provenance,
+				metadata.instanceIdentity(initialized.Config()),
+			)
+			if bindErr != nil {
+				return nil, bindErr
 			}
 			if metadata.priority != nil {
 				binding.Priority = *metadata.priority
@@ -2947,7 +2962,13 @@ func (b *Builder) initPluginBindingsStrict(
 		if metadataErr != nil {
 			return nil, sourceError(metadataErr)
 		}
-		binding, bindErr := plugin.BindResolvedPlugin(descriptor, initialized, source.scope, source.provenance)
+		binding, bindErr := plugin.BindResolvedPlugin(
+			descriptor,
+			initialized,
+			source.scope,
+			source.provenance,
+			metadata.instanceIdentity(p.Config()),
+		)
 		if bindErr != nil {
 			return nil, sourceError(bindErr)
 		}

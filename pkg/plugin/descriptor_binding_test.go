@@ -78,6 +78,72 @@ func TestDescriptorBindingUsesManifestPriorityInsteadOfMutablePluginPriority(t *
 	}
 }
 
+func TestDescriptorBindingRejectsScopeOutsideManifest(t *testing.T) {
+	p := New("request-context", base.Dependencies{})
+	if p == nil {
+		t.Fatal("request-context factory is not registered")
+	}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BindPluginChecked(
+		"request-context",
+		p,
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+	); err == nil {
+		t.Fatal("BindPluginChecked() error = nil, want manifest scope rejection")
+	}
+}
+
+func TestDescriptorBindingAcceptsExistingMaterializationScopes(t *testing.T) {
+	tests := []struct {
+		name       string
+		factory    string
+		scope      Scope
+		provenance ResourceProvenance
+	}{
+		{
+			name: "system", factory: "request-context", scope: ScopeSystem,
+			provenance: ResourceProvenance{Kind: ResourceSystem, ID: "system"},
+		},
+		{
+			name: "global", factory: "request-id", scope: ScopeGlobal,
+			provenance: ResourceProvenance{Kind: ResourceGlobalRule, ID: "global"},
+		},
+		{
+			name: "route", factory: "request-id", scope: ScopeRoute,
+			provenance: ResourceProvenance{Kind: ResourceRoute, ID: "route"},
+		},
+		{
+			name: "service", factory: "request-id", scope: ScopeRoute,
+			provenance: ResourceProvenance{Kind: ResourceService, ID: "service"},
+		},
+		{
+			name: "consumer", factory: "request-id", scope: ScopeConsumer,
+			provenance: ResourceProvenance{Kind: ResourceConsumer, ID: "consumer"},
+		},
+		{
+			name: "consumer-group", factory: "request-id", scope: ScopeConsumer,
+			provenance: ResourceProvenance{Kind: ResourceConsumerGroup, ID: "group"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := New(test.factory, base.Dependencies{})
+			if p == nil {
+				t.Fatalf("factory %q is not registered", test.factory)
+			}
+			if err := p.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := BindPluginChecked(test.factory, p, test.scope, test.provenance); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 type descriptorBindingTraceKey struct{}
 
 func TestDescriptorStageRunsHandlerAndPropagatesReplacementRequest(t *testing.T) {

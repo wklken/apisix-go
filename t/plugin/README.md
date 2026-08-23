@@ -20,6 +20,8 @@ produced by the real APISIX-Go process. An intentional negative scenario may
 keep the target plugin disabled only when it declares a nonblank
 `target_plugin_exempt_reason`; the gate rejects missing, blank, or stale
 exemptions. No generated placeholder manifest is counted as coverage.
+`docs/plugins.md` is a generated status projection, never a fixture-selection
+database.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;

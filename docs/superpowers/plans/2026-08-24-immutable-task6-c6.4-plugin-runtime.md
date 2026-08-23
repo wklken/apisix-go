@@ -26,7 +26,7 @@
    -> expose PreparedGeneration
    ```
 
-2. No new path may fall back to package-global Store, `data_encryption.Resolver`, an environment lookup outside `GenerationCapability`, or a raw keyring.
+2. No new path may fall back to package-global Store, `data_encryption.Resolver`, an environment lookup outside `GenerationCapability`, or a raw keyring. A factory with manifest `plugin_config` declarations must implement the scoped interface before the new compiler prepares it; strict ciphertext must not bypass this check merely because the unresolved-reference scanner cannot see it.
 3. Intermediate commits compile. Shared API changes are additive until the compiler and current production caller use the new path; legacy methods are deleted atomically at the C6.6 boundary.
 4. A descriptor or error may retain a source class and digest, never a raw reference, environment variable name, Vault path, ciphertext, or plaintext.
 5. `secret.Value` contains Go strings that cannot be reliably zeroed. Code must drop references and close attempt-owned resolver state; it must not claim that Go strings were wiped.
@@ -156,7 +156,9 @@ Shared-file ownership is serial:
 - [ ] Define only the minimal read interface in `pkg/plugin/base`: credential-key lookup, anonymous-consumer lookup, and consumer-group lookup. Put that interface in `base.Dependencies`; the concrete runtime value satisfies it without creating a reverse dependency.
 - [ ] Make the read API request-time lookup only and return defensive copies. Construction/materialization stays in compiler preparation code and accepts the manifest catalog plus final capability; preparation errors never become request-time lookup errors.
 - [ ] Add `Consumers` to the additive dependency bundle alongside Config, Secrets, Metadata, and Tasks.
-- [ ] Introduce additive `ScopedSecretMaterializer.MaterializeScopedSecrets(context.Context, secret.Scope, secret.GenerationCapability)` and `MaterializeScopedPluginSecrets`. The wrapper rejects an invalid capability, non-empty base field, and generation/attempt mismatch before plugin code. Plugin code may change only `Field`.
+- [ ] Introduce additive `ScopedSecretAccess` with unexported bound scope/capability fields and `Materialize(ctx, field, raw)`. Leaf code receives only this façade, so it cannot change generation, attempt, domain, resource, source, or factory.
+- [ ] Add `ScopedSecretMaterializer.MaterializeScopedSecrets(context.Context, ScopedSecretAccess)` and `MaterializeScopedPluginSecrets(ctx, baseScope, capability, plugin)`. The wrapper rejects an invalid capability, non-empty base field, invalid domain/resource/factory/source, and generation/attempt mismatch before constructing the access object.
+- [ ] Add a constrained `ScopedSecretAccess.Child(factory)` used only by composites. It preserves generation/attempt/domain/resource/source and changes only the catalog-validated child factory.
 - [ ] Add `Generation()` to `GenerationCapability` so the wrapper can validate the complete base scope before dispatch.
 - [ ] Add `Attempt` to `plugin.InstanceKey` through additive `NewAttemptInstanceKey`; reject zero attempts and include it in equality/string identity. Add `BindAttemptResolvedPlugin` for the new compiler path.
 - [ ] Keep legacy `SecretMaterializer`, `MaterializePluginSecrets`, `NewInstanceKey`, and `BindResolvedPlugin` callable only for existing production while leaf work proceeds. Mark them transitional; new compiler code must use only the attempt-scoped variants. Delete/rename the legacy variants atomically in C6.6 after all callers migrate.
@@ -176,6 +178,7 @@ Shared-file ownership is serial:
 - [ ] Rebuild and validate the exact final `PublicationSet` after refinement.
 - [ ] Register only that final set, then create the capability. Tests must show invalid desired bytes are never registered and resolver calls remain zero during refinement.
 - [ ] Add additive hooks for metadata materialization, consumer binding preparation, and plugin preparation after registration; leaf lanes may target these frozen interfaces.
+- [ ] Before preparing a factory, require `ScopedSecretMaterializer` whenever the manifest catalog has `plugin_config` declarations. Add a poison legacy implementation test proving the new compiler never invokes the legacy method.
 - [ ] Recovery validates committed publication structure and schema, registers recovery, then materializes. It never consults desired state or computes a new disposition.
 - [ ] Run focused compiler/generation/secret race tests and `make build`.
 
@@ -198,6 +201,8 @@ Shared-file ownership is serial:
 - [ ] Materialize only declared fields. Empty optional fields do not call the capability.
 - [ ] Preserve limit-count root/nested alias provenance before normalization and use container declarations for cluster nodes.
 - [ ] Remove PostInit self-materialization. Compiler admission is the sole materialization phase.
+- [ ] In the same leaf commits, remove the existing PostInit self-fallbacks in `ai_rag`, `oas_validator`, and `ai_aliyun_content_moderation`; direct PostInit tests must call an explicit preparation path first.
+- [ ] During the additive window, retain a distinct legacy method for the current Builder and a scoped method for the new compiler. They may share field enumeration/installation logic, but the scoped method must not call the Store-backed legacy method.
 - [ ] Retain `secret.Value` or build provider clients inside `Value.Use`; never copy plaintext back into public config. On stop/failure, drop references and rely on attempt close for owned-byte clearing.
 - [ ] Prove config/error output contains descriptor/digest only.
 - [ ] Run each affected package test; add race only to packages with mutable retained client/secret state.
@@ -212,6 +217,7 @@ Shared-file ownership is serial:
 
 - [ ] Add failing tests showing declared strict ciphertext, optional literal, `$ENV`, and `$secret` behavior where applicable.
 - [ ] Replace `BasePlugin.DataEncryption()` with scoped capability materialization.
+- [ ] During the additive window, add an explicit legacy materializer for the current Builder while the scoped method serves the new compiler. Move resolver access out of PostInit; do not implement scoped materialization by calling the legacy backend.
 - [ ] Preserve the current field path and strict/optional behavior from the manifest catalog; do not add a private table in plugin code.
 - [ ] Preserve logger client/batch ownership but move long-lived tasks/leases under generation ownership where the plugin already starts them.
 - [ ] Remove every production import of `pkg/data_encryption` from these packages.
@@ -246,8 +252,8 @@ Shared-file ownership is serial:
 
 **Exclusive packages:** `pkg/plugin/workflow/**`, `pkg/plugin/multi_auth/**`.
 
-- [ ] `workflow` constructs `limit-count` children through the frozen scoped preparation path with the outer resource owner and same attempt.
-- [ ] `multi-auth` constructs auth children through the same dependency bundle and same consumer bindings.
+- [ ] `workflow` constructs `limit-count` children through `ScopedSecretAccess.Child`, preserving the outer resource owner and attempt.
+- [ ] `multi-auth` moves child construction/materialization out of PostInit and uses the same scoped child access, dependency bundle, and consumer bindings.
 - [ ] Child `InstanceKey` includes child factory plus outer provenance plus attempt; siblings cannot collide.
 - [ ] Partial child failure stops already-prepared children exactly once in reverse order.
 - [ ] Delete direct calls to legacy `base.MaterializePluginSecrets` only after both composites use the scoped path.
@@ -289,7 +295,7 @@ Shared-file ownership is serial:
 
 ## Task 11: CP6 — Integrate the current production owner
 
-**Single integration owner files:** `pkg/route/**`, `pkg/server/**`, required `cmd/**`, and only the Store accessors proven dead by call-site scans.
+**Single integration owner files:** `pkg/route/**`, `pkg/server/**`, `pkg/stream/router.go`, required `cmd/**`, and only the Store accessors proven dead by call-site scans.
 
 - [ ] Pass the exact C6.5 final metadata view, consumer bindings, scoped plugin dependencies, tasks, and registration lifetime into the existing Builder/server generation.
 - [ ] Do not build a temporary view from `Store.ConfigSnapshot` and do not decrypt metadata twice.
@@ -305,6 +311,8 @@ Shared-file ownership is serial:
   request-time Store consumer credential resolution from auth plugins
   transitional parameterless MaterializePluginSecrets
   ```
+
+- [ ] Migrate the MQTT stream owner in `pkg/stream/router.go` before deleting the legacy wrapper. HTTP Builder-only call-site scans are insufficient.
 
 - [ ] If no caller needs decoded Store plugin metadata, remove the decoded cache/snapshot accessors and prove Store/journal retain raw publication bytes only. If a pre-Task-9 owner still needs them, record the exact caller and Task 9 deletion step.
 

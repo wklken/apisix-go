@@ -83,12 +83,11 @@ type CapabilitySpec struct {
 	ResponseOwners     []ResponseOwnerKind
 	Finalizer          FinalizerKind
 	GenerationOwner    GenerationOwnerKind
-	PrimaryPlan        string
 }
 
 type capabilityManifestEntry struct {
-	primaryPlan  string
-	capabilities Capability
+	phases []string
+	scopes []string
 }
 
 // CompressionSet records structural content-coding offers without coupling
@@ -140,9 +139,9 @@ func cloneCapabilitySpec(spec CapabilitySpec) CapabilitySpec {
 }
 
 func buildCapabilityRegistry() map[string]CapabilitySpec {
-	manifest := capabilityManifestEntries()
+	manifest := generatedCapabilityManifestEntries()
 	registry := make(map[string]CapabilitySpec, len(pluginRegistry)-1)
-	for factory := range pluginRegistry {
+	for factory, constructor := range pluginRegistry {
 		identity := canonicalCapabilityFactory(factory)
 		if _, exists := registry[identity]; exists {
 			continue
@@ -152,9 +151,12 @@ func buildCapabilityRegistry() map[string]CapabilitySpec {
 			implementation = "request_context"
 		}
 		spec := CapabilitySpec{Identity: identity, ImplementationName: implementation}
-		if entry, classified := manifest[identity]; classified {
-			spec.PrimaryPlan = entry.primaryPlan
-			spec.Capabilities = entry.capabilities
+		entry, classified := manifest[identity]
+		if classified {
+			spec.Capabilities = manifestCapabilityBits(entry)
+		}
+		if constructor != nil && classified {
+			spec.Capabilities |= interfaceCapabilityBits(constructor(), entry)
 		}
 		registry[identity] = spec
 	}
@@ -183,9 +185,6 @@ func buildCapabilityRegistry() map[string]CapabilitySpec {
 				spec.Capabilities |= CapabilityFinalResponseStore
 				spec.ResponseOwners = append(spec.ResponseOwners, ResponseOwnerFinalStore)
 			}
-		}
-		if isLogIdentity(identity) {
-			spec.Capabilities |= CapabilityLog
 		}
 		if kind, ok := finalizerForIdentity(identity); ok {
 			spec.Capabilities |= CapabilityFinalizer
@@ -235,254 +234,52 @@ func buildCapabilityRegistry() map[string]CapabilitySpec {
 	return registry
 }
 
-// capabilityManifestEntries is the production copy of the capability
-// manifest.  Every registered identity is listed in exactly one primary-plan
-// group; an unknown identity remains unclassified so completeness checks fail
-// instead of silently assigning the system capability.
-func capabilityManifestEntries() map[string]capabilityManifestEntry {
-	entries := make(map[string]capabilityManifestEntry, 114)
-	add := func(plan string, capabilities Capability, identities ...string) {
-		for _, identity := range identities {
-			entries[identity] = capabilityManifestEntry{
-				primaryPlan:  plan,
-				capabilities: capabilities,
-			}
+func manifestCapabilityBits(entry capabilityManifestEntry) Capability {
+	var bits Capability
+	if slices.Contains(entry.scopes, "system") {
+		bits |= CapabilitySystem
+	}
+	for _, phase := range entry.phases {
+		switch phase {
+		case "rewrite":
+			bits |= CapabilityRequestRewrite
+		case "consumer_rewrite":
+			bits |= CapabilityConsumerRewrite
+		case "access":
+			bits |= CapabilityRequestAccess
+		case "before_proxy":
+			bits |= CapabilityBeforeProxy
+		case "header_filter":
+			bits |= CapabilityHeaderFilter
+		case "finalizer":
+			bits |= CapabilityFinalizer
 		}
 	}
-	add(
-		"Plan 12",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityFinalizer,
-		"limit-conn",
-	)
-	add("Plan 12", CapabilitySystem|CapabilityRequestRewrite, "request-context")
-	add(
-		"Plan 13",
-		CapabilityRequestRewrite|CapabilityConditionalTerminal,
-		"ai-prompt-decorator",
-		"ai-prompt-template",
-		"ai-rag",
-		"ai-request-rewrite",
-		"degraphql",
-		"jwe-decrypt",
-		"request-id",
-		"traffic-split",
-	)
-	add(
-		"Plan 13",
-		CapabilitySystem|CapabilityRequestRewrite|CapabilitySeparateSubsystem,
-		"example-plugin",
-	)
-	add(
-		"Plan 13",
-		CapabilityRequestRewrite,
-		"proxy-control",
-		"proxy-mirror",
-		"proxy-rewrite",
-		"real-ip",
-		"traffic-label",
-	)
-	add("Plan 14", CapabilityConsumerRewrite, "attach-consumer-label")
-	add(
-		"Plan 14",
-		CapabilityRequestAccess|CapabilityConditionalTerminal,
-		"acl",
-		"ai-aws-content-moderation",
-		"ai-prompt-guard",
-		"authz-casbin",
-		"authz-casdoor",
-		"authz-keycloak",
-		"basic-auth",
-		"cas-auth",
-		"chaitin-waf",
-		"client-control",
-		"consumer-restriction",
-		"csrf",
-		"dingtalk-auth",
-		"feishu-auth",
-		"forward-auth",
-		"graphql-limit-count",
-		"hmac-auth",
-		"ip-restriction",
-		"jwt-auth",
-		"ldap-auth",
-		"limit-count",
-		"limit-req",
-		"multi-auth",
-		"oas-validator",
-		"opa",
-		"openid-connect",
-		"referer-restriction",
-		"request-validation",
-		"saml-auth",
-		"ua-restriction",
-		"uri-blocker",
-		"wolf-rbac",
-		"workflow",
-	)
-	add(
-		"Plan 14",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityLogSanitizer,
-		"key-auth",
-	)
-	add(
-		"Plan 15",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityFinalizer,
-		"api-breaker",
-	)
-	add("Plan 15", CapabilityRequestRewrite|CapabilityBufferedBodyFilter, "body-transformer")
-	add("Plan 15", CapabilityHeaderFilter|CapabilityBufferedBodyFilter, "echo")
-	add(
-		"Plan 15",
-		CapabilityBufferedBodyFilter,
-		"error-page",
-		"exit-transformer",
-	)
-	add("Plan 15", CapabilityHeaderFilter|CapabilityBufferedBodyFilter, "response-rewrite")
-	add(
-		"Plan 15",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityFinalResponseStore,
-		"graphql-proxy-cache",
-		"proxy-cache",
-	)
-	add(
-		"Plan 15",
-		CapabilityRequestRewrite|CapabilityRequestAccess|CapabilityBeforeProxy|CapabilityConditionalTerminal|CapabilityHeaderFilter|CapabilityBufferedBodyFilter|CapabilityLog,
-		"serverless-pre-function",
-		"serverless-post-function",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityBufferedBodyFilter|CapabilityStreamingBodyFilter,
-		"ai-aliyun-content-moderation",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityBeforeProxy|CapabilityExclusiveProtocolOwner|CapabilityStreamingResponseOwner,
-		"ai-proxy",
-		"ai-proxy-multi",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityBufferedBodyFilter|CapabilityStreamingBodyFilter|CapabilityFinalizer,
-		"ai-rate-limiting",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal,
-		"aws-lambda",
-		"azure-functions",
-		"openfunction",
-		"openwhisk",
-	)
-	add(
-		"Plan 16",
-		CapabilityHeaderFilter|CapabilityCompressionOffer|CapabilityStreamingBodyFilter,
-		"brotli",
-		"gzip",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestRewrite|CapabilityConditionalTerminal|CapabilityHeaderFilter,
-		"cors",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityBeforeProxy|CapabilityExclusiveProtocolOwner|CapabilitySeparateSubsystem,
-		"dubbo-proxy",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestRewrite|CapabilityConditionalTerminal,
-		"fault-injection",
-		"redirect",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityBufferedBodyFilter,
-		"grpc-transcode",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityHeaderFilter|CapabilityStreamingBodyFilter|CapabilityExclusiveProtocolOwner,
-		"grpc-web",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityBeforeProxy|CapabilityExclusiveProtocolOwner|CapabilitySeparateSubsystem|CapabilityStreamingResponseOwner,
-		"kafka-proxy",
-	)
-	add(
-		"Plan 16",
-		CapabilityBeforeProxy|CapabilityExclusiveProtocolOwner|CapabilitySeparateSubsystem,
-		"http-dubbo",
-	)
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilityStreamingResponseOwner,
-		"mcp-bridge",
-	)
-	add("Plan 16", CapabilityRequestAccess|CapabilityConditionalTerminal, "mocking")
-	add("Plan 16", CapabilityProtocolOwner|CapabilitySeparateSubsystem, "mqtt-proxy")
-	add("Plan 16", CapabilityRequestRewrite|CapabilityStreamingBodyFilter, "proxy-buffering")
-	add(
-		"Plan 16",
-		CapabilityRequestAccess|CapabilityConditionalTerminal|CapabilitySeparateSubsystem,
-		"public-api",
-	)
-	add("Plan 17", CapabilitySystem, "ai", "gm")
-	add(
-		"Plan 17",
-		CapabilitySystem|CapabilitySeparateSubsystem,
-		"batch-requests",
-		"node-status",
-	)
-	add(
-		"Plan 17",
-		CapabilitySystem|CapabilitySeparateSubsystem|CapabilityLog,
-		"prometheus",
-	)
-	add(
-		"Plan 17",
-		CapabilitySystem|CapabilityGenerationOwner|CapabilitySeparateSubsystem,
-		"error-log-logger",
-		"server-info",
-	)
-	add(
-		"Plan 17",
-		CapabilityRequestAccess|CapabilitySystem|CapabilityGenerationOwner,
-		"log-rotate",
-	)
-	add(
-		"Plan 17",
-		CapabilityLog,
-		"clickhouse-logger",
-		"datadog",
-		"elasticsearch-logger",
-		"file-logger",
-		"google-cloud-logging",
-		"http-logger",
-		"kafka-logger",
-		"lago",
-		"loggly",
-		"loki-logger",
-		"rocketmq-logger",
-		"skywalking-logger",
-		"sls-logger",
-		"splunk-hec-logging",
-		"syslog",
-		"tcp-logger",
-		"tencent-cloud-cls",
-		"udp-logger",
-	)
-	add(
-		"Plan 17",
-		CapabilityRequestRewrite|CapabilityFinalizer,
-		"opentelemetry",
-		"skywalking",
-		"zipkin",
-	)
-	add("Plan 20", CapabilityLogSanitizer, "data-mask")
-	return entries
+	return bits
+}
+
+func interfaceCapabilityBits(instance Plugin, entry capabilityManifestEntry) Capability {
+	var bits Capability
+	if slices.Contains(entry.phases, "body_filter") {
+		if _, ok := instance.(base.BufferedBodyFilterPlugin); ok {
+			bits |= CapabilityBufferedBodyFilter
+		}
+		if _, ok := instance.(base.FinalResponseStorePlugin); ok {
+			bits |= CapabilityFinalResponseStore
+		}
+		if _, ok := instance.(base.StreamingBodyFilterPlugin); ok {
+			bits |= CapabilityStreamingBodyFilter
+		}
+	}
+	if slices.Contains(entry.phases, "log") {
+		if _, ok := instance.(base.LogPhasePlugin); ok {
+			bits |= CapabilityLog
+		}
+		if _, ok := instance.(base.LogSnapshotSanitizerPlugin); ok {
+			bits |= CapabilityLogSanitizer
+		}
+	}
+	return bits
 }
 
 func beforeProxyOwnerForFactory(identity string) RequestOwnerKind {
@@ -593,19 +390,6 @@ func uniqueResponseOwners(owners []ResponseOwnerKind) []ResponseOwnerKind {
 		result = append(result, owner)
 	}
 	return result
-}
-
-func isLogIdentity(identity string) bool {
-	if identity == "serverless-pre-function" || identity == "serverless-post-function" {
-		return true
-	}
-	return slices.Contains([]string{
-		"prometheus",
-		"clickhouse-logger", "datadog", "elasticsearch-logger", "file-logger", "google-cloud-logging",
-		"http-logger", "kafka-logger", "lago", "loggly", "loki-logger", "rocketmq-logger",
-		"skywalking-logger", "sls-logger", "splunk-hec-logging", "syslog", "tcp-logger",
-		"tencent-cloud-cls", "udp-logger",
-	}, identity)
 }
 
 func finalizerForIdentity(identity string) (FinalizerKind, bool) {

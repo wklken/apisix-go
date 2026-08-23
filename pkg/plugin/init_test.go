@@ -52,6 +52,25 @@ func TestNewReturnsRegisteredPlugin(t *testing.T) {
 	}
 }
 
+func TestNewPreservesHistoricalFactoryAliases(t *testing.T) {
+	for factory, wantName := range map[string]string{
+		"otel":            "opentelemetry",
+		"opentelemetry":   "opentelemetry",
+		"request-context": "request_context",
+	} {
+		plugin := New(factory)
+		if plugin == nil {
+			t.Fatalf("New(%q) = nil, want registered alias", factory)
+		}
+		if err := plugin.Init(); err != nil {
+			t.Fatalf("New(%q).Init() error = %v", factory, err)
+		}
+		if got := plugin.GetName(); got != wantName {
+			t.Fatalf("New(%q).GetName() = %q, want %q", factory, got, wantName)
+		}
+	}
+}
+
 func TestPlan16CapabilityRegistryCoversExactHTTPIdentities(t *testing.T) {
 	wantHTTP := []string{
 		"ai-aliyun-content-moderation", "ai-proxy", "ai-proxy-multi", "ai-rate-limiting",

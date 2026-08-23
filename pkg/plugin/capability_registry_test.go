@@ -44,7 +44,7 @@ func TestCapabilityRegistryCompleteness115Factories114Identities(t *testing.T) {
 	if len(capabilityRegistry) != 114 {
 		t.Fatalf("identity count = %d, want 114", len(capabilityRegistry))
 	}
-	manifest := capabilityManifestEntries()
+	manifest := generatedCapabilityManifestEntries()
 	if len(manifest) != 114 {
 		t.Fatalf("manifest identity count = %d, want 114", len(manifest))
 	}
@@ -53,7 +53,7 @@ func TestCapabilityRegistryCompleteness115Factories114Identities(t *testing.T) {
 		if !ok {
 			t.Fatalf("factory %q has no capability spec", factory)
 		}
-		if spec.Capabilities == 0 || spec.PrimaryPlan == "" || spec.Identity == "" {
+		if spec.Capabilities == 0 || spec.Identity == "" {
 			t.Fatalf("factory %q has incomplete spec %#v", factory, spec)
 		}
 		if _, ok := manifest[spec.Identity]; !ok {
@@ -102,38 +102,33 @@ func TestCapabilityRegistryAliasAndImplementationNameExceptions(t *testing.T) {
 	}
 }
 
-func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T) {
+func TestCapabilityRegistryUsesGeneratedManifestFactsAndCapabilities(t *testing.T) {
+	manifest := generatedCapabilityManifestEntries()
 	tests := []struct {
 		factory string
-		plan    string
 		bits    Capability
 	}{
 		{
 			factory: "limit-conn",
-			plan:    "Plan 12",
 			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal | CapabilityFinalizer,
 		},
 		{
 			factory: "request-id",
-			plan:    "Plan 13",
 			bits:    CapabilityRequestRewrite | CapabilityConditionalTerminal,
 		},
 		{
 			factory: "key-auth",
-			plan:    "Plan 14",
 			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal | CapabilityLogSanitizer,
 		},
 		{
 			factory: "proxy-cache",
-			plan:    "Plan 15",
 			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal | CapabilityFinalResponseStore,
 		},
 		{
 			factory: "ai-proxy",
-			plan:    "Plan 16",
 			bits:    CapabilityRequestAccess | CapabilityConditionalTerminal | CapabilityBeforeProxy | CapabilityExclusiveProtocolOwner | CapabilityStreamingResponseOwner,
 		},
-		{factory: "http-logger", plan: "Plan 17", bits: CapabilityLog},
+		{factory: "http-logger", bits: CapabilityLog},
 	}
 	for _, test := range tests {
 		t.Run(test.factory, func(t *testing.T) {
@@ -141,8 +136,9 @@ func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T)
 			if !ok {
 				t.Fatalf("CapabilitySpecForFactory(%q) missing", test.factory)
 			}
-			if spec.PrimaryPlan != test.plan {
-				t.Fatalf("PrimaryPlan = %q, want %q", spec.PrimaryPlan, test.plan)
+			entry, ok := manifest[spec.Identity]
+			if !ok || len(entry.phases) == 0 && len(entry.scopes) == 0 {
+				t.Fatalf("generated manifest facts for %q = %#v/%v", spec.Identity, entry, ok)
 			}
 			if spec.Capabilities&test.bits != test.bits {
 				t.Fatalf("Capabilities = %#x, want bits %#x", spec.Capabilities, test.bits)
@@ -151,17 +147,17 @@ func TestCapabilityRegistryUsesManifestPrimaryPlansAndCapabilities(t *testing.T)
 	}
 }
 
-func TestKeyAuthSanitizerStaysInPlan14AndDataMaskRemainsExact(t *testing.T) {
+func TestKeyAuthAndDataMaskSanitizerCapabilitiesStayExact(t *testing.T) {
 	keyAuth, ok := CapabilitySpecForFactory("key-auth")
-	if !ok || keyAuth.PrimaryPlan != "Plan 14" {
-		t.Fatalf("key-auth spec = %#v/%v, want Plan 14", keyAuth, ok)
+	if !ok {
+		t.Fatal("key-auth capability is missing")
 	}
 	if keyAuth.Capabilities&CapabilityLogSanitizer == 0 {
 		t.Fatalf("key-auth capabilities = %#x, want log sanitizer ownership", keyAuth.Capabilities)
 	}
 	dataMask, ok := CapabilitySpecForFactory("data-mask")
-	if !ok || dataMask.PrimaryPlan != "Plan 20" || dataMask.Capabilities != CapabilityLogSanitizer {
-		t.Fatalf("data-mask spec = %#v/%v, want only Plan 20 log sanitizer", dataMask, ok)
+	if !ok || dataMask.Capabilities != CapabilityLogSanitizer {
+		t.Fatalf("data-mask spec = %#v/%v, want only log sanitizer", dataMask, ok)
 	}
 }
 
@@ -174,7 +170,7 @@ func TestCapabilityRegistryDoesNotDefaultUnclassifiedIdentityToSystem(t *testing
 	if !ok {
 		t.Fatal("unclassified identity missing from built registry")
 	}
-	if spec.Capabilities != 0 || spec.PrimaryPlan != "" {
+	if spec.Capabilities != 0 {
 		t.Fatalf("unclassified identity silently classified: %#v", spec)
 	}
 }
@@ -250,8 +246,19 @@ func TestCapabilityPhaseKindBijection(t *testing.T) {
 				(spec.GenerationOwner == GenerationOwnerNone) {
 				t.Fatalf("generation capability/kind disagree: %#v", spec)
 			}
-			if spec.Capabilities&CapabilityLog != 0 && !isLogIdentity(identity) {
-				t.Fatalf("log capability has no exact log identity: %#v", spec)
+			instance := New(identity)
+			if instance == nil {
+				t.Fatalf("canonical factory %q is not registered", identity)
+			}
+			if spec.Capabilities&CapabilityLog != 0 {
+				if _, ok := instance.(base.LogPhasePlugin); !ok {
+					t.Fatalf("log capability has no log-phase interface: %#v", spec)
+				}
+			}
+			if spec.Capabilities&CapabilityLogSanitizer != 0 {
+				if _, ok := instance.(base.LogSnapshotSanitizerPlugin); !ok {
+					t.Fatalf("sanitizer capability has no sanitizer interface: %#v", spec)
+				}
 			}
 		})
 	}

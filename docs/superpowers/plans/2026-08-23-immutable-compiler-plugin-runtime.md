@@ -536,6 +536,7 @@ func TestMaterializerRequiresOwnedScopeAndNeverLeaksPlaintext(t *testing.T) {
 	value, err := registration.Materialize(context.Background(), Scope{
 		Generation: 9,
 		Attempt: registration.AttemptID(),
+		Domain: generation.DomainHTTP,
 		Plugin: "http-logger",
 		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
 		Source: capability.SecretPluginConfig,
@@ -558,7 +559,7 @@ func TestGenerationCapabilityRejectsCrossGenerationScope(t *testing.T) {
 	defer registration.Close(context.Background())
 	capability, err := NewGenerationCapability(registration, 9)
 	if err != nil { t.Fatal(err) }
-	_, err = capability.Materialize(context.Background(), Scope{Generation: 10, Attempt: capability.AttemptID(), Plugin: "http-logger",
+	_, err = capability.Materialize(context.Background(), Scope{Generation: 10, Attempt: capability.AttemptID(), Domain: generation.DomainHTTP, Plugin: "http-logger",
 		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Source: capability.SecretPluginConfig, Field: "token"}, "value")
 	if !errors.Is(err, ErrCapabilityScopeMismatch) { t.Fatalf("Materialize() error = %v", err) }
 }
@@ -592,7 +593,7 @@ func TestScopedMaterializerPassesOwnedScopeAndRedactsResolverError(t *testing.T)
 	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
 	if err != nil { t.Fatal(err) }
 	defer registration.Close(context.Background())
-	wantScope := Scope{Generation: 9, Attempt: registration.AttemptID(), Plugin: "http-logger",
+	wantScope := Scope{Generation: 9, Attempt: registration.AttemptID(), Domain: generation.DomainHTTP, Plugin: "http-logger",
 		Resource: generation.ResourceKey{Kind: "routes", ID: "r1"}, Source: capability.SecretPluginConfig, Field: "token"}
 	value, err := registration.Materialize(context.Background(), wantScope, "$secret://logger/token")
 	if err != nil { t.Fatal(err) }
@@ -659,7 +660,7 @@ func (r *attemptRegistration) Materialize(ctx context.Context, scope Scope, raw 
 	if r.closed { return Value{}, ErrCredentialUnavailable }
 	if err := validateScope(scope); err != nil { return Value{}, err }
 	if err := ctx.Err(); err != nil { return Value{}, err }
-	if scope.Generation != r.generation || scope.Attempt != r.id || !r.allowed.Contains(scope.Resource) {
+	if scope.Generation != r.generation || scope.Attempt != r.id || !r.allowed.Contains(scope.Domain, scope.Resource) {
 		return Value{}, ErrCapabilityScopeMismatch
 	}
 	resolved, err := r.resolve(ctx, scope, raw)
@@ -712,7 +713,7 @@ func (c GenerationCapability) Valid() bool {
 // RegisterRecovery never fabricates desired bytes or widens the verified set.
 ```
 
-`RegisterRecovery` mirrors `RegisterCandidate` but computes `RecoveryAttemptID`, derives the closure only from verified published candidates and uses `Revisions.Desired` as the scope generation. Both constructors reject malformed identities before opening a resolver; duplicate live registration of the exact same `AttemptID` within one materializer is rejected, while candidate and recovery registrations with different canonical identities may coexist even when their desired revision is equal. `Close` takes the exclusive gate, marks the registration locally revoked before backend cleanup, waits any in-flight materialization and uses a non-cancelled cleanup context for broker/resolver revocation. No materialization can start after close begins, and a failed backend revoke never re-enables the local capability; the exact ID remains quarantined in the materializer registry until the owning resolver/materializer process is closed, so a stale backend view cannot collide with a replacement. A successful revoke releases the ID. Define `ErrCredentialUnavailable`, `ErrInvalidCapability` and `ErrCapabilityScopeMismatch` with constant redacted messages. `materializationContext` contains only attempt ID, generation, plugin, resource kind/ID, declaration source and field; it never includes `raw` or plaintext.
+`RegisterRecovery` mirrors `RegisterCandidate` but computes `RecoveryAttemptID`, derives the closure only from verified published candidates and uses `Revisions.Desired` as the scope generation. Candidate registration rejects an empty required-domain set and recovery registration rejects an empty verified published map. Both constructors reject malformed identities before opening a resolver; duplicate live registration of the exact same `AttemptID` within one materializer is rejected, while candidate and recovery registrations with different canonical identities may coexist even when their desired revision is equal. Public Attempt-ID helpers return the zero ID if canonical encoding fails; registration uses private checked helpers and rejects that sentinel. `Close` takes the exclusive gate, marks the registration locally revoked before backend cleanup, waits any in-flight materialization and uses a non-cancelled cleanup context for broker/resolver revocation. No materialization can start after close begins, and a failed backend revoke never re-enables the local capability; the exact ID remains quarantined for the process/backend-owner lifetime, so a stale backend view cannot collide with a replacement. A successful revoke releases the ID. Define `ErrCredentialUnavailable`, `ErrInvalidCapability` and `ErrCapabilityScopeMismatch` with constant redacted messages. `materializationContext` contains only attempt ID, generation, plugin, resource kind/ID, declaration source and field; it never includes `raw` or plaintext.
 
 - [ ] **Step 4: Add runtime dependency validation**
 

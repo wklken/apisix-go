@@ -47,16 +47,32 @@ GOFLAGS=-mod=readonly go run ./cmd/capability-gen -check
 
 **Gate:** focused declaration/encryption/metadata/rotation tests plus a repository build smoke check.
 
+### C6.2b — Shared publication structural validator
+
+**Depends on:** C6.2 only for branch sequencing; its files are independent.
+
+**Exclusive owner:** `pkg/generation/**` plus the structural validation call site in `pkg/store/journal_publish.go` and focused Store tests.
+
+Move the pure `PublicationSet`/`PublicationCandidate` structural validator from Store into `pkg/generation`. Preserve the existing error taxonomy and validation semantics exactly. Store staging delegates to the shared validator, and no package-private duplicate remains. This lands before C6.3 so candidate and recovery attempt registration can reject malformed publication closures before retaining bytes or opening a resolver.
+
+**Gate:** focused generation validator tests, existing Store publication-validation tests, and a build smoke check.
+
 ### C6.3 — Attempt registration and temporary Store broker
 
-**Depends on:** C6.2 and the domain amendment.
+**Depends on:** C6.2b and the domain amendment.
 
 Split after interfaces are frozen:
 
 - `pkg/secret/**` and `pkg/runtime/dependencies*`: attempt IDs, duplicate-live registry, registration-bound materializers, generation capability, domain/catalog admission, close quarantine, and immutable metadata view.
 - `pkg/store/store.go`, `consumer_secret.go`, `resolved_secret.go`, focused broker tests: candidate/recovery authorization, exact per-domain retained bytes, cancellation-aware resolution, cache identity including secret-config digest, revoke/close race, and no package-global fallback.
 
-`Store.Stop` closes the broker before bbolt. A view is removed from live lookup before waiting for in-flight resolutions; retained sensitive bytes are cleared after the wait. Backend revoke failure never revalidates the local capability.
+Attempt IDs use versioned, domain-separated, length-delimited canonical binary encodings of the complete candidate or recovery identity. Public hash helpers return the zero ID on an impossible encoding failure; registration uses checked private helpers and rejects the sentinel. Candidate registration rejects an empty required-domain set; recovery registration rejects an empty verified published map. Authorization indexes only published/last-good resources by `(Domain, ResourceKey)`, never a cross-domain union.
+
+Materialization validates the exact catalog tuple before examining the value. A raw reference goes directly to the attempt resolver; a non-reference first follows the declaration's strict/optional at-rest policy, and any reference produced by decryption then goes to the resolver. This preserves strict encrypted literals without rejecting an explicitly supported reference as malformed ciphertext.
+
+The duplicate-live registry linearizes at reserve. Successful close releases the ID; backend revoke failure leaves it quarantined for the process/backend-owner lifetime. `Store.Stop` closes the broker before bbolt. A view is removed from live lookup before waiting for in-flight resolutions; retained sensitive bytes are cleared after the wait. Backend revoke failure never revalidates the local capability.
+
+`MetadataView` accepts only one JSON object per factory, uses `pkg/json` with `UseNumber`, stores compact defensive bytes, exposes only decode, and returns redacted errors because its documents may already contain plaintext.
 
 ### C6.4 — Plugin dependency and metadata migration
 
@@ -74,7 +90,7 @@ Split after interfaces are frozen:
 
 **Depends on:** C6.3 and C6.4.
 
-**Exclusive owner:** `pkg/compiler/**` plus the shared pure candidate validator in `pkg/generation` and its Store caller migration.
+**Exclusive owner:** `pkg/compiler/**`.
 
 - Extract pure publication preparation from the current compiler constructor dependency cycle.
 - Refine structural candidates with catalog/schema admission before computing the final attempt ID. Invalid resource/plugin admission follows the established per-resource last-good/fail-closed disposition; the final registered set is the exact refined set.
@@ -90,7 +106,7 @@ Adapt `cmd/root.go`, standalone ingestion, current Builder/server/stream callers
 ## Parallelism and Ownership
 
 - C6.1 and C6.2 are sequential single-owner foundation work.
-- After C6.2 freezes signatures, secret/runtime, Store broker, and plugin leaf migration may use separate worktrees only where files are exclusive.
+- After C6.2b freezes the encryption and publication-validation signatures, secret/runtime, Store broker, and plugin leaf migration may use separate worktrees only where files are exclusive.
 - Compiler factory work starts only after the attempt and plugin contracts compile.
 - One integration owner resolves live-caller fallout. Workers may implement and run focused tests locally but do not commit, push, merge, or modify another lane's files.
 

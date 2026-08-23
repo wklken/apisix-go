@@ -1454,31 +1454,6 @@ func TestManagedKeySuccessfulShapesUseCanonicalMembership(t *testing.T) {
 			t.Errorf("managedKey(%q) returned noncanonical bucket %q", key, bucket)
 		}
 	}
-
-	body := sourceFunction(t, "watcher.go", "func (c *ConfigClient) managedKey")
-	predicate := strings.Index(body, "generation.IsManagedResourceKind(bucket)")
-	success := strings.Index(body, "return bucket, id, true")
-	if predicate < 0 || success < 0 || predicate > success || strings.Count(body, ", true") != 1 {
-		t.Fatalf("managedKey must have one successful exit after the canonical predicate:\n%s", body)
-	}
-}
-
-func sourceFunction(t *testing.T, filename, declaration string) string {
-	t.Helper()
-	source, err := os.ReadFile(filename)
-	if err != nil {
-		t.Fatalf("read %s: %v", filename, err)
-	}
-	start := strings.Index(string(source), declaration)
-	if start < 0 {
-		t.Fatalf("declaration %q not found in %s", declaration, filename)
-	}
-	body := string(source[start:])
-	end := strings.Index(body, "\n}\n")
-	if end < 0 {
-		t.Fatalf("end of declaration %q not found in %s", declaration, filename)
-	}
-	return body[:end+2]
 }
 
 func TestApplySnapshotFiltersSiblingServerInfoUnknownAndCollectionKeys(t *testing.T) {

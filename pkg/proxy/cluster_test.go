@@ -373,9 +373,9 @@ func TestCleartextHTTP2ClusterPreservesAdmissionProgressTimeoutAndClose(t *testi
 		WithDialTimeout(time.Second).
 		WithResponseHeaderTimeout(25 * time.Millisecond).
 		Build()
-	cluster, err := newCluster(config, NopClusterObserver{})
+	cluster, err := NewCluster(config, NopClusterObserver{})
 	if err != nil {
-		t.Fatalf("newCluster() error = %v", err)
+		t.Fatalf("NewCluster() error = %v", err)
 	}
 	t.Cleanup(cluster.Close)
 
@@ -453,9 +453,9 @@ func TestCleartextHTTP2ClusterRetriesReplayableGRPCAndObservesOutcome(t *testing
 	config := testClusterConfig()
 	config.HTTP2Cleartext = true
 	config.Retries = 1
-	cluster, err := newCluster(config, observer)
+	cluster, err := NewCluster(config, observer)
 	if err != nil {
-		t.Fatalf("newCluster() error = %v", err)
+		t.Fatalf("NewCluster() error = %v", err)
 	}
 	t.Cleanup(cluster.Close)
 

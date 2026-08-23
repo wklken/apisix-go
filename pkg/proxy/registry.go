@@ -69,7 +69,7 @@ func (r *ClusterRegistry) Acquire(config ClusterConfig) (*ClusterLease, error) {
 		entry.refs++
 		return &ClusterLease{cluster: entry.cluster, release: r.release(key)}, nil
 	}
-	cluster, err := newCluster(config, r.observer)
+	cluster, err := NewCluster(config, r.observer)
 	if err != nil {
 		return nil, err
 	}

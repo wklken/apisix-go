@@ -142,7 +142,9 @@ type Cluster struct {
 	maxInFlight int
 }
 
-func newCluster(config ClusterConfig, observer ClusterObserver) (*Cluster, error) {
+// NewCluster constructs a cluster that owns its transport, health checker,
+// admission limiter, and immutable configuration identity.
+func NewCluster(config ClusterConfig, observer ClusterObserver) (*Cluster, error) {
 	if config.HTTP2Cleartext {
 		transport := newCleartextHTTP2Transport(config.Transport)
 		base := newResponseHeaderTimeoutTransport(transport, config.Transport.responseHeaderTimeout)

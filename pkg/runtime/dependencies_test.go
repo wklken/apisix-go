@@ -150,3 +150,27 @@ func TestRuntimeDependenciesValidateAcceptsEmptyMetadataView(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
+
+func TestRuntimeDependenciesConsumersRemainOptionalAndAccessible(t *testing.T) {
+	dependencies := RuntimeDependencies{
+		Config:    &config.EffectiveConfig{},
+		Secrets:   testGenerationCapability(t),
+		Resources: NewResourceRegistry(),
+		Tasks:     NewTaskRegistry(context.Background(), nil),
+	}
+	if err := dependencies.Validate(); err != nil {
+		t.Fatalf("Validate() without Consumers error = %v", err)
+	}
+
+	bindings, err := NewConsumerBindings(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings() error = %v", err)
+	}
+	dependencies.Consumers = bindings
+	if err := dependencies.Validate(); err != nil {
+		t.Fatalf("Validate() with Consumers error = %v", err)
+	}
+	if dependencies.Consumers != bindings {
+		t.Fatal("RuntimeDependencies did not retain Consumers")
+	}
+}

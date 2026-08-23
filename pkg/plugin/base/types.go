@@ -19,11 +19,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+type ConsumerLookup interface {
+	ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool)
+	ConsumerByID(id string) (resource.Consumer, bool)
+	ConsumerGroupByID(id string) (resource.ConsumerGroup, bool)
+}
 
 type Dependencies struct {
 	Config         *config.EffectiveConfig
 	DataEncryption data_encryption.Resolver
+	Secrets        secret.GenerationCapability
+	Metadata       runtime.MetadataView
+	Consumers      ConsumerLookup
+	Tasks          *runtime.TaskRegistry
 }
 
 type BasePlugin struct {
@@ -44,6 +57,22 @@ func (p *BasePlugin) StaticConfig() *config.EffectiveConfig {
 
 func (p *BasePlugin) DataEncryption() data_encryption.Resolver {
 	return p.dependencies.DataEncryption
+}
+
+func (p *BasePlugin) ScopedSecrets() secret.GenerationCapability {
+	return p.dependencies.Secrets
+}
+
+func (p *BasePlugin) MetadataView() runtime.MetadataView {
+	return p.dependencies.Metadata
+}
+
+func (p *BasePlugin) ConsumerLookup() ConsumerLookup {
+	return p.dependencies.Consumers
+}
+
+func (p *BasePlugin) TaskRegistry() *runtime.TaskRegistry {
+	return p.dependencies.Tasks
 }
 
 func (p *BasePlugin) GetName() string {

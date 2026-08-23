@@ -13,6 +13,7 @@ type RuntimeDependencies struct {
 	Metadata  MetadataView
 	Resources *ResourceRegistry
 	Tasks     *TaskRegistry
+	Consumers *ConsumerBindings
 }
 
 func (dependencies RuntimeDependencies) Validate() error {

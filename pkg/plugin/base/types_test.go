@@ -16,7 +16,38 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/runtime"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
+
+type testBaseAttemptRegistration struct {
+	id secret.AttemptID
+}
+
+func (registration testBaseAttemptRegistration) AttemptID() secret.AttemptID {
+	return registration.id
+}
+
+func (testBaseAttemptRegistration) Materialize(context.Context, secret.Scope, string) (secret.Value, error) {
+	panic("base dependency accessor materialized a secret")
+}
+
+func (testBaseAttemptRegistration) Close(context.Context) error {
+	return nil
+}
+
+func testBaseGenerationCapability(t *testing.T, generation uint64) secret.GenerationCapability {
+	t.Helper()
+	capability, err := secret.NewGenerationCapability(
+		testBaseAttemptRegistration{id: secret.AttemptID{byte(generation)}},
+		generation,
+	)
+	if err != nil {
+		t.Fatalf("NewGenerationCapability() error = %v", err)
+	}
+	return capability
+}
 
 func TestBasePluginDependenciesRemainInstanceScoped(t *testing.T) {
 	leftConfig := &config.EffectiveConfig{}
@@ -41,6 +72,69 @@ func TestBasePluginDependenciesRemainInstanceScoped(t *testing.T) {
 	}
 	if _, err := right.DataEncryption().Resolve(ciphertext); err == nil {
 		t.Fatal("right resolver decrypted ciphertext owned by the left plugin instance")
+	}
+}
+
+func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
+	leftConsumers, err := runtime.NewConsumerBindings(
+		[]runtime.ConsumerRecord{{ID: "left", Consumer: resource.Consumer{Username: "left"}}},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings(left) error = %v", err)
+	}
+	rightConsumers, err := runtime.NewConsumerBindings(
+		[]runtime.ConsumerRecord{{ID: "right", Consumer: resource.Consumer{Username: "right"}}},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewConsumerBindings(right) error = %v", err)
+	}
+	leftMetadata, err := runtime.NewMetadataView(map[string][]byte{"left": []byte(`{"owner":"left"}`)})
+	if err != nil {
+		t.Fatalf("NewMetadataView(left) error = %v", err)
+	}
+	rightMetadata, err := runtime.NewMetadataView(map[string][]byte{"right": []byte(`{"owner":"right"}`)})
+	if err != nil {
+		t.Fatalf("NewMetadataView(right) error = %v", err)
+	}
+	leftTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	rightTasks := runtime.NewTaskRegistry(context.Background(), nil)
+	leftSecrets := testBaseGenerationCapability(t, 1)
+	rightSecrets := testBaseGenerationCapability(t, 2)
+
+	left := &BasePlugin{}
+	left.SetDependencies(Dependencies{
+		Secrets:   leftSecrets,
+		Metadata:  leftMetadata,
+		Consumers: leftConsumers,
+		Tasks:     leftTasks,
+	})
+	right := &BasePlugin{}
+	right.SetDependencies(Dependencies{
+		Secrets:   rightSecrets,
+		Metadata:  rightMetadata,
+		Consumers: rightConsumers,
+		Tasks:     rightTasks,
+	})
+
+	if left.ScopedSecrets().AttemptID() == right.ScopedSecrets().AttemptID() {
+		t.Fatal("secret capabilities were not isolated")
+	}
+	if consumer, ok := left.ConsumerLookup().ConsumerByID("left"); !ok || consumer.Username != "left" {
+		t.Fatalf("left ConsumerLookup() = (%+v, %v)", consumer, ok)
+	}
+	if _, ok := left.ConsumerLookup().ConsumerByID("right"); ok {
+		t.Fatal("left ConsumerLookup() exposed right consumer")
+	}
+	var decoded map[string]string
+	if ok, err := left.MetadataView().Decode("left", &decoded); err != nil || !ok || decoded["owner"] != "left" {
+		t.Fatalf("left MetadataView().Decode() = (%v, %v, %#v)", ok, err, decoded)
+	}
+	if left.TaskRegistry() != leftTasks || right.TaskRegistry() != rightTasks {
+		t.Fatal("task registries were not retained by plugin instance")
 	}
 }
 

@@ -836,11 +836,12 @@ git commit -m "feat(store): persist desired revisions and tombstones"
 
 - Create: `pkg/store/journal_publish.go`
 - Test: `pkg/store/journal_publish_test.go`
+- Modify: `pkg/store/journal_schema.go`
 
 **Interfaces:**
 
 - Consumes: `generation.ApplyTicket` and a complete `generation.PublicationSet` produced for every required domain.
-- Produces: `Store.Stage`, `Store.Commit`, `Store.Abort`, `Store.LoadPublished`, independent HTTP/stream revisions and one atomic dependency-closure/head transaction.
+- Produces: `Store.Stage`, `Store.Commit`, `Store.Abort`, strict `Store.LoadPublished`, complete `Store.Revisions`, independent HTTP/stream revisions and one atomic dependency-closure/head transaction.
 
 - [ ] **Step 1: Write failing independent-domain and closure tests**
 
@@ -932,6 +933,8 @@ func publicationCandidate(
 }
 ```
 
+Also test forged and authentic-but-stale tickets, exact required-domain equality, empty-domain cursor-only publications, multiple pending tokens, stale/same-revision commit rejection, one-domain-stale failure of a two-domain commit, unknown `LoadPublished` domains, defensive copies, restart commit/abort, token collision, canonical wire goldens and tampering of every cross-linked published record. A staged token must not affect artifacts, heads, decisions or `RevisionSet` before commit.
+
 - [ ] **Step 2: Run the publication tests and confirm RED**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^(TestJournalCommit|TestJournalStage)" -count=1'`
@@ -960,21 +963,28 @@ func validatePublicationSet(ticket generation.ApplyTicket, set generation.Public
 }
 ```
 
-For every closure key, require exactly one decision and either a matching resource in the candidate snapshot or a matching tombstone plus `DispositionDeleted`. Reject resources outside the declared closure. This makes the published artifact a complete atomic dependency closure rather than a bag of independently updated rows.
+Inside the same read/write transaction, load the current desired snapshot, active authority and keyed cursor record. The supplied ticket must byte-for-byte match the recorded normalized ticket and must still identify the current desired revision/digest. Repeat this check during `Commit`, because a valid staged ticket can become stale after a later `ApplyDesired`.
+
+The keys of `set.Domains` must exactly equal the normalized `ticket.RequiredDomains`; reject missing, extra and unknown domains. An empty required-domain ticket accepts only an empty set and produces no published-head mutation. For every closure key, require exactly one decision and either a matching resource in the candidate snapshot or a matching tombstone plus `DispositionDeleted`. Reject duplicate closure/decision keys and resources outside the declared closure. This is structural closure validation only; Task 5 owns predecessor, last-good, quarantine and fail-closed policy.
 
 - [ ] **Step 4: Implement durable stage, abort and one-transaction commit**
 
-`Stage` writes a random 128-bit token from `crypto/rand`, the ticket, candidates, canonical payloads and decisions into `generation_publication_transactions`. It does not update a published head or `RevisionSet`.
+`Stage` writes a collision-checked random 128-bit token from `crypto/rand`, the ticket, complete candidates, canonical snapshot payloads, closures and decisions into `generation_publication_transactions`. It does not write the shared artifact bucket and does not update a published head, decision record or `RevisionSet`; therefore Abort cannot leak orphan artifacts. The staged transaction, published head and decision records use private explicit-tag wire DTOs inside size/digest envelopes. Maps become stable HTTP-then-stream sequences, closure and decisions are key-sorted, decode rebuilds snapshots through `generation.NewSnapshot`, and canonical re-encoding must equal the stored payload.
+
+`publishedHeadWire` stores the complete artifact, canonical closure and the digest of the separate decision record. Decision records use `domain || big-endian revision` keys. `LoadPublished` cross-checks head key/domain/revision, artifact digest/ID and snapshot, decision key/revision/digest, closure and one-to-one decisions before returning a deep copy. Unknown domains are rejected, absent heads return `ErrNotFound`, and malformed or mismatched records return `ErrIntegrity`.
 
 The bbolt helpers used by `Stage` and `Commit` have these exact signatures:
 
 ```go
 func loadStagedPublicationTx(*bolt.Tx, generation.PublicationToken) (stagedPublication, error)
+func validateStageTicketTx(*bolt.Tx, generation.ApplyTicket, bool) error
 func putArtifactTx(*bolt.Tx, generation.Snapshot) error
 func putPublishedHeadTx(*bolt.Tx, generation.Domain, generation.PublicationCandidate) error
 func putDecisionsTx(*bolt.Tx, generation.Domain, uint64, []generation.ResourceDecision) error
 func deleteStagedPublicationTx(*bolt.Tx, generation.PublicationToken) error
 func acknowledgementFrom(stagedPublication) generation.Acknowledgement
+func loadPublishedTx(*bolt.Tx, generation.Domain) (generation.PublishedGeneration, error)
+func loadRevisionSetTx(*bolt.Tx) (generation.RevisionSet, error)
 ```
 
 ```go
@@ -988,7 +998,18 @@ func (s *Store) Commit(ctx context.Context, token generation.PublicationToken) (
 		if err != nil {
 			return err
 		}
-		for domain, candidate := range staged.Set.Domains {
+		if err := validateStageTicketTx(tx, staged.Ticket, true); err != nil {
+			return err
+		}
+		current, err := loadRevisionSetTx(tx)
+		if err != nil {
+			return err
+		}
+		for _, domain := range sortedPublicationDomains(staged.Set.Domains) {
+			candidate := staged.Set.Domains[domain]
+			if candidate.Artifact.Revision <= revisionForDomain(current, domain) {
+				return generation.ErrStaleCursor
+			}
 			if err := putArtifactTx(tx, candidate.Snapshot); err != nil {
 				return err
 			}
@@ -1002,7 +1023,12 @@ func (s *Store) Commit(ctx context.Context, token generation.PublicationToken) (
 		if err := deleteStagedPublicationTx(tx, token); err != nil {
 			return err
 		}
+		revisions, err := loadRevisionSetTx(tx)
+		if err != nil {
+			return err
+		}
 		ack = acknowledgementFrom(staged)
+		ack.Revisions = revisions
 		return nil
 	})
 	if err != nil {
@@ -1014,9 +1040,13 @@ func (s *Store) Commit(ctx context.Context, token generation.PublicationToken) (
 
 `Commit` changes durable heads only. The coordinator has already reversibly activated the detached runtime owners before calling it, but the engine retains predecessor owners and leases until `FinalizeActivation` follows a successful commit. Task 9 makes `GenerationEngine.Activate` atomically install the prepared `PublishedView` together with the HTTP/stream runtime owner; this avoids an intermediate library commit that changes the active Store read path.
 
+Before any write, `Commit` revalidates the staged ticket against the current desired/authority records and requires every candidate revision to be strictly greater than its domain's committed head. Multiple pending tokens may coexist, but after a newer or same-revision token commits, older competitors fail without changing any artifact, head, decision or token. If either domain of a two-domain token is stale or any write fails, the whole bbolt transaction rolls back and the token remains available for retry or Abort. Success writes all artifacts, heads and decisions, deletes the token and derives the acknowledgement from the committed records in that same transaction.
+
+`Abort` validates the bounded UTF-8 reason code but schema v1 does not persist it: success deletes only the pending token and changes no committed state; missing, already committed or already aborted tokens return `ErrNotFound`. `Revisions` reads desired plus both strict published heads in one read transaction, ignores pending transactions and fails closed on malformed heads. Task 6 reuses these strict primitives to add per-domain recovery degradation.
+
 - [ ] **Step 5: Run publication and bbolt atomicity tests**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/store -run "^(TestJournalCommit|TestJournalStage|TestJournalAbort|TestJournalPublishedDomains)" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/store -run "^(TestJournalCommit|TestJournalStage|TestJournalAbort|TestJournalPublished|TestJournalPublication|TestJournalLoadPublished|TestJournalRevisions)" -count=1'`
 
 Expected: PASS, including a forced bbolt write error that leaves both published heads unchanged.
 
@@ -1196,8 +1226,8 @@ git commit -m "feat(store): enforce durable last-good decisions"
 
 **Interfaces:**
 
-- Consumes: committed desired/published heads and artifact envelopes.
-- Produces: `Store.Recover`, `Store.LoadPublished`, verified HTTP/stream `PublishedGeneration` values and an inert immutable `store.PublishedView` type. Existing production getters remain on their current path until Task 9 switches every caller in one commit.
+- Consumes: committed desired/published heads, artifact envelopes, and Task 4's strict `loadPublishedTx`/`Store.LoadPublished` plus complete committed revision reader.
+- Produces: `Store.Recover`, per-domain recovery failure isolation, verified HTTP/stream `PublishedGeneration` values and an inert immutable `store.PublishedView` type. Existing production getters remain on their current path until Task 9 switches every caller in one commit.
 
 - [ ] **Step 1: Write failing restart and domain-isolation tests**
 
@@ -1751,7 +1781,7 @@ func stableAbortCode(phase string, err error) string {
 }
 ```
 
-`DiscardPrepared` is called only when `Prepare` succeeded but `Stage` did not return a token. It receives an uncanceled cleanup context, is idempotent by publication-set identity, and releases every new candidate lease; `errors.Join` preserves both persistence and cleanup failures. `RollbackActivation` is called after every activation error because it is idempotent and is the only safe way to clean up an engine that switched one domain before another failed. A commit error means the bbolt transaction did not publish any head: the coordinator restores the old active owners, closes the new owners, aborts the stage and returns no acknowledgement. `FinalizeActivation` runs only after the durable commit and cannot report a recoverable business error; an implementation invariant failure there must terminate/fail the runtime rather than return an acknowledgement from split truth. `stableAbortCode` maps errors to bounded codes and never serializes `err.Error()` into bbolt. A prepare error represents an unresolved transient/system failure and is not an acknowledgement. Deterministic invalid-resource handling must be represented by a valid candidate and explicit decisions, allowing unrelated resources to publish.
+`DiscardPrepared` is called only when `Prepare` succeeded but `Stage` did not return a token. It receives an uncanceled cleanup context, is idempotent by publication-set identity, and releases every new candidate lease; `errors.Join` preserves both persistence and cleanup failures. `RollbackActivation` is called after every activation error because it is idempotent and is the only safe way to clean up an engine that switched one domain before another failed. A commit error means the bbolt transaction did not publish any head: the coordinator restores the old active owners, closes the new owners, aborts the stage and returns no acknowledgement. `FinalizeActivation` runs only after the durable commit and cannot report a recoverable business error; an implementation invariant failure there must terminate/fail the runtime rather than return an acknowledgement from split truth. `stableAbortCode` maps errors to bounded codes and never passes `err.Error()` into the journal. Schema v1 validates this Abort code but does not persist abort audit records. A prepare error represents an unresolved transient/system failure and is not an acknowledgement. Deterministic invalid-resource handling must be represented by a valid candidate and explicit decisions, allowing unrelated resources to publish.
 
 - [ ] **Step 4: Run coordinator tests with race detection**
 
@@ -2460,8 +2490,8 @@ The document must contain this bucket table and state machine using the implemen
 | `generation_meta` | `schema_version` | uint64 big-endian `1` | migration only |
 | `generation_desired_head` | `revision`, `artifact` | current desired revision and artifact ID | `ApplyDesired` |
 | `generation_desired_revisions` | uint64 big-endian revision | desired artifact ID | migration/`ApplyDesired` |
-| `generation_artifacts` | `sha256:<hex>` | integrity envelope and canonical snapshot | desired/stage |
-| `generation_published_heads` | `http` or `stream` | artifact identity and published revision | `Commit` |
+| `generation_artifacts` | `sha256:<hex>` | integrity envelope and canonical snapshot | `ApplyDesired`/`Commit` |
+| `generation_published_heads` | `http` or `stream` | artifact, published revision, closure and decision-record digest | `Commit` |
 | `generation_publication_transactions` | random token | ticket and complete candidate set | `Stage`/`Abort`/`Commit` |
 | `generation_provider_cursors` | `active_provider` or SHA-256 cursor identity | active authority, exact cursor, ordered batch digest and desired ticket | `ApplyDesired` |
 | `generation_publication_decisions` | domain/revision | bounded per-resource decisions | `Commit` |

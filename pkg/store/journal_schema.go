@@ -355,28 +355,20 @@ func verifyArtifact(id string, envelope artifactEnvelope) error {
 }
 
 func (s *Store) Revisions(ctx context.Context) (generation.RevisionSet, error) {
-	if err := ctx.Err(); err != nil {
+	if err := contextErr(ctx); err != nil {
 		return generation.RevisionSet{}, err
 	}
 	var revisions generation.RevisionSet
 	err := s.db.View(func(tx *bolt.Tx) error {
-		if err := ctx.Err(); err != nil {
+		if err := contextErr(ctx); err != nil {
 			return err
 		}
-		head := tx.Bucket(desiredHeadBucket)
-		if head == nil {
-			return generation.ErrIntegrity
+		var err error
+		revisions, err = loadRevisionSetTx(tx)
+		if err != nil {
+			return err
 		}
-		encoded := head.Get(desiredHeadRevisionKey)
-		if encoded == nil {
-			return nil
-		}
-		revision, err := decodeUint64(encoded)
-		if err != nil || revision == 0 {
-			return generation.ErrIntegrity
-		}
-		revisions.Desired = revision
-		return nil
+		return contextErr(ctx)
 	})
 	return revisions, err
 }

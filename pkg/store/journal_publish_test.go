@@ -328,9 +328,20 @@ func TestJournalStageRejectsTicketDomainCandidateAndClosureViolations(t *testing
 
 func TestJournalStageAcceptsStructurallyClosedDeletedTombstone(t *testing.T) {
 	journal := openTestJournal(t)
-	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	candidate := publicationCandidateFor(t, generation.DomainHTTP, ticket)
+	_ = applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
 	deleted := generation.ResourceKey{Kind: "routes", ID: "deleted"}
+	ticket, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{Provider: "etcd", Revision: "2"},
+		Mutations: []generation.Mutation{{
+			Type: generation.MutationDelete,
+			Key:  deleted,
+		}},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := publicationCandidateFor(t, generation.DomainHTTP, ticket)
 	candidate.Snapshot = mustSnapshot(
 		t,
 		ticket.DesiredRevision,
@@ -1054,7 +1065,7 @@ func TestJournalPublicationWireGoldenAndTokenCollision(t *testing.T) {
 		t.Fatalf("unexpected staged wire payload: %s", envelope.Payload)
 	}
 	wantPayload := []byte(
-		`{"token":"abababababababababababababababab","ticket":{"desired_revision":1,"desired_digest":[255,34,247,236,119,115,175,167,88,110,191,95,97,222,84,148,88,119,130,47,116,145,122,203,199,27,184,81,131,1,232,154],"cursor":{"provider":"etcd","revision":"1"},"required_domains":["http"]},"desired_revision":1,"domains":[{"domain":"http","candidate":{"artifact":{"domain":"http","revision":1,"digest":[201,111,177,221,203,220,34,32,98,107,68,128,244,214,206,18,231,49,78,151,235,5,165,195,140,214,92,112,104,207,247,243],"snapshot":"sha256:c96fb1ddcbdc2220626b4480f4d6ce12e7314e97eb05a5c38cd65c7068cff7f3"},"snapshot_payload":"eyJyZXZpc2lvbiI6MSwicmVzb3VyY2VzIjpbeyJrZXkiOnsia2luZCI6InJvdXRlcyIsImlkIjoicjEifSwidmFsdWUiOiJlMzA9In0seyJrZXkiOnsia2luZCI6InVwc3RyZWFtcyIsImlkIjoidTEifSwidmFsdWUiOiJlMzA9In1dLCJ0b21ic3RvbmVzIjpudWxsfQ==","closure":[{"kind":"routes","id":"r1"},{"kind":"upstreams","id":"u1"}],"decisions":[{"key":{"kind":"routes","id":"r1"},"disposition":"published","code":"test-published"},{"key":{"kind":"upstreams","id":"u1"},"disposition":"published","code":"test-published"}]}}]}`,
+		`{"token":"abababababababababababababababab","ticket":{"desired_revision":1,"desired_digest":[255,34,247,236,119,115,175,167,88,110,191,95,97,222,84,148,88,119,130,47,116,145,122,203,199,27,184,81,131,1,232,154],"cursor":{"provider":"etcd","revision":"1"},"required_domains":["http"]},"desired_revision":1,"domains":[{"domain":"http","candidate":{"artifact":{"domain":"http","revision":1,"digest":[255,34,247,236,119,115,175,167,88,110,191,95,97,222,84,148,88,119,130,47,116,145,122,203,199,27,184,81,131,1,232,154],"snapshot":"sha256:ff22f7ec7773afa7586ebf5f61de54945877822f74917acbc71bb8518301e89a"},"snapshot_payload":"eyJyZXZpc2lvbiI6MSwicmVzb3VyY2VzIjpbeyJrZXkiOnsia2luZCI6InJvdXRlcyIsImlkIjoicjEifSwidmFsdWUiOiJleUpwWkNJNkluSXhJbjA9In0seyJrZXkiOnsia2luZCI6InVwc3RyZWFtcyIsImlkIjoidTEifSwidmFsdWUiOiJleUpwWkNJNkluVXhJbjA9In1dLCJ0b21ic3RvbmVzIjpudWxsfQ==","closure":[{"kind":"routes","id":"r1"},{"kind":"upstreams","id":"u1"}],"decisions":[{"key":{"kind":"routes","id":"r1"},"disposition":"published","code":"test-published"},{"key":{"kind":"upstreams","id":"u1"},"disposition":"published","code":"test-published"}]}}]}`,
 	)
 	if envelope.Size != uint64(len(wantPayload)) {
 		t.Fatalf("envelope size = %d, want %d", envelope.Size, len(wantPayload))
@@ -1130,30 +1141,30 @@ func applyDesiredForPublication(
 	domains ...generation.Domain,
 ) generation.ApplyTicket {
 	t.Helper()
-	mutations := make([]generation.Mutation, 0, 2)
-	if len(domains) == 1 && domains[0] == generation.DomainStream {
-		mutations = append(
-			mutations,
-			generation.Mutation{
+	mutations := make([]generation.Mutation, 0, 3)
+	for _, domain := range domains {
+		switch domain {
+		case generation.DomainHTTP:
+			mutations = append(
+				mutations,
+				generation.Mutation{
+					Type:  generation.MutationPut,
+					Key:   generation.ResourceKey{Kind: "routes", ID: "r1"},
+					Value: []byte(`{"id":"r1"}`),
+				},
+				generation.Mutation{
+					Type:  generation.MutationPut,
+					Key:   generation.ResourceKey{Kind: "upstreams", ID: "u1"},
+					Value: []byte(`{"id":"u1"}`),
+				},
+			)
+		case generation.DomainStream:
+			mutations = append(mutations, generation.Mutation{
 				Type:  generation.MutationPut,
 				Key:   generation.ResourceKey{Kind: "stream_routes", ID: "s1"},
 				Value: []byte(`{"id":"s1"}`),
-			},
-		)
-	} else {
-		mutations = append(
-			mutations,
-			generation.Mutation{
-				Type:  generation.MutationPut,
-				Key:   generation.ResourceKey{Kind: "routes", ID: "r1"},
-				Value: []byte(`{"id":"r1"}`),
-			},
-			generation.Mutation{
-				Type:  generation.MutationPut,
-				Key:   generation.ResourceKey{Kind: "upstreams", ID: "u1"},
-				Value: []byte(`{"id":"u1"}`),
-			},
-		)
+			})
+		}
 	}
 	ticket, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
 		Cursor:          generation.ProviderCursor{Provider: "etcd", Revision: revision},
@@ -1200,7 +1211,10 @@ func publicationCandidateFor(
 	resources := make([]generation.Resource, 0, len(keys))
 	decisions := make([]generation.ResourceDecision, 0, len(keys))
 	for _, key := range keys {
-		resources = append(resources, generation.Resource{Key: key, Value: []byte(`{}`)})
+		resources = append(
+			resources,
+			generation.Resource{Key: key, Value: fmt.Appendf(nil, `{"id":%q}`, key.ID)},
+		)
 		decisions = append(
 			decisions,
 			generation.ResourceDecision{Key: key, Disposition: generation.DispositionPublished, Code: "test-published"},

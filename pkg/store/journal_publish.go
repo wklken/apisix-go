@@ -91,9 +91,6 @@ func (s *Store) Stage(
 ) (generation.PublicationToken, error) {
 	ticket = cloneApplyTicket(ticket)
 	set = clonePublicationSet(set)
-	if err := validatePublicationSet(ticket, set); err != nil {
-		return "", err
-	}
 	if err := contextErr(ctx); err != nil {
 		return "", err
 	}
@@ -103,6 +100,19 @@ func (s *Store) Stage(
 			return err
 		}
 		if err := validateStageTicketTx(tx, ticket, false); err != nil {
+			return err
+		}
+		if err := validatePublicationSet(ticket, set); err != nil {
+			return err
+		}
+		if err := validateNewDecisionCodes(set); err != nil {
+			return err
+		}
+		desired, err := loadDesiredSnapshotTx(tx, ticket.DesiredRevision)
+		if err != nil {
+			return err
+		}
+		if err := validatePublicationPolicyTx(tx, desired, set); err != nil {
 			return err
 		}
 		bucket := tx.Bucket(publicationTxnBucket)
@@ -161,6 +171,13 @@ func (s *Store) Commit(
 			return err
 		}
 		if err := validateStageTicketTx(tx, staged.Ticket, true); err != nil {
+			return err
+		}
+		desired, err := loadDesiredSnapshotTx(tx, staged.Ticket.DesiredRevision)
+		if err != nil {
+			return err
+		}
+		if err := validatePublicationPolicyTx(tx, desired, staged.Set); err != nil {
 			return err
 		}
 		current, err := loadRevisionSetTx(tx)
@@ -315,9 +332,6 @@ func validatePublicationCandidate(
 		}
 		tombstones[tombstone.Key] = struct{}{}
 	}
-	if len(resources)+len(tombstones) != len(closure) {
-		return generation.ErrInvalidClosure
-	}
 	decisions := make(map[generation.ResourceKey]generation.ResourceDecision, len(candidate.Decisions))
 	for _, decision := range candidate.Decisions {
 		if !validResourceKey(decision.Key) || decision.Code == "" || !utf8.ValidString(decision.Code) ||
@@ -339,12 +353,132 @@ func validatePublicationCandidate(
 		}
 		_, resource := resources[key]
 		_, deleted := tombstones[key]
-		if !resource && !deleted || resource && decision.Disposition == generation.DispositionDeleted ||
-			deleted && decision.Disposition != generation.DispositionDeleted {
+		switch decision.Disposition {
+		case generation.DispositionPublished, generation.DispositionLastGood:
+			if !resource || deleted {
+				return generation.ErrInvalidClosure
+			}
+		case generation.DispositionQuarantined, generation.DispositionFailClosed:
+			if resource || deleted {
+				return generation.ErrInvalidClosure
+			}
+		case generation.DispositionDeleted:
+			if resource || !deleted {
+				return generation.ErrInvalidClosure
+			}
+		default:
 			return generation.ErrInvalidClosure
 		}
 	}
 	return nil
+}
+
+func validatePublicationPolicyTx(
+	tx *bolt.Tx,
+	desired generation.Snapshot,
+	set generation.PublicationSet,
+) error {
+	for _, domain := range sortedPublicationDomains(set.Domains) {
+		predecessor, err := loadPublishedTx(tx, domain)
+		if err != nil && !errors.Is(err, generation.ErrNotFound) {
+			return err
+		}
+		hasPredecessor := err == nil
+		if err := validatePublicationCandidatePolicy(
+			desired,
+			set.Domains[domain],
+			predecessor,
+			hasPredecessor,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePublicationCandidatePolicy(
+	desired generation.Snapshot,
+	candidate generation.PublicationCandidate,
+	predecessor generation.PublishedGeneration,
+	hasPredecessor bool,
+) error {
+	desiredResources := resourceValues(desired.Resources())
+	desiredTombstones := tombstoneRevisions(desired.Tombstones())
+	candidateResources := resourceValues(candidate.Snapshot.Resources())
+	candidateTombstones := tombstoneRevisions(candidate.Snapshot.Tombstones())
+	predecessorResources := resourceValues(predecessor.Snapshot.Resources())
+
+	for _, decision := range candidate.Decisions {
+		desiredValue, desiredLive := desiredResources[decision.Key]
+		desiredDeletedRevision, desiredDeleted := desiredTombstones[decision.Key]
+		candidateValue, candidateLive := candidateResources[decision.Key]
+		candidateDeletedRevision, candidateDeleted := candidateTombstones[decision.Key]
+
+		if !desiredLive && !desiredDeleted {
+			return generation.ErrInvalidClosure
+		}
+		switch decision.Disposition {
+		case generation.DispositionPublished:
+			if !desiredLive || desiredDeleted || !candidateLive || candidateDeleted ||
+				!exactBytes(candidateValue, desiredValue) {
+				return generation.ErrInvalidClosure
+			}
+		case generation.DispositionLastGood:
+			if !desiredLive || desiredDeleted {
+				return generation.ErrNoLastGood
+			}
+			if !candidateLive || candidateDeleted {
+				return generation.ErrInvalidClosure
+			}
+			predecessorValue, found := predecessorResources[decision.Key]
+			if !hasPredecessor || !found || !exactBytes(candidateValue, predecessorValue) {
+				return generation.ErrNoLastGood
+			}
+		case generation.DispositionQuarantined, generation.DispositionFailClosed:
+			if !desiredLive || desiredDeleted || candidateLive || candidateDeleted {
+				return generation.ErrInvalidClosure
+			}
+		case generation.DispositionDeleted:
+			if desiredLive || !desiredDeleted || candidateLive || !candidateDeleted ||
+				candidateDeletedRevision != desiredDeletedRevision {
+				return generation.ErrInvalidClosure
+			}
+		default:
+			return generation.ErrInvalidClosure
+		}
+	}
+	return nil
+}
+
+func exactBytes(left, right []byte) bool {
+	return (left == nil) == (right == nil) && bytes.Equal(left, right)
+}
+
+func validateNewDecisionCodes(set generation.PublicationSet) error {
+	for _, domain := range sortedPublicationDomains(set.Domains) {
+		for _, decision := range set.Domains[domain].Decisions {
+			if !validDecisionCode(decision.Code) {
+				return generation.ErrInvalidClosure
+			}
+		}
+	}
+	return nil
+}
+
+func resourceValues(resources []generation.Resource) map[generation.ResourceKey][]byte {
+	values := make(map[generation.ResourceKey][]byte, len(resources))
+	for _, resource := range resources {
+		values[resource.Key] = resource.Value
+	}
+	return values
+}
+
+func tombstoneRevisions(tombstones []generation.Tombstone) map[generation.ResourceKey]uint64 {
+	revisions := make(map[generation.ResourceKey]uint64, len(tombstones))
+	for _, tombstone := range tombstones {
+		revisions[tombstone.Key] = tombstone.Revision
+	}
+	return revisions
 }
 
 func validateStageTicketTx(tx *bolt.Tx, ticket generation.ApplyTicket, staleIsCursor bool) error {
@@ -855,6 +989,28 @@ func validPublicationDomain(domain generation.Domain) bool {
 
 func validResourceKey(key generation.ResourceKey) bool {
 	return key.Kind != "" && key.ID != "" && utf8.ValidString(key.Kind) && utf8.ValidString(key.ID)
+}
+
+func validDecisionCode(code string) bool {
+	if len(code) == 0 || len(code) > 128 {
+		return false
+	}
+	first := code[0]
+	if !lowerAlphaNumeric(first) {
+		return false
+	}
+	for index := 1; index < len(code); index++ {
+		character := code[index]
+		if lowerAlphaNumeric(character) || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func lowerAlphaNumeric(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= '0' && character <= '9'
 }
 
 func validDisposition(disposition generation.ResourceDisposition) bool {

@@ -1064,152 +1064,64 @@ git commit -m "feat(store): commit dependency-closed domain generations"
 **Files:**
 
 - Modify: `pkg/store/journal_publish.go`
-- Test: `pkg/store/journal_publish_test.go`
-- Modify: `pkg/store/store.go`
+- Create: `pkg/store/journal_policy_test.go`
+- Modify: `pkg/store/journal_publish_test.go`
 
 **Interfaces:**
 
 - Consumes: current desired tombstones, previous published artifact and each `ResourceDecision`.
 - Produces: journal-enforced consistency between each submitted decision, its predecessor, its desired tombstone and its candidate snapshot; security classification and the choice between quarantine and fail-closed belong to the trusted `PublicationEngine` and are tested in Task 9.
 
-- [ ] **Step 1: Write the failing policy matrix**
+- [ ] **Step 1: Write failing end-to-end policy tests**
 
 ```go
-func TestJournalPublicationDispositionPolicy(t *testing.T) {
-	tests := []struct {
-		name            string
-		predecessor     bool
-		deleted         bool
-		disposition     generation.ResourceDisposition
-		wantErr         error
-	}{
-		{name: "predecessor may use last-good", predecessor: true, disposition: generation.DispositionLastGood},
-		{name: "first invalid may fail closed", disposition: generation.DispositionFailClosed},
-		{name: "first invalid cannot claim last-good", disposition: generation.DispositionLastGood, wantErr: generation.ErrNoLastGood},
-		{name: "delete cannot resurrect predecessor", predecessor: true, deleted: true, disposition: generation.DispositionLastGood, wantErr: generation.ErrNoLastGood},
-		{name: "delete is authoritative", predecessor: true, deleted: true, disposition: generation.DispositionDeleted},
-		{name: "nonsecurity invalid may quarantine", disposition: generation.DispositionQuarantined},
+func TestJournalPolicyLastGoodRequiresSameDomainPredecessor(t *testing.T) {
+	journal := openTestJournal(t)
+	ticket := applyPolicyDesired(t, journal, "1", []byte("desired"), generation.DomainHTTP)
+	candidate := policyCandidate(
+		t, ticket, generation.DomainHTTP, []byte("desired"), generation.DispositionLastGood,
+	)
+	if _, err := journal.Stage(
+		context.Background(), ticket, policySet(ticket, candidate),
+	); !errors.Is(err, generation.ErrNoLastGood) {
+		t.Fatalf("first last-good Stage() error = %v, want ErrNoLastGood", err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := exerciseDisposition(t, test.predecessor, test.deleted, test.disposition)
-			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("error = %v, want %v", err, test.wantErr)
-			}
-		})
+	if got := bucketKeyCount(t, journal.db, publicationTxnBucket); got != 0 {
+		t.Fatalf("rejected policy staged %d transactions, want 0", got)
 	}
 }
 
-func exerciseDisposition(
-	t *testing.T,
-	predecessor bool,
-	deleted bool,
-	disposition generation.ResourceDisposition,
-) error {
-	t.Helper()
-	key := generation.ResourceKey{Kind: "ssls", ID: "ssl-1"}
-	journal := &Store{}
-	desiredResources := []generation.Resource{{Key: key, Value: []byte(`{"id":"ssl-1"}`)}}
-	var tombstones []generation.Tombstone
-	if deleted {
-		desiredResources = nil
-		tombstones = []generation.Tombstone{{Key: key, Revision: 2}}
-	}
-	desired, err := generation.NewSnapshot(2, desiredResources, tombstones)
-	if err != nil {
-		t.Fatal(err)
-	}
-	previousResources := []generation.Resource(nil)
-	if predecessor {
-		previousResources = []generation.Resource{{Key: key, Value: []byte(`{"id":"ssl-1","status":1}`)}}
-	}
-	previousSnapshot, err := generation.NewSnapshot(1, previousResources, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := generation.PublishedGeneration{Snapshot: previousSnapshot}
-	candidateResources := []generation.Resource(nil)
-	if disposition == generation.DispositionPublished || disposition == generation.DispositionLastGood {
-		value := []byte(`{"id":"ssl-1"}`)
-		if disposition == generation.DispositionLastGood && predecessor {
-			value = []byte(`{"id":"ssl-1","status":1}`)
-		}
-		candidateResources = []generation.Resource{{Key: key, Value: value}}
-	}
-	candidateSnapshot, err := generation.NewSnapshot(2, candidateResources, tombstones)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate := generation.PublicationCandidate{Snapshot: candidateSnapshot}
-	return journal.validateDecision(desired, previous, candidate, generation.ResourceDecision{
-		Key: key, Disposition: disposition, Code: "test-decision",
-	})
-}
+// Every case uses ApplyDesired -> Stage and, for accepted cases, Commit and
+// LoadPublished. Tests must prove rejected mixed-closure and mixed-domain sets
+// leave no staged token rather than testing a detached helper alone.
 ```
+
+Cover first-generation and exact same-domain predecessor `last-good`, mismatched predecessor bytes, explicit deletion after a predecessor, exact desired-vs-published bytes, decision-only quarantine/fail-closed, exact tombstone revision, unknown desired keys, damaged predecessors, cross-domain predecessor borrowing, mixed-closure/mixed-domain atomic rejection, decision round-trip, and stable decision-code syntax.
 
 - [ ] **Step 2: Run the policy matrix and confirm RED**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^TestJournalPublicationDispositionPolicy$" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^TestJournalPolicy" -count=1'`
 
 Expected: FAIL because Stage does not yet enforce predecessor and tombstone rules.
 
 - [ ] **Step 3: Implement exact disposition validation**
 
-```go
-func (s *Store) validateDecision(
-	desired generation.Snapshot,
-	previous generation.PublishedGeneration,
-	candidate generation.PublicationCandidate,
-	decision generation.ResourceDecision,
-) error {
-	_, predecessor := previous.Snapshot.Lookup(decision.Key)
-	_, candidateHasValue := candidate.Snapshot.Lookup(decision.Key)
-	deleted := desired.Deleted(decision.Key)
-	switch decision.Disposition {
-	case generation.DispositionPublished:
-		if deleted || !candidateHasValue {
-			return fmt.Errorf("published decision has no candidate value for %s/%s", decision.Key.Kind, decision.Key.ID)
-		}
-	case generation.DispositionLastGood:
-		if deleted || !predecessor || !candidateHasValue {
-			return generation.ErrNoLastGood
-		}
-		oldValue, _ := previous.Snapshot.Lookup(decision.Key)
-		newValue, _ := candidate.Snapshot.Lookup(decision.Key)
-		if !bytes.Equal(oldValue, newValue) {
-			return generation.ErrNoLastGood
-		}
-	case generation.DispositionQuarantined:
-		if candidateHasValue {
-			return fmt.Errorf("quarantined resource remains in candidate")
-		}
-	case generation.DispositionFailClosed:
-		if candidateHasValue {
-			return fmt.Errorf("fail-closed resource remains in candidate")
-		}
-	case generation.DispositionDeleted:
-		if !deleted || candidateHasValue {
-			return fmt.Errorf("deleted decision does not match desired tombstone")
-		}
-	default:
-		return fmt.Errorf("unknown resource disposition %q", decision.Disposition)
-	}
-	return nil
-}
-```
+`Stage` performs policy validation in its existing bbolt update transaction after ticket-authority validation and before writing the token. `Commit` repeats the same semantic policy validation after decoding the staged record and revalidating its ticket, before its first durable publication write. This preserves the invariant across restart, binary upgrade, canonical staged-record rewriting and predecessor corruption. Both paths load the current desired snapshot and each domain's strict committed predecessor; `ErrNotFound` means first generation, while corruption remains `ErrIntegrity`. A failure in any key or domain leaves the publication transaction bucket and all committed state unchanged.
 
-Every decision must have a stable non-empty `Code`; the code is suitable for metrics and audit and must not contain raw configuration or a secret value. A candidate with a duplicate or missing decision is rejected before it is staged.
+The closure is the complete decision closure, not only the resources retained in the candidate. `published` requires a desired live resource and byte-identical candidate value. `last-good` requires a desired live resource plus a byte-identical value from the same domain's committed predecessor, otherwise `ErrNoLastGood`. Byte identity includes the nil/non-nil distinction because schema-v1 canonical JSON and digests distinguish nil from an empty value. `quarantined` and `fail-closed` require a desired live resource but no candidate resource or tombstone. `deleted` requires an exact desired tombstone, including its revision, and the same candidate tombstone. Candidate resources are therefore limited to `published`/`last-good`, tombstones to `deleted`, and decision-only keys to `quarantined`/`fail-closed`. Security classification and the selection between quarantine and fail-closed remain Task 9 engine policy.
+
+Every new `Stage` input has a mechanically bounded metric/audit code: 1-128 lowercase ASCII bytes, beginning with `[a-z0-9]` and continuing with `[a-z0-9._-]`. The journal enforces this shape at new-write ingress but does not attempt content inspection for secrets; the trusted engine owns code selection. Schema-v1 decoding retains its original non-empty valid-UTF-8 rule so pending and published records created by an older binary remain commit/read compatible without a schema migration. Duplicate or missing decisions and unknown desired keys are rejected before staging.
 
 - [ ] **Step 4: Run focused policy and deletion tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^(TestJournalPublicationDispositionPolicy|TestJournalExplicitDelete|TestJournalSecurityLastGood)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^TestJournalPolicy" -count=1'`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit policy enforcement**
 
 ```bash
-git add pkg/store/store.go pkg/store/journal_publish.go pkg/store/journal_publish_test.go
+git add pkg/store/journal_publish.go pkg/store/journal_publish_test.go pkg/store/journal_policy_test.go docs/superpowers/plans/2026-08-23-durable-generation-journal.md
 git commit -m "feat(store): enforce durable last-good decisions"
 ```
 

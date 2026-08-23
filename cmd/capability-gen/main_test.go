@@ -57,6 +57,16 @@ func TestRenderRegistrySortsImportsAndFactories(t *testing.T) {
 	}
 }
 
+func TestValidateGeneratedFactsAcceptsExplicitConsumerScopes(t *testing.T) {
+	plugin := capability.PluginCapability{
+		Name:   "consumer-scoped",
+		Scopes: []string{"consumer", "consumer_group"},
+	}
+	if err := validateGeneratedFacts(plugin); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRenderPluginsMarkdownSeparatesBehaviorAndEvidence(t *testing.T) {
 	manifest := loadManifest(t)
 	generated, err := renderPluginsMarkdown(manifest)

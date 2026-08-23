@@ -83,8 +83,8 @@ func TestConsumerResolutionPreservesGroupAndConsumerProvenance(t *testing.T) {
 	provenance := make(map[string]plugin.ResourceProvenance, len(resolution.Bindings))
 	for _, binding := range resolution.Bindings {
 		provenance[binding.Plugin.GetName()] = binding.Provenance
-		if binding.Scope != plugin.ScopeRoute {
-			t.Fatalf("binding %q scope = %d, want merged route scope", binding.Plugin.GetName(), binding.Scope)
+		if binding.Scope != plugin.ScopeConsumer {
+			t.Fatalf("binding %q scope = %d, want consumer scope", binding.Plugin.GetName(), binding.Scope)
 		}
 	}
 	if got, want := provenance["request-id"], (plugin.ResourceProvenance{Kind: plugin.ResourceConsumerGroup, ID: "provenance-group"}); got != want {

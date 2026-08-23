@@ -1613,7 +1613,7 @@ func consumerPluginSources(group resource.ConsumerGroup, consumer resource.Consu
 		sourcesByName[name] = materializedPluginSource{
 			name:       name,
 			config:     group.Plugins[name],
-			scope:      plugin.ScopeRoute,
+			scope:      plugin.ScopeConsumer,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumerGroup, ID: consumer.GroupID},
 		}
 	}
@@ -1624,7 +1624,7 @@ func consumerPluginSources(group resource.ConsumerGroup, consumer resource.Consu
 		sourcesByName[name] = materializedPluginSource{
 			name:       name,
 			config:     consumer.Plugins[name],
-			scope:      plugin.ScopeRoute,
+			scope:      plugin.ScopeConsumer,
 			provenance: plugin.ResourceProvenance{Kind: plugin.ResourceConsumer, ID: consumer.Username},
 		}
 	}

@@ -18,8 +18,20 @@ func TestDescriptorForFactoryUsesManifestPhasePriorityScope(t *testing.T) {
 	}
 	entry, _ := manifest.Plugin("request-id")
 	if descriptor.Priority != entry.Priority || descriptor.Factory != "request-id" ||
-		!slices.Equal(descriptor.Phases, []Phase{PhaseRewrite}) {
+		!slices.Equal(descriptor.Phases, []Phase{PhaseRewrite}) ||
+		!slices.Equal(entry.Scopes, []string{"global_rule", "route", "service", "consumer", "consumer_group"}) ||
+		!slices.Equal(descriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute, ScopeConsumer}) {
 		t.Fatalf("descriptor = %#v, manifest = %#v", descriptor, entry)
+	}
+
+	credentialDescriptor, err := DescriptorForFactory(manifest, "key-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialEntry, _ := manifest.Plugin("key-auth")
+	if !slices.Equal(credentialEntry.Scopes, []string{"global_rule", "route", "service"}) ||
+		!slices.Equal(credentialDescriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute}) {
+		t.Fatalf("credential descriptor = %#v, manifest = %#v", credentialDescriptor, credentialEntry)
 	}
 }
 

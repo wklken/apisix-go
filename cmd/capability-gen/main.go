@@ -888,7 +888,7 @@ func validateGeneratedFacts(plugin capability.PluginCapability) error {
 	}
 	for _, scope := range plugin.Scopes {
 		switch scope {
-		case "system", "global_rule", "route", "service":
+		case "system", "global_rule", "route", "service", "consumer", "consumer_group":
 		default:
 			return fmt.Errorf("render registry: capability %q has unsupported scope %q", plugin.Name, scope)
 		}

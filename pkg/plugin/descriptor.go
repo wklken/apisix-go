@@ -205,12 +205,7 @@ func parseManifestScopes(values []string) ([]Scope, error) {
 		case "global_rule":
 			scope = ScopeGlobal
 		case "route", "service":
-			for _, candidate := range []Scope{ScopeRoute, ScopeConsumer} {
-				if !slices.Contains(scopes, candidate) {
-					scopes = append(scopes, candidate)
-				}
-			}
-			continue
+			scope = ScopeRoute
 		case "consumer", "consumer_group":
 			scope = ScopeConsumer
 		default:

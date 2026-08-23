@@ -49,7 +49,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 900
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -77,7 +77,7 @@ plugins:
         constructor: "Plugin"
     phases: ["header_filter", "body_filter"]
     priority: 412
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`before_body`, `body`, `after_body` rewriting; response `headers` with string or numeric values; body-modification header cleanup; official body/header schema boundaries"
@@ -104,7 +104,7 @@ plugins:
         constructor: "Plugin"
     phases: ["header_filter", "body_filter"]
     priority: 995
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`types` and `types = \"*\"` wildcard matching; `min_length` gating when the response provides `Content-Length`; `comp_level`, `http_version`, and `vary`; gzip-only offer; shared `Accept-Encoding` negotiation honors q-values, preference order, and `q=0`"
@@ -131,7 +131,7 @@ plugins:
         constructor: "Plugin"
     phases: ["header_filter", "body_filter"]
     priority: 996
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`Accept-Encoding` recognition for `br` / `*` with basic `q=0` disabling; `types`, `min_length`, `comp_level`, `lgwin`, `http_version`, `vary`; content-encoding skip and content-length removal; strong ETag weakening"
@@ -158,7 +158,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 23000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`arg_*`, `http_*`, `cookie_*` source variables require configured `trusted_addresses` before rewriting client identity; `http_x_forwarded_for` recursive trusted-CIDR walk; common built-in request variables; bare IP and IP:port sources with valid port bounds"
@@ -212,7 +212,7 @@ plugins:
         constructor: "Plugin"
     phases: ["body_filter"]
     priority: 450
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "metadata-shaped `enable` and `error_404` / `error_500` / `error_502` / `error_503`; custom body / content-type / content-length; default APISIX-style HTML bodies; upstream-sourced responses skipped via `$response_source`"
@@ -239,7 +239,7 @@ plugins:
         constructor: "Plugin"
     phases: ["body_filter"]
     priority: 22950
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "chained response capture; sandboxed Lua control flow and mutation; status remap and normalized JSON errors; upstream-response provenance guard"
@@ -266,7 +266,7 @@ plugins:
         constructor: "Plugin"
     phases: ["consumer_rewrite"]
     priority: 2399
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "client-supplied header deletion before label mapping; authenticated consumer label copy into request headers; JSON serialization for numeric, boolean, and array label values; no consumer or no labels leaves client headers untouched"
@@ -293,7 +293,7 @@ plugins:
         constructor: "NewPreFunction"
     phases: ["rewrite", "access", "before_proxy", "header_filter", "body_filter", "log"]
     priority: 10000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -321,7 +321,7 @@ plugins:
         constructor: "NewPostFunction"
     phases: ["rewrite", "access", "before_proxy", "header_filter", "body_filter", "log"]
     priority: -2000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -349,7 +349,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: -1900
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -377,7 +377,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: -1902
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -405,7 +405,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: -1901
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -433,7 +433,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: -1899
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -576,7 +576,7 @@ plugins:
         constructor: "Plugin"
     phases: ["header_filter", "body_filter"]
     priority: 899
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "`status_code` and validated plain/base64 `body`; legacy and `add` / `set` / `remove` headers with string or numeric values; response/request header variables; nested `lua-resty-expr` logical groups"
@@ -603,7 +603,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 1008
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "URI/regex rewriting with early method finalization; unsafe raw-URI compatibility path; host/scheme override; header operations with variables and captures"
@@ -630,7 +630,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "body_filter"]
     priority: 506
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -658,7 +658,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "header_filter", "body_filter", "protocol"]
     priority: 505
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -686,7 +686,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 11000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -714,7 +714,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 10900
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -742,7 +742,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 509
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -770,7 +770,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "body_filter"]
     priority: 1080
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "request/response template substitution for `json`, `xml`, `yaml`, `encoded`, `args`, `plain`; bounded `multipart` fields and file names; nested values, array indexes and bracket paths; repeated XML element indexes and `_attr.<name>` lookup"
@@ -909,7 +909,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -937,7 +937,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2559
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -965,7 +965,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2430
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -993,7 +993,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2420
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1021,7 +1021,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2598
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1077,7 +1077,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2599
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1105,7 +1105,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2597
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1161,7 +1161,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2560
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1217,7 +1217,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2001
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1245,7 +1245,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2002
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1301,7 +1301,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "header_filter"]
     priority: 4000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1329,7 +1329,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2410
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1357,7 +1357,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2900
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1385,7 +1385,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 3000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1413,7 +1413,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2999
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1441,7 +1441,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2990
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1469,7 +1469,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2400
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1497,7 +1497,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2980
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1525,7 +1525,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 501
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1580,7 +1580,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2700
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1608,7 +1608,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 1500
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "detached log-snapshot-only query/header/urlencoded/JSON body masking; upstream request URI/query order, headers, and body bytes remain unchanged; bounded `max_req_post_args` parsing with fail-closed logging when the form exceeds the configured argument count; APISIX conditional rule-schema validation; bounded JSONPath body masking for dot paths, root-array selectors, quoted bracket fields, recursive descent, `[*]`, and numeric indexes"
@@ -1635,7 +1635,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 512
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1663,7 +1663,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1001
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1691,7 +1691,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "finalizer"]
     priority: 1003
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1719,7 +1719,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1002
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1747,7 +1747,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1004
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1775,7 +1775,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "body_filter"]
     priority: 1085
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1803,7 +1803,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "body_filter"]
     priority: 1009
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -1831,7 +1831,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 2800
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1859,7 +1859,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "before_proxy"]
     priority: 1010
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "HTTP mirror `host`, `path`, `path_concat_mode`, `sample_ratio`; APISIX-style `host` / `path` schema validation; bounded request-body capture with exact accepted-body replay and pre-upstream 413 rejection; bounded unary gRPC request mirroring over HTTP/2"
@@ -1886,7 +1886,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "before_proxy", "protocol"]
     priority: 508
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "strict `sasl.password` secret resolution; request-context propagation to the stream consumer; APISIX PubSub protobuf WebSocket owner (`cmd_kafka_list_offset`, `cmd_kafka_fetch`) with sequence preservation; text frames are ignored; malformed binary commands receive sequence-0 `wrong command` and keep the session open; offset/timestamp/key/value conversion through a bounded `kafka-go` consumer"
@@ -1913,7 +1913,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "before_proxy", "protocol"]
     priority: 507
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "required `service_name` / `service_version`; URI-derived method fallback; Hessian2 `Map<String,Object>` HTTP-context request encoding; route-upstream TCP terminal integration with retries"
@@ -1940,7 +1940,7 @@ plugins:
         constructor: "Plugin"
     phases: ["before_proxy", "protocol"]
     priority: 504
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "cluster-selected TCP upstreams with retries/probes; bounded connect/send/read timeouts, including fractional millisecond configuration; Dubbo 2.x fastjson request framing; response frame validation and HTTP mapping"
@@ -1967,7 +1967,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "finalizer"]
     priority: 1005
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -1995,7 +1995,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 966
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -2023,7 +2023,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 967
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "schema-validated first-match rules; match-all rules; string/numeric `set_headers` with variable resolution; weighted actions via per-weight round-robin sequences"
@@ -2050,7 +2050,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 12015
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -2078,7 +2078,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 21990
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "route/global `request_buffering` flag propagation; eager Go proxy request-body buffering before upstream forwarding"
@@ -2105,7 +2105,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "body_filter"]
     priority: 21991
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "route/global `disable_proxy_buffering` flag propagation; immediate response flushing via the flushing response writer; streaming handler selection when buffering is disabled"
@@ -2132,7 +2132,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 22000
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -2160,7 +2160,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1006
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -2188,7 +2188,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "finalizer"]
     priority: 12011
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "B3 single-header and multi-header extraction/injection; parent/child span identity with random IDs; probabilistic `sample_ratio`; `endpoint`, `service_name`, `server_addr`"
@@ -2215,7 +2215,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "finalizer"]
     priority: 12010
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "probabilistic `sample_ratio`; `plugin_attr.skywalking` service/instance/endpoint/report_interval defaults; `sw8` parse/injection with 8-field base64url format; the last rewrite binding owns trace state, so route configuration overrides global configuration; unsampled final bindings preserve a client `sw8` and remove only plugin-generated propagation; random trace/segment IDs and cross-process segment refs"
@@ -2246,7 +2246,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite", "finalizer"]
     priority: 12009
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "official plugin name and priority; sampler names `always_on`, `always_off`, `trace_id_ratio`, `parent_base` with defaults; configurable middleware server name; `additional_attributes` and `additional_header_prefix_attributes`"
@@ -2273,7 +2273,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 500
-    scopes: ["system", "global_rule", "route", "service"]
+    scopes: ["system", "global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "collection disabled when the plugin is absent from the global allowlist; request metrics owned by the effective route/service/plugin-config/global binding with `prefer_route` behavior; dedicated export listener or configured `public-api` URI; official connection, request, node, etcd-index, upstream-health, stream, HTTP, and LLM family names/labels; bounded series with idle expiration"
@@ -2327,7 +2327,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 495
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "DogStatsD UDP metrics; metadata `host`, `port`, `namespace`, `constant_tags`; route `constant_tags` and `prefer_name`; consumer/balancer/status/scheme tags"
@@ -2354,7 +2354,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 410
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`uri`, encrypted `auth_header`, `timeout`, `ssl_verify`, HTTP/S POST delivery; route/metadata nested `log_format` with depth-five cap; default route/request/response/consumer fields; `concat_method` JSON/new-line batches"
@@ -2381,7 +2381,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 408
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`; `/v3/logs` delivery with basic `sw8` trace correlation; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture"
@@ -2408,7 +2408,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 405
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`host`, `port`, `timeout`, `log_format`; `tls`, `tls_options` as TLS server name / SNI; TLS 1.2 minimum and `ssl_verify` with secure default plus explicit compatibility opt-out; default access-log credential-header redaction while explicit custom formats remain available"
@@ -2435,7 +2435,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 403
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`brokers`, deprecated `broker_list`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`; broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`; encrypted broker SASL passwords resolved strictly before writer creation; rotated keys supported and invalid ciphertext fails initialization; producer batch defaults and `meta_format = origin`"
@@ -2462,7 +2462,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 402
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "partial"
     behavior_summary: "`nameserver_list`, `topic`, `key`, `tag`, `timeout`; `access_key`, encrypted `secret_key`; `meta_format = origin`, `log_format`; `include_req_body` / `include_req_body_expr`"
@@ -2489,7 +2489,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 400
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`host`, `port`, `timeout`, `log_format`, UDP delivery; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture; batch processor fields"
@@ -2516,7 +2516,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 398
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`endpoint_addr`, random `endpoint_addrs` selection; `user`, encrypted `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture"
@@ -2543,7 +2543,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 401
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "exact raw RFC5424 SYSLOG/INFO frames (`<46>1`, millisecond UTC timestamp, host, `apisix`, PID, JSON, newline); TCP, UDP, and TLS delivery with ordered frame concatenation; TLS 1.2 minimum and `ssl_verify` with secure default plus explicit compatibility opt-out; default access-log credential-header redaction while explicit custom formats remain available"
@@ -2624,7 +2624,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 406
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "RFC5424 SLS log messages over TLS TCP; `host`, `port`, `project`, `logstore`, `access_key_id`, encrypted `access_key_secret`, `timeout`, `log_format`; the required secret is validated for official-schema compatibility, then cleared and never serialized; `include_req_body` / `include_req_body_expr`; `include_resp_body` / `include_resp_body_expr` with capped capture"
@@ -2651,7 +2651,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 407
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "service-account `auth_config` / `auth_file` with encrypted private key; JWT bearer token exchange with cached, skew-aware refresh; `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`; default Cloud Logging `httpRequest` entry expansion"
@@ -2678,7 +2678,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 409
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`endpoint.uri`, encrypted `endpoint.token`, `endpoint.channel`, `endpoint.timeout`, `endpoint.keepalive_timeout`; `ssl_verify`, `log_format`, `log_format_extra`; batch processor fields; concatenated JSON event-object batch payloads and `max_pending_entries`"
@@ -2705,7 +2705,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 399
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`path` from route or metadata; `log_format` / `log_format_extra` precedence with depth-five cap; default credential-header redaction while explicit custom formats remain available; newly created log files use owner-only `0600` mode without chmodding existing files; bounded async entry queue plus shared per-path zap byte buffer with one-second flush and rotation-safe reopen; pending, bounded-overload, and lifecycle batch metrics"
@@ -2732,7 +2732,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 411
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery; encrypted `customer_token` with standalone encryption at rest and plugin-boundary decryption; `severity`, response-status `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`; metadata/route `log_format` precedence with route identity"
@@ -2759,7 +2759,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 413
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`endpoint_addr`, random `endpoint_addrs` selection; `field.index` with time and APISIX variable expansion; major-version discovery with `_type = _doc` only for versions 5/6, ignored `field.type` on modern versions; `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`"
@@ -2786,7 +2786,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 397
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "`cls_host`, `cls_topic`, `scheme`, `ssl_verify`; encrypted `secret_id` / `secret_key`; `sample_ratio`, `global_tag`, `log_format`; `include_req_body` / `include_req_body_expr`, `include_resp_body` / `include_resp_body_expr` with capped capture"
@@ -2813,7 +2813,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 414
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "random `endpoint_addrs` selection, `endpoint_uri`, `tenant_id`; custom headers and `log_labels` with variable resolution; `ssl_verify`, `timeout`, keepalive defaults; route/metadata `log_format` / `log_format_extra`"
@@ -2840,7 +2840,7 @@ plugins:
         constructor: "Plugin"
     phases: ["log"]
     priority: 415
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "random `endpoint_addrs` selection with Bearer token delivery to `endpoint_uri`; request/response variable templates for transaction ID, subscription ID, event properties; request-start event timestamps and dynamic `${arg_*}`, `${cookie_*}`, `${http_*}`, `${sent_http_*}`, `${upstream_http_*}` variables; `include_req_body` / `include_resp_body` with capped capture through `${request_body}` / `${response_body}` templates"
@@ -2894,7 +2894,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "body_filter"]
     priority: 1029
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -2922,7 +2922,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1050
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -2950,7 +2950,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 1060
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -2978,7 +2978,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 1070
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3006,7 +3006,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access"]
     priority: 1072
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -3034,7 +3034,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 1071
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3062,7 +3062,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 1073
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3090,7 +3090,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "body_filter", "finalizer"]
     priority: 1030
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3118,7 +3118,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "before_proxy", "protocol"]
     priority: 1040
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3146,7 +3146,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "before_proxy", "protocol"]
     priority: 1041
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "partial"
@@ -3174,7 +3174,7 @@ plugins:
         constructor: "Plugin"
     phases: ["access", "protocol"]
     priority: 510
-    scopes: ["global_rule", "route", "service"]
+    scopes: ["global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     conditional_terminal: true
     behavior: "full"
@@ -3202,7 +3202,7 @@ plugins:
         constructor: "Plugin"
     phases: ["protocol"]
     priority: 1000
-    scopes: ["route"]
+    scopes: ["route", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "default `protocol_name = \"MQTT\"`; MQTT 5 CONNECT decoded with Eclipse Paho packets; MQTT 3.1/3.1.1 with the local bounded parser; flags validation and UTF-8 validation with zero-byte rejection; client-ID extraction with peer-address fallback"
@@ -3229,7 +3229,7 @@ plugins:
         constructor: "Plugin"
     phases: ["rewrite"]
     priority: 0
-    scopes: ["system", "global_rule", "route", "service"]
+    scopes: ["system", "global_rule", "route", "service", "consumer", "consumer_group"]
     instance_scope: "effective-config"
     behavior: "full"
     behavior_summary: "metadata schema; pass-through middleware; route upstream override through the traffic-split path when `ip` is configured; control API `GET /v1/plugin/example-plugin/hello` with text or JSON response"

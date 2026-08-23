@@ -286,6 +286,57 @@ func TestMaterializeResponseBindingsUsesPrivateFactoryIdentity(t *testing.T) {
 	}
 }
 
+func TestResponsePlanRequestLocalBindingsNeverResolveDescriptors(t *testing.T) {
+	plan, err := BuildResponsePlan(ResponsePlanInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolvedConfig := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+		RequestStage: "none",
+		Header:       true,
+	}}
+	resolvedPlugin := newResponseTestPlugin("echo", 1, resolvedConfig)
+	resolved := checkedResponseBinding(t, "echo", resolvedPlugin, ScopeConsumer, "resolved-consumer")
+	resolved.Provenance.Kind = ResourceConsumer
+	if calls := resolvedConfig.calls.Load(); calls != 1 {
+		t.Fatalf("resolved DescribeBindingPhases calls = %d, want 1 at construction", calls)
+	}
+	for range 2 {
+		if _, err := plan.PostResolutionHook(
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			EffectiveBindingSet{merged: []Binding{resolved}},
+		); err != nil {
+			t.Fatalf("resolved PostResolutionHook() error = %v", err)
+		}
+	}
+	if calls := resolvedConfig.calls.Load(); calls != 1 {
+		t.Fatalf("resolved DescribeBindingPhases calls = %d, want immutable 1", calls)
+	}
+
+	unresolvedConfig := &countingResponseTestConfig{descriptor: base.BindingPhaseDescriptor{
+		RequestStage: "none",
+		Header:       true,
+	}}
+	unresolved := Binding{
+		Plugin:     newResponseTestPlugin("echo", 1, unresolvedConfig),
+		Descriptor: Descriptor{Factory: "echo"},
+		Scope:      ScopeConsumer,
+		Provenance: ResourceProvenance{Kind: ResourceConsumer, ID: "unresolved-consumer"},
+	}
+	for range 2 {
+		if _, err := plan.PostResolutionHook(
+			httptest.NewRequest(http.MethodGet, "/", nil),
+			EffectiveBindingSet{merged: []Binding{unresolved}},
+		); err == nil {
+			t.Fatal("unresolved PostResolutionHook() error = nil, want fail closed")
+		}
+	}
+	if calls := unresolvedConfig.calls.Load(); calls != 0 {
+		t.Fatalf("unresolved DescribeBindingPhases calls = %d, want 0", calls)
+	}
+}
+
 func TestResponseRewriteSelectsExactlyOneConfiguredResponseOwner(t *testing.T) {
 	tests := []struct {
 		name              string

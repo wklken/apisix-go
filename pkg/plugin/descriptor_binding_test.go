@@ -79,20 +79,31 @@ func TestDescriptorBindingUsesManifestPriorityInsteadOfMutablePluginPriority(t *
 }
 
 func TestDescriptorBindingRejectsScopeOutsideManifest(t *testing.T) {
-	p := New("request-context", base.Dependencies{})
-	if p == nil {
-		t.Fatal("request-context factory is not registered")
+	tests := []struct {
+		factory    string
+		scope      Scope
+		provenance ResourceProvenance
+	}{
+		{
+			factory: "request-context", scope: ScopeRoute,
+			provenance: ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+		},
+		{
+			factory: "key-auth", scope: ScopeConsumer,
+			provenance: ResourceProvenance{Kind: ResourceConsumer, ID: "consumer"},
+		},
 	}
-	if err := p.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BindPluginChecked(
-		"request-context",
-		p,
-		ScopeRoute,
-		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
-	); err == nil {
-		t.Fatal("BindPluginChecked() error = nil, want manifest scope rejection")
+	for _, test := range tests {
+		p := New(test.factory, base.Dependencies{})
+		if p == nil {
+			t.Fatalf("%s factory is not registered", test.factory)
+		}
+		if err := p.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := BindPluginChecked(test.factory, p, test.scope, test.provenance); err == nil {
+			t.Fatalf("BindPluginChecked(%q) error = nil, want manifest scope rejection", test.factory)
+		}
 	}
 }
 

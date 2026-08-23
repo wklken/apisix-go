@@ -766,12 +766,12 @@ func cloneBindings(bindings []Binding) []Binding {
 	return cloned
 }
 
-// resolveBindingsForPlan normalizes legacy construction inputs exactly once.
-// Request-time executors only receive the returned resolved bindings.
+// resolveBindingsForPlan freezes already-resolved construction inputs.
+// Descriptor resolution belongs to plugin materialization, never plan building
+// or request-local response compatibility checks.
 func resolveBindingsForPlan(bindings []Binding) ([]Binding, error) {
 	resolved := cloneBindings(bindings)
-	for index := range resolved {
-		binding := resolved[index]
+	for _, binding := range resolved {
 		if binding.Plugin == nil {
 			return nil, fmt.Errorf(
 				"plugin plan binding has nil plugin (factory=%q resource=%s/%s)",
@@ -780,27 +780,14 @@ func resolveBindingsForPlan(bindings []Binding) ([]Binding, error) {
 				binding.Provenance.ID,
 			)
 		}
-		if binding.Descriptor.resolved {
-			continue
+		if !binding.Descriptor.resolved {
+			return nil, fmt.Errorf(
+				"plugin plan binding has no resolved descriptor (factory=%q resource=%s/%s)",
+				binding.Descriptor.Factory,
+				binding.Provenance.Kind,
+				binding.Provenance.ID,
+			)
 		}
-		descriptor, err := descriptorForRuntimeFactory(binding.Descriptor.Factory, binding.Plugin)
-		if err != nil {
-			return nil, err
-		}
-		normalized, err := BindResolvedPlugin(
-			descriptor,
-			binding.Plugin,
-			binding.Scope,
-			binding.Provenance,
-			InstanceIdentityInput{PluginConfig: binding.Plugin.Config()},
-		)
-		if err != nil {
-			return nil, err
-		}
-		if binding.Priority != 0 {
-			normalized.Priority = binding.Priority
-		}
-		resolved[index] = normalized
 	}
 	return resolved, nil
 }

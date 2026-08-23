@@ -91,3 +91,86 @@ func TestCheckRejectsOutputPathEscape(t *testing.T) {
 		t.Fatalf("checkOutputs() error = %v, want repository escape rejection", err)
 	}
 }
+
+func TestOutputsRejectDirectorySymlink(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(string, []generatedOutput) error
+	}{
+		{name: "check", run: checkOutputs},
+		{name: "write", run: writeOutputs},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			root := t.TempDir()
+			outside := t.TempDir()
+			sentinelPath := filepath.Join(outside, "registry_gen.go")
+			sentinel := []byte("external sentinel")
+			if err := os.WriteFile(sentinelPath, sentinel, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "pkg", "plugin")); err != nil {
+				t.Skipf("creating symlink is unavailable: %v", err)
+			}
+
+			err := operation.run(root, []generatedOutput{{
+				relativePath: registryOutputPath,
+				content:      []byte("generated"),
+			}})
+			if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+				t.Fatalf("operation error = %v, want symbolic-link rejection", err)
+			}
+			got, err := os.ReadFile(sentinelPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, sentinel) {
+				t.Fatalf("external sentinel changed: got %q, want %q", got, sentinel)
+			}
+		})
+	}
+}
+
+func TestOutputsRejectFinalFileSymlink(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(string, []generatedOutput) error
+	}{
+		{name: "check", run: checkOutputs},
+		{name: "write", run: writeOutputs},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			root := t.TempDir()
+			outside := t.TempDir()
+			sentinelPath := filepath.Join(outside, "registry_gen.go")
+			sentinel := []byte("external sentinel")
+			if err := os.WriteFile(sentinelPath, sentinel, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			outputDir := filepath.Join(root, "pkg", "plugin")
+			if err := os.MkdirAll(outputDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(sentinelPath, filepath.Join(outputDir, "registry_gen.go")); err != nil {
+				t.Skipf("creating symlink is unavailable: %v", err)
+			}
+
+			err := operation.run(root, []generatedOutput{{
+				relativePath: registryOutputPath,
+				content:      []byte("generated"),
+			}})
+			if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+				t.Fatalf("operation error = %v, want symbolic-link rejection", err)
+			}
+			got, err := os.ReadFile(sentinelPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, sentinel) {
+				t.Fatalf("external sentinel changed: got %q, want %q", got, sentinel)
+			}
+		})
+	}
+}

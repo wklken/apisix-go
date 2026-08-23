@@ -226,15 +226,30 @@ func stringSliceLiteral(values []string) string {
 }
 
 func writeOutputs(repoRoot string, outputs []generatedOutput) error {
+	root, err := openOutputRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
 	for _, output := range outputs {
-		path, err := containedOutputPath(repoRoot, output.relativePath)
+		relativePath, err := containedOutputRelativePath(output.relativePath)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("create output directory for %s: %w", output.relativePath, err)
+		if err := rejectOutputSymlinks(root, relativePath); err != nil {
+			return err
 		}
-		if err := os.WriteFile(path, output.content, 0o644); err != nil {
+		parent := filepath.Dir(relativePath)
+		if parent != "." {
+			if err := root.MkdirAll(parent, 0o755); err != nil {
+				return fmt.Errorf("create output directory for %s: %w", output.relativePath, err)
+			}
+		}
+		if err := rejectOutputSymlinks(root, relativePath); err != nil {
+			return err
+		}
+		if err := root.WriteFile(relativePath, output.content, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", output.relativePath, err)
 		}
 	}
@@ -242,12 +257,21 @@ func writeOutputs(repoRoot string, outputs []generatedOutput) error {
 }
 
 func checkOutputs(repoRoot string, outputs []generatedOutput) error {
+	root, err := openOutputRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
 	for _, output := range outputs {
-		path, err := containedOutputPath(repoRoot, output.relativePath)
+		relativePath, err := containedOutputRelativePath(output.relativePath)
 		if err != nil {
 			return err
 		}
-		current, err := os.ReadFile(path)
+		if err := rejectOutputSymlinks(root, relativePath); err != nil {
+			return err
+		}
+		current, err := root.ReadFile(relativePath)
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%s: generated output is missing", output.relativePath)
 		}
@@ -261,21 +285,58 @@ func checkOutputs(repoRoot string, outputs []generatedOutput) error {
 	return nil
 }
 
-func containedOutputPath(repoRoot, relativePath string) (string, error) {
-	root, err := filepath.Abs(filepath.Clean(repoRoot))
+func openOutputRoot(repoRoot string) (*os.Root, error) {
+	rootPath, err := canonicalRepoRoot(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open repository root %q: %w", repoRoot, err)
+	}
+	return root, nil
+}
+
+func canonicalRepoRoot(repoRoot string) (string, error) {
+	rootPath, err := filepath.Abs(filepath.Clean(repoRoot))
 	if err != nil {
 		return "", fmt.Errorf("clean repository root: %w", err)
 	}
+	rootPath, err = filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	return rootPath, nil
+}
+
+func containedOutputRelativePath(relativePath string) (string, error) {
 	if filepath.IsAbs(relativePath) {
 		return "", fmt.Errorf("output path %q escapes repository root", relativePath)
 	}
-	path := filepath.Clean(filepath.Join(root, filepath.FromSlash(relativePath)))
-	relative, err := filepath.Rel(root, path)
-	if err != nil {
-		return "", fmt.Errorf("resolve output path %q: %w", relativePath, err)
-	}
+	relative := filepath.Clean(filepath.FromSlash(relativePath))
 	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("output path %q escapes repository root", relativePath)
 	}
-	return path, nil
+	return relative, nil
+}
+
+func rejectOutputSymlinks(root *os.Root, relativePath string) error {
+	currentPath := ""
+	for component := range strings.SplitSeq(filepath.ToSlash(relativePath), "/") {
+		if component == "" || component == "." {
+			continue
+		}
+		currentPath = filepath.Join(currentPath, component)
+		info, err := root.Lstat(currentPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect output path %q: %w", relativePath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("output path %q contains symbolic link %q", relativePath, currentPath)
+		}
+	}
+	return nil
 }

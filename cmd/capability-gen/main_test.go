@@ -240,6 +240,8 @@ func TestReplaceGeneratedReadmeBlockRejectsMissingOrDuplicateMarkers(t *testing.
 
 func TestBuildOutputsRejectsReadmeSymlink(t *testing.T) {
 	root := t.TempDir()
+	manifest := loadManifest(t)
+	writeManifestADRs(t, root, manifest)
 	outside := t.TempDir()
 	sentinel := filepath.Join(outside, "README.md")
 	if err := os.WriteFile(sentinel, []byte("external sentinel"), 0o644); err != nil {
@@ -248,7 +250,7 @@ func TestBuildOutputsRejectsReadmeSymlink(t *testing.T) {
 	if err := os.Symlink(sentinel, filepath.Join(root, "README.md")); err != nil {
 		t.Skipf("creating symlink is unavailable: %v", err)
 	}
-	if _, err := buildOutputs(root, loadManifest(t)); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+	if _, err := buildOutputs(root, manifest); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("buildOutputs() error = %v, want README symbolic-link rejection", err)
 	}
 	got, err := os.ReadFile(sentinel)
@@ -262,13 +264,15 @@ func TestBuildOutputsRejectsReadmeSymlink(t *testing.T) {
 
 func TestGeneratedDocumentationDriftIsChecked(t *testing.T) {
 	root := t.TempDir()
+	manifest := loadManifest(t)
+	writeManifestADRs(t, root, manifest)
 	for _, name := range []string{readmeOutputPath, readmeChineseOutputPath} {
 		content := []byte("before\n" + generatedSummaryBegin + "\nold\n" + generatedSummaryEnd + "\nafter\n")
 		if err := os.WriteFile(filepath.Join(root, name), content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	outputs, err := buildOutputs(root, loadManifest(t))
+	outputs, err := buildOutputs(root, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,6 +333,446 @@ func loadManifest(t *testing.T) *capability.Manifest {
 		t.Fatal(err)
 	}
 	return manifest
+}
+
+func TestValidateDivergenceADRRequiresAcceptedOwnerDecision(t *testing.T) {
+	valid := capability.Divergence{
+		ID:               "DIV-001-example",
+		Status:           capability.DivergenceAccepted,
+		Compatibility:    "apisix-3.17",
+		ADR:              "docs/architecture/adr/0001-example.md",
+		OwnerApprovalRef: "decisions 1-3",
+	}
+
+	tests := []struct {
+		name       string
+		divergence capability.Divergence
+		content    string
+		want       string
+	}{
+		{name: "missing ADR", divergence: valid, want: "missing ADR"},
+		{
+			name:       "proposed ADR",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"proposed",
+				[]string{valid.ID},
+				"wklken",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: "status",
+		},
+		{
+			name:       "missing divergence ID",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				nil,
+				"wklken",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: valid.ID,
+		},
+		{
+			name:       "mismatched divergence ID",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{"DIV-999-other"},
+				"wklken",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: valid.ID,
+		},
+		{
+			name:       "duplicate divergence ID",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{valid.ID, valid.ID},
+				"wklken",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: "exactly once",
+		},
+		{
+			name:       "ADR ID filename mismatch",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-9999",
+				"accepted",
+				[]string{valid.ID},
+				"wklken",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: "ADR-0001",
+		},
+		{
+			name:       "compatibility target mismatch",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{valid.ID},
+				"wklken",
+				"apisix-9.99",
+				valid.OwnerApprovalRef,
+			),
+			want: "compatibility_target",
+		},
+		{
+			name:       "owner mismatch",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{valid.ID},
+				"agent",
+				valid.Compatibility,
+				valid.OwnerApprovalRef,
+			),
+			want: "owner",
+		},
+		{
+			name:       "approval mismatch",
+			divergence: valid,
+			content: validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{valid.ID},
+				"wklken",
+				valid.Compatibility,
+				"decisions 4-6",
+			),
+			want: "owner_approval_ref",
+		},
+		{
+			name:       "unknown front matter field",
+			divergence: valid,
+			content: strings.Replace(
+				validADRDocument(
+					"ADR-0001",
+					"accepted",
+					[]string{valid.ID},
+					"wklken",
+					valid.Compatibility,
+					valid.OwnerApprovalRef,
+				),
+				"date: 2026-08-23",
+				"date: 2026-08-23\nunknown_field: rejected",
+				1,
+			),
+			want: "unknown_field",
+		},
+		{
+			name:       "missing date",
+			divergence: valid,
+			content: strings.Replace(
+				validADRDocument(
+					"ADR-0001",
+					"accepted",
+					[]string{valid.ID},
+					"wklken",
+					valid.Compatibility,
+					valid.OwnerApprovalRef,
+				),
+				"date: 2026-08-23\n",
+				"",
+				1,
+			),
+			want: "date",
+		},
+	}
+
+	missingApproval := valid
+	missingApproval.OwnerApprovalRef = ""
+	tests = append(tests, struct {
+		name       string
+		divergence capability.Divergence
+		content    string
+		want       string
+	}{
+		name:       "missing owner approval reference",
+		divergence: missingApproval,
+		content:    validADRDocument("ADR-0001", "accepted", []string{valid.ID}, "wklken", valid.Compatibility, ""),
+		want:       "owner_approval_ref",
+	})
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if test.content != "" {
+				writeADR(t, root, test.divergence.ADR, test.content)
+			}
+			err := validateDivergenceADR(root, test.divergence)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateDivergenceADR() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateDivergenceADRRejectsUnsafePaths(t *testing.T) {
+	tests := []string{
+		"/docs/architecture/adr/0001-example.md",
+		"docs/architecture/adr/../0001-example.md",
+		"docs/architecture/adr/0000-template.md",
+		"docs/architecture/adr/0001-example.txt",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			err := validateDivergenceADR(t.TempDir(), capability.Divergence{
+				ID:               "DIV-001-example",
+				Status:           capability.DivergenceAccepted,
+				Compatibility:    "apisix-3.17",
+				ADR:              path,
+				OwnerApprovalRef: "decisions 1-3",
+			})
+			if err == nil || !strings.Contains(err.Error(), "ADR path") {
+				t.Fatalf("validateDivergenceADR() error = %v, want ADR path rejection", err)
+			}
+		})
+	}
+}
+
+func TestValidateDivergenceADRRejectsManifestTargetMismatch(t *testing.T) {
+	manifest := &capability.Manifest{
+		Target: capability.Target{Name: "apisix-3.17"},
+		Divergences: []capability.Divergence{{
+			ID:               "DIV-001-example",
+			Status:           capability.DivergenceAccepted,
+			Compatibility:    "apisix-9.99",
+			ADR:              "docs/architecture/adr/0001-example.md",
+			OwnerApprovalRef: "decisions 1-3",
+		}},
+	}
+	err := validateDivergenceADRs(t.TempDir(), manifest)
+	if err == nil || !strings.Contains(err.Error(), "DIV-001-example") ||
+		!strings.Contains(err.Error(), "apisix-3.17") {
+		t.Fatalf("validateDivergenceADRs() error = %v, want exact divergence and manifest target", err)
+	}
+}
+
+func TestValidateDivergenceADRRejectsUnreferencedAcceptedADR(t *testing.T) {
+	root := t.TempDir()
+	manifest := testDivergenceManifest()
+	writeManifestADRs(t, root, manifest)
+	writeADR(t, root, "docs/architecture/adr/0099-unreferenced.md", validADRDocument(
+		"ADR-0099", "accepted", []string{"DIV-099-unreferenced"}, "wklken", "apisix-3.17", "decisions 99",
+	))
+	err := validateDivergenceADRs(root, manifest)
+	if err == nil || !strings.Contains(err.Error(), "ADR-0099") || !strings.Contains(err.Error(), "unreferenced") {
+		t.Fatalf("validateDivergenceADRs() error = %v, want unreferenced accepted ADR", err)
+	}
+}
+
+func TestValidateDivergenceADRRejectsMismatchedLedgerList(t *testing.T) {
+	root := t.TempDir()
+	manifest := testDivergenceManifest()
+	writeManifestADRs(t, root, manifest)
+	first := manifest.Divergences[0]
+	writeADR(t, root, first.ADR, validADRDocument(
+		"ADR-0001",
+		"accepted",
+		[]string{first.ID, "DIV-999-unapproved"},
+		"wklken",
+		first.Compatibility,
+		first.OwnerApprovalRef,
+	))
+	err := validateDivergenceADRs(root, manifest)
+	if err == nil || !strings.Contains(err.Error(), "ADR-0001") || !strings.Contains(err.Error(), "exactly match") {
+		t.Fatalf("validateDivergenceADRs() error = %v, want exact divergence ledger mismatch", err)
+	}
+}
+
+func TestValidateDivergenceADRRejectsSymlinksWithoutChangingExternalFile(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		link func(t *testing.T, root, outside, relativePath string)
+	}{
+		{
+			name: "ADR file",
+			link: func(t *testing.T, root, outside, relativePath string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(root, filepath.Dir(relativePath)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(outside, "sentinel.md"), filepath.Join(root, relativePath)); err != nil {
+					t.Skipf("creating symlink is unavailable: %v", err)
+				}
+			},
+		},
+		{
+			name: "ADR directory",
+			link: func(t *testing.T, root, outside, relativePath string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(root, "docs", "architecture"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "docs", "architecture", "adr")); err != nil {
+					t.Skipf("creating symlink is unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			outside := t.TempDir()
+			first := testDivergenceManifest().Divergences[0]
+			sentinelContent := validADRDocument(
+				"ADR-0001",
+				"accepted",
+				[]string{first.ID},
+				"wklken",
+				"apisix-3.17",
+				first.OwnerApprovalRef,
+			)
+			sentinelPath := filepath.Join(outside, "sentinel.md")
+			if err := os.WriteFile(sentinelPath, []byte(sentinelContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			relativePath := filepath.FromSlash(first.ADR)
+			test.link(t, root, outside, relativePath)
+
+			err := validateDivergenceADR(root, first)
+			if err == nil || !strings.Contains(err.Error(), "symbolic link") ||
+				!strings.Contains(err.Error(), first.ID) {
+				t.Fatalf("validateDivergenceADR() error = %v, want exact divergence symbolic-link rejection", err)
+			}
+			got, err := os.ReadFile(sentinelPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != sentinelContent {
+				t.Fatalf("external sentinel changed: got %q", got)
+			}
+		})
+	}
+}
+
+func TestValidateDivergenceADRValidThreeDecisionRepository(t *testing.T) {
+	root := t.TempDir()
+	manifest := testDivergenceManifest()
+	writeManifestADRs(t, root, manifest)
+	if err := validateDivergenceADRs(root, manifest); err != nil {
+		t.Fatalf("validateDivergenceADRs() error = %v", err)
+	}
+}
+
+func TestValidateDivergenceADRCODEOWNERSBoundary(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "CODEOWNERS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/pkg/capability/manifest.yaml @wklken\n" +
+		"/pkg/config/profiles.go @wklken\n" +
+		"/docs/architecture/adr/ @wklken\n" +
+		"/docs/plugins.md @wklken\n"
+	if string(data) != want {
+		t.Fatalf("CODEOWNERS = %q, want exact governance boundary %q", data, want)
+	}
+}
+
+func testDivergenceManifest() *capability.Manifest {
+	return &capability.Manifest{
+		Target: capability.Target{Name: "apisix-3.17"},
+		Divergences: []capability.Divergence{
+			{
+				ID:               "DIV-001-go-native-extension-identity",
+				Status:           capability.DivergenceAccepted,
+				Compatibility:    "apisix-3.17",
+				ADR:              "docs/architecture/adr/0001-compatibility-governance.md",
+				OwnerApprovalRef: "decisions 1-42",
+			},
+			{
+				ID:               "DIV-002-strict-security-profile",
+				Status:           capability.DivergenceAccepted,
+				Compatibility:    "apisix-3.17",
+				ADR:              "docs/architecture/adr/0002-strict-security-profile.md",
+				OwnerApprovalRef: "decisions 23, 35, 63-68",
+			},
+			{
+				ID:               "DIV-003-platform-artifact-policy",
+				Status:           capability.DivergenceAccepted,
+				Compatibility:    "apisix-3.17",
+				ADR:              "docs/architecture/adr/0003-platform-support.md",
+				OwnerApprovalRef: "decisions 107, 118-130",
+			},
+		},
+	}
+}
+
+func writeManifestADRs(t *testing.T, root string, manifest *capability.Manifest) {
+	t.Helper()
+	for _, divergence := range manifest.Divergences {
+		if divergence.Status != capability.DivergenceAccepted {
+			continue
+		}
+		base := filepath.Base(filepath.FromSlash(divergence.ADR))
+		number := strings.SplitN(base, "-", 2)[0]
+		writeADR(t, root, divergence.ADR, validADRDocument(
+			"ADR-"+number,
+			"accepted",
+			[]string{divergence.ID},
+			"wklken",
+			divergence.Compatibility,
+			divergence.OwnerApprovalRef,
+		))
+	}
+}
+
+func writeADR(t *testing.T, root, relativePath, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validADRDocument(id, status string, divergenceIDs []string, owner, target, approval string) string {
+	quotedIDs := make([]string, len(divergenceIDs))
+	for index, divergenceID := range divergenceIDs {
+		quotedIDs[index] = fmt.Sprintf("%q", divergenceID)
+	}
+	return fmt.Sprintf(`---
+id: %s
+title: Test divergence
+status: %s
+compatibility_target: %s
+divergence_ids: [%s]
+owner: %s
+owner_approval_ref: %q
+date: 2026-08-23
+---
+
+# Context
+
+Pinned behavior.
+
+# Decision
+
+Exact decision.
+
+# Consequences
+
+Known consequences.
+
+# Evidence required to retire
+
+Exact retirement evidence.
+`, id, status, target, strings.Join(quotedIDs, ", "), owner, approval)
 }
 
 func TestCheckDetectsDrift(t *testing.T) {

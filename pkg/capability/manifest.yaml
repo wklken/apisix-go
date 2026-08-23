@@ -3207,4 +3207,19 @@ plugins:
       recovery: {state: "not_applicable", refs: [], owner: "request-context", reason: "plugin has no recovery lifecycle"}
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
-divergences: []
+divergences:
+  - id: "DIV-001-go-native-extension-identity"
+    status: "accepted"
+    compatibility_target: "apisix-3.17"
+    adr: "docs/architecture/adr/0001-compatibility-governance.md"
+    owner_approval_ref: "decisions 1-42"
+  - id: "DIV-002-strict-security-profile"
+    status: "accepted"
+    compatibility_target: "apisix-3.17"
+    adr: "docs/architecture/adr/0002-strict-security-profile.md"
+    owner_approval_ref: "decisions 23, 35, 63-68"
+  - id: "DIV-003-platform-artifact-policy"
+    status: "accepted"
+    compatibility_target: "apisix-3.17"
+    adr: "docs/architecture/adr/0003-platform-support.md"
+    owner_approval_ref: "decisions 107, 118-130"

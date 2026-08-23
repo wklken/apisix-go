@@ -8,6 +8,8 @@
 
 **Corrected execution boundary:** This plan may start after Durable Journal Tasks 1–8, not after the whole journal plan. Task 1 is split, Task 3's compiler integration is postponed, Task 8's destructive reload removal is postponed, and Task 9 is merged with Durable Task 9 exactly as specified by `2026-08-24-journal-immutable-cutover-reorder.md`.
 
+**Task 5 execution amendment:** Use `2026-08-24-immutable-task5-execution-brief.md`. It adds the canonical resource-taxonomy prerequisite, covers all managed kinds, keeps Task 5 side-effect free, and moves `WorkerCompilerFactory` to Task 6 and cluster acquisition to Task 7.
+
 **Tech Stack:** Go 1.26, standard-library `context`, `crypto/sha256`, `encoding/json`, `net/http`, `sync`, existing `go-chi/chi`, `pkg/capability`, `pkg/config`, `pkg/data_encryption`, `pkg/generation`, `pkg/plugin`, `pkg/proxy`, `pkg/resource`, `pkg/stream` and bbolt-backed `generation.Journal`.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
@@ -333,7 +335,8 @@ type WorkerCompilerFactory struct {
 
 func New(*capability.Manifest, runtime.RuntimeDependencies) (*Compiler, error)
 func NewWorkerCompilerFactory(*capability.Manifest, *config.EffectiveConfig, secret.Materializer) (*WorkerCompilerFactory, error)
-func (f *WorkerCompilerFactory) NewGeneration(context.Context, generation.ApplyTicket, func(runtime.TaskFailure)) (*Compiler, error)
+func (f *WorkerCompilerFactory) PrepareGeneration(context.Context, generation.ApplyTicket, generation.Snapshot,
+	map[generation.Domain]generation.PublishedGeneration, func(runtime.TaskFailure)) (*PreparedGeneration, error)
 func (f *WorkerCompilerFactory) Close(context.Context) error
 func (c *Compiler) Prepare(
 	context.Context,
@@ -384,7 +387,7 @@ All returned slices, maps, resource bytes and publication values are defensive c
 
 `generation.Journal` remains the only durable writer. `Compiler.Prepare` consumes `generation.PublishedGeneration` values supplied by `generation.Coordinator`; it never calls `Journal.Stage`, `Commit` or `Abort`. The `generation.PublicationEngine` contract gains `DiscardPrepared(context.Context, generation.PublicationSet) error`; the coordinator calls it when staging fails after a successful prepare. `server.GenerationEngine` implements that method by removing the matching pending prepared generation and calling its `DiscardPrepared`, which verifies the defensive-copy publication set and then closes candidate tasks and leases.
 
-An exec-created worker reconstructs `WorkerCompilerFactory` from its local effective config, manifest and the plan 05 scoped IPC client implementing `secret.Materializer`. The constructor creates its own `ResourceRegistry`; it accepts no supervisor object, `data_encryption.Service`, reference resolver or raw keyring. Before the exec cutover, the in-process owner adapts plan 02 with `secret.NewMaterializer(data_encryption.Service, resolver)` and passes only that interface to the same factory. `NewGeneration` wraps the supplied materializer in a `GenerationCapability` and creates a fresh generation-owned `TaskRegistry` for the ticket, then calls `New`. `RuntimeDependencies.Resources` is worker-owned and shared; `RuntimeDependencies.Tasks` is never reused across prepared generations. This keeps `PreparedGeneration.Close` able to stop exactly its own tasks without affecting the predecessor retained for rollback. `WorkerCompilerFactory.Close` first prevents new generations, then closes the worker registry; the plan 05 cutover deletes every worker-side raw encryption-service/keyring path.
+An exec-created worker reconstructs `WorkerCompilerFactory` from its local effective config, manifest and the plan 05 scoped IPC client implementing `secret.Materializer`. The constructor creates its own `ResourceRegistry`; it accepts no supervisor object, `data_encryption.Service`, reference resolver or raw keyring. Before the exec cutover, the in-process owner adapts plan 02 with `secret.NewMaterializer(data_encryption.Service, resolver)` and passes only that interface to the same factory. `PrepareGeneration` atomically wraps the supplied materializer in a `GenerationCapability`, creates a fresh generation-owned `TaskRegistry`, constructs the compiler, prepares the candidate and transfers task ownership to the successful `PreparedGeneration`; every constructor or prepare failure stops the task registry before returning. `RuntimeDependencies.Resources` is worker-owned and shared; `RuntimeDependencies.Tasks` is never reused across prepared generations. `WorkerCompilerFactory.Close` first prevents new generations, then closes the worker registry; the plan 05 cutover deletes every worker-side raw encryption-service/keyring path.
 
 ---
 
@@ -664,7 +667,7 @@ git commit -m "feat(runtime): own generation and request tasks"
 
 ### Task 3: Replace the Cluster Registry With a Generic Resource Registry
 
-> **Execution amendment:** The parallel foundation branch contains only the generic registry, `proxy.NewCluster` and their tests. Postpone `RuntimeDependencies`-based cluster/compiler acquisition to Task 5 or 7, where it is first used. Keep the current `ClusterRegistry` unchanged until the joint cutover.
+> **Execution amendment:** The parallel foundation branch contains only the generic registry, `proxy.NewCluster` and their tests. Postpone `RuntimeDependencies`-based cluster/compiler acquisition to Task 7, where it is first used. Keep the current `ClusterRegistry` unchanged until the joint cutover.
 
 **Files:**
 
@@ -766,9 +769,9 @@ Construct `ResourceRegistry` with a non-nil `entries` map. Each `resourceEntry.r
 
 Rename the implementation constructor to `proxy.NewCluster`, update `pkg/proxy/registry.go` mechanically to call it, and keep `ClusterRegistry` behavior and ownership unchanged. Do not retain a private forwarding `newCluster` wrapper.
 
-#### Deferred integration: acquire clusters from the compiler in Task 5 or 7
+#### Deferred integration: acquire clusters from the compiler in Task 7
 
-After `RuntimeDependencies` exists, move observer deletion assertions to resource-registry-backed route/compiler tests and make newly extracted compiler code acquire clusters through `runtime.ResourceRegistry`. Keep the existing `ClusterRegistry` reachable only from the still-live `route.Builder` path until Task 9. Do not add an alias, wrapper or selection flag between the registries; Task 9 deletes Builder and the proxy-specific registry together after the new path becomes the only production owner.
+In Task 7, move observer deletion assertions to resource-registry-backed route/compiler tests and make newly extracted HTTP compiler code acquire clusters through `runtime.ResourceRegistry`. Keep the existing `ClusterRegistry` reachable only from the still-live `route.Builder` path until Task 9. Do not add an alias, wrapper or selection flag between the registries; Task 9 deletes Builder and the proxy-specific registry together after the new path becomes the only production owner.
 
 - [ ] **Step 5: Run registry and live-cluster race tests**
 
@@ -905,6 +908,12 @@ git commit -m "refactor(plugin): derive runtime descriptors from manifest"
 ---
 
 ### Task 5: Normalize Resources and Resolve Atomic Domain Closures
+
+> **Execution amendment:** The detailed steps below are superseded where they conflict with `2026-08-24-immutable-task5-execution-brief.md`. In particular, execute C0 first; do not create `worker_factory.go` in this task, do not acquire clusters, cover all managed resource kinds, and preserve raw/exact-generic/typed representations.
+
+Execute only the linked brief. Task 5 produces `PreparePublication`; Task 6 composes it behind the stable `Prepare(...)(*PreparedGeneration, error)` and atomic worker-factory lifecycle.
+
+<!-- Superseded Task 5 reference retained for historical context only. Do not execute.
 
 **Files:**
 
@@ -1072,9 +1081,13 @@ git add pkg/compiler pkg/resource
 git commit -m "feat(compiler): resolve immutable domain closures"
 ```
 
+-->
+
 ---
 
 ### Task 6: Materialize Scoped Plugin Instances and Prepared Generations
+
+> **Execution amendment:** Task 6 also owns `WorkerCompilerFactory`. Expose only atomic `PrepareGeneration`, which stops its new generation task registry on every failure and transfers ownership to `PreparedGeneration` only on success. Do not expose `NewGeneration(...)(*Compiler, error)`.
 
 > **Execution amendment:** The implementation file scope includes every still-live Builder, server and plugin caller affected by the new explicit plugin/secret dependencies, including direct `store.MaterializeSecret` and runtime `store.Get*` consumers. The task must keep the current production owner buildable without a global-secret fallback.
 

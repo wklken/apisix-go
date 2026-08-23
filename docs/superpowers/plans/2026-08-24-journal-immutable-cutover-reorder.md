@@ -4,6 +4,8 @@
 
 **Authority:** This addendum is the canonical execution-order source for Programs 03 and 04. Where it conflicts with `2026-08-23-durable-generation-journal.md`, `2026-08-23-immutable-compiler-plugin-runtime.md`, or the linear Program 03 → Program 04 wording in the total plan, this addendum wins. The child plans remain authoritative for interfaces and task details not amended here.
 
+**Task 5 amendment:** `2026-08-24-immutable-task5-execution-brief.md` is authoritative for the Wave C taxonomy prerequisite, pure compiler boundary and Task 6/7 deferrals.
+
 **Current checkpoint:** Durable Journal Tasks 1–8 are complete at `20afa677`. Durable Task 9 has no implementation diff. Do not rebuild or replace the accepted Task 1–8 journal, coordinator, recovery, acknowledgement, or provider-translation work.
 
 ## Why the original order is unsafe
@@ -133,10 +135,11 @@ git commit -m "feat(runtime): assemble explicit runtime dependencies"
 
 Execute in dependency order:
 
-1. Immutable Task 5, moving the postponed cluster acquisition integration into the first real compiler use.
-2. Immutable Task 6, adding every still-live Builder/server/plugin caller affected by the explicit secret and plugin dependency signature to the task scope. No global secret fallback may remain.
-3. Immutable Task 7, producing generation-bound HTTP, TLS, consumer, metadata, proto, secret and plugin owners while the current Builder remains the sole production entry until the joint cutover.
-4. Immutable Task 8 only for additive immutable router/snapshot/compiler work.
+1. The Task 5 C0 prerequisite, moving managed kind/domain classification into `pkg/generation` and migrating current etcd/Store callers.
+2. Immutable Task 5 pure normalize, validate, closure and publication-candidate construction. It does not acquire clusters or create a worker factory.
+3. Immutable Task 6, adding every still-live Builder/server/plugin caller affected by the explicit secret and plugin dependency signature to the task scope, plus the worker factory and generation task ownership. No global secret fallback may remain.
+4. Immutable Task 7, producing generation-bound HTTP, TLS, consumer, metadata, proto, secret, plugin and cluster owners while the current Builder remains the sole production entry until the joint cutover.
+5. Immutable Task 8 only for additive immutable router/snapshot/compiler work.
 
 Immutable Task 8 must not yet remove `Router.Reload`, mutate listener ownership, or install a new router from the legacy event path. Those destructive steps belong to the joint cutover. A detached compiler may exist before the cutover, but there must be no runtime flag or second selectable production path.
 
@@ -154,7 +157,7 @@ The unit must:
 6. Retain the predecessor through journal commit, restore it on partial activation or commit failure, and retire it only after finalize.
 7. Preserve old-generation resources for draining requests and naturally closing hijacked connections.
 8. Delete Event/hooks, legacy resource buckets, in-memory last-good state, package-global production Store getters, `route.Builder`, `ClusterRegistry`, mutable stream `Reload`, and proxy-only lifecycle facades in the same integration unit.
-9. Move all managed resource kind/domain classification to one canonical contract in `pkg/generation`; expose at least `ManagedResourceKinds() []string` as a sorted defensive copy and the pure kind-to-domain classifier consumed by etcd, standalone, legacy import and compiler. Do not call the nonexistent `store.ManagedResourceKinds()` or retain divergent lists.
+9. Consume the canonical `pkg/generation` managed kind/domain contract landed in C0, finish migrating any joint-cutover-only legacy import/compiler callers, and delete the separate legacy reload-impact functions with their mutable runtime. Do not call the nonexistent `store.ManagedResourceKinds()` or retain divergent provider-domain lists.
 10. Migrate affected Store, provider, plugin, route, TLS, stream and server tests to journal snapshots and generation-bound fixtures. Do not replace coverage by deleting tests wholesale.
 
 The integration review must prove:

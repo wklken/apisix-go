@@ -310,14 +310,17 @@ func VerifyBundle(string) (*Result, error)
 ### Task 1: Validate the Static Stream Listener Matrix Without Creating a Parallel Namespace
 
 **Files:**
+- Modify: `pkg/generation/resource_kinds.go`, `resource_kinds_test.go`
 - Modify: `pkg/config/types.go`, `effective.go`, `validation.go`
 - Modify: `pkg/config/effective_test.go`, `release_gate_test.go`
 - Modify: `conf/config-default.yaml`, `docs/configuration.md`
 - Create: `pkg/stream/listener.go`, `listener_test.go`
 
-**Interfaces:** Consumes plan 02 `config.EffectiveConfig` and existing `apisix.stream_proxy.tcp`. Produces `stream.ListenerPolicy` and `CompileListenerPolicies` exactly as declared above.
+**Interfaces:** Consumes plan 02 `config.EffectiveConfig`, existing `apisix.stream_proxy.tcp`, and the canonical generation taxonomy. Produces `stream.ListenerPolicy`, `CompileListenerPolicies`, and the exact `ssls -> [http, stream]` domain expansion required before any stream TLS resource can enter a closure.
 
 - [ ] **Step 1: Write failing presence-aware listener matrix tests**
+
+First update the exact taxonomy test so `DomainsForResourceKind("ssls")` requires both HTTP and stream while every other mapping remains unchanged. Add a provider-domain test proving an SSL-only mutation now requests both publications. This change must land in the same commit as stream TLS compilation; do not create a window where stream consumes SSL without republishing on SSL changes.
 
 ```go
 func TestCompileListenerPoliciesCoversTCPAndTLSProxyMatrix(t *testing.T) {

@@ -133,7 +133,7 @@ Build stable graph edges for:
 - service to upstream;
 - stream route to service/upstream;
 - consumer to consumer group;
-- upstream and traffic-split inline upstream to client SSL;
+- HTTP-domain upstream and traffic-split inline upstream to client SSL;
 - traffic-split weighted upstream references;
 - grpc-transcode to proto;
 - explicit `$secret://manager/id/...` to `secrets/manager/id`.
@@ -145,6 +145,8 @@ route inline > route upstream_id > service inline > service upstream_id
 ```
 
 Do not create an edge to a lower-precedence reference that cannot be selected. Sort and compact adjacency lists; detect cycles with deterministic three-color DFS and stable `dependency-cycle` decisions.
+
+The C0 taxonomy intentionally keeps `ssls` HTTP-only until Stream Task 1 expands its publication domain. Therefore Task 5 must not place an SSL resource in a stream candidate: a stream-domain upstream or inline upstream containing `client_cert_id` receives stable `stream-client-ssl-deferred`, and any owning stream route becomes `dependency-unavailable`. HTTP compilation still creates and validates the SSL edge normally. Stream Task 1 atomically changes `ssls` to HTTP+stream before compiling downstream or upstream TLS, so an SSL change can never affect stream runtime without also triggering a stream publication.
 
 ### Step 4: Decide disposition with predecessor presence
 
@@ -190,4 +192,5 @@ Independent review must prove there is no Store import/read, no runtime side eff
 
 - Task 6 owns `WorkerCompilerFactory`, `PreparedGeneration`, generation task shutdown, descriptor-based plugin admission, field-level secret declarations and plugin-metadata requirements. Its factory exposes an atomic `PrepareGeneration(ctx, ticket, snapshot, previous, onFailure) (*PreparedGeneration, error)`: it creates the generation task registry, materializes and prepares, transfers ownership only on success, and stops the registry on every failure. It does not expose a `NewGeneration` method returning an unowned `*Compiler`.
 - Task 7 owns `runtime.ResourceRegistry.Acquire` for clusters and every immutable HTTP/TLS/consumer/proto runtime owner.
+- Stream Task 1 owns the later `ssls` domain expansion from HTTP-only to HTTP+stream; Task 5 keeps stream client-certificate references explicitly deferred until that trigger contract changes.
 - The joint cutover deletes the remaining legacy reload/event/bucket APIs after their callers move; it no longer creates the canonical kind/domain contract from scratch.

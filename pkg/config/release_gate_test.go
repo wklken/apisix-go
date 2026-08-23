@@ -117,6 +117,50 @@ func TestLoadConfigFilesEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) 
 	}
 }
 
+func TestLoadConfigFilesRejectsRemovedDeploymentProfileBeforePublication(t *testing.T) {
+	previous := &Config{Debug: true}
+	GlobalConfig = previous
+	t.Cleanup(func() { GlobalConfig = previous })
+
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T) string
+	}{
+		{
+			name: "file",
+			setup: func(t *testing.T) string {
+				return writeConfigFile(t, "override.yaml", "deployment:\n  profile: http-data-plane-v1\n")
+			},
+		},
+		{
+			name: "environment",
+			setup: func(t *testing.T) string {
+				t.Setenv("APISIXGO_DEPLOYMENT_PROFILE", "http-data-plane-v1")
+				return ""
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			GlobalConfig = previous
+			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+			_, err := loadConfigFiles(base, test.setup(t))
+			if err == nil {
+				t.Fatal("loadConfigFiles() error = nil, want removed deployment.profile rejection")
+			}
+			for _, field := range []string{
+				"deployment.profile", "removed", "compatibility_target", "security_profile", "qualification_profile",
+			} {
+				if !strings.Contains(err.Error(), field) {
+					t.Fatalf("loadConfigFiles() error = %q, want %q", err, field)
+				}
+			}
+			if GlobalConfig != previous {
+				t.Fatal("GlobalConfig changed after removed deployment.profile rejection")
+			}
+		})
+	}
+}
+
 func TestLoadConfigFilesEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
 	previous := GlobalConfig
 	GlobalConfig = previous

@@ -10,6 +10,10 @@ import (
 )
 
 var (
+	compatPolicySelection = appconfig.ProfileSelection{
+		Compatibility: appconfig.CompatibilityAPISIX317,
+		Security:      appconfig.SecurityCompat,
+	}
 	strictPolicySelection = appconfig.ProfileSelection{
 		Compatibility: appconfig.CompatibilityAPISIX317,
 		Security:      appconfig.SecurityStrict,
@@ -181,6 +185,23 @@ func TestProductionPolicyUpstreamSecurityAxis(t *testing.T) {
 			upstream:   resource.Upstream{Scheme: "grpcs"},
 			wantErr:    true,
 			wantFields: []string{"grpcs", "tls.verify"},
+		},
+		{
+			name:       "strict Kafka TLS false verify is rejected",
+			selection:  strictPolicySelection,
+			upstream:   resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: false}},
+			wantErr:    true,
+			wantFields: []string{"kafka", "tls.verify"},
+		},
+		{
+			name:      "strict Kafka TLS true verify is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: true}},
+		},
+		{
+			name:      "compatibility Kafka TLS false verify is allowed",
+			selection: compatPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: false}},
 		},
 	}
 

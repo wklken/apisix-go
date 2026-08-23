@@ -101,7 +101,7 @@ func validateSecurityUpstreamPolicy(
 	upstream resource.Upstream,
 	source string,
 ) error {
-	if selection.Security != appconfig.SecurityStrict || !upstreamUsesTLS(upstream) {
+	if selection.Security != appconfig.SecurityStrict || !securityPolicyUpstreamUsesTLS(upstream) {
 		return nil
 	}
 	if upstream.TLS == nil || !upstream.TLS.Verify {
@@ -112,6 +112,11 @@ func validateSecurityUpstreamPolicy(
 		)
 	}
 	return nil
+}
+
+func securityPolicyUpstreamUsesTLS(upstream resource.Upstream) bool {
+	return upstreamUsesTLS(upstream) ||
+		(strings.EqualFold(upstream.Scheme, "kafka") && upstream.TLS != nil)
 }
 
 func validateSecurityMaterializedPluginSources(

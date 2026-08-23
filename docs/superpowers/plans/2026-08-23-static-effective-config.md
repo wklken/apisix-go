@@ -327,11 +327,14 @@ in the error. `nodeToAny` must retain `json.Number` values.
 
 Also test that a second YAML document is rejected and that `cloneNode` deeply
 copies mappings and sequences while preserving every scalar, source, and
-`pathBase`. YAML anchors, aliases, and merge keys are not silently expanded in
+`pathBase`. An empty or comment-only document is an empty mapping/no-op layer;
+an explicit YAML `null` document remains `nodeNull`. YAML anchors, aliases, and merge keys are not silently expanded in
 this milestone: reject an anchored node, an alias node, or `!!merge` with a
 stable field-path-only error. This is a fail-closed, explicitly unqualified
 YAML-syntax gap, not evidence of full APISIX configuration parity; supporting
-it requires a later compatibility decision and differential corpus.
+it requires a later compatibility decision and differential corpus. A quoted
+or explicit-`!!str` key whose literal value is `<<` is an ordinary string key,
+not a merge key, and must remain accepted.
 
 - [ ] **Step 2: Write APISIX 3.17 environment-template tests**
 
@@ -382,9 +385,17 @@ does after substitution: booleans remain booleans and numbers become exact
 `json.Number`; a result such as `prefix-${{PORT}}` remains a string. This rule
 also applies when the YAML scalar containing the template was quoted.
 
-Template provenance is leaf-observable. Variables used by a template key apply
-to every descendant leaf below the expanded key; variables used by a descendant
-value are unioned with them. Sort and deduplicate the names before storing
+APISIX performs this post-expansion numeric decision with Lua `tonumber`, not
+with YAML scalar grammar. Implement a separate exact lexical path: decimal
+`077` and `08` become decimal 77 and 8; signed decimal integers, decimal
+fractions/exponents, and Lua-supported hexadecimal integers are numeric;
+YAML-only `0o17`, `0b10`, and underscored `1_000` remain strings. Do not reuse
+legacy-octal YAML normalization and do not introduce a `float64` precision
+round trip.
+
+Template provenance is node-observable. Variables used by a template key apply
+to the mapping/sequence containers and every descendant leaf below the expanded
+key; variables used by a descendant value are unioned with them. Sort and deduplicate the names before storing
 `FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(names, ","), Explicit: true}`.
 Expansion must retain the original file `pathBase`.
 
@@ -424,11 +435,13 @@ type valueNode struct {
 
 `parseDocument` sets `pathBase=filepath.Dir(source.Origin)` on every node from a default or override file and preserves it when APISIX expansion changes the public source to an environment variable; `cloneNode` and merge must retain it. This internal-only base lets a relative runtime path from a `${{...}}` value resolve against the file that contained the template without exposing a second value in provenance.
 
-In `document.go`, decode through `yaml.Node`, require exactly one document,
+In `document.go`, decode through `yaml.Node`, treat EOF before content as an
+empty mapping/no-op layer, and otherwise require exactly one document,
 reject duplicate literal and expanded mapping keys under the rules above, and
-retain `!!null`. Reject anchors, aliases, and YAML merge keys explicitly rather
+retain explicit `!!null`. Reject anchors, aliases, and nodes tagged as YAML
+merge keys explicitly rather
 than letting library-specific expansion bypass duplicate-key or provenance
-checks. Convert `!!int` lexically with `math/big.Int` so YAML base prefixes
+checks; do not reject a quoted or explicit-string `<<` key. Convert `!!int` lexically with `math/big.Int` so YAML base prefixes
 become an exact base-10 `json.Number`. Normalize finite `!!float` lexically into
 JSON number syntax (remove underscores and add a missing leading/trailing zero)
 without `float64`; reject all infinity and NaN spellings with only the field

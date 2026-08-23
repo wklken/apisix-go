@@ -290,16 +290,30 @@ type RevisionSet struct {
 // package runtime
 type RuntimeDependencies struct {
 	Config    *config.EffectiveConfig
-	Secrets   secret.Materializer
+	Secrets   secret.GenerationCapability
+	Metadata  MetadataView
 	Resources *ResourceRegistry
 	Tasks     *TaskRegistry
 }
 
+type MetadataView struct { documents map[string][]byte }
+func NewMetadataView(map[string][]byte) (MetadataView, error)
+func (v MetadataView) Decode(string, any) (bool, error)
+
 // package secret
+type Scope struct {
+	Generation uint64
+	Attempt    AttemptID
+	Domain     generation.Domain
+	Plugin     string
+	Resource   generation.ResourceKey
+	Source     capability.SecretDeclarationSource
+	Field      string
+}
 type ScopedResolver interface {
 	ResolveScoped(context.Context, Scope, string) (string, error)
 }
-func NewScopedMaterializer(ScopedResolver) Materializer
+func NewScopedMaterializer(ScopedAttemptBroker, *capability.SecretDeclarationCatalog) Materializer
 
 // package lifecycle
 const ReasonMemoryPressureHard = "memory-pressure-hard"
@@ -455,7 +469,7 @@ Expected: the child plan's journal commits are present, no generation change is 
 
 - [ ] **Step 1: Execute the immutable compiler child plan using the corrected waves**
 
-Use `docs/superpowers/plans/2026-08-24-journal-immutable-cutover-reorder.md` for task splitting and execution order, and `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md` for unchanged interfaces and detailed tests. Immutable Task 9 is the permanent implementation owner of the one shared Journal/Immutable production cutover; do not preserve proxy-only methods from `pkg/route.Builder`.
+Use `docs/superpowers/plans/2026-08-24-journal-immutable-cutover-reorder.md` for task splitting and execution order, `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md` for stable interfaces and detailed tests, and `docs/superpowers/plans/2026-08-24-immutable-task6-execution-brief.md` for Task 6's buildable contract-first lanes. Immutable Task 9 is the permanent implementation owner of the one shared Journal/Immutable production cutover; do not preserve proxy-only methods from `pkg/route.Builder`.
 
 - [ ] **Step 2: Run the compiler milestone gate**
 

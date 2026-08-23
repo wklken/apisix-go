@@ -10,6 +10,8 @@
 
 **Task 5 execution amendment:** Use `2026-08-24-immutable-task5-execution-brief.md`. It adds the canonical resource-taxonomy prerequisite, covers all managed kinds, keeps Task 5 side-effect free, and moves `WorkerCompilerFactory` to Task 6 and cluster acquisition to Task 7.
 
+**Task 6 execution amendment:** Use `2026-08-24-immutable-task6-execution-brief.md`. It freezes the manifest-owned secret catalog before the service/materializer cutover, adds the publication domain to every secret scope, and keeps the post-foundation implementation lanes file-exclusive until integration.
+
 **Tech Stack:** Go 1.26, standard-library `context`, `crypto/sha256`, `encoding/json`, `net/http`, `sync`, existing `go-chi/chi`, `pkg/capability`, `pkg/config`, `pkg/data_encryption`, `pkg/generation`, `pkg/plugin`, `pkg/proxy`, `pkg/resource`, `pkg/stream` and bbolt-backed `generation.Journal`.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
@@ -148,6 +150,7 @@ type AttemptID [32]byte
 type Scope struct {
 	Generation uint64
 	Attempt    AttemptID
+	Domain     generation.Domain
 	Plugin     string
 	Resource   generation.ResourceKey
 	Source     capability.SecretDeclarationSource
@@ -241,14 +244,21 @@ func (c GenerationCapability) Materialize(context.Context, Scope, string) (Value
 
 `Strict` preserves the current compatibility contract: it controls whether an already-present value must be valid contextual ciphertext; it never makes a field present. Field presence and shape remain owned by the plugin config/metadata schema. `Scope.Source` is mandatory and is the only discriminator between `plugin_config` and `plugin_metadata`; it is never inferred from `Resource.Kind`, and materializer, IPC grant builder and supervisor all validate the exact `(Plugin, Source, Field)` catalog tuple. `Value` deliberately exposes plaintext only inside `Use`; errors, digests, resource identities and logs never contain it. Both materializers reject an empty or undeclared plugin/source/field scope before resolving and expose their catalog digest. `CandidateAttemptID` hashes a versioned canonical encoding of the complete ticket and effective publication set under a `candidate` domain separator; `RecoveryAttemptID` hashes committed revisions plus the sorted verified published map under a distinct `recovery` separator. Neither uses Go map iteration or string concatenation. `RegisterCandidate` and `RegisterRecovery` recompute those IDs and each returns a distinct registration-bound materializer that owns an immutable closure index and resolver attempt. Candidate and recovery for the same desired revision therefore coexist with different IDs and cannot read one another. `NewMaterializer` obtains the catalog from the in-process plan-02 encryption service and opens resolver attempts through `GenerationSecretResolver`; `NewScopedMaterializer` receives the exact decoded worker manifest catalog and creates the same view-bound registrations around plan 05's scoped IPC resolver. `GenerationCapability` owns one registration and rejects a generation or `AttemptID` mismatch before delegating; workers create it locally and never receive a supervisor pointer or raw keyring.
 
+**Secret-domain amendment:** `Scope.Domain` is mandatory and identifies the exact HTTP or stream publication whose closure owns the resource. Attempt grants are indexed by `(Domain, ResourceKey)`, never by a cross-domain union; both materializers reject an empty domain. This prevents independently recovered domains with the same resource key but different bytes from borrowing one another's secret authority. `RegisterCandidate` and `RegisterRecovery` therefore retain immutable per-domain closure indexes.
+
 ```go
 // package runtime
 type RuntimeDependencies struct {
 	Config    *config.EffectiveConfig
 	Secrets   secret.GenerationCapability
+	Metadata  MetadataView
 	Resources *ResourceRegistry
 	Tasks     *TaskRegistry
 }
+
+type MetadataView struct { documents map[string][]byte }
+func NewMetadataView(map[string][]byte) (MetadataView, error)
+func (v MetadataView) Decode(string, any) (bool, error)
 
 type ResourceKey struct {
 	Kind   string
@@ -390,15 +400,16 @@ type InstanceKey struct {
 	Factory      string
 	Scope        Scope
 	Owner        ResourceProvenance
+	Attempt      secret.AttemptID
 	ConfigDigest [32]byte
 }
 
 func DescriptorForFactory(*capability.Manifest, string) (Descriptor, error)
 func ResolveDescriptor(Descriptor, Plugin) (Descriptor, error)
-func NewInstanceKey(Descriptor, Scope, ResourceProvenance, any) (InstanceKey, error)
+func NewInstanceKey(Descriptor, Scope, ResourceProvenance, secret.AttemptID, any) (InstanceKey, error)
 ```
 
-`Binding` stores a resolved `Descriptor`, effective priority and `InstanceKey`; executors never query mutable priority or a handwritten registry at request time.
+`MetadataView` owns defensive canonical bytes for already schema-validated and secret-materialized plugin metadata. `Decode` returns `(false, nil)` for an absent factory and never exposes backing bytes. Plugin schema witnesses receive an empty view; ordinary instances receive the completed generation view before `PostInit`. `Binding` stores a resolved `Descriptor`, effective priority and `InstanceKey`; executors never query mutable priority or a handwritten registry at request time. Plugin instances are generation-local because their dependencies retain an attempt capability and task registry, so `InstanceKey.Attempt` is mandatory. Generation-neutral clients acquired by an instance use separate digest-keyed resource identities and may still be shared across generations.
 
 ```go
 // package compiler
@@ -1332,6 +1343,7 @@ Use the exact `Plugin`, `Initializer`, `PostInitializer`, `Middleware`, `Stopper
 type Dependencies struct {
 	Config  *config.EffectiveConfig
 	Secrets secret.GenerationCapability
+	Metadata runtime.MetadataView
 	Tasks   *runtime.TaskRegistry
 }
 
@@ -1343,7 +1355,7 @@ func New(name string, deps Dependencies) Plugin {
 }
 ```
 
-This task deletes `base.Dependencies.DataEncryption` and `BasePlugin.DataEncryption()`. Store/standalone owns plan 02's `data_encryption.Service`; plugins consume only the attempt-bound `GenerationCapability` created from the temporary scoped materializer. Task 9 switches the permanent compiler path to `secret.NewMaterializer(service, generationResolver)`. No plugin may retain the raw service/resolver.
+This task deletes `base.Dependencies.DataEncryption` and `BasePlugin.DataEncryption()`. Store/standalone owns plan 02's `data_encryption.Service`; plugins consume only the attempt-bound `GenerationCapability` created from the temporary scoped materializer. Plugin metadata is decoded only from `Dependencies.Metadata`; `base.LoadPluginMetadata` no longer reads Store and direct production `store.GetPluginMetadata` calls are forbidden. Task 9 switches the permanent compiler path to `secret.NewMaterializer(service, generationResolver)`. No plugin may retain the raw service/resolver.
 
 - [ ] **Step 4: Implement exact plugin admission order**
 

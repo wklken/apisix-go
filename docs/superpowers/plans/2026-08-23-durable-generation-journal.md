@@ -424,7 +424,7 @@ git commit -m "feat(generation): define immutable snapshot identities"
 **Interfaces:**
 
 - Consumes: `generation.Snapshot`, `generation.Journal`, the exact legacy bucket-name list supplied to `OpenJournal`.
-- Produces: `store.OpenJournal(path string, options JournalOptions) (*Store, error)` where `*Store` implements `generation.Journal` and owns the only writable `*bolt.DB`.
+- Produces: `store.OpenJournal(path string, options JournalOptions) (*Store, error)`, idempotent `Store.Close`, schema-backed `Store.Revisions`, and a big-endian desired revision-to-artifact index used by later cursor replay. The returned store owns the only writable `*bolt.DB`; Tasks 3–6 add the remaining `generation.Journal` methods, so Task 2 must not add stub methods or a premature full-interface assertion.
 
 - [ ] **Step 1: Write failing schema, migration and newer-version tests**
 
@@ -559,6 +559,8 @@ var (
 	ErrNewerSchema    = errors.New("generation journal schema is newer than this binary")
 	ErrIntegrity      = errors.New("generation journal integrity check failed")
 	ErrCursorConflict = errors.New("provider cursor was reused with different content")
+	ErrStaleCursor    = errors.New("provider cursor is stale relative to desired head")
+	ErrProviderConflict = errors.New("desired provider changed without authoritative replacement")
 	ErrNoLastGood     = errors.New("published predecessor required for last-good")
 	ErrInvalidClosure = errors.New("publication dependency closure is incomplete")
 )
@@ -574,6 +576,7 @@ const currentJournalSchemaVersion uint64 = 1
 var (
 	journalMetaBucket         = []byte("generation_meta")
 	desiredHeadBucket         = []byte("generation_desired_head")
+	desiredRevisionBucket     = []byte("generation_desired_revisions")
 	artifactBucket            = []byte("generation_artifacts")
 	publishedHeadBucket       = []byte("generation_published_heads")
 	publicationTxnBucket      = []byte("generation_publication_transactions")
@@ -586,6 +589,9 @@ type JournalOptions struct {
 }
 
 func OpenJournal(path string, options JournalOptions) (*Store, error) {
+	if err := validateLegacyBucketNames(options.LegacyResourceBuckets); err != nil {
+		return nil, err
+	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: storeOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("open generation journal %q: %w", path, err)
@@ -599,7 +605,9 @@ func OpenJournal(path string, options JournalOptions) (*Store, error) {
 }
 ```
 
-`initializeJournal` must first read the version. A version greater than `currentJournalSchemaVersion` returns `ErrNewerSchema` from a read transaction. For a database with no journal metadata, one update transaction reads every listed legacy bucket into a revision-1 desired `generation.Snapshot`, writes its integrity envelope and desired head, creates all journal buckets, records `schema_version=1` and `integrity_algorithm=sha256`, then deletes the legacy buckets. It does not create an HTTP or stream published head because the old database cannot prove that its current rows were successfully published.
+`initializeJournal` must first inspect schema state without mutating it. A version greater than `currentJournalSchemaVersion` returns `ErrNewerSchema`; an explicit version `0`, missing required metadata/buckets for version `1`, or journal data buckets without the metadata bucket return `ErrIntegrity`. Version `1` is the first journal schema, so there is no invented version-0 upgrade path.
+
+For a database with no journal metadata or journal data buckets, one update transaction creates every journal bucket and records `schema_version=1` and `integrity_algorithm=sha256`. A genuinely empty database with none of the caller-listed legacy buckets stays at desired/HTTP/stream revision `0` and writes no artifact. A nonempty database with no matching listed legacy bucket fails closed with `ErrIntegrity` rather than silently claiming ownership of an unrelated database. Empty or journal-reserved legacy bucket names also fail closed before opening or creating the database file. If at least one caller-listed legacy bucket exists, even when it has no rows, the same transaction reads all rows from every existing listed bucket into a revision-1 desired `generation.Snapshot`, writes its integrity envelope, revision-index entry and desired head, and deletes only those listed legacy buckets. Unlisted buckets remain untouched. `generation_desired_head` contains either zero keys or exactly the current `revision` and `artifact`; historical mappings live only in `generation_desired_revisions` under exact eight-byte big-endian keys. The index is the complete contiguous range `1..current`; startup rejects gaps, future revisions, malformed IDs and any entry whose canonical artifact revision/digest/ID does not match. Migration does not create an HTTP or stream published head because the old database cannot prove that its current rows were successfully published. Reopening either initialized form is idempotent and never repeats import. A revision argument of `0` to the private loader means the current desired head and revalidates its index mapping; a nonzero revision resolves through the revision index and may load a historical desired artifact.
 
 - [ ] **Step 5: Add exact artifact integrity envelopes**
 
@@ -626,9 +634,9 @@ Use eight-byte big-endian integers for schema and revision metadata. Never decod
 
 - [ ] **Step 6: Run schema and integrity tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^(TestOpenJournal|TestJournalSchema|TestArtifactEnvelope)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/store -run "^(TestOpenJournal|TestJournalSchema|TestArtifactEnvelope|TestDesiredRevisionIndex)" -count=1'`
 
-Expected: PASS, including empty database, legacy import, idempotent reopen, unknown newer version and modified artifact bytes.
+Expected: PASS, including true-empty revision 0, non-empty and empty-bucket legacy import as desired-only revision 1, unlisted-bucket preservation, invalid/reserved legacy names before file creation and nonmatching nonempty databases without mutation, current-head revision-0 and historical revision-index lookup, idempotent reopen, explicit version 0/partial-schema/orphan-artifact/unknown-head-key/malformed-index fail-closed behavior, unknown newer version without mutation and lock release, and payload/size/digest/ID/canonical artifact tampering.
 
 - [ ] **Step 7: Commit the durable format foundation**
 
@@ -690,7 +698,7 @@ func TestJournalApplyDesiredPersistsExplicitDeleteAcrossRestart(t *testing.T) {
 }
 ```
 
-Add tests that a complete replacement tombstones absent resources, that an identical cursor+digest returns the original ticket without incrementing Desired, and that the same cursor with different mutations returns `ErrCursorConflict`.
+Add tests that a complete replacement tombstones absent resources, that an identical cursor+digest returns the original ticket without incrementing Desired, and that the same cursor with different mutations returns `ErrCursorConflict`. Preserve mutation order and add same-key `PUT → DELETE` / `DELETE → PUT` tests: etcd watch order is semantic and last mutation wins. Also cover restart replay after newer desired revisions exist, collision-free cursor identity, provider switching, empty-batch rules, tombstone revision refresh, input/output defensive copies, overflow, canceled context and artifact/cursor tampering.
 
 - [ ] **Step 2: Run the desired-state tests and confirm RED**
 
@@ -714,18 +722,31 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 		if err != nil {
 			return err
 		}
+		current, err := loadDesiredSnapshotTx(tx, 0)
+		if err != nil && !errors.Is(err, generation.ErrNotFound) {
+			return err
+		}
+		activeProvider, err := loadActiveProviderTx(tx)
+		if err != nil {
+			return err
+		}
 		if replay, recordedDigest, found, err := loadCursorTx(tx, batch.Cursor); err != nil {
 			return err
 		} else if found {
 			if recordedDigest != batchDigest {
 				return generation.ErrCursorConflict
 			}
+			if activeProvider != batch.Cursor.Provider {
+				return generation.ErrProviderConflict
+			}
+			if replay.DesiredRevision != current.Revision() {
+				return generation.ErrStaleCursor
+			}
 			ticket = replay
 			return nil
 		}
-		current, err := loadDesiredSnapshotTx(tx, 0)
-		if err != nil && !errors.Is(err, generation.ErrNotFound) {
-			return err
+		if activeProvider != "" && activeProvider != batch.Cursor.Provider && !batch.ReplaceManaged {
+			return generation.ErrProviderConflict
 		}
 		if current.Revision() == math.MaxUint64 {
 			return fmt.Errorf("desired revision overflow")
@@ -746,13 +767,20 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 }
 ```
 
-`applyBatch` must clone all input bytes and return a `NewSnapshot(current.Revision()+1, resources, tombstones)` result; it never mutates `current`. `ReplaceManaged=true` turns every resource absent from the replacement into a tombstone at the new revision. An explicit `MutationDelete` has the same authoritative effect. A later valid PUT clears that key's tombstone. Provider names and cursor revisions must be non-empty; required domains must contain only `http` or `stream` and must be de-duplicated in stable order.
+`applyBatch` must clone all input bytes and return a `NewSnapshot(current.Revision()+1, resources, tombstones)` result; it never mutates `current`. `ReplaceManaged=true` first turns every current resource absent from the authoritative input into a tombstone at the new revision, then applies mutations in their original order. `MutationDelete` removes the value and writes or refreshes a tombstone at the new revision; a later `MutationPut` clones the value and clears that key's tombstone. Existing tombstones not replaced by a PUT remain durable.
 
-Implement the private boundary with these exact signatures; `digestDesiredBatch` canonicalizes cursor, replacement flag, sorted mutations and sorted required domains without reading current journal state:
+`ReplaceManaged` is global authority over the complete APISIX desired namespace because one process has exactly one configured provider. The first batch on an empty journal establishes its provider; a different provider is accepted only with `ReplaceManaged=true`, which atomically transfers authority. Every replacement requires normalized domains `[http, stream]`, including an empty replacement, so deletion of either runtime cannot remain unpublished. A non-replacement batch with mutations requires at least one domain. An empty non-replacement batch with empty domains is a legal cursor-only revision; an explicit domain on an empty non-replacement batch is a legal forced recompilation.
+
+Provider names, cursor revisions, resource keys and domains must be non-empty valid UTF-8. Reject unknown mutation types/domains and a delete carrying non-empty value bytes. Required domains are de-duplicated into stable `http`, `stream` order. Repeated keys inside a batch are legal and remain ordered. `nil` and empty PUT values remain distinct desired bytes and receive golden digest coverage; later compiler policy decides whether either payload is valid.
+
+`providerCursorBucket` stores a fixed active-provider record plus cursor records keyed by a collision-resistant SHA-256 of the canonical provider/revision pair; every record embeds and revalidates the exact cursor, ordered batch digest and complete original ticket. Same cursor plus the same canonical batch returns the original ticket only while that ticket is the current desired head and its provider is still active, including after restart, so a failed current publication can be retried. Once the desired head advances, replaying the older cursor returns `ErrStaleCursor` without loading, preparing or publishing the historical snapshot. A cursor from a non-active provider returns `ErrProviderConflict`; even an old replacement record cannot transfer authority again. Different mutation order, type, bytes, replacement flag or normalized domains returns `ErrCursorConflict`. Cursor persistence records ingestion/deduplication only, never provider acknowledgement: Tasks 8–9 advance etcd acknowledgement state only after `Coordinator.Apply` succeeds.
+
+Implement the private boundary with these exact signatures; `digestDesiredBatch` canonicalizes cursor, replacement flag, mutations in original order, and normalized required domains without reading current journal state. Standalone translation is already deterministically sorted before this boundary, while etcd watch translation retains server event order:
 
 ```go
 func validateDesiredBatch(generation.DesiredBatch) error
 func digestDesiredBatch(generation.DesiredBatch) ([32]byte, error)
+func loadActiveProviderTx(*bolt.Tx) (string, error)
 func loadCursorTx(*bolt.Tx, generation.ProviderCursor) (generation.ApplyTicket, [32]byte, bool, error)
 func loadDesiredSnapshotTx(*bolt.Tx, uint64) (generation.Snapshot, error)
 func applyBatch(generation.Snapshot, generation.DesiredBatch) (generation.Snapshot, error)
@@ -2404,11 +2432,12 @@ The document must contain this bucket table and state machine using the implemen
 | Bucket | Key | Value | Commit owner |
 | --- | --- | --- | --- |
 | `generation_meta` | `schema_version` | uint64 big-endian `1` | migration only |
-| `generation_desired_head` | `head` | desired revision, digest, provider cursor | `ApplyDesired` |
+| `generation_desired_head` | `revision`, `artifact` | current desired revision and artifact ID | `ApplyDesired` |
+| `generation_desired_revisions` | uint64 big-endian revision | desired artifact ID | migration/`ApplyDesired` |
 | `generation_artifacts` | `sha256:<hex>` | integrity envelope and canonical snapshot | desired/stage |
 | `generation_published_heads` | `http` or `stream` | artifact identity and published revision | `Commit` |
 | `generation_publication_transactions` | random token | ticket and complete candidate set | `Stage`/`Abort`/`Commit` |
-| `generation_provider_cursors` | provider and cursor | desired ticket and digest | `ApplyDesired` |
+| `generation_provider_cursors` | `active_provider` or SHA-256 cursor identity | active authority, exact cursor, ordered batch digest and desired ticket | `ApplyDesired` |
 | `generation_publication_decisions` | domain/revision | bounded per-resource decisions | `Commit` |
 
 desired durable -> prepared -> staged durable -> reversibly activated -> published durable

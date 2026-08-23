@@ -443,6 +443,11 @@ func (storage *Store) Stop() error {
 	return storage.stopErr
 }
 
+// Close releases the Store's event-loop and database ownership exactly once.
+func (storage *Store) Close() error {
+	return storage.Stop()
+}
+
 // []byte{}  get the last part split by / in the key
 
 // /apisix/routes/505192286146003655

@@ -38,8 +38,39 @@ func TestCapabilityManifestSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load capability manifest: %v", err)
 	}
+	files, err := manifestYAMLFiles()
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	problems, factoryCount := capabilityManifestSelectionProblems(manifest, files)
+	if len(problems) != 0 {
+		t.Fatalf("capability manifest selection problems = %v", problems)
+	}
+	t.Logf("capability selection: %d manifest files cover %d factory keys", len(files), factoryCount)
+}
 
-	want := make(map[string]bool)
+func TestCapabilityManifestSelectionRequiresCanonicalManifest(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	files, err := manifestYAMLFiles()
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	files = slices.DeleteFunc(files, func(file string) bool {
+		return filepath.Base(file) == "redirect.yaml"
+	})
+
+	problems, _ := capabilityManifestSelectionProblems(manifest, files)
+	if !slices.Contains(problems, "missing manifest redirect.yaml") {
+		t.Fatalf("selection problems = %v, want missing canonical redirect.yaml", problems)
+	}
+}
+
+func capabilityManifestSelectionProblems(manifest *capability.Manifest, files []string) ([]string, int) {
+	expectedManifests := make(map[string]bool)
+	expectedFactories := make(map[string]bool)
 	factoriesByManifest := make(map[string][]string)
 	for _, plugin := range manifest.Plugins {
 		for _, ref := range plugin.Evidence.Upstream.Refs {
@@ -47,61 +78,55 @@ func TestCapabilityManifestSelection(t *testing.T) {
 				filepath.Base(ref) == corpusScopeFile {
 				continue
 			}
+			manifestName := filepath.Base(ref)
+			expectedManifests[manifestName] = true
 			for _, factory := range plugin.Factories {
-				want[factory.Key] = true
-				factoriesByManifest[filepath.Base(ref)] = append(
-					factoriesByManifest[filepath.Base(ref)],
-					factory.Key,
-				)
+				expectedFactories[factory.Key] = true
+				factoriesByManifest[manifestName] = append(factoriesByManifest[manifestName], factory.Key)
 			}
 		}
 	}
+	expectedManifests["redirect2.yaml"] = true
 
-	files, err := manifestYAMLFiles()
-	if err != nil {
-		t.Fatalf("discover manifests: %v", err)
-	}
-	actual := make(map[string]bool, len(files))
-	var unexpected []string
-	hasRedirect2 := false
+	actualManifests := make(map[string]bool, len(files))
 	for _, file := range files {
-		manifestName := filepath.Base(file)
-		if manifestName == "redirect2.yaml" {
-			hasRedirect2 = true
-			manifestName = "redirect.yaml"
+		actualManifests[filepath.Base(file)] = true
+	}
+
+	var problems []string
+	for manifestName := range expectedManifests {
+		if !actualManifests[manifestName] {
+			problems = append(problems, "missing manifest "+manifestName)
 		}
-		factories, ok := factoriesByManifest[manifestName]
-		if !ok {
-			unexpected = append(unexpected, filepath.Base(file))
-			continue
-		}
-		for _, factory := range factories {
-			actual[factory] = true
+	}
+	for manifestName := range actualManifests {
+		if !expectedManifests[manifestName] {
+			problems = append(problems, "unexpected manifest "+manifestName)
 		}
 	}
 
-	if !hasRedirect2 {
-		t.Error("checked-in manifests are missing the explicit redirect2.yaml alias")
+	actualFactories := make(map[string]bool, len(expectedFactories))
+	for manifestName := range actualManifests {
+		factoryManifest := manifestName
+		if factoryManifest == "redirect2.yaml" {
+			factoryManifest = "redirect.yaml"
+		}
+		for _, factory := range factoriesByManifest[factoryManifest] {
+			actualFactories[factory] = true
+		}
 	}
-	if len(unexpected) != 0 {
-		sort.Strings(unexpected)
-		t.Errorf("checked-in manifests without capability evidence refs = %v", unexpected)
+	for factory := range expectedFactories {
+		if !actualFactories[factory] {
+			problems = append(problems, "missing factory "+factory)
+		}
 	}
-	wantNames := sortedMapKeys(want)
-	actualNames := sortedMapKeys(actual)
-	if !slices.Equal(wantNames, actualNames) {
-		t.Fatalf("checked-in manifests = %v, want capability-selected factories %v", actualNames, wantNames)
+	for factory := range actualFactories {
+		if !expectedFactories[factory] {
+			problems = append(problems, "unexpected factory "+factory)
+		}
 	}
-	t.Logf("capability selection: %d manifest files cover %d factory keys", len(files), len(wantNames))
-}
-
-func sortedMapKeys(values map[string]bool) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(problems)
+	return problems, len(expectedFactories)
 }
 
 func TestManifestCorpusValidates(t *testing.T) {
@@ -246,12 +271,8 @@ func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
 }
 
 func TestSourceCoverage(t *testing.T) {
-	capabilities, err := capability.Load()
-	if err != nil {
-		t.Fatalf("load capability manifest: %v", err)
-	}
-	targetCommit := capabilities.Target.SourceCommit
-	sourceRoot := apacheAPISIXSourceRoot(t, targetCommit)
+	corpusCommit := sourceCoverageCommit(t)
+	sourceRoot := apacheAPISIXSourceRoot(t, corpusCommit)
 	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
@@ -278,17 +299,36 @@ func TestSourceCoverage(t *testing.T) {
 					source.Repository,
 				)
 			}
-			if source.Commit != targetCommit {
+			if source.Commit != corpusCommit {
 				t.Errorf(
 					"%s source %s commit = %q, want %s",
 					manifestFile,
 					source.File,
 					source.Commit,
-					targetCommit,
+					corpusCommit,
 				)
 			}
 			assertSourceTests(t, sourceRoot, manifestFile, source)
 		}
+	}
+}
+
+func sourceCoverageCommit(t *testing.T) string {
+	t.Helper()
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	return scope.Commit
+}
+
+func TestSourceCoverageUsesCorpusCommit(t *testing.T) {
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	if got := sourceCoverageCommit(t); got != scope.Commit {
+		t.Fatalf("source coverage commit = %s, want historical corpus commit %s", got, scope.Commit)
 	}
 }
 
@@ -297,7 +337,7 @@ func apacheAPISIXSourceRoot(t *testing.T, commit string) string {
 	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t, commit); ok {
 		return sourceRoot
 	}
-	t.Skip("target Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
+	t.Skip("historical corpus APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
 	return ""
 }
 

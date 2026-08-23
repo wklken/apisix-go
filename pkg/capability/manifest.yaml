@@ -338,6 +338,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "azure-functions"
+    secret_declarations:
+      - factory: "azure-functions"
+        source: "plugin_config"
+        field: "authorization.apikey"
+        strict: false
+      - factory: "azure-functions"
+        source: "plugin_metadata"
+        field: "master_apikey"
+        strict: false
     implementation: "azure-functions"
     namespace: "apisix"
     domains: ["http"]
@@ -366,6 +375,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "openfunction"
+    secret_declarations:
+      - factory: "openfunction"
+        source: "plugin_config"
+        field: "authorization.service_token"
+        strict: false
     implementation: "openfunction"
     namespace: "apisix"
     domains: ["http"]
@@ -394,6 +408,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "openwhisk"
+    secret_declarations:
+      - factory: "openwhisk"
+        source: "plugin_config"
+        field: "service_token"
+        strict: false
     implementation: "openwhisk"
     namespace: "apisix"
     domains: ["http"]
@@ -422,6 +441,19 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "aws-lambda"
+    secret_declarations:
+      - factory: "aws-lambda"
+        source: "plugin_config"
+        field: "authorization.apikey"
+        strict: false
+      - factory: "aws-lambda"
+        source: "plugin_config"
+        field: "authorization.iam.accesskey"
+        strict: false
+      - factory: "aws-lambda"
+        source: "plugin_config"
+        field: "authorization.iam.secretkey"
+        strict: false
     implementation: "aws-lambda"
     namespace: "apisix"
     domains: ["http"]
@@ -565,6 +597,15 @@ plugins:
     divergence_ids: []
     supported_platforms: []
   - name: "response-rewrite"
+    secret_declarations:
+      - factory: "response-rewrite"
+        source: "plugin_config"
+        field: "body"
+        strict: false
+      - factory: "response-rewrite"
+        source: "plugin_config"
+        field: "body_secret"
+        strict: true
     implementation: "response-rewrite"
     namespace: "apisix"
     domains: ["http"]
@@ -786,6 +827,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "key-auth"
+    secret_declarations:
+      - factory: "key-auth"
+        source: "plugin_config"
+        field: "key"
+        strict: false
     implementation: "key-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -814,6 +860,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "jwt-auth"
+    secret_declarations:
+      - factory: "jwt-auth"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
+      - factory: "jwt-auth"
+        source: "plugin_config"
+        field: "private_key"
+        strict: false
     implementation: "jwt-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -842,6 +897,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "jwe-decrypt"
+    secret_declarations:
+      - factory: "jwe-decrypt"
+        source: "plugin_config"
+        field: "key"
+        strict: false
+      - factory: "jwe-decrypt"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
     implementation: "jwe-decrypt"
     namespace: "apisix"
     domains: ["http"]
@@ -870,6 +934,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "basic-auth"
+    secret_declarations:
+      - factory: "basic-auth"
+        source: "plugin_config"
+        field: "password"
+        strict: false
     implementation: "basic-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -898,6 +967,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "authz-keycloak"
+    secret_declarations:
+      - factory: "authz-keycloak"
+        source: "plugin_config"
+        field: "client_secret"
+        strict: false
     implementation: "authz-keycloak"
     namespace: "apisix"
     domains: ["http"]
@@ -926,6 +1000,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "authz-casdoor"
+    secret_declarations:
+      - factory: "authz-casdoor"
+        source: "plugin_config"
+        field: "client_secret"
+        strict: false
+      - factory: "authz-casdoor"
+        source: "plugin_config"
+        field: "client_secret_fallbacks"
+        strict: false
     implementation: "authz-casdoor"
     namespace: "apisix"
     domains: ["http"]
@@ -954,6 +1037,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "dingtalk-auth"
+    secret_declarations:
+      - factory: "dingtalk-auth"
+        source: "plugin_config"
+        field: "app_secret"
+        strict: false
+      - factory: "dingtalk-auth"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
     implementation: "dingtalk-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -982,6 +1074,19 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "feishu-auth"
+    secret_declarations:
+      - factory: "feishu-auth"
+        source: "plugin_config"
+        field: "app_secret"
+        strict: false
+      - factory: "feishu-auth"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
+      - factory: "feishu-auth"
+        source: "plugin_config"
+        field: "secret_fallbacks"
+        strict: false
     implementation: "feishu-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1010,6 +1115,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "saml-auth"
+    secret_declarations:
+      - factory: "saml-auth"
+        source: "plugin_config"
+        field: "sp_private_key"
+        strict: false
+      - factory: "saml-auth"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
     implementation: "saml-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1066,6 +1180,23 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "openid-connect"
+    secret_declarations:
+      - factory: "openid-connect"
+        source: "plugin_config"
+        field: "client_secret"
+        strict: false
+      - factory: "openid-connect"
+        source: "plugin_config"
+        field: "client_rsa_private_key"
+        strict: false
+      - factory: "openid-connect"
+        source: "plugin_config"
+        field: "session.secret"
+        strict: false
+      - factory: "openid-connect"
+        source: "plugin_config"
+        field: "session.redis.password"
+        strict: false
     implementation: "openid-connect"
     namespace: "apisix"
     domains: ["http"]
@@ -1094,6 +1225,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "cas-auth"
+    secret_declarations:
+      - factory: "cas-auth"
+        source: "plugin_config"
+        field: "cookie.secret"
+        strict: false
     implementation: "cas-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1122,6 +1258,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "hmac-auth"
+    secret_declarations:
+      - factory: "hmac-auth"
+        source: "plugin_config"
+        field: "secret"
+        strict: false
     implementation: "hmac-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1178,6 +1319,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ldap-auth"
+    secret_declarations:
+      - factory: "ldap-auth"
+        source: "plugin_config"
+        field: "user_dn"
+        strict: false
     implementation: "ldap-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1486,6 +1632,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "csrf"
+    secret_declarations:
+      - factory: "csrf"
+        source: "plugin_config"
+        field: "key"
+        strict: true
     implementation: "csrf"
     namespace: "apisix"
     domains: ["http"]
@@ -1875,6 +2026,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "kafka-proxy"
+    secret_declarations:
+      - factory: "kafka-proxy"
+        source: "plugin_config"
+        field: "sasl.password"
+        strict: true
     implementation: "kafka-proxy"
     namespace: "apisix"
     domains: ["http"]
@@ -2343,6 +2499,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "http-logger"
+    secret_declarations:
+      - factory: "http-logger"
+        source: "plugin_config"
+        field: "auth_header"
+        strict: true
     implementation: "http-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2424,6 +2585,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "kafka-logger"
+    secret_declarations:
+      - factory: "kafka-logger"
+        source: "plugin_config"
+        field: "brokers.*.sasl_config.password"
+        strict: true
     implementation: "kafka-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2451,6 +2617,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "rocketmq-logger"
+    secret_declarations:
+      - factory: "rocketmq-logger"
+        source: "plugin_config"
+        field: "secret_key"
+        strict: true
     implementation: "rocketmq-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2505,6 +2676,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "clickhouse-logger"
+    secret_declarations:
+      - factory: "clickhouse-logger"
+        source: "plugin_config"
+        field: "password"
+        strict: true
     implementation: "clickhouse-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2586,6 +2762,23 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
   - name: "error-log-logger"
+    secret_declarations:
+      - factory: "error-log-logger"
+        source: "plugin_config"
+        field: "clickhouse.password"
+        strict: true
+      - factory: "error-log-logger"
+        source: "plugin_config"
+        field: "kafka.brokers.*.sasl_config.password"
+        strict: true
+      - factory: "error-log-logger"
+        source: "plugin_metadata"
+        field: "clickhouse.password"
+        strict: true
+      - factory: "error-log-logger"
+        source: "plugin_metadata"
+        field: "kafka.brokers.*.sasl_config.password"
+        strict: true
     implementation: "error-log-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2613,6 +2806,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "sls-logger"
+    secret_declarations:
+      - factory: "sls-logger"
+        source: "plugin_config"
+        field: "access_key_secret"
+        strict: true
     implementation: "sls-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2640,6 +2838,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "google-cloud-logging"
+    secret_declarations:
+      - factory: "google-cloud-logging"
+        source: "plugin_config"
+        field: "auth_config.private_key"
+        strict: true
     implementation: "google-cloud-logging"
     namespace: "apisix"
     domains: ["http"]
@@ -2667,6 +2870,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "splunk-hec-logging"
+    secret_declarations:
+      - factory: "splunk-hec-logging"
+        source: "plugin_config"
+        field: "endpoint.token"
+        strict: true
     implementation: "splunk-hec-logging"
     namespace: "apisix"
     domains: ["http"]
@@ -2721,6 +2929,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
   - name: "loggly"
+    secret_declarations:
+      - factory: "loggly"
+        source: "plugin_config"
+        field: "customer_token"
+        strict: true
     implementation: "loggly"
     namespace: "apisix"
     domains: ["http"]
@@ -2748,6 +2961,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "elasticsearch-logger"
+    secret_declarations:
+      - factory: "elasticsearch-logger"
+        source: "plugin_config"
+        field: "auth.password"
+        strict: true
+      - factory: "elasticsearch-logger"
+        source: "plugin_config"
+        field: "headers.Authorization"
+        strict: false
     implementation: "elasticsearch-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -2775,6 +2997,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "tencent-cloud-cls"
+    secret_declarations:
+      - factory: "tencent-cloud-cls"
+        source: "plugin_config"
+        field: "secret_key"
+        strict: true
     implementation: "tencent-cloud-cls"
     namespace: "apisix"
     domains: ["http"]
@@ -2829,6 +3056,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "lago"
+    secret_declarations:
+      - factory: "lago"
+        source: "plugin_config"
+        field: "token"
+        strict: true
     implementation: "lago"
     namespace: "apisix"
     domains: ["http"]
@@ -2883,6 +3115,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-aliyun-content-moderation"
+    secret_declarations:
+      - factory: "ai-aliyun-content-moderation"
+        source: "plugin_config"
+        field: "access_key_secret"
+        strict: false
     implementation: "ai-aliyun-content-moderation"
     namespace: "apisix"
     domains: ["http"]
@@ -2911,6 +3148,11 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-aws-content-moderation"
+    secret_declarations:
+      - factory: "ai-aws-content-moderation"
+        source: "plugin_config"
+        field: "comprehend.secret_access_key"
+        strict: false
     implementation: "ai-aws-content-moderation"
     namespace: "apisix"
     domains: ["http"]
@@ -2939,6 +3181,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-rag"
+    secret_declarations:
+      - factory: "ai-rag"
+        source: "plugin_config"
+        field: "embeddings_provider.azure_openai.api_key"
+        strict: false
+      - factory: "ai-rag"
+        source: "plugin_config"
+        field: "vector_search_provider.azure_ai_search.api_key"
+        strict: false
     implementation: "ai-rag"
     namespace: "apisix"
     domains: ["http"]
@@ -3051,6 +3302,27 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-request-rewrite"
+    secret_declarations:
+      - factory: "ai-request-rewrite"
+        source: "plugin_config"
+        field: "auth.header"
+        strict: false
+      - factory: "ai-request-rewrite"
+        source: "plugin_config"
+        field: "auth.query"
+        strict: false
+      - factory: "ai-request-rewrite"
+        source: "plugin_config"
+        field: "auth.gcp.service_account_json"
+        strict: false
+      - factory: "ai-request-rewrite"
+        source: "plugin_config"
+        field: "auth.aws.secret_access_key"
+        strict: false
+      - factory: "ai-request-rewrite"
+        source: "plugin_config"
+        field: "auth.aws.session_token"
+        strict: false
     implementation: "ai-request-rewrite"
     namespace: "apisix"
     domains: ["http"]
@@ -3079,6 +3351,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-rate-limiting"
+    secret_declarations:
+      - factory: "ai-rate-limiting"
+        source: "plugin_config"
+        field: "redis_password"
+        strict: true
+      - factory: "ai-rate-limiting"
+        source: "plugin_config"
+        field: "sentinel_password"
+        strict: true
     implementation: "ai-rate-limiting"
     namespace: "apisix"
     domains: ["http"]
@@ -3107,6 +3388,27 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-proxy"
+    secret_declarations:
+      - factory: "ai-proxy"
+        source: "plugin_config"
+        field: "auth.header"
+        strict: false
+      - factory: "ai-proxy"
+        source: "plugin_config"
+        field: "auth.query"
+        strict: false
+      - factory: "ai-proxy"
+        source: "plugin_config"
+        field: "auth.gcp.service_account_json"
+        strict: false
+      - factory: "ai-proxy"
+        source: "plugin_config"
+        field: "auth.aws.secret_access_key"
+        strict: false
+      - factory: "ai-proxy"
+        source: "plugin_config"
+        field: "auth.aws.session_token"
+        strict: false
     implementation: "ai-proxy"
     namespace: "apisix"
     domains: ["http"]
@@ -3135,6 +3437,27 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "ai-proxy-multi"
+    secret_declarations:
+      - factory: "ai-proxy-multi"
+        source: "plugin_config"
+        field: "instances.*.auth.header"
+        strict: false
+      - factory: "ai-proxy-multi"
+        source: "plugin_config"
+        field: "instances.*.auth.query"
+        strict: false
+      - factory: "ai-proxy-multi"
+        source: "plugin_config"
+        field: "instances.*.auth.gcp.service_account_json"
+        strict: false
+      - factory: "ai-proxy-multi"
+        source: "plugin_config"
+        field: "instances.*.auth.aws.secret_access_key"
+        strict: false
+      - factory: "ai-proxy-multi"
+        source: "plugin_config"
+        field: "instances.*.auth.aws.session_token"
+        strict: false
     implementation: "ai-proxy-multi"
     namespace: "apisix"
     domains: ["http"]

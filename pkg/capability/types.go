@@ -1,5 +1,19 @@
 package capability
 
+type SecretDeclarationSource string
+
+const (
+	SecretPluginConfig   SecretDeclarationSource = "plugin_config"
+	SecretPluginMetadata SecretDeclarationSource = "plugin_metadata"
+)
+
+type SecretDeclaration struct {
+	Factory string                  `yaml:"factory"`
+	Source  SecretDeclarationSource `yaml:"source"`
+	Field   string                  `yaml:"field"`
+	Strict  bool                    `yaml:"strict"`
+}
+
 type (
 	Namespace        string
 	Domain           string
@@ -72,23 +86,32 @@ type Evidence struct {
 }
 
 type PluginCapability struct {
-	Name                string         `yaml:"name"`
-	Implementation      string         `yaml:"implementation"`
-	Namespace           Namespace      `yaml:"namespace"`
-	Domains             []Domain       `yaml:"domains"`
-	APISIXDefault       bool           `yaml:"apisix_default"`
-	Factories           []Factory      `yaml:"factories"`
-	Phases              []string       `yaml:"phases"`
-	Priority            int            `yaml:"priority"`
-	Scopes              []string       `yaml:"scopes"`
-	InstanceScope       string         `yaml:"instance_scope"`
-	ConditionalTerminal bool           `yaml:"conditional_terminal"`
-	Behavior            BehaviorStatus `yaml:"behavior"`
-	BehaviorSummary     string         `yaml:"behavior_summary"`
-	KnownGaps           []string       `yaml:"known_gaps"`
-	Evidence            Evidence       `yaml:"evidence"`
-	DivergenceIDs       []string       `yaml:"divergence_ids"`
-	SupportedPlatforms  []string       `yaml:"supported_platforms"`
+	Name                string              `yaml:"name"`
+	Implementation      string              `yaml:"implementation"`
+	Namespace           Namespace           `yaml:"namespace"`
+	Domains             []Domain            `yaml:"domains"`
+	APISIXDefault       bool                `yaml:"apisix_default"`
+	Factories           []Factory           `yaml:"factories"`
+	Phases              []string            `yaml:"phases"`
+	Priority            int                 `yaml:"priority"`
+	Scopes              []string            `yaml:"scopes"`
+	InstanceScope       string              `yaml:"instance_scope"`
+	ConditionalTerminal bool                `yaml:"conditional_terminal"`
+	Behavior            BehaviorStatus      `yaml:"behavior"`
+	BehaviorSummary     string              `yaml:"behavior_summary"`
+	KnownGaps           []string            `yaml:"known_gaps"`
+	Evidence            Evidence            `yaml:"evidence"`
+	DivergenceIDs       []string            `yaml:"divergence_ids"`
+	SupportedPlatforms  []string            `yaml:"supported_platforms"`
+	SecretDeclarations  []SecretDeclaration `yaml:"secret_declarations"`
+}
+
+// SecretDeclarationCatalog is the immutable, manifest-owned index of encrypted
+// plugin fields. Its contents are copied when constructed and enumerated.
+type SecretDeclarationCatalog struct {
+	declarations []SecretDeclaration
+	lookup       map[secretDeclarationKey]SecretDeclaration
+	digest       [32]byte
 }
 
 type QualificationProfile struct {

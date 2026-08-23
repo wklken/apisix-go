@@ -1033,12 +1033,12 @@ The gate accepts `status: accepted` only. The template remains `proposed` and is
 Create three accepted ADRs with `owner: wklken` and these exact decision references:
 
 ```text
-ADR-0001: decisions 1-42; APISIX namespace stays compatibility-pure, Go-native implementation identity is allowed, extensions use apisix-go/v1.
-ADR-0002: decisions 23, 35, 63-68; compat preserves pinned observable defaults/bugs, strict adds versioned security controls.
-ADR-0003: decisions 107, 118-130; Linux production, native-smoked macOS artifacts, Windows source-buildable experimental and no Windows artifact.
+ADR-0001 / DIV-001-go-native-extension-identity / `owner_approval_ref: "decisions 1-42"`: APISIX namespace stays compatibility-pure, Go-native implementation identity is allowed, extensions use apisix-go/v1.
+ADR-0002 / DIV-002-strict-security-profile / `owner_approval_ref: "decisions 23, 35, 63-68"`: compat preserves pinned observable defaults/bugs, strict adds versioned security controls.
+ADR-0003 / DIV-003-platform-artifact-policy / `owner_approval_ref: "decisions 107, 118-130"`: Linux production, native-smoked macOS artifacts, Windows source-buildable experimental and no Windows artifact.
 ```
 
-Do not mark a feature gap as a divergence. A gap remains `partial` or `deferred`; a divergence is only an intentional observable departure that is active in a namespace/profile.
+Add those exact three IDs as top-level accepted manifest divergences with `compatibility_target: apisix-3.17`, their matching ADR paths, and the exact decision-reference text above. They govern global namespace/profile/artifact policy and are not plugin-specific, so do not add them to any plugin's `divergence_ids`. Do not mark a feature gap as a divergence. A gap remains `partial` or `deferred`; a divergence is only an intentional observable departure that is active in a namespace/profile.
 
 - [ ] **Step 5: Implement ADR validation**
 

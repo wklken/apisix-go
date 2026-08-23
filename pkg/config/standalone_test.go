@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,24 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/store"
 )
+
+func TestStandaloneBucketsExcludeSingletonPlugins(t *testing.T) {
+	buckets := StandaloneBuckets()
+	if len(buckets) != 12 {
+		t.Fatalf("len(StandaloneBuckets()) = %d, want 12", len(buckets))
+	}
+	if slices.Contains(buckets, "plugins") {
+		t.Fatalf("StandaloneBuckets() = %v, want singleton plugins excluded", buckets)
+	}
+	if !generation.IsManagedResourceKind("plugins") {
+		t.Fatal("singleton plugins is not in the canonical managed-resource set")
+	}
+	for _, bucket := range buckets {
+		if !generation.IsManagedResourceKind(bucket) {
+			t.Errorf("standalone bucket %q is not managed", bucket)
+		}
+	}
+}
 
 func TestDesiredBatchFromStandaloneUsesContentDigestCursor(t *testing.T) {
 	batch := desiredBatchFromStandalone(standaloneSnapshot{

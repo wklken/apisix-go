@@ -150,7 +150,7 @@ func desiredBatchFromStandalone(snapshot standaloneSnapshot) generation.DesiredB
 	// from every managed standalone kind rather than only the resources present.
 	domainSet := make(map[generation.Domain]struct{})
 	for _, kind := range standaloneBuckets {
-		for _, domain := range desiredDomains(kind) {
+		for _, domain := range generation.DomainsForResourceKind(kind) {
 			domainSet[domain] = struct{}{}
 		}
 	}
@@ -181,20 +181,6 @@ func digestStandaloneMutations(mutations []generation.Mutation) [sha256.Size]byt
 func appendStandaloneDigestString(canonical []byte, value string) []byte {
 	canonical = binary.AppendUvarint(canonical, uint64(len(value)))
 	return append(canonical, value...)
-}
-
-func desiredDomains(kind string) []generation.Domain {
-	switch kind {
-	case "stream_routes":
-		return []generation.Domain{generation.DomainStream}
-	case "services", "upstreams", "secrets":
-		return []generation.Domain{generation.DomainHTTP, generation.DomainStream}
-	case "routes", "global_rules", "plugin_configs", "plugin_metadata", "plugins",
-		"ssls", "consumers", "consumer_groups", "protos":
-		return []generation.Domain{generation.DomainHTTP}
-	default:
-		return nil
-	}
 }
 
 func NewStandaloneFileWatcher(

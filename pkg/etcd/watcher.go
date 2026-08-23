@@ -272,7 +272,7 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 		return "plugins", "plugins", true
 	}
 	if len(parts) == 2 {
-		if !isManagedEtcdBucket(parts[0]) || parts[0] == "secrets" {
+		if !generation.IsManagedResourceKind(parts[0]) || parts[0] == "secrets" {
 			return "", "", false
 		}
 		return parts[0], parts[1], true
@@ -283,34 +283,10 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 	return "", "", false
 }
 
-func isManagedEtcdBucket(bucket string) bool {
-	switch bucket {
-	case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata",
-		"consumers", "consumer_groups", "plugins", "protos", "ssls", "stream_routes", "secrets":
-		return true
-	default:
-		return false
-	}
-}
-
 func etcdProviderID(clusterID uint64, prefix string) string {
 	canonicalPrefix := canonicalEtcdPrefix(prefix)
 	prefixDigest := sha256.Sum256([]byte(canonicalPrefix))
 	return fmt.Sprintf("etcd/v1/%016x/%x", clusterID, prefixDigest)
-}
-
-func desiredDomains(kind string) []generation.Domain {
-	switch kind {
-	case "stream_routes":
-		return []generation.Domain{generation.DomainStream}
-	case "services", "upstreams", "secrets":
-		return []generation.Domain{generation.DomainHTTP, generation.DomainStream}
-	case "routes", "global_rules", "plugin_configs", "plugin_metadata", "plugins",
-		"ssls", "consumers", "consumer_groups", "protos":
-		return []generation.Domain{generation.DomainHTTP}
-	default:
-		return nil
-	}
 }
 
 func normalizeRequiredDomains(domains []generation.Domain) []generation.Domain {
@@ -346,7 +322,7 @@ func desiredMutationFromEtcdEvent(
 	default:
 		return generation.Mutation{}, nil, false, fmt.Errorf("unsupported etcd event type %d", event.Type)
 	}
-	return mutation, desiredDomains(bucket), true, nil
+	return mutation, generation.DomainsForResourceKind(bucket), true, nil
 }
 
 func desiredBatchFromEtcdSnapshot(prefix string, response *clientv3.GetResponse) (generation.DesiredBatch, error) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -272,26 +273,9 @@ func IsStreamReloadBucket(bucket string) bool {
 	return bucket == "upstreams" || bucket == "stream_routes" || bucket == "services"
 }
 
-var builtInBuckets = [][]byte{
-	[]byte("routes"),
-	[]byte("services"),
-	[]byte("upstreams"),
-	[]byte("global_rules"),
-	[]byte("plugin_configs"),
-	[]byte("plugin_metadata"),
-	[]byte("consumers"),
-	// []byte("secrets"),
-
-	[]byte("consumer_groups"),
-	[]byte("plugins"),
-	[]byte("protos"),
-	[]byte("ssls"),
-	[]byte("stream_routes"),
-	[]byte("secrets"),
-}
-
 func (s *Store) InitBuckets() error {
-	for _, bucket := range builtInBuckets {
+	for _, bucketName := range generation.ManagedResourceKinds() {
+		bucket := []byte(bucketName)
 		err := s.db.Update(func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucket)
 			if b != nil {
@@ -624,8 +608,8 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 		return validationErr
 	}
 	if options.ReplaceManaged {
-		for _, bucket := range builtInBuckets {
-			addAffected(string(bucket))
+		for _, bucket := range generation.ManagedResourceKinds() {
+			addAffected(bucket)
 		}
 	}
 
@@ -803,23 +787,15 @@ func parseMutationKey(key []byte) (string, string, error) {
 	} else if bucket == "secrets" {
 		return "", "", fmt.Errorf("invalid secret resource key %q", key)
 	}
-	if !isManagedBucket(bucket) {
+	if !generation.IsManagedResourceKind(bucket) {
 		return "", "", fmt.Errorf("unsupported resource bucket %q", bucket)
 	}
 	return bucket, id, nil
 }
 
-func isManagedBucket(bucket string) bool {
-	for _, managed := range builtInBuckets {
-		if string(managed) == bucket {
-			return true
-		}
-	}
-	return false
-}
-
 func clearManagedBuckets(tx *bolt.Tx, preserve map[ResourceKey]struct{}) error {
-	for _, bucketName := range builtInBuckets {
+	for _, managed := range generation.ManagedResourceKinds() {
+		bucketName := []byte(managed)
 		bucket := tx.Bucket(bucketName)
 		if bucket == nil {
 			return errBucketNotFound

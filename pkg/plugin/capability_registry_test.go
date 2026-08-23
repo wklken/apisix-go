@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -20,6 +21,23 @@ func (f capabilityPhaseFixture) DescribeBindingPhases() (base.BindingPhaseDescri
 }
 
 func TestCapabilityRegistryCompleteness115Factories114Identities(t *testing.T) {
+	central, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryBearingEntries := 0
+	for _, entry := range central.Plugins {
+		if len(entry.Factories) != 0 {
+			factoryBearingEntries++
+		}
+	}
+	if len(central.Plugins) != 119 || factoryBearingEntries != 114 {
+		t.Fatalf(
+			"central manifest entries/factory-bearing entries = %d/%d, want 119/114",
+			len(central.Plugins),
+			factoryBearingEntries,
+		)
+	}
 	if len(pluginRegistry) != 115 {
 		t.Fatalf("factory count = %d, want 115", len(pluginRegistry))
 	}

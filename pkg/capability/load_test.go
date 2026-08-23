@@ -41,6 +41,31 @@ func TestManifestQueriesReturnCopies(t *testing.T) {
 	}
 }
 
+func TestLoadedManifestPinsCompleteAPISIX317Inventory(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := 0
+	for _, plugin := range m.Plugins {
+		if plugin.APISIXDefault {
+			defaults++
+		}
+		if plugin.Behavior == BehaviorFull && len(plugin.KnownGaps) != 0 {
+			t.Fatalf("full plugin %s has gaps %v", plugin.Name, plugin.KnownGaps)
+		}
+	}
+	if defaults != 104 {
+		t.Fatalf("APISIX default count = %d, want 104", defaults)
+	}
+	for _, name := range []string{"ext-plugin-pre-req", "ext-plugin-post-req", "ext-plugin-post-resp", "inspect", "ai"} {
+		plugin, ok := m.Plugin(name)
+		if !ok || plugin.Behavior != BehaviorNotApplicable {
+			t.Fatalf("%s = %#v/%v, want not_applicable", name, plugin, ok)
+		}
+	}
+}
+
 func TestQualifiedPluginsDistinguishesUnknownProfile(t *testing.T) {
 	m, err := Load()
 	if err != nil {

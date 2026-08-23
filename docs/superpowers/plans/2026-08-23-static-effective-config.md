@@ -583,7 +583,10 @@ sequence brackets. A safe segment matches `[A-Za-z_][A-Za-z0-9_-]*`. Encode any
 other mapping key as a bracketed JSON string, for example
 `plugin_attr["tenant.a"].token`, so a literal dot or bracket in a dynamic key
 cannot collide with a nested field path. Root unsafe keys begin with the same
-bracket form. Task 5's schema matcher must consume this exact syntax.
+bracket form. Encode the string with `encoding/json`, not `strconv.Quote`:
+Go's `\xNN` escapes are not JSON. Include U+0001 in the tests and prove the
+bracket content round-trips through `encoding/json`. Task 5's schema matcher
+must consume this exact syntax.
 
 Test `nodeFromAny` with every signed/unsigned integer width including
 `math.MaxUint64`, named primitive types, `json.Number`, string-keyed named maps,
@@ -692,7 +695,13 @@ func setPath(root *valueNode, path string, value *valueNode) error {
 	current := root
 	for _, segment := range segments[:len(segments)-1] {
 		next := current.mapping[segment]
-		if next == nil { next = &valueNode{kind: nodeMapping, mapping: make(map[string]*valueNode)}; current.mapping[segment] = next }
+		if next == nil {
+			next = &valueNode{
+				kind: nodeMapping, mapping: make(map[string]*valueNode),
+				source: value.source, pathBase: value.pathBase,
+			}
+			current.mapping[segment] = next
+		}
 		if next.kind != nodeMapping { return fmt.Errorf("configuration path %s crosses a non-mapping value", path) }
 		current = next
 	}
@@ -700,6 +709,12 @@ func setPath(root *valueNode, path string, value *valueNode) error {
 	return nil
 }
 ```
+
+A created intermediate mapping inherits the inserted node's `source` and
+`pathBase`; an existing mapping retains its metadata. Flatten provenance after
+both APISIXGO and CLI create a missing container and assert that container and
+leaf sources are valid. This is part of the failure-atomic overlay contract,
+not a Task 5 repair.
 
 - [ ] **Step 6: Run the layer tests**
 
@@ -1338,7 +1353,8 @@ func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
 	if err := cmd.Execute(); err != nil { t.Fatal(err) }
 	output := stdout.String()
 	for _, secret := range []string{
-		"etcd-password", "url-password", "admin-secret", "encryption-key", "plugin-attr-secret",
+		"etcd-password", "url-password", "admin-secret", "encryption-key",
+		"plugin-attr-secret", "discovery-provider-secret",
 	} {
 		if strings.Contains(output, secret) { t.Fatalf("dump leaked %q", secret) }
 	}
@@ -1462,6 +1478,7 @@ missing required secret path. The required registry after this task is:
 | `deployment.etcd.password` | `secret:"true"` | redact a non-empty password |
 | `deployment.etcd.host` | `secret:"url-userinfo"` | sanitize every endpoint as specified below |
 | `plugin_attr` | `secret:"container"` | preserve plugin names, redact each whole value |
+| `discovery` | `secret:"container"` | preserve discovery provider names, redact each whole provider value |
 
 `AdminAPIMTLS.AdminSSLCertKey` and `EtcdTLS.Key` are file paths in the current
 typed/runtime contract, not inline private-key material. Do not tag them as
@@ -1563,7 +1580,12 @@ func environmentMap(entries []string) map[string]string {
 
 - [ ] **Step 8: Add the URL-userinfo tag and implement deterministic redacted values**
 
-Add `secret:"url-userinfo"` only to `Etcd.Host`. For display, parse each
+Add `secret:"url-userinfo"` only to `Etcd.Host`, and add
+`secret:"container"` to `Config.Discovery` as well as the Task 4 tag on
+`Config.PluginAttr`. `Discovery` is an open `map[string]any` provider
+configuration surface and may contain credentials unknown to the static
+schema; preserving only provider names is the same fail-closed boundary as
+plugin attributes. For URL display, parse each
 non-empty endpoint with `net/url` and emit a representation that cannot retain
 credentials:
 
@@ -1746,15 +1768,43 @@ git commit -m "feat(cli): inspect effective configuration safely"
 - Modify: `docs/configuration.md`
 - Modify: `docs/production-profile.md`
 - Modify: `docs/design.md`
+- Modify: `cmd/capability-gen/main_test.go`
 - Verify: `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
+- Verify: `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program.md`
 
 **Interfaces:**
 - Consumes: completed Tasks 1–5 and the central governance manifest.
-- Produces: operator documentation for precedence, presence, environment namespaces, profiles, runtime paths, config commands, redaction, migration, and the static-config milestone evidence consumed by child plan 03. Plan 04 also consumes `data_encryption.Service` and replaces its temporary resolver injection atomically with `secret.Materializer`.
+- Produces: operator documentation for precedence, presence, environment namespaces, profiles, runtime paths, config commands, redaction, journal migration, and the static-config milestone evidence consumed by child plan 03. Plan 04 also consumes `data_encryption.Service` and replaces its temporary resolver injection atomically with `secret.Materializer`.
+- Scope decision: do not edit `conf/config-production.yaml` or `Dockerfile` in this docs/governance task. The `/var/*` layout below is an operator-owned overlay example, not the checked-in image shape. A later deployment task may choose to make it an image default with non-root filesystem tests.
 
-- [ ] **Step 1: Replace the obsolete operator examples**
+- [ ] **Step 1: Write governance tests for current truth and preserved history**
 
-Use this exact production profile shape in both operator documents:
+Extend `cmd/capability-gen/main_test.go` before editing docs. The tests must
+distinguish active claims from the explicitly labelled superseded history in
+`docs/design.md`; do not ban the string `deployment.profile` globally because
+the existing governance test intentionally preserves that historical evidence.
+Add assertions that the active documentation contains:
+
+- builtin/default/override/APISIXGO/CLI precedence and file-local APISIX
+  template expansion;
+- the four runtime paths and short `APISIXGO_RUNTIME_PATHS_*` aliases;
+- `config test` static-only limits and redacted-dump opaque-handle policy;
+- journal relocation/migration guidance;
+- the currently unqualified/fail-closed production snapshot.
+
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./cmd/capability-gen -run "^TestGovernedDocsContainNoActiveLegacyClaims$" -count=1'
+```
+
+Expected: FAIL on the still-active legacy/static-config claims, while the
+superseded-history oracle continues to pass.
+
+- [ ] **Step 2: Replace obsolete operator examples without inventing an image contract**
+
+Use this as an **operator overlay example**, never as the checked-in production
+or container shape:
 
 ```yaml
 compatibility_target: apisix-3.17
@@ -1769,63 +1819,105 @@ apisix_go:
     temp_dir: /var/tmp/apisix-go
 ```
 
-Document the exact precedence order, recursive-map/list-replacement/null behavior, provenance source kinds, APISIX `${{NAME}}` and `${{NAME:=fallback}}`, `APISIXGO_*`, repeatable `--set path=value`, strict unknown-field rejection, compatibility ignored-path reporting, and the removed `deployment.profile` error. Explain that bootstrap injects platform defaults, qualification requires all four paths to be nonempty and absolute, compatibility resolves explicit relative paths against the owning configuration file, and the durable journal is always `filepath.Join(data_dir, "apisix-go-store.db")`. Include these executable examples:
+State next to the example that the operator must create/mount and set ownership
+and permissions on all four directories before startup. The current Dockerfile
+creates only `/usr/local/apisix/{conf,logs,data}` and this task does not change
+it. `conf/config-production.yaml` intentionally omits the runtime-path overlay
+and etcd endpoint; do not claim otherwise and do not replace its existing
+deployment/etcd example in `docs/production-profile.md`.
+
+Document the exact precedence order, recursive-map/list-replacement/null behavior, provenance source kinds, APISIX `${{NAME}}` and `${{NAME:=fallback}}`, `APISIXGO_*`, repeatable `--set path=value`, strict unknown-field rejection, compatibility opaque ignored-path reporting, and the removed `deployment.profile` error. Explain that APISIX template expansion happens inside each parsed file layer; bootstrap injects platform defaults; qualification requires all four paths to be nonempty and absolute; compatibility resolves explicit relative paths against the selected override file directory, or the default file directory when no override exists; and the durable journal is always `filepath.Join(data_dir, "apisix-go-store.db")`.
+
+Document the intentional parser limits: YAML anchors, aliases, and merge keys
+fail closed, and LuaJIT hex-float template retyping is not qualified. Do not
+generalize “official YAML shape” beyond those explicit limits.
+
+Use `conf/config-example.yaml` for successful inspection examples:
 
 ```bash
-apisix config test -c conf/config-production.yaml
-apisix config dump --effective --redacted -c conf/config-production.yaml
-apisix config test -c conf/config.yaml --set proxy.max_in_flight=2048
-apisix config dump --effective --redacted -c conf/config.yaml --set apisix_go.runtime_paths.log_dir=relative-logs
+apisix config test -c conf/config-example.yaml
+apisix config dump --effective --redacted -c conf/config-example.yaml
+apisix config test -c conf/config-example.yaml --set proxy.max_in_flight=2048
+apisix config dump --effective --redacted -c conf/config-example.yaml --set apisix_go.runtime_paths.log_dir=relative-logs
 ```
 
-State that dump has no unredacted mode and that `plugin_attr`, admin keys, etcd password, and encryption keyring are redacted.
+Show the production command separately as **expected to fail closed on the
+repository snapshot** until the deployment supplies an etcd endpoint and the
+manifest records complete qualification evidence. Do not imply that a current
+production dump emits JSON.
 
-- [ ] **Step 2: Correct the design document's source-of-truth statements**
+State that `config test` validates only static read/merge/decode/profile
+contracts. It does not create/check directory permissions, open/migrate the
+journal, bind ports, contact etcd/providers, configure logging, or prove runtime
+readiness. State that dump has no unredacted mode. Its registered secret
+contract covers encryption keyring, admin keys, etcd password, sanitized etcd
+URL userinfo, plugin attributes, and discovery provider configuration. Unknown
+and APISIX-environment-derived paths use opaque correlation handles; original
+keys/values are absent. `AdminSSLCertKey` and `EtcdTLS.Key` are displayed as
+file paths, not inline private-key contents. The output still contains approved
+operational metadata (profiles, file paths, provider/plugin names, environment
+variable names, and sanitized hosts) and must be handled as a sensitive
+diagnostic artifact.
 
-Remove claims that Viper defines merge semantics, environment variables are automatic field overrides, or `deployment.profile` combines security and qualification. Link the static configuration section to the program specification and central capability manifest. Do not rewrite unrelated historical implementation sections.
+Add a journal migration runbook: stop the old process; back up the cwd
+`apisix-go-store.db`; create and permission `data_dir`; copy/verify the database
+to `data_dir/apisix-go-store.db`; start exactly one instance; validate resource
+generation; retain the backup for rollback. Warn that starting without moving
+the old journal presents an empty local state until providers repopulate it.
 
-- [ ] **Step 3: Run the required symbol and placeholder scans**
+- [ ] **Step 3: Correct current design ownership while retaining superseded history**
+
+Replace active claims that Viper defines merge semantics, environment variables are automatic field overrides, configuration is published globally, or `deployment.profile` combines security and qualification. Link the current static-configuration section to the program specification and central capability manifest. Update the active secret chain to `EffectiveConfig -> data_encryption.Service -> explicit resolver dependency`, and replace active `config.GlobalConfig.Plugins` wording with the startup plugin list. Preserve the explicitly labelled superseded history required by the governance oracle; do not rewrite unrelated historical evidence.
+
+- [ ] **Step 4: Run governance, generated-document, symbol, and placeholder scans**
 
 Run:
 
 ```bash
-rg -n 'GlobalConfig|data_encryption\.Configure|data_encryption\.Keyring|deployment\.profile|HTTPDataPlaneV1Profile|AutomaticEnv|--viper' cmd pkg conf docs/configuration.md docs/production-profile.md docs/design.md --glob '*.go' --glob '*.yaml' --glob '*.md'
+bash -lc 'source .envrc && go test ./cmd/capability-gen -run "^TestGovernedDocsContainNoActiveLegacyClaims$" -count=1'
+bash -lc 'source .envrc && go run ./cmd/capability-gen -repo-root . -check'
+rg -n 'GlobalConfig|data_encryption\.(Configure|Keyring)|HTTPDataPlaneV1Profile|AutomaticEnv|--viper' cmd pkg conf docs/configuration.md docs/production-profile.md docs/design.md --glob '*.go' --glob '*.yaml' --glob '*.md'
+rg -n 'deployment\.profile' docs/configuration.md docs/production-profile.md docs/design.md cmd/capability-gen/main_test.go
 rg -n 'apisix-go-store\.db' cmd pkg --glob '*.go'
 rg -n 'T[B]D|T[O]DO|implement l[a]ter|fill in d[e]tails|similar to T[a]sk' docs/superpowers/plans/2026-08-23-static-effective-config.md
 ```
 
-Expected: the first command prints only the intentional migration sentence saying `deployment.profile` is removed; the journal scan prints only `JournalPath` and exact path tests; the placeholder scan prints no line.
+Expected: both commands PASS; active-legacy scan prints no line; the dedicated
+`deployment.profile` scan contains only the current migration/tombstone text,
+the explicitly labelled superseded-history block, and its governance oracle;
+the journal scan contains `JournalPath`, exact path tests, and intentional
+migration documentation references only; placeholder scan prints no line.
 
-- [ ] **Step 4: Run the static-config milestone gate from the master plan**
+- [ ] **Step 5: Run the exact static-config milestone gate from the master plan**
 
 Run:
 
 ```bash
-bash -lc 'source .envrc && go test ./pkg/config ./cmd -run "^(TestLoadEffective|TestMergePresence|TestProfileSelection|TestConfigCommand)" -count=1 && make build'
+bash -lc 'source .envrc && go test ./pkg/config ./pkg/data_encryption ./pkg/plugin/base ./pkg/plugin ./pkg/server ./pkg/route ./pkg/store ./pkg/observability/metrics ./cmd -run "^(TestLoadEffective|TestMergePresence|TestProfileSelection|TestConfigCommand|TestDependencies|TestServerConfig)" -count=1 && make build'
 ```
 
-Expected: PASS.
+Expected: PASS. This is copied from the parent program and must not be narrowed.
 
-- [ ] **Step 5: Run impact-scoped regression and formatting gates**
+- [ ] **Step 6: Run impact-scoped regression and formatting gates**
 
 Run:
 
 ```bash
 bash -lc 'source .envrc && go test ./pkg/data_encryption ./pkg/store ./pkg/server ./pkg/route ./pkg/observability/metrics -run "(Config|Configured|Secret|Encryption|Builder|Server|TLS|Prometheus)" -count=1'
-bash -lc 'source .envrc && golangci-lint run ./cmd/... ./pkg/config/... ./pkg/data_encryption/... ./pkg/server/... ./pkg/route/... ./pkg/store/... ./pkg/observability/metrics/...'
+bash -lc 'source .envrc && golangci-lint run ./cmd/... ./pkg/config/... ./pkg/data_encryption/... ./pkg/plugin/base/... ./pkg/plugin/... ./pkg/server/... ./pkg/route/... ./pkg/store/... ./pkg/observability/metrics/...'
 git diff --check
 ```
 
 Expected: PASS. Do not substitute `go test ./...` or `make test`.
 
-- [ ] **Step 6: Perform the required dead-code and proxy-only audit**
+- [ ] **Step 7: Perform the required dead-code and proxy-only audit**
 
 List every deleted or renamed symbol from the diff, then run exact production-and-test call-site searches for `Load`, `loadConfigFiles`, `load`, `validateHTTPDataPlaneV1Profile`, `profileAwareRuntimeError`, `GlobalConfig`, `Configure`, `Keyring`, old `NewServer()`, old builder constructors, old `plugin.New(name)`, and zero-argument static config helpers. Delete unused imports, helpers, fixtures, and tests that only exercise removed globals. Do not preserve a wrapper for test convenience.
 
-- [ ] **Step 7: Commit documentation and milestone evidence**
+- [ ] **Step 8: Commit documentation and milestone evidence**
 
 ```bash
-git add docs/configuration.md docs/production-profile.md docs/design.md
+git add docs/configuration.md docs/production-profile.md docs/design.md cmd/capability-gen/main_test.go
 git commit -m "docs(config): document effective configuration contract"
 ```
 
@@ -1837,7 +1929,12 @@ git commit -m "docs(config): document effective configuration contract"
 - `LoadEffective` has no ambient reads or runtime side effects; bootstrap alone supplies platform defaults and the environment snapshot.
 - `apisix_go.runtime_paths.*`, their `APISIXGO_RUNTIME_PATHS_*` aliases, canonical resolution, qualification checks, redacted output, and `JournalPath` have focused tests.
 - The only runtime cutover commit removes both old config and encryption global paths; no adapter remains.
-- The redacted renderer cannot emit secret values or ignored-field values.
+- The redacted renderer cannot emit values or raw keys from registered secret
+  containers/fields, APISIX-environment-derived dynamic paths, or ignored
+  fields; docs list the approved operational metadata that remains visible.
+- Operator docs separate checked-in configuration, bootstrap defaults, and
+  operator overlays; they do not call static validation a runtime-readiness
+  check and include the journal relocation/rollback boundary.
 - All test and implementation steps contain exact code, commands, and expected red/green results.
 - The final symbol scan and dead-code audit cover production and tests.
 

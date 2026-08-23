@@ -156,9 +156,10 @@ Shared-file ownership is serial:
 - [ ] Define only the minimal read interface in `pkg/plugin/base`: credential-key lookup, anonymous-consumer lookup, and consumer-group lookup. Put that interface in `base.Dependencies`; the concrete runtime value satisfies it without creating a reverse dependency.
 - [ ] Make the read API request-time lookup only and return defensive copies. Construction/materialization stays in compiler preparation code and accepts the manifest catalog plus final capability; preparation errors never become request-time lookup errors.
 - [ ] Add `Consumers` to the additive dependency bundle alongside Config, Secrets, Metadata, and Tasks.
-- [ ] Introduce scoped secret materialization with explicit `context.Context`, immutable base `secret.Scope`, and `secret.GenerationCapability`. Plugin code may change only `Field`.
-- [ ] Add `Attempt` to `plugin.InstanceKey`; reject zero attempts and include it in equality/string identity.
-- [ ] Keep legacy constructors/materializers callable only for existing production while leaf work proceeds. Mark them transitional; do not let new compiler code use them.
+- [ ] Introduce additive `ScopedSecretMaterializer.MaterializeScopedSecrets(context.Context, secret.Scope, secret.GenerationCapability)` and `MaterializeScopedPluginSecrets`. The wrapper rejects an invalid capability, non-empty base field, and generation/attempt mismatch before plugin code. Plugin code may change only `Field`.
+- [ ] Add `Generation()` to `GenerationCapability` so the wrapper can validate the complete base scope before dispatch.
+- [ ] Add `Attempt` to `plugin.InstanceKey` through additive `NewAttemptInstanceKey`; reject zero attempts and include it in equality/string identity. Add `BindAttemptResolvedPlugin` for the new compiler path.
+- [ ] Keep legacy `SecretMaterializer`, `MaterializePluginSecrets`, `NewInstanceKey`, and `BindResolvedPlugin` callable only for existing production while leaf work proceeds. Mark them transitional; new compiler code must use only the attempt-scoped variants. Delete/rename the legacy variants atomically in C6.6 after all callers migrate.
 - [ ] Define a redacted `SecretDescriptor` containing source class plus digest only. It must not accept/store raw input.
 - [ ] Add tests for cross-attempt key separation, capability/scope mismatch rejection before resolver access, redacted failures, and immutable consumer lookup copies.
 - [ ] Run focused plugin/base/runtime/secret tests plus `make build`.

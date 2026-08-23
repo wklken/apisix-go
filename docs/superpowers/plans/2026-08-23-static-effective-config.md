@@ -401,6 +401,9 @@ to the mapping/sequence containers and every descendant leaf below the expanded
 key; variables used by a descendant value are unioned with them. Sort and deduplicate the names before storing
 `FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(names, ","), Explicit: true}`.
 Expansion must retain the original file `pathBase`.
+Reject an APISIX environment expansion whose resulting key or value is not
+valid UTF-8 before it enters the node tree; the error contains only the safe
+field location, never the environment value.
 
 Duplicate literal keys may name the literal field path. A collision caused by
 one or more expanded keys must report the unexpanded parent path and involved
@@ -594,7 +597,10 @@ slices, arrays, nil, and typed-nil maps/slices. Named primitives are accepted by
 underlying kind; typed nil becomes explicit null. Validate `json.Number`
 immediately as a finite JSON number. Reject floats, pointers, structs, malformed
 numbers, and non-string-key maps without printing their values. Verify that
-`mustNodeFromAny` panics only for an invalid compile-time builtin.
+`mustNodeFromAny` panics only for an invalid compile-time builtin. Reject invalid
+UTF-8 scalar strings and map keys so `encoding/json` cannot replace distinct
+byte strings with the same U+FFFD provenance path; include the invalid-byte vs
+literal-U+FFFD collision case.
 
 Both overlay functions are failure-atomic: sort and completely validate/convert
 all selected inputs into detached nodes before changing `root`. On any error,

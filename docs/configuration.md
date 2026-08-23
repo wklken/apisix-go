@@ -19,13 +19,25 @@ endpoints), or mounts an operator-managed configuration override. The endpoint
 must be supplied explicitly; the image does not fall back to a local etcd
 address.
 
-The production HTTP allowlist is deliberately limited to `request-id`, `cors`,
-`key-auth`, `jwt-auth`, `basic-auth`, and `prometheus`. Stream proxy mode and
-stream plugins are disabled, the deployment uses the data-plane etcd provider,
-etcd TLS verification is enabled, and no admin or data-encryption key material
-is embedded in the image defaults. The selected `deployment.profile:
-http-data-plane-v1` is a conservative candidate profile; it still awaits the
-release and operations qualification described in
+The checked-in production override selects three independent axes:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+```
+
+`compatibility_target` selects the pinned observable APISIX contract.
+`security_profile` selects compatibility-preserving or versioned strict
+security controls. `qualification_profile` selects an evidence-backed
+operating contract. Strict security is independent of qualification. An empty
+qualification profile makes no qualification claim. Selecting
+`http-data-plane-v1` fails closed when any required manifest evidence is
+blocked; current required plugins and blocking evidence are shown only in the
+[generated plugin capability status](plugins.md).
+
+The production override is a conservative candidate configuration; it still
+awaits the release and operations qualification described in
 [`production-profile.md`](production-profile.md) and the
 [`production release runbook`](runbooks/production-release.md). The release
 workflow and metadata checks define a qualification path; they do not by
@@ -38,24 +50,25 @@ TCP/UDP stream listeners and `stream_plugins`, at least one valid
 no process access-log settings. The checked-in production override uses a
 60-second `client_body_timeout`.
 Every etcd endpoint must use `https://` and `deployment.etcd.tls.verify` must
-be explicitly `true`. The HTTP plugin list must be exactly this ordered list:
-`request-id`, `cors`, `key-auth`, `jwt-auth`, `basic-auth`, `prometheus`.
-In this candidate profile, enabled effective `key-auth`, `basic-auth`, and
-`jwt-auth` configurations must set `hide_credentials: true`; `jwt-auth` must
-also include literal `exp` in `claims_to_verify`. Effective HTTPS and gRPCS
-upstreams must set `tls.verify: true` after inline, ID, or service resolution.
-Disabled auth configurations remain inert. The empty compatibility profile
-retains the APISIX-compatible defaults for these dynamic fields.
-The profile also excludes Kafka PubSub and upstreams with `scheme: kafka`;
-those remain available only in the empty compatibility profile.
+be explicitly `true` under strict security. The qualification profile's
+required plugin set comes from `pkg/capability/manifest.yaml`, not this prose;
+the effective HTTP plugin list must match that set. Under strict security,
+enabled effective `key-auth`, `basic-auth`, and `jwt-auth` configurations must
+set `hide_credentials: true`; `jwt-auth` must also include literal `exp` in
+`claims_to_verify`. Effective HTTPS and gRPCS upstreams must set
+`tls.verify: true` after inline, ID, or service resolution. Disabled auth
+configurations remain inert. `security_profile: compat` retains the
+APISIX-compatible defaults for these dynamic fields. Kafka PubSub and upstreams
+with `scheme: kafka` remain APISIX compatibility owners but are outside the
+HTTP qualification contract, independent of security selection.
 
 NGINX HTTP and stream process access-log settings are unsupported in every
 profile, not only in `http-data-plane-v1`: any explicitly non-zero boolean or
 numeric value, or non-empty string value, fails configuration load. Route/plugin
 loggers are the supported compatibility/general-plugin request-logging
-mechanism, whose output is owned by the Go request pipeline. The exact
-six-plugin `http-data-plane-v1` allowlist contains no request logger and makes
-no request-logging egress claim.
+mechanism, whose output is owned by the Go request pipeline. Qualification
+selection makes no request-logging egress claim; consult the generated status
+for the current required plugin set.
 
 `/livez` returns HTTP 200 while the process is alive. `/readyz` returns HTTP
 503 until configuration has been applied and the configured etcd provider is
@@ -82,20 +95,26 @@ Global-rule and shared generation setup failures remain fail-closed.
 Provider-side and build-snapshot quarantine counts are aggregated
 independently, so clearing one source cannot hide the other.
 
-Plugin support status is verified by a separate read-only `Plugin Status
-Contract` workflow. It creates the same check on every pull request so it can
-be required without path-filtered PRs remaining pending, and runs the exact
-`TestSupportedPluginManifestSelection` gate. Pushes to `master` are limited to
-changes in `docs/plugins.md`, plugin manifests, the selector test, or the
-workflow itself. This keeps the status matrix independent from the broad CI
-path, which intentionally ignores Markdown-only changes.
+`pkg/capability/manifest.yaml` is the only editable plugin, behavior, evidence,
+qualification, platform, gap, and divergence ledger. `docs/plugins.md` is its
+generated projection and must not be edited as an independent matrix. Verify
+the manifest/ADR/generated-document contract without writing files:
+
+```bash
+go run ./cmd/capability-gen -repo-root . -check
+```
+
+Selection derives the required set and evidence result from the manifest and
+fails closed on any mismatch or blocked requirement.
 
 ## Applied by the Go runtime
 
 | Configuration | Go behavior |
 | --- | --- |
 | `apisix.node_listen` | Opens every configured TCP HTTP listener. Both `9080` and `{port: 9080, ip: ...}` forms are accepted. |
-| `deployment.profile` | Empty selects compatibility mode; `http-data-plane-v1` enables the strict candidate HTTP data-plane contract documented in [`production-profile.md`](production-profile.md). Other values are rejected. |
+| `compatibility_target` | Selects the pinned observable compatibility contract. The current accepted value is `apisix-3.17`; other values fail startup. |
+| `security_profile` | Selects `compat` or `strict` security behavior independently from compatibility and qualification. |
+| `qualification_profile` | Empty makes no qualification claim. `http-data-plane-v1` is selectable only when its manifest-owned required set has complete required evidence; otherwise startup fails closed. |
 | `apisix.proxy_mode` and `apisix.stream_proxy.tcp` | `http` leaves stream settings unused. When `proxy_mode` contains `stream`, the bounded raw-TCP/MQTT stream runtime requires at least one TCP listener and starts only after routes, upstream references, listener binds, and supported flags validate successfully. |
 | `plugins`, `stream_plugins`, and `plugin_attr` | Control plugin registration, stream plugin selection, and plugin-specific settings. The Prometheus lifetime and cardinality contract is documented below. |
 | `graphql.max_size` | Applies to the GraphQL limit and GraphQL proxy-cache plugins. |
@@ -261,10 +280,11 @@ do not include request/response start lines and headers as NGINX's
   inactivity limits which reset when body I/O makes progress. `read` also
   limits the wait for response headers. Long-idle WebSocket or gRPC streams
   must set an explicit `timeout` larger than 60s, same as APISIX.
-- `tls.verify: true` validates an HTTPS upstream certificate. In the empty
-  compatibility profile, omitted or false preserves APISIX-compatible insecure
-  verification behavior; `http-data-plane-v1` rejects an effective HTTPS or
-  gRPCS upstream unless `tls.verify: true`.
+- `tls.verify: true` validates an HTTPS upstream certificate. Under
+  `security_profile: compat`, omitted or false preserves APISIX-compatible
+  insecure verification behavior; `security_profile: strict` rejects an
+  effective HTTPS or gRPCS upstream unless `tls.verify: true`, independently
+  of qualification selection.
 - Automatic retries require a replayable body. POST and PATCH additionally require `Idempotency-Key` or `X-Idempotency-Key`.
 - `proxy-control` buffers at most 8 MiB in memory. A larger buffered request is rejected with HTTP 413.
 - An invalid individual route is quarantined as a unit at initial build and
@@ -285,13 +305,25 @@ do not include request/response start lines and headers as NGINX's
   compilation. This is independent of SSL `status`, which already skips
   `status == 0`.
 - HTTP-family upstreams accept only the implemented `roundrobin` type. `chash` and other unsupported types are rejected during route compilation instead of silently falling back to weighted round robin.
-- `http-data-plane-v1` rejects `scheme: kafka` upstreams because Kafka PubSub is a separate compatibility subsystem; the empty compatibility profile retains the Kafka owner.
+- `qualification_profile: http-data-plane-v1` excludes `scheme: kafka`
+  upstreams because Kafka PubSub is a separate compatibility subsystem. The
+  Kafka owner remains available under the selected compatibility target,
+  independent of the security and qualification axes.
 - Without explicit HTTP timeout settings, request headers are limited to 10 seconds and idle keep-alive connections to 90 seconds. Total read/write timeouts remain disabled for streaming compatibility.
 - Each upstream is served by a reusable cluster that owns one connection pool, one retry/progress wrapper chain, and one load balancer. Clusters are interned by their complete effective configuration, so unchanged upstreams keep their connection pools across unrelated route reloads, while changed upstreams receive new clusters. Route generations hold reference-counted leases and release them only after in-flight requests drain.
 - When a cluster reaches its in-flight limit, the next request is rejected with HTTP 503. Overload is fail-fast and never queued.
 - The supported `checks.active` HTTP/HTTPS probe subset (`type`, `http_path`, `host`, `timeout`, `concurrency`, `healthy.interval`/`successes`/`http_statuses`, and `unhealthy.interval`/`http_failures`/`tcp_failures`/`timeouts`/`http_statuses`) recovers and quarantines targets. Active defaults are healthy statuses `{200,302}` and HTTP/TCP/timeout failure thresholds `5/2/3`; the passive status defaults remain separate. When every target is unhealthy the pool fails open and keeps forwarding, with the state exposed through metrics and logs.
 - `apisix.disable_upstream_healthcheck: true` omits active probes from cluster configuration while retaining ordinary weighted selection.
 - Route generations are retired asynchronously: publishing a new handler never blocks behind a long-lived request on the previous generation.
+
+The last statement describes the current pre-convergence implementation. Its
+retirement path may close hijacked connections, and `SIGHUP` currently drains
+and exits with an unsupported-reload error. It is not the governing lifecycle
+target. The later
+[supervisor-generation plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+targets generation handoff that preserves ordinary hijacked connections; that
+replacement is not implemented yet. See the
+[legacy conflict ledger](architecture/legacy-conflicts.md).
 
 ## Standalone file-driven mode
 
@@ -354,20 +386,25 @@ runtime features called out below is rejected rather than silently ignored:
   discovery providers (`dns`, Eureka, Nacos, Consul, and Kubernetes). Top-level
   discovery activation fails startup; route/upstream discovery compatibility
   fields are preserved and rejected at route compilation.
-- Exact APISIX/OpenResty etcd watch resync and lifecycle semantics. The
-  production profile uses its bounded reachability probe for readiness and
+- Exact APISIX/OpenResty etcd watch resync semantics. The production
+  qualification profile uses its bounded reachability probe for readiness and
   does not claim OpenResty timing parity.
 - WebSocket upgrades require effective route or service
   `enable_websocket: true`. Every WebSocket upgrade attempt skips response
   callbacks; request, authentication, access, before-proxy, and log phases
-  still run. For `http-data-plane-v1`, the admission and timeout guarantee
-  applies only to profile-allowed HTTP reverse-proxy tunnels; retired route
-  generations close them during generation shutdown. Kafka PubSub compatibility
-  routes are outside this profile contract.
+  still run. For `qualification_profile: http-data-plane-v1`, the admission and
+  timeout guarantee applies only to qualification-allowed HTTP reverse-proxy
+  tunnels. In the current pre-convergence implementation, retired generations
+  may close those tunnels during shutdown. Kafka PubSub compatibility routes
+  are outside this qualification contract.
 - Zipkin is v2-only. OTel rejects `set_ngx_var: true` and any non-zero
   `inactive_timeout`; collector `request_timeout` remains supported.
-- `SIGHUP` performs graceful shutdown and returns an unsupported-reload error;
-  it is not an in-process configuration reload.
+- The current pre-convergence `SIGHUP` implementation performs graceful
+  shutdown and returns an unsupported-reload error; it is not an in-process
+  configuration reload. The governing supervisor-generation target hands a
+  validated generation to a replacement process while preserving ordinary
+  hijacked connections. That target belongs to a later child plan and is not
+  yet delivered.
 
 No placeholder implementation is added for these native or separate-runtime
 features. They should be treated as unsupported when deploying an official

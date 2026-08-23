@@ -1,5 +1,11 @@
 # Convergence Review Decisions
 
+> **Historical remediation evidence.** This ledger remains evidence for
+> completed remediations. Its prospective architecture decisions are
+> non-governing wherever the
+> [legacy conflict ledger](../architecture/legacy-conflicts.md) records a
+> superseding contract.
+
 This ledger records confirmed findings from the convergence review and the
 stacked remediations that closed them. The original convergence PR left these
 items record-only; later PRs applied the locked last-good, trust-boundary,
@@ -105,6 +111,13 @@ and compatibility contracts.
 
 - Status: remediating / fixed
 - Decision: retain a documented compatibility subset. One pre-materialization entrypoint (`validateRouteCompatibility`) runs the current checks, including host rules. Do not import the full APISIX 3.17 schema. Evidence: `fix-compat-contracts`.
+
+> **Superseded 2026-08-23:** ARCH-03 remains evidence for the remediation it
+> closed, but its prospective subset decision no longer governs. The
+> [program specification](../superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md)
+> now requires the pinned observable APISIX HTTP contract with explicit gap
+> accounting; see the [compatibility contract](../architecture/compatibility-contract.md)
+> and [legacy conflict ledger](../architecture/legacy-conflicts.md).
 
 ### ARCH-04: HTTP fixture observation window
 

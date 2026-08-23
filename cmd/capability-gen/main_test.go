@@ -326,6 +326,136 @@ func TestArchivedPluginsSnapshotIntegrity(t *testing.T) {
 	}
 }
 
+func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	normalize := func(content string) string {
+		content = strings.ReplaceAll(content, "\n> ", "\n")
+		return strings.Join(strings.Fields(content), " ")
+	}
+	require := func(path, content string, required ...string) {
+		t.Helper()
+		content = normalize(content)
+		for _, claim := range required {
+			claim = normalize(claim)
+			if !strings.Contains(content, claim) {
+				t.Errorf("%s is missing governed claim %q", path, claim)
+			}
+		}
+	}
+	reject := func(path, content string, forbidden ...string) {
+		t.Helper()
+		content = normalize(content)
+		for _, claim := range forbidden {
+			claim = normalize(claim)
+			if strings.Contains(content, claim) {
+				t.Errorf("%s retains active legacy claim %q", path, claim)
+			}
+		}
+	}
+
+	for _, path := range []string{"docs/configuration.md", "docs/production-profile.md"} {
+		content := read(path)
+		require(
+			path,
+			content,
+			"compatibility_target",
+			"security_profile",
+			"qualification_profile",
+			"Strict security is independent of qualification.",
+			"An empty qualification profile makes no qualification claim.",
+			"fails closed when any required manifest evidence is blocked",
+		)
+		reject(
+			path,
+			content,
+			"`deployment.profile` | Empty selects compatibility mode",
+			"deployment.profile: http-data-plane-v1",
+			"TestSupportedPluginManifestSelection",
+			"exact six-plugin",
+			"six-plugin allowlist",
+			"| `basic-auth` | `converted_upstream=stale`",
+		)
+	}
+
+	designPath := "docs/design.md"
+	design := read(designPath)
+	for _, section := range []string{
+		"Historical behavior before convergence: candidate profile",
+		"Historical behavior before convergence: lifecycle",
+		"Historical behavior before convergence: route schema",
+	} {
+		require(designPath, design, section)
+	}
+	require(
+		designPath,
+		design,
+		"`deployment.profile` accepts either the empty compatibility value",
+		"Retiring a route generation closes its WebSocket connections.",
+		"It does not import the full pinned APISIX 3.17 route schema.",
+		"Superseded 2026-08-23",
+		"superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
+		"architecture/compatibility-contract.md",
+		"architecture/legacy-conflicts.md",
+	)
+
+	decisionsPath := "docs/reviews/convergence-decisions.md"
+	decisions := read(decisionsPath)
+	require(
+		decisionsPath,
+		decisions,
+		"Historical remediation evidence",
+		"prospective architecture decisions are non-governing",
+		"- Decision: retain a documented compatibility subset. One pre-materialization entrypoint (`validateRouteCompatibility`) runs the current checks, including host rules. Do not import the full APISIX 3.17 schema. Evidence: `fix-compat-contracts`.",
+		"Superseded 2026-08-23:",
+		"../architecture/legacy-conflicts.md",
+	)
+	normalizedDecisions := normalize(decisions)
+	arch03Decision := strings.Index(normalizedDecisions, "- Decision: retain a documented compatibility subset.")
+	arch04 := strings.Index(normalizedDecisions, "### ARCH-04:")
+	superseded := strings.Index(normalizedDecisions, "Superseded 2026-08-23:")
+	if arch03Decision < 0 || superseded < arch03Decision || arch04 < superseded {
+		t.Errorf("%s does not place the dated supersession immediately after ARCH-03", decisionsPath)
+	}
+
+	ledgerPath := "docs/architecture/legacy-conflicts.md"
+	ledger := read(ledgerPath)
+	for _, historicalSource := range []string{
+		"`docs/design.md`, candidate profile section",
+		"`docs/design.md`, lifecycle section",
+		"`docs/design.md`, route schema section",
+		"`docs/plugins.md` before governance",
+		"`docs/reviews/convergence-decisions.md`, ARCH-03",
+		"`docs/configuration.md`, lifecycle/SIGHUP",
+		"`docs/production-profile.md`, lifecycle/SIGHUP",
+	} {
+		require(ledgerPath, ledger, historicalSource)
+	}
+	require(
+		ledgerPath,
+		ledger,
+		"../superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
+		"compatibility-contract.md",
+		"../plugins.md",
+		"../history/plugins-2026-08-23.md",
+	)
+
+	production := read("docs/production-profile.md")
+	require("docs/production-profile.md", production, "[generated plugin capability status](plugins.md)")
+	reject(
+		"docs/production-profile.md",
+		production,
+		"none of its six required plugins",
+		"| Required plugin | Current non-passing required evidence |",
+	)
+}
+
 func loadManifest(t *testing.T) *capability.Manifest {
 	t.Helper()
 	manifest, err := capability.Load()

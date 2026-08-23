@@ -39,6 +39,14 @@ qualification claim. `qualification_profile` accepts the empty value or
 axis values fail startup, and explicitly activated unsupported runtime features
 still fail closed in every selection.
 
+Strict security is independent of qualification. An empty qualification
+profile makes no qualification claim. Selection of `http-data-plane-v1` fails
+closed when any required manifest evidence is blocked. The capability manifest
+owns the required set; the qualified set contains only entries in the APISIX
+namespace with full behavior, the selected domain, and every required evidence
+claim verified or concretely not applicable. A required-set/qualified-set
+mismatch fails closed.
+
 ## Exact profile requirements
 
 The checked-in production reference selects both `strict` security and
@@ -61,17 +69,10 @@ of the following:
   `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
   Go applies it together with the header timeout as `net/http`'s combined
   `ReadTimeout`, because `net/http` has no body-only server deadline.
-- The ordered HTTP plugin list is exactly:
-
-  ```yaml
-  plugins:
-    - basic-auth
-    - cors
-    - jwt-auth
-    - key-auth
-    - prometheus
-    - request-id
-  ```
+- The effective HTTP plugin list matches the required set owned by
+  `pkg/capability/manifest.yaml`. This document does not maintain a second
+  plugin inventory; current membership, qualification result, and blockers are
+  in the [generated plugin capability status](plugins.md).
 
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
@@ -82,8 +83,7 @@ of the following:
   Tencent CLS require a non-empty effective flat-string `log_format` from
   effective resource/plugin configuration or plugin metadata before creating a
   client or batch processor; effective resource/plugin configuration wins over
-  plugin metadata. The exact six-plugin candidate allowlist contains no
-  request logger and makes no request-logging egress claim.
+  plugin metadata. Qualification makes no request-logging egress claim.
 - Prometheus `http_status`, `http_latency`, and `bandwidth` each have an
   independent admitted-tuple budget controlled by
   `plugin_attr.prometheus.max_http_series` (default `10000`, integer range
@@ -121,15 +121,15 @@ network controls remain operator responsibilities.
 
 ## External ingress request-log qualification
 
-The exact six-plugin allowlist contains no in-process request logger. A
-deployment that relies on an external TLS-terminating ingress must therefore
-provide a redacted request-log evidence bundle before this profile can be
-qualified. The bundle must demonstrate a request ID, method, normalized path
-without query-string secrets, status, latency, upstream identity, retention
-owner, and trace correlation for representative successful, rejected, and
-failed requests. These are ingress evidence requirements; the Go runtime does
-not claim to emit those fields, and this document does not mutate or verify the
-external logging system.
+This qualification profile makes no in-process request-logging guarantee. A
+deployment that relies on an external TLS-terminating ingress must provide a
+redacted request-log evidence bundle before it can be qualified. The bundle
+must demonstrate a request ID, method, normalized path without query-string
+secrets, status, latency, upstream identity, retention owner, and trace
+correlation for representative successful, rejected, and failed requests.
+These are ingress evidence requirements; the Go runtime does not claim to emit
+those fields, and this document does not mutate or verify the external logging
+system.
 
 ## State ownership
 
@@ -179,8 +179,9 @@ callbacks; request, authentication, access, before-proxy, and log phases still
 run. For this profile, successful HTTP reverse-proxy tunnels remain subject to
 cluster admission and timeout limits; Kafka PubSub compatibility tunnels are
 outside the profile contract.
-When a route generation retires, its WebSocket connections are closed as part
-of generation shutdown.
+In the current pre-convergence implementation, retiring a route generation may
+close its WebSocket connections as part of generation shutdown. This is an
+implementation limitation, not the governing lifecycle target.
 
 ## Readiness and reload behavior
 
@@ -194,9 +195,15 @@ of generation shutdown.
   process entrypoint. An invalid individual HTTP route is quarantined instead:
   valid routes start, the invalid route receives 404, and readiness remains 503
   until the quarantine is cleared.
-- `SIGHUP` performs graceful shutdown and returns an unsupported-reload error.
-  It is not an in-process reload; start a new process with the new merged
-  configuration after the old generation has drained.
+- The current pre-convergence `SIGHUP` path performs graceful shutdown and
+  returns an unsupported-reload error; it does not hand off a live generation.
+
+The governing
+[supervisor-generation target](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+validates a replacement generation before handoff and preserves ordinary
+hijacked connections. That target belongs to a later child plan and is not yet
+implemented. See the
+[legacy conflict ledger](architecture/legacy-conflicts.md).
 
 ## Candidate authentication and TLS admission
 
@@ -242,25 +249,16 @@ testing. Until those gates are complete, keep the global not-ready warning and
 do not advertise `http-data-plane-v1` as production qualified. The first
 release also has no previous immutable digest, so rollback qualification cannot
 be claimed until a distinct older published digest exists and is exercised.
-The independent plugin-status workflow must create a check on every pull
-request so it can remain required without path-filtered PRs staying pending.
-Its exact selector pass is not release qualification evidence; `master` push
-triggers remain scoped to the status matrix, manifests, selector test, and
-workflow paths.
+The manifest/ADR/generated-document contract is checked read-only with
+`go run ./cmd/capability-gen -repo-root . -check`; a passing drift check is not
+release qualification evidence.
 The final workflow must retain the protected `production-release` reviewers and
 wait timer; the current environment's protected-branch-only tag policy must be
 updated by an operator to permit the intended `v*` tag before publication.
 
-The current capability manifest intentionally prevents selecting
-`qualification_profile: http-data-plane-v1`: none of its six required plugins
-satisfies every required evidence claim. Startup fails closed until the
-manifest records all of the following gaps as passing evidence:
-
-| Required plugin | Current non-passing required evidence |
-| --- | --- |
-| `basic-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
-| `cors` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
-| `jwt-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
-| `key-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
-| `prometheus` | `converted_upstream=deferred`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
-| `request-id` | `converted_upstream=stale`; `differential` and `failure` missing |
+The current selection result and every blocking evidence claim are derived from
+the manifest and published in the
+[generated plugin capability status](plugins.md). Do not copy its numeric
+summary or per-plugin evidence rows here; selection fails closed until that
+generated projection shows that the manifest-owned required set equals the
+qualified set.

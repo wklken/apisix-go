@@ -73,6 +73,8 @@ bash scripts/release_gate_test.sh
 
 ### Candidate HTTP data-plane profile and lifecycle
 
+#### Historical behavior before convergence: candidate profile
+
 `deployment.profile` accepts either the empty compatibility value or the
 strict `http-data-plane-v1` candidate. The strict profile is an ordered,
 HTTP-only contract: it uses the six-plugin allowlist
@@ -88,6 +90,13 @@ post-merge RC/final release and operations evidence and does not change the
 repository-wide not-ready status. The first release has no previous immutable
 digest, so rollback qualification remains open until a distinct older
 published digest is exercised.
+
+> **Superseded 2026-08-23:** the governing design has three independent
+> selection axes and manifest-derived qualification. See the
+> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
+> retained only as historical evidence of the pre-convergence candidate.
 
 NGINX HTTP and stream process access-log settings are unsupported in both the
 compatibility and candidate profiles: any explicitly non-zero boolean or
@@ -121,6 +130,8 @@ of the implemented TLS boundary; direct Internet exposure still requires that
 frontend TLS boundary or a trusted TLS-terminating ingress whose source CIDRs
 are configured.
 
+#### Historical behavior before convergence: lifecycle
+
 WebSocket upgrades are admitted only when the effective route or service sets
 `enable_websocket: true`. Every WebSocket upgrade attempt skips response
 callbacks while request, authentication, access, before-proxy, and log phases
@@ -132,6 +143,14 @@ returns an unsupported-reload error, so configuration changes require a new
 process rather than an in-process reload. Zipkin is v2-only, and OTel rejects
 `set_ngx_var` and non-zero `inactive_timeout` while retaining collector
 `request_timeout`.
+
+> **Superseded 2026-08-23:** route retirement and `SIGHUP` above describe the
+> current pre-convergence implementation limitation, not the governing target.
+> The later [supervisor-generation child plan](superpowers/plans/2026-08-23-supervisor-worker-platform.md)
+> targets generation handoff that preserves ordinary hijacked connections.
+> See the [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md).
 
 Configuration publication separates deterministic per-resource validation
 from route-scoped and generation-wide semantic validation. New route,
@@ -156,6 +175,8 @@ failed plugin initialization rolls back generation public API registrations.
 `BuildStrict` remains available for strict validation tests, while runtime
 publication uses the route-quarantining build entry point.
 
+#### Historical behavior before convergence: route schema
+
 Route publication uses one pre-materialization entrypoint,
 `validateRouteCompatibility`, for the Go data-plane compatibility subset.
 It does not import the full pinned APISIX 3.17 route schema. The subset
@@ -166,6 +187,15 @@ non-empty `remote_addrs` are rejected. Empty `hosts` fail closed, and
 invalid wildcard host patterns are rejected before publication. Plugin
 materialization, secret ownership, and upstream resolution stay on the
 existing post-entrypoint path.
+
+> **Superseded 2026-08-23:** the governing route target is the pinned observable
+> APISIX contract with explicit gap accounting, not preservation of this subset
+> as the final compatibility boundary. See the
+> [program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md),
+> [compatibility contract](architecture/compatibility-contract.md), and
+> [legacy conflict ledger](architecture/legacy-conflicts.md). The text above is
+> retained as historical implementation evidence until the later HTTP
+> compatibility child plan converges it.
 
 ## APISIX 3.17 Protocol Bridge Design
 

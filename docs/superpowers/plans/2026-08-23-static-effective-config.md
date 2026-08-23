@@ -1248,25 +1248,83 @@ git commit -m "refactor(config): cut over to explicit effective configuration"
 - Create: `cmd/config_test.go`
 - Modify: `cmd/root.go`
 - Modify: `cmd/root_test.go`
+- Modify: `cmd/version.go`
+- Modify: `pkg/config/types.go`
 - Create: `pkg/config/redact.go`
 - Test: `pkg/config/effective_test.go`
 
 **Interfaces:**
-- Consumes: `capability.Load()`, `config.DefaultRuntimePaths`, `config.LoadEffective`, root `--config/-c`, and root `--set path=value`.
-- Produces: `config.RenderEffectiveRedacted(*EffectiveConfig) ([]byte, error)`, `apisix config test`, and `apisix config dump --effective --redacted`; both commands stop after static load/validation and never create `server.Server`.
+- Consumes: `capability.Load()`, `config.DefaultRuntimePaths() (RuntimePaths, error)`, `config.LoadEffective(LoadRequest) (*EffectiveConfig, error)`, `config.ValidateStaticOverridePath(string) error`, Task 3's canonical provenance-path syntax, root `--config/-c`, and root `--set path=value`.
+- Produces: `config.RenderEffectiveRedacted(*EffectiveConfig) ([]byte, error)`, `newRootCommand() *cobra.Command`, `newVersionCommand() *cobra.Command`, `apisix config test`, and `apisix config dump --effective --redacted`.
+- Boundary: bootstrap may snapshot the process environment, resolve platform paths, resolve absolute file names, and read static files and the embedded manifest. `config.LoadEffective` remains the deterministic request-owned loader. Config inspection commands stop after that loader and never configure logging, construct encryption/store/server owners, create a journal or runtime directory, bind a listener, start a provider, or create a goroutine.
 
-- [ ] **Step 1: Write the command tests before registering the command**
+- [ ] **Step 1: Write the command lifecycle and `--set` parser tests before registering the command**
+
+Add table-driven tests in `cmd/config_test.go` and replace all package-global
+`rootCmd`, `versionCmd`, and `cfgFile` use in `cmd/root_test.go` with a fresh
+`newRootCommand()` per test. Cover these exact contracts:
+
+- two root commands have independent `--config`, `--set`, output, error, and
+  parsed-flag state;
+- `version` works on two independently constructed roots, proving that no
+  child `*cobra.Command` is reparented or reused;
+- `--config/-c` and `--set` are persistent flags and work before or after the
+  `config test` / `config dump` subcommand tokens;
+- `--set` uses `StringArrayVar`, not `StringSliceVar`, so commas remain part of
+  one value;
+- split only the first `=` (`apisix.id=a=b` produces `a=b`), accept an empty
+  value, and reject missing `=`, an empty path, duplicate paths, unknown paths,
+  and the removed `deployment.profile` tombstone;
+- every malformed-input error excludes the raw `--set` argument and its value.
+
+The parser must return this value-free syntax error; do not append the raw
+argument because it may contain a credential:
+
+```go
+func parseSetOverrides(values []string) (map[string]any, error) {
+	result := make(map[string]any, len(values))
+	for _, raw := range values {
+		path, value, ok := strings.Cut(raw, "=")
+		if !ok || path == "" {
+			return nil, errors.New("--set must use path=value")
+		}
+		if _, exists := result[path]; exists {
+			return nil, fmt.Errorf("--set path %q is repeated", path)
+		}
+		if err := config.ValidateStaticOverridePath(path); err != nil {
+			return nil, err
+		}
+		result[path] = value
+	}
+	return result, nil
+}
+```
+
+Use a sentinel such as `must-not-appear` in malformed values and assert that it
+is absent from both `err.Error()` and the captured stdout/stderr. Unknown file
+fields remain a compatibility-mode input feature; they never make an unknown
+CLI override path valid. A schema leaf whose Go type cannot decode from a CLI
+string is a valid path followed by a redacted typed-decode error, not an excuse
+to add a second CLI schema.
+
+- [ ] **Step 2: Write the command behavior and side-effect tests**
+
+Every command uses `cobra.NoArgs`. `config test` prints exactly one line;
+`config dump` succeeds only when both safety flags are true:
 
 ```go
 func TestConfigCommandTestValidatesWithoutStartingServer(t *testing.T) {
-	path := writeCommandConfig(t, validCommandConfig)
+	dataDir := filepath.Join(t.TempDir(), "must-stay-absent")
+	path := writeCommandConfig(t, validCommandConfigWithDataDir(dataDir))
 	cmd := newRootCommand()
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout); cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"config", "test", "-c", path})
 	if err := cmd.Execute(); err != nil { t.Fatal(err) }
 	if got := stdout.String(); got != "configuration is valid\n" { t.Fatalf("stdout = %q", got) }
-	if strings.Contains(stdout.String()+stderr.String(), "Starting server") { t.Fatal("config test started runtime") }
+	if _, err := os.Stat(dataDir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("config test created runtime path: %v", err)
+	}
 }
 
 func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
@@ -1279,42 +1337,184 @@ func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
 		"--set", "apisix_go.runtime_paths.log_dir=relative-logs"})
 	if err := cmd.Execute(); err != nil { t.Fatal(err) }
 	output := stdout.String()
-	for _, secret := range []string{"etcd-password", "admin-secret", "encryption-key", "plugin-attr-secret"} {
+	for _, secret := range []string{
+		"etcd-password", "url-password", "admin-secret", "encryption-key", "plugin-attr-secret",
+	} {
 		if strings.Contains(output, secret) { t.Fatalf("dump leaked %q", secret) }
 	}
-	for _, want := range []string{`"max_in_flight": 77`, `"kind": "cli"`, `"profiles"`, `"paths"`, `"ignored_fields"`} {
+	for _, want := range []string{
+		`"max_in_flight": 77`, `"kind": "cli"`, `"profiles"`, `"paths"`, `"ignored_fields"`,
+	} {
 		if !strings.Contains(output, want) { t.Fatalf("dump missing %q: %s", want, output) }
 	}
 }
 ```
 
-- [ ] **Step 2: Run command tests and verify `config` is unknown**
+Also test all four dump flag combinations, positional-argument rejection for
+`config`, `config test`, and `config dump`, an occupied configured listener,
+and a temporary `apisix_go.runtime_paths.data_dir`. Successful inspection must
+leave the listener owned by the test and must not create the data directory,
+`apisix-go-store.db`, a standalone UID file, or any provider-owned artifact.
+Checking only for the text `Starting server` is not side-effect evidence.
 
-Run: `bash -lc 'source .envrc && go test ./cmd -run "^TestConfigCommand" -count=1'`
+- [ ] **Step 3: Run command tests and verify the new factories and commands are absent**
 
-Expected: FAIL because the `config` subcommand is not registered.
+Run:
 
-- [ ] **Step 3: Make root command state instance-local**
+```bash
+bash -lc 'source .envrc && go test ./cmd -run "^(TestConfigCommand|TestParseSetOverrides|TestEnvironmentMap|TestRootCommand|TestVersionCommand)" -count=1'
+```
 
-Define `newRootCommand() *cobra.Command`; `Execute` constructs one command, while tests construct a fresh command so flags and output do not leak. Put `--config/-c` and repeatable `--set` on persistent flags. Task 4 already deleted the historical `--viper` flag; assert that it remains absent instead of performing a second deletion here.
+Expected: FAIL because the fresh command factories and `config` subcommand are
+not registered; the sentinel-leak assertions compile.
 
-Parse `--set` only as the first `=` split; reject missing path, missing `=`, duplicate paths, and a path not known to the static schema. Call `config.ValidateStaticOverridePath` before adding each result so command parsing and `LoadEffective` share Task 3's one schema index and the exact removed-`deployment.profile` tombstone. The value remains a string for schema-aware decode. For example:
+- [ ] **Step 4: Write the redacted-renderer schema, secret, and canonical-path tests**
 
-```go
-func parseSetOverrides(values []string) (map[string]any, error) {
-	result := make(map[string]any, len(values))
-	for _, raw := range values {
-		path, value, ok := strings.Cut(raw, "=")
-		if !ok || path == "" { return nil, fmt.Errorf("--set must use path=value, got %q", raw) }
-		if _, exists := result[path]; exists { return nil, fmt.Errorf("--set path %q is repeated", path) }
-		if err := config.ValidateStaticOverridePath(path); err != nil { return nil, err }
-		result[path] = value
-	}
-	return result, nil
+Add `TestRenderEffectiveRedacted*` cases in `pkg/config/effective_test.go` before
+creating `pkg/config/redact.go`. Lock the exact indented JSON schema to five
+top-level keys in this order:
+
+```json
+{
+  "config": {},
+  "paths": {
+    "data_dir": "",
+    "runtime_dir": "",
+    "log_dir": "",
+    "temp_dir": ""
+  },
+  "profiles": {
+    "compatibility_target": "",
+    "security_profile": "",
+    "qualification_profile": ""
+  },
+  "provenance": [
+    {
+      "path": "",
+      "kind": "",
+      "origin": "",
+      "explicit": false
+    }
+  ],
+  "ignored_fields": []
 }
 ```
 
-- [ ] **Step 4: Implement one shared side-effect-free load function**
+Use private dump DTOs; do not add JSON tags to or directly serialize
+`ProfileSelection`, whose current exported Go field names would otherwise
+produce unstable operator-facing `Compatibility`, `Security`, and
+`Qualification` keys:
+
+```go
+type profileDump struct {
+	Compatibility CompatibilityTarget  `json:"compatibility_target"`
+	Security      SecurityProfile      `json:"security_profile"`
+	Qualification QualificationProfile `json:"qualification_profile"`
+}
+
+type provenanceEntry struct {
+	Path     string     `json:"path"`
+	Kind     SourceKind `json:"kind"`
+	Origin   string     `json:"origin"`
+	Explicit bool       `json:"explicit"`
+}
+
+type effectiveDump struct {
+	Config        map[string]any   `json:"config"`
+	Paths         RuntimePaths     `json:"paths"`
+	Profiles      profileDump      `json:"profiles"`
+	Provenance    []provenanceEntry `json:"provenance"`
+	IgnoredFields []string         `json:"ignored_fields"`
+}
+```
+
+Tests must prove:
+
+- nil input returns `render effective config: config is required`;
+- config map keys and nested map keys are deterministic, arrays retain config
+  order, provenance is sorted by rendered path, ignored fields are sorted, and
+  empty provenance/ignored fields encode as `[]`, never `null`;
+- exact `json.Number` values remain numbers;
+- `time.Duration` values use the standard `encoding/json` representation of
+  their typed `int64` nanoseconds; lock one non-zero example so a later switch
+  to strings is an explicit schema migration;
+- `secret:"true"` retains an empty string or empty slice and renders every
+  non-empty scalar or list as the single JSON string `[REDACTED]`;
+- `secret:"container"` preserves only first-level plugin names and renders
+  each complete plugin attribute value as `[REDACTED]` without traversing its
+  keys;
+- URL userinfo, template-expanded dynamic keys, unknown field names, and
+  secret-container descendants obey the fail-closed path contracts below;
+- a dynamic config-map key whose winning provenance is `SourceAPISIXEnv` is
+  replaced in the `config` object as well as in provenance; the sentinel key is
+  absent from the complete JSON document;
+- a sentinel secret is absent from the complete JSON bytes and every returned
+  error.
+
+Add a reflection inventory test over `Config` that fails on an unknown
+`secret` tag value, a secret tag attached to an unsupported Go shape, or a
+missing required secret path. The required registry after this task is:
+
+| Static path | Tag | Renderer |
+| --- | --- | --- |
+| `apisix.data_encryption.keyring` | `secret:"true"` | redact the complete non-empty list |
+| `deployment.admin.admin_key[].key` | `secret:"true"` | redact each non-empty key |
+| `deployment.etcd.password` | `secret:"true"` | redact a non-empty password |
+| `deployment.etcd.host` | `secret:"url-userinfo"` | sanitize every endpoint as specified below |
+| `plugin_attr` | `secret:"container"` | preserve plugin names, redact each whole value |
+
+`AdminAPIMTLS.AdminSSLCertKey` and `EtcdTLS.Key` are file paths in the current
+typed/runtime contract, not inline private-key material. Do not tag them as
+secret values in this task; changing that display policy requires a separate
+operator-contract decision.
+
+- [ ] **Step 5: Run renderer tests and confirm the renderer is absent**
+
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/config -run "^TestRenderEffectiveRedacted" -count=1'
+```
+
+Expected: FAIL because `RenderEffectiveRedacted` and its schema matcher do not
+exist. The complete secret registry test fails because
+`deployment.etcd.host` does not yet carry `secret:"url-userinfo"`.
+
+- [ ] **Step 6: Make every Cobra command and flag instance-local**
+
+Define `newRootCommand() *cobra.Command` with a local options value captured by
+its root and config handlers. `Execute` constructs exactly one fresh command.
+Define `newVersionCommand() *cobra.Command`; delete the package-global
+`versionCmd` and its `init()` registration. Reusing one child command across
+fresh roots is forbidden because Cobra reparents and retains flag/output state.
+
+Register `--config/-c` and `--set` as persistent flags on each new root. Keep
+the current default `config.DefaultConfigFile`. Use `StringArrayVar` for
+`--set`; `StringSliceVar` is forbidden because it treats commas in values as
+separators. Task 4 already removed `--viper`; assert it remains absent.
+
+Construct the config command tree through factories so every boolean is also
+instance-local:
+
+```go
+type rootOptions struct {
+	configPath string
+	setValues  []string
+}
+
+func newConfigCommand(load func(string, []string) (*config.EffectiveConfig, error)) *cobra.Command
+func newConfigTestCommand(load func(string, []string) (*config.EffectiveConfig, error)) *cobra.Command
+func newConfigDumpCommand(load func(string, []string) (*config.EffectiveConfig, error)) *cobra.Command
+```
+
+The injected loader function is a narrow unit-test seam, not an alternate
+production loader. Production always passes `loadEffectiveForCommand`.
+
+- [ ] **Step 7: Implement the single bootstrap snapshot boundary**
+
+The function name describes command/bootstrap ownership, not mathematical
+purity. It may read only the ambient inputs listed here and must snapshot each
+exactly once before entering `LoadEffective`:
 
 ```go
 func loadEffectiveForCommand(configPath string, setValues []string) (*config.EffectiveConfig, error) {
@@ -1342,7 +1542,11 @@ func loadEffectiveForCommand(configPath string, setValues []string) (*config.Eff
 }
 ```
 
-Root server startup, `config test`, and `config dump` all call this exact function. Only root startup constructs encryption/store/server after it returns.
+Root server startup, `config test`, and `config dump` all call this exact
+function. Root startup creates the immutable encryption service, configures
+logging, opens store/server owners, and calls `runServer` only after the
+function returns successfully. Inspection handlers return or render immediately
+and never enter those branches.
 
 Define the environment snapshot with a first-`=` split and no subsequent `os.Getenv` calls:
 
@@ -1357,50 +1561,182 @@ func environmentMap(entries []string) map[string]string {
 }
 ```
 
-- [ ] **Step 5: Implement deterministic redacted rendering**
+- [ ] **Step 8: Add the URL-userinfo tag and implement deterministic redacted values**
+
+Add `secret:"url-userinfo"` only to `Etcd.Host`. For display, parse each
+non-empty endpoint with `net/url` and emit a representation that cannot retain
+credentials:
+
+- a URL with scheme and host but no userinfo, path, raw query, or fragment is
+  returned unchanged;
+- a URL with userinfo is rendered exactly as
+  `<scheme>://[REDACTED]@<host>` while retaining no username or password;
+- any non-root path, raw query, or fragment appends exactly one fixed
+  `/<redacted>` suffix to that scheme/host representation because those
+  components are not required by the etcd endpoint contract and may contain
+  credentials;
+- an empty endpoint remains empty;
+- a parse failure, missing scheme, or missing host returns the fixed
+  `[REDACTED]` value rather than the input or a value-bearing error.
+
+The sanitizer operates on a copy and never mutates `EffectiveConfig`. Its error
+messages contain only the schema path and sequence index. Do not use
+`url.URL.String()` until userinfo and non-host components have been replaced.
+
+Build the config document by walking `Config` through `mapstructure` tags.
+Recurse through structs, pointers, slices/arrays, and string-key maps; retain
+zero values; copy `json.Number` exactly; apply the three supported secret tags
+above before descending. No renderer reflection error may format the field
+value. Carry the canonical raw schema path during this walk. Before emitting a
+dynamic map key, look up the winning provenance for that map entry; when its
+kind is `SourceAPISIXEnv`, emit the opaque ID allocated for the raw canonical
+entry path instead of the key. `FieldSource` cannot distinguish key expansion
+from value expansion, so this deliberately aliases some value-only environment
+entries rather than risking an expanded secret in the JSON key. Fixed
+struct/schema field names remain unchanged. Apply the same rule to a
+first-level plugin name before the `secret:"container"` value is replaced.
+
+- [ ] **Step 9: Implement the canonical provenance tokenizer and schema matcher**
+
+Do not classify provenance with `strings.Split(path, ".")`. Implement one
+tokenizer for the exact Task 3 grammar:
+
+```text
+safe mapping key: [A-Za-z_][A-Za-z0-9_-]*
+unsafe mapping key: [<one valid JSON string>]
+sequence index: [0] or another canonical base-10 non-negative integer
+```
+
+An unsafe root key starts directly with the bracketed JSON string. A mapping
+key containing dot, quote, backslash, or brackets must round-trip through its
+JSON string, for example
+`plugin_attr["tenant.\\\"prod\\\\blue"].token`. Reject invalid JSON escapes,
+trailing bytes inside brackets, a bracket-string encoding of a safe key,
+negative/overflow indices, and non-canonical indices such as `[00]`.
+
+Match the parsed tokens against a schema descriptor derived from
+`reflect.TypeFor[Config]()` plus the four synthetic leaves under
+`apisix_go.runtime_paths`. The matcher rules are exact:
+
+- a struct accepts its exported `mapstructure` names and skips `-`;
+- a map accepts one mapping-key token and continues with its element type;
+- a slice/array accepts one numeric-index token and continues with its element;
+- an interface accepts any remaining syntactically valid canonical tokens;
+- a scalar accepts only end-of-path;
+- every mapping, map, sequence, element container, scalar, and explicit-null
+  position is known when traversal can end at that position.
+
+This recognizes `apisix`, `apisix.node_listen`,
+`apisix.node_listen[0]`, and `apisix.node_listen[0].port` without treating a
+literal dynamic key such as `plugin_attr["tenant.a"]` as nested fields.
+
+- [ ] **Step 10: Implement fail-closed provenance and ignored-field display paths**
+
+Classification uses the raw canonical path internally. The output never emits
+an untrusted raw path or a digest derived from it when its safety cannot be
+proven. Before rendering, collect every raw path/key that requires masking,
+sort the unique raw strings internally, and assign sequential opaque IDs:
+
+```go
+func buildOpaquePathIDs(paths []string) map[string]string {
+	// Sort and deduplicate raw strings internally, then assign opaque:0001,
+	// opaque:0002, ... without serializing the raw string or a derived digest.
+}
+```
+
+The numeric width is at least four digits and expands when necessary. The same
+raw string receives the same ID everywhere in one dump, so config, provenance,
+and ignored fields remain correlatable. For the same effective configuration
+the allocation is deterministic. Adding or removing an unsafe path may
+renumber IDs; these are inspection-local handles, not durable identifiers. Do
+not use an unsalted hash: low-entropy secret-bearing field names are
+dictionary-guessable even when the digest is one-way.
+
+Render paths with these ordered rules:
+
+1. A raw path rejected by the schema matcher is added to `ignored_fields` as
+   `unknown:` plus its opaque ID. Its provenance entry uses that same safe
+   display path. Never output the unknown field name.
+2. Any provenance entry with `Kind == SourceAPISIXEnv` is displayed as
+   `apisix_env:` plus its opaque ID. `FieldSource` cannot currently prove
+   whether the environment expansion occurred in a key or only in a value, so
+   aliasing every such path is the required fail-closed behavior. Retain the
+   safe environment-variable name(s) in `origin`.
+3. For a path below a `secret:"container"` field, retain the container path and
+   its first-level plugin name, but replace the remainder with
+   `redacted:` plus its opaque ID. Do not emit descendant attribute keys.
+   An unsafe first-level plugin name is itself replaced with
+   `plugin:` plus its opaque ID.
+4. Other known canonical paths are emitted unchanged.
+
+Sort after converting to display paths. Preserve entries ordered by display
+path, then kind, origin, and explicit; do not use a map that silently drops
+provenance. `ignored_fields` is deduplicated after conversion and sorting.
+Opaque IDs are diagnostic correlation handles only and are never accompanied
+by the raw string or any value derived from it.
+
+The fixed marker `[REDACTED]`, opaque IDs, schema paths, builtin IDs,
+file paths, environment-variable names, and validated CLI paths are the only
+data classes admitted to the dump. Environment or CLI values are never valid
+origins.
+
+- [ ] **Step 11: Implement the renderer and exact command semantics**
 
 `RenderEffectiveRedacted` returns indented JSON with five top-level keys in a struct: `config`, `paths`, `profiles`, `provenance`, and `ignored_fields`. Reflect over `Config` using `mapstructure` names and add the four reserved `apisix_go.runtime_paths.*` schema paths. The schema matcher must recognize mapping containers, sequences, numeric sequence indices, and Task 3's bracketed JSON-string encoding for unsafe dynamic mapping keys so known container/index provenance is not mislabeled as unknown. For `secret:"true"`, retain empty as empty and render any nonempty scalar/list as `[REDACTED]`; for `secret:"container"`, preserve first-level plugin names with redacted values. Sort provenance keys and ignored paths before materializing output structs. Unknown paths are provenance paths not accepted by that matcher and are listed without their values.
 
 ```go
 type effectiveDump struct {
-	Config map[string]any `json:"config"`
-	Paths RuntimePaths `json:"paths"`
-	Profiles ProfileSelection `json:"profiles"`
-	Provenance []provenanceEntry `json:"provenance"`
-	IgnoredFields []string `json:"ignored_fields"`
+	Config        map[string]any    `json:"config"`
+	Paths         RuntimePaths      `json:"paths"`
+	Profiles      profileDump       `json:"profiles"`
+	Provenance    []provenanceEntry `json:"provenance"`
+	IgnoredFields []string          `json:"ignored_fields"`
 }
 
 func RenderEffectiveRedacted(effective *EffectiveConfig) ([]byte, error) {
 	if effective == nil { return nil, errors.New("render effective config: config is required") }
-	dump := buildEffectiveDump(effective)
+	dump, err := buildEffectiveDump(effective)
+	if err != nil { return nil, err }
 	data, err := json.MarshalIndent(dump, "", "  ")
 	if err != nil { return nil, fmt.Errorf("render effective config: %w", err) }
 	return append(data, '\n'), nil
 }
 ```
 
-Origin includes only a file path, environment variable name, builtin identifier, or config path; never an environment or CLI value.
-
-- [ ] **Step 6: Register exact command semantics**
-
 `apisix config test` accepts no positional arguments and prints exactly `configuration is valid`. `apisix config dump` accepts no positional arguments and errors unless both `--effective` and `--redacted` are true; no unredacted mode exists.
 
-- [ ] **Step 7: Run command and redaction tests**
+- [ ] **Step 12: Run the focused command, renderer, and build gates**
+
+Run in this order:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/config -run "^(TestRenderEffectiveRedacted|TestLoadEffective)" -count=1'
+bash -lc 'source .envrc && go test ./cmd -run "^(TestConfigCommand|TestParseSetOverrides|TestEnvironmentMap|TestRootCommand|TestVersionCommand|TestStart)" -count=1'
+bash -lc 'source .envrc && make build'
+git diff --check
+```
+
+Expected: PASS. The focused tests prove side-effect absence with filesystem and
+occupied-listener assertions, not log-string inspection.
+
+- [ ] **Step 13: Prove global Cobra state and unsafe output paths are gone**
 
 Run:
 
 ```bash
-bash -lc 'source .envrc && go test ./pkg/config -run "^(TestRenderEffectiveRedacted|TestLoadEffective)" -count=1'
-bash -lc 'source .envrc && go test ./cmd -run "^(TestConfigCommand|TestRootCommandConfigFlag|TestStart)" -count=1'
-bash -lc 'source .envrc && make build'
+rg -n 'var (rootCmd|versionCmd|cfgFile)|--viper|StringSliceVar' cmd --glob '*.go'
+rg -n 'got %q.*raw|ignored_fields.*raw|Path: raw|data_encryption\.Configure|config\.GlobalConfig' cmd pkg/config --glob '*.go'
 ```
 
-Expected: PASS, and the tests assert that no provider/store/listener side effect occurs.
+Expected: no match. Function names such as `newRootCommand` and
+`newVersionCommand` are allowed; package-global mutable Cobra commands and raw
+secret-bearing path/value output are not.
 
-- [ ] **Step 8: Commit the CLI**
+- [ ] **Step 14: Commit the CLI**
 
 ```bash
-git add cmd/config.go cmd/config_test.go cmd/root.go cmd/root_test.go pkg/config/redact.go pkg/config/effective_test.go
+git add cmd/config.go cmd/config_test.go cmd/root.go cmd/root_test.go cmd/version.go \
+  pkg/config/types.go pkg/config/redact.go pkg/config/effective_test.go
 git commit -m "feat(cli): inspect effective configuration safely"
 ```
 

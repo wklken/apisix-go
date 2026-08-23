@@ -6,6 +6,8 @@
 
 **Architecture:** `pkg/compiler` consumes one durable desired snapshot plus the previously published domain snapshots and executes normalize, validate, dependency-resolution, secret-materialization, resource-preparation, HTTP/stream compilation and probe phases without touching live runtime state. `pkg/runtime` owns digest-keyed resource leases and named task registries, while `pkg/plugin` resolves phase, priority, scope and instance identity from the central capability manifest. `server.GenerationEngine` retains prepared generations until the journal transaction activates them, then atomically swaps immutable snapshots; the old `route.Builder`, mutable stream reload path and proxy-only lifecycle facades are deleted in the same production cutover.
 
+**Corrected execution boundary:** This plan may start after Durable Journal Tasks 1–8, not after the whole journal plan. Task 1 is split, Task 3's compiler integration is postponed, Task 8's destructive reload removal is postponed, and Task 9 is merged with Durable Task 9 exactly as specified by `2026-08-24-journal-immutable-cutover-reorder.md`.
+
 **Tech Stack:** Go 1.26, standard-library `context`, `crypto/sha256`, `encoding/json`, `net/http`, `sync`, existing `go-chi/chi`, `pkg/capability`, `pkg/config`, `pkg/data_encryption`, `pkg/generation`, `pkg/plugin`, `pkg/proxy`, `pkg/resource`, `pkg/stream` and bbolt-backed `generation.Journal`.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
@@ -388,6 +390,8 @@ An exec-created worker reconstructs `WorkerCompilerFactory` from its local effec
 
 ### Task 1: Create Scoped Secret Materialization and Runtime Dependencies
 
+> **Execution amendment:** Land the `pkg/secret` materializer half in parallel with Tasks 2, the resource-registry core of Task 3, and Task 4. Create `pkg/runtime/dependencies.go` only after the real `TaskRegistry` and `ResourceRegistry` types are merged. Do not use placeholder types. See `2026-08-24-journal-immutable-cutover-reorder.md`.
+
 **Files:**
 
 - Create: `pkg/secret/materializer.go`
@@ -660,6 +664,8 @@ git commit -m "feat(runtime): own generation and request tasks"
 
 ### Task 3: Replace the Cluster Registry With a Generic Resource Registry
 
+> **Execution amendment:** The parallel foundation branch contains only the generic registry, `proxy.NewCluster` and their tests. Postpone `RuntimeDependencies`-based cluster/compiler acquisition to Task 5 or 7, where it is first used. Keep the current `ClusterRegistry` unchanged until the joint cutover.
+
 **Files:**
 
 - Create: `pkg/runtime/resource_registry.go`
@@ -756,36 +762,25 @@ func (l *ResourceLease[T]) Release(ctx context.Context) error {
 
 Construct `ResourceRegistry` with a non-nil `entries` map. Each `resourceEntry.ready` closes exactly once after its factory stores `value`, `closeResource` and `createErr`; `references`, `closed` and the map are protected by `ResourceRegistry.mu`. Entry and lease `sync.Once` fields make registry-close/final-release and concurrent repeated lease release replay one stored close error. The final release removes the entry before invoking its close function outside the registry mutex. `Close` prevents new acquisitions, waits for in-progress factories, closes each remaining resource once and returns `errors.Join`.
 
-- [ ] **Step 4: Export cluster construction and acquire it through the generic registry**
+- [ ] **Step 4: Export cluster construction and keep the live registry buildable**
 
-```go
-func acquireCluster(ctx context.Context, dependencies runtime.RuntimeDependencies,
-	scope string, config proxy.ClusterConfig, observer proxy.ClusterObserver) (*runtime.ResourceLease[*proxy.Cluster], error) {
-	digest, err := config.Key(); if err != nil { return nil, err }
-	return runtime.Acquire(ctx, dependencies.Resources, runtime.ResourceKey{
-		Kind: "upstream-cluster", Scope: scope, Digest: digest,
-	}, func(context.Context) (*proxy.Cluster, func(context.Context) error, error) {
-		cluster, err := proxy.NewCluster(config, observer)
-		return cluster, func(context.Context) error { cluster.Close(); return nil }, err
-	})
-}
-```
+Rename the implementation constructor to `proxy.NewCluster`, update `pkg/proxy/registry.go` mechanically to call it, and keep `ClusterRegistry` behavior and ownership unchanged. Do not retain a private forwarding `newCluster` wrapper.
 
-- [ ] **Step 5: Migrate new compiler acquisition without breaking the current production owner**
+#### Deferred integration: acquire clusters from the compiler in Task 5 or 7
 
-Move observer deletion assertions to resource-registry-backed route/compiler tests and make all newly extracted compiler code use `runtime.ResourceRegistry`. Keep the existing `ClusterRegistry` implementation unchanged and reachable only from the still-live `route.Builder` path until Task 9. Do not add an alias, wrapper or selection flag between the registries; Task 9 deletes Builder and the proxy-specific registry together after the new path becomes the only production owner.
+After `RuntimeDependencies` exists, move observer deletion assertions to resource-registry-backed route/compiler tests and make newly extracted compiler code acquire clusters through `runtime.ResourceRegistry`. Keep the existing `ClusterRegistry` reachable only from the still-live `route.Builder` path until Task 9. Do not add an alias, wrapper or selection flag between the registries; Task 9 deletes Builder and the proxy-specific registry together after the new path becomes the only production owner.
 
-- [ ] **Step 6: Run registry and cluster race tests**
+- [ ] **Step 5: Run registry and live-cluster race tests**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/runtime ./pkg/proxy -run "^(TestResourceRegistry|TestCluster)" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/runtime ./pkg/proxy -run "^(TestResourceRegistry|TestCluster|TestClusterRegistry)" -count=1 && make build'`
 
-Expected: PASS; the new compiler path proves equal configs share one cluster until the final generation/plugin lease releases it, while the not-yet-cut-over Builder tests remain green.
+Expected: PASS; registry-core tests prove equal identities share one resource until final release, and the mechanically updated live `ClusterRegistry` remains green and buildable. Compiler acquisition is intentionally not claimed yet.
 
-- [ ] **Step 7: Commit the registry cutover**
+- [ ] **Step 6: Commit the resource-registry foundation**
 
 ```bash
-git add pkg/runtime pkg/proxy/cluster.go pkg/proxy/cluster_test.go pkg/route/upstream_options.go
-git commit -m "refactor(runtime): generalize shared resource ownership"
+git add pkg/runtime/resource_registry.go pkg/runtime/resource_registry_test.go pkg/proxy/cluster.go pkg/proxy/cluster_test.go pkg/proxy/registry.go pkg/proxy/registry_test.go pkg/proxy/registry_metrics_test.go
+git commit -m "refactor(runtime): add generic resource ownership"
 ```
 
 ---
@@ -903,6 +898,7 @@ Expected: PASS with exact APISIX scope/phase/priority ordering.
 
 ```bash
 git add pkg/plugin pkg/capability/manifest.yaml
+git add pkg/route/builder.go pkg/route/*_test.go
 git commit -m "refactor(plugin): derive runtime descriptors from manifest"
 ```
 
@@ -1079,6 +1075,8 @@ git commit -m "feat(compiler): resolve immutable domain closures"
 ---
 
 ### Task 6: Materialize Scoped Plugin Instances and Prepared Generations
+
+> **Execution amendment:** The implementation file scope includes every still-live Builder, server and plugin caller affected by the new explicit plugin/secret dependencies, including direct `store.MaterializeSecret` and runtime `store.Get*` consumers. The task must keep the current production owner buildable without a global-secret fallback.
 
 **Files:**
 
@@ -1339,13 +1337,15 @@ git commit -m "refactor(route): compile immutable HTTP snapshots"
 
 ### Task 8: Compile an Immutable Stream Router Snapshot
 
+> **Execution amendment:** Before the joint cutover, land only additive detached router/snapshot/compiler work. Do not remove `Router.Reload`, change listener/runtime installation ownership, or route the legacy event path through the new compiler. Those destructive steps execute with Task 9 in the single joint cutover.
+
 **Files:**
 
 - Create: `pkg/stream/snapshot.go`
 - Create: `pkg/stream/snapshot_test.go`
 - Create: `pkg/compiler/stream.go`
-- Modify: `pkg/stream/router.go` (`Router.Reload` removal)
-- Modify: `pkg/stream/runtime.go` (serve an installed immutable router)
+- Modify before the joint cutover: `pkg/stream/router.go` (add detached compilation without removing the live `Router.Reload` path)
+- Modify during the joint cutover: `pkg/stream/runtime.go`, `router.go` (install immutable ownership and remove `Router.Reload`)
 - Modify: `pkg/stream/router_test.go`, `runtime_test.go`
 - Modify: `pkg/compiler/compiler.go`, `types.go`, `compiler_test.go`
 
@@ -1357,14 +1357,11 @@ git commit -m "refactor(route): compile immutable HTTP snapshots"
 - [ ] **Step 1: Write the failing immutable stream test**
 
 ```go
-func TestCompileRouterDoesNotReloadOrObserveInputMutation(t *testing.T) {
+func TestCompileRouterDoesNotObserveInputMutation(t *testing.T) {
 	routes := []resource.StreamRoute{streamRoute("r1", "127.0.0.1:19001")}
 	router, err := CompileRouter(routes, []string{"mqtt-proxy"}, nil); if err != nil { t.Fatal(err) }
 	routes[0].ID = "mutated"
 	if got := router.RouteIDs(); !slices.Equal(got, []string{"r1"}) { t.Fatalf("RouteIDs() = %v", got) }
-	if _, ok := any(router).(interface{ Reload([]resource.StreamRoute) error }); ok {
-		t.Fatal("immutable router exposes Reload")
-	}
 }
 
 func TestStreamSnapshotRetainsArtifactIdentity(t *testing.T) {
@@ -1392,11 +1389,11 @@ func CompileRouter(routes []resource.StreamRoute, enabled []string, onResult fun
 }
 ```
 
-Remove `Router.mu` and `Router.Reload`. `Serve` reads immutable entries without locks.
+Before the joint cutover, `CompileRouter` constructs a detached router whose owned inputs cannot change; the still-live legacy runtime may retain `Router.mu` and `Router.Reload`. During the joint cutover, remove both and make `Serve` read immutable entries without locks. The legacy runtime must never receive a compiler-produced detached router before that cutover.
 
 - [ ] **Step 4: Separate listener runtime from the compiled snapshot**
 
-Change stream runtime construction to receive listeners plus an immutable router. It may install a new router only through the generation activation boundary; it does not mutate an existing router.
+Defer this step to the joint cutover. There, change stream runtime construction to receive listeners plus an immutable router. It may install a new router only through the generation activation boundary; it does not mutate an existing router.
 
 - [ ] **Step 5: Produce `compiler.StreamSnapshot` without binding**
 
@@ -1415,9 +1412,9 @@ func (s *StreamSnapshot) Router() *stream.Router { return s.router }
 
 - [ ] **Step 6: Run stream compiler and race tests**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/compiler ./pkg/stream -run "^(TestCompilerStream|TestCompileRouter|TestRouter|TestRuntime)" -count=1'`
+Run before the joint cutover: `bash -lc 'source .envrc && go test -race ./pkg/compiler ./pkg/stream -run "^(TestCompilerStream|TestCompileRouter|TestRouter)" -count=1'`
 
-Expected: PASS; concurrent connections observe exactly one immutable router each.
+Expected before the joint cutover: PASS for detached compilation and input isolation. The runtime-install and absence-of-`Reload` cases run in Task 9, where concurrent connections must observe exactly one immutable router each.
 
 - [ ] **Step 7: Commit immutable stream compilation**
 
@@ -1428,7 +1425,9 @@ git commit -m "refactor(stream): compile immutable router snapshots"
 
 ---
 
-### Task 9: Cut `GenerationEngine` Over Atomically and Delete `route.Builder`
+### Task 9: Jointly Cut Journal and Immutable Runtime Over and Delete Legacy Owners
+
+> **Execution amendment:** This is the permanent and only `GenerationEngine` implementation owner. Execute it in one worktree with Durable Task 9's provider, startup/recovery, acknowledgement and legacy-store deletion obligations. Do not first land the durable plan's temporary engine. The authoritative combined scope and gate are in `2026-08-24-journal-immutable-cutover-reorder.md`.
 
 **Files:**
 
@@ -1830,4 +1829,4 @@ Skip the commit when Tasks 1–11 and the documentation update leave no diff; ne
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`. Execute it only after `2026-08-23-durable-generation-journal.md` completes. Use `superpowers:subagent-driven-development` (recommended, fresh implementation worker plus review between tasks) or `superpowers:executing-plans` (inline batches with checkpoints).
+Plan complete and saved to `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`. Execute its corrected waves after Durable Journal Tasks 1–8 and use its Task 9 only as the shared production cutover, following `2026-08-24-journal-immutable-cutover-reorder.md`. Use `superpowers:subagent-driven-development` (recommended, fresh implementation worker plus review between tasks) or `superpowers:executing-plans` (inline batches with checkpoints).

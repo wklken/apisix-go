@@ -4,7 +4,7 @@
 
 **Goal:** Converge apisix-go from its current single-process, locally validated APISIX 3.17 implementation into a governed, immutable, hot-upgradable, evidence-qualified Go data plane.
 
-**Architecture:** Nine vertically testable subprojects replace one concern at a time while keeping `master` runnable. The dependency spine is governance → static config → durable generations → immutable compiler → supervisor → HTTP closure; runtime safety may start beside HTTP closure but its body-budget slice waits for the HTTP body contract, qualification consumes both completed milestones, and stream convergence follows the qualified HTTP milestone.
+**Architecture:** Nine vertically testable subprojects replace one concern at a time while keeping `master` runnable. Programs 03 and 04 share one production cutover: durable journal Tasks 1–8 precede immutable detached compilation, then both Task 9 boundaries merge into one atomic provider/journal/HTTP/TLS/stream switch. The canonical corrected order is `2026-08-24-journal-immutable-cutover-reorder.md`. After that joint gate, the dependency spine continues through supervisor → HTTP closure; runtime safety may start beside HTTP closure but its body-budget slice waits for the HTTP body contract, qualification consumes both completed milestones, and stream convergence follows the qualified HTTP milestone.
 
 **Tech Stack:** Go 1.26, Cobra, Viper only as an input reader, bbolt, etcd v3, go-chi/chi, `net/http`, Prometheus, OpenTelemetry, Buildx/OCI, GitHub Actions, and Docker-based real dependency gates. Task 8 retires the pre-existing GoReleaser/Linux-download path.
 
@@ -34,10 +34,16 @@
 02 Static Config / Effective Config
         │
         ▼
-03 Durable Desired / Published Generations
+03A Durable Journal Core, Tasks 1-8
         │
         ▼
-04 Immutable Compiler / Plugin Lifecycle
+04A Immutable Foundations / Detached Compilation
+        │
+        ▼
+03/04 Joint Production Cutover
+        │
+        ▼
+03B/04B Documentation / Runtime Ownership Gates
         │
         ▼
 05 Supervisor / Worker / Platform Lifecycle
@@ -422,9 +428,9 @@ Expected: the child plan's task commits are present, no static-config change is 
 
 - [ ] **Step 1: Execute the generation journal child plan task-by-task**
 
-Follow `docs/superpowers/plans/2026-08-23-durable-generation-journal.md`, preserving explicit-delete, dependency-closure and full provider-state cursor semantics. The coordinator must discard a prepared generation if staging fails, roll back an activated generation if journal commit fails, and may mark the old generation retiring only after commit succeeds.
+Follow `docs/superpowers/plans/2026-08-23-durable-generation-journal.md` through Task 8, preserving explicit-delete, dependency-closure and full provider-state cursor semantics. Then follow `docs/superpowers/plans/2026-08-24-journal-immutable-cutover-reorder.md`: Durable Task 9 waits for immutable detached compilation and executes only as the shared 03/04 production cutover. The completed Tasks 1–8 remain accepted and are not reimplemented.
 
-- [ ] **Step 2: Run the durable-state milestone gate**
+- [ ] **Step 2: Run the durable-state milestone gate after the joint cutover and Durable Task 10**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/store ./pkg/etcd ./pkg/config ./pkg/server ./pkg/observability/metrics -run "^(TestJournal|TestPublished|TestOffline|TestExplicitDelete|TestAcknowledg|TestReadiness)" -count=1'`
 
@@ -447,9 +453,9 @@ Expected: the child plan's journal commits are present, no generation change is 
 - Consumes: `config.EffectiveConfig`, `generation.Journal`, `capability.Manifest`
 - Produces: `compiler.Compiler`, `compiler.PreparedGeneration`, the reversible activation implementation for `generation.PublicationEngine`, `runtime.RuntimeDependencies`, `runtime.ResourceRegistry`, `runtime.TaskRegistry`
 
-- [ ] **Step 1: Execute the immutable compiler child plan task-by-task**
+- [ ] **Step 1: Execute the immutable compiler child plan using the corrected waves**
 
-Use the atomic cutovers in `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`; do not preserve proxy-only methods from `pkg/route.Builder`.
+Use `docs/superpowers/plans/2026-08-24-journal-immutable-cutover-reorder.md` for task splitting and execution order, and `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md` for unchanged interfaces and detailed tests. Immutable Task 9 is the permanent implementation owner of the one shared Journal/Immutable production cutover; do not preserve proxy-only methods from `pkg/route.Builder`.
 
 - [ ] **Step 2: Run the compiler milestone gate**
 

@@ -6,6 +6,8 @@
 
 **Architecture:** `pkg/generation` defines immutable snapshots, revisions, publication transactions, and the coordinator contract; `pkg/store` implements `generation.Journal` as the single writable bbolt owner and maintains decoded read views of committed published artifacts. Providers submit complete or incremental desired batches to `generation.Coordinator`, which stages a complete dependency-closed publication, reversibly activates it through the runtime engine, commits the published heads, finalizes active ownership, enqueues predecessor retirement, and then returns an acknowledgement. Existing resource buckets are imported once as desired-only state, then deleted together with the Store event/hook path so there is no dual persistence model or legacy adapter.
 
+**Corrected execution boundary:** Tasks 1–8 form the durable journal core. Task 9 does not create a temporary `PublishedView`-backed runtime engine; it executes with Immutable Runtime Task 9 as the single production cutover defined by `2026-08-24-journal-immutable-cutover-reorder.md`. Immutable Task 9 owns the permanent compiler and `GenerationEngine`; this plan owns provider acknowledgement, journal startup/recovery, legacy persistence deletion and durable verification within that same integration unit.
+
 **Tech Stack:** Go 1.26, `context`, `crypto/sha256`, `encoding/binary`, `encoding/json`, bbolt v1.5.0, existing APISIX resource decoders, etcd client v3, fsnotify.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
@@ -45,22 +47,22 @@
 - `pkg/store/journal_apply_test.go` — desired revision, replacement, explicit deletion and cursor tests.
 - `pkg/store/journal_publish_test.go` — closure, domain revision and last-good policy tests.
 - `pkg/store/journal_recovery_test.go` — offline restart and partial-domain integrity tests.
-- `pkg/store/published_view.go` — decoded immutable HTTP/stream read views backed only by committed artifacts.
-- `pkg/store/published_view_test.go` — published-view installation, isolation and restart tests.
-- `pkg/server/generation_engine.go` — current runtime implementation of `generation.PublicationEngine`; the next compiler plan replaces its internals without changing the interface.
-- `pkg/server/generation_engine_test.go` — prepare/activate/failure tests for HTTP and stream domains.
+- `pkg/store/published_view.go` — inert decoded views used only to verify committed artifact decoding and recovery isolation; it is not a production request/runtime owner.
+- `pkg/store/published_view_test.go` — detached decoding, isolation and restart-verification tests.
+- `pkg/server/generation_engine.go` — created only by the joint cutover as the permanent immutable compiler-backed implementation of `generation.PublicationEngine`.
+- `pkg/server/generation_engine_test.go` — joint-cutover prepare/activate/failure tests for immutable HTTP and stream owners.
 - `docs/architecture/durable-generation-journal.md` — durable format, transaction state machine, recovery and migration contract.
 
 **Modify:**
 
-- `pkg/store/store.go` — make `Store` the bbolt `generation.Journal` implementation and owner of committed read views; remove the event loop and direct resource-bucket writes.
-- `pkg/store/getter.go` — read from installed domain views instead of bbolt resource buckets; remove in-memory HTTP and stream last-good ownership.
+- `pkg/store/store.go` — make `Store` the bbolt `generation.Journal` implementation; remove the event loop and direct resource-bucket writes without making Store a serving owner.
+- `pkg/store/getter.go` — delete production global resource getters during the joint cutover; do not redirect them to an installed global view.
 - `pkg/store/standalone_snapshot.go` — replace resource-bucket snapshotting with desired-snapshot access, then delete this file in the atomic cutover.
 - `pkg/etcd/watcher.go` — translate one etcd response into one `generation.DesiredBatch` and advance the etcd cursor only after coordinator acknowledgement.
 - `pkg/etcd/watcher_test.go` — assert revision, quarantine, delete, retry and acknowledgement against the journal.
 - `pkg/config/standalone.go` — translate one complete file into one authoritative desired batch identified by file digest.
 - `pkg/config/standalone_test.go` — assert replacement, malformed-resource decisions, explicit deletion, digest idempotency and restart behavior.
-- `pkg/server/server.go` — open/recover the journal, construct the coordinator, install published views, wire the chosen provider and support offline last-good startup.
+- `pkg/server/server.go` — open/recover the journal, construct the coordinator, compile verified committed artifacts into generation-bound owners, wire the chosen provider and support offline last-good startup.
 - `pkg/server/reload.go` — retain only runtime prepare/activate logic used by `generation_engine.go`; remove event debounce ownership after provider cutover.
 - `pkg/server/reload_test.go` — replace Store-hook acknowledgement tests with coordinator publication tests.
 - `pkg/server/stream_test.go` — replace process-memory stream last-good tests with durable domain publication and restart tests.
@@ -2001,6 +2003,8 @@ git commit -m "refactor(provider): normalize desired generation batches"
 
 ### Task 9: Atomically Cut Providers and Runtime to the Journal and Delete the Legacy Store Path
 
+> **Execution amendment:** Do not implement Steps 1–3 below as a temporary `store.PublishedView` compiler, temporary domain lease engine or temporary security classifier. First complete the detached immutable waves in `2026-08-24-journal-immutable-cutover-reorder.md`, then execute this task and Immutable Task 9 in one worktree. Preserve Steps 4–8 as journal/provider obligations, but use `compiler.PreparedGeneration` and the permanent immutable `GenerationEngine`. The joint task owns the union of both file maps, including all generation-bound consumer, metadata, proto, secret, TLS, HTTP and stream read paths. Its integration history replaces the standalone commit described by Step 9.
+
 **Files:**
 
 - Create: `pkg/server/generation_engine.go`
@@ -2026,10 +2030,12 @@ git commit -m "refactor(provider): normalize desired generation batches"
 
 **Interfaces:**
 
-- Consumes: `store.OpenJournal`, `generation.NewCoordinator`, `config.JournalPath(*config.EffectiveConfig) string` from the static-config plan, pure provider translation functions and the existing HTTP/stream prepare/activate behavior.
-- Produces: the only production path: provider → `Coordinator.Apply` → journal desired/stage → reversible `server.GenerationEngine` activation → journal commit → activation finalize → ack; recovered published views feed HTTP, TLS, consumers and stream.
+- Consumes: `store.OpenJournal`, `generation.NewCoordinator`, `config.JournalPath(*config.EffectiveConfig) string` from the static-config plan, pure provider translation functions, `compiler.PreparedGeneration` and the permanent immutable HTTP/stream activation behavior from the joint cutover.
+- Produces: the only production path: provider → `Coordinator.Apply` → journal desired/stage → reversible `server.GenerationEngine` activation → journal commit → activation finalize → ack; recovered committed artifacts are compiled into generation-bound HTTP, TLS, consumer, plugin and stream owners. `store.PublishedView` remains an inert decode/verification utility only.
 
-- [ ] **Step 1: Write failing server-engine tests before changing production wiring**
+#### Historical Step 1: Temporary-engine design — superseded, do not execute
+
+The code and tests below are retained only as the rejected design record. The joint cutover uses Immutable Task 9's `compiler.PreparedGeneration` tests and the combined acceptance gate in `2026-08-24-journal-immutable-cutover-reorder.md`; it does not create `newGenerationEngineForTest` over the mutable server owners.
 
 ```go
 func TestGenerationEnginePrepareUsesDependencyClosedSnapshot(t *testing.T) {
@@ -2271,13 +2277,13 @@ func (l *fakeDomainActivationLease) Retire(context.Context) error {
 
 The commit-failure integration case uses `generation.NewCoordinator` with this real engine and a `generation.Journal` fixture whose `Commit` returns `errCommit`. It asserts `errors.Is(err, errCommit)`, the old HTTP/stream owners are restored, every new lease is released once, every old lease remains live, the staged token is aborted once, and `FinalizeActivation` is never called. Also add a test proving a valid SSL predecessor is copied with `DispositionLastGood`, and a test proving an explicit SSL delete cannot be retained.
 
-- [ ] **Step 2: Run engine tests and confirm RED**
+#### Historical Step 2: Temporary-engine RED gate — superseded, do not execute
 
 Run: `bash -lc 'source .envrc && go test ./pkg/server -run "^TestGenerationEngine" -count=1'`
 
 Expected: FAIL because `GenerationEngine` does not exist.
 
-- [ ] **Step 3: Implement the permanent publication-engine boundary**
+#### Historical Step 3: Temporary-engine implementation — superseded, do not execute
 
 ```go
 type domainActivationLease interface {
@@ -2486,9 +2492,9 @@ func (e *GenerationEngine) retireNext(ctx context.Context) error {
 
 `activation` and `deleteActivation` lock `GenerationEngine.mu`; they never call a lease while holding that mutex. Each non-empty domain lease captures both the old live owner and the detached new owner. `Activate` swaps to the new owner but retains old handler/runtime/resource leases; a synthetic empty activation only moves its in-memory token record. `Rollback` is idempotent and restores the old owner before closing the new owner and releasing every new dependency lease, including leases for a later domain that never activated; synthetic rollback only deletes its record. `Finalize` updates the per-domain active artifact identities named by a non-empty publication while retaining independently active identities for untouched domains, appends predecessor leases only for a non-empty publication, sets `activeReady`, deletes the activation record, and returns. A zero-domain finalize never replaces or retires an owner. Recovery installation records every verified recovered domain identity and sets `activeReady`, including for an initialized empty fence. `activeDomainsMatch` requires a coherent `DesiredRevision` and exact artifact identity for every domain requested by `set`; it permits additional independently active domains at older revisions. `ConfirmActive` checks cancellation both before and immediately after acquiring the engine mutex, then performs that requested-subset comparison without compilation, owner switch, retirement or blocking I/O. A deterministic test holds the mutex, starts confirmation, cancels its context and then unlocks; confirmation must return the context error with zero side effects. The server main loop calls `retireNext` asynchronously to drain old handlers/runtimes and release predecessor dependency leases; retirement errors change runtime status and are retried or escalated, but cannot retroactively fail finalize or the already committed provider acknowledgement. A missing/mismatched token or an ownership transition that cannot be finalized is a core invariant violation and must fail the runtime, never return a provider-visible business error after durable commit.
 
-Plan 04's `compiler.PreparedGeneration` is the permanent producer of these same domain leases: its prepared owners and dependency leases remain owned by the preparation/activation record from `Prepare` through `Activate`; `DiscardPrepared` closes the un-staged prepared generation; `RollbackActivation` restores the predecessor and releases the new generation; `FinalizeActivation` transfers active ownership and enqueues the predecessor for retirement; `ConfirmActive` verifies its immutable publication identity. Plan 04 may replace `preparedActivation` internals, but it must not change the `generation.PublicationEngine` signatures or release predecessor leases before journal commit.
+The joint cutover's `compiler.PreparedGeneration` is the only producer of these domain leases: its prepared owners and dependency leases remain owned by the preparation/activation record from `Prepare` through `Activate`; `DiscardPrepared` closes the un-staged prepared generation; `RollbackActivation` restores the predecessor and releases the new generation; `FinalizeActivation` transfers active ownership and enqueues the predecessor for retirement; `ConfirmActive` verifies its immutable publication identity. There is no earlier `preparedActivation` implementation to replace, and the joint implementation must not change the accepted `generation.PublicationEngine` signatures or release predecessor leases before journal commit.
 
-Until plan 04 replaces this classifier with the immutable compiler's closure-aware implementation, use this explicit conservative first-milestone classification. An invalid first resource in these kinds receives `DispositionFailClosed`; an invalid replacement may use exact predecessor bytes with `DispositionLastGood`. Other invalid first resources receive `DispositionQuarantined` and remain absent from the candidate.
+The following classifier is part of the superseded temporary-engine design and must not be implemented. The joint cutover uses the immutable compiler's closure-aware classification directly.
 
 ```go
 func securitySensitiveResource(key generation.ResourceKey) bool {
@@ -2537,7 +2543,7 @@ if journalPath == "" {
 	return errors.New("resolve generation journal path: effective config is nil")
 }
 journal, err := store.OpenJournal(journalPath, store.JournalOptions{
-	LegacyResourceBuckets: store.ManagedResourceKinds(),
+	LegacyResourceBuckets: generation.ManagedResourceKinds(),
 })
 if err != nil {
 	return fmt.Errorf("open generation journal: %w", err)
@@ -2587,12 +2593,9 @@ Run: `bash -lc 'source .envrc && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go buil
 
 Expected: PASS or an already-recorded unrelated platform failure with exact package/file/line. No new journal code may import Unix-only APIs.
 
-- [ ] **Step 9: Commit the atomic runtime cutover**
+- [ ] **Step 9: Complete the shared Journal/Immutable production cutover**
 
-```bash
-git add pkg/generation pkg/store pkg/etcd pkg/config pkg/server pkg/observability/metrics
-git commit -m "refactor(runtime): cut providers over to generation journal"
-```
+Do not create a standalone Journal runtime-cutover commit. Complete this checkbox only when Immutable Task 9's single integration history contains this task's provider, recovery, acknowledgement, legacy deletion and verification obligations, as required by `2026-08-24-journal-immutable-cutover-reorder.md`.
 
 ---
 
@@ -2681,6 +2684,6 @@ git commit -m "docs(runtime): specify durable generation journal"
 - Spec coverage: schema version, migrations, integrity, desired state, independent domain revisions, ack-after-publication-and-finalize, partial activation rollback, commit-failure rollback, restart last-good, explicit delete, per-resource security last-good/fail-closed, atomic dependency closure, offline degraded startup and unknown-newer-schema failure each have a named task and red/green test.
 - Migration coverage: legacy resource buckets are imported exactly once as desired-only state and deleted transactionally; Task 7 transactionally upgrades schema v1 to v2 while retaining markerless cursors for exact lazy classification and makes v1 readers reject v2 before mutation; Task 9 deletes Store events, hooks and in-memory last-good rather than preserving a compatibility path.
 - Interface consistency: every task uses `generation.Domain`, `generation.RevisionSet`, `generation.GenerationArtifact`, `generation.Journal`, `generation.PublicationEngine` and `generation.Coordinator` with the exact signatures declared under Shared Interfaces, including durable `LoadAcknowledgement`, pre-stage `DiscardPrepared`, reversible `Activate`/`RollbackActivation`, post-commit infallible `FinalizeActivation`, and read-only exact-fence `ConfirmActive` for committed replay.
-- Dependency consistency: this plan consumes plan 02's `config.JournalPath(*config.EffectiveConfig)` for the database path. It produces the journal and reversible transaction boundary consumed by plan 04's trusted compiler/`PreparedGeneration` lease owner and the later supervisor plan; plan 04 remains the final owner of security-sensitive classification.
+- Dependency consistency: this plan consumes plan 02's `config.JournalPath(*config.EffectiveConfig)` for the database path. Tasks 1–8 produce the journal and reversible transaction boundary consumed by plan 04's trusted compiler/`PreparedGeneration` lease owner. Task 9 is the single joint production cutover defined by `2026-08-24-journal-immutable-cutover-reorder.md`; no temporary `PublishedView` runtime engine or temporary security classifier is implemented or later replaced.
 - Verification scope: every Go command sources `.envrc`; tests are restricted to affected packages and focused names; race, lint and build gates occur only after the production cutover.
 - Completeness scan: the plan contains no deferred implementation markers, generic error-handling requests, unspecified tests or undefined neighboring interfaces.

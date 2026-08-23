@@ -120,11 +120,16 @@ type Tombstone struct {
 }
 
 type Snapshot struct {
-	Revision   uint64      `json:"revision"`
-	Resources  []Resource  `json:"resources"`
-	Tombstones []Tombstone `json:"tombstones"`
-	Digest     [32]byte    `json:"-"`
+	revision   uint64
+	resources  []Resource
+	tombstones []Tombstone
+	digest     [32]byte
 }
+
+func (s Snapshot) Revision() uint64
+func (s Snapshot) Resources() []Resource
+func (s Snapshot) Tombstones() []Tombstone
+func (s Snapshot) Digest() [32]byte
 
 type MutationType string
 
@@ -271,7 +276,8 @@ func (c *Coordinator) Apply(context.Context, DesiredBatch) (Acknowledgement, err
 **Interfaces:**
 
 - Consumes: provider resource kind/ID/value triples; no `pkg/store` types.
-- Produces: all shared value types above plus `NewSnapshot`, `Clone`, `Lookup`, `Deleted`, `CanonicalBytes`, and `SnapshotID`.
+- Produces: all shared value types above plus `NewSnapshot`, `Revision`, `Resources`, `Tombstones`, `Digest`, `Clone`, `Lookup`, `Deleted`, `CanonicalBytes`, and `SnapshotID`.
+- `Snapshot` is structurally immutable outside `pkg/generation`: every field is private, construction clones all input bytes, collection accessors return defensive copies, and no method exposes internal slice storage. Persistence readers decode into a temporary wire value and reconstruct through `NewSnapshot`; they never deserialize directly into `Snapshot`.
 
 - [ ] **Step 1: Write failing tests for deterministic ordering, cloning and tombstones**
 
@@ -284,13 +290,18 @@ func TestNewSnapshotCanonicalizesResourcesAndTombstones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := snapshot.Resources[0].Key.ID; got != "a" {
+	if got := snapshot.Resources()[0].Key.ID; got != "a" {
 		t.Fatalf("first resource = %q, want a", got)
 	}
 	clone := snapshot.Clone()
-	clone.Resources[0].Value[0] = 'x'
-	if bytes.Equal(clone.Resources[0].Value, snapshot.Resources[0].Value) {
+	clone.resources[0].Value[0] = 'x'
+	if bytes.Equal(clone.resources[0].Value, snapshot.resources[0].Value) {
 		t.Fatal("Clone shared resource bytes")
+	}
+	exposed := snapshot.Resources()
+	exposed[0].Value[0] = 'x'
+	if got, _ := snapshot.Lookup(exposed[0].Key); got[0] == 'x' {
+		t.Fatal("Resources exposed internal bytes")
 	}
 	if !snapshot.Deleted(ResourceKey{Kind: "services", ID: "gone"}) {
 		t.Fatal("explicit tombstone is not visible")
@@ -312,8 +323,8 @@ func TestSnapshotDigestIsIndependentOfInputOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if left.Digest != right.Digest || left.SnapshotID() != right.SnapshotID() {
-		t.Fatalf("same snapshot has different identity: %x/%x", left.Digest, right.Digest)
+	if left.Digest() != right.Digest() || left.SnapshotID() != right.SnapshotID() {
+		t.Fatalf("same snapshot has different identity: %x/%x", left.Digest(), right.Digest())
 	}
 }
 ```
@@ -328,7 +339,7 @@ Expected: FAIL because `NewSnapshot`, `Resource`, `Tombstone`, `Clone`, `Deleted
 
 ```go
 func NewSnapshot(revision uint64, resources []Resource, tombstones []Tombstone) (Snapshot, error) {
-	result := Snapshot{Revision: revision}
+	result := Snapshot{revision: revision}
 	seen := make(map[ResourceKey]struct{}, len(resources)+len(tombstones))
 	for _, resource := range resources {
 		if resource.Key.Kind == "" || resource.Key.ID == "" {
@@ -338,7 +349,7 @@ func NewSnapshot(revision uint64, resources []Resource, tombstones []Tombstone) 
 			return Snapshot{}, fmt.Errorf("duplicate resource %s/%s", resource.Key.Kind, resource.Key.ID)
 		}
 		seen[resource.Key] = struct{}{}
-		result.Resources = append(result.Resources, Resource{Key: resource.Key, Value: bytes.Clone(resource.Value)})
+		result.resources = append(result.resources, Resource{Key: resource.Key, Value: bytes.Clone(resource.Value)})
 	}
 	for _, tombstone := range tombstones {
 		if tombstone.Key.Kind == "" || tombstone.Key.ID == "" || tombstone.Revision == 0 {
@@ -348,24 +359,25 @@ func NewSnapshot(revision uint64, resources []Resource, tombstones []Tombstone) 
 			return Snapshot{}, fmt.Errorf("resource and tombstone overlap at %s/%s", tombstone.Key.Kind, tombstone.Key.ID)
 		}
 		seen[tombstone.Key] = struct{}{}
-		result.Tombstones = append(result.Tombstones, tombstone)
+		result.tombstones = append(result.tombstones, tombstone)
 	}
-	slices.SortFunc(result.Resources, compareResource)
-	slices.SortFunc(result.Tombstones, compareTombstone)
+	slices.SortFunc(result.resources, compareResource)
+	slices.SortFunc(result.tombstones, compareTombstone)
 	encoded, err := result.CanonicalBytes()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	result.Digest = sha256.Sum256(encoded)
+	result.digest = sha256.Sum256(encoded)
 	return result, nil
 }
 
 func (s Snapshot) SnapshotID() string {
-	return "sha256:" + hex.EncodeToString(s.Digest[:])
+	digest := s.Digest()
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 ```
 
-`CanonicalBytes` must encode a private struct containing `Revision`, sorted `Resources`, and sorted `Tombstones`; it must not encode `Digest`. `Lookup`, `Deleted`, and `Clone` return cloned byte slices and never expose mutable internal storage.
+`CanonicalBytes` must encode a private struct containing `Revision()`, sorted private resources, and sorted private tombstones; it must not encode `Digest()`. `Resources`, `Tombstones`, `Lookup`, and `Clone` return defensive copies and never expose mutable internal storage. Add regression tests that mutate constructor inputs and every returned slice/byte value, then prove the original canonical bytes, digest, snapshot ID, lookup results, and tombstone membership do not change.
 
 Use these exact ordering helpers so every writer produces the same digest:
 
@@ -608,6 +620,8 @@ func verifyArtifact(id string, envelope artifactEnvelope) error {
 }
 ```
 
+`loadDesiredSnapshotTx`, publication staging, and recovery must decode `envelope.Payload` into a private wire struct with exported JSON fields, call `generation.NewSnapshot(wire.Revision, wire.Resources, wire.Tombstones)`, and require the rebuilt `CanonicalBytes`, `Digest()`, and `SnapshotID()` to equal the stored payload, envelope digest, and artifact ID. A direct `json.Unmarshal` into `generation.Snapshot` is forbidden because its private representation is the immutability boundary.
+
 Use eight-byte big-endian integers for schema and revision metadata. Never decode revision data through JSON numbers or `float64`.
 
 - [ ] **Step 6: Run schema and integrity tests**
@@ -713,21 +727,16 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 		if err != nil && !errors.Is(err, generation.ErrNotFound) {
 			return err
 		}
+		if current.Revision() == math.MaxUint64 {
+			return fmt.Errorf("desired revision overflow")
+		}
 		next, err := applyBatch(current, batch)
 		if err != nil {
 			return err
 		}
-		if current.Revision == math.MaxUint64 {
-			return fmt.Errorf("desired revision overflow")
-		}
-		next.Revision = current.Revision + 1
-		next, err = generation.NewSnapshot(next.Revision, next.Resources, next.Tombstones)
-		if err != nil {
-			return err
-		}
 		ticket = generation.ApplyTicket{
-			DesiredRevision: next.Revision,
-			DesiredDigest: next.Digest,
+			DesiredRevision: next.Revision(),
+			DesiredDigest: next.Digest(),
 			Cursor: batch.Cursor,
 			RequiredDomains: normalizeDomains(batch.RequiredDomains),
 		}
@@ -737,7 +746,7 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 }
 ```
 
-`applyBatch` must clone all input bytes. `ReplaceManaged=true` turns every resource absent from the replacement into a tombstone at the new revision. An explicit `MutationDelete` has the same authoritative effect. A later valid PUT clears that key's tombstone. Provider names and cursor revisions must be non-empty; required domains must contain only `http` or `stream` and must be de-duplicated in stable order.
+`applyBatch` must clone all input bytes and return a `NewSnapshot(current.Revision()+1, resources, tombstones)` result; it never mutates `current`. `ReplaceManaged=true` turns every resource absent from the replacement into a tombstone at the new revision. An explicit `MutationDelete` has the same authoritative effect. A later valid PUT clears that key's tombstone. Provider names and cursor revisions must be non-empty; required domains must contain only `http` or `stream` and must be de-duplicated in stable order.
 
 Implement the private boundary with these exact signatures; `digestDesiredBatch` canonicalizes cursor, replacement flag, sorted mutations and sorted required domains without reading current journal state:
 
@@ -860,7 +869,7 @@ func publicationCandidate(
 	}
 	return generation.PublicationCandidate{
 		Artifact: generation.GenerationArtifact{
-			Domain: domain, Revision: ticket.DesiredRevision, Digest: snapshot.Digest, Snapshot: snapshot.SnapshotID(),
+			Domain: domain, Revision: ticket.DesiredRevision, Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
 		},
 		Snapshot: snapshot,
 		Closure: append([]generation.ResourceKey(nil), closure...),
@@ -888,7 +897,7 @@ func validatePublicationSet(ticket generation.ApplyTicket, set generation.Public
 			return fmt.Errorf("required domain %q has no publication candidate", domain)
 		}
 		if candidate.Artifact.Domain != domain || candidate.Artifact.Revision != ticket.DesiredRevision ||
-			candidate.Artifact.Digest != candidate.Snapshot.Digest ||
+			candidate.Artifact.Digest != candidate.Snapshot.Digest() ||
 			candidate.Artifact.Snapshot != candidate.Snapshot.SnapshotID() {
 			return generation.ErrIntegrity
 		}
@@ -1322,8 +1331,9 @@ type PublishedView struct {
 }
 
 func NewPublishedView(published generation.PublishedGeneration) (*PublishedView, error) {
-	resources := make(map[generation.ResourceKey][]byte, len(published.Snapshot.Resources))
-	for _, resource := range published.Snapshot.Resources {
+	snapshotResources := published.Snapshot.Resources()
+	resources := make(map[generation.ResourceKey][]byte, len(snapshotResources))
+	for _, resource := range snapshotResources {
 		resources[resource.Key] = bytes.Clone(resource.Value)
 	}
 	return &PublishedView{generation: published, resources: resources}, nil
@@ -1487,7 +1497,7 @@ func (j *fakeJournal) ApplyDesired(_ context.Context, batch DesiredBatch) (Apply
 	}
 	j.desired = snapshot
 	j.ticket = ApplyTicket{
-		DesiredRevision: 1, DesiredDigest: snapshot.Digest, Cursor: batch.Cursor,
+		DesiredRevision: 1, DesiredDigest: snapshot.Digest(), Cursor: batch.Cursor,
 		RequiredDomains: append([]Domain(nil), batch.RequiredDomains...),
 	}
 	return j.ticket, nil
@@ -1558,9 +1568,10 @@ func (e *fakeEngine) Prepare(
 	_ map[Domain]PublishedGeneration,
 ) (PublicationSet, error) {
 	*e.calls = append(*e.calls, "prepare")
-	closure := make([]ResourceKey, 0, len(desired.Resources))
-	decisions := make([]ResourceDecision, 0, len(desired.Resources))
-	for _, resource := range desired.Resources {
+	resources := desired.Resources()
+	closure := make([]ResourceKey, 0, len(resources))
+	decisions := make([]ResourceDecision, 0, len(resources))
+	for _, resource := range resources {
 		closure = append(closure, resource.Key)
 		decisions = append(decisions, ResourceDecision{
 			Key: resource.Key, Disposition: DispositionPublished, Code: "test-published",
@@ -1569,7 +1580,7 @@ func (e *fakeEngine) Prepare(
 	candidate := PublicationCandidate{
 		Artifact: GenerationArtifact{
 			Domain: DomainHTTP, Revision: ticket.DesiredRevision,
-			Digest: desired.Digest, Snapshot: desired.SnapshotID(),
+			Digest: desired.Digest(), Snapshot: desired.SnapshotID(),
 		},
 		Snapshot: desired.Clone(), Closure: closure, Decisions: decisions,
 	}
@@ -1851,7 +1862,7 @@ func TestGenerationEnginePrepareUsesDependencyClosedSnapshot(t *testing.T) {
 	desired := snapshotWithRouteAndUpstream(t, 81, "route-1", "upstream-1")
 	set, err := engine.Prepare(context.Background(), generation.ApplyTicket{
 		DesiredRevision: 81,
-		DesiredDigest: desired.Digest,
+		DesiredDigest: desired.Digest(),
 		RequiredDomains: []generation.Domain{generation.DomainHTTP},
 	}, desired, nil)
 	if err != nil {
@@ -1918,9 +1929,9 @@ func snapshotWithInvalidEnabledSSL(t *testing.T, revision uint64, id string) gen
 
 func ticketFor(snapshot generation.Snapshot, domains ...generation.Domain) generation.ApplyTicket {
 	return generation.ApplyTicket{
-		DesiredRevision: snapshot.Revision,
-		DesiredDigest: snapshot.Digest,
-		Cursor: generation.ProviderCursor{Provider: "test", Revision: strconv.FormatUint(snapshot.Revision, 10)},
+		DesiredRevision: snapshot.Revision(),
+		DesiredDigest: snapshot.Digest(),
+		Cursor: generation.ProviderCursor{Provider: "test", Revision: strconv.FormatUint(snapshot.Revision(), 10)},
 		RequiredDomains: append([]generation.Domain(nil), domains...),
 	}
 }

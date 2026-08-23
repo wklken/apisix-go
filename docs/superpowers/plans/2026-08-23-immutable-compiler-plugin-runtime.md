@@ -1009,13 +1009,13 @@ func (f *WorkerCompilerFactory) NewGeneration(ctx context.Context, ticket genera
 
 ```go
 func normalize(snapshot generation.Snapshot) (normalizedInput, []resourceIssue, error) {
-	input := newNormalizedInput(snapshot.Revision)
-	for _, raw := range snapshot.Resources {
+	input := newNormalizedInput(snapshot.Revision())
+	for _, raw := range snapshot.Resources() {
 		if err := input.decode(raw.Key, bytes.Clone(raw.Value)); err != nil {
 			input.issues = append(input.issues, resourceIssue{Key: raw.Key, Code: "decode-invalid", Err: err})
 		}
 	}
-	for _, tombstone := range snapshot.Tombstones { input.tombstones[tombstone.Key] = tombstone }
+	for _, tombstone := range snapshot.Tombstones() { input.tombstones[tombstone.Key] = tombstone }
 	input.sortAll()
 	return input, append([]resourceIssue(nil), input.issues...), nil
 }

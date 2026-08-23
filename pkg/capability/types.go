@@ -5,6 +5,7 @@ type SecretDeclarationSource string
 const (
 	SecretPluginConfig   SecretDeclarationSource = "plugin_config"
 	SecretPluginMetadata SecretDeclarationSource = "plugin_metadata"
+	SecretConsumerConfig SecretDeclarationSource = "consumer_config"
 )
 
 type SecretDeclaration struct {

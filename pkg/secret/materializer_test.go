@@ -207,6 +207,7 @@ func testCatalog(t *testing.T) *capability.SecretDeclarationCatalog {
 		SecretDeclarations: []capability.SecretDeclaration{
 			{Factory: "http-logger", Source: capability.SecretPluginConfig, Field: "token", Strict: true},
 			{Factory: "key-auth", Source: capability.SecretPluginConfig, Field: "key"},
+			{Factory: "key-auth", Source: capability.SecretConsumerConfig, Field: "key"},
 			{Factory: "metadata-plugin", Source: capability.SecretPluginConfig, Field: "token"},
 			{Factory: "metadata-plugin", Source: capability.SecretPluginMetadata, Field: "token", Strict: true},
 		},
@@ -216,6 +217,39 @@ func testCatalog(t *testing.T) *capability.SecretDeclarationCatalog {
 		t.Fatal(err)
 	}
 	return catalog
+}
+
+func TestMaterializerAcceptsDeclaredConsumerConfigScope(t *testing.T) {
+	service, _ := testService(t, false)
+	factory := &testResolverFactoryWithResolver{
+		factory: &testResolverFactory{},
+		resolve: func(_ context.Context, _ Scope, _ string) (string, error) {
+			return "consumer-key", nil
+		},
+	}
+	materializer := NewMaterializer(service, factory)
+	resource := generation.ResourceKey{Kind: "consumers", ID: "c1"}
+	ticket, set := testPublication(t, 9, generation.DomainHTTP, resource)
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = registration.Close(context.Background()) }()
+
+	value, err := registration.Materialize(context.Background(), testScope(
+		registration,
+		generation.DomainHTTP,
+		"key-auth",
+		resource,
+		capability.SecretConsumerConfig,
+		"key",
+	), "$ENV://CONSUMER_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := valuePlaintext(t, value); got != "consumer-key" {
+		t.Fatalf("plaintext = %q, want consumer-key", got)
+	}
 }
 
 func testService(

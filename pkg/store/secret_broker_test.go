@@ -72,6 +72,20 @@ func TestScopedAttemptBrokerKeepsCandidateAndRecoveryAttemptsSeparate(t *testing
 	}
 }
 
+func TestValidStoreSecretScopeAcceptsConsumerConfig(t *testing.T) {
+	if !validStoreSecretScope(secret.Scope{
+		Generation: 1,
+		Attempt:    secret.AttemptID{1},
+		Domain:     generation.DomainHTTP,
+		Plugin:     "key-auth",
+		Resource:   generation.ResourceKey{Kind: "consumers", ID: "c1"},
+		Source:     capability.SecretConsumerConfig,
+		Field:      "key",
+	}) {
+		t.Fatal("validStoreSecretScope() rejected consumer_config")
+	}
+}
+
 func TestScopedAttemptBrokerRejectsAuthorityMismatchesBeforeVault(t *testing.T) {
 	var requests atomic.Int32
 	vault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

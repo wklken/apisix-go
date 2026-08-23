@@ -832,6 +832,10 @@ plugins:
         source: "plugin_config"
         field: "key"
         strict: false
+      - factory: "key-auth"
+        source: "consumer_config"
+        field: "key"
+        strict: false
     implementation: "key-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -868,6 +872,26 @@ plugins:
       - factory: "jwt-auth"
         source: "plugin_config"
         field: "private_key"
+        strict: false
+      - factory: "jwt-auth"
+        source: "consumer_config"
+        field: "key"
+        strict: false
+      - factory: "jwt-auth"
+        source: "consumer_config"
+        field: "secret"
+        strict: false
+      - factory: "jwt-auth"
+        source: "consumer_config"
+        field: "public_key"
+        strict: false
+      - factory: "jwt-auth"
+        source: "consumer_config"
+        field: "private_key"
+        strict: false
+      - factory: "jwt-auth"
+        source: "consumer_config"
+        field: "algorithm"
         strict: false
     implementation: "jwt-auth"
     namespace: "apisix"
@@ -906,6 +930,14 @@ plugins:
         source: "plugin_config"
         field: "secret"
         strict: false
+      - factory: "jwe-decrypt"
+        source: "consumer_config"
+        field: "key"
+        strict: false
+      - factory: "jwe-decrypt"
+        source: "consumer_config"
+        field: "secret"
+        strict: false
     implementation: "jwe-decrypt"
     namespace: "apisix"
     domains: ["http"]
@@ -937,6 +969,14 @@ plugins:
     secret_declarations:
       - factory: "basic-auth"
         source: "plugin_config"
+        field: "password"
+        strict: false
+      - factory: "basic-auth"
+        source: "consumer_config"
+        field: "username"
+        strict: false
+      - factory: "basic-auth"
+        source: "consumer_config"
         field: "password"
         strict: false
     implementation: "basic-auth"
@@ -1152,6 +1192,23 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "wolf-rbac"
+    secret_declarations:
+      - factory: "wolf-rbac"
+        source: "consumer_config"
+        field: "appid"
+        strict: false
+      - factory: "wolf-rbac"
+        source: "consumer_config"
+        field: "header_prefix"
+        strict: false
+      - factory: "wolf-rbac"
+        source: "consumer_config"
+        field: "server"
+        strict: false
+      - factory: "wolf-rbac"
+        source: "consumer_config"
+        field: "wolf_url"
+        strict: false
     implementation: "wolf-rbac"
     namespace: "apisix"
     domains: ["http"]
@@ -1188,6 +1245,10 @@ plugins:
       - factory: "openid-connect"
         source: "plugin_config"
         field: "client_rsa_private_key"
+        strict: false
+      - factory: "openid-connect"
+        source: "plugin_config"
+        field: "public_key"
         strict: false
       - factory: "openid-connect"
         source: "plugin_config"
@@ -1263,6 +1324,14 @@ plugins:
         source: "plugin_config"
         field: "secret"
         strict: false
+      - factory: "hmac-auth"
+        source: "consumer_config"
+        field: "key_id"
+        strict: false
+      - factory: "hmac-auth"
+        source: "consumer_config"
+        field: "secret_key"
+        strict: false
     implementation: "hmac-auth"
     namespace: "apisix"
     domains: ["http"]
@@ -1322,6 +1391,10 @@ plugins:
     secret_declarations:
       - factory: "ldap-auth"
         source: "plugin_config"
+        field: "user_dn"
+        strict: false
+      - factory: "ldap-auth"
+        source: "consumer_config"
         field: "user_dn"
         strict: false
     implementation: "ldap-auth"
@@ -1775,6 +1848,15 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "oas-validator"
+    secret_declarations:
+      - factory: "oas-validator"
+        source: "plugin_config"
+        field: "spec"
+        strict: false
+      - factory: "oas-validator"
+        source: "plugin_config"
+        field: "spec_url_request_headers"
+        strict: false
     implementation: "oas-validator"
     namespace: "apisix"
     domains: ["http"]
@@ -1859,6 +1941,27 @@ plugins:
     divergence_ids: []
     supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
   - name: "limit-count"
+    secret_declarations:
+      - factory: "limit-count"
+        source: "plugin_config"
+        field: "key"
+        strict: false
+      - factory: "limit-count"
+        source: "plugin_config"
+        field: "redis_host"
+        strict: false
+      - factory: "limit-count"
+        source: "plugin_config"
+        field: "redis_config.redis_host"
+        strict: false
+      - factory: "limit-count"
+        source: "plugin_config"
+        field: "redis_cluster_nodes"
+        strict: false
+      - factory: "limit-count"
+        source: "plugin_config"
+        field: "redis_cluster_config.redis_cluster_nodes"
+        strict: false
     implementation: "limit-count"
     namespace: "apisix"
     domains: ["http"]
@@ -2681,6 +2784,10 @@ plugins:
         source: "plugin_config"
         field: "password"
         strict: true
+      - factory: "clickhouse-logger"
+        source: "plugin_config"
+        field: "user"
+        strict: false
     implementation: "clickhouse-logger"
     namespace: "apisix"
     domains: ["http"]
@@ -3120,6 +3227,10 @@ plugins:
         source: "plugin_config"
         field: "access_key_secret"
         strict: false
+      - factory: "ai-aliyun-content-moderation"
+        source: "plugin_config"
+        field: "access_key_id"
+        strict: false
     implementation: "ai-aliyun-content-moderation"
     namespace: "apisix"
     domains: ["http"]
@@ -3152,6 +3263,14 @@ plugins:
       - factory: "ai-aws-content-moderation"
         source: "plugin_config"
         field: "comprehend.secret_access_key"
+        strict: false
+      - factory: "ai-aws-content-moderation"
+        source: "plugin_config"
+        field: "comprehend.access_key_id"
+        strict: false
+      - factory: "ai-aws-content-moderation"
+        source: "plugin_config"
+        field: "comprehend.session_token"
         strict: false
     implementation: "ai-aws-content-moderation"
     namespace: "apisix"

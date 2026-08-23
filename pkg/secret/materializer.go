@@ -603,7 +603,8 @@ func validateScope(scope Scope) error {
 	if scope.Generation == 0 || scope.Attempt == (AttemptID{}) ||
 		(scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||
 		scope.Plugin == "" || scope.Resource.Kind == "" || scope.Resource.ID == "" ||
-		(scope.Source != capability.SecretPluginConfig && scope.Source != capability.SecretPluginMetadata) ||
+		(scope.Source != capability.SecretPluginConfig && scope.Source != capability.SecretPluginMetadata &&
+			scope.Source != capability.SecretConsumerConfig) ||
 		scope.Field == "" {
 		return ErrInvalidScope
 	}

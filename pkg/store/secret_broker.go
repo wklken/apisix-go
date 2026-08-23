@@ -634,7 +634,8 @@ func validStoreSecretScope(scope secret.Scope) bool {
 	return scope.Generation != 0 && scope.Attempt != (secret.AttemptID{}) &&
 		(scope.Domain == generation.DomainHTTP || scope.Domain == generation.DomainStream) &&
 		scope.Plugin != "" && scope.Resource.Kind != "" && scope.Resource.ID != "" &&
-		(scope.Source == capability.SecretPluginConfig || scope.Source == capability.SecretPluginMetadata) &&
+		(scope.Source == capability.SecretPluginConfig || scope.Source == capability.SecretPluginMetadata ||
+			scope.Source == capability.SecretConsumerConfig) &&
 		scope.Field != ""
 }
 

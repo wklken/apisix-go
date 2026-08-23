@@ -14,8 +14,10 @@ type legacyDeclarationKey struct {
 }
 
 var expectedPluginFields = map[string][]string{
-	"ai-aliyun-content-moderation": {"access_key_secret"},
-	"ai-aws-content-moderation":    {"comprehend.secret_access_key"},
+	"ai-aliyun-content-moderation": {"access_key_id", "access_key_secret"},
+	"ai-aws-content-moderation": {
+		"comprehend.access_key_id", "comprehend.secret_access_key", "comprehend.session_token",
+	},
 	"ai-proxy": {
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
@@ -55,12 +57,13 @@ var expectedPluginFields = map[string][]string{
 	"openid-connect": {
 		"client_secret",
 		"client_rsa_private_key",
+		"public_key",
 		"session.secret",
 		"session.redis.password",
 	},
 	"openfunction":         {"authorization.service_token"},
 	"openwhisk":            {"service_token"},
-	"clickhouse-logger":    {"password"},
+	"clickhouse-logger":    {"password", "user"},
 	"csrf":                 {"key"},
 	"elasticsearch-logger": {"auth.password", "headers.Authorization"},
 	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
@@ -73,6 +76,14 @@ var expectedPluginFields = map[string][]string{
 	"sls-logger":           {"access_key_secret"},
 	"splunk-hec-logging":   {"endpoint.token"},
 	"tencent-cloud-cls":    {"secret_key"},
+	"limit-count": {
+		"key",
+		"redis_host",
+		"redis_config.redis_host",
+		"redis_cluster_nodes",
+		"redis_cluster_config.redis_cluster_nodes",
+	},
+	"oas-validator": {"spec", "spec_url_request_headers"},
 }
 
 var expectedStrictPluginFields = map[string][]string{
@@ -101,6 +112,16 @@ var expectedPluginMetadataFields = map[string][]string{
 
 var expectedStrictPluginMetadataFields = map[string][]string{
 	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+}
+
+var expectedConsumerFields = map[string][]string{
+	"basic-auth":  {"username", "password"},
+	"key-auth":    {"key"},
+	"jwt-auth":    {"key", "secret", "public_key", "private_key", "algorithm"},
+	"hmac-auth":   {"key_id", "secret_key"},
+	"ldap-auth":   {"user_dn"},
+	"jwe-decrypt": {"key", "secret"},
+	"wolf-rbac":   {"appid", "header_prefix", "server", "wolf_url"},
 }
 
 func TestSecretDeclarationCatalogParity(t *testing.T) {
@@ -155,6 +176,13 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 	gotMetadata := make(map[legacyDeclarationKey]struct{})
 	gotOptionalMetadata := make(map[legacyDeclarationKey]struct{})
 	gotStrictMetadata := make(map[legacyDeclarationKey]struct{})
+	wantConsumer := make(map[legacyDeclarationKey]struct{})
+	for factory, fields := range expectedConsumerFields {
+		for _, field := range fields {
+			wantConsumer[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
+		}
+	}
+	gotConsumer := make(map[legacyDeclarationKey]struct{})
 	for _, declaration := range catalog.Declarations() {
 		key := legacyDeclarationKey{factory: declaration.Factory, field: declaration.Field}
 		switch declaration.Source {
@@ -172,6 +200,11 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 			} else {
 				gotOptionalMetadata[key] = struct{}{}
 			}
+		case capability.SecretConsumerConfig:
+			gotConsumer[key] = struct{}{}
+			if declaration.Strict {
+				t.Errorf("consumer declaration %s/%s unexpectedly uses strict at-rest policy", key.factory, key.field)
+			}
 		default:
 			t.Fatalf("catalog contains unknown declaration source %q", declaration.Source)
 		}
@@ -188,6 +221,7 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 		{name: "metadata", got: gotMetadata, want: wantMetadata},
 		{name: "metadata optional", got: gotOptionalMetadata, want: wantOptionalMetadata},
 		{name: "metadata strict", got: gotStrictMetadata, want: wantStrictMetadata},
+		{name: "consumer", got: gotConsumer, want: wantConsumer},
 	}
 	for _, check := range checks {
 		if !reflect.DeepEqual(check.got, check.want) {

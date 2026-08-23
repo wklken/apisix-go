@@ -12,6 +12,7 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{
 		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
+		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 	}
 	loaded := parseManifest(t, manifest)
 	catalog, err := NewSecretDeclarationCatalog(loaded)
@@ -20,6 +21,7 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	}
 
 	want := []SecretDeclaration{
+		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
 		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
 	}
@@ -61,6 +63,7 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	shuffled := testManifest()
 	shuffled.Plugins[0].SecretDeclarations = []SecretDeclaration{
 		{Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret"},
+		{Factory: "request-id", Source: SecretConsumerConfig, Field: "consumer.key"},
 		{Factory: "request-id", Source: SecretPluginMetadata, Field: "metadata.*.token", Strict: true},
 	}
 	shuffledLoaded := parseManifest(t, shuffled)
@@ -70,6 +73,21 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	}
 	if catalog.Digest() != shuffledCatalog.Digest() {
 		t.Fatalf("Digest() changed with declaration ordering: %x != %x", catalog.Digest(), shuffledCatalog.Digest())
+	}
+}
+
+func TestSecretDeclarationCatalogAcceptsConsumerConfig(t *testing.T) {
+	manifest := testManifest()
+	manifest.Plugins[0].SecretDeclarations = []SecretDeclaration{{
+		Factory: "request-id", Source: SecretConsumerConfig, Field: "username",
+	}}
+	catalog := mustDeclarationCatalog(t, manifest)
+	if declaration, ok := catalog.Lookup(
+		"request-id",
+		SecretConsumerConfig,
+		"username",
+	); !ok || declaration.Strict {
+		t.Fatalf("Lookup() = %#v/%v, want optional consumer declaration", declaration, ok)
 	}
 }
 
@@ -88,7 +106,7 @@ func TestSecretDeclarationCatalogDigestIncludesPolicyAndSource(t *testing.T) {
 			manifest.Plugins[0].SecretDeclarations[0].Strict = true
 		},
 		"source": func(manifest *Manifest) {
-			manifest.Plugins[0].SecretDeclarations[0].Source = SecretPluginMetadata
+			manifest.Plugins[0].SecretDeclarations[0].Source = SecretConsumerConfig
 		},
 		"field": func(manifest *Manifest) {
 			manifest.Plugins[0].SecretDeclarations[0].Field = "other.secret"

@@ -95,6 +95,73 @@ func TestServiceValidatesDeclarationsAndSeparatesSources(t *testing.T) {
 	}
 }
 
+func TestPluginAndMetadataEncryptionIgnoreConsumerDeclarations(t *testing.T) {
+	manifest := &capability.Manifest{Plugins: []capability.PluginCapability{{
+		Name:      "test-owner",
+		Factories: []capability.Factory{{Key: "test-plugin"}},
+		SecretDeclarations: []capability.SecretDeclaration{
+			{Factory: "test-plugin", Source: capability.SecretPluginConfig, Field: "plugin_secret"},
+			{Factory: "test-plugin", Source: capability.SecretPluginMetadata, Field: "metadata_secret"},
+			{Factory: "test-plugin", Source: capability.SecretConsumerConfig, Field: "consumer_secret"},
+		},
+	}}}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(true, []string{"qeddd145sfvddff3"}, catalog)
+
+	configs := map[string]any{"test-plugin": map[string]any{
+		"plugin_secret":   "plugin-value",
+		"consumer_secret": "consumer-value",
+	}}
+	if err := service.EncryptPluginConfigs(configs); err != nil {
+		t.Fatal(err)
+	}
+	config := configs["test-plugin"].(map[string]any)
+	if config["plugin_secret"] == "plugin-value" {
+		t.Fatal("EncryptPluginConfigs() did not encrypt plugin_config declaration")
+	}
+	if got := config["consumer_secret"]; got != "consumer-value" {
+		t.Fatalf("EncryptPluginConfigs() consumer_config = %v, want untouched plaintext", got)
+	}
+	consumerCiphertext, err := EncryptForContext(
+		"consumer-value",
+		"qeddd145sfvddff3",
+		"test-plugin.consumer_secret",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config["consumer_secret"] = encryptedValuePrefix + consumerCiphertext
+	service.DecryptPluginConfigs(configs)
+	if got := config["plugin_secret"]; got != "plugin-value" {
+		t.Fatalf("DecryptPluginConfigs() plugin_config = %v, want plugin-value", got)
+	}
+	if got := config["consumer_secret"]; got != encryptedValuePrefix+consumerCiphertext {
+		t.Fatalf("DecryptPluginConfigs() consumer_config = %v, want untouched ciphertext", got)
+	}
+
+	metadata := map[string]any{"metadata_secret": "metadata-value", "consumer_secret": "consumer-value"}
+	if err := service.EncryptPluginMetadata("test-plugin", metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["metadata_secret"] == "metadata-value" {
+		t.Fatal("EncryptPluginMetadata() did not encrypt plugin_metadata declaration")
+	}
+	if got := metadata["consumer_secret"]; got != "consumer-value" {
+		t.Fatalf("EncryptPluginMetadata() consumer_config = %v, want untouched plaintext", got)
+	}
+	metadata["consumer_secret"] = encryptedValuePrefix + consumerCiphertext
+	service.DecryptPluginMetadata("test-plugin", metadata)
+	if got := metadata["metadata_secret"]; got != "metadata-value" {
+		t.Fatalf("DecryptPluginMetadata() plugin_metadata = %v, want metadata-value", got)
+	}
+	if got := metadata["consumer_secret"]; got != encryptedValuePrefix+consumerCiphertext {
+		t.Fatalf("DecryptPluginMetadata() consumer_config = %v, want untouched ciphertext", got)
+	}
+}
+
 func TestServiceRejectsUnknownDeclarationBeforeResolving(t *testing.T) {
 	service := NewService(true, []string{"qeddd145sfvddff3"}, testDeclarationCatalog(t))
 	_, err := service.ResolveDeclared("key-auth", capability.SecretPluginMetadata, "key", "secret-value")

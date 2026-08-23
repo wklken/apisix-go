@@ -64,7 +64,6 @@ The runtime cutover table in Task 4 lists every production global reader. Its re
 - Create: `pkg/config/qualification.go`
 - Create: `pkg/config/paths.go`
 - Test: `pkg/config/effective_contract_test.go`
-- Modify: `pkg/config/profiles_test.go`
 
 **Interfaces:**
 - Consumes: `config.ProfileSelection`, `config.ProfileSelection.Validate(*capability.Manifest) error`, `capability.Load()`, `capability.Manifest.Qualification(name string) (capability.QualificationProfile, bool)`, and `capability.Manifest.QualifiedPlugins(name string) []string` from plan 01. `ProfileSelection.Validate` already enforces compatibility `apisix-3.17`, security `compat|strict`, qualification existence, and exact equality between required and evidence-qualified plugin sets without reading `Config`.
@@ -88,6 +87,12 @@ func TestEffectiveConfigContractCarriesProfilesAndProvenance(t *testing.T) {
 	}
 }
 
+func TestJournalPathRejectsMissingOrNonAbsoluteDataDir(t *testing.T) {
+	for _, effective := range []*EffectiveConfig{nil, {}, {Paths: RuntimePaths{DataDir: "relative"}}} {
+		if got := JournalPath(effective); got != "" { t.Fatalf("JournalPath() = %q, want empty", got) }
+	}
+}
+
 func TestDefaultRuntimePathsAreAbsoluteAndNonEmpty(t *testing.T) {
 	paths, err := DefaultRuntimePaths()
 	if err != nil { t.Fatal(err) }
@@ -100,8 +105,7 @@ func TestDefaultRuntimePathsAreAbsoluteAndNonEmpty(t *testing.T) {
 }
 
 func TestValidateQualificationPluginsReportsStableSetDifference(t *testing.T) {
-	manifest, err := capability.Load()
-	if err != nil { t.Fatal(err) }
+	manifest := qualifiedProfileTestManifest(t)
 	profile, ok := manifest.Qualification("http-data-plane-v1")
 	if !ok || len(profile.RequiredPlugins) == 0 { t.Fatal("qualification profile has no required plugins") }
 	selection := ProfileSelection{
@@ -111,7 +115,7 @@ func TestValidateQualificationPluginsReportsStableSetDifference(t *testing.T) {
 	}
 	enabled := append([]string(nil), profile.RequiredPlugins[1:]...)
 	enabled = append(enabled, "zz-extra")
-	err = ValidateQualificationPlugins(enabled, selection, manifest)
+	err := ValidateQualificationPlugins(enabled, selection, manifest)
 	want := fmt.Sprintf("qualification_profile http-data-plane-v1: missing plugins [%s]; unexpected plugins [zz-extra]",
 		profile.RequiredPlugins[0])
 	if err == nil || err.Error() != want {
@@ -206,12 +210,12 @@ func DefaultRuntimePaths() (RuntimePaths, error) {
 }
 
 func JournalPath(e *EffectiveConfig) string {
-	if e == nil { return "" }
+	if e == nil || e.Paths.DataDir == "" || !filepath.IsAbs(e.Paths.DataDir) { return "" }
 	return filepath.Join(e.Paths.DataDir, "apisix-go-store.db")
 }
 ```
 
-`JournalPath(nil)` returns empty so callers can fail before filesystem access; runtime construction already rejects a nil effective config. Do not call `os.MkdirAll` in either path function.
+`JournalPath` returns empty for nil effective configuration and for empty or non-absolute `DataDir`, so callers fail before filesystem access and cannot silently recreate a cwd-relative journal. Runtime construction later rejects invalid effective configuration. Do not call `os.MkdirAll` in either path function.
 
 ```go
 // pkg/config/qualification.go
@@ -254,11 +258,11 @@ func ValidateQualificationPlugins(enabled []string, selection ProfileSelection, 
 }
 ```
 
-Tests load an independent embedded manifest fixture through `capability.Load()` and pass the returned pointer explicitly; do not construct a second manifest representation in `pkg/config`.
+Tests reuse the existing `qualifiedProfileTestManifest(t)` helper, which loads an independent embedded manifest and removes only the test copy's evidence requirements so set-difference behavior is reachable. Also assert that reordered complete input passes, missing/unexpected output is stable, and neither the enabled input nor the manifest required slice is mutated. Do not construct a second manifest representation in `pkg/config`. The new helper intentionally compares plugin membership independent of order; the existing runtime remains order-sensitive until Task 4 atomically switches consumers and updates its old order-rejection test.
 
-- [ ] **Step 4: Re-run the plan-01 import-boundary contract**
+- [ ] **Step 4: Re-run the existing dependency-thinning contract**
 
-Run the existing dependency contract from plan 01 and confirm the one-way edge remains `config -> capability`; do not add another copy of that test.
+Run the existing `TestConfigPackageDoesNotDepend*` dependency-thinning contract and rely on Go compilation to reject an import cycle. The existing test bans ingress-controller and Kubernetes dependencies; it does not itself assert the `config -> capability` edge, so do not claim or duplicate a nonexistent import-boundary assertion.
 
 - [ ] **Step 5: Run the focused interface tests**
 
@@ -269,7 +273,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit the interface contract**
 
 ```bash
-git add pkg/config/effective.go pkg/config/qualification.go pkg/config/paths.go pkg/config/effective_contract_test.go pkg/config/profiles_test.go
+git add pkg/config/effective.go pkg/config/qualification.go pkg/config/paths.go pkg/config/effective_contract_test.go
 git commit -m "feat(config): define effective configuration contract"
 ```
 

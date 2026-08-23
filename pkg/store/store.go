@@ -97,6 +97,8 @@ type Store struct {
 	// protosGeneration increments on every protos bucket change so consumers
 	// can detect proto resource updates without re-reading the bucket.
 	protosGeneration atomic.Int64
+
+	secretBroker storeSecretBroker
 }
 
 // should it be global store?
@@ -162,6 +164,7 @@ func Open(
 		consumerReferenceKV:     map[string]map[string][]byte{},
 		consumerToReferences:    map[string][]string{},
 		validatedPluginMetadata: newValidatedPluginMetadataCache(),
+		secretBroker:            newStoreSecretBroker(),
 	}
 	if err := storage.InitBuckets(); err != nil {
 		_ = db.Close()
@@ -422,6 +425,7 @@ func (storage *Store) Stop() error {
 		if runDone != nil {
 			<-runDone
 		}
+		storage.closeSecretBroker()
 
 		globalStoreMu.Lock()
 		defer globalStoreMu.Unlock()

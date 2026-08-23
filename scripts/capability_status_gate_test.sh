@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 workflow="$repo_root/.github/workflows/capability-status.yml"
+makefile="$repo_root/Makefile"
 
 require_fixed() {
 	local text=$1
@@ -35,8 +36,39 @@ paths_from_trigger() {
 	'
 }
 
+make_target_body() {
+	local target=$1
+	awk -v target="$target:" '
+		$0 == target { in_target = 1; next }
+		in_target && /^\t/ { print; next }
+		in_target && /^[[:space:]]*$/ { next }
+		in_target { exit }
+	' "$makefile"
+}
+
+require_make_target_body() {
+	local target=$1
+	local expected=$2
+	local count actual
+	count=$(grep -Ec -- "^${target}::?([[:space:]]|$)" "$makefile" || true)
+	if [[ "$count" -ne 1 ]]; then
+		printf 'expected exactly one %s target in %s, found %s\n' "$target" "$makefile" "$count" >&2
+		exit 1
+	fi
+	actual=$(make_target_body "$target")
+	if [[ "$actual" != "$expected" ]]; then
+		printf 'target %s body differs from the capability status contract in %s\n' "$target" "$makefile" >&2
+		printf 'want:\n%s\ngot:\n%s\n' "$expected" "$actual" >&2
+		exit 1
+	fi
+}
+
 if [[ ! -f "$workflow" ]]; then
 	printf 'missing capability status workflow: %s\n' "$workflow" >&2
+	exit 1
+fi
+if [[ ! -f "$makefile" ]]; then
+	printf 'missing Makefile: %s\n' "$makefile" >&2
 	exit 1
 fi
 
@@ -69,8 +101,8 @@ if [[ -z "$pull_request_block" ]]; then
 	printf 'missing pull_request trigger in %s\n' "$workflow" >&2
 	exit 1
 fi
-if grep -Fq '    paths:' <<<"$pull_request_block"; then
-	printf 'pull_request must not use path filters because this workflow is a required check: %s\n' "$workflow" >&2
+if [[ "$pull_request_block" != '  pull_request:' ]]; then
+	printf 'pull_request must be unconfigured because this workflow is a required check: %s\n' "$workflow" >&2
 	exit 1
 fi
 
@@ -154,5 +186,14 @@ if grep -Eq 'TestPluginIntegration|make test-integration|-write|generate-capabil
 	printf 'write-mode generation and real-process plugin integration are forbidden in %s\n' "$workflow" >&2
 	exit 1
 fi
+
+require_make_target_body generate-capabilities \
+	$'\tgo run ./cmd/capability-gen -repo-root . -write'
+require_make_target_body check-capability-drift \
+	$'\tgo run ./cmd/capability-gen -repo-root . -check'
+status_target_body=$(printf '\t%s\n\t%s' \
+	"go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1" \
+	"APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)\$\$' -count=1")
+require_make_target_body test-capability-status "$status_target_body"
 
 printf 'capability status workflow contract: PASS\n'

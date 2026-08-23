@@ -698,7 +698,7 @@ func TestJournalApplyDesiredPersistsExplicitDeleteAcrossRestart(t *testing.T) {
 }
 ```
 
-Add tests that a complete replacement tombstones absent resources, that an identical cursor+digest returns the original ticket without incrementing Desired, and that the same cursor with different mutations returns `ErrCursorConflict`. Preserve mutation order and add same-key `PUT → DELETE` / `DELETE → PUT` tests: etcd watch order is semantic and last mutation wins. Also cover restart replay after newer desired revisions exist, collision-free cursor identity, provider switching, empty-batch rules, tombstone revision refresh, input/output defensive copies, overflow, canceled context and artifact/cursor tampering.
+Add tests that a complete replacement tombstones absent resources, that an identical cursor+digest returns the original ticket without incrementing Desired, and that the same cursor with different mutations returns `ErrCursorConflict`. Preserve mutation order and add same-key `PUT → DELETE` / `DELETE → PUT` tests: etcd watch order is semantic and last mutation wins. Also cover restart replay after newer desired revisions exist, collision-free cursor identity, provider switching, empty-batch rules, tombstone revision refresh, input/output defensive copies, overflow, canceled context, artifact/cursor tampering, and a coherent rollback of both the active-authority record and its keyed cursor record.
 
 - [ ] **Step 2: Run the desired-state tests and confirm RED**
 
@@ -710,6 +710,7 @@ Expected: FAIL because `ApplyDesired` and `LoadDesired` do not exist.
 
 ```go
 func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch) (generation.ApplyTicket, error) {
+	batch = cloneDesiredBatch(batch)
 	if err := validateDesiredBatch(batch); err != nil {
 		return generation.ApplyTicket{}, err
 	}
@@ -718,6 +719,9 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 	}
 	var ticket generation.ApplyTicket
 	err := s.db.Update(func(tx *bolt.Tx) error {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		batchDigest, err := digestDesiredBatch(batch)
 		if err != nil {
 			return err
@@ -726,7 +730,7 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 		if err != nil && !errors.Is(err, generation.ErrNotFound) {
 			return err
 		}
-		activeProvider, err := loadActiveProviderTx(tx)
+		activeProvider, err := loadActiveProviderTx(tx, current)
 		if err != nil {
 			return err
 		}
@@ -741,6 +745,9 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 			}
 			if replay.DesiredRevision != current.Revision() {
 				return generation.ErrStaleCursor
+			}
+			if replay.DesiredDigest != current.Digest() {
+				return generation.ErrIntegrity
 			}
 			ticket = replay
 			return nil
@@ -761,9 +768,15 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 			Cursor: batch.Cursor,
 			RequiredDomains: normalizeDomains(batch.RequiredDomains),
 		}
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		return persistDesiredTx(tx, next, ticket, batchDigest)
 	})
-	return ticket, err
+	if err != nil {
+		return generation.ApplyTicket{}, err
+	}
+	return cloneApplyTicket(ticket), nil
 }
 ```
 
@@ -771,22 +784,35 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 
 `ReplaceManaged` is global authority over the complete APISIX desired namespace because one process has exactly one configured provider. The first batch on an empty journal establishes its provider; a different provider is accepted only with `ReplaceManaged=true`, which atomically transfers authority. Every replacement requires normalized domains `[http, stream]`, including an empty replacement, so deletion of either runtime cannot remain unpublished. A non-replacement batch with mutations requires at least one domain. An empty non-replacement batch with empty domains is a legal cursor-only revision; an explicit domain on an empty non-replacement batch is a legal forced recompilation.
 
-Provider names, cursor revisions, resource keys and domains must be non-empty valid UTF-8. Reject unknown mutation types/domains and a delete carrying non-empty value bytes. Required domains are de-duplicated into stable `http`, `stream` order. Repeated keys inside a batch are legal and remain ordered. `nil` and empty PUT values remain distinct desired bytes and receive golden digest coverage; later compiler policy decides whether either payload is valid.
+Provider names, cursor revisions, resource keys and domains must be non-empty valid UTF-8. Reject unknown mutation types/domains and a delete carrying non-empty value bytes. Required domains are de-duplicated into stable `http`, `stream` order. Repeated keys inside a batch are legal and remain ordered. `nil` and empty PUT values remain distinct desired bytes and receive golden digest coverage; later compiler policy decides whether either payload is valid. The schema-v1 batch digest and cursor payload must use private wire DTOs with explicit JSON tags; never marshal `generation.ProviderCursor` or `generation.ApplyTicket` directly, because unrelated changes to their exported Go fields must not alter persisted bytes. Lock both canonical payloads with readable JSON golden tests.
 
-`providerCursorBucket` stores a fixed active-provider record plus cursor records keyed by a collision-resistant SHA-256 of the canonical provider/revision pair; every record embeds and revalidates the exact cursor, ordered batch digest and complete original ticket. Same cursor plus the same canonical batch returns the original ticket only while that ticket is the current desired head and its provider is still active, including after restart, so a failed current publication can be retried. Once the desired head advances, replaying the older cursor returns `ErrStaleCursor` without loading, preparing or publishing the historical snapshot. A cursor from a non-active provider returns `ErrProviderConflict`; even an old replacement record cannot transfer authority again. Different mutation order, type, bytes, replacement flag or normalized domains returns `ErrCursorConflict`. Cursor persistence records ingestion/deduplication only, never provider acknowledgement: Tasks 8–9 advance etcd acknowledgement state only after `Coordinator.Apply` succeeds.
+`providerCursorBucket` stores a fixed active-provider record plus cursor records keyed by a collision-resistant SHA-256 of the canonical provider/revision pair; every record embeds and revalidates the exact cursor, ordered batch digest and complete original ticket. The active record must equal its keyed cursor record and its ticket revision/digest must equal the already-loaded current desired snapshot, so a coherent rollback of both cursor records still fails closed. Same cursor plus the same canonical batch returns the original ticket only while that ticket is the current desired head and its provider is still active, including after restart, so a failed current publication can be retried. Once the desired head advances, replaying the older cursor returns `ErrStaleCursor` without loading, preparing or publishing the historical snapshot. A cursor from a non-active provider returns `ErrProviderConflict`; even an old replacement record cannot transfer authority again. Different mutation order, type, bytes, replacement flag or normalized domains returns `ErrCursorConflict`. Cursor persistence records ingestion/deduplication only, never provider acknowledgement: Tasks 8–9 advance etcd acknowledgement state only after `Coordinator.Apply` succeeds.
 
 Implement the private boundary with these exact signatures; `digestDesiredBatch` canonicalizes cursor, replacement flag, mutations in original order, and normalized required domains without reading current journal state. Standalone translation is already deterministically sorted before this boundary, while etcd watch translation retains server event order:
 
 ```go
 func validateDesiredBatch(generation.DesiredBatch) error
 func digestDesiredBatch(generation.DesiredBatch) ([32]byte, error)
-func loadActiveProviderTx(*bolt.Tx) (string, error)
+func loadActiveProviderTx(*bolt.Tx, generation.Snapshot) (string, error)
 func loadCursorTx(*bolt.Tx, generation.ProviderCursor) (generation.ApplyTicket, [32]byte, bool, error)
 func loadDesiredSnapshotTx(*bolt.Tx, uint64) (generation.Snapshot, error)
 func applyBatch(generation.Snapshot, generation.DesiredBatch) (generation.Snapshot, error)
 func normalizeDomains([]generation.Domain) []generation.Domain
 func persistDesiredTx(*bolt.Tx, generation.Snapshot, generation.ApplyTicket, [32]byte) error
 func contextErr(context.Context) error
+func cursorRecordKey(generation.ProviderCursor) []byte
+func encodeCursorRecord(cursorRecord) ([]byte, error)
+func decodeCursorRecord([]byte, *generation.ProviderCursor) (cursorRecord, error)
+func validateProviderCursor(generation.ProviderCursor) error
+func providerCursorToWire(generation.ProviderCursor) providerCursorWire
+func providerCursorFromWire(providerCursorWire) generation.ProviderCursor
+func applyTicketToWire(generation.ApplyTicket) applyTicketWire
+func applyTicketFromWire(applyTicketWire) generation.ApplyTicket
+func cursorRecordToWire(cursorRecord) cursorRecordWire
+func cursorRecordFromWire(cursorRecordWire) cursorRecord
+func cloneDesiredBatch(generation.DesiredBatch) generation.DesiredBatch
+func cloneApplyTicket(generation.ApplyTicket) generation.ApplyTicket
+func cloneBytes([]byte) []byte
 ```
 
 - [ ] **Step 4: Run desired tests including restart and race repetition**

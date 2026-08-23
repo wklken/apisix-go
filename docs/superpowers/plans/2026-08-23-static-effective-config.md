@@ -286,7 +286,7 @@ git commit -m "feat(config): define effective configuration contract"
 
 **Interfaces:**
 - Consumes: `config.FieldSource` and source constants from Task 1.
-- Produces: internal `valueNode`, `parseDocument([]byte, FieldSource, map[string]string) (*valueNode, error)`, `readConfigDocument(string, FieldSource, map[string]string) (*valueNode, error)`, and `nodeToAny(*valueNode) any` used by merge and typed decode.
+- Produces: internal `valueNode`, `parseDocument([]byte, FieldSource, map[string]string) (*valueNode, error)`, `readConfigDocument(string, FieldSource, map[string]string) (*valueNode, error)`, `nodeToAny(*valueNode) any`, and `cloneNode(*valueNode) *valueNode` used by merge and typed decode.
 
 - [ ] **Step 1: Write parser tests for all distinct value states and exact numbers**
 
@@ -316,9 +316,33 @@ func TestParseDocumentRejectsDuplicateMappingKeys(t *testing.T) {
 }
 ```
 
+Extend this group beyond the abbreviated examples above. Cover absent versus
+explicit `null`, `false`, zero, empty string, sequence and mapping presence;
+integers beyond both `float64`'s exact range and `uint64`; YAML hexadecimal,
+octal, binary, legacy-octal and underscored integers normalized to exact base-10
+`json.Number`; finite high-precision decimals normalized lexically without a
+`float64` round trip; `.5`, `-.5`, `1.`, and a leading `+`; and fail-closed
+rejection of every infinity/NaN spelling without including the rejected scalar
+in the error. `nodeToAny` must retain `json.Number` values.
+
+Also test that a second YAML document is rejected and that `cloneNode` deeply
+copies mappings and sequences while preserving every scalar, source, and
+`pathBase`. YAML anchors, aliases, and merge keys are not silently expanded in
+this milestone: reject an anchored node, an alias node, or `!!merge` with a
+stable field-path-only error. This is a fail-closed, explicitly unqualified
+YAML-syntax gap, not evidence of full APISIX configuration parity; supporting
+it requires a later compatibility decision and differential corpus.
+
 - [ ] **Step 2: Write APISIX 3.17 environment-template tests**
 
-The pinned contract comes from `https://github.com/apache/apisix/blob/3.17.0/conf/config.yaml`: substitution is allowed in values and keys, a missing required variable errors, and `:=` supplies a fallback only when the name is absent from `LoadRequest.Environment`.
+The pinned contract comes from `conf/config.yaml` and `apisix/cli/file.lua` at
+APISIX `3.17.0` (`9ef2ecab67f652d38365049613610ef649bb4ad0`): substitution is
+allowed in values and keys, outer whitespace in `${{ VAR }}` is accepted, a
+missing required variable errors, and `:=` supplies a trimmed fallback only
+when the name is absent from `LoadRequest.Environment`. A present variable with
+an empty value wins over the fallback. Expansion may occur multiple times in a
+single string. The implementation receives an explicit environment snapshot
+and must never call `os.Getenv`.
 
 ```go
 func TestParseDocumentExpandsAPISIXEnvironmentInKeysAndValues(t *testing.T) {
@@ -348,6 +372,27 @@ func TestParseDocumentRejectsMissingAPISIXEnvironment(t *testing.T) {
 	}
 }
 ```
+
+Add cases for templates in mapping keys, scalar values, and sequence values;
+multiple variables; `${{ VAR }}` outer whitespace; trimmed and empty fallbacks;
+present-empty values; and a stable first-missing-variable error in textual
+order. When expansion was used and the complete expanded scalar is `true`,
+`false`, or a supported finite numeric spelling, retype it exactly as APISIX
+does after substitution: booleans remain booleans and numbers become exact
+`json.Number`; a result such as `prefix-${{PORT}}` remains a string. This rule
+also applies when the YAML scalar containing the template was quoted.
+
+Template provenance is leaf-observable. Variables used by a template key apply
+to every descendant leaf below the expanded key; variables used by a descendant
+value are unioned with them. Sort and deduplicate the names before storing
+`FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(names, ","), Explicit: true}`.
+Expansion must retain the original file `pathBase`.
+
+Duplicate literal keys may name the literal field path. A collision caused by
+one or more expanded keys must report the unexpanded parent path and involved
+environment variable names, never the expanded key, environment value,
+fallback text, or original scalar. Add a sentinel-secret test for this rule and
+for all other parser errors.
 
 - [ ] **Step 3: Run the parser tests and verify the parser is absent**
 
@@ -379,30 +424,31 @@ type valueNode struct {
 
 `parseDocument` sets `pathBase=filepath.Dir(source.Origin)` on every node from a default or override file and preserves it when APISIX expansion changes the public source to an environment variable; `cloneNode` and merge must retain it. This internal-only base lets a relative runtime path from a `${{...}}` value resolve against the file that contained the template without exposing a second value in provenance.
 
-In `document.go`, decode through `yaml.Node`, reject multiple documents, reject duplicate expanded mapping keys, and retain `!!null`. Convert `!!int` lexically with `math/big.Int` so YAML base prefixes become an exact base-10 `json.Number`. Normalize finite `!!float` lexically into JSON number syntax (remove underscores and add a missing leading/trailing zero) without `float64`; reject `.inf`, `-.inf`, and `.nan` with the field path. Convert booleans with `strconv.ParseBool`; leave timestamps and all other scalar tags as strings so configuration decode remains explicit. Traverse mapping keys as well as values through one anchored regexp:
+In `document.go`, decode through `yaml.Node`, require exactly one document,
+reject duplicate literal and expanded mapping keys under the rules above, and
+retain `!!null`. Reject anchors, aliases, and YAML merge keys explicitly rather
+than letting library-specific expansion bypass duplicate-key or provenance
+checks. Convert `!!int` lexically with `math/big.Int` so YAML base prefixes
+become an exact base-10 `json.Number`. Normalize finite `!!float` lexically into
+JSON number syntax (remove underscores and add a missing leading/trailing zero)
+without `float64`; reject all infinity and NaN spellings with only the field
+path. Convert booleans with `strconv.ParseBool`; leave timestamps and all other
+scalar tags as strings so configuration decode remains explicit.
 
-```go
-var apisixEnvPattern = regexp.MustCompile(`\$\{\{([A-Za-z_][A-Za-z0-9_]*)(?:(:=)([^}]*))?\}\}`)
+Traverse mapping keys as well as values with a scanner that supports multiple
+`${{...}}` occurrences. It must accept whitespace immediately inside the braces,
+require an identifier matching `[A-Za-z_][A-Za-z0-9_]*`, recognize optional
+`:=fallback`, trim the fallback as pinned APISIX does, and preserve the first
+missing-variable error instead of overwriting it in a replacement callback.
+Do not use the earlier single-regexp sketch: it neither models the upstream
+whitespace/fallback contract nor safely preserves the first error. Apply key
+template source names recursively to descendant leaves, union them with value
+template names, and never include substituted or fallback values in `Origin` or
+errors.
 
-func expandAPISIXString(path, input string, env map[string]string) (string, []string, error) {
-	used := make([]string, 0)
-	var expansionErr error
-	result := apisixEnvPattern.ReplaceAllStringFunc(input, func(match string) string {
-		parts := apisixEnvPattern.FindStringSubmatch(match)
-		name := parts[1]
-		value, ok := env[name]
-		if !ok && parts[2] != "" { value, ok = parts[3], true }
-		if !ok { expansionErr = fmt.Errorf("expand APISIX environment at %s: %s is not set", path, name); return match }
-		used = append(used, name)
-		return value
-	})
-	if expansionErr != nil { return "", nil, expansionErr }
-	sort.Strings(used)
-	return result, slices.Compact(used), nil
-}
-```
-
-When one or more variables are used, set the node source to `FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(used, ","), Explicit: true}`. Never include the substituted value in `Origin` or an error.
+`cloneNode(nil)` returns nil. Every other node is deeply copied, including maps,
+sequences, `FieldSource`, and `pathBase`, so Task 3 does not alias parser-owned
+state.
 
 Implement the file boundary with no ambient reads:
 
@@ -418,7 +464,7 @@ func readConfigDocument(path string, source FieldSource, env map[string]string) 
 
 - [ ] **Step 5: Run parser tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^TestParseDocument" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^Test(ParseDocument|ReadConfigDocument|NodeToAny|CloneNode)" -count=1'`
 
 Expected: PASS.
 

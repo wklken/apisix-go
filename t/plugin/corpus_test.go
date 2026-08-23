@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -35,6 +37,8 @@ var corpusDispositions = map[string]bool{
 	"blocked_design":  true,
 	"non_plugin":      true,
 }
+
+var gitCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 const corpusScopeFile = "corpus_scope.yaml"
 
@@ -63,8 +67,8 @@ func (s *corpusScope) validate() error {
 	if strings.TrimSpace(s.Commit) == "" {
 		return errors.New("commit is required")
 	}
-	if s.Commit != pinnedAPISIXSourceCommit {
-		return fmt.Errorf("commit %q does not match the pinned upstream commit %s", s.Commit, pinnedAPISIXSourceCommit)
+	if !gitCommitPattern.MatchString(s.Commit) {
+		return fmt.Errorf("commit %q must be a lowercase 40-character Git object ID", s.Commit)
 	}
 	seen := make(map[string]map[int]string, len(s.Sources))
 	for i := range s.Sources {
@@ -107,9 +111,13 @@ func (s *corpusScope) validate() error {
 	return nil
 }
 
+func testCorpusCommit() string {
+	return strings.Repeat("a", 40)
+}
+
 func TestCorpusScopeRejectsMissingSourceLabel(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    owner: example-plugin",
@@ -123,7 +131,7 @@ func TestCorpusScopeRejectsMissingSourceLabel(t *testing.T) {
 
 func TestCorpusScopeRejectsDuplicateSourceLabel(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1, 2]",
@@ -144,7 +152,7 @@ func TestCorpusScopeRejectsDuplicateSourceLabel(t *testing.T) {
 
 func TestCorpusScopeRejectsUnknownDisposition(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1]",
@@ -160,7 +168,7 @@ func TestCorpusScopeRejectsUnknownDisposition(t *testing.T) {
 
 func TestCorpusScopeRequiresManifestForConverted(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1]",
@@ -176,7 +184,7 @@ func TestCorpusScopeRequiresManifestForConverted(t *testing.T) {
 
 func TestCorpusScopeRequiresReasonForNonConverted(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1]",
@@ -189,24 +197,24 @@ func TestCorpusScopeRequiresReasonForNonConverted(t *testing.T) {
 	}
 }
 
-func TestCorpusScopeRejectsWrongPinnedCommit(t *testing.T) {
+func TestCorpusScopeRejectsMalformedCommit(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: 0000000000000000000000000000000000000000",
+		"commit: not-a-git-object-id",
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1]",
 		"    owner: example-plugin",
 		"    disposition: pending",
-		"    reason: wrong pin",
+		"    reason: malformed commit",
 	}, "\n"))
 	if _, err := loadCorpusScope("test", data); err == nil {
-		t.Fatal("loadCorpusScope() accepted a wrong pinned commit")
+		t.Fatal("loadCorpusScope() accepted a malformed commit")
 	}
 }
 
 func TestCorpusScopeRejectsUnknownFields(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		"commit: " + pinnedAPISIXSourceCommit,
+		"commit: " + testCorpusCommit(),
 		"sources:",
 		"  - file: t/plugin/example.t",
 		"    test_numbers: [1]",
@@ -220,7 +228,7 @@ func TestCorpusScopeRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestCorpusScopeValidates(t *testing.T) {
+func TestCorpusScope(t *testing.T) {
 	data, err := os.ReadFile(corpusScopeFile)
 	if err != nil {
 		t.Fatalf("read %s: %v", corpusScopeFile, err)
@@ -228,9 +236,6 @@ func TestCorpusScopeValidates(t *testing.T) {
 	scope, err := loadCorpusScope(corpusScopeFile, data)
 	if err != nil {
 		t.Fatalf("load %s: %v", corpusScopeFile, err)
-	}
-	if scope.Commit != pinnedAPISIXSourceCommit {
-		t.Fatalf("ledger commit = %q, want %s", scope.Commit, pinnedAPISIXSourceCommit)
 	}
 	if len(scope.Sources) == 0 {
 		t.Fatal("ledger has no sources")
@@ -242,15 +247,12 @@ func TestUpstreamCorpusAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load ledger: %v", err)
 	}
-	if scope.Commit != pinnedAPISIXSourceCommit {
-		t.Fatalf("ledger commit = %q, want %s", scope.Commit, pinnedAPISIXSourceCommit)
-	}
 	checkOfflineCorpusAccounting(t, scope)
 
-	// A local pinned checkout adds source-label comparison but is not required for
+	// A local checkout of the historical corpus commit adds source-label comparison but is not required for
 	// ledger/manifest consistency validation.
-	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t); ok {
-		checkCorpusScopeAgainstPinnedSource(t, scope, sourceRoot)
+	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t, scope.Commit); ok {
+		checkCorpusScopeAgainstSource(t, scope, sourceRoot)
 	}
 }
 
@@ -262,11 +264,74 @@ func TestUpstreamCorpusAccountingWithoutSourceCheckout(t *testing.T) {
 	checkOfflineCorpusAccounting(t, scope)
 }
 
+func TestCorpusEvidenceMatchesCompatibilityTarget(t *testing.T) {
+	scope, err := loadCorpusScopeFile(t)
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	if scope.Commit == manifest.Target.SourceCommit {
+		t.Logf("corpus commit already matches compatibility target %s", manifest.Target.SourceCommit)
+		return
+	}
+
+	qualified := make(map[string]bool)
+	for _, pluginName := range manifest.QualifiedPlugins("http-data-plane-v1") {
+		qualified[pluginName] = true
+	}
+
+	staleClaims := 0
+	for _, plugin := range manifest.Plugins {
+		if !onlyIntegrationManifestRefs(plugin.Evidence.Upstream.Refs) {
+			continue
+		}
+		staleClaims++
+		if plugin.Evidence.Upstream.State != capability.EvidenceStale {
+			t.Errorf(
+				"plugin %s converted_upstream state = %q, want %q while corpus %s differs from target %s",
+				plugin.Name,
+				plugin.Evidence.Upstream.State,
+				capability.EvidenceStale,
+				scope.Commit,
+				manifest.Target.SourceCommit,
+			)
+		}
+		if qualified[plugin.Name] {
+			t.Errorf("QualifiedPlugins(http-data-plane-v1) includes %s with stale corpus evidence", plugin.Name)
+		}
+	}
+	if staleClaims == 0 {
+		t.Fatal("capability manifest has no claims sourced only from integration manifests")
+	}
+	t.Logf(
+		"corpus evidence: %d claims are stale at corpus %s versus compatibility target %s",
+		staleClaims,
+		scope.Commit,
+		manifest.Target.SourceCommit,
+	)
+}
+
+func onlyIntegrationManifestRefs(refs []string) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, "t/plugin/") || filepath.Ext(ref) != ".yaml" ||
+			filepath.Base(ref) == corpusScopeFile {
+			return false
+		}
+	}
+	return true
+}
+
 func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	t.Helper()
 
 	// Every manifest-declared source label is converted and points back to a manifest.
-	manifestByFile, err := loadManifestSelections()
+	manifestByFile, err := loadManifestSelections(scope.Commit)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
 	}
@@ -327,7 +392,7 @@ func checkOfflineCorpusAccounting(t *testing.T, scope *corpusScope) {
 	}
 }
 
-func checkCorpusScopeAgainstPinnedSource(t *testing.T, scope *corpusScope, sourceRoot string) {
+func checkCorpusScopeAgainstSource(t *testing.T, scope *corpusScope, sourceRoot string) {
 	t.Helper()
 
 	// Ledger file/label union must equal the pinned checkout when available.
@@ -454,7 +519,7 @@ func upstreamSourceLabels(t *testing.T, sourceRoot string) map[string]map[int]bo
 	return labels
 }
 
-func loadManifestSelections() (map[string]map[int]string, error) {
+func loadManifestSelections(corpusCommit string) (map[string]map[int]string, error) {
 	files, err := filepath.Glob("*.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("discover manifests: %w", err)
@@ -474,6 +539,15 @@ func loadManifestSelections() (map[string]map[int]string, error) {
 		}
 		manifestName := filepath.Base(file)
 		for _, source := range manifestSources(manifest) {
+			if source.Commit != corpusCommit {
+				return nil, fmt.Errorf(
+					"%s source %s commit = %q, want corpus commit %s",
+					manifestName,
+					source.File,
+					source.Commit,
+					corpusCommit,
+				)
+			}
 			if selections[source.File] == nil {
 				selections[source.File] = make(map[int]string)
 			}

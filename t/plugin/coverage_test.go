@@ -12,22 +12,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"go.yaml.in/yaml/v3"
 )
 
 var (
-	documentedPluginName   = regexp.MustCompile("`([^`]+)`")
-	sourceTestHeader       = regexp.MustCompile(`^=== TEST\s+([0-9]+)`)
-	upstreamSourceAbsences = map[string]string{
-		"GM":              "no Apache APISIX t/plugin source at the pinned commit",
-		"proxy-buffering": "no Apache APISIX t/plugin source at the pinned commit",
-	}
+	sourceTestHeader            = regexp.MustCompile(`^=== TEST\s+([0-9]+)`)
 	manifestTargetPluginAliases = map[string][]string{
 		"ai-proxy": {"ai-proxy", "ai-proxy-multi"},
 	}
 )
-
-const pinnedAPISIXSourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
 
 func manifestYAMLFiles() ([]string, error) {
 	files, err := filepath.Glob("*.yaml")
@@ -39,28 +33,28 @@ func manifestYAMLFiles() ([]string, error) {
 	}), nil
 }
 
-func TestSupportedPluginManifestSelection(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "plugins.md"))
+func TestCapabilityManifestSelection(t *testing.T) {
+	manifest, err := capability.Load()
 	if err != nil {
-		t.Fatalf("read docs/plugins.md: %v", err)
+		t.Fatalf("load capability manifest: %v", err)
 	}
 
-	plugins, err := supportedPluginNames(data)
-	if err != nil {
-		t.Fatalf("supportedPluginNames() error = %v", err)
-	}
-	if got := len(plugins); got != 100 {
-		t.Fatalf("supported plugins = %d, want 100", got)
-	}
-
-	manifests := make(map[string]bool, len(plugins)-len(upstreamSourceAbsences))
-	for _, pluginName := range plugins {
-		if _, absent := upstreamSourceAbsences[pluginName]; !absent {
-			manifests[pluginName] = true
+	want := make(map[string]bool)
+	factoriesByManifest := make(map[string][]string)
+	for _, plugin := range manifest.Plugins {
+		for _, ref := range plugin.Evidence.Upstream.Refs {
+			if !strings.HasPrefix(ref, "t/plugin/") || filepath.Ext(ref) != ".yaml" ||
+				filepath.Base(ref) == corpusScopeFile {
+				continue
+			}
+			for _, factory := range plugin.Factories {
+				want[factory.Key] = true
+				factoriesByManifest[filepath.Base(ref)] = append(
+					factoriesByManifest[filepath.Base(ref)],
+					factory.Key,
+				)
+			}
 		}
-	}
-	if problems := manifestCoverageProblems(plugins, manifests); len(problems) != 0 {
-		t.Fatalf("complete manifest set problems = %v", problems)
 	}
 
 	files, err := manifestYAMLFiles()
@@ -68,29 +62,46 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 		t.Fatalf("discover manifests: %v", err)
 	}
 	actual := make(map[string]bool, len(files))
+	var unexpected []string
+	hasRedirect2 := false
 	for _, file := range files {
-		name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-		if name == "redirect2" {
-			name = "redirect"
+		manifestName := filepath.Base(file)
+		if manifestName == "redirect2.yaml" {
+			hasRedirect2 = true
+			manifestName = "redirect.yaml"
 		}
-		actual[name] = true
-	}
-	if problems := manifestCoverageProblems(plugins, actual); len(problems) != 0 {
-		t.Fatalf("checked-in manifest set problems = %v", problems)
-	}
-
-	delete(manifests, "redirect")
-	problems := manifestCoverageProblems(plugins, manifests)
-	if len(problems) != 1 || !strings.Contains(problems[0], "redirect") {
-		t.Fatalf("missing manifest problems = %v, want redirect", problems)
+		factories, ok := factoriesByManifest[manifestName]
+		if !ok {
+			unexpected = append(unexpected, filepath.Base(file))
+			continue
+		}
+		for _, factory := range factories {
+			actual[factory] = true
+		}
 	}
 
-	manifests["redirect"] = true
-	manifests["not-a-plugin"] = true
-	problems = manifestCoverageProblems(plugins, manifests)
-	if len(problems) != 1 || !strings.Contains(problems[0], "not-a-plugin") {
-		t.Fatalf("extra manifest problems = %v, want not-a-plugin", problems)
+	if !hasRedirect2 {
+		t.Error("checked-in manifests are missing the explicit redirect2.yaml alias")
 	}
+	if len(unexpected) != 0 {
+		sort.Strings(unexpected)
+		t.Errorf("checked-in manifests without capability evidence refs = %v", unexpected)
+	}
+	wantNames := sortedMapKeys(want)
+	actualNames := sortedMapKeys(actual)
+	if !slices.Equal(wantNames, actualNames) {
+		t.Fatalf("checked-in manifests = %v, want capability-selected factories %v", actualNames, wantNames)
+	}
+	t.Logf("capability selection: %d manifest files cover %d factory keys", len(files), len(wantNames))
+}
+
+func sortedMapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestManifestCorpusValidates(t *testing.T) {
@@ -235,7 +246,12 @@ func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
 }
 
 func TestSourceCoverage(t *testing.T) {
-	sourceRoot := apacheAPISIXSourceRoot(t)
+	capabilities, err := capability.Load()
+	if err != nil {
+		t.Fatalf("load capability manifest: %v", err)
+	}
+	targetCommit := capabilities.Target.SourceCommit
+	sourceRoot := apacheAPISIXSourceRoot(t, targetCommit)
 	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
@@ -262,30 +278,30 @@ func TestSourceCoverage(t *testing.T) {
 					source.Repository,
 				)
 			}
-			if source.Commit != pinnedAPISIXSourceCommit {
+			if source.Commit != targetCommit {
 				t.Errorf(
 					"%s source %s commit = %q, want %s",
 					manifestFile,
 					source.File,
 					source.Commit,
-					pinnedAPISIXSourceCommit,
+					targetCommit,
 				)
 			}
-			assertPinnedSourceTests(t, sourceRoot, manifestFile, source)
+			assertSourceTests(t, sourceRoot, manifestFile, source)
 		}
 	}
 }
 
-func apacheAPISIXSourceRoot(t *testing.T) string {
+func apacheAPISIXSourceRoot(t *testing.T, commit string) string {
 	t.Helper()
-	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t); ok {
+	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t, commit); ok {
 		return sourceRoot
 	}
-	t.Skip("pinned Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
+	t.Skip("target Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
 	return ""
 }
 
-func optionalApacheAPISIXSourceRoot(t *testing.T) (string, bool) {
+func optionalApacheAPISIXSourceRoot(t *testing.T, commit string) (string, bool) {
 	t.Helper()
 	candidates := []string{os.Getenv("APISIX_SOURCE_DIR")}
 	if root := os.Getenv("APISIX_GO_ROOT"); root != "" {
@@ -298,22 +314,22 @@ func optionalApacheAPISIXSourceRoot(t *testing.T) (string, bool) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
-			assertPinnedSourceCheckout(t, candidate)
+			assertSourceCheckout(t, candidate, commit)
 			return candidate, true
 		}
 	}
 	return "", false
 }
 
-func assertPinnedSourceCheckout(t *testing.T, root string) {
+func assertSourceCheckout(t *testing.T, root, commit string) {
 	t.Helper()
 	command := exec.Command("git", "-C", root, "rev-parse", "HEAD")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("read Apache APISIX source revision: %v: %s", err, output)
 	}
-	if got := strings.TrimSpace(string(output)); got != pinnedAPISIXSourceCommit {
-		t.Fatalf("Apache APISIX source revision = %s, want %s", got, pinnedAPISIXSourceCommit)
+	if got := strings.TrimSpace(string(output)); got != commit {
+		t.Fatalf("Apache APISIX source revision = %s, want %s", got, commit)
 	}
 
 	command = exec.Command("git", "-C", root, "status", "--short", "--untracked-files=no", "--", "t/plugin")
@@ -326,7 +342,7 @@ func assertPinnedSourceCheckout(t *testing.T, root string) {
 	}
 }
 
-func assertPinnedSourceTests(t *testing.T, sourceRoot, manifestFile string, source SourceSpec) {
+func assertSourceTests(t *testing.T, sourceRoot, manifestFile string, source SourceSpec) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(source.File)))
 	if err != nil {
@@ -732,61 +748,4 @@ func configContainsPlugin(value any, pluginName string) bool {
 		}
 	}
 	return false
-}
-
-func supportedPluginNames(data []byte) ([]string, error) {
-	var plugins []string
-	seen := make(map[string]bool)
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "|---") {
-			continue
-		}
-		fields := strings.Split(strings.Trim(line, "|"), "|")
-		if len(fields) < 6 || strings.TrimSpace(fields[3]) != "yes" ||
-			strings.TrimSpace(fields[5]) != "yes" {
-			continue
-		}
-		match := documentedPluginName.FindStringSubmatch(fields[1])
-		if len(match) != 2 {
-			return nil, fmt.Errorf("corpus-gated plugin row has no backtick name: %s", line)
-		}
-		if seen[match[1]] {
-			return nil, fmt.Errorf("corpus-gated plugin %q is duplicated", match[1])
-		}
-		seen[match[1]] = true
-		plugins = append(plugins, match[1])
-	}
-	if len(plugins) == 0 {
-		return nil, fmt.Errorf("no corpus-gated plugin rows found")
-	}
-	return plugins, nil
-}
-
-func manifestCoverageProblems(plugins []string, manifests map[string]bool) []string {
-	selected := make(map[string]bool, len(plugins))
-	var problems []string
-	for _, pluginName := range plugins {
-		selected[pluginName] = true
-		if _, absent := upstreamSourceAbsences[pluginName]; absent {
-			if manifests[pluginName] {
-				problems = append(problems, fmt.Sprintf("source-absence plugin %s has a manifest", pluginName))
-			}
-			continue
-		}
-		if !manifests[pluginName] {
-			problems = append(problems, fmt.Sprintf("corpus-gated plugin %s has no manifest", pluginName))
-		}
-	}
-	for pluginName := range upstreamSourceAbsences {
-		if !selected[pluginName] {
-			problems = append(problems, fmt.Sprintf("source-absence plugin %s is not selected", pluginName))
-		}
-	}
-	for pluginName := range manifests {
-		if !selected[pluginName] {
-			problems = append(problems, fmt.Sprintf("manifest %s is not a supported plugin", pluginName))
-		}
-	}
-	sort.Strings(problems)
-	return problems
 }

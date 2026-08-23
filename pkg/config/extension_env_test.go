@@ -275,15 +275,15 @@ func TestCLIRejectsInvalidPathsAndValuesAtomically(t *testing.T) {
 	}{
 		{
 			name: "unknown", root: map[string]any{"debug": false}, cli: map[string]any{"unknown.path": "x"},
-			want: `unknown.path does not map to a static configuration field`,
+			want: `configuration path does not map to a static configuration field`,
 		},
 		{
 			name: "empty path", root: map[string]any{}, cli: map[string]any{"": "x"},
-			want: `configuration path "" is empty`,
+			want: `configuration path is invalid`,
 		},
 		{
 			name: "empty segment", root: map[string]any{}, cli: map[string]any{"proxy..max_in_flight": "x"},
-			want: `configuration path "proxy..max_in_flight" contains an empty segment`,
+			want: `configuration path is invalid`,
 		},
 		{
 			name: "crosses non-mapping", root: map[string]any{"proxy": "scalar"},
@@ -316,6 +316,22 @@ func TestCLIRejectsInvalidPathsAndValuesAtomically(t *testing.T) {
 	err := applyCLIOverrides(root, cli)
 	if err == nil || strings.Contains(err.Error(), "C3_CLI_SENTINEL") || !reflect.DeepEqual(root, rootBefore) {
 		t.Fatalf("mixed validation error/root = %v/%#v", err, root)
+	}
+}
+
+func TestValidateStaticOverridePathDoesNotExposeRejectedPath(t *testing.T) {
+	const sentinel = "must-not-appear"
+	for _, path := range []string{
+		"unknown." + sentinel,
+		"proxy.." + sentinel,
+	} {
+		err := ValidateStaticOverridePath(path)
+		if err == nil {
+			t.Fatalf("ValidateStaticOverridePath(%q) error = nil", path)
+		}
+		if strings.Contains(err.Error(), sentinel) {
+			t.Fatalf("ValidateStaticOverridePath() leaked the rejected path: %v", err)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -109,7 +110,7 @@ func extensionEnvName(path string) string {
 
 func ValidateStaticOverridePath(path string) error {
 	if err := validateConfigurationPath(path); err != nil {
-		return err
+		return errors.New("configuration path is invalid")
 	}
 	if path == "deployment.profile" {
 		return fmt.Errorf("%s", removedDeploymentProfileError)
@@ -118,7 +119,7 @@ func ValidateStaticOverridePath(path string) error {
 		return fmt.Errorf("build static configuration schema: %w", configStaticSchemaErr)
 	}
 	if _, ok := configStaticSchema.byPath[path]; !ok {
-		return fmt.Errorf("%s does not map to a static configuration field", path)
+		return errors.New("configuration path does not map to a static configuration field")
 	}
 	return nil
 }

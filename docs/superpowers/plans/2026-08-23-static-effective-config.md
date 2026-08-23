@@ -1319,11 +1319,17 @@ func parseSetOverrides(values []string) (map[string]any, error) {
 		if !ok || path == "" {
 			return nil, errors.New("--set must use path=value")
 		}
-		if _, exists := result[path]; exists {
-			return nil, fmt.Errorf("--set path %q is repeated", path)
-		}
 		if err := config.ValidateStaticOverridePath(path); err != nil {
-			return nil, err
+			// deployment.profile is one fixed public tombstone whose guidance is
+			// safe to preserve. Every other invalid path is user-controlled and
+			// must be reduced to a value-free category.
+			if path == "deployment.profile" {
+				return nil, err
+			}
+			return nil, errors.New("--set path does not map to a static configuration field")
+		}
+		if _, exists := result[path]; exists {
+			return nil, errors.New("--set path is repeated")
 		}
 		result[path] = value
 	}
@@ -1331,12 +1337,13 @@ func parseSetOverrides(values []string) (map[string]any, error) {
 }
 ```
 
-Use a sentinel such as `must-not-appear` in malformed values and assert that it
-is absent from both `err.Error()` and the captured stdout/stderr. Unknown file
-fields remain a compatibility-mode input feature; they never make an unknown
-CLI override path valid. A schema leaf whose Go type cannot decode from a CLI
-string is a valid path followed by a redacted typed-decode error, not an excuse
-to add a second CLI schema.
+Use a sentinel such as `must-not-appear` in malformed paths and values and
+assert that it is absent from both `err.Error()` and the captured stdout/stderr.
+Validation precedes duplicate detection, and duplicate errors never print the
+validated path. Unknown file fields remain a compatibility-mode input feature;
+they never make an unknown CLI override path valid. A schema leaf whose Go type
+cannot decode from a CLI string is a valid path followed by a redacted
+typed-decode error, not an excuse to add a second CLI schema.
 
 - [ ] **Step 2: Write the command behavior and side-effect tests**
 
@@ -1370,7 +1377,7 @@ func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
 	output := stdout.String()
 	for _, secret := range []string{
 		"etcd-password", "url-password", "admin-secret", "encryption-key",
-		"plugin-attr-secret", "discovery-provider-secret",
+		"plugin-attr-secret",
 	} {
 		if strings.Contains(output, secret) { t.Fatalf("dump leaked %q", secret) }
 	}
@@ -1382,12 +1389,24 @@ func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
 }
 ```
 
+Do not put a non-empty `discovery` block in this successful command fixture:
+the current Go data plane rejects discovery during static runtime validation.
+The direct `RenderEffectiveRedacted` unit tests own discovery-provider secret
+coverage without weakening validation or bypassing the unified loader.
+
 Also test all four dump flag combinations, positional-argument rejection for
 `config`, `config test`, and `config dump`, an occupied configured listener,
 and a temporary `apisix_go.runtime_paths.data_dir`. Successful inspection must
 leave the listener owned by the test and must not create the data directory,
 `apisix-go-store.db`, a standalone UID file, or any provider-owned artifact.
 Checking only for the text `Starting server` is not side-effect evidence.
+
+The `cmd` package tests run with `cmd/` as their working directory. Production-
+loader integration cases therefore use an isolated temporary working directory
+containing a copied `conf/config-default.yaml`; they snapshot that directory
+before and after execution so unexpected artifacts also fail the test. Set the
+global logger level before both inspection commands, configure a different
+level in the candidate file, and assert the logger level remains unchanged.
 
 - [ ] **Step 3: Run command tests and verify the new factories and commands are absent**
 
@@ -1466,7 +1485,9 @@ Tests must prove:
 - config map keys and nested map keys are deterministic, arrays retain config
   order, provenance is sorted by rendered path, ignored fields are sorted, and
   empty provenance/ignored fields encode as `[]`, never `null`;
-- exact `json.Number` values remain numbers;
+- large typed integer values remain exact JSON numbers. The current public
+  `Config` has no non-secret `any` field through which a `json.Number` can be
+  rendered, so do not claim public `json.Number` coverage from an integer test;
 - `time.Duration` values use the standard `encoding/json` representation of
   their typed `int64` nanoseconds; lock one non-zero example so a later switch
   to strings is an explicit schema migration;
@@ -1516,7 +1537,10 @@ exist. The complete secret registry test fails because
 - [ ] **Step 6: Make every Cobra command and flag instance-local**
 
 Define `newRootCommand() *cobra.Command` with a local options value captured by
-its root and config handlers. `Execute` constructs exactly one fresh command.
+its root. Config handlers may either capture that same instance-local value or
+read the root's inherited persistent flags from their own command instance;
+they must never fall back to package globals. `Execute` constructs exactly one
+fresh command.
 Define `newVersionCommand() *cobra.Command`; delete the package-global
 `versionCmd` and its `init()` registration. Reusing one child command across
 fresh roots is forbidden because Cobra reparents and retains flag/output state.
@@ -1563,6 +1587,12 @@ func loadEffectiveForCommand(configPath string, setValues []string) (*config.Eff
 	if configPath != "" {
 		overridePath, err = filepath.Abs(configPath)
 		if err != nil { return nil, fmt.Errorf("resolve override config path: %w", err) }
+		// The persistent flag retains the historical default filename. Do not
+		// reload that same file as an override or relabel builtin/default-file
+		// provenance as override-file provenance.
+		if filepath.Clean(overridePath) == filepath.Clean(defaultPath) {
+			overridePath = ""
+		}
 	}
 	return config.LoadEffective(config.LoadRequest{
 		DefaultPath: defaultPath,

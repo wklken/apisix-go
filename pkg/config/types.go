@@ -19,7 +19,7 @@ type Config struct {
 	// applies the HTTP timeout settings that have direct net/http equivalents.
 	Proxy Proxy `mapstructure:"proxy"`
 
-	Discovery     Discovery `mapstructure:"discovery"`
+	Discovery     Discovery `mapstructure:"discovery" secret:"container"`
 	GraphQL       GraphQL   `mapstructure:"graphql"`
 	ExtPlugin     ExtPlugin `mapstructure:"ext-plugin"`
 	Wasm          Wasm      `mapstructure:"wasm"`
@@ -365,7 +365,7 @@ type AdminAPIMTLS struct {
 // section: deployment.etcd
 
 type Etcd struct {
-	Host   []string `mapstructure:"host"`
+	Host   []string `mapstructure:"host" secret:"url-userinfo"`
 	Prefix string   `mapstructure:"prefix"`
 
 	// TODO: not support yet

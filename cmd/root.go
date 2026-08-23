@@ -7,14 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -24,9 +22,12 @@ import (
 	_ "github.com/wklken/apisix-go/pkg/proxy"
 )
 
-var cfgFile string
-
 var errSIGHUPReloadUnsupported = errors.New("SIGHUP reload is unsupported")
+
+type rootOptions struct {
+	configPath string
+	setValues  []string
+}
 
 type serverLifecycle interface {
 	Start(context.Context) error
@@ -40,55 +41,38 @@ func configureLogger(cfg *config.Config) error {
 	return logger.ConfigureLevel(cfg.NginxConfig.ErrorLogLevel)
 }
 
-func init() {
-	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
-}
-
-var rootCmd = &cobra.Command{
-	Use:   "apisix",
-	Short: "an golang version of apisix, not production ready",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return Start()
-	},
-}
-
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+	if err := newRootCommand().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func Start() error {
-	manifest, err := capability.Load()
-	if err != nil {
-		return fmt.Errorf("load capability manifest: %w", err)
+	return startWithOptions(rootOptions{configPath: config.DefaultConfigFile})
+}
+
+func newRootCommand() *cobra.Command {
+	options := &rootOptions{configPath: config.DefaultConfigFile}
+	root := &cobra.Command{
+		Use:           "apisix",
+		Short:         "an golang version of apisix, not production ready",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return startWithOptions(*options)
+		},
 	}
-	runtimePaths, err := config.DefaultRuntimePaths()
-	if err != nil {
-		return fmt.Errorf("resolve default runtime paths: %w", err)
-	}
-	defaultPath, err := filepath.Abs(config.DefaultConfigFile)
-	if err != nil {
-		return fmt.Errorf("resolve default config path: %w", err)
-	}
-	selectedPath, err := filepath.Abs(cfgFile)
-	if err != nil {
-		return fmt.Errorf("resolve config path: %w", err)
-	}
-	overridePath := selectedPath
-	if filepath.Clean(selectedPath) == filepath.Clean(defaultPath) {
-		overridePath = ""
-	}
-	effective, err := config.LoadEffective(config.LoadRequest{
-		DefaultPath:  defaultPath,
-		OverridePath: overridePath,
-		DefaultPaths: runtimePaths,
-		Environment:  environmentSnapshot(os.Environ()),
-		CLIOverrides: nil,
-		Manifest:     manifest,
-	})
+	root.PersistentFlags().StringVarP(&options.configPath, "config", "c", config.DefaultConfigFile, "config file")
+	root.PersistentFlags().StringArrayVar(&options.setValues, "set", nil, "set a static configuration path to a value")
+	root.AddCommand(newVersionCommand())
+	root.AddCommand(newConfigCommand(loadEffectiveForCommand))
+	return root
+}
+
+func startWithOptions(options rootOptions) error {
+	effective, err := loadEffectiveForCommand(options.configPath, options.setValues)
 	if err != nil {
 		return fmt.Errorf("load effective config: %w", err)
 	}
@@ -110,7 +94,7 @@ func Start() error {
 	return runServer(srv)
 }
 
-func environmentSnapshot(entries []string) map[string]string {
+func environmentMap(entries []string) map[string]string {
 	environment := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		name, value, ok := strings.Cut(entry, "=")

@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 )
@@ -356,6 +358,402 @@ apisix_go: {runtime_paths: {log_dir: ""}}
 	want := "qualification_profile http-data-plane-v1: runtime path log_dir must be a non-empty absolute path"
 	if err == nil || err.Error() != want {
 		t.Fatalf("LoadEffective() error = %v, want %q", err, want)
+	}
+}
+
+func TestRenderEffectiveRedactedNil(t *testing.T) {
+	_, err := RenderEffectiveRedacted(nil)
+	if err == nil || err.Error() != "render effective config: config is required" {
+		t.Fatalf("RenderEffectiveRedacted() error = %v", err)
+	}
+}
+
+func TestRenderEffectiveRedactedDeterministicSchemaAndSecrets(t *testing.T) {
+	effective := &EffectiveConfig{
+		Config: Config{
+			GraphQL: GraphQL{MaxSize: 7},
+			Apisix:  Apisix{DataEncryption: DataEncryption{Keyring: []string{"encryption-secret"}}},
+			Deployment: Deployment{
+				Admin: Admin{AdminKey: []AdminKey{{Name: "admin", Key: "admin-secret", Role: "admin"}}},
+				Etcd: Etcd{
+					Host:     []string{"https://etcd-user:etcd-password@etcd.example:2379/path?token=url-secret"},
+					Password: "etcd-secret",
+				},
+			},
+			PluginAttr: map[string]map[string]any{
+				"prometheus": {"token": "plugin-attr-secret"},
+			},
+			Discovery: Discovery{
+				"etcd": map[string]any{"password": "discovery-provider-secret"},
+			},
+			NginxConfig: NginxConfig{HTTP: NginxHTTP{
+				ClientMaxBodySize: 9007199254740993,
+				ClientBodyTimeout: 3 * time.Second,
+			}},
+		},
+		Paths: RuntimePaths{
+			DataDir:    "/var/lib/apisix-go",
+			RuntimeDir: "/run/apisix-go",
+			LogDir:     "/var/log/apisix-go",
+			TempDir:    "/var/tmp/apisix-go",
+		},
+		Profiles: ProfileSelection{
+			Compatibility: CompatibilityAPISIX317,
+			Security:      SecurityStrict,
+			Qualification: QualificationHTTPDataPlaneV1,
+		},
+		Provenance: Provenance{
+			"graphql.max_size": {
+				Kind: SourceCLI, Origin: "graphql.max_size", Explicit: true,
+			},
+			"plugin_attr.prometheus.token": {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/default.yaml", Explicit: true,
+			},
+			"deployment.etcd.password": {
+				Kind: SourceOverrideFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			"deployment.etcd.host[0]": {
+				Kind: SourceOverrideFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			"deployment.admin.admin_key[0].key": {
+				Kind: SourceOverrideFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+		},
+	}
+
+	data, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.HasPrefix(text, "{\n  \"config\": ") {
+		t.Fatalf("top-level output does not start with config: %s", text)
+	}
+	for _, secret := range []string{
+		"encryption-secret", "admin-secret", "etcd-password", "etcd-secret",
+		"url-secret", "plugin-attr-secret", "discovery-provider-secret",
+	} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("redacted output leaked %q: %s", secret, text)
+		}
+	}
+	for _, want := range []string{
+		`"config"`, `"paths"`, `"profiles"`, `"provenance"`, `"ignored_fields"`,
+		`"client_max_body_size": 9007199254740993`, `"client_body_timeout": 3000000000`,
+		`"key": "[REDACTED]"`, `"password": "[REDACTED]"`,
+		`"prometheus": "[REDACTED]"`, `"etcd": "[REDACTED]"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("redacted output missing %q: %s", want, text)
+		}
+	}
+	var decoded struct {
+		Config        map[string]any   `json:"config"`
+		Provenance    []map[string]any `json:"provenance"`
+		IgnoredFields []string         `json:"ignored_fields"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Config == nil || decoded.Provenance == nil || decoded.IgnoredFields == nil {
+		t.Fatalf("empty output collections must be JSON arrays/maps: %#v", decoded)
+	}
+}
+
+func TestRenderEffectiveRedactedMasksDynamicAndUnknownPaths(t *testing.T) {
+	const dynamicKey = "must-not-appear-dynamic-key"
+	const unknownKey = "must-not-appear-unknown-key"
+	effective := &EffectiveConfig{
+		Config: Config{
+			PluginAttr: map[string]map[string]any{
+				dynamicKey: {"token": "dynamic-secret"},
+				"tenant.a": {"token": "unsafe-plugin-secret"},
+			},
+		},
+		Provenance: Provenance{
+			"plugin_attr." + dynamicKey: {
+				Kind: SourceAPISIXEnv, Origin: "PLUGIN_NAME", Explicit: true,
+			},
+			`plugin_attr["tenant.a"].token`: {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			"unknown_section." + unknownKey: {
+				Kind: SourceOverrideFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+		},
+	}
+	data, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, secret := range []string{dynamicKey, unknownKey, "dynamic-secret", "unsafe-plugin-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("redacted output leaked %q: %s", secret, text)
+		}
+	}
+	for _, marker := range []string{"apisix_env:opaque:", "plugin:opaque:", "unknown:opaque:", "redacted:opaque:"} {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("redacted output missing opaque marker %q: %s", marker, text)
+		}
+	}
+	if strings.Index(text, `"config"`) > strings.Index(text, `"paths"`) {
+		t.Fatal("config must precede paths")
+	}
+}
+
+func TestRenderEffectiveRedactedFailsClosedForInvalidDynamicKey(t *testing.T) {
+	invalidKey := string([]byte{0xff, 0xfe})
+	effective := &EffectiveConfig{Config: Config{
+		PluginAttr: map[string]map[string]any{invalidKey: {"token": "invalid-key-secret"}},
+	}}
+	data, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatalf("RenderEffectiveRedacted() error = %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "invalid-key-secret") || strings.Contains(text, invalidKey) {
+		t.Fatalf("redacted output leaked an invalid dynamic key or value: %q", text)
+	}
+	if !strings.Contains(text, `opaque:`) {
+		t.Fatalf("redacted output missing opaque invalid-key marker: %s", text)
+	}
+}
+
+func TestRenderEffectiveRedactedSecretRegistry(t *testing.T) {
+	if err := validateSecretInventory(reflect.TypeFor[Config]()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCanonicalProvenancePathTokenizer(t *testing.T) {
+	valid := []string{
+		"apisix",
+		"apisix.node_listen",
+		"apisix.node_listen[0].port",
+		`plugin_attr["tenant.\\\"prod\\\\blue"].token`,
+		`["unsafe.root"].token`,
+	}
+	for _, path := range valid {
+		if _, err := parseCanonicalPath(path); err != nil {
+			t.Errorf("parseCanonicalPath(%q) error = %v", path, err)
+		}
+	}
+	invalid := []string{
+		`plugin_attr["safe"].token`,
+		"apisix.node_listen[00].port",
+		"apisix.node_listen[-1].port",
+		"apisix.node_listen[18446744073709551616].port",
+		`plugin_attr["bad\q"].token`,
+		`plugin_attr["tenant"]trailing`,
+		"apisix.",
+	}
+	for _, path := range invalid {
+		if _, err := parseCanonicalPath(path); err == nil {
+			t.Errorf("parseCanonicalPath(%q) unexpectedly succeeded", path)
+		}
+	}
+}
+
+func TestCanonicalProvenanceSchemaMatcher(t *testing.T) {
+	known := []string{
+		"apisix_go",
+		"apisix_go.runtime_paths",
+		"apisix_go.runtime_paths.data_dir",
+		"apisix.node_listen[0]",
+		"apisix.node_listen[0].port",
+		`plugin_attr["tenant.a"].token`,
+		`discovery["provider.name"].token`,
+	}
+	for _, path := range known {
+		tokens, err := parseCanonicalPath(path)
+		if err != nil || !knownConfigTokens(tokens) {
+			t.Errorf("knownConfigTokens(%q) = false, parse error = %v", path, err)
+		}
+	}
+	unknown := []string{
+		"apisix_go.runtime_paths.unknown",
+		"apisix.node_listen[0].unknown",
+		"plugin_attr[0]",
+	}
+	for _, path := range unknown {
+		tokens, err := parseCanonicalPath(path)
+		if err != nil {
+			t.Errorf("parseCanonicalPath(%q) error = %v", path, err)
+			continue
+		}
+		if knownConfigTokens(tokens) {
+			t.Errorf("knownConfigTokens(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestRenderEffectiveRedactedOpaqueCorrelationAndOrdering(t *testing.T) {
+	const dynamicKey = "dynamic-plugin"
+	const unsafeKey = "tenant.a"
+	const unknownPath = `unknown_section["unknown.key"]`
+	effective := &EffectiveConfig{
+		Config: Config{
+			GraphQL: GraphQL{MaxSize: 1},
+			PluginAttr: map[string]map[string]any{
+				dynamicKey: {"token": "dynamic-secret"},
+				unsafeKey:  {"token": "unsafe-secret"},
+			},
+		},
+		Provenance: Provenance{
+			"graphql.max_size": {
+				Kind: SourceAPISIXEnv, Origin: "GRAPHQL_MAX_SIZE", Explicit: true,
+			},
+			"plugin_attr." + dynamicKey: {
+				Kind: SourceAPISIXEnv, Origin: "PLUGIN_NAME", Explicit: true,
+			},
+			`plugin_attr["tenant.a"]`: {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			`plugin_attr["tenant.a"].token`: {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			unknownPath: {
+				Kind: SourceAPISIXEnv, Origin: "UNKNOWN_NAME", Explicit: true,
+			},
+			"apisix_go.runtime_paths.data_dir": {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+			"apisix.node_listen[0].port": {
+				Kind: SourceDefaultFile, Origin: "/etc/apisix/config.yaml", Explicit: true,
+			},
+		},
+	}
+
+	first, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("repeated rendering is not deterministic")
+	}
+	text := string(first)
+	for _, secret := range []string{dynamicKey, unsafeKey, "dynamic-secret", "unsafe-secret", `"token"`, unknownPath} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("redacted output leaked %q: %s", secret, text)
+		}
+	}
+	var dump struct {
+		Config struct {
+			PluginAttr map[string]any `json:"plugin_attr"`
+		} `json:"config"`
+		Provenance    []provenanceEntry `json:"provenance"`
+		IgnoredFields []string          `json:"ignored_fields"`
+	}
+	if err := json.Unmarshal(first, &dump); err != nil {
+		t.Fatal(err)
+	}
+	dynamicDisplay := ""
+	unsafeDisplay := ""
+	for key := range dump.Config.PluginAttr {
+		if strings.HasPrefix(key, "apisix_env:opaque:") {
+			dynamicDisplay = key
+		}
+		if strings.HasPrefix(key, "plugin:opaque:") {
+			unsafeDisplay = key
+		}
+	}
+	if dynamicDisplay == "" || unsafeDisplay == "" {
+		t.Fatalf("config dynamic keys were not safely correlated: %#v", dump.Config.PluginAttr)
+	}
+	findPath := func(pathPrefix string) (provenanceEntry, bool) {
+		for _, entry := range dump.Provenance {
+			if strings.HasPrefix(entry.Path, pathPrefix) {
+				return entry, true
+			}
+		}
+		return provenanceEntry{}, false
+	}
+	findExactPath := func(path string) (provenanceEntry, bool) {
+		for _, entry := range dump.Provenance {
+			if entry.Path == path {
+				return entry, true
+			}
+		}
+		return provenanceEntry{}, false
+	}
+	if entry, ok := findExactPath(dynamicDisplay); !ok {
+		t.Fatalf("dynamic config/provenance opaque IDs differ: config=%q provenance=%+v", dynamicDisplay, entry)
+	}
+	if entry, ok := findPath("plugin_attr." + unsafeDisplay + ".redacted:"); !ok {
+		t.Fatalf("secret descendant was not redacted: %#v", dump.Provenance)
+	} else if !strings.HasPrefix(entry.Path, "plugin_attr."+unsafeDisplay+".redacted:opaque:") {
+		t.Fatalf("unexpected secret descendant display path: %q", entry.Path)
+	}
+	unknownDisplay := "unknown:opaque:"
+	if len(dump.IgnoredFields) != 1 || !strings.HasPrefix(dump.IgnoredFields[0], unknownDisplay) {
+		t.Fatalf("unknown path was not opaque/deduplicated: %#v", dump.IgnoredFields)
+	}
+	if entry, ok := findPath(unknownDisplay); !ok || entry.Path != dump.IgnoredFields[0] {
+		t.Fatalf("unknown provenance/ignored IDs differ: %#v / %#v", dump.Provenance, dump.IgnoredFields)
+	}
+	for _, path := range []string{"apisix_env:opaque:", "plugin_attr.", "apisix_go.runtime_paths.data_dir", "apisix.node_listen[0].port"} {
+		if _, ok := findPath(path); !ok {
+			t.Fatalf("provenance entry %q is missing: %#v", path, dump.Provenance)
+		}
+	}
+	if !sort.SliceIsSorted(dump.Provenance, func(left, right int) bool {
+		return dump.Provenance[left].Path < dump.Provenance[right].Path
+	}) {
+		t.Fatalf("provenance is not sorted: %#v", dump.Provenance)
+	}
+	if !sort.StringsAreSorted(dump.IgnoredFields) {
+		t.Fatalf("ignored fields are not sorted: %#v", dump.IgnoredFields)
+	}
+}
+
+func TestRenderEffectiveRedactedPreservesMultipleAPISIXEnvironmentOrigins(t *testing.T) {
+	effective := &EffectiveConfig{
+		Config: Config{GraphQL: GraphQL{MaxSize: 1}},
+		Provenance: Provenance{
+			"graphql.max_size": {
+				Kind: SourceAPISIXEnv, Origin: "KEY_A,KEY_B", Explicit: true,
+			},
+		},
+	}
+
+	data, err := RenderEffectiveRedacted(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dump struct {
+		Provenance []provenanceEntry `json:"provenance"`
+	}
+	if err := json.Unmarshal(data, &dump); err != nil {
+		t.Fatal(err)
+	}
+	if len(dump.Provenance) != 1 || dump.Provenance[0].Origin != "KEY_A,KEY_B" {
+		t.Fatalf("APISIX environment origin = %#v, want KEY_A,KEY_B", dump.Provenance)
+	}
+}
+
+func TestSanitizeEtcdEndpoint(t *testing.T) {
+	for _, test := range []struct {
+		name, endpoint, want string
+	}{
+		{name: "plain", endpoint: "https://etcd.example:2379", want: "https://etcd.example:2379"},
+		{name: "userinfo", endpoint: "https://user:password@etcd.example:2379", want: "https://[REDACTED]@etcd.example:2379"},
+		{name: "userinfo-root", endpoint: "https://user:password@etcd.example:2379/", want: "https://[REDACTED]@etcd.example:2379"},
+		{name: "root", endpoint: "https://etcd.example:2379/", want: "https://etcd.example:2379/"},
+		{name: "empty-query", endpoint: "https://etcd.example:2379?", want: "https://etcd.example:2379?"},
+		{name: "path", endpoint: "https://etcd.example:2379/v3?token=secret#fragment", want: "https://etcd.example:2379/<redacted>"},
+		{name: "invalid", endpoint: "not a URL must-not-appear", want: "[REDACTED]"},
+		{name: "empty", endpoint: "", want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sanitizeEtcdEndpoint(test.endpoint); got != test.want {
+				t.Fatalf("sanitizeEtcdEndpoint() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

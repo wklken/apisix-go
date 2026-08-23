@@ -74,7 +74,8 @@ func TestConfigureLoggerAcceptsNilAndRejectsInvalidLevel(t *testing.T) {
 }
 
 func TestRootCommandConfigFlagMetadata(t *testing.T) {
-	flag := rootCmd.Flags().Lookup("config")
+	root := newRootCommand()
+	flag := root.PersistentFlags().Lookup("config")
 	if flag == nil {
 		t.Fatal("config flag is not registered")
 	}
@@ -87,25 +88,24 @@ func TestRootCommandConfigFlagMetadata(t *testing.T) {
 }
 
 func TestRootCommandDoesNotExposeObsoleteViperFlag(t *testing.T) {
-	if flag := rootCmd.PersistentFlags().Lookup("viper"); flag != nil {
+	root := newRootCommand()
+	if flag := root.PersistentFlags().Lookup("viper"); flag != nil {
 		t.Fatalf("obsolete viper flag remains registered: %#v", flag)
 	}
 }
 
-func TestEnvironmentSnapshotPreservesValuesAndSkipsMalformedEntries(t *testing.T) {
-	got := environmentSnapshot([]string{"PLAIN=value", "WITH_EQUALS=a=b=c", "EMPTY=", "MALFORMED"})
+func TestEnvironmentMapPreservesValuesAndSkipsMalformedEntries(t *testing.T) {
+	got := environmentMap([]string{"PLAIN=value", "WITH_EQUALS=a=b=c", "EMPTY=", "MALFORMED"})
 	want := map[string]string{"PLAIN": "value", "WITH_EQUALS": "a=b=c", "EMPTY": ""}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("environmentSnapshot() = %#v, want %#v", got, want)
+		t.Fatalf("environmentMap() = %#v, want %#v", got, want)
 	}
 }
 
 func TestStartReturnsStartupErrorWithoutPanic(t *testing.T) {
-	previous := cfgFile
-	t.Cleanup(func() { cfgFile = previous })
-	cfgFile = filepath.Join(t.TempDir(), "missing.yaml")
-
-	err := Start()
+	root := newRootCommand()
+	root.SetArgs([]string{"-c", filepath.Join(t.TempDir(), "missing.yaml")})
+	err := root.Execute()
 	if err == nil {
 		t.Fatal("Start() error = nil with an unreadable config file")
 	}
@@ -115,9 +115,10 @@ func TestStartReturnsStartupErrorWithoutPanic(t *testing.T) {
 }
 
 func TestRootCommandRejectsUnknownArgs(t *testing.T) {
-	rootCmd.SetErr(io.Discard)
-	rootCmd.SetArgs([]string{"definitely-not-a-real-command"})
-	if err := rootCmd.Execute(); err == nil {
+	root := newRootCommand()
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"definitely-not-a-real-command"})
+	if err := root.Execute(); err == nil {
 		t.Fatal("root command accepted an unknown positional argument")
 	}
 }
@@ -127,9 +128,10 @@ func TestVersionCommandPrintsFullVersionInfo(t *testing.T) {
 	t.Cleanup(restore)
 
 	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetArgs([]string{"version"})
-	if err := rootCmd.Execute(); err != nil {
+	root := newRootCommand()
+	root.SetOut(&buf)
+	root.SetArgs([]string{"version"})
+	if err := root.Execute(); err != nil {
 		t.Fatalf("version command failed: %v", err)
 	}
 	want := "Version: 1.2.3\nCommit: abc1234\nBuild Time: 2026-08-09_12:00:00\nGo Version: go1.26.5"

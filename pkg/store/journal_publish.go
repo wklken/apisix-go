@@ -109,7 +109,7 @@ func (s *Store) Stage(
 		if record.Committed != nil {
 			return generation.ErrStaleCursor
 		}
-		if err := validatePublicationSet(ticket, set); err != nil {
+		if err := generation.ValidatePublicationSet(ticket, set); err != nil {
 			return err
 		}
 		if err := validateNewDecisionCodes(set); err != nil {
@@ -441,105 +441,6 @@ func (s *Store) LoadPublished(
 	return clonePublishedGeneration(published), nil
 }
 
-func validatePublicationSet(ticket generation.ApplyTicket, set generation.PublicationSet) error {
-	if ticket.DesiredRevision == 0 || set.DesiredRevision != ticket.DesiredRevision ||
-		!slices.Equal(ticket.RequiredDomains, normalizeDomains(ticket.RequiredDomains)) ||
-		len(set.Domains) != len(ticket.RequiredDomains) {
-		return generation.ErrIntegrity
-	}
-	for domain := range set.Domains {
-		if !validPublicationDomain(domain) || !slices.Contains(ticket.RequiredDomains, domain) {
-			return generation.ErrIntegrity
-		}
-	}
-	for _, domain := range ticket.RequiredDomains {
-		candidate, ok := set.Domains[domain]
-		if !ok {
-			return generation.ErrIntegrity
-		}
-		if err := validatePublicationCandidate(domain, ticket.DesiredRevision, candidate); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validatePublicationCandidate(
-	domain generation.Domain,
-	revision uint64,
-	candidate generation.PublicationCandidate,
-) error {
-	if candidate.Artifact.Domain != domain || candidate.Artifact.Revision != revision ||
-		candidate.Snapshot.Revision() != revision ||
-		candidate.Artifact.Digest != candidate.Snapshot.Digest() ||
-		candidate.Artifact.Snapshot != candidate.Snapshot.SnapshotID() {
-		return generation.ErrIntegrity
-	}
-	closure := make(map[generation.ResourceKey]struct{}, len(candidate.Closure))
-	for _, key := range candidate.Closure {
-		if !validResourceKey(key) {
-			return generation.ErrInvalidClosure
-		}
-		if _, exists := closure[key]; exists {
-			return generation.ErrInvalidClosure
-		}
-		closure[key] = struct{}{}
-	}
-	resources := make(map[generation.ResourceKey]struct{})
-	for _, resource := range candidate.Snapshot.Resources() {
-		if _, exists := closure[resource.Key]; !exists {
-			return generation.ErrInvalidClosure
-		}
-		resources[resource.Key] = struct{}{}
-	}
-	tombstones := make(map[generation.ResourceKey]struct{})
-	for _, tombstone := range candidate.Snapshot.Tombstones() {
-		if _, exists := closure[tombstone.Key]; !exists {
-			return generation.ErrInvalidClosure
-		}
-		tombstones[tombstone.Key] = struct{}{}
-	}
-	decisions := make(map[generation.ResourceKey]generation.ResourceDecision, len(candidate.Decisions))
-	for _, decision := range candidate.Decisions {
-		if !validResourceKey(decision.Key) || decision.Code == "" || !utf8.ValidString(decision.Code) ||
-			!validDisposition(decision.Disposition) {
-			return generation.ErrInvalidClosure
-		}
-		if _, exists := decisions[decision.Key]; exists {
-			return generation.ErrInvalidClosure
-		}
-		decisions[decision.Key] = decision
-	}
-	if len(decisions) != len(closure) {
-		return generation.ErrInvalidClosure
-	}
-	for key := range closure {
-		decision, exists := decisions[key]
-		if !exists {
-			return generation.ErrInvalidClosure
-		}
-		_, resource := resources[key]
-		_, deleted := tombstones[key]
-		switch decision.Disposition {
-		case generation.DispositionPublished, generation.DispositionLastGood:
-			if !resource || deleted {
-				return generation.ErrInvalidClosure
-			}
-		case generation.DispositionQuarantined, generation.DispositionFailClosed:
-			if resource || deleted {
-				return generation.ErrInvalidClosure
-			}
-		case generation.DispositionDeleted:
-			if resource || !deleted {
-				return generation.ErrInvalidClosure
-			}
-		default:
-			return generation.ErrInvalidClosure
-		}
-	}
-	return nil
-}
-
 func validatePublicationPolicyTx(
 	tx *bolt.Tx,
 	desired generation.Snapshot,
@@ -862,7 +763,7 @@ func loadPublishedTx(tx *bolt.Tx, domain generation.Domain) (generation.Publishe
 	published := generation.PublishedGeneration{
 		Artifact: head.Artifact, Snapshot: snapshot, Closure: head.Closure, Decisions: decisions,
 	}
-	if err := validatePublicationCandidate(
+	if err := generation.ValidatePublicationCandidate(
 		domain,
 		head.Artifact.Revision,
 		generation.PublicationCandidate(published),
@@ -980,7 +881,7 @@ func loadArtifactByIDTx(tx *bolt.Tx, id string) (generation.Snapshot, error) {
 
 func encodeStagedPublication(staged stagedPublication) ([]byte, error) {
 	canonical := cloneStagedPublication(staged)
-	if err := validatePublicationSet(canonical.Ticket, canonical.Set); err != nil {
+	if err := generation.ValidatePublicationSet(canonical.Ticket, canonical.Set); err != nil {
 		return nil, err
 	}
 	domains := make([]publicationDomainWire, 0, len(canonical.Set.Domains))
@@ -1040,7 +941,7 @@ func decodeStagedPublication(
 		staged.Set.Domains[entry.Domain] = candidate
 		lastDomain = entry.Domain
 	}
-	if err := validatePublicationSet(staged.Ticket, staged.Set); err != nil {
+	if err := generation.ValidatePublicationSet(staged.Ticket, staged.Set); err != nil {
 		return stagedPublication{}, generation.ErrIntegrity
 	}
 	return staged, nil

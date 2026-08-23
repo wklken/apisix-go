@@ -1,0 +1,1275 @@
+# Static Effective Configuration Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace Viper-defined process-global configuration with a presence-aware, provenance-carrying `config.EffectiveConfig`, explicit profile axes, side-effect-free validation commands, and explicitly injected static configuration and data-encryption dependencies.
+
+**Architecture:** Parse YAML into an internal typed node tree that preserves presence, `null`, exact numbers, and source metadata; merge builtin/default-file/override-file/APISIX-template/APISIXGO/CLI layers explicitly; then decode and validate once into immutable `EffectiveConfig`. Cut the running process over atomically: `cmd` loads one manifest and one effective configuration, passes both configuration and an immutable data-encryption service into `server`, and all downstream server, route, store, metric, and plugin owners receive dependencies explicitly rather than reading package globals.
+
+**Tech Stack:** Go 1.26, Cobra, `go.yaml.in/yaml/v3`, `github.com/go-viper/mapstructure/v2`, existing `pkg/capability`, existing `pkg/data_encryption`, standard-library `encoding/json`, reflection only for schema indexing and redacted rendering.
+
+**Spec:** `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
+
+## Global Constraints
+
+- Compatibility target is Apache APISIX 3.17.0 at commit `9ef2ecab67f652d38365049613610ef649bb4ad0`.
+- The APISIX environment syntax is `${{NAME}}` and `${{NAME:=fallback}}`, including substitutions in YAML keys; a missing variable without a fallback is an error.
+- The Go extension override namespace is `APISIXGO_*`; it is separate from APISIX template substitution and is applied after both files.
+- Merge order is builtin defaults, default file, override file, APISIXGO environment overrides, then CLI overrides. APISIX `${{...}}` substitution occurs inside each parsed file layer and records the environment variable as the winning source.
+- Nested mappings merge recursively. A sequence replaces the lower sequence. Explicit `null` replaces the lower value and remains present in `Provenance`.
+- Compatibility, security, and qualification are independent: `apisix-3.17`, `compat|strict`, and empty or `http-data-plane-v1` respectively.
+- `config.LoadEffective` must be deterministic from `LoadRequest`; it must not call `os.Getenv`, read a global manifest, publish a global config, configure encryption, open bbolt, bind a socket, start a provider, or create a goroutine.
+- `LoadRequest.Manifest == nil` is a stable configuration error. Bootstrap obtains the manifest once with `capability.Load()` and passes it explicitly.
+- Bootstrap also calls `DefaultRuntimePaths()` once and passes the result as `LoadRequest.DefaultPaths`; `LoadEffective` never discovers platform directories itself.
+- Runtime-path overrides live only at `apisix_go.runtime_paths.{data_dir,runtime_dir,log_dir,temp_dir}`. Their environment aliases omit the repeated `apisix_go` segment: `APISIXGO_RUNTIME_PATHS_*`; CLI uses the full dotted path.
+- Keep exact integers and `json.Number`; never decode an untyped configuration number through `float64`.
+- Compatibility mode retains unknown static fields in provenance as ignored paths; strict mode rejects them. Removed `deployment.profile` is rejected in every mode with the three replacement field names.
+- No secret value may appear in config errors, effective-config output, provenance origins, logs, or test failure strings.
+- Source `.envrc` before every Go or Make command.
+- Use impact-scoped tests; do not run `go test ./...`, `go test ./pkg/...`, or `make test`.
+- Run `source .envrc && make build` after the atomic runtime cutover and final CLI work.
+- Do not retain `config.Load`, `loadConfigFiles`, `config.GlobalConfig`, `data_encryption.Configure`, `data_encryption.Keyring`, an optional dependency fallback, or a proxy-only facade after cutover.
+- Do not edit or stage the four user-owned untracked files under `docs/reviews/`.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+| --- | --- |
+| `pkg/config/effective.go` | Public `LoadRequest`, `EffectiveConfig`, `Provenance`, and source types fixed by the program plan. |
+| `pkg/config/profiles.go` | Profile types and manifest-evidence validation produced by plan 01; this plan only consumes them. |
+| `pkg/config/qualification.go` | Effective enabled-plugin set validation for a selected qualification profile. |
+| `pkg/config/paths.go` | Cross-platform bootstrap defaults, canonical effective runtime paths, and the durable journal path. |
+| `pkg/config/node.go` | Internal node representation that distinguishes map/list/scalar/null and carries leaf provenance. |
+| `pkg/config/document.go` | YAML-node parsing, exact scalar conversion, duplicate-key rejection, and APISIX `${{...}}` expansion. |
+| `pkg/config/merge.go` | Recursive map merge, sequence replacement, explicit-null replacement, and provenance flattening. |
+| `pkg/config/extension_env.go` | Reflection-derived `APISIXGO_*` index and deterministic extension overlays. |
+| `pkg/config/defaults.go` | The only Go-runtime builtin static defaults not supplied by the pinned APISIX default file. |
+| `pkg/config/decode.go` | Presence-aware typed decode, exact-number range checks, and unused-field collection. |
+| `pkg/config/validation.go` | Runtime, security-profile, qualification-profile, and removed-field validation. |
+| `pkg/config/redact.go` | Deterministic redacted effective-config document; unknown paths are listed without values. |
+| `pkg/config/init.go` | Final `LoadEffective` pipeline only; historical Viper loader and globals are deleted. |
+| `pkg/data_encryption/service.go` | Immutable encryption/decryption owner constructed from effective static config. |
+| `pkg/plugin/base/types.go`, `pkg/plugin/types.go`, `pkg/plugin/init.go` | Explicit immutable static config and secret resolver injection into plugin instances. |
+| `pkg/server/server.go` | Owns the effective config and encryption service and passes them down. |
+| `cmd/config.go` | `apisix config test` and `apisix config dump --effective --redacted`. |
+
+The runtime cutover table in Task 4 lists every production global reader. Its replacements are part of one commit because decision 196C forbids a committed dual path.
+
+### Task 1: Define Effective Configuration and Qualification-Set Interfaces
+
+**Files:**
+- Create: `pkg/config/effective.go`
+- Create: `pkg/config/qualification.go`
+- Create: `pkg/config/paths.go`
+- Test: `pkg/config/effective_contract_test.go`
+- Modify: `pkg/config/profiles_test.go`
+
+**Interfaces:**
+- Consumes: `config.ProfileSelection`, `config.ProfileSelection.Validate(*capability.Manifest) error`, `capability.Load()`, `capability.Manifest.Qualification(name string) (capability.QualificationProfile, bool)`, and `capability.Manifest.QualifiedPlugins(name string) []string` from plan 01. `ProfileSelection.Validate` already enforces compatibility `apisix-3.17`, security `compat|strict`, qualification existence, and exact equality between required and evidence-qualified plugin sets without reading `Config`.
+- Produces: `config.EffectiveConfig`, `config.Provenance`, `config.LoadRequest`, `config.RuntimePaths`, `config.DefaultRuntimePaths() (RuntimePaths, error)`, `config.JournalPath(*EffectiveConfig) string`, and `config.ValidateQualificationPlugins([]string, ProfileSelection, *capability.Manifest) error`.
+
+- [ ] **Step 1: Write the effective-config and enabled-plugin contract tests**
+
+```go
+func TestEffectiveConfigContractCarriesProfilesAndProvenance(t *testing.T) {
+	effective := EffectiveConfig{
+		Provenance: Provenance{"proxy.max_in_flight": {
+			Kind: SourceCLI, Origin: "proxy.max_in_flight", Explicit: true,
+		}},
+		Profiles: ProfileSelection{Compatibility: CompatibilityAPISIX317, Security: SecurityCompat},
+		Paths: RuntimePaths{DataDir: "/var/lib/apisix-go"},
+	}
+	if effective.Provenance["proxy.max_in_flight"].Kind != SourceCLI { t.Fatal("source kind was lost") }
+	if effective.Profiles.Compatibility != CompatibilityAPISIX317 { t.Fatal("profile was lost") }
+	if got := JournalPath(&effective); got != filepath.Join("/var/lib/apisix-go", "apisix-go-store.db") {
+		t.Fatalf("JournalPath() = %q", got)
+	}
+}
+
+func TestDefaultRuntimePathsAreAbsoluteAndNonEmpty(t *testing.T) {
+	paths, err := DefaultRuntimePaths()
+	if err != nil { t.Fatal(err) }
+	for name, path := range map[string]string{
+		"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
+		"log_dir": paths.LogDir, "temp_dir": paths.TempDir,
+	} {
+		if path == "" || !filepath.IsAbs(path) { t.Fatalf("%s = %q", name, path) }
+	}
+}
+
+func TestValidateQualificationPluginsReportsStableSetDifference(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil { t.Fatal(err) }
+	profile, ok := manifest.Qualification("http-data-plane-v1")
+	if !ok || len(profile.RequiredPlugins) == 0 { t.Fatal("qualification profile has no required plugins") }
+	selection := ProfileSelection{
+		Compatibility: CompatibilityAPISIX317,
+		Security: SecurityStrict,
+		Qualification: QualificationHTTPDataPlaneV1,
+	}
+	enabled := append([]string(nil), profile.RequiredPlugins[1:]...)
+	enabled = append(enabled, "zz-extra")
+	err = ValidateQualificationPlugins(enabled, selection, manifest)
+	want := fmt.Sprintf("qualification_profile http-data-plane-v1: missing plugins [%s]; unexpected plugins [zz-extra]",
+		profile.RequiredPlugins[0])
+	if err == nil || err.Error() != want {
+		t.Fatalf("ValidateQualificationPlugins() error = %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run the focused tests and confirm the plan-02 contracts do not exist**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^Test(EffectiveConfigContract|DefaultRuntimePaths|ValidateQualificationPlugins)" -count=1'`
+
+Expected: FAIL with undefined `EffectiveConfig`, `SourceCLI`, and `ValidateQualificationPlugins`; plan-01 profile symbols compile.
+
+- [ ] **Step 3: Add the exact public contracts**
+
+```go
+// pkg/config/effective.go
+package config
+
+import "github.com/wklken/apisix-go/pkg/capability"
+
+type SourceKind string
+
+const (
+	SourceBuiltin     SourceKind = "builtin"
+	SourceDefaultFile SourceKind = "default_file"
+	SourceOverrideFile SourceKind = "override_file"
+	SourceAPISIXEnv   SourceKind = "apisix_env"
+	SourceAPISIXGOEnv SourceKind = "apisixgo_env"
+	SourceCLI         SourceKind = "cli"
+)
+
+type FieldSource struct {
+	Kind     SourceKind `json:"kind"`
+	Origin   string     `json:"origin"`
+	Explicit bool       `json:"explicit"`
+}
+
+type Provenance map[string]FieldSource
+
+type EffectiveConfig struct {
+	Config     Config
+	Provenance Provenance
+	Profiles   ProfileSelection
+	Paths      RuntimePaths
+}
+
+type LoadRequest struct {
+	DefaultPath  string
+	OverridePath string
+	DefaultPaths RuntimePaths
+	Environment  map[string]string
+	CLIOverrides map[string]any
+	Manifest     *capability.Manifest
+}
+```
+
+```go
+// pkg/config/paths.go
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+type RuntimePaths struct {
+	DataDir    string `mapstructure:"data_dir" json:"data_dir"`
+	RuntimeDir string `mapstructure:"runtime_dir" json:"runtime_dir"`
+	LogDir     string `mapstructure:"log_dir" json:"log_dir"`
+	TempDir    string `mapstructure:"temp_dir" json:"temp_dir"`
+}
+
+func DefaultRuntimePaths() (RuntimePaths, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil { return RuntimePaths{}, fmt.Errorf("resolve user config directory: %w", err) }
+	cacheDir, err := os.UserCacheDir()
+	if err != nil { return RuntimePaths{}, fmt.Errorf("resolve user cache directory: %w", err) }
+	paths := RuntimePaths{
+		DataDir: filepath.Join(configDir, "apisix-go", "data"),
+		RuntimeDir: filepath.Join(cacheDir, "apisix-go", "run"),
+		LogDir: filepath.Join(cacheDir, "apisix-go", "log"),
+		TempDir: filepath.Join(os.TempDir(), "apisix-go"),
+	}
+	for name, path := range map[string]string{"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
+		"log_dir": paths.LogDir, "temp_dir": paths.TempDir} {
+		if path == "" || !filepath.IsAbs(path) { return RuntimePaths{}, fmt.Errorf("default %s is not absolute", name) }
+	}
+	return paths, nil
+}
+
+func JournalPath(e *EffectiveConfig) string {
+	if e == nil { return "" }
+	return filepath.Join(e.Paths.DataDir, "apisix-go-store.db")
+}
+```
+
+`JournalPath(nil)` returns empty so callers can fail before filesystem access; runtime construction already rejects a nil effective config. Do not call `os.MkdirAll` in either path function.
+
+```go
+// pkg/config/qualification.go
+package config
+
+import (
+	"fmt"
+	"slices"
+	"sort"
+
+	"github.com/wklken/apisix-go/pkg/capability"
+)
+
+func ValidateQualificationPlugins(enabled []string, selection ProfileSelection, manifest *capability.Manifest) error {
+	if err := selection.Validate(manifest); err != nil { return err }
+	if selection.Qualification == "" {
+		return nil
+	}
+	profile, ok := manifest.Qualification(string(selection.Qualification))
+	if !ok {
+		return fmt.Errorf("qualification_profile %q is not declared by the capability manifest", selection.Qualification)
+	}
+	want := append([]string(nil), profile.RequiredPlugins...)
+	got := append([]string(nil), enabled...)
+	sort.Strings(want)
+	sort.Strings(got)
+	missing := make([]string, 0)
+	unexpected := make([]string, 0)
+	for _, name := range want {
+		if !slices.Contains(got, name) { missing = append(missing, name) }
+	}
+	for _, name := range got {
+		if !slices.Contains(want, name) { unexpected = append(unexpected, name) }
+	}
+	if len(missing) != 0 || len(unexpected) != 0 {
+		return fmt.Errorf("qualification_profile %s: missing plugins %v; unexpected plugins %v",
+			selection.Qualification, missing, unexpected)
+	}
+	return nil
+}
+```
+
+Tests load an independent embedded manifest fixture through `capability.Load()` and pass the returned pointer explicitly; do not construct a second manifest representation in `pkg/config`.
+
+- [ ] **Step 4: Re-run the plan-01 import-boundary contract**
+
+Run the existing dependency contract from plan 01 and confirm the one-way edge remains `config -> capability`; do not add another copy of that test.
+
+- [ ] **Step 5: Run the focused interface tests**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestEffectiveConfigContract|TestDefaultRuntimePaths|TestProfileSelection|TestValidateQualificationPlugins|TestConfigPackageDoesNotDepend)" -count=1'`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit the interface contract**
+
+```bash
+git add pkg/config/effective.go pkg/config/qualification.go pkg/config/paths.go pkg/config/effective_contract_test.go pkg/config/profiles_test.go
+git commit -m "feat(config): define effective configuration contract"
+```
+
+### Task 2: Parse Presence, Exact Numbers, and APISIX Environment Templates
+
+**Files:**
+- Create: `pkg/config/node.go`
+- Create: `pkg/config/document.go`
+- Test: `pkg/config/document_test.go`
+
+**Interfaces:**
+- Consumes: `config.FieldSource` and source constants from Task 1.
+- Produces: internal `valueNode`, `parseDocument([]byte, FieldSource, map[string]string) (*valueNode, error)`, `readConfigDocument(string, FieldSource, map[string]string) (*valueNode, error)`, and `nodeToAny(*valueNode) any` used by merge and typed decode.
+
+- [ ] **Step 1: Write parser tests for all distinct value states and exact numbers**
+
+```go
+func TestParseDocumentPreservesPresenceKindsAndExactNumbers(t *testing.T) {
+	doc, err := parseDocument([]byte(`
+absent_parent: {present_null: null, disabled: false, zero: 0, empty: ""}
+plugin_attr: {prometheus: {large: 9007199254740993}}
+`), FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true}, nil)
+	if err != nil { t.Fatal(err) }
+	if _, ok := doc.mapping["absent"]; ok { t.Fatal("absent path became present") }
+	parent := doc.mapping["absent_parent"]
+	if parent.mapping["present_null"].kind != nodeNull { t.Fatal("null kind was lost") }
+	if got := parent.mapping["disabled"].scalar; got != false { t.Fatalf("disabled = %#v", got) }
+	if got := parent.mapping["zero"].scalar; got != json.Number("0") { t.Fatalf("zero = %#v", got) }
+	if got := parent.mapping["empty"].scalar; got != "" { t.Fatalf("empty = %#v", got) }
+	large := doc.mapping["plugin_attr"].mapping["prometheus"].mapping["large"].scalar
+	if large != json.Number("9007199254740993") { t.Fatalf("large = %#v", large) }
+}
+
+func TestParseDocumentRejectsDuplicateMappingKeys(t *testing.T) {
+	_, err := parseDocument([]byte("apisix:\n  enable_http2: true\n  enable_http2: false\n"),
+		FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate key apisix.enable_http2") {
+		t.Fatalf("parseDocument() error = %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Write APISIX 3.17 environment-template tests**
+
+The pinned contract comes from `https://github.com/apache/apisix/blob/3.17.0/conf/config.yaml`: substitution is allowed in values and keys, a missing required variable errors, and `:=` supplies a fallback only when the name is absent from `LoadRequest.Environment`.
+
+```go
+func TestParseDocumentExpandsAPISIXEnvironmentInKeysAndValues(t *testing.T) {
+	doc, err := parseDocument([]byte(`
+deployment: {etcd: {host: ["http://${{ETCD_HOST}}:2379"]}}
+plugin_attr: {nodes: {"${{HOST}}:${{PORT:=9080}}": 1}}
+empty_fallback: "${{OPTIONAL:=}}"
+`), FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true},
+		map[string]string{"ETCD_HOST": "etcd.internal", "HOST": "127.0.0.1"})
+	if err != nil { t.Fatal(err) }
+	if got := doc.mapping["deployment"].mapping["etcd"].mapping["host"].sequence[0].scalar;
+		got != "http://etcd.internal:2379" { t.Fatalf("host = %#v", got) }
+	nodes := doc.mapping["plugin_attr"].mapping["nodes"]
+	if _, ok := nodes.mapping["127.0.0.1:9080"]; !ok { t.Fatalf("expanded keys = %#v", nodes.mapping) }
+	if got := doc.mapping["empty_fallback"].scalar; got != "" { t.Fatalf("empty_fallback = %#v", got) }
+	if got := doc.mapping["deployment"].mapping["etcd"].mapping["host"].sequence[0].source;
+		got.Kind != SourceAPISIXEnv || got.Origin != "ETCD_HOST" || !got.Explicit {
+		t.Fatalf("source = %+v", got)
+	}
+}
+
+func TestParseDocumentRejectsMissingAPISIXEnvironment(t *testing.T) {
+	_, err := parseDocument([]byte("value: '${{MISSING}}'\n"),
+		FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true}, map[string]string{})
+	if err == nil || err.Error() != "expand APISIX environment at value: MISSING is not set" {
+		t.Fatalf("parseDocument() error = %v", err)
+	}
+}
+```
+
+- [ ] **Step 3: Run the parser tests and verify the parser is absent**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^TestParseDocument" -count=1'`
+
+Expected: FAIL with undefined `parseDocument` and node kind names.
+
+- [ ] **Step 4: Implement the internal node and exact scalar conversion**
+
+```go
+type nodeKind uint8
+
+const (
+	nodeNull nodeKind = iota
+	nodeScalar
+	nodeMapping
+	nodeSequence
+)
+
+type valueNode struct {
+	kind     nodeKind
+	scalar   any
+	mapping  map[string]*valueNode
+	sequence []*valueNode
+	source   FieldSource
+	pathBase string
+}
+```
+
+`parseDocument` sets `pathBase=filepath.Dir(source.Origin)` on every node from a default or override file and preserves it when APISIX expansion changes the public source to an environment variable; `cloneNode` and merge must retain it. This internal-only base lets a relative runtime path from a `${{...}}` value resolve against the file that contained the template without exposing a second value in provenance.
+
+In `document.go`, decode through `yaml.Node`, reject multiple documents, reject duplicate expanded mapping keys, and retain `!!null`. Convert `!!int` lexically with `math/big.Int` so YAML base prefixes become an exact base-10 `json.Number`. Normalize finite `!!float` lexically into JSON number syntax (remove underscores and add a missing leading/trailing zero) without `float64`; reject `.inf`, `-.inf`, and `.nan` with the field path. Convert booleans with `strconv.ParseBool`; leave timestamps and all other scalar tags as strings so configuration decode remains explicit. Traverse mapping keys as well as values through one anchored regexp:
+
+```go
+var apisixEnvPattern = regexp.MustCompile(`\$\{\{([A-Za-z_][A-Za-z0-9_]*)(?:(:=)([^}]*))?\}\}`)
+
+func expandAPISIXString(path, input string, env map[string]string) (string, []string, error) {
+	used := make([]string, 0)
+	var expansionErr error
+	result := apisixEnvPattern.ReplaceAllStringFunc(input, func(match string) string {
+		parts := apisixEnvPattern.FindStringSubmatch(match)
+		name := parts[1]
+		value, ok := env[name]
+		if !ok && parts[2] != "" { value, ok = parts[3], true }
+		if !ok { expansionErr = fmt.Errorf("expand APISIX environment at %s: %s is not set", path, name); return match }
+		used = append(used, name)
+		return value
+	})
+	if expansionErr != nil { return "", nil, expansionErr }
+	sort.Strings(used)
+	return result, slices.Compact(used), nil
+}
+```
+
+When one or more variables are used, set the node source to `FieldSource{Kind: SourceAPISIXEnv, Origin: strings.Join(used, ","), Explicit: true}`. Never include the substituted value in `Origin` or an error.
+
+Implement the file boundary with no ambient reads:
+
+```go
+func readConfigDocument(path string, source FieldSource, env map[string]string) (*valueNode, error) {
+	data, err := os.ReadFile(path)
+	if err != nil { return nil, fmt.Errorf("read static configuration %s: %w", path, err) }
+	doc, err := parseDocument(data, source, env)
+	if err != nil { return nil, fmt.Errorf("parse static configuration %s: %w", path, err) }
+	return doc, nil
+}
+```
+
+- [ ] **Step 5: Run parser tests**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^TestParseDocument" -count=1'`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit the inert parser**
+
+```bash
+git add pkg/config/node.go pkg/config/document.go pkg/config/document_test.go
+git commit -m "feat(config): preserve static configuration presence"
+```
+
+### Task 3: Merge Layers and Record Field Provenance
+
+**Files:**
+- Create: `pkg/config/merge.go`
+- Create: `pkg/config/extension_env.go`
+- Test: `pkg/config/merge_test.go`
+- Test: `pkg/config/extension_env_test.go`
+
+**Interfaces:**
+- Consumes: `valueNode`, `parseDocument`, `LoadRequest`, and `Provenance`.
+- Produces: `mergeNodes(lower, upper *valueNode) *valueNode`, `flattenProvenance(*valueNode) Provenance`, `nodeFromAny(any, FieldSource) (*valueNode, error)`, `mustNodeFromAny(any, FieldSource) *valueNode`, `applyAPISIXGO(*valueNode, map[string]string) error`, and `applyCLIOverrides(*valueNode, map[string]any) error`.
+
+- [ ] **Step 1: Write the precedence, recursive-map, sequence, and null tests**
+
+```go
+func TestMergePresenceUsesExplicitPrecedence(t *testing.T) {
+	lower := mustParseDocument(t, `section: {keep: lower, replace: lower, list: [a, b], nullable: lower}`,
+		FieldSource{Kind: SourceDefaultFile, Origin: "default.yaml"})
+	upper := mustParseDocument(t, `section: {replace: "", list: [c], nullable: null}`,
+		FieldSource{Kind: SourceOverrideFile, Origin: "override.yaml", Explicit: true})
+	merged := mergeNodes(lower, upper)
+	section := merged.mapping["section"]
+	if section.mapping["keep"].scalar != "lower" { t.Fatal("recursive map lost lower key") }
+	if section.mapping["replace"].scalar != "" { t.Fatal("explicit empty did not replace") }
+	if len(section.mapping["list"].sequence) != 1 { t.Fatal("sequence did not replace") }
+	if section.mapping["nullable"].kind != nodeNull { t.Fatal("null did not replace") }
+	provenance := flattenProvenance(merged)
+	if provenance["section.keep"].Kind != SourceDefaultFile { t.Fatalf("keep = %+v", provenance["section.keep"]) }
+	if provenance["section.nullable"].Kind != SourceOverrideFile { t.Fatalf("nullable = %+v", provenance["section.nullable"]) }
+}
+```
+
+- [ ] **Step 2: Write the APISIXGO and CLI overlay tests**
+
+```go
+func TestExtensionAndCLIOverridesWinWithoutAmbientEnvironment(t *testing.T) {
+	root := mustParseDocument(t, `proxy: {max_in_flight: 32}
+plugins: [request-id, cors]
+`, FieldSource{Kind: SourceDefaultFile, Origin: "default.yaml"})
+	err := applyAPISIXGO(root, map[string]string{
+		"APISIXGO_PROXY_MAX_IN_FLIGHT": "64",
+		"UNRELATED": "ignored",
+	})
+	if err != nil { t.Fatal(err) }
+	if err := applyCLIOverrides(root, map[string]any{"proxy.max_in_flight": 96}); err != nil { t.Fatal(err) }
+	provenance := flattenProvenance(root)
+	if got := provenance["proxy.max_in_flight"];
+		got != (FieldSource{Kind: SourceCLI, Origin: "proxy.max_in_flight", Explicit: true}) {
+		t.Fatalf("source = %+v", got)
+	}
+}
+
+func TestRuntimePathExtensionUsesReservedAliasAndFullCLIPath(t *testing.T) {
+	root := mustNodeFromAny(map[string]any{"apisix_go": map[string]any{"runtime_paths": map[string]any{
+		"data_dir": "/default/data",
+	}}}, FieldSource{Kind: SourceBuiltin, Origin: "test-defaults"})
+	if err := applyAPISIXGO(root, map[string]string{
+		"APISIXGO_RUNTIME_PATHS_DATA_DIR": "relative/env-data",
+	}); err != nil { t.Fatal(err) }
+	if err := applyCLIOverrides(root, map[string]any{
+		"apisix_go.runtime_paths.data_dir": "relative/cli-data",
+	}); err != nil { t.Fatal(err) }
+	got := flattenProvenance(root)["apisix_go.runtime_paths.data_dir"]
+	if got != (FieldSource{Kind: SourceCLI, Origin: "apisix_go.runtime_paths.data_dir", Explicit: true}) {
+		t.Fatalf("source = %+v", got)
+	}
+}
+
+func TestAPISIXGORejectsUnknownAndCollidingPaths(t *testing.T) {
+	root := &valueNode{kind: nodeMapping, mapping: map[string]*valueNode{}}
+	err := applyAPISIXGO(root, map[string]string{"APISIXGO_NOT_A_CONFIG_FIELD": "x"})
+	if err == nil || err.Error() != "APISIXGO_NOT_A_CONFIG_FIELD does not map to a static configuration field" {
+		t.Fatalf("applyAPISIXGO() error = %v", err)
+	}
+}
+```
+
+- [ ] **Step 3: Run the merge tests and confirm the functions are absent**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMergePresence|TestExtensionAndCLI|TestAPISIXGO)" -count=1'`
+
+Expected: FAIL with undefined merge and overlay functions.
+
+- [ ] **Step 4: Implement immutable merge and provenance flattening**
+
+`mergeNodes` must deep-clone the winning nodes so `LoadEffective` never aliases request-owned maps. Only two mapping nodes recurse; all other upper kinds replace the lower node. `flattenProvenance` emits leaf paths, sequence container paths, sequence indices such as `apisix.node_listen[0].port`, and explicit-null paths.
+
+```go
+func mergeNodes(lower, upper *valueNode) *valueNode {
+	if lower == nil { return cloneNode(upper) }
+	if upper == nil { return cloneNode(lower) }
+	if lower.kind != nodeMapping || upper.kind != nodeMapping { return cloneNode(upper) }
+	merged := cloneNode(lower)
+	for key, incoming := range upper.mapping {
+		merged.mapping[key] = mergeNodes(merged.mapping[key], incoming)
+	}
+	return merged
+}
+```
+
+- [ ] **Step 5: Implement the deterministic APISIXGO index and CLI paths**
+
+Walk `reflect.TypeFor[Config]()` through `mapstructure` tags. A leaf path `proxy.max_in_flight` maps to `APISIXGO_PROXY_MAX_IN_FLIGHT`. Add exactly four reserved schema paths which are intentionally not fields on `Config`: `apisix_go.runtime_paths.data_dir`, `.runtime_dir`, `.log_dir`, and `.temp_dir`. Their environment aliases are `APISIXGO_RUNTIME_PATHS_DATA_DIR`, `APISIXGO_RUNTIME_PATHS_RUNTIME_DIR`, `APISIXGO_RUNTIME_PATHS_LOG_DIR`, and `APISIXGO_RUNTIME_PATHS_TEMP_DIR`; do not generate `APISIXGO_APISIX_GO_*`. CLI keys use the complete `apisix_go.runtime_paths.*` path. Reject duplicate environment names during index construction. APISIXGO values remain string scalar nodes and are converted only by typed decode; an empty environment value is therefore explicit empty, not absence. CLI values are converted recursively without a JSON float round trip. Implement that conversion once as `nodeFromAny`; it accepts nil, bool, string, `json.Number`, all signed/unsigned integer widths, maps with string keys, and slices/arrays, and rejects floats and non-string map keys. `mustNodeFromAny` wraps it only for compile-time builtin literals and panics on programmer error; request data always uses the error-returning function.
+
+```go
+func extensionEnvName(path string) string {
+	return "APISIXGO_" + strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
+}
+
+func mustNodeFromAny(value any, source FieldSource) *valueNode {
+	node, err := nodeFromAny(value, source)
+	if err != nil { panic(fmt.Sprintf("invalid builtin configuration: %v", err)) }
+	return node
+}
+
+func setPath(root *valueNode, path string, value *valueNode) error {
+	segments := strings.Split(path, ".")
+	current := root
+	for _, segment := range segments[:len(segments)-1] {
+		next := current.mapping[segment]
+		if next == nil { next = &valueNode{kind: nodeMapping, mapping: make(map[string]*valueNode)}; current.mapping[segment] = next }
+		if next.kind != nodeMapping { return fmt.Errorf("configuration path %s crosses a non-mapping value", path) }
+		current = next
+	}
+	current.mapping[segments[len(segments)-1]] = cloneNode(value)
+	return nil
+}
+```
+
+- [ ] **Step 6: Run the layer tests**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMergePresence|TestExtensionAndCLI|TestAPISIXGO)" -count=1'`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit the inert merge engine**
+
+```bash
+git add pkg/config/merge.go pkg/config/extension_env.go pkg/config/merge_test.go pkg/config/extension_env_test.go
+git commit -m "feat(config): merge explicit configuration layers"
+```
+
+### Task 4: Atomically Cut Runtime Over to Effective Config and Explicit Encryption
+
+**Files:**
+- Create: `pkg/config/defaults.go`
+- Create: `pkg/config/decode.go`
+- Create: `pkg/config/validation.go`
+- Create: `pkg/config/effective_test.go`
+- Create: `pkg/data_encryption/service.go`
+- Create: `pkg/data_encryption/service_test.go`
+- Modify: `go.mod`
+- Modify: `pkg/config/types.go`
+- Rewrite: `pkg/config/init.go`
+- Modify: `pkg/config/init_test.go`
+- Modify: `pkg/config/release_gate_test.go`
+- Modify: `pkg/config/trusted_addresses_validation_test.go`
+- Modify: `pkg/config/standalone.go`
+- Modify: `pkg/config/standalone_test.go`
+- Modify: `pkg/data_encryption/data_encryption.go`
+- Modify: `pkg/data_encryption/data_encryption_test.go`
+- Modify: `pkg/data_encryption/resolver.go`
+- Modify: `cmd/root.go`
+- Modify: `cmd/root_test.go`
+- Modify: `pkg/server/server.go`
+- Modify: `pkg/server/reload.go`
+- Modify: `pkg/server/tls.go`
+- Modify tests: `pkg/server/*_test.go`
+- Modify: `pkg/route/builder.go`
+- Modify: `pkg/route/extra.go`
+- Modify: `pkg/route/production_policy.go`
+- Modify: `pkg/route/upstream_options.go`
+- Modify tests: `pkg/route/*_test.go`
+- Modify: `pkg/plugin/types.go`
+- Modify: `pkg/plugin/init.go`
+- Modify: `pkg/plugin/base/types.go`
+- Modify: `pkg/plugin/proxy_cache/zones.go`
+- Modify: `pkg/plugin/graphql_proxy_cache/plugin.go`
+- Modify: `pkg/plugin/graphql_limit_count/plugin.go`
+- Modify: `pkg/plugin/dubbo_proxy/transport.go`
+- Modify: `pkg/plugin/server_info/plugin.go`
+- Modify: `pkg/plugin/otel/provider.go`
+- Modify: `pkg/plugin/skywalking/plugin.go`
+- Modify: `pkg/plugin/log_rotate/plugin.go`
+- Modify: `pkg/plugin/redirect/plugin.go`
+- Modify the 16 plugin implementations returned by `rg -l 'data_encryption\.Keyring\(' pkg/plugin --glob '*.go' --glob '!*_test.go'`
+- Modify focused tests in the corresponding plugin packages
+- Modify: `pkg/store/store.go`
+- Modify: `pkg/store/getter.go`
+- Modify tests: `pkg/store/*_test.go`
+- Modify: `pkg/apisix/id/id.go`
+- Modify: `pkg/apisix/id/id_test.go`
+- Modify: `pkg/observability/metrics/prometheus.go`
+- Modify: `pkg/observability/metrics/prometheus_test.go`
+- Modify: `conf/config-production.yaml`
+
+**Interfaces:**
+- Consumes: Tasks 1–3, `capability.Load() (*capability.Manifest, error)`, current `config.Config`, and current data-encryption primitives.
+- Produces: `config.LoadEffective(config.LoadRequest) (*config.EffectiveConfig, error)`, `data_encryption.Service`, `base.Dependencies`, `plugin.New(string, base.Dependencies) Plugin`, `server.NewServer(*config.EffectiveConfig, data_encryption.Service) (*server.Server, error)`, and a runtime with no static-config or encryption global.
+
+This is deliberately one implementation unit. Do not commit after adding `LoadEffective` while production still calls `config.Load`, and do not commit after injecting only some global readers.
+
+Plan 04 consumes the immutable `data_encryption.Service` produced here. During its compiler cutover it atomically replaces the route/plugin `base.Dependencies` resolver field with its `secret.Materializer` and removes every direct plugin/base dependency on the raw plan-02 service or resolver; it must not retain both injection paths.
+
+- [ ] **Step 1: Write the end-to-end loader tests**
+
+```go
+func TestLoadEffectiveAppliesAllLayersAndProvenance(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil { t.Fatal(err) }
+	profile, ok := manifest.Qualification("http-data-plane-v1")
+	if !ok { t.Fatal("http-data-plane-v1 qualification is missing") }
+	defaults := writeConfigFile(t, "default.yaml", `
+apisix: {node_listen: [{port: 9080}]}
+proxy: {max_idle_conns: 10, max_idle_conns_per_host: 10, max_conns_per_host: 10, max_in_flight: 10}
+nginx_config: {http: {client_max_body_size: 1024, client_body_timeout: 60s}}
+plugins: `+mustYAMLInline(t, profile.RequiredPlugins)+`
+deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
+`)
+	override := writeConfigFile(t, "override.yaml", `
+proxy: {max_in_flight: 20}
+compatibility_target: apisix-3.17
+security_profile: compat
+qualification_profile: http-data-plane-v1
+`)
+	effective, err := LoadEffective(LoadRequest{
+		DefaultPath: defaults, OverridePath: override,
+		Environment: map[string]string{"APISIXGO_PROXY_MAX_IN_FLIGHT": "30"},
+		CLIOverrides: map[string]any{"proxy.max_in_flight": 40}, Manifest: manifest,
+	})
+	if err != nil { t.Fatal(err) }
+	if effective.Config.Proxy.MaxInFlight != 40 { t.Fatalf("max_in_flight = %d", effective.Config.Proxy.MaxInFlight) }
+	if got := effective.Provenance["proxy.max_in_flight"];
+		got.Kind != SourceCLI || got.Origin != "proxy.max_in_flight" || !got.Explicit { t.Fatalf("source = %+v", got) }
+	if effective.Profiles.Compatibility != CompatibilityAPISIX317 ||
+		effective.Profiles.Security != SecurityCompat ||
+		effective.Profiles.Qualification != QualificationHTTPDataPlaneV1 { t.Fatalf("profiles = %+v", effective.Profiles) }
+}
+
+func TestLoadEffectiveDistinguishesNullFalseZeroEmptyAndAbsent(t *testing.T) {
+	effective := loadEffectiveFixture(t, `
+debug: false
+apisix: {id: "", node_listen: [{port: 9080}]}
+proxy: {max_idle_conns: 1, max_idle_conns_per_host: 1, max_conns_per_host: 1, max_in_flight: 1}
+nginx_config: {http: {client_max_body_size: 1, client_body_timeout: 1s}}
+plugins: [request-id]
+compatibility_target: apisix-3.17
+security_profile: compat
+deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
+graphql: null
+`)
+	for _, path := range []string{"debug", "apisix.id", "graphql"} {
+		if _, ok := effective.Provenance[path]; !ok { t.Fatalf("%s has no provenance", path) }
+	}
+	if _, ok := effective.Provenance["apisix.enable_dev_mode"]; ok { t.Fatal("absent field became explicit") }
+}
+
+func TestLoadEffectivePreservesExactUntypedNumber(t *testing.T) {
+	effective := loadEffectiveFixture(t, validConfigWith(`plugin_attr: {prometheus: {large: 9007199254740993}}`))
+	got := effective.Config.PluginAttr["prometheus"]["large"]
+	if got != json.Number("9007199254740993") { t.Fatalf("large = %#v (%T)", got, got) }
+}
+
+func TestLoadEffectiveResolvesCompatRelativeRuntimePathAgainstOwningFile(t *testing.T) {
+	req := loadRequestFixture(t, SecurityCompat, `apisix_go: {runtime_paths: {data_dir: relative-data}}`)
+	effective, err := LoadEffective(req)
+	if err != nil { t.Fatal(err) }
+	want := filepath.Join(filepath.Dir(req.OverridePath), "relative-data")
+	if effective.Paths.DataDir != want { t.Fatalf("data_dir = %q, want %q", effective.Paths.DataDir, want) }
+	if !filepath.IsAbs(effective.Paths.DataDir) { t.Fatalf("data_dir is not absolute: %q", effective.Paths.DataDir) }
+}
+
+func TestLoadEffectiveQualificationRequiresFourAbsoluteRuntimePaths(t *testing.T) {
+	req := qualifiedLoadRequestFixture(t, `apisix_go: {runtime_paths: {log_dir: ""}}`)
+	_, err := LoadEffective(req)
+	if err == nil || err.Error() != "qualification_profile http-data-plane-v1: runtime path log_dir must be a non-empty absolute path" {
+		t.Fatalf("LoadEffective() error = %v", err)
+	}
+}
+```
+
+All `loadRequestFixture`, `qualifiedLoadRequestFixture`, and `loadEffectiveFixture` helpers in this task must call `capability.Load()` explicitly, write files below `t.TempDir()` so their paths are absolute, and populate all four `DefaultPaths` with absolute child directories. They must not call `DefaultRuntimePaths()` or read the developer machine's environment.
+
+- [ ] **Step 2: Write profile, unknown-field, removed-field, and nil-manifest tests**
+
+```go
+func TestLoadEffectiveUnknownFieldsFollowSecurityProfile(t *testing.T) {
+	compat := loadRequestFixture(t, SecurityCompat, "unknown_section: {token: must-not-appear}\n")
+	effective, err := LoadEffective(compat)
+	if err != nil { t.Fatal(err) }
+	if _, ok := effective.Provenance["unknown_section.token"]; !ok { t.Fatal("ignored field missing provenance") }
+	strict := loadRequestFixture(t, SecurityStrict, "unknown_section: {token: must-not-appear}\n")
+	if _, err := LoadEffective(strict); err == nil || !strings.Contains(err.Error(), "unknown_section.token") {
+		t.Fatalf("strict LoadEffective() error = %v", err)
+	}
+}
+
+func TestLoadEffectiveRejectsRemovedDeploymentProfile(t *testing.T) {
+	req := loadRequestFixture(t, SecurityCompat, "deployment: {profile: http-data-plane-v1}\n")
+	_, err := LoadEffective(req)
+	want := "deployment.profile was removed; use compatibility_target, security_profile, and qualification_profile"
+	if err == nil || !strings.Contains(err.Error(), want) { t.Fatalf("LoadEffective() error = %v", err) }
+}
+
+func TestLoadEffectiveRequiresExplicitManifest(t *testing.T) {
+	req := loadRequestFixture(t, SecurityCompat, "")
+	req.Manifest = nil
+	_, err := LoadEffective(req)
+	if err == nil || err.Error() != "load effective config: capability manifest is required" { t.Fatalf("error = %v", err) }
+}
+```
+
+- [ ] **Step 3: Run the new loader tests and confirm they fail**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^TestLoadEffective" -count=1'`
+
+Expected: FAIL because `LoadEffective` is not implemented; the root profile fields from plan 01 compile.
+
+- [ ] **Step 4: Preserve plan-01 profile fields and tag static secrets**
+
+Plan 01 has already deleted `HTTPDataPlaneV1Profile` and `Deployment.Profile`, added the following root `Config` fields, and implemented `Config.Profiles()`. Treat those symbols as inputs and do not move them back under `Deployment`:
+
+```go
+CompatibilityTarget CompatibilityTarget `mapstructure:"compatibility_target"`
+SecurityProfile SecurityProfile `mapstructure:"security_profile"`
+QualificationProfile QualificationProfile `mapstructure:"qualification_profile"`
+```
+
+Mark static secrets for the redacted renderer:
+
+```go
+type DataEncryption struct {
+	EnableEncryptFields bool     `mapstructure:"enable_encrypt_fields"`
+	Keyring             []string `mapstructure:"keyring" secret:"true"`
+}
+type AdminKey struct {
+	Name string `mapstructure:"name"`
+	Key  string `mapstructure:"key" secret:"true"`
+	Role string `mapstructure:"role"`
+}
+type Etcd struct {
+	Password string `mapstructure:"password" secret:"true"`
+}
+```
+
+Modify the existing `Config.PluginAttr` declaration to include `secret:"container"` without changing its Go type. Redacted output lists plugin names but replaces each plugin's entire attribute value with `[REDACTED]`. This conservative static rule prevents an unregistered plugin attribute from leaking credentials.
+
+- [ ] **Step 5: Implement builtin defaults, typed decode, and validation**
+
+`defaults.go` owns exactly the current Go-only defaults, profile defaults, and bootstrap-injected runtime-path defaults:
+
+```go
+func builtinDefaults(paths RuntimePaths) *valueNode {
+	return mustNodeFromAny(map[string]any{
+		"nginx_config": map[string]any{"http": map[string]any{
+			"client_max_body_size": int64(10 * 1024 * 1024),
+			"client_body_timeout": "60s",
+		}},
+		"compatibility_target": string(CompatibilityAPISIX317),
+		"security_profile": string(SecurityCompat),
+		"apisix_go": map[string]any{"runtime_paths": map[string]any{
+			"data_dir": paths.DataDir, "runtime_dir": paths.RuntimeDir,
+			"log_dir": paths.LogDir, "temp_dir": paths.TempDir,
+		}},
+	}, FieldSource{Kind: SourceBuiltin, Origin: "apisix-go-runtime-defaults", Explicit: false})
+}
+```
+
+Before typed `Config` decode, copy the top-level map, remove `apisix_go`, and decode that extension with the private exact shape `struct { RuntimePaths RuntimePaths ` + "`mapstructure:\"runtime_paths\"`" + ` }`; return its unused fields together with the main `Config` unused fields. This keeps `RuntimePaths` out of `Config` while retaining presence and provenance in the merged node tree. Use `mapstructure.Decoder` directly with `TagName: "mapstructure"`, `WeaklyTypedInput: true`, existing `configDecodeHook`, an added `json.Number` hook that calls `strconv.ParseInt/ParseUint` with the destination bit size, and `Metadata.Unused`. Move `github.com/go-viper/mapstructure/v2 v2.5.0` from the indirect block to the direct block in `go.mod`; do not change its version or rewrite vendor.
+
+Define `resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (RuntimePaths, error)`. For each nonempty relative value, use the winning node's `pathBase`; CLI/APISIXGO nodes use the directory of `OverridePath`, or `DefaultPath` when no override exists. The chosen base must already be absolute; return a stable error instead of calling `filepath.Abs` or reading the working directory. Clean every nonempty result with `filepath.Clean`. `DataDir` is always required and absolute because it owns the journal. When qualification is selected, all four fields must be nonempty and absolute; compatibility mode may leave runtime/log/temp empty, and resolves any supplied relative value by the rule above.
+
+Obtain `ProfileSelection` through `cfg.Profiles()`, call `selection.Validate(req.Manifest)`, then run existing general validations. Reuse plan 01's `validateSecurityProfile`; call `ValidateQualificationPlugins` plus HTTP-scope checks from `validateQualificationProfile`. Compatibility mode returns sorted unused paths; strict mode returns a redacted error naming the first sorted unknown path. Check `deployment.profile` in the merged tree before decode so it cannot be silently ignored.
+
+- [ ] **Step 6: Implement the complete `LoadEffective` pipeline**
+
+```go
+func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
+	if req.Manifest == nil { return nil, fmt.Errorf("load effective config: capability manifest is required") }
+	defaultPath := req.DefaultPath
+	if defaultPath == "" { defaultPath = DefaultConfigFile }
+	root := builtinDefaults(req.DefaultPaths)
+	defaultDoc, err := readConfigDocument(defaultPath, FieldSource{Kind: SourceDefaultFile, Origin: defaultPath}, req.Environment)
+	if err != nil { return nil, err }
+	root = mergeNodes(root, defaultDoc)
+	if req.OverridePath != "" && !sameConfigPath(defaultPath, req.OverridePath) {
+		override, err := readConfigDocument(req.OverridePath,
+			FieldSource{Kind: SourceOverrideFile, Origin: req.OverridePath, Explicit: true}, req.Environment)
+		if err != nil { return nil, err }
+		root = mergeNodes(root, override)
+	}
+	if err := applyAPISIXGO(root, req.Environment); err != nil { return nil, err }
+	if err := applyCLIOverrides(root, req.CLIOverrides); err != nil { return nil, err }
+	cfg, paths, unused, err := decodeConfig(root)
+	if err != nil { return nil, err }
+	profiles := cfg.Profiles()
+	paths, err = resolveRuntimePaths(paths, root, req)
+	if err != nil { return nil, err }
+	effective := &EffectiveConfig{Config: cfg, Provenance: flattenProvenance(root), Profiles: profiles, Paths: paths}
+	if err := validateEffective(effective, unused, req.Manifest); err != nil { return nil, err }
+	return effective, nil
+}
+```
+
+Delete the Viper import, `GlobalConfig`, `Load`, `loadConfigFiles`, `load(*viper.Viper)`, all `v.SetDefault`, `AutomaticEnv`, and the call to `data_encryption.Configure`. Retain only helpers still called by the new decoder and validator; move them to the focused files listed above.
+
+- [ ] **Step 7: Add an immutable data-encryption service and failing global-state tests**
+
+```go
+func TestServiceInstancesDoNotShareKeyrings(t *testing.T) {
+	first := NewService(true, []string{"qeddd145sfvddff3"})
+	second := NewService(false, nil)
+	ciphertext, err := first.EncryptForContext("secret", "test.secret")
+	if err != nil { t.Fatal(err) }
+	if _, err := first.Resolver().ResolveForContext(ciphertext, "test.secret"); err != nil { t.Fatal(err) }
+	if got, err := second.Resolver().ResolveForContext("plain", "test.secret"); err != nil || got != "plain" {
+		t.Fatalf("disabled resolver = (%q, %v)", got, err)
+	}
+}
+```
+
+Implement an immutable value owner; do not expose its keyring:
+
+```go
+type Service struct {
+	enabled bool
+	keyring []string
+}
+
+func NewService(enabled bool, keyring []string) Service {
+	return Service{enabled: enabled, keyring: append([]string(nil), keyring...)}
+}
+func (s Service) Resolver() Resolver { return NewResolver(s.enabled, s.keyring) }
+func (s Service) EncryptPluginConfigs(configs map[string]any) error {
+	if !s.enabled { return nil }
+	return EncryptPluginConfigs(configs, s.keyring)
+}
+func (s Service) EncryptPluginMetadata(name string, metadata map[string]any) error {
+	if !s.enabled { return nil }
+	return EncryptPluginMetadata(name, metadata, s.keyring)
+}
+```
+
+Add equivalent service methods for metadata/plugin decryption by delegating to the existing resolver-aware functions. Delete `runtimeConfig`, `Configure`, and `Keyring` from `data_encryption.go`.
+
+- [ ] **Step 8: Define explicit plugin dependencies**
+
+```go
+// pkg/plugin/base/types.go
+type Dependencies struct {
+	Config         *config.EffectiveConfig
+	DataEncryption data_encryption.Resolver
+}
+
+type BasePlugin struct {
+	Name string
+	Priority int
+	Schema string
+	MetadataSchema string
+	dependencies Dependencies
+}
+
+func (p *BasePlugin) SetDependencies(deps Dependencies) { p.dependencies = deps }
+func (p *BasePlugin) StaticConfig() *config.EffectiveConfig { return p.dependencies.Config }
+func (p *BasePlugin) DataEncryption() data_encryption.Resolver { return p.dependencies.DataEncryption }
+```
+
+```go
+// pkg/plugin/types.go and pkg/plugin/init.go
+type dependencyReceiver interface { SetDependencies(base.Dependencies) }
+
+func New(name string, deps base.Dependencies) Plugin {
+	factory, ok := pluginRegistry[name]
+	if !ok { return nil }
+	p := factory()
+	receiver, ok := p.(dependencyReceiver)
+	if !ok { panic("registered plugin does not embed base.BasePlugin") }
+	receiver.SetDependencies(deps)
+	return p
+}
+```
+
+Update both `plugin.New` call sites in `pkg/route/builder.go`. There is no one-argument overload. Tests that need a plugin must pass an explicit zero `base.Dependencies{}` or the exact dependencies required by that behavior.
+
+- [ ] **Step 9: Propagate immutable dependencies from `cmd` through server and route**
+
+In `cmd.Start`, call `capability.Load()` and `config.DefaultRuntimePaths()` exactly once, normalize the selected default/override config file names to absolute paths before constructing the request, build an environment map from `os.Environ()`, and call `LoadEffective` with `CLIOverrides: nil`. Then create `data_encryption.NewService`, configure logging from `&effective.Config`, and call `server.NewServer(effective, encryption)`. Remove `cmd.globalConfig`. Task 5 adds repeatable `--set` and routes all three commands through one loader; Task 4 must not parse an unregistered flag.
+
+Add `staticConfig *config.EffectiveConfig` and `dataEncryption data_encryption.Service` to the existing `Server` struct without renaming its other fields. Replace its constructor signature with `func NewServer(effective *config.EffectiveConfig, encryption data_encryption.Service) (*Server, error)`, return `create server: effective config is required` before any resource creation when `effective == nil`, and make the remainder of the existing constructor read `&effective.Config` and the supplied encryption value. Add `staticConfig *appconfig.EffectiveConfig` and `pluginDependencies base.Dependencies` to the existing `route.Builder` struct without renaming its other fields.
+
+Replace constructor signatures with explicit required parameters; do not add variadic or nil-fallback overloads:
+
+```go
+func NewBuilder(storage *store.Store, effective *appconfig.EffectiveConfig, resolver data_encryption.Resolver) *Builder
+func NewBuilderWithServerAddr(storage *store.Store, serverAddr string,
+	effective *appconfig.EffectiveConfig, resolver data_encryption.Resolver) *Builder
+func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string,
+	registry *pxy.ClusterRegistry, effective *appconfig.EffectiveConfig,
+	resolver data_encryption.Resolver) *Builder
+```
+
+Update every builder construction found by `rg -n 'route\.NewBuilder|NewBuilderWith(ServerAddr|ClusterRegistry)' pkg --glob '*.go'`. Production code always passes `s.config` and `s.dataEncryption.Resolver()`; tests use a helper that creates a complete `EffectiveConfig` rather than assigning a package variable.
+
+- [ ] **Step 10: Replace every static-config global reader by its owner**
+
+Apply this exact ownership table. Each row is a direct replacement, not a compatibility fallback:
+
+| Current reader | Replacement |
+| --- | --- |
+| `pkg/server/server.go`, `pkg/server/tls.go` | `s.config.Config` or a helper receiving `*config.Config`; helpers such as `configuredListenAddresses`, `configuredTLSListenAddresses`, `pluginConfigured`, `newClusterObserver`, and TLS builders accept config explicitly. |
+| `pkg/route/builder.go`, `extra.go`, `production_policy.go`, `upstream_options.go` | `b.staticConfig.Config`; free functions receive `*config.Config` or the needed value explicitly. |
+| `pkg/plugin/graphql_proxy_cache`, `graphql_limit_count`, `server_info`, `otel`, `skywalking`, `log_rotate`, `redirect` | `p.StaticConfig()` supplied before `Init/PostInit`; nil is a construction error in production, while focused unit tests pass explicit fixtures. |
+| `pkg/plugin/dubbo_proxy/transport.go` | transport construction receives the plugin attribute map from the owning plugin instance; the transport helper no longer reads config. |
+| `pkg/observability/metrics/prometheus.go` | `Init(attr map[string]any)` and `StartPrometheusExportServer(attr map[string]any)`; server passes `effective.Config.PluginAttr["prometheus"]`. |
+| `pkg/apisix/id/id.go` | `Get(configuredID string)`; node-status, server-info, and request-context pass `p.StaticConfig().Config.Apisix.ID`. |
+| `pkg/plugin/proxy_cache/zones.go` | an internal immutable zone snapshot owned by the proxy-cache registry; `RefreshConfiguredZones` publishes to that registry directly and never rewrites static config. |
+
+After each package edit, replace tests that mutate `GlobalConfig` with explicit constructor or function arguments. Do not preserve zero-argument helpers solely for old tests.
+
+- [ ] **Step 11: Replace every encryption global reader**
+
+Change `store.Open` and `store.GetStore` to require both an explicit database path and `data_encryption.Service`, store the service on `Store`, and use it in metadata/resource decode. Server passes `config.JournalPath(effective)`; remove every production literal or cwd fallback for `apisix-go-store.db`. Change `config.NewStandaloneFileWatcher` to require the service and use its encryption methods. Server passes the same immutable service to both.
+
+For the 16 plugin files reported by the required `rg` command, replace this pattern:
+
+```go
+keyring, enabled := data_encryption.Keyring()
+resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(value, context)
+```
+
+with:
+
+```go
+resolved, err := p.DataEncryption().ResolveForContext(value, context)
+```
+
+For helper methods, pass `data_encryption.Resolver` as an argument from the plugin instance. Update focused secret tests to construct plugins through `plugin.New(name, base.Dependencies{DataEncryption: service.Resolver()})` or set the embedded dependencies explicitly inside the same package. No test may call a process-wide configure/reset function.
+
+- [ ] **Step 12: Update production configuration to the three axes**
+
+Replace only the old profile field in `conf/config-production.yaml`; the three axes are root keys, not children of `deployment`:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+```
+
+Retain the file's role, provider, etcd, TLS, listener, and plugin values.
+
+- [ ] **Step 13: Run the focused red/green gates for the atomic cutover**
+
+Run in this order:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/config -run "^(TestLoadEffective|TestMergePresence|TestProfileSelection|TestValidateQualificationPlugins|TestProductionProfile|TestRuntimeConfig)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/data_encryption ./pkg/store -run "(Service|Resolver|Encrypt|Decrypt|PluginMetadata|PluginConfig)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/apisix/id ./pkg/observability/metrics -run "(Configured|Prometheus|Metric|ID|Get)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/server ./pkg/route -run "(Configured|Config|Builder|TLS|Plugin|Upstream|Production|Server)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/plugin/ai_rate_limiting ./pkg/plugin/clickhouse_logger ./pkg/plugin/csrf ./pkg/plugin/elasticsearch_logger ./pkg/plugin/error_log_logger ./pkg/plugin/google_cloud_logging ./pkg/plugin/http_logger ./pkg/plugin/kafka_logger ./pkg/plugin/kafka_proxy ./pkg/plugin/lago ./pkg/plugin/loggly ./pkg/plugin/response_rewrite ./pkg/plugin/rocketmq_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging ./pkg/plugin/tencent_cloud_cls -run "(Secret|Resolve|PostInit|Materialize|Config)" -count=1'
+bash -lc 'source .envrc && make build'
+```
+
+Expected: all commands PASS. If an existing test name does not match a selector, narrow by the actual affected test name rather than broadening to `./pkg/...`.
+
+- [ ] **Step 14: Prove the old paths are gone**
+
+Run:
+
+```bash
+rg -n 'GlobalConfig|data_encryption\.Configure|data_encryption\.Keyring|func Load\(|func loadConfigFiles|AutomaticEnv|NewServer\(\)' cmd pkg --glob '*.go'
+rg -n 'plugin\.New\([^,\)]*\)' pkg --glob '*.go'
+rg -n 'apisix-go-store\.db' cmd pkg --glob '*.go'
+```
+
+Expected: the first two commands print no production or test call site. The third prints only the `JournalPath` implementation and exact path tests, never a server/store cwd fallback. `server.NewServer` must require both dependencies; `plugin.New` must require `base.Dependencies`.
+
+- [ ] **Step 15: Commit the atomic cutover**
+
+```bash
+git add go.mod cmd pkg/config pkg/data_encryption pkg/server pkg/route pkg/store pkg/plugin pkg/apisix/id pkg/observability/metrics conf/config-production.yaml
+git commit -m "refactor(config): cut over to explicit effective configuration"
+```
+
+### Task 5: Add Side-Effect-Free Config Test and Redacted Dump Commands
+
+**Files:**
+- Create: `cmd/config.go`
+- Create: `cmd/config_test.go`
+- Modify: `cmd/root.go`
+- Modify: `cmd/root_test.go`
+- Create: `pkg/config/redact.go`
+- Test: `pkg/config/effective_test.go`
+
+**Interfaces:**
+- Consumes: `capability.Load()`, `config.DefaultRuntimePaths`, `config.LoadEffective`, root `--config/-c`, and root `--set path=value`.
+- Produces: `config.RenderEffectiveRedacted(*EffectiveConfig) ([]byte, error)`, `apisix config test`, and `apisix config dump --effective --redacted`; both commands stop after static load/validation and never create `server.Server`.
+
+- [ ] **Step 1: Write the command tests before registering the command**
+
+```go
+func TestConfigCommandTestValidatesWithoutStartingServer(t *testing.T) {
+	path := writeCommandConfig(t, validCommandConfig)
+	cmd := newRootCommand()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout); cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"config", "test", "-c", path})
+	if err := cmd.Execute(); err != nil { t.Fatal(err) }
+	if got := stdout.String(); got != "configuration is valid\n" { t.Fatalf("stdout = %q", got) }
+	if strings.Contains(stdout.String()+stderr.String(), "Starting server") { t.Fatal("config test started runtime") }
+}
+
+func TestConfigCommandDumpRequiresEffectiveAndRedacted(t *testing.T) {
+	path := writeCommandConfig(t, validCommandConfigWithSecrets)
+	cmd := newRootCommand()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"config", "dump", "--effective", "--redacted", "-c", path,
+		"--set", "proxy.max_in_flight=77",
+		"--set", "apisix_go.runtime_paths.log_dir=relative-logs"})
+	if err := cmd.Execute(); err != nil { t.Fatal(err) }
+	output := stdout.String()
+	for _, secret := range []string{"etcd-password", "admin-secret", "encryption-key", "plugin-attr-secret"} {
+		if strings.Contains(output, secret) { t.Fatalf("dump leaked %q", secret) }
+	}
+	for _, want := range []string{`"max_in_flight": 77`, `"kind": "cli"`, `"profiles"`, `"paths"`, `"ignored_fields"`} {
+		if !strings.Contains(output, want) { t.Fatalf("dump missing %q: %s", want, output) }
+	}
+}
+```
+
+- [ ] **Step 2: Run command tests and verify `config` is unknown**
+
+Run: `bash -lc 'source .envrc && go test ./cmd -run "^TestConfigCommand" -count=1'`
+
+Expected: FAIL because the `config` subcommand is not registered.
+
+- [ ] **Step 3: Make root command state instance-local**
+
+Define `newRootCommand() *cobra.Command`; `Execute` constructs one command, while tests construct a fresh command so flags and output do not leak. Put `--config/-c` and repeatable `--set` on persistent flags. Delete the historical `--viper` flag because Viper no longer owns semantics.
+
+Parse `--set` only as the first `=` split; reject missing path, missing `=`, duplicate paths, and a path not known to the static schema. The value remains a string for schema-aware decode. For example:
+
+```go
+func parseSetOverrides(values []string) (map[string]any, error) {
+	result := make(map[string]any, len(values))
+	for _, raw := range values {
+		path, value, ok := strings.Cut(raw, "=")
+		if !ok || path == "" { return nil, fmt.Errorf("--set must use path=value, got %q", raw) }
+		if _, exists := result[path]; exists { return nil, fmt.Errorf("--set path %q is repeated", path) }
+		result[path] = value
+	}
+	return result, nil
+}
+```
+
+- [ ] **Step 4: Implement one shared side-effect-free load function**
+
+```go
+func loadEffectiveForCommand(configPath string, setValues []string) (*config.EffectiveConfig, error) {
+	manifest, err := capability.Load()
+	if err != nil { return nil, fmt.Errorf("load capability manifest: %w", err) }
+	overrides, err := parseSetOverrides(setValues)
+	if err != nil { return nil, err }
+	paths, err := config.DefaultRuntimePaths()
+	if err != nil { return nil, err }
+	defaultPath, err := filepath.Abs(config.DefaultConfigFile)
+	if err != nil { return nil, fmt.Errorf("resolve default config path: %w", err) }
+	overridePath := ""
+	if configPath != "" {
+		overridePath, err = filepath.Abs(configPath)
+		if err != nil { return nil, fmt.Errorf("resolve override config path: %w", err) }
+	}
+	return config.LoadEffective(config.LoadRequest{
+		DefaultPath: defaultPath,
+		OverridePath: overridePath,
+		DefaultPaths: paths,
+		Environment: environmentMap(os.Environ()),
+		CLIOverrides: overrides,
+		Manifest: manifest,
+	})
+}
+```
+
+Root server startup, `config test`, and `config dump` all call this exact function. Only root startup constructs encryption/store/server after it returns.
+
+Define the environment snapshot with a first-`=` split and no subsequent `os.Getenv` calls:
+
+```go
+func environmentMap(entries []string) map[string]string {
+	result := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok { result[name] = value }
+	}
+	return result
+}
+```
+
+- [ ] **Step 5: Implement deterministic redacted rendering**
+
+`RenderEffectiveRedacted` returns indented JSON with five top-level keys in a struct: `config`, `paths`, `profiles`, `provenance`, and `ignored_fields`. Reflect over `Config` using `mapstructure` names and add the four reserved `apisix_go.runtime_paths.*` schema paths. The schema matcher must recognize mapping containers, sequences, and numeric sequence indices so known container/index provenance is not mislabeled as unknown. For `secret:"true"`, retain empty as empty and render any nonempty scalar/list as `[REDACTED]`; for `secret:"container"`, preserve first-level plugin names with redacted values. Sort provenance keys and ignored paths before materializing output structs. Unknown paths are provenance paths not accepted by that matcher and are listed without their values.
+
+```go
+type effectiveDump struct {
+	Config map[string]any `json:"config"`
+	Paths RuntimePaths `json:"paths"`
+	Profiles ProfileSelection `json:"profiles"`
+	Provenance []provenanceEntry `json:"provenance"`
+	IgnoredFields []string `json:"ignored_fields"`
+}
+
+func RenderEffectiveRedacted(effective *EffectiveConfig) ([]byte, error) {
+	if effective == nil { return nil, errors.New("render effective config: config is required") }
+	dump := buildEffectiveDump(effective)
+	data, err := json.MarshalIndent(dump, "", "  ")
+	if err != nil { return nil, fmt.Errorf("render effective config: %w", err) }
+	return append(data, '\n'), nil
+}
+```
+
+Origin includes only a file path, environment variable name, builtin identifier, or config path; never an environment or CLI value.
+
+- [ ] **Step 6: Register exact command semantics**
+
+`apisix config test` accepts no positional arguments and prints exactly `configuration is valid`. `apisix config dump` accepts no positional arguments and errors unless both `--effective` and `--redacted` are true; no unredacted mode exists.
+
+- [ ] **Step 7: Run command and redaction tests**
+
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/config -run "^(TestRenderEffectiveRedacted|TestLoadEffective)" -count=1'
+bash -lc 'source .envrc && go test ./cmd -run "^(TestConfigCommand|TestRootCommandConfigFlag|TestStart)" -count=1'
+bash -lc 'source .envrc && make build'
+```
+
+Expected: PASS, and the tests assert that no provider/store/listener side effect occurs.
+
+- [ ] **Step 8: Commit the CLI**
+
+```bash
+git add cmd/config.go cmd/config_test.go cmd/root.go cmd/root_test.go pkg/config/redact.go pkg/config/effective_test.go
+git commit -m "feat(cli): inspect effective configuration safely"
+```
+
+### Task 6: Update the Operator Contract and Run the Milestone Gate
+
+**Files:**
+- Modify: `docs/configuration.md`
+- Modify: `docs/production-profile.md`
+- Modify: `docs/design.md`
+- Verify: `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md`
+
+**Interfaces:**
+- Consumes: completed Tasks 1–5 and the central governance manifest.
+- Produces: operator documentation for precedence, presence, environment namespaces, profiles, runtime paths, config commands, redaction, migration, and the static-config milestone evidence consumed by child plan 03. Plan 04 also consumes `data_encryption.Service` and replaces its temporary resolver injection atomically with `secret.Materializer`.
+
+- [ ] **Step 1: Replace the obsolete operator examples**
+
+Use this exact production profile shape in both operator documents:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
+apisix_go:
+  runtime_paths:
+    data_dir: /var/lib/apisix-go
+    runtime_dir: /run/apisix-go
+    log_dir: /var/log/apisix-go
+    temp_dir: /var/tmp/apisix-go
+```
+
+Document the exact precedence order, recursive-map/list-replacement/null behavior, provenance source kinds, APISIX `${{NAME}}` and `${{NAME:=fallback}}`, `APISIXGO_*`, repeatable `--set path=value`, strict unknown-field rejection, compatibility ignored-path reporting, and the removed `deployment.profile` error. Explain that bootstrap injects platform defaults, qualification requires all four paths to be nonempty and absolute, compatibility resolves explicit relative paths against the owning configuration file, and the durable journal is always `filepath.Join(data_dir, "apisix-go-store.db")`. Include these executable examples:
+
+```bash
+apisix config test -c conf/config-production.yaml
+apisix config dump --effective --redacted -c conf/config-production.yaml
+apisix config test -c conf/config.yaml --set proxy.max_in_flight=2048
+apisix config dump --effective --redacted -c conf/config.yaml --set apisix_go.runtime_paths.log_dir=relative-logs
+```
+
+State that dump has no unredacted mode and that `plugin_attr`, admin keys, etcd password, and encryption keyring are redacted.
+
+- [ ] **Step 2: Correct the design document's source-of-truth statements**
+
+Remove claims that Viper defines merge semantics, environment variables are automatic field overrides, or `deployment.profile` combines security and qualification. Link the static configuration section to the program specification and central capability manifest. Do not rewrite unrelated historical implementation sections.
+
+- [ ] **Step 3: Run the required symbol and placeholder scans**
+
+Run:
+
+```bash
+rg -n 'GlobalConfig|data_encryption\.Configure|data_encryption\.Keyring|deployment\.profile|HTTPDataPlaneV1Profile|AutomaticEnv|--viper' cmd pkg conf docs/configuration.md docs/production-profile.md docs/design.md --glob '*.go' --glob '*.yaml' --glob '*.md'
+rg -n 'apisix-go-store\.db' cmd pkg --glob '*.go'
+rg -n 'T[B]D|T[O]DO|implement l[a]ter|fill in d[e]tails|similar to T[a]sk' docs/superpowers/plans/2026-08-23-static-effective-config.md
+```
+
+Expected: the first command prints only the intentional migration sentence saying `deployment.profile` is removed; the journal scan prints only `JournalPath` and exact path tests; the placeholder scan prints no line.
+
+- [ ] **Step 4: Run the static-config milestone gate from the master plan**
+
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/config ./cmd -run "^(TestLoadEffective|TestMergePresence|TestProfileSelection|TestConfigCommand)" -count=1 && make build'
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Run impact-scoped regression and formatting gates**
+
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./pkg/data_encryption ./pkg/store ./pkg/server ./pkg/route ./pkg/observability/metrics -run "(Config|Configured|Secret|Encryption|Builder|Server|TLS|Prometheus)" -count=1'
+bash -lc 'source .envrc && golangci-lint run ./cmd/... ./pkg/config/... ./pkg/data_encryption/... ./pkg/server/... ./pkg/route/... ./pkg/store/... ./pkg/observability/metrics/...'
+git diff --check
+```
+
+Expected: PASS. Do not substitute `go test ./...` or `make test`.
+
+- [ ] **Step 6: Perform the required dead-code and proxy-only audit**
+
+List every deleted or renamed symbol from the diff, then run exact production-and-test call-site searches for `Load`, `loadConfigFiles`, `load`, `validateHTTPDataPlaneV1Profile`, `profileAwareRuntimeError`, `GlobalConfig`, `Configure`, `Keyring`, old `NewServer()`, old builder constructors, old `plugin.New(name)`, and zero-argument static config helpers. Delete unused imports, helpers, fixtures, and tests that only exercise removed globals. Do not preserve a wrapper for test convenience.
+
+- [ ] **Step 7: Commit documentation and milestone evidence**
+
+```bash
+git add docs/configuration.md docs/production-profile.md docs/design.md
+git commit -m "docs(config): document effective configuration contract"
+```
+
+## Self-Review Checklist
+
+- Every configuration/state requirement in the program spec maps to Tasks 1–6: profile axes, presence, exact numbers, APISIX/APISIXGO separation, provenance, unknown fields, CLI inspection, redaction, and global removal.
+- The Task 2 base shape of `EffectiveConfig` plus `Provenance`, `ProfileSelection`, `RuntimePaths`, `LoadRequest`, `DefaultRuntimePaths`, `JournalPath`, and `LoadEffective` matches the master plan. Plans 05 and 07 add `EffectiveConfig.Runtime` and its lifecycle/safety/telemetry/diagnostics policy in their own compiling atomic milestones; this plan does not predeclare empty future policy types.
+- `ProfileSelection.Validate` uses `Manifest.Qualification` plus `Manifest.QualifiedPlugins` to fail closed on incomplete required evidence; it does not read `Config`, and `capability` never imports `config`.
+- `LoadEffective` has no ambient reads or runtime side effects; bootstrap alone supplies platform defaults and the environment snapshot.
+- `apisix_go.runtime_paths.*`, their `APISIXGO_RUNTIME_PATHS_*` aliases, canonical resolution, qualification checks, redacted output, and `JournalPath` have focused tests.
+- The only runtime cutover commit removes both old config and encryption global paths; no adapter remains.
+- The redacted renderer cannot emit secret values or ignored-field values.
+- All test and implementation steps contain exact code, commands, and expected red/green results.
+- The final symbol scan and dead-code audit cover production and tests.
+
+Plan complete and saved to `docs/superpowers/plans/2026-08-23-static-effective-config.md`. Execute it through the parent program's selected subagent-driven workflow, preserving the dependency order: governance first, then this plan, then durable generation journal; plan 04 consumes the static encryption service and removes its raw plugin/base injection during the `secret.Materializer` cutover.

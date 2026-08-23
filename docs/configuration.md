@@ -1,23 +1,166 @@
 # Configuration compatibility
 
-`apisix-go` accepts the YAML shape of the official Apache APISIX
-[`conf/config.yaml.example`](https://github.com/apache/apisix/blob/master/conf/config.yaml.example),
-including its scalar and mapping forms for listeners. The Go loader keeps
-configuration that has no direct Go equivalent in the typed configuration
-object so an official file can be loaded without being rewritten. Recognition
-is a compatibility boundary, not an activation guarantee: compatibility-only
-fields may be retained, while the explicitly unsupported runtime activations
-listed below fail closed when configured.
+`apisix-go` accepts the documented scalar and mapping listener forms and a
+bounded subset of the YAML shape in the official Apache APISIX
+[`conf/config.yaml.example`](https://github.com/apache/apisix/blob/master/conf/config.yaml.example).
+Recognition is a compatibility boundary, not an activation guarantee. In
+compatibility mode, unknown static fields remain only as provenance and are
+reported by opaque handles in the redacted effective-config output; they are
+not decoded into the typed `Config`. Strict security rejects unknown static
+fields. YAML anchors, aliases, and merge keys fail closed, and LuaJIT hex-float
+template retyping is not qualified. Explicitly unsupported runtime activations
+listed below also fail closed when configured.
+
+## Effective static configuration
+
+### Precedence, presence, and provenance
+
+The precedence order is built-in defaults, the default file, the selected
+override file, `APISIXGO_*`, and repeatable CLI `--set` overrides. The default
+file is `conf/config-default.yaml`; `-c`/`--config` selects the override file.
+APISIX template expansion happens inside each parsed file layer. It is not a
+separate overlay after the files.
+
+Within a merge, mappings merge recursively and a sequence replaces the lower
+sequence. A field absent from an upper layer inherits the lower value. An
+explicit `null` replaces the lower value and remains present in provenance;
+explicit `false`, zero, an empty string, an empty mapping, and an empty sequence
+are likewise distinct from absence. Configuration integers are retained
+exactly rather than being decoded through `float64`.
+
+Every winning field records one of the provenance source kinds `builtin`,
+`default_file`, `override_file`, `apisix_env`, `apisixgo_env`, or `cli`, plus an
+approved origin and whether the source was explicit. Under
+`security_profile: strict`, any unknown static field fails configuration load.
+Under `security_profile: compat`, unknown fields remain available only for
+provenance and ignored-field diagnostics; their raw keys and values are not
+rendered.
+
+### APISIX templates and APISIXGO overrides
+
+APISIX-compatible file templates use `${{NAME}}` or
+`${{NAME:=fallback}}`, including substitutions in YAML keys. A missing variable
+without a fallback is an error. The variable is expanded while its owning file
+is parsed and is recorded as the winning `apisix_env` source.
+
+`APISIXGO_*` is a separate, Go-specific namespace for typed static overrides.
+It is applied after both files, accepts only schema-derived aliases, and rejects
+unknown aliases. For example, `APISIXGO_DEPLOYMENT_ETCD_HOST` supplies the etcd
+endpoint list and accepts comma-separated endpoints. A repeatable CLI override
+uses the complete typed path, for example:
+
+```bash
+apisix -c conf/config-example.yaml \
+  --set proxy.max_in_flight=2048 \
+  --set apisix_go.runtime_paths.log_dir=relative-logs
+```
+
+The former `deployment.profile` field has been removed from files, environment
+overrides, and CLI overrides. Use `compatibility_target`, `security_profile`,
+and `qualification_profile` independently. `APISIXGO_DEPLOYMENT_PROFILE` is
+rejected by the same migration boundary.
+
+### Runtime paths
+
+The four Go-owned runtime paths are:
+
+| Typed path | Environment alias |
+| --- | --- |
+| `apisix_go.runtime_paths.data_dir` | `APISIXGO_RUNTIME_PATHS_DATA_DIR` |
+| `apisix_go.runtime_paths.runtime_dir` | `APISIXGO_RUNTIME_PATHS_RUNTIME_DIR` |
+| `apisix_go.runtime_paths.log_dir` | `APISIXGO_RUNTIME_PATHS_LOG_DIR` |
+| `apisix_go.runtime_paths.temp_dir` | `APISIXGO_RUNTIME_PATHS_TEMP_DIR` |
+
+The short aliases intentionally omit the repeated `APISIX_GO` segment; aliases
+such as `APISIXGO_APISIX_GO_RUNTIME_PATHS_DATA_DIR` do not exist. Bootstrap
+derives platform defaults from Go's user configuration, user cache, and
+temporary-directory APIs and injects them as built-in defaults. Those defaults
+are not a fixed Linux `/var` layout.
+
+`data_dir` must always resolve to a non-empty absolute path. Selecting a
+qualification profile requires all four paths to resolve to non-empty absolute
+paths. A relative value in a file resolves against that file's directory. A
+relative `APISIXGO_*` or CLI value resolves against the selected override file's
+directory, or the default file's directory when there is no override. The
+durable journal is always `data_dir/apisix-go-store.db`.
+
+### Static inspection commands
+
+Use the compatibility example for successful inspection:
+
+```bash
+apisix config test -c conf/config-example.yaml
+apisix config dump --effective --redacted -c conf/config-example.yaml
+apisix config test -c conf/config-example.yaml --set proxy.max_in_flight=2048
+apisix config dump --effective --redacted -c conf/config-example.yaml --set apisix_go.runtime_paths.log_dir=relative-logs
+```
+
+`apisix config test` validates only static read/merge/decode/profile contracts.
+On success it prints exactly `configuration is valid`. It does not create/check
+directory permissions, open/migrate the journal, bind ports, contact
+etcd/providers, configure logging, or prove runtime readiness. It also does not
+start a provider, server, or background goroutine.
+
+`apisix config dump` requires both `--effective` and `--redacted`; there is no
+unredacted mode. The registered secret contract covers the encryption keyring,
+admin keys, the etcd password, sanitized etcd URL userinfo, all plugin-attribute
+values, and discovery-provider configuration values. Unknown paths omit their
+original keys and values; one opaque correlation handle links provenance to the
+ignored-field list. Known `apisix_env` provenance paths use opaque handles but
+are not treated as ignored fields. When such a path contains a dynamic mapping
+key, the same handle can correlate its safe config key with provenance. Known
+non-secret configuration values remain visible in the typed config output.
+`AdminSSLCertKey` and `EtcdTLS.Key` remain visible as file paths, not as inline
+private-key contents.
+
+The dump also retains approved operational metadata such as profiles, file
+paths, provider and plugin names, environment variable names, and sanitized
+hosts. Treat it as a sensitive diagnostic artifact even though secret values
+are redacted.
+
+### Journal relocation and rollback
+
+When upgrading from the cwd-relative journal, stop the old process, back up the
+cwd `apisix-go-store.db`, create and permission the selected `data_dir`, and
+copy/verify the database as `data_dir/apisix-go-store.db`, then start exactly one
+instance and validate the published resource generation before increasing the
+replica count, and retain the backup for rollback. Starting without moving the
+old journal presents an empty local state until providers repopulate it.
 
 ## Production container configuration
 
-The image starts with `conf/config-production.yaml` layered over
-`conf/config-default.yaml`. This production override intentionally contains no
-etcd endpoint, so the image fails configuration validation until an operator
-provides `APISIXGO_DEPLOYMENT_ETCD_HOST` (comma-separated for multiple
-endpoints), or mounts an operator-managed configuration override. The endpoint
-must be supplied explicitly; the image does not fall back to a local etcd
-address.
+The image loads `/usr/local/apisix/conf/config-default.yaml` and layers
+`/usr/local/apisix/conf/config-production.yaml` over it. The production override
+has an empty `deployment.etcd.host` and no `apisix_go.runtime_paths` overlay.
+The repository snapshot is currently unqualified and its production
+configuration is expected to fail closed until an operator supplies a real
+etcd endpoint and the central manifest records complete qualification evidence.
+The endpoint can be supplied through `APISIXGO_DEPLOYMENT_ETCD_HOST`
+(comma-separated for multiple endpoints) or an operator-managed override; the
+image does not fall back to a local etcd address.
+
+The following is an operator-owned overlay example, not the checked-in
+production file or the image's filesystem contract:
+
+```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
+apisix_go:
+  runtime_paths:
+    data_dir: /var/lib/apisix-go
+    runtime_dir: /run/apisix-go
+    log_dir: /var/log/apisix-go
+    temp_dir: /var/tmp/apisix-go
+```
+
+The operator must create or mount all four directories and set their ownership
+and permissions before startup. The current Dockerfile creates only
+`/usr/local/apisix/conf`, `/usr/local/apisix/logs`, and
+`/usr/local/apisix/data`; it does not create the `/var` paths above. The
+checked-in `conf/config-production.yaml` intentionally omits this runtime-path
+overlay, and this documentation does not change either file.
 
 The checked-in production override selects three independent axes:
 

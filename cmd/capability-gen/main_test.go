@@ -359,6 +359,26 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 			}
 		}
 	}
+	withoutSupersededHistory := func(path, content string, historicalSections ...string) string {
+		t.Helper()
+		for _, section := range historicalSections {
+			sectionStart := strings.Index(content, section)
+			if sectionStart < 0 {
+				t.Fatalf("%s is missing explicitly labelled historical section %q", path, section)
+			}
+			supersededOffset := strings.Index(content[sectionStart:], "> **Superseded 2026-08-23:**")
+			if supersededOffset < 0 {
+				t.Fatalf("%s historical section %q has no dated supersession label", path, section)
+			}
+			supersededStart := sectionStart + supersededOffset
+			supersededEndOffset := strings.Index(content[supersededStart:], "\n\n")
+			if supersededEndOffset < 0 {
+				t.Fatalf("%s historical section %q has no bounded supersession block", path, section)
+			}
+			content = content[:sectionStart] + content[supersededStart+supersededEndOffset+2:]
+		}
+		return content
+	}
 
 	for _, path := range []string{"docs/configuration.md", "docs/production-profile.md"} {
 		content := read(path)
@@ -395,11 +415,12 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 
 	designPath := "docs/design.md"
 	design := read(designPath)
-	for _, section := range []string{
+	historicalSections := []string{
 		"Historical behavior before convergence: candidate profile",
 		"Historical behavior before convergence: lifecycle",
 		"Historical behavior before convergence: route schema",
-	} {
+	}
+	for _, section := range historicalSections {
 		require(designPath, design, section)
 	}
 	require(
@@ -412,6 +433,24 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 		"superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
 		"architecture/compatibility-contract.md",
 		"architecture/legacy-conflicts.md",
+	)
+	activeDesign := withoutSupersededHistory(designPath, design, historicalSections...)
+	reject(
+		designPath,
+		activeDesign,
+		"default -> selected override -> APISIXGO_*",
+		"environment variables are applied last",
+		"publishing global state",
+		"config.GlobalConfig.Plugins",
+		"deployment.profile",
+	)
+	require(
+		designPath,
+		activeDesign,
+		"superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md",
+		"pkg/capability/manifest.yaml",
+		"EffectiveConfig -> data_encryption.Service -> explicit resolver dependency",
+		"startup plugin list",
 	)
 
 	decisionsPath := "docs/reviews/convergence-decisions.md"
@@ -462,6 +501,50 @@ func TestGovernedDocsContainNoActiveLegacyClaims(t *testing.T) {
 		production,
 		"none of its six required plugins",
 		"| Required plugin | Current non-passing required evidence |",
+	)
+
+	configuration := read("docs/configuration.md")
+	require(
+		"docs/configuration.md",
+		configuration,
+		"The precedence order is built-in defaults, the default file, the selected override file, `APISIXGO_*`, and repeatable CLI `--set` overrides.",
+		"APISIX template expansion happens inside each parsed file layer.",
+		"`${{NAME}}`",
+		"`${{NAME:=fallback}}`",
+		"`apisix config test` validates only static read/merge/decode/profile contracts.",
+		"does not create/check directory permissions",
+		"open/migrate the journal",
+		"bind ports",
+		"contact etcd/providers",
+		"configure logging",
+		"prove runtime readiness",
+		"no unredacted mode",
+		"Unknown paths omit their original keys and values; one opaque correlation handle links provenance to the ignored-field list.",
+		"Known `apisix_env` provenance paths use opaque handles but are not treated as ignored fields.",
+		"Known non-secret configuration values remain visible in the typed config output.",
+	)
+
+	operatorDocs := configuration + "\n" + production + "\n" + activeDesign
+	require(
+		"active operator documentation",
+		operatorDocs,
+		"apisix_go.runtime_paths.data_dir",
+		"apisix_go.runtime_paths.runtime_dir",
+		"apisix_go.runtime_paths.log_dir",
+		"apisix_go.runtime_paths.temp_dir",
+		"APISIXGO_RUNTIME_PATHS_DATA_DIR",
+		"APISIXGO_RUNTIME_PATHS_RUNTIME_DIR",
+		"APISIXGO_RUNTIME_PATHS_LOG_DIR",
+		"APISIXGO_RUNTIME_PATHS_TEMP_DIR",
+		"data_dir/apisix-go-store.db",
+		"stop the old process",
+		"back up",
+		"copy/verify",
+		"start exactly one instance",
+		"retain the backup for rollback",
+		"empty local state until providers repopulate it",
+		"repository snapshot is currently unqualified",
+		"expected to fail closed",
 	)
 }
 

@@ -31,6 +31,26 @@ deployment:
       verify: true
 ```
 
+The deployment and etcd example above remains the profile-selection shape. A
+deployment may add the following separate operator-owned runtime-path overlay:
+
+```yaml
+apisix_go:
+  runtime_paths:
+    data_dir: /var/lib/apisix-go
+    runtime_dir: /run/apisix-go
+    log_dir: /var/log/apisix-go
+    temp_dir: /var/tmp/apisix-go
+```
+
+This `/var` layout is not present in `conf/config-production.yaml` and is not an
+image default. The current Dockerfile creates only `/usr/local/apisix/conf`,
+`/usr/local/apisix/logs`, and `/usr/local/apisix/data`; it does not create these
+four paths. Before startup, the operator must create or mount every selected
+directory and set ownership and permissions for the runtime user. See
+[`configuration.md`](configuration.md#runtime-paths) for platform defaults,
+relative-path resolution, and environment aliases.
+
 `compatibility_target` currently accepts only `apisix-3.17`.
 `security_profile` accepts `compat` or `strict`; `strict` enables the transport,
 credential, and trusted-address requirements below without selecting a
@@ -76,6 +96,12 @@ of the following:
   `required_plugins` sequence, including order. This document does not maintain
   a second plugin inventory; current membership, qualification result, and
   blockers are in the [generated plugin capability status](plugins.md).
+- `apisix_go.runtime_paths.data_dir`,
+  `apisix_go.runtime_paths.runtime_dir`,
+  `apisix_go.runtime_paths.log_dir`, and
+  `apisix_go.runtime_paths.temp_dir` are all non-empty absolute paths. Static
+  validation does not create the directories or verify their ownership and
+  permissions. The durable journal is `data_dir/apisix-go-store.db`.
 
 - Process access-log settings remain unset: HTTP and stream access-log enable
   flags are false, paths and formats are empty, and access-log buffering is
@@ -104,9 +130,37 @@ of the following:
   `tls.verify: true`; `security_profile: compat` permits `tls.verify: false`.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
-the etcd endpoint empty so an operator must supply a real endpoint through an
-override or `APISIXGO_DEPLOYMENT_ETCD_HOST`; it must not be replaced with a
-plaintext endpoint when selecting this profile.
+the etcd endpoint empty and omits the runtime-path overlay, so an operator must
+supply a real endpoint through an override or
+`APISIXGO_DEPLOYMENT_ETCD_HOST`; it must not be replaced with a plaintext
+endpoint when selecting this profile. Providing an endpoint and writable
+directories does not replace the manifest's required qualification evidence.
+The repository snapshot is currently unqualified, and production static
+inspection is expected to fail closed while that evidence remains incomplete.
+
+## Static configuration preflight
+
+Use the compatibility example for a successful static preflight:
+
+```bash
+apisix config test -c conf/config-example.yaml
+apisix config dump --effective --redacted -c conf/config-example.yaml
+```
+
+Running `apisix config test -c conf/config-production.yaml` against the
+repository snapshot is expected to fail closed: the file supplies no etcd
+endpoint and the manifest does not yet contain complete qualification evidence.
+Do not interpret that command as producing a current production JSON dump.
+
+`config test` checks static read, merge, decode, and profile contracts only. It
+does not create directories, verify permissions, open or migrate the journal,
+bind listeners, contact etcd or another provider, configure logging, or prove
+runtime readiness. `config dump` has no unredacted mode and its redacted output
+still contains approved operational metadata; handle it as a sensitive
+diagnostic artifact. The full precedence, environment-namespace, redaction,
+runtime-path, and
+[journal migration](configuration.md#journal-relocation-and-rollback) contract
+is documented in [`configuration.md`](configuration.md).
 
 ## Topology and TLS boundary
 
@@ -262,6 +316,10 @@ release qualification evidence.
 The final workflow must retain the protected `production-release` reviewers and
 wait timer; the current environment's protected-branch-only tag policy must be
 updated by an operator to permit the intended `v*` tag before publication.
+
+The static-configuration milestone proves the effective loader, explicit
+dependency injection, and operator contract only. It does not change the
+repository snapshot's unqualified, fail-closed production status.
 
 The current selection result and every blocking evidence claim are derived from
 the manifest and published in the

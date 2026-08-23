@@ -6,14 +6,25 @@
 
 ## Configuration, container, and release gates
 
-Runtime configuration has one deterministic precedence chain:
-`default -> selected override -> APISIXGO_*`. The base file is always
-`conf/config-default.yaml`; `-c/--config` selects an optional override, and
-environment variables are applied last. Nested maps merge and lists replace.
-The process validates the fully merged result before publishing global state:
-the HTTP plugin allowlist and listener set must be non-empty, listeners must be
-valid, proxy connection limits must be positive, and the effective `etcd`
-provider must have endpoints and a prefix.
+Runtime configuration has one presence-aware precedence chain:
+`builtin defaults -> default file -> override file -> APISIXGO_* -> repeatable --set path=value`.
+The base file is always `conf/config-default.yaml`; `-c/--config` selects an
+optional override. APISIX `${{NAME}}` and `${{NAME:=fallback}}` templates expand
+inside each parsed file layer before that layer enters the merge. Maps merge
+recursively, lists/sequences replace, and an explicit `null` replaces the lower
+layer; absent, `null`, `false`, zero, and empty string remain distinct presence
+states. Only recognized `APISIXGO_*` aliases are applied as static overlays, and
+repeatable `--set path=value` flags are applied last.
+
+`config.LoadEffective` validates the result and returns one immutable
+`config.EffectiveConfig`; bootstrap performs explicit dependency injection along
+`EffectiveConfig -> data_encryption.Service -> explicit resolver dependency`
+before constructing the server and plugins. Configuration is not published as
+process-global state. The HTTP plugin allowlist and listener set must be
+non-empty, listeners must be valid, proxy connection limits must be positive,
+and the effective `etcd` provider must have endpoints and a prefix. See the
+[static-configuration program specification](superpowers/plans/2026-08-23-apisix-go-convergence-program-spec.md)
+and the [central capability manifest](../pkg/capability/manifest.yaml).
 
 Startup logs only the bounded `config.CapabilitySummary`: debug mode, bounded
 role/provider values, listener and plugin counts, protocol-mode booleans, the
@@ -166,7 +177,9 @@ generation-fatal. If there is no last-good version (including first
 startup), the generation fails closed and the previously installed handler
 remains. SSL identities, global rules, stream routes, and the dynamic
 plugin list are never omitted to keep the process up, and a failed plugin
-list never falls back to `config.GlobalConfig.Plugins`. Routes, services,
+list never falls back to a process-global value; the injected startup plugin
+list is `EffectiveConfig.Config.Plugins` (a valid dynamic plugin list may
+replace it for the generation). Routes, services,
 upstreams, plugin_configs, and plugin_metadata may still quarantine-and-omit
 malformed legacy rows. Runtime startup and reload also quarantine a complete
 individual route when its plugin materialization, reference resolution, or
@@ -703,7 +716,9 @@ configuration error before an outbound client is created.
 
 ### Key source and rotation
 
-- Source: `apisix.data_encryption.keyring` loaded by `pkg/config.Load`.
+- Source: `apisix.data_encryption.keyring` is loaded into `EffectiveConfig` by
+  `config.LoadEffective`; bootstrap constructs `data_encryption.Service` and
+  injects its explicit resolver dependency.
 - Read path: all configured keys are tried newest-first.
 - Rotation: add the new key at index 0 and retain old keys until all stored
   values have been rewritten; no old-key deletion is performed automatically.

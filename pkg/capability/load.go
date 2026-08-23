@@ -410,6 +410,22 @@ func concreteReason(reason string) bool {
 		}
 	}
 
+	informativeTokens := 0
+	for _, token := range words {
+		if genericReasonToken(token) {
+			continue
+		}
+		for _, char := range token {
+			if unicode.IsLetter(char) {
+				informativeTokens++
+				break
+			}
+		}
+	}
+	if informativeTokens < 2 {
+		return false
+	}
+
 	compactReason := compact.String()
 	switch compactReason {
 	case "tbd", "todo", "pending", "unknown", "placeholder", "unspecified", "na",
@@ -422,6 +438,19 @@ func concreteReason(reason string) bool {
 		return false
 	}
 	return true
+}
+
+func genericReasonToken(token string) bool {
+	switch token {
+	case "a", "an", "and", "applicable", "as", "at", "because", "by", "for", "from", "has", "in", "is", "n", "no":
+		return true
+	case "not", "now", "of", "on", "or", "reason", "status":
+		return true
+	case "the", "this", "to", "with", "foo", "bar", "baz", "example":
+		return true
+	default:
+		return false
+	}
 }
 
 func sortedUniqueStrings(values []string) bool {

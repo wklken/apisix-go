@@ -251,6 +251,20 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			want: "concrete applicability reason",
 		},
 		{
+			name: "not applicable digits only",
+			mutate: func(m *Manifest) {
+				m.Plugins[0].Evidence.Schema = notApplicableClaim("123 456")
+			},
+			want: "concrete applicability reason",
+		},
+		{
+			name: "not applicable status code",
+			mutate: func(m *Manifest) {
+				m.Plugins[0].Evidence.Schema = notApplicableClaim("status 200")
+			},
+			want: "concrete applicability reason",
+		},
+		{
 			name: "not applicable punctuation-only reason",
 			mutate: func(m *Manifest) {
 				m.Plugins[0].Evidence.Schema = notApplicableClaim("!!! --- ...")

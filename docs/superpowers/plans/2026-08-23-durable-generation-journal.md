@@ -1131,6 +1131,8 @@ git commit -m "feat(store): enforce durable last-good decisions"
 
 **Files:**
 
+- Modify: `pkg/store/getter.go`
+- Modify: `pkg/store/journal_schema.go`
 - Create: `pkg/store/journal_recovery.go`
 - Test: `pkg/store/journal_recovery_test.go`
 - Create: `pkg/store/published_view.go`
@@ -1286,35 +1288,50 @@ Expected: FAIL because recovery and published views do not exist.
 
 - [ ] **Step 3: Implement deterministic recovery**
 
-`Recover` verifies meta first. Metadata corruption and unknown schema return an error and no state. It loads desired independently, then verifies HTTP and stream heads separately. A corrupt or missing domain artifact adds one stable `RecoveryFailure` and omits only that domain. Pending staged transactions are not active and are removed by the writable owner after recovery; committed heads are never inferred from a pending transaction.
+`Recover` is an exclusive startup operation that runs before the provider and coordinator start. One bbolt update transaction verifies metadata and desired history, projects HTTP and stream independently, clears every crash-left pending publication, checks context at the transaction boundary and commits. Global metadata/desired/unknown-head-key failures or cancellation roll the transaction back, return no state and retain pending records. A known-domain integrity failure omits only that domain, leaves its recovered revision at zero, records `artifact-integrity`, still returns the other verified domain and clears pending records. Missing heads are unpublished state, not failures. A runtime caller must never invoke `Recover`, because a token staged before the call is intentionally treated as crash residue.
+
+`Store.Revisions` and `loadRevisionSetTx` remain strict runtime readers and are not called as a recovery precondition. Recovery strictly loads desired, rejects unknown published-head keys globally, then calls `loadPublishedTx` separately for HTTP and stream. Only a fully verified published generation whose revision is not newer than desired contributes its domain revision.
 
 ```go
 func (s *Store) Recover(ctx context.Context) (generation.RecoveryState, error) {
 	state := generation.RecoveryState{Published: make(map[generation.Domain]generation.PublishedGeneration)}
-	err := s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		if err := verifyJournalMetaTx(tx); err != nil {
 			return err
 		}
-		state.Revisions = loadRevisionSetTx(tx)
-		desired, err := loadDesiredSnapshotTx(tx, state.Revisions.Desired)
+		if err := validateDesiredHeadTx(tx); err != nil {
+			return err
+		}
+		desired, err := loadDesiredSnapshotTx(tx, 0)
 		if err != nil && !errors.Is(err, generation.ErrNotFound) {
 			return err
 		}
 		state.Desired = desired
+		state.Revisions.Desired = desired.Revision()
+		if err := validatePublishedHeadKeysTx(tx); err != nil {
+			return err
+		}
 		for _, domain := range []generation.Domain{generation.DomainHTTP, generation.DomainStream} {
 			published, err := loadPublishedTx(tx, domain)
 			if errors.Is(err, generation.ErrNotFound) {
 				continue
 			}
-			if err != nil {
+			if err != nil || published.Artifact.Revision > state.Revisions.Desired {
 				state.Failures = append(state.Failures, generation.RecoveryFailure{Domain: domain, Code: "artifact-integrity"})
 				continue
 			}
 			state.Published[domain] = published
+			setRevisionForDomain(&state.Revisions, domain, published.Artifact.Revision)
 		}
-		return nil
+		if err := clearPendingPublicationsTx(tx); err != nil {
+			return err
+		}
+		return contextErr(ctx)
 	})
-	return state, err
+	if err != nil {
+		return generation.RecoveryState{}, err
+	}
+	return cloneRecoveryState(state), nil
 }
 ```
 
@@ -1326,7 +1343,15 @@ type PublishedView struct {
 	resources  map[generation.ResourceKey][]byte
 }
 
-func NewPublishedView(published generation.PublishedGeneration) (*PublishedView, error) {
+type PublishedViewOptions struct {
+	DataEncryption data_encryption.Service
+}
+
+func NewPublishedView(
+	published generation.PublishedGeneration,
+	options PublishedViewOptions,
+) (*PublishedView, error) {
+	// Revalidate the public value before indexing it, then clone everything.
 	snapshotResources := published.Snapshot.Resources()
 	resources := make(map[generation.ResourceKey][]byte, len(snapshotResources))
 	for _, resource := range snapshotResources {
@@ -1341,18 +1366,22 @@ func (v *PublishedView) Raw(kind, id string) ([]byte, bool) {
 }
 ```
 
-Add explicit decoding methods on `PublishedView` needed by Task 9 (`ConfigSnapshot`, `StreamRoutes`, `Consumer`, `ConsumerGroup`, `SSL`, `Proto`, and plugin metadata). They decode only the immutable snapshot and never consult bbolt or the package-level Store. Do not route an existing production getter through this type yet; Task 9 switches all provider/runtime ownership and deletes the old persistence path atomically.
+Add `Published`, `ConfigSnapshot`, `StreamRoutes`, `Consumer`, `ConsumerGroup`, `SSL`, `Proto`, `PluginMetadataRaw` and `PluginMetadata` methods. They decode only the immutable snapshot and use the explicitly injected immutable data-encryption service; they never consult bbolt, the package-level Store, Vault/environment secret resolution, mutable caches, SNI indexes or legacy last-good state. Every returned byte slice, resource, map and generation is defensively cloned and ordering is deterministic. Closing the journal after constructing a view cannot affect it.
+
+Extend the existing `cloneSSL` helper to clone `SSL.Client` and `SkipMTLSURIRegex`; otherwise the immutable `ConfigSnapshot.GetSSL` accessor would expose shared nested state. This is a cloning fix only and does not switch any production getter to the journal.
+
+Do not route an existing package-level or `Store` production getter through this type yet. Task 9 atomically installs recovered/prepared views and switches every provider/runtime read owner. Consumer credential indexes, SNI certificate indexes, stream last-good, generation counters and secret-resolution leases also remain Task 9 responsibilities.
 
 - [ ] **Step 5: Run restart, view-isolation and getter tests**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/store -run "^(TestJournalRecover|TestPublishedView|TestStoreGettersPublished)" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/store -run "^(TestJournalRecover|TestPublishedView|TestNewPublishedView)" -count=1'`
 
 Expected: PASS.
 
 - [ ] **Step 6: Commit durable recovery and read views**
 
 ```bash
-git add pkg/store/journal_recovery.go pkg/store/journal_recovery_test.go pkg/store/published_view.go pkg/store/published_view_test.go
+git add pkg/store/getter.go pkg/store/journal_schema.go pkg/store/journal_recovery.go pkg/store/journal_recovery_test.go pkg/store/published_view.go pkg/store/published_view_test.go docs/superpowers/plans/2026-08-23-durable-generation-journal.md
 git commit -m "feat(store): recover published generations across restart"
 ```
 

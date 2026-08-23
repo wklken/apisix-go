@@ -1335,6 +1335,11 @@ func clonePluginConfigRule(rule resource.PluginConfigRule) resource.PluginConfig
 
 func cloneSSL(ssl resource.SSL) resource.SSL {
 	ssl.Snis = append([]string(nil), ssl.Snis...)
+	if ssl.Client != nil {
+		client := *ssl.Client
+		client.SkipMTLSURIRegex = append([]string(nil), client.SkipMTLSURIRegex...)
+		ssl.Client = &client
+	}
 	if ssl.Labels != nil {
 		labels := make(map[string]string, len(ssl.Labels))
 		maps.Copy(labels, ssl.Labels)

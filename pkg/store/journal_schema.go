@@ -159,37 +159,44 @@ func (s *Store) initializeJournal(legacyBucketNames []string) error {
 func inspectJournal(db *bolt.DB) (bool, error) {
 	initialized := false
 	err := db.View(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(journalMetaBucket)
-		if meta == nil {
-			if hasJournalDataBucket(tx) {
-				return generation.ErrIntegrity
-			}
-			return nil
-		}
-
-		version, err := decodeUint64(meta.Get(schemaVersionKey))
-		if err != nil || version == 0 {
-			return generation.ErrIntegrity
-		}
-		if version > currentJournalSchemaVersion {
-			return generation.ErrNewerSchema
-		}
-		if version != currentJournalSchemaVersion ||
-			!bytes.Equal(meta.Get(integrityAlgorithmKey), []byte("sha256")) {
-			return generation.ErrIntegrity
-		}
-		for _, name := range journalBuckets {
-			if tx.Bucket(name) == nil {
-				return generation.ErrIntegrity
-			}
+		var err error
+		initialized, err = verifyJournalMetaTx(tx)
+		if err != nil || !initialized {
+			return err
 		}
 		if err := validateDesiredHeadTx(tx); err != nil {
 			return err
 		}
-		initialized = true
 		return nil
 	})
 	return initialized, err
+}
+
+func verifyJournalMetaTx(tx *bolt.Tx) (bool, error) {
+	meta := tx.Bucket(journalMetaBucket)
+	if meta == nil {
+		if hasJournalDataBucket(tx) {
+			return false, generation.ErrIntegrity
+		}
+		return false, nil
+	}
+	version, err := decodeUint64(meta.Get(schemaVersionKey))
+	if err != nil || version == 0 {
+		return false, generation.ErrIntegrity
+	}
+	if version > currentJournalSchemaVersion {
+		return false, generation.ErrNewerSchema
+	}
+	if version != currentJournalSchemaVersion ||
+		!bytes.Equal(meta.Get(integrityAlgorithmKey), []byte("sha256")) {
+		return false, generation.ErrIntegrity
+	}
+	for _, name := range journalBuckets {
+		if tx.Bucket(name) == nil {
+			return false, generation.ErrIntegrity
+		}
+	}
+	return true, nil
 }
 
 func requireNoJournalBuckets(tx *bolt.Tx) error {

@@ -749,6 +749,8 @@ git commit -m "feat(config): merge explicit configuration layers"
 - Modify: `pkg/plugin/init.go`
 - Modify: `pkg/plugin/base/types.go`
 - Modify: `pkg/plugin/proxy_cache/zones.go`
+- Modify: `pkg/plugin/node_status/plugin.go`
+- Modify: `pkg/plugin/request_context/plugin.go`
 - Modify: `pkg/plugin/graphql_proxy_cache/plugin.go`
 - Modify: `pkg/plugin/graphql_limit_count/plugin.go`
 - Modify: `pkg/plugin/dubbo_proxy/transport.go`
@@ -766,13 +768,15 @@ git commit -m "feat(config): merge explicit configuration layers"
 - Modify: `pkg/apisix/id/id_test.go`
 - Modify: `pkg/observability/metrics/prometheus.go`
 - Modify: `pkg/observability/metrics/prometheus_test.go`
-- Modify: `conf/config-production.yaml`
+- Modify every focused test and fixture affected by the Builder, Store, standalone-watcher, plugin-factory, metrics, ID, and handler signature changes; the exact inventory comes from the preflight `rg` commands below, not only the wildcard rows above.
 
 **Interfaces:**
 - Consumes: Tasks 1–3, `capability.Load() (*capability.Manifest, error)`, current `config.Config`, and current data-encryption primitives.
 - Produces: `config.LoadEffective(config.LoadRequest) (*config.EffectiveConfig, error)`, `data_encryption.Service`, `base.Dependencies`, `plugin.New(string, base.Dependencies) Plugin`, `server.NewServer(*config.EffectiveConfig, data_encryption.Service) (*server.Server, error)`, and a runtime with no static-config or encryption global.
 
-This is deliberately one implementation unit. Do not commit after adding `LoadEffective` while production still calls `config.Load`, and do not commit after injecting only some global readers.
+This is deliberately one implementation unit. Do not commit after adding `LoadEffective` while production still calls `config.Load`, and do not commit after injecting only some global readers. Temporary coexistence is allowed only inside the uncommitted worktree while the worker keeps the dependency order below; the final commit must compile with no adapter, overload, nil fallback, or old global path.
+
+Implement in this internal order: (1) loader/decode/validation and the immutable-by-ownership encryption service; (2) plugin dependencies and factory; (3) Store plus standalone watcher; (4) all static/encryption readers and tests; (5) server and `cmd.Start`; (6) delete the old loader/globals and run the exact zero scans. Do not publish or checkpoint an intermediate stage.
 
 Plan 04 consumes the immutable `data_encryption.Service` produced here. During its compiler cutover it atomically replaces the route/plugin `base.Dependencies` resolver field with its `secret.Materializer` and removes every direct plugin/base dependency on the raw plan-02 service or resolver; it must not retain both injection paths.
 
@@ -944,6 +948,15 @@ Before typed `Config` decode, copy the top-level map, remove `apisix_go`, and de
 
 Define `resolveRuntimePaths(paths RuntimePaths, root *valueNode, req LoadRequest) (RuntimePaths, error)`. For each nonempty relative value, use the winning node's `pathBase`; CLI/APISIXGO nodes use the directory of `OverridePath`, or `DefaultPath` when no override exists. The chosen base must already be absolute; return a stable error instead of calling `filepath.Abs` or reading the working directory. Clean every nonempty result with `filepath.Clean`. `DataDir` is always required and absolute because it owns the journal. When qualification is selected, all four fields must be nonempty and absolute; compatibility mode may leave runtime/log/temp empty, and resolves any supplied relative value by the rule above.
 
+`LoadEffective` is deterministic at its public boundary: `DefaultPath` is
+required, nonempty, and absolute; a nonempty `OverridePath` must also be
+absolute. It does not fall back to `DefaultConfigFile`, call `filepath.Abs`, or
+interpret either path against the process working directory. `cmd.Start` and
+Task 5 are the only bootstrap owners that turn their CLI defaults into absolute
+paths. `sameConfigPath` compares already absolute, cleaned paths without cwd
+access. Empty/comment-only files are empty mapping layers; explicit YAML null
+remains an explicit replacing value.
+
 Obtain `ProfileSelection` through `cfg.Profiles()`, call `selection.Validate(req.Manifest)`, then run existing general validations. Reuse plan 01's `validateSecurityProfile`; call `ValidateQualificationPlugins` plus HTTP-scope checks from `validateQualificationProfile`. Compatibility mode returns sorted unused paths; strict mode returns a redacted error naming the first sorted unknown path. Check `deployment.profile` in the merged tree before decode so it cannot be silently ignored.
 
 - [ ] **Step 6: Implement the complete `LoadEffective` pipeline**
@@ -951,8 +964,13 @@ Obtain `ProfileSelection` through `cfg.Profiles()`, call `selection.Validate(req
 ```go
 func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 	if req.Manifest == nil { return nil, fmt.Errorf("load effective config: capability manifest is required") }
-	defaultPath := req.DefaultPath
-	if defaultPath == "" { defaultPath = DefaultConfigFile }
+	if req.DefaultPath == "" || !filepath.IsAbs(req.DefaultPath) {
+		return nil, fmt.Errorf("load effective config: default path must be a non-empty absolute path")
+	}
+	if req.OverridePath != "" && !filepath.IsAbs(req.OverridePath) {
+		return nil, fmt.Errorf("load effective config: override path must be absolute")
+	}
+	defaultPath := filepath.Clean(req.DefaultPath)
 	root := builtinDefaults(req.DefaultPaths)
 	defaultDoc, err := readConfigDocument(defaultPath, FieldSource{Kind: SourceDefaultFile, Origin: defaultPath}, req.Environment)
 	if err != nil { return nil, err }
@@ -976,7 +994,7 @@ func LoadEffective(req LoadRequest) (*EffectiveConfig, error) {
 }
 ```
 
-Delete the Viper import, `GlobalConfig`, `Load`, `loadConfigFiles`, `load(*viper.Viper)`, all `v.SetDefault`, `AutomaticEnv`, and the call to `data_encryption.Configure`. Retain only helpers still called by the new decoder and validator; move them to the focused files listed above.
+Delete the Viper import, `GlobalConfig`, `Load`, `loadConfigFiles`, `load(*viper.Viper)`, all `v.SetDefault`, `AutomaticEnv`, and the call to `data_encryption.Configure`. Remove the obsolete `--viper` flag in the same atomic cutover; it must not survive without semantics until Task 5. Move `github.com/go-viper/mapstructure/v2 v2.5.0` to the direct block and remove direct `github.com/spf13/viper`; do not run `go mod tidy` or rewrite vendor as incidental cleanup. Retain only helpers still called by the new decoder and validator; move them to the focused files listed above.
 
 - [ ] **Step 7: Add an immutable data-encryption service and failing global-state tests**
 
@@ -1015,7 +1033,16 @@ func (s Service) EncryptPluginMetadata(name string, metadata map[string]any) err
 }
 ```
 
-Add equivalent service methods for metadata/plugin decryption by delegating to the existing resolver-aware functions. Delete `runtimeConfig`, `Configure`, and `Keyring` from `data_encryption.go`.
+Add equivalent service methods for metadata/plugin decryption by delegating to the existing resolver-aware functions. Add `SameConfiguration(Service) bool`, implemented inside `data_encryption` with constant public semantics and no keyring exposure, so `store.GetStore` can reject a second caller that supplies a different service. Clone constructor input and never return the keyring. Delete `runtimeConfig`, `Configure`, and `Keyring` from `data_encryption.go`.
+
+`EffectiveConfig` is immutable by runtime ownership, not by Go's type system:
+the public struct necessarily contains maps and slices for typed compatibility.
+The bootstrap constructs it once and every injected consumer treats it as
+read-only; tests must prove two independent EffectiveConfig/Builder/Service
+instances do not mutate or cross-read each other. `Service` itself never exposes
+key material. The configured keyring remains present only in the read-only
+static snapshot for Task 5's redacted rendering; this milestone must not claim
+structural immutability or keyring removal from `EffectiveConfig`.
 
 - [ ] **Step 8: Define explicit plugin dependencies**
 
@@ -1056,11 +1083,18 @@ func New(name string, deps base.Dependencies) Plugin {
 
 Update both `plugin.New` call sites in `pkg/route/builder.go`. There is no one-argument overload. Tests that need a plugin must pass an explicit zero `base.Dependencies{}` or the exact dependencies required by that behavior.
 
+`plugin.New` continues to return `Plugin`, not `(Plugin, error)`. Zero
+dependencies remain valid only for plugins whose behavior does not consume
+them. A plugin that reads static configuration or encryption must return a
+stable missing-dependency error from `Init`/`PostInit` before serving; production
+Builder paths always supply both dependencies. Do not panic on a nil config or
+invent an error-returning factory overload.
+
 - [ ] **Step 9: Propagate immutable dependencies from `cmd` through server and route**
 
 In `cmd.Start`, call `capability.Load()` and `config.DefaultRuntimePaths()` exactly once, normalize the selected default/override config file names to absolute paths before constructing the request, build an environment map from `os.Environ()`, and call `LoadEffective` with `CLIOverrides: nil`. Then create `data_encryption.NewService`, configure logging from `&effective.Config`, and call `server.NewServer(effective, encryption)`. Remove `cmd.globalConfig`. Task 5 adds repeatable `--set` and routes all three commands through one loader; Task 4 must not parse an unregistered flag.
 
-Add `staticConfig *config.EffectiveConfig` and `dataEncryption data_encryption.Service` to the existing `Server` struct without renaming its other fields. Replace its constructor signature with `func NewServer(effective *config.EffectiveConfig, encryption data_encryption.Service) (*Server, error)`, return `create server: effective config is required` before any resource creation when `effective == nil`, and make the remainder of the existing constructor read `&effective.Config` and the supplied encryption value. Add `staticConfig *appconfig.EffectiveConfig` and `pluginDependencies base.Dependencies` to the existing `route.Builder` struct without renaming its other fields.
+Add `staticConfig *config.EffectiveConfig` and `dataEncryption data_encryption.Service` to the existing `Server` struct without renaming its other fields. Replace its constructor signature with `func NewServer(effective *config.EffectiveConfig, encryption data_encryption.Service) (*Server, error)`, return `effective config is required` before any resource creation when `effective == nil`, and make the remainder of the existing constructor read `&effective.Config` and the supplied encryption value. `cmd.Start` alone wraps that error once as `create server: %w`. Add `staticConfig *appconfig.EffectiveConfig` and `pluginDependencies base.Dependencies` to the existing `route.Builder` struct without renaming its other fields.
 
 Replace constructor signatures with explicit required parameters; do not add variadic or nil-fallback overloads:
 
@@ -1073,7 +1107,7 @@ func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string,
 	resolver data_encryption.Resolver) *Builder
 ```
 
-Update every builder construction found by `rg -n 'route\.NewBuilder|NewBuilderWith(ServerAddr|ClusterRegistry)' pkg --glob '*.go'`. Production code always passes `s.config` and `s.dataEncryption.Resolver()`; tests use a helper that creates a complete `EffectiveConfig` rather than assigning a package variable.
+Update every builder construction found by `rg -n 'route\.NewBuilder|NewBuilderWith(ServerAddr|ClusterRegistry)' pkg --glob '*.go'`. Production code always passes `s.staticConfig` and `s.dataEncryption.Resolver()`; tests use a shared route-package helper that creates a complete `EffectiveConfig` rather than assigning a package variable or repeating 138 ad-hoc literals.
 
 - [ ] **Step 10: Replace every static-config global reader by its owner**
 
@@ -1081,19 +1115,61 @@ Apply this exact ownership table. Each row is a direct replacement, not a compat
 
 | Current reader | Replacement |
 | --- | --- |
-| `pkg/server/server.go`, `pkg/server/tls.go` | `s.config.Config` or a helper receiving `*config.Config`; helpers such as `configuredListenAddresses`, `configuredTLSListenAddresses`, `pluginConfigured`, `newClusterObserver`, and TLS builders accept config explicitly. |
+| `pkg/server/server.go`, `pkg/server/tls.go` | `s.staticConfig.Config` or a helper receiving `*config.Config`; helpers such as `configuredListenAddresses`, `configuredTLSListenAddresses`, `pluginConfigured`, `newClusterObserver`, and TLS builders accept config explicitly. |
 | `pkg/route/builder.go`, `extra.go`, `production_policy.go`, `upstream_options.go` | `b.staticConfig.Config`; free functions receive `*config.Config` or the needed value explicitly. |
-| `pkg/plugin/graphql_proxy_cache`, `graphql_limit_count`, `server_info`, `otel`, `skywalking`, `log_rotate`, `redirect` | `p.StaticConfig()` supplied before `Init/PostInit`; nil is a construction error in production, while focused unit tests pass explicit fixtures. |
+| `pkg/plugin/graphql_proxy_cache`, `graphql_limit_count`, `otel`, `skywalking`, `log_rotate`, `redirect`, `request_context` | `p.StaticConfig()` supplied before `Init/PostInit`; consumers return a stable missing-dependency error, while focused unit tests pass explicit fixtures. |
 | `pkg/plugin/dubbo_proxy/transport.go` | transport construction receives the plugin attribute map from the owning plugin instance; the transport helper no longer reads config. |
-| `pkg/observability/metrics/prometheus.go` | `Init(attr map[string]any)` and `StartPrometheusExportServer(attr map[string]any)`; server passes `effective.Config.PluginAttr["prometheus"]`. |
-| `pkg/apisix/id/id.go` | `Get(configuredID string)`; node-status, server-info, and request-context pass `p.StaticConfig().Config.Apisix.ID`. |
-| `pkg/plugin/proxy_cache/zones.go` | an internal immutable zone snapshot owned by the proxy-cache registry; `RefreshConfiguredZones` publishes to that registry directly and never rewrites static config. |
+| `pkg/observability/metrics/prometheus.go` | `Init(attr map[string]any)`, `ConfiguredPublicEndpoint(attr map[string]any)`, and `ConfiguredExportServer(attr map[string]any)`; retain `StartExportServer(ExportServerConfig)`. Server and `route/extra.go` pass the same `effective.Config.PluginAttr["prometheus"]`; delete `prometheusPluginAttributes()`. |
+| `pkg/apisix/id/id.go` | `Get(configuredID string)`; no zero-argument overload. |
+| `pkg/plugin/node_status`, `server_info`, `request_context` | `StatusHandler(configuredID string) http.HandlerFunc`; `CurrentInfo(configuredID string)`, `InfoHandler(configuredID string) http.HandlerFunc`, `ReportTTL(attr map[string]any)`, and request-context `PostInit` receives the ID through `p.StaticConfig()`. Route/server pass the exact ID/attr snapshot. |
+| `pkg/plugin/proxy_cache/zones.go` | an internal immutable zone snapshot owned by the proxy-cache registry; `RefreshConfiguredZones` publishes directly and never rewrites static config. At the start of every Builder candidate build, publish `b.staticConfig.Config.Apisix.ProxyCache.Zones` before validation so the first build cannot observe an empty stale registry. |
 
 After each package edit, replace tests that mutate `GlobalConfig` with explicit constructor or function arguments. Do not preserve zero-argument helpers solely for old tests.
 
 - [ ] **Step 11: Replace every encryption global reader**
 
-Change `store.Open` and `store.GetStore` to require both an explicit database path and `data_encryption.Service`, store the service on `Store`, and use it in metadata/resource decode. Server passes `config.JournalPath(effective)`; remove every production literal or cwd fallback for `apisix-go-store.db`. Change `config.NewStandaloneFileWatcher` to require the service and use its encryption methods. Server passes the same immutable service to both.
+Use these exact appended-argument signatures:
+
+```go
+// pkg/store
+func Open(dbPath string, events chan *Event, encryption data_encryption.Service) (*Store, error)
+func GetStore(dbPath string, events chan *Event, encryption data_encryption.Service) (*Store, error)
+
+// pkg/config
+func NewStandaloneFileWatcher(path, provider string, events chan *store.Event,
+	encryption data_encryption.Service) *StandaloneFileWatcher
+```
+
+Store the service on each `Store`. Convert `decodePluginMetadata`,
+`ParseRoute`, `ParseStreamRoute`, `ParseService`, `ParseConsumer`,
+`ParseConsumerGroup`, `ParseGlobalRule`, `ParsePluginConfigRule`,
+`decryptPluginConfigs`, and the validation paths that call them into Store
+methods; they use only that receiver's Service/Resolver. Encryption-free
+`ParseUpstream`, `ParseSSL`, and `ParseProto` may remain package functions. Do
+not read `store.s` from a parser. Tests that parse an encrypted resource create
+an explicit Store with the intended Service.
+
+`GetStore` compares a supplied Service with an existing singleton using
+`SameConfiguration`; a mismatch returns `global store already initialized with
+a different data-encryption service` instead of first-caller-wins behavior.
+Server passes `config.JournalPath(effective)` and the same immutable service to
+Store and standalone watcher; remove every production literal or cwd fallback
+for `apisix-go-store.db`.
+
+Add explicit isolation tests, not only call-site compilation:
+
+- two Stores built with different Services decrypt only their own fixture and
+  never cross-read key material;
+- a second `GetStore` call with a different Service returns the exact mismatch
+  error, while the same configuration reuses the singleton;
+- a standalone watcher decrypts through its supplied Service without changing
+  another watcher or Store;
+- `NewServer(nil, service)` fails before opening a database or starting a
+  watcher;
+- two Builders with different EffectiveConfigs retain their own plugin
+  attributes, ID, and proxy-cache zones;
+- the first candidate build publishes its configured proxy-cache zones before
+  plugin validation can read the registry.
 
 For the 16 plugin files reported by the required `rg` command, replace this pattern:
 
@@ -1110,49 +1186,58 @@ resolved, err := p.DataEncryption().ResolveForContext(value, context)
 
 For helper methods, pass `data_encryption.Resolver` as an argument from the plugin instance. Update focused secret tests to construct plugins through `plugin.New(name, base.Dependencies{DataEncryption: service.Resolver()})` or set the embedded dependencies explicitly inside the same package. No test may call a process-wide configure/reset function.
 
-- [ ] **Step 12: Update production configuration to the three axes**
+- [ ] **Step 12: Confirm production configuration is already migrated**
 
-Replace only the old profile field in `conf/config-production.yaml`; the three axes are root keys, not children of `deployment`:
-
-```yaml
-compatibility_target: apisix-3.17
-security_profile: strict
-qualification_profile: http-data-plane-v1
-```
-
-Retain the file's role, provider, etcd, TLS, listener, and plugin values.
+`conf/config-production.yaml` already contains the three root axes on the
+current base. Assert that shape through the migrated release-gate tests, but do
+not touch the file or manufacture a no-op diff.
 
 - [ ] **Step 13: Run the focused red/green gates for the atomic cutover**
 
 Run in this order:
 
 ```bash
-bash -lc 'source .envrc && go test ./pkg/config -run "^(TestLoadEffective|TestMergePresence|TestProfileSelection|TestValidateQualificationPlugins|TestProductionProfile|TestRuntimeConfig)" -count=1'
-bash -lc 'source .envrc && go test ./pkg/data_encryption ./pkg/store -run "(Service|Resolver|Encrypt|Decrypt|PluginMetadata|PluginConfig)" -count=1'
-bash -lc 'source .envrc && go test ./pkg/apisix/id ./pkg/observability/metrics -run "(Configured|Prometheus|Metric|ID|Get)" -count=1'
-bash -lc 'source .envrc && go test ./pkg/server ./pkg/route -run "(Configured|Config|Builder|TLS|Plugin|Upstream|Production|Server)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/config ./pkg/data_encryption ./pkg/store -count=1'
+bash -lc 'source .envrc && go test ./cmd -run "(Start|Root|Config|Logger|Signal)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/apisix/id ./pkg/observability/metrics -run "(Configured|Prometheus|Metric|ID|Get|Init)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/server ./pkg/route -run "(Configured|Config|Builder|TLS|Plugin|Upstream|Production|Server|Store|Standalone)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/plugin ./pkg/plugin/graphql_proxy_cache ./pkg/plugin/graphql_limit_count ./pkg/plugin/dubbo_proxy ./pkg/plugin/server_info ./pkg/plugin/node_status ./pkg/plugin/request_context ./pkg/plugin/otel ./pkg/plugin/skywalking ./pkg/plugin/log_rotate ./pkg/plugin/redirect ./pkg/plugin/proxy_cache -run "(Dependencies|Config|PostInit|Configured|Handler|TTL|ID|Zone|Transport)" -count=1'
 bash -lc 'source .envrc && go test ./pkg/plugin/ai_rate_limiting ./pkg/plugin/clickhouse_logger ./pkg/plugin/csrf ./pkg/plugin/elasticsearch_logger ./pkg/plugin/error_log_logger ./pkg/plugin/google_cloud_logging ./pkg/plugin/http_logger ./pkg/plugin/kafka_logger ./pkg/plugin/kafka_proxy ./pkg/plugin/lago ./pkg/plugin/loggly ./pkg/plugin/response_rewrite ./pkg/plugin/rocketmq_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging ./pkg/plugin/tencent_cloud_cls -run "(Secret|Resolve|PostInit|Materialize|Config)" -count=1'
+bash -lc 'source .envrc && go test ./pkg/etcd ./pkg/plugin/authz_casbin ./pkg/plugin/basic_auth ./pkg/plugin/chaitin_waf ./pkg/plugin/file_logger ./pkg/plugin/grpc_transcode ./pkg/plugin/hmac_auth ./pkg/plugin/jwe_decrypt ./pkg/plugin/jwt_auth ./pkg/plugin/key_auth ./pkg/plugin/ldap_auth ./pkg/plugin/multi_auth ./pkg/plugin/wolf_rbac -run "^$" -count=1'
 bash -lc 'source .envrc && make build'
+git diff --check
 ```
 
-Expected: all commands PASS. If an existing test name does not match a selector, narrow by the actual affected test name rather than broadening to `./pkg/...`.
+The first command is deliberately package-wide because all loader, encryption,
+and Store contracts change. The final compile-only command covers remaining
+Store/signature call-site packages not already behavior-tested. Before running,
+derive the live call-site package set with `rg`; add any newly discovered exact
+package rather than broadening to `./pkg/...`. Expected: every command PASS and
+every named behavior selector matches at least one test.
 
 - [ ] **Step 14: Prove the old paths are gone**
 
 Run:
 
 ```bash
-rg -n 'GlobalConfig|data_encryption\.Configure|data_encryption\.Keyring|func Load\(|func loadConfigFiles|AutomaticEnv|NewServer\(\)' cmd pkg --glob '*.go'
+rg -n 'GlobalConfig|data_encryption\.(Configure|Keyring)' cmd pkg --glob '*.go'
+rg -n 'func (Load|loadConfigFiles)\b|AutomaticEnv|spf13/viper|--viper' pkg/config cmd go.mod --glob '*.go'
+rg -n '^func Parse(Route|StreamRoute|Service|Consumer|ConsumerGroup|GlobalRule|PluginConfigRule)\b' pkg/store --glob '*.go'
 rg -n 'plugin\.New\([^,\)]*\)' pkg --glob '*.go'
 rg -n 'apisix-go-store\.db' cmd pkg --glob '*.go'
 ```
 
-Expected: the first two commands print no production or test call site. The third prints only the `JournalPath` implementation and exact path tests, never a server/store cwd fallback. `server.NewServer` must require both dependencies; `plugin.New` must require `base.Dependencies`.
+Expected: the first four commands print no production or test call site. The
+database scan prints only `JournalPath` and exact path tests, never a
+server/store cwd fallback. Separately inspect every changed constructor call
+from the diff: `server.NewServer` requires EffectiveConfig and Service;
+`plugin.New` requires Dependencies; all Builder, Store, and watcher calls pass
+their exact new dependencies.
 
 - [ ] **Step 15: Commit the atomic cutover**
 
 ```bash
-git add go.mod cmd pkg/config pkg/data_encryption pkg/server pkg/route pkg/store pkg/plugin pkg/apisix/id pkg/observability/metrics conf/config-production.yaml
+git add go.mod cmd pkg/config pkg/data_encryption pkg/server pkg/route pkg/store pkg/plugin pkg/apisix/id pkg/observability/metrics
 git commit -m "refactor(config): cut over to explicit effective configuration"
 ```
 
@@ -1211,7 +1296,7 @@ Expected: FAIL because the `config` subcommand is not registered.
 
 - [ ] **Step 3: Make root command state instance-local**
 
-Define `newRootCommand() *cobra.Command`; `Execute` constructs one command, while tests construct a fresh command so flags and output do not leak. Put `--config/-c` and repeatable `--set` on persistent flags. Delete the historical `--viper` flag because Viper no longer owns semantics.
+Define `newRootCommand() *cobra.Command`; `Execute` constructs one command, while tests construct a fresh command so flags and output do not leak. Put `--config/-c` and repeatable `--set` on persistent flags. Task 4 already deleted the historical `--viper` flag; assert that it remains absent instead of performing a second deletion here.
 
 Parse `--set` only as the first `=` split; reject missing path, missing `=`, duplicate paths, and a path not known to the static schema. Call `config.ValidateStaticOverridePath` before adding each result so command parsing and `LoadEffective` share Task 3's one schema index and the exact removed-`deployment.profile` tombstone. The value remains a string for schema-aware decode. For example:
 

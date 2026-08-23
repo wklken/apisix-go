@@ -388,10 +388,13 @@ also applies when the YAML scalar containing the template was quoted.
 APISIX performs this post-expansion numeric decision with Lua `tonumber`, not
 with YAML scalar grammar. Implement a separate exact lexical path: decimal
 `077` and `08` become decimal 77 and 8; signed decimal integers, decimal
-fractions/exponents, and Lua-supported hexadecimal integers are numeric;
-YAML-only `0o17`, `0b10`, and underscored `1_000` remain strings. Do not reuse
+fractions/exponents, and LuaJIT-supported hexadecimal and binary integers are
+numeric; YAML-only `0o17` and underscored `1_000` remain strings. Do not reuse
 legacy-octal YAML normalization and do not introduce a `float64` precision
-round trip.
+round trip. LuaJIT also accepts hexadecimal floating-point strings; this
+milestone leaves those as strings because no exact bounded conversion is yet
+defined. Treat that as an explicit unqualified differential gap, not APISIX
+parity, until a later corpus and owner decision retire it.
 
 Template provenance is node-observable. Variables used by a template key apply
 to the mapping/sequence containers and every descendant leaf below the expanded

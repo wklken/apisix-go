@@ -97,6 +97,18 @@ func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) 
 	}
 }
 
+func TestStrictPluginMetadataFieldRegistry(t *testing.T) {
+	if !IsStrictPluginMetadataField("error-log-logger", "clickhouse.password") {
+		t.Fatal("error-log-logger.clickhouse.password must be strict to remain encrypted at rest")
+	}
+	if IsStrictPluginMetadataField("azure-functions", "master_apikey") {
+		t.Fatal("azure-functions.master_apikey must remain optional for plaintext compatibility")
+	}
+	if IsStrictPluginMetadataField("error-log-logger", "clickhouse.user") {
+		t.Fatal("unregistered metadata path must not be strict")
+	}
+}
+
 func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 	key := "edd1c9f0985e76a2"
 	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="

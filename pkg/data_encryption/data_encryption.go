@@ -119,6 +119,10 @@ func IsStrictPluginField(pluginName string, field string) bool {
 	return slices.Contains(strictPluginFields[pluginName], field)
 }
 
+func IsStrictPluginMetadataField(pluginName string, field string) bool {
+	return slices.Contains(strictPluginMetadataFields[pluginName], field)
+}
+
 func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
 	if len(keyring) == 0 {
 		return ErrKeyUnavailable

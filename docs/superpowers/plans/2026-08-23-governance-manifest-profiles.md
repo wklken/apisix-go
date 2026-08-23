@@ -1249,7 +1249,7 @@ git commit -m "ci(governance): enforce capability manifest drift gate"
 **Files:**
 - Verify: `pkg/capability/**`
 - Verify: `pkg/config/profiles.go`
-- Verify: `pkg/plugin/registry_gen.go`
+- Verify: `pkg/plugin/registry_gen.go`, `pkg/plugin/capability_registry_test.go`
 - Verify: `docs/plugins.md`, `docs/architecture/**`, `README.md`, `README.zh-CN.md`
 - Verify: `t/plugin/corpus_scope.yaml`, `.github/workflows/capability-status.yml`
 
@@ -1259,14 +1259,20 @@ git commit -m "ci(governance): enforce capability manifest drift gate"
 
 - [ ] **Step 1: Prove no editable duplicate plugin-status database remains**
 
-Run:
+Run the active-source scans with exact patterns; do not use broad numeric substrings such as `want 100`, which also match unrelated values and WebSocket codes:
 
 ```bash
-rg -n 'single source of truth|factory count =|want 115|want 114|supported plugins =|want 100|HTTPDataPlaneV1Profile|deployment\.profile' \
-  pkg t/plugin docs README*.md --glob '*.go' --glob '*.md' --glob '*.yaml'
+test -z "$(rg -n 'HTTPDataPlaneV1Profile|Deployment\.Profile' pkg conf --glob '*.go' --glob '*.yaml')"
+test -z "$(rg -n \
+  'plugin-status|Plugin Status Contract|test-plugin-status|TestSupportedPluginManifestSelection|plugin_status_gate_test' \
+  Makefile .github scripts docs/configuration.md docs/production-profile.md docs/runbooks/production-release.md)"
+test -z "$(rg -n \
+  'factory count = .*want 115|identity count = .*want 114|manifest identity count = .*want 114|supported plugins = .*want 100' \
+  pkg t/plugin --glob '*_test.go')"
+rg -n 'deployment\.profile' pkg/config conf --glob '*.go' --glob '*.yaml'
 ```
 
-Expected: numeric inventory/status claims appear only in historical archives or generated output; legacy profile symbols have no production or test call site.
+Expected: the three `test -z` commands produce no output. `deployment.profile` remains only in the explicit removed-field tombstone and its migration-rejection tests; historical archives/plans are not active truth and are governed by Task 8's context-aware test.
 
 - [ ] **Step 2: Prove the generated registry has no handwritten proxy**
 
@@ -1274,19 +1280,32 @@ Run: `rg -n 'var pluginRegistry|func capabilityManifestEntries|generatedCapabili
 
 Expected: one generated `pluginRegistry`, one generated declarative entry function, and runtime consumption of that function; no second handwritten table.
 
-- [ ] **Step 3: Run the complete impact-scoped governance gate**
+- [ ] **Step 3: Run generator, ADR, document, and workflow contract gates**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/capability ./pkg/config ./pkg/plugin -run "^(TestLoadedManifest|TestManifest|TestParse|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry|TestNew)" -count=1 && APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run "^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestCorpusScope|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)$" -count=1 && make check-capability-drift && make build'`
+Run:
+
+```bash
+bash -lc 'source .envrc && go test ./cmd/capability-gen \
+  -run "^(TestValidateDivergenceADR|TestGovernedDocsContainNoActiveLegacyClaims|TestGeneratedDocumentationDriftIsChecked|TestCheckDetectsDrift|TestOutputsReject|TestBuildOutputsReject)" \
+  -count=1'
+bash -lc 'source .envrc && bash scripts/capability_status_gate_test.sh && bash scripts/release_gate_test.sh && make check-capability-drift'
+```
+
+Expected: PASS. The generated check remains read-only and covers registry/docs/README drift plus exact owner-approved ADR mapping. The workflow contracts prove the old status workflow is absent and CI never regenerates tracked artifacts.
+
+- [ ] **Step 4: Run the complete impact-scoped governance gate**
+
+Run: `bash -lc 'source .envrc && go test ./pkg/capability ./pkg/config ./pkg/plugin -run "^(TestLoadedManifest|TestManifest|TestParse|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry|TestNew)" -count=1 && APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run "^(TestCapabilityManifestSelection|TestCapabilityManifestSelectionRequiresCanonicalManifest|TestManifestCorpusValidates|TestCorpusScope|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget|TestSourceCoverageUsesCorpusCommit)$" -count=1 && make test-capability-status && make build'`
 
 Expected: PASS. A stale, flaky, missing, or deferred required claim excludes its plugin from qualification; an explicitly inapplicable dimension remains accounted for without blocking it.
 
-- [ ] **Step 4: Check formatting and unowned changes**
+- [ ] **Step 5: Check formatting and unowned changes**
 
 Run: `git diff --check && git status --short`
 
-Expected: only governance-plan paths are changed; the four pre-existing untracked review documents remain unmodified and uncommitted.
+Expected: no tracked diff; the four pre-existing untracked review documents remain unmodified and uncommitted. Clean the build output with `source .envrc && make clean` before the final status check.
 
-- [ ] **Step 5: Record milestone completion**
+- [ ] **Step 6: Record milestone completion only when needed**
 
 ```bash
 git add pkg/capability pkg/config pkg/plugin cmd/capability-gen t/plugin \

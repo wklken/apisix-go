@@ -484,8 +484,8 @@ git commit -m "feat(config): preserve static configuration presence"
 - Test: `pkg/config/extension_env_test.go`
 
 **Interfaces:**
-- Consumes: `valueNode`, `parseDocument`, `LoadRequest`, and `Provenance`.
-- Produces: `mergeNodes(lower, upper *valueNode) *valueNode`, `flattenProvenance(*valueNode) Provenance`, `nodeFromAny(any, FieldSource) (*valueNode, error)`, `mustNodeFromAny(any, FieldSource) *valueNode`, `applyAPISIXGO(*valueNode, map[string]string) error`, and `applyCLIOverrides(*valueNode, map[string]any) error`.
+- Consumes: `valueNode`, `cloneNode`, `Config`, and `Provenance`; `LoadEffective` in Task 4 passes the two override maps from `LoadRequest`, but no Task 3 function consumes `LoadRequest` directly.
+- Produces: `mergeNodes(lower, upper *valueNode) *valueNode`, `flattenProvenance(*valueNode) Provenance`, `nodeFromAny(any, FieldSource) (*valueNode, error)`, `mustNodeFromAny(any, FieldSource) *valueNode`, `ValidateStaticOverridePath(string) error`, `applyAPISIXGO(*valueNode, map[string]string) error`, and `applyCLIOverrides(*valueNode, map[string]any) error`.
 
 - [ ] **Step 1: Write the precedence, recursive-map, sequence, and null tests**
 
@@ -552,15 +552,62 @@ func TestAPISIXGORejectsUnknownAndCollidingPaths(t *testing.T) {
 }
 ```
 
+Extend these abbreviated examples with table-driven coverage for all merge
+kind pairs, empty mappings and sequences, sequence replacement, nil arguments,
+deep non-aliasing in both directions, and `pathBase` retention. Flattened
+provenance records every non-root node: mapping containers (including empty
+mappings), sequence containers (including empty sequences), sequence element
+containers such as `apisix.node_listen[0]`, scalar leaves, and explicit nulls.
+When two mappings merge recursively, the resulting mapping container takes the
+upper mapping's `source` and `pathBase`; each child still records the source of
+the layer that actually won that child.
+
+Canonical provenance paths use dotted safe mapping segments and decimal
+sequence brackets. A safe segment matches `[A-Za-z_][A-Za-z0-9_-]*`. Encode any
+other mapping key as a bracketed JSON string, for example
+`plugin_attr["tenant.a"].token`, so a literal dot or bracket in a dynamic key
+cannot collide with a nested field path. Root unsafe keys begin with the same
+bracket form. Task 5's schema matcher must consume this exact syntax.
+
+Test `nodeFromAny` with every signed/unsigned integer width including
+`math.MaxUint64`, named primitive types, `json.Number`, string-keyed named maps,
+slices, arrays, nil, and typed-nil maps/slices. Named primitives are accepted by
+underlying kind; typed nil becomes explicit null. Validate `json.Number`
+immediately as a finite JSON number. Reject floats, pointers, structs, malformed
+numbers, and non-string-key maps without printing their values. Verify that
+`mustNodeFromAny` panics only for an invalid compile-time builtin.
+
+Both overlay functions are failure-atomic: sort and completely validate/convert
+all selected inputs into detached nodes before changing `root`. On any error,
+`root` and the caller-owned environment/CLI maps remain byte-for-byte and
+alias-for-alias unchanged. APISIXGO ignores names without the `APISIXGO_`
+prefix, rejects unknown prefixed names in sorted order, and never reads ambient
+environment. CLI paths are sorted before validation, reject empty or empty
+segments, and must be exact known static-schema leaves; compatibility-mode
+retention of unknown *file* fields does not permit unknown CLI paths.
+
+Add a reflected-type index-builder test seam so a synthetic struct can prove
+alias collision rejection, including collision with one of the four reserved
+runtime-path aliases. Test the exact four short reserved aliases and rejection
+of `APISIXGO_APISIX_GO_RUNTIME_PATHS_*`. Recognize
+`APISIXGO_DEPLOYMENT_PROFILE` and `deployment.profile` specially and return the
+same error required for file input:
+
+```text
+deployment.profile was removed; use compatibility_target, security_profile, and qualification_profile
+```
+
+They are removed tombstones, not valid schema entries.
+
 - [ ] **Step 3: Run the merge tests and confirm the functions are absent**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMergePresence|TestExtensionAndCLI|TestAPISIXGO)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMerge|TestFlattenProvenance|TestNodeFromAny|TestMustNodeFromAny|TestExtension|TestAPISIXGO|TestCLI|TestOverlay|TestSetPath)" -count=1'`
 
 Expected: FAIL with undefined merge and overlay functions.
 
 - [ ] **Step 4: Implement immutable merge and provenance flattening**
 
-`mergeNodes` must deep-clone the winning nodes so `LoadEffective` never aliases request-owned maps. Only two mapping nodes recurse; all other upper kinds replace the lower node. `flattenProvenance` emits leaf paths, sequence container paths, sequence indices such as `apisix.node_listen[0].port`, and explicit-null paths.
+`mergeNodes` must deep-clone the winning nodes so `LoadEffective` never aliases request-owned maps. Only two mapping nodes recurse; all other upper kinds replace the lower node. Empty upper mappings recurse and therefore do not erase lower children; empty upper sequences replace lower sequences. `nil` means an absent function argument, never explicit null. For recursive mappings, update the merged container metadata to the upper mapping's `source` and `pathBase` before merging children. `flattenProvenance` emits every non-root node under the canonical escaped-path contract above.
 
 ```go
 func mergeNodes(lower, upper *valueNode) *valueNode {
@@ -568,6 +615,8 @@ func mergeNodes(lower, upper *valueNode) *valueNode {
 	if upper == nil { return cloneNode(lower) }
 	if lower.kind != nodeMapping || upper.kind != nodeMapping { return cloneNode(upper) }
 	merged := cloneNode(lower)
+	merged.source = upper.source
+	merged.pathBase = upper.pathBase
 	for key, incoming := range upper.mapping {
 		merged.mapping[key] = mergeNodes(merged.mapping[key], incoming)
 	}
@@ -577,11 +626,39 @@ func mergeNodes(lower, upper *valueNode) *valueNode {
 
 - [ ] **Step 5: Implement the deterministic APISIXGO index and CLI paths**
 
-Walk `reflect.TypeFor[Config]()` through `mapstructure` tags. A leaf path `proxy.max_in_flight` maps to `APISIXGO_PROXY_MAX_IN_FLIGHT`. Add exactly four reserved schema paths which are intentionally not fields on `Config`: `apisix_go.runtime_paths.data_dir`, `.runtime_dir`, `.log_dir`, and `.temp_dir`. Their environment aliases are `APISIXGO_RUNTIME_PATHS_DATA_DIR`, `APISIXGO_RUNTIME_PATHS_RUNTIME_DIR`, `APISIXGO_RUNTIME_PATHS_LOG_DIR`, and `APISIXGO_RUNTIME_PATHS_TEMP_DIR`; do not generate `APISIXGO_APISIX_GO_*`. CLI keys use the complete `apisix_go.runtime_paths.*` path. Reject duplicate environment names during index construction. APISIXGO values remain string scalar nodes and are converted only by typed decode; an empty environment value is therefore explicit empty, not absence. CLI values are converted recursively without a JSON float round trip. Implement that conversion once as `nodeFromAny`; it accepts nil, bool, string, `json.Number`, all signed/unsigned integer widths, maps with string keys, and slices/arrays, and rejects floats and non-string map keys. `mustNodeFromAny` wraps it only for compile-time builtin literals and panics on programmer error; request data always uses the error-returning function.
+Walk `reflect.TypeFor[Config]()` through `mapstructure` tags. Recurse only into
+struct fields; pointers, maps, slices, arrays, and scalar fields are schema
+leaves. Skip unexported fields and `mapstructure:"-"`; use the field name only
+when the tag name before comma options is empty. A leaf path
+`proxy.max_in_flight` maps to `APISIXGO_PROXY_MAX_IN_FLIGHT`. Normalize both `.`
+and `-` to `_`, so `ext-plugin.cmd` maps to
+`APISIXGO_EXT_PLUGIN_CMD`; duplicate-alias rejection is mandatory because this
+normalization is lossy.
+
+Add exactly four reserved schema paths which are intentionally not fields on
+`Config`: `apisix_go.runtime_paths.data_dir`, `.runtime_dir`, `.log_dir`, and
+`.temp_dir`. Their environment aliases are
+`APISIXGO_RUNTIME_PATHS_DATA_DIR`, `APISIXGO_RUNTIME_PATHS_RUNTIME_DIR`,
+`APISIXGO_RUNTIME_PATHS_LOG_DIR`, and `APISIXGO_RUNTIME_PATHS_TEMP_DIR`; do not
+generate `APISIXGO_APISIX_GO_*`. CLI keys use the complete
+`apisix_go.runtime_paths.*` path. Build the reflected and reserved entries in one
+index and reject all path or environment-name collisions deterministically.
+Expose `ValidateStaticOverridePath` over that same immutable index; both
+`applyCLIOverrides` and Task 5's `--set` parser use it, so there is no duplicate
+schema source of truth.
+
+APISIXGO values remain string scalar nodes and are converted only by typed
+decode; an empty environment value is therefore explicit empty, not absence.
+CLI values are converted recursively without a JSON float round trip. Implement
+that conversion once as `nodeFromAny`; it accepts the exact types and semantics
+defined in the test contract above. `mustNodeFromAny` wraps it only for
+compile-time builtin literals and panics on programmer error; request data
+always uses the error-returning function.
 
 ```go
 func extensionEnvName(path string) string {
-	return "APISIXGO_" + strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
+	replacer := strings.NewReplacer(".", "_", "-", "_")
+	return "APISIXGO_" + strings.ToUpper(replacer.Replace(path))
 }
 
 func mustNodeFromAny(value any, source FieldSource) *valueNode {
@@ -591,7 +668,11 @@ func mustNodeFromAny(value any, source FieldSource) *valueNode {
 }
 
 func setPath(root *valueNode, path string, value *valueNode) error {
+	if root == nil || root.kind != nodeMapping { return fmt.Errorf("configuration root must be a mapping") }
 	segments := strings.Split(path, ".")
+	for _, segment := range segments {
+		if segment == "" { return fmt.Errorf("configuration path %q contains an empty segment", path) }
+	}
 	current := root
 	for _, segment := range segments[:len(segments)-1] {
 		next := current.mapping[segment]
@@ -606,7 +687,7 @@ func setPath(root *valueNode, path string, value *valueNode) error {
 
 - [ ] **Step 6: Run the layer tests**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMergePresence|TestExtensionAndCLI|TestAPISIXGO)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/config -run "^(TestMerge|TestFlattenProvenance|TestNodeFromAny|TestMustNodeFromAny|TestExtension|TestAPISIXGO|TestCLI|TestOverlay|TestSetPath)" -count=1'`
 
 Expected: PASS.
 
@@ -1116,7 +1197,7 @@ Expected: FAIL because the `config` subcommand is not registered.
 
 Define `newRootCommand() *cobra.Command`; `Execute` constructs one command, while tests construct a fresh command so flags and output do not leak. Put `--config/-c` and repeatable `--set` on persistent flags. Delete the historical `--viper` flag because Viper no longer owns semantics.
 
-Parse `--set` only as the first `=` split; reject missing path, missing `=`, duplicate paths, and a path not known to the static schema. The value remains a string for schema-aware decode. For example:
+Parse `--set` only as the first `=` split; reject missing path, missing `=`, duplicate paths, and a path not known to the static schema. Call `config.ValidateStaticOverridePath` before adding each result so command parsing and `LoadEffective` share Task 3's one schema index and the exact removed-`deployment.profile` tombstone. The value remains a string for schema-aware decode. For example:
 
 ```go
 func parseSetOverrides(values []string) (map[string]any, error) {
@@ -1125,6 +1206,7 @@ func parseSetOverrides(values []string) (map[string]any, error) {
 		path, value, ok := strings.Cut(raw, "=")
 		if !ok || path == "" { return nil, fmt.Errorf("--set must use path=value, got %q", raw) }
 		if _, exists := result[path]; exists { return nil, fmt.Errorf("--set path %q is repeated", path) }
+		if err := config.ValidateStaticOverridePath(path); err != nil { return nil, err }
 		result[path] = value
 	}
 	return result, nil
@@ -1176,7 +1258,7 @@ func environmentMap(entries []string) map[string]string {
 
 - [ ] **Step 5: Implement deterministic redacted rendering**
 
-`RenderEffectiveRedacted` returns indented JSON with five top-level keys in a struct: `config`, `paths`, `profiles`, `provenance`, and `ignored_fields`. Reflect over `Config` using `mapstructure` names and add the four reserved `apisix_go.runtime_paths.*` schema paths. The schema matcher must recognize mapping containers, sequences, and numeric sequence indices so known container/index provenance is not mislabeled as unknown. For `secret:"true"`, retain empty as empty and render any nonempty scalar/list as `[REDACTED]`; for `secret:"container"`, preserve first-level plugin names with redacted values. Sort provenance keys and ignored paths before materializing output structs. Unknown paths are provenance paths not accepted by that matcher and are listed without their values.
+`RenderEffectiveRedacted` returns indented JSON with five top-level keys in a struct: `config`, `paths`, `profiles`, `provenance`, and `ignored_fields`. Reflect over `Config` using `mapstructure` names and add the four reserved `apisix_go.runtime_paths.*` schema paths. The schema matcher must recognize mapping containers, sequences, numeric sequence indices, and Task 3's bracketed JSON-string encoding for unsafe dynamic mapping keys so known container/index provenance is not mislabeled as unknown. For `secret:"true"`, retain empty as empty and render any nonempty scalar/list as `[REDACTED]`; for `secret:"container"`, preserve first-level plugin names with redacted values. Sort provenance keys and ignored paths before materializing output structs. Unknown paths are provenance paths not accepted by that matcher and are listed without their values.
 
 ```go
 type effectiveDump struct {

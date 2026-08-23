@@ -1138,7 +1138,7 @@ In `docs/design.md`, retain the old lifecycle and route-schema text under a `His
 
 - [ ] **Step 5: Rewrite current operational documents to the new axes**
 
-Update `docs/configuration.md` and `docs/production-profile.md` to show the three exact YAML keys from Task 4. Explain that `security_profile: strict` does not imply qualification, and `qualification_profile: http-data-plane-v1` derives its plugin set from verified evidence. If the initial set is empty or blocked, link the generated blocked reason; do not preserve a hand-maintained six-plugin or evidence table. Their lifecycle/SIGHUP sections must distinguish the current pre-convergence implementation from the governing supervisor-generation target instead of presenting either as already delivered.
+Update `docs/configuration.md` and `docs/production-profile.md` to show the three exact YAML keys from Task 4. Explain that `security_profile: strict` does not imply qualification, and `qualification_profile: http-data-plane-v1` requires the effective plugin list to exactly equal the manifest `required_plugins` sequence, including order, before applying evidence qualification. If selection is blocked, link the generated reason; do not preserve a hand-maintained six-plugin or evidence table. State the Kafka boundary precisely: qualification does not disable the Kafka compatibility owner; strict permits plaintext Kafka, but configured Kafka TLS requires `tls.verify: true`, while compat preserves `verify: false`. Their lifecycle/SIGHUP sections must distinguish the current pre-convergence implementation from the governing supervisor-generation target instead of presenting either as already delivered.
 
 - [ ] **Step 6: Run documentation conflict and link checks**
 
@@ -1177,7 +1177,7 @@ Create `scripts/capability_status_gate_test.sh` by retaining the current parser 
 ```text
 workflow: .github/workflows/capability-status.yml
 name: Capability Status Contract
-pull_request: no path filter
+pull_request: no configuration (therefore no paths, paths-ignore, branches, or types filter)
 push master paths: Makefile, pkg/capability/**, pkg/config/profiles.go,
   pkg/plugin/registry_gen.go, cmd/capability-gen/**, docs/plugins.md,
   docs/architecture/**, t/plugin/*.yaml, t/plugin/corpus_scope.yaml,
@@ -1187,6 +1187,8 @@ push master paths: Makefile, pkg/capability/**, pkg/config/profiles.go,
 permissions: contents read
 steps: checkout, setup Go from go.mod, source .envrc and make check-capability-drift,
   source .envrc and make test-capability-status
+Make target contract: exact bodies for generate-capabilities, check-capability-drift,
+  and test-capability-status; no extra recipe can hide write mode or real integration
 forbidden: TestPluginIntegration, make test-integration, write-mode generation
 ```
 

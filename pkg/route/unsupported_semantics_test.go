@@ -244,11 +244,13 @@ func TestBuildReverseHandlerValidatesHTTPUpstreamTypes(t *testing.T) {
 	}
 }
 
-func TestBuildReverseHandlerRejectsKafkaInHTTPDataPlaneProfile(t *testing.T) {
+func TestUnsupportedUpstreamSchemeAcceptsKafkaAcrossProfileAxes(t *testing.T) {
 	previous := appconfig.GlobalConfig
 	t.Cleanup(func() { appconfig.GlobalConfig = previous })
 	appconfig.GlobalConfig = &appconfig.Config{
-		Deployment: appconfig.Deployment{Profile: appconfig.HTTPDataPlaneV1Profile},
+		CompatibilityTarget:  appconfig.CompatibilityAPISIX317,
+		SecurityProfile:      appconfig.SecurityStrict,
+		QualificationProfile: appconfig.QualificationHTTPDataPlaneV1,
 	}
 
 	builder := &Builder{}
@@ -257,17 +259,8 @@ func TestBuildReverseHandlerRejectsKafkaInHTTPDataPlaneProfile(t *testing.T) {
 		ID:       "profile-kafka-route",
 		Upstream: resource.Upstream{Scheme: "kafka", Type: "chash"},
 	}, resource.Service{})
-	if err == nil {
-		t.Fatal("buildReverseHandler() error = nil, want profile to reject kafka upstream")
-	}
-	for _, want := range []string{
-		appconfig.HTTPDataPlaneV1Profile,
-		"kafka",
-		"unsupported",
-	} {
-		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
-			t.Fatalf("buildReverseHandler() error = %q, want %q", err, want)
-		}
+	if err != nil {
+		t.Fatalf("buildReverseHandler() error = %v, want Kafka compatibility owner available across axes", err)
 	}
 }
 

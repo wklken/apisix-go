@@ -8,9 +8,12 @@ import (
 )
 
 type Config struct {
-	Debug       bool        `mapstructure:"debug"`
-	Apisix      Apisix      `mapstructure:"apisix"`
-	NginxConfig NginxConfig `mapstructure:"nginx_config"`
+	CompatibilityTarget  CompatibilityTarget  `mapstructure:"compatibility_target"`
+	SecurityProfile      SecurityProfile      `mapstructure:"security_profile"`
+	QualificationProfile QualificationProfile `mapstructure:"qualification_profile"`
+	Debug                bool                 `mapstructure:"debug"`
+	Apisix               Apisix               `mapstructure:"apisix"`
+	NginxConfig          NginxConfig          `mapstructure:"nginx_config"`
 
 	// NGINX-only directives are retained for config compatibility; the Go server
 	// applies the HTTP timeout settings that have direct net/http equivalents.
@@ -29,7 +32,13 @@ type Config struct {
 	Deployment Deployment                `mapstructure:"deployment"`
 }
 
-const HTTPDataPlaneV1Profile = "http-data-plane-v1"
+func (c *Config) Profiles() ProfileSelection {
+	return ProfileSelection{
+		Compatibility: c.CompatibilityTarget,
+		Security:      c.SecurityProfile,
+		Qualification: c.QualificationProfile,
+	}
+}
 
 // section: apisix
 
@@ -296,7 +305,6 @@ type PluginAttr map[string]any
 
 type Deployment struct {
 	// TODO: add validation here
-	Profile          string                `mapstructure:"profile"`
 	Role             string                `mapstructure:"role"`
 	RoleTraditional  RoleTraditionalConfig `mapstructure:"role_traditional"`
 	RoleDataPlane    RoleConfig            `mapstructure:"role_data_plane"`

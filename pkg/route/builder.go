@@ -1020,7 +1020,7 @@ func (b *Builder) buildGlobalNotFoundHandler(
 	}
 	routeContext := pluginRouteContext{publicAPIRegistry: registry}
 	globalRules = deduplicateGlobalRules(globalRules)
-	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, ""); err != nil {
+	if err := validateSecurityGlobalRulePolicy(configuredProfileSelection(), globalRules, ""); err != nil {
 		return nil, err
 	}
 	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
@@ -1135,6 +1135,7 @@ func (b *Builder) buildHandlerWithServiceStrict(
 	service resource.Service,
 	registries ...*public_api.Registry,
 ) (http.Handler, error) {
+	selection := configuredProfileSelection()
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
@@ -1171,7 +1172,8 @@ func (b *Builder) buildHandlerWithServiceStrict(
 		service.Plugins,
 		r.ServiceID,
 	)
-	if err := validateHTTPDataPlaneMaterializedPluginSources(
+	if err := validateSecurityMaterializedPluginSources(
+		selection,
 		append(localSources, serviceSources...),
 		r.ID,
 	); err != nil {
@@ -1216,7 +1218,7 @@ func (b *Builder) buildHandlerWithServiceStrict(
 		return nil, err
 	}
 	globalRules = deduplicateGlobalRules(globalRules)
-	if err := validateHTTPDataPlaneGlobalRulePolicy(globalRules, r.ID); err != nil {
+	if err := validateSecurityGlobalRulePolicy(selection, globalRules, r.ID); err != nil {
 		return nil, err
 	}
 	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
@@ -1241,7 +1243,8 @@ func (b *Builder) buildHandlerWithServiceStrict(
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHTTPDataPlaneUpstreamPolicy(
+	if err := validateSecurityUpstreamPolicy(
+		selection,
 		resolvedUpstream,
 		fmt.Sprintf("%s %q for route %q", upstreamProvenance.Kind, upstreamProvenance.ID, r.ID),
 	); err != nil {
@@ -3681,15 +3684,6 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 }
 
 func validateHTTPUpstreamType(upstream resource.Upstream) error {
-	if appconfig.GlobalConfig != nil &&
-		appconfig.GlobalConfig.Deployment.Profile == appconfig.HTTPDataPlaneV1Profile &&
-		strings.EqualFold(upstream.Scheme, "kafka") {
-		return fmt.Errorf(
-			"unsupported upstream scheme %q for %s profile: Kafka is outside the HTTP reverse-proxy contract",
-			upstream.Scheme,
-			appconfig.HTTPDataPlaneV1Profile,
-		)
-	}
 	switch strings.ToLower(upstream.Scheme) {
 	case "", "http", "https", "grpc", "grpcs":
 		if upstream.Type != "" && upstream.Type != "roundrobin" {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
@@ -49,7 +50,11 @@ func loadConfigFiles(defaultPath, overridePath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeConfig(cfg); err != nil {
+	manifest, err := capability.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load capability manifest: %w", err)
+	}
+	if err := validateRuntimeConfig(cfg, manifest); err != nil {
 		return nil, err
 	}
 
@@ -68,6 +73,8 @@ func sameConfigPath(first, second string) bool {
 }
 
 func load(v *viper.Viper) (*Config, error) {
+	v.SetDefault("compatibility_target", CompatibilityAPISIX317)
+	v.SetDefault("security_profile", SecurityCompat)
 	v.SetDefault("nginx_config.http.client_max_body_size", defaultClientMaxBodySize)
 	v.SetDefault("nginx_config.http.client_body_timeout", defaultClientBodyTimeout)
 	rawPlugins := v.Get("plugins")
@@ -109,23 +116,27 @@ func load(v *viper.Viper) (*Config, error) {
 	return &cfg, nil
 }
 
-func validateRuntimeConfig(cfg *Config) error {
+func validateRuntimeConfig(cfg *Config, manifest *capability.Manifest) error {
+	selection := cfg.Profiles()
+	if err := selection.Validate(manifest); err != nil {
+		return err
+	}
 	if len(cfg.Plugins) == 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf("plugins must contain at least one HTTP plugin"))
+		return profileAwareRuntimeError(selection, fmt.Errorf("plugins must contain at least one HTTP plugin"))
 	}
 	if len(cfg.Apisix.NodeListen) == 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf("apisix.node_listen must contain at least one listener"))
+		return profileAwareRuntimeError(selection, fmt.Errorf("apisix.node_listen must contain at least one listener"))
 	}
 	for index, listener := range cfg.Apisix.NodeListen {
 		if listener.Port < 1 || listener.Port > 65535 {
 			return profileAwareRuntimeError(
-				cfg,
+				selection,
 				fmt.Errorf("apisix.node_listen[%d].port must be between 1 and 65535, got %d", index, listener.Port),
 			)
 		}
 		if listener.Ip != "" && net.ParseIP(listener.Ip) == nil {
 			return profileAwareRuntimeError(
-				cfg,
+				selection,
 				fmt.Errorf("apisix.node_listen[%d].ip must be a valid IP address, got %q", index, listener.Ip),
 			)
 		}
@@ -140,7 +151,10 @@ func validateRuntimeConfig(cfg *Config) error {
 		{field: "proxy.max_in_flight", value: cfg.Proxy.MaxInFlight},
 	} {
 		if limit.value <= 0 {
-			return profileAwareRuntimeError(cfg, fmt.Errorf("%s must be positive, got %d", limit.field, limit.value))
+			return profileAwareRuntimeError(
+				selection,
+				fmt.Errorf("%s must be positive, got %d", limit.field, limit.value),
+			)
 		}
 	}
 	for index, address := range cfg.Apisix.TrustedAddresses {
@@ -153,7 +167,7 @@ func validateRuntimeConfig(cfg *Config) error {
 		}
 		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
 			return profileAwareRuntimeError(
-				cfg,
+				selection,
 				fmt.Errorf(
 					"apisix.trusted_addresses[%d] must be a valid CIDR or IP address",
 					index,
@@ -162,43 +176,43 @@ func validateRuntimeConfig(cfg *Config) error {
 		}
 	}
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf(
+		return profileAwareRuntimeError(selection, fmt.Errorf(
 			"nginx_config.http.client_max_body_size must be positive, got %d",
 			cfg.NginxConfig.HTTP.ClientMaxBodySize,
 		))
 	}
 	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
-		return profileAwareRuntimeError(cfg, fmt.Errorf(
+		return profileAwareRuntimeError(selection, fmt.Errorf(
 			"nginx_config.http.client_body_timeout must be positive, got %s",
 			cfg.NginxConfig.HTTP.ClientBodyTimeout,
 		))
 	}
 	if err := validateProcessAccessLogs(cfg); err != nil {
-		return profileAwareRuntimeError(cfg, err)
+		return profileAwareRuntimeError(selection, err)
 	}
 
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
-		return profileAwareRuntimeError(cfg, err)
+		return profileAwareRuntimeError(selection, err)
 	}
 	if provider == "etcd" {
 		if len(cfg.Deployment.Etcd.Host) == 0 {
 			return profileAwareRuntimeError(
-				cfg,
+				selection,
 				fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider"),
 			)
 		}
 		for index, endpoint := range cfg.Deployment.Etcd.Host {
 			if strings.TrimSpace(endpoint) == "" {
 				return profileAwareRuntimeError(
-					cfg,
+					selection,
 					fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index),
 				)
 			}
 		}
 		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
 			return profileAwareRuntimeError(
-				cfg,
+				selection,
 				fmt.Errorf("deployment.etcd.prefix must not be empty for the etcd provider"),
 			)
 		}
@@ -207,19 +221,18 @@ func validateRuntimeConfig(cfg *Config) error {
 		return err
 	}
 
-	switch cfg.Deployment.Profile {
-	case "":
-		return nil
-	case HTTPDataPlaneV1Profile:
-		return validateHTTPDataPlaneV1Profile(cfg)
-	default:
-		return fmt.Errorf("deployment.profile must be empty or %s", HTTPDataPlaneV1Profile)
+	if err := validateSecurityProfile(cfg, selection); err != nil {
+		return err
 	}
+	return validateQualificationProfile(cfg, manifest, selection)
 }
 
-func profileAwareRuntimeError(cfg *Config, err error) error {
-	if cfg != nil && cfg.Deployment.Profile == HTTPDataPlaneV1Profile {
-		return fmt.Errorf("%s: %w", HTTPDataPlaneV1Profile, err)
+func profileAwareRuntimeError(selection ProfileSelection, err error) error {
+	if selection.Security == SecurityStrict {
+		return fmt.Errorf("%s: %w", SecurityStrict, err)
+	}
+	if selection.Qualification != QualificationNone {
+		return fmt.Errorf("%s: %w", selection.Qualification, err)
 	}
 	return err
 }
@@ -236,77 +249,52 @@ func validateUnsupportedRuntimeConfig(cfg *Config) error {
 		{field: "xrpc.protocols", isActive: len(cfg.XRPC.Protocols) > 0},
 	} {
 		if unsupported.isActive {
-			return fmt.Errorf(
-				"%s is unsupported; %s does not permit this runtime feature",
-				unsupported.field,
-				HTTPDataPlaneV1Profile,
-			)
+			return fmt.Errorf("%s is unsupported by the Go data plane", unsupported.field)
 		}
 	}
 	for index, listener := range cfg.Apisix.Ssl.Listen {
 		if listener.EnableQuic {
 			return fmt.Errorf(
-				"apisix.ssl.listen[%d].enable_quic is unsupported; %s does not permit this runtime feature",
+				"apisix.ssl.listen[%d].enable_quic is unsupported by the Go data plane",
 				index,
-				HTTPDataPlaneV1Profile,
 			)
 		}
 		if listener.EnableHttp3 {
 			return fmt.Errorf(
-				"apisix.ssl.listen[%d].enable_http3 is unsupported; %s does not permit this runtime feature",
+				"apisix.ssl.listen[%d].enable_http3 is unsupported by the Go data plane",
 				index,
-				HTTPDataPlaneV1Profile,
 			)
 		}
 	}
 	return nil
 }
 
-func validateHTTPDataPlaneV1Profile(cfg *Config) error {
-	const profile = HTTPDataPlaneV1Profile
+func validateSecurityProfile(cfg *Config, selection ProfileSelection) error {
+	if selection.Security != SecurityStrict {
+		return nil
+	}
+	profile := string(selection.Security)
 	if cfg.Debug {
 		return profileFieldError(profile, "debug", "must be false")
 	}
-	if cfg.Deployment.Role != "data_plane" {
-		return profileFieldError(profile, "deployment.role", "must be data_plane")
-	}
 	provider, err := EffectiveConfigProvider(cfg)
-	if err != nil || provider != "etcd" {
-		return profileFieldError(profile, "deployment.role_data_plane.config_provider", "must resolve to etcd")
+	if err != nil {
+		return profileFieldError(profile, "deployment", "must select a supported role and config provider")
 	}
-	for index, endpoint := range cfg.Deployment.Etcd.Host {
-		parsed, parseErr := url.Parse(endpoint)
-		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return profileFieldError(
-				profile,
-				fmt.Sprintf("deployment.etcd.host[%d]", index),
-				"must use an HTTPS endpoint",
-			)
+	if provider == "etcd" {
+		for index, endpoint := range cfg.Deployment.Etcd.Host {
+			parsed, parseErr := url.Parse(endpoint)
+			if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
+				return profileFieldError(
+					profile,
+					fmt.Sprintf("deployment.etcd.host[%d]", index),
+					"must use an HTTPS endpoint",
+				)
+			}
 		}
-	}
-	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
-		return profileFieldError(profile, "deployment.etcd.tls.verify", "must be explicitly true")
-	}
-	if cfg.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
-		return profileFieldError(profile, "nginx_config.http.client_max_body_size", "must be positive")
-	}
-	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
-		return profileFieldError(profile, "nginx_config.http.client_body_timeout", "must be positive")
-	}
-	if cfg.Apisix.EnableAdmin {
-		return profileFieldError(profile, "apisix.enable_admin", "must be false")
-	}
-	if cfg.Apisix.ProxyMode != "http" {
-		return profileFieldError(profile, "apisix.proxy_mode", "must be http")
-	}
-	if len(cfg.Apisix.StreamProxy.Tcp) > 0 {
-		return profileFieldError(profile, "apisix.stream_proxy.tcp", "must be empty")
-	}
-	if len(cfg.Apisix.StreamProxy.Udp) > 0 {
-		return profileFieldError(profile, "apisix.stream_proxy.udp", "must be empty")
-	}
-	if len(cfg.StreamPlugins) > 0 {
-		return profileFieldError(profile, "stream_plugins", "must be empty")
+		if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
+			return profileFieldError(profile, "deployment.etcd.tls.verify", "must be explicitly true")
+		}
 	}
 	if len(cfg.Apisix.TrustedAddresses) == 0 {
 		return profileFieldError(profile, "apisix.trusted_addresses", "must contain at least one CIDR")
@@ -320,9 +308,49 @@ func validateHTTPDataPlaneV1Profile(cfg *Config) error {
 			)
 		}
 	}
-	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
-	if !slices.Equal(cfg.Plugins, wantPlugins) {
-		return profileFieldError(profile, "plugins", "must use the exact HTTP plugin allowlist")
+	return nil
+}
+
+func validateQualificationProfile(
+	cfg *Config,
+	manifest *capability.Manifest,
+	selection ProfileSelection,
+) error {
+	if selection.Qualification == QualificationNone {
+		return nil
+	}
+	profile := string(selection.Qualification)
+	qualification, ok := manifest.Qualification(profile)
+	if !ok {
+		return profileFieldError(profile, "qualification_profile", "is not defined by the capability manifest")
+	}
+	if !slices.Equal(cfg.Plugins, qualification.RequiredPlugins) {
+		return profileFieldError(profile, "plugins", "must equal the manifest qualification required_plugins set")
+	}
+	if !slices.Equal(qualification.RequiredPlugins, manifest.QualifiedPlugins(profile)) {
+		return profileFieldError(profile, "evidence", "does not satisfy every required evidence claim")
+	}
+	if selection.Qualification != QualificationHTTPDataPlaneV1 {
+		return nil
+	}
+	if cfg.Deployment.Role != "data_plane" {
+		return profileFieldError(profile, "deployment.role", "must be data_plane")
+	}
+	provider, err := EffectiveConfigProvider(cfg)
+	if err != nil || provider != "etcd" {
+		return profileFieldError(profile, "deployment.role_data_plane.config_provider", "must resolve to etcd")
+	}
+	if cfg.Apisix.ProxyMode != "http" {
+		return profileFieldError(profile, "apisix.proxy_mode", "must be http")
+	}
+	if len(cfg.Apisix.StreamProxy.Tcp) > 0 {
+		return profileFieldError(profile, "apisix.stream_proxy.tcp", "must be empty")
+	}
+	if len(cfg.Apisix.StreamProxy.Udp) > 0 {
+		return profileFieldError(profile, "apisix.stream_proxy.udp", "must be empty")
+	}
+	if len(cfg.StreamPlugins) > 0 {
+		return profileFieldError(profile, "stream_plugins", "must be empty")
 	}
 	return nil
 }

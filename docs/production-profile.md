@@ -11,11 +11,15 @@ evidence.
 
 ## Selection
 
-Set the profile in the merged runtime configuration:
+Select the compatibility target, security policy, and qualification contract
+independently in the merged runtime configuration:
 
 ```yaml
+compatibility_target: apisix-3.17
+security_profile: strict
+qualification_profile: http-data-plane-v1
+
 deployment:
-  profile: http-data-plane-v1
   role: data_plane
   role_data_plane:
     config_provider: etcd
@@ -27,23 +31,31 @@ deployment:
       verify: true
 ```
 
-The only accepted values are the empty compatibility value and
-`http-data-plane-v1`. An unknown value fails startup. The empty value does not
-claim this candidate contract; explicit activation of unsupported
-runtime features still fails closed in every mode.
+`compatibility_target` currently accepts only `apisix-3.17`.
+`security_profile` accepts `compat` or `strict`; `strict` enables the transport,
+credential, and trusted-address requirements below without selecting a
+qualification claim. `qualification_profile` accepts the empty value or
+`http-data-plane-v1`; the empty value makes no qualification claim. Unknown
+axis values fail startup, and explicitly activated unsupported runtime features
+still fail closed in every selection.
 
 ## Exact profile requirements
 
-The merged configuration must satisfy all of the following:
+The checked-in production reference selects both `strict` security and
+`http-data-plane-v1` qualification. Its merged configuration must satisfy all
+of the following:
 
-- `debug: false`.
-- `deployment.role: data_plane` and the effective provider is `etcd`.
+- Under `strict`, `debug: false`.
+- Under `http-data-plane-v1`, `deployment.role: data_plane` and the effective
+  provider is `etcd`.
 - Every `deployment.etcd.host` endpoint uses the `https://` scheme and
-  `deployment.etcd.tls.verify` is explicitly `true`.
-- `apisix.proxy_mode: http`; `apisix.stream_proxy.tcp` and
+  `deployment.etcd.tls.verify` is explicitly `true` under `strict` when etcd is
+  the effective provider.
+- Under `http-data-plane-v1`, `apisix.proxy_mode: http`; `apisix.stream_proxy.tcp` and
   `apisix.stream_proxy.udp` are empty; `stream_plugins` is empty.
 - `apisix.enable_admin: false`.
-- `apisix.trusted_addresses` contains at least one syntactically valid CIDR.
+- Under `strict`, `apisix.trusted_addresses` contains at least one syntactically
+  valid CIDR.
 - `nginx_config.http.client_max_body_size` is positive and
   `nginx_config.http.client_body_timeout` is mandatory and positive. The checked-in
   `conf/config-production.yaml` value for `client_body_timeout` is 60 seconds;
@@ -82,9 +94,10 @@ The merged configuration must satisfy all of the following:
   `metric_prefix: apisix_`, this is
   `apisix_http_metric_series_overflow_total{metric}`. These series are not
   reset during route reload.
-- Kafka PubSub and upstreams with `scheme: kafka` are excluded from this
-  profile and fail route compilation; Kafka remains available only in the
-  empty compatibility profile.
+- Kafka PubSub and upstreams with `scheme: kafka` are outside the HTTP
+  qualification contract and carry no `http-data-plane-v1` evidence claim.
+  The APISIX 3.17 compatibility owner remains available regardless of the
+  independently selected security or qualification axis.
 
 The checked-in `conf/config-production.yaml` is the reference shape. It leaves
 the etcd endpoint empty so an operator must supply a real endpoint through an
@@ -145,11 +158,11 @@ Explicit activation of these unsupported features fails startup:
 
 Route and upstream discovery fields are retained by the resource decoder for
 compatibility, but HTTP and stream compilation rejects discovery types or
-service references that require an unsupported discovery runtime. The profile
-also excludes general stream-plugin chaining, stream metrics, Lua/OpenResty
-runtime behavior, Kafka PubSub/upstream `scheme: kafka`, external plugin
-runners, and process access-log claims. The Kafka owner remains a supported
-compatibility-mode subsystem outside this candidate profile.
+service references that require an unsupported discovery runtime. The
+qualification contract also excludes general stream-plugin chaining, stream
+metrics, Lua/OpenResty runtime behavior, Kafka PubSub/upstream `scheme: kafka`,
+external plugin runners, and process access-log claims. Exclusion from
+qualification does not disable the Kafka compatibility owner.
 
 The bounded observability contract is strict: Zipkin is v2-only. OTel rejects
 `set_ngx_var: true` and any non-zero `inactive_timeout`; collector
@@ -187,7 +200,7 @@ of generation shutdown.
 
 ## Candidate authentication and TLS admission
 
-When `deployment.profile` is `http-data-plane-v1`, route compilation
+When `security_profile` is `strict`, route compilation
 quarantines a route with unsafe effective configuration before constructing
 its handler. The policy
 checks route/plugin-config/service winners and global rules; shadowed entries
@@ -203,9 +216,10 @@ generation-wide and fail-closed.
 - After inline, ID, or service upstream resolution, HTTPS and gRPCS upstreams
   must set `tls.verify: true`; omitted or false is rejected in this profile.
 
-The empty compatibility profile retains APISIX-compatible authentication and
+`security_profile: compat` retains APISIX-compatible authentication and
 upstream-TLS defaults, including omitted or false `hide_credentials` and
-`tls.verify`; this candidate policy does not change compatibility mode.
+`tls.verify`; selecting `http-data-plane-v1` alone does not change those
+security defaults.
 
 Route compilation also quarantines an individual route configured with
 `remote_addr`, non-empty
@@ -236,3 +250,17 @@ workflow paths.
 The final workflow must retain the protected `production-release` reviewers and
 wait timer; the current environment's protected-branch-only tag policy must be
 updated by an operator to permit the intended `v*` tag before publication.
+
+The current capability manifest intentionally prevents selecting
+`qualification_profile: http-data-plane-v1`: none of its six required plugins
+satisfies every required evidence claim. Startup fails closed until the
+manifest records all of the following gaps as passing evidence:
+
+| Required plugin | Current non-passing required evidence |
+| --- | --- |
+| `basic-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
+| `cors` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
+| `jwt-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
+| `key-auth` | `converted_upstream=stale`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
+| `prometheus` | `converted_upstream=deferred`; `differential`, `failure`, `real_dependency`, and `recovery` missing |
+| `request-id` | `converted_upstream=stale`; `differential` and `failure` missing |

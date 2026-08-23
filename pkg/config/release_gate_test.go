@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 const validRuntimeConfig = `
@@ -69,6 +68,12 @@ deployment:
 	}
 	if cfg.Deployment.Etcd.Prefix != "/custom" || len(cfg.Deployment.Etcd.Host) != 1 {
 		t.Fatalf("etcd merge = %#v, want retained host and overridden prefix", cfg.Deployment.Etcd)
+	}
+	if got, want := cfg.Profiles(), (ProfileSelection{
+		Compatibility: CompatibilityAPISIX317,
+		Security:      SecurityCompat,
+	}); got != want {
+		t.Fatalf("default profiles = %#v, want %#v", got, want)
 	}
 }
 
@@ -289,6 +294,7 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	previous := GlobalConfig
 	t.Cleanup(func() { GlobalConfig = previous })
 	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "")
+	t.Setenv("APISIXGO_QUALIFICATION_PROFILE", "")
 
 	defaultPath, productionPath := repositoryConfigPaths(t)
 	_, err := loadConfigFiles(defaultPath, productionPath)
@@ -297,80 +303,19 @@ func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
 	}
 }
 
-func TestProductionConfigFilePassesReleaseGate(t *testing.T) {
+func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
 	previous := GlobalConfig
 	t.Cleanup(func() { GlobalConfig = previous })
 	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "https://etcd.example:2379")
 
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	cfg, err := loadConfigFiles(defaultPath, productionPath)
-	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+	_, err := loadConfigFiles(defaultPath, productionPath)
+	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") ||
+		!strings.Contains(err.Error(), "unqualified required plugins") {
+		t.Fatalf("loadConfigFiles() error = %v, want incomplete qualification evidence rejection", err)
 	}
-
-	if cfg.Debug {
-		t.Fatal("production config debug = true, want false")
-	}
-	if got, want := cfg.Apisix.ProxyMode, "http"; got != want {
-		t.Fatalf("production proxy mode = %q, want %q", got, want)
-	}
-	if len(cfg.Apisix.StreamProxy.Tcp) != 0 || len(cfg.Apisix.StreamProxy.Udp) != 0 {
-		t.Fatalf(
-			"production stream listeners = tcp:%#v udp:%#v, want none",
-			cfg.Apisix.StreamProxy.Tcp,
-			cfg.Apisix.StreamProxy.Udp,
-		)
-	}
-	wantPlugins := []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"}
-	if got, want := cfg.Plugins, wantPlugins; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production HTTP plugins = %#v, want %#v", got, want)
-	}
-	if len(cfg.StreamPlugins) != 0 {
-		t.Fatalf("production stream plugins = %#v, want none", cfg.StreamPlugins)
-	}
-	if got, want := cfg.Deployment.Role, "data_plane"; got != want {
-		t.Fatalf("production deployment role = %q, want %q", got, want)
-	}
-	if got, want := cfg.Deployment.RoleDataPlane.ConfigProvider, "etcd"; got != want {
-		t.Fatalf("production data-plane provider = %q, want %q", got, want)
-	}
-	if got, want := cfg.Deployment.Etcd.Host, []string{"https://etcd.example:2379"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production etcd hosts = %#v, want %#v", got, want)
-	}
-	if got, want := cfg.Deployment.Etcd.Prefix, "/apisix"; got != want {
-		t.Fatalf("production etcd prefix = %q, want %q", got, want)
-	}
-	if cfg.Deployment.Etcd.TLS.Verify == nil || !*cfg.Deployment.Etcd.TLS.Verify {
-		t.Fatal("production etcd TLS verification is not explicitly enabled")
-	}
-	if got, want := cfg.Apisix.TrustedAddresses, []string{"127.0.0.1/32", "::1/128"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("production trusted addresses = %#v, want %#v", got, want)
-	}
-	if len(cfg.Deployment.Admin.AdminKey) != 0 {
-		t.Fatalf("production admin keys = %#v, want none", cfg.Deployment.Admin.AdminKey)
-	}
-	if cfg.Apisix.DataEncryption.EnableEncryptFields || len(cfg.Apisix.DataEncryption.Keyring) != 0 {
-		t.Fatalf("production data encryption = %#v, want disabled with empty keyring", cfg.Apisix.DataEncryption)
-	}
-	if got, want := cfg.Deployment.Profile, HTTPDataPlaneV1Profile; got != want {
-		t.Fatalf("production deployment profile = %q, want %q", got, want)
-	}
-	if cfg.Apisix.EnableAdmin {
-		t.Fatal("production admin API is enabled, want explicit disablement")
-	}
-	if !cfg.Apisix.Ssl.Enable || len(cfg.Apisix.Ssl.Listen) != 1 {
-		t.Fatalf("production SSL state = %#v, want one enabled HTTP-only listener", cfg.Apisix.Ssl)
-	}
-	for index, listener := range cfg.Apisix.Ssl.Listen {
-		if listener.EnableQuic || listener.EnableHttp3 {
-			t.Fatalf("production SSL listener %d enables QUIC/HTTP3: %#v", index, listener)
-		}
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
-		t.Fatalf("production client max body size = %d, want %d", got, want)
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
-		t.Fatalf("production client body timeout = %s, want %s", got, want)
+	if GlobalConfig != previous {
+		t.Fatal("GlobalConfig changed before qualification validation completed")
 	}
 }
 
@@ -388,9 +333,9 @@ func TestDefaultConfigDisablesAdmin(t *testing.T) {
 	}
 }
 
-func TestProductionProfileAcceptsValidConfig(t *testing.T) {
-	if err := validateRuntimeConfig(validHTTPDataPlaneV1Config()); err != nil {
-		t.Fatalf("validateRuntimeConfig() error = %v, want valid %s profile", err, HTTPDataPlaneV1Profile)
+func TestHTTPDataPlaneQualificationAcceptsValidConfig(t *testing.T) {
+	if err := validateRuntimeConfig(validProfileSelectionConfig(), qualifiedProfileTestManifest(t)); err != nil {
+		t.Fatalf("validateRuntimeConfig() error = %v, want valid HTTP qualification", err)
 	}
 }
 
@@ -451,28 +396,43 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 		},
 	}
 
-	for _, profile := range []struct {
+	for _, selection := range []struct {
 		name  string
-		value string
+		value ProfileSelection
 	}{
-		{name: "compatibility", value: ""},
-		{name: "http-data-plane-v1", value: HTTPDataPlaneV1Profile},
+		{
+			name: "compatibility",
+			value: ProfileSelection{
+				Compatibility: CompatibilityAPISIX317,
+				Security:      SecurityCompat,
+			},
+		},
+		{
+			name: "strict HTTP qualification",
+			value: ProfileSelection{
+				Compatibility: CompatibilityAPISIX317,
+				Security:      SecurityStrict,
+				Qualification: QualificationHTTPDataPlaneV1,
+			},
+		},
 	} {
 		for _, test := range tests {
-			t.Run(profile.name+"/"+test.name, func(t *testing.T) {
-				cfg := validHTTPDataPlaneV1Config()
-				cfg.Deployment.Profile = profile.value
+			t.Run(selection.name+"/"+test.name, func(t *testing.T) {
+				cfg := validProfileSelectionConfig()
+				cfg.CompatibilityTarget = selection.value.Compatibility
+				cfg.SecurityProfile = selection.value.Security
+				cfg.QualificationProfile = selection.value.Qualification
 				test.mutate(cfg)
 
-				err := validateRuntimeConfig(cfg)
+				err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
 				if err == nil {
 					t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
 				}
 				if !strings.Contains(err.Error(), test.field) {
 					t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 				}
-				if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
-					t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+				if !strings.Contains(err.Error(), "Go data plane") {
+					t.Fatalf("validateRuntimeConfig() error = %q, want global unsupported-runtime policy", err)
 				}
 				if strings.Contains(err.Error(), "logger.wasm") ||
 					strings.Contains(err.Error(), "/usr/local/bin/plugin") {
@@ -483,19 +443,12 @@ func TestUnsupportedRuntimeConfigRejectsEveryMode(t *testing.T) {
 	}
 }
 
-func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
+func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 	tests := []struct {
 		name   string
 		field  string
 		mutate func(*Config)
 	}{
-		{
-			name:  "unknown profile",
-			field: "deployment.profile",
-			mutate: func(cfg *Config) {
-				cfg.Deployment.Profile = "future-profile"
-			},
-		},
 		{
 			name:  "debug",
 			field: "debug",
@@ -508,6 +461,7 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 			field: "deployment.role",
 			mutate: func(cfg *Config) {
 				cfg.Deployment.Role = "control_plane"
+				cfg.Deployment.RoleControlPlane.ConfigProvider = "etcd"
 			},
 		},
 		{
@@ -683,56 +637,24 @@ func TestProductionProfileRejectsOneMutatedFieldPerRow(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := validHTTPDataPlaneV1Config()
+			cfg := validProfileSelectionConfig()
 			test.mutate(cfg)
 
-			err := validateRuntimeConfig(cfg)
+			err := validateRuntimeConfig(cfg, qualifiedProfileTestManifest(t))
 			if err == nil {
 				t.Fatalf("validateRuntimeConfig() error = nil, want %s rejection", test.field)
 			}
 			if !strings.Contains(err.Error(), test.field) {
 				t.Fatalf("validateRuntimeConfig() error = %q, want field %q", err, test.field)
 			}
-			if !strings.Contains(err.Error(), HTTPDataPlaneV1Profile) {
-				t.Fatalf("validateRuntimeConfig() error = %q, want profile name %q", err, HTTPDataPlaneV1Profile)
+			if !strings.Contains(err.Error(), string(SecurityStrict)) &&
+				!strings.Contains(err.Error(), string(QualificationHTTPDataPlaneV1)) {
+				t.Fatalf("validateRuntimeConfig() error = %q, want responsible security or qualification axis", err)
 			}
 			if strings.Contains(err.Error(), "/var/log/apisix") || strings.Contains(err.Error(), "$request") {
 				t.Fatalf("validateRuntimeConfig() error leaked config value: %q", err)
 			}
 		})
-	}
-}
-
-func validHTTPDataPlaneV1Config() *Config {
-	verify := true
-	return &Config{
-		Apisix: Apisix{
-			NodeListen:  []NodeListen{{Ip: "0.0.0.0", Port: 9080}},
-			ProxyMode:   "http",
-			EnableAdmin: false,
-			Ssl: Ssl{
-				Enable: true,
-				Listen: []Listen{{Ip: "0.0.0.0", Port: 9443, EnableHttp2: true}},
-			},
-			TrustedAddresses: []string{"10.0.0.0/8"},
-		},
-		NginxConfig: NginxConfig{HTTP: NginxHTTP{
-			ClientBodyTimeout: 60 * time.Second,
-			ClientMaxBodySize: 10 * 1024 * 1024,
-		}},
-		Plugins: []string{"request-id", "cors", "key-auth", "jwt-auth", "basic-auth", "prometheus"},
-		Proxy:   Proxy{MaxIdleConns: 1024, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 512, MaxInFlight: 1024},
-		Deployment: Deployment{
-			Profile:          HTTPDataPlaneV1Profile,
-			Role:             "data_plane",
-			RoleDataPlane:    RoleConfig{ConfigProvider: "etcd"},
-			RoleControlPlane: RoleConfig{ConfigProvider: "etcd"},
-			Etcd: Etcd{
-				Host:   []string{"https://etcd.example:2379"},
-				Prefix: "/apisix",
-				TLS:    EtcdTLS{Verify: &verify},
-			},
-		},
 	}
 }
 

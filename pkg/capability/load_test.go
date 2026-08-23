@@ -118,11 +118,11 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			mutate: func(m *Manifest) {
 				collision := m.Plugins[0]
 				collision.Factories = append([]Factory(nil), collision.Factories...)
-				collision.Name = "request-id"
-				collision.Factories[0].Key = "other"
+				collision.Name = "collision"
+				collision.Factories[0].Key = "request-id-capability"
 				m.Plugins = append(m.Plugins, collision)
 			},
-			want: "duplicate plugin",
+			want: "factory id \"request-id-capability\" collides with plugin id",
 		},
 		{
 			name: "duplicate divergence id",
@@ -142,6 +142,13 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			name: "unknown plugin domain",
 			mutate: func(m *Manifest) {
 				m.Plugins[0].Domains = []Domain{Domain("tcp")}
+			},
+			want: "unknown domain",
+		},
+		{
+			name: "unknown qualification domain",
+			mutate: func(m *Manifest) {
+				m.QualificationProfiles[0].Domains = []string{"tcp"}
 			},
 			want: "unknown domain",
 		},
@@ -219,6 +226,27 @@ func TestParseRejectsInvalidManifestFixtures(t *testing.T) {
 			name: "not applicable unknown reason",
 			mutate: func(m *Manifest) {
 				m.Plugins[0].Evidence.Schema = notApplicableClaim("unknown")
+			},
+			want: "concrete applicability reason",
+		},
+		{
+			name: "not applicable unknown status phrase",
+			mutate: func(m *Manifest) {
+				m.Plugins[0].Evidence.Schema = notApplicableClaim("status unknown")
+			},
+			want: "concrete applicability reason",
+		},
+		{
+			name: "not applicable TBD status phrase",
+			mutate: func(m *Manifest) {
+				m.Plugins[0].Evidence.Schema = notApplicableClaim("this is TBD")
+			},
+			want: "concrete applicability reason",
+		},
+		{
+			name: "not applicable N/A status phrase",
+			mutate: func(m *Manifest) {
+				m.Plugins[0].Evidence.Schema = notApplicableClaim("N/A for now")
 			},
 			want: "concrete applicability reason",
 		},
@@ -388,9 +416,27 @@ func TestQualifiedPluginsFailClosedByEvidenceState(t *testing.T) {
 	}{
 		{name: "verified", state: EvidenceVerified, qualified: true},
 		{
-			name:      "not applicable",
+			name:      "not an HTTP plugin",
 			state:     EvidenceNotApplicable,
-			reason:    "not applicable: no external dependency applies to this fixture.",
+			reason:    "not an HTTP plugin",
+			qualified: true,
+		},
+		{
+			name:      "no external dependency",
+			state:     EvidenceNotApplicable,
+			reason:    "plugin has no external dependency",
+			qualified: true,
+		},
+		{
+			name:      "no recovery lifecycle",
+			state:     EvidenceNotApplicable,
+			reason:    "no recovery lifecycle",
+			qualified: true,
+		},
+		{
+			name:      "explained not applicable",
+			state:     EvidenceNotApplicable,
+			reason:    "not applicable: plugin is stateless",
 			qualified: true,
 		},
 		{name: "missing", state: EvidenceMissing, reason: "evidence is not recorded", qualified: false},
@@ -450,7 +496,7 @@ func TestManifestQueriesReturnDeepCopies(t *testing.T) {
 	if !ok || byFactory.Name != byName.Name {
 		t.Fatal("factory key did not resolve to canonical plugin")
 	}
-	original := clonePlugin(byName)
+	original := yamlPluginSnapshot(t, byName)
 	byName.Domains[0] = DomainStream
 	byName.Factories[0].Key = "mutated"
 	byName.Phases[0] = "mutated"
@@ -474,7 +520,7 @@ func TestManifestQueriesReturnDeepCopies(t *testing.T) {
 	if !ok {
 		t.Fatal("qualification profile missing")
 	}
-	originalQualification := cloneQualification(qualification)
+	originalQualification := yamlQualificationSnapshot(t, qualification)
 	qualification.Domains[0] = "stream"
 	qualification.RequiredPlugins[0] = "mutated"
 	qualification.RequiredEvidence[0] = EvidenceUnit
@@ -588,6 +634,32 @@ func parseManifestYAML(t *testing.T, data []byte) *Manifest {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	return manifest
+}
+
+func yamlPluginSnapshot(t *testing.T, plugin PluginCapability) PluginCapability {
+	t.Helper()
+	data, err := yaml.Marshal(plugin)
+	if err != nil {
+		t.Fatalf("yaml.Marshal(plugin) error = %v", err)
+	}
+	var snapshot PluginCapability
+	if err := yaml.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("yaml.Unmarshal(plugin) error = %v", err)
+	}
+	return snapshot
+}
+
+func yamlQualificationSnapshot(t *testing.T, profile QualificationProfile) QualificationProfile {
+	t.Helper()
+	data, err := yaml.Marshal(profile)
+	if err != nil {
+		t.Fatalf("yaml.Marshal(profile) error = %v", err)
+	}
+	var snapshot QualificationProfile
+	if err := yaml.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("yaml.Unmarshal(profile) error = %v", err)
+	}
+	return snapshot
 }
 
 func addNestedTargetField(data []byte) []byte {

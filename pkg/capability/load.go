@@ -370,10 +370,10 @@ func concreteReason(reason string) bool {
 		return false
 	}
 
-	var compact strings.Builder
 	words := make([]string, 0, 4)
 	var word strings.Builder
-	letterCount := 0
+	var compact strings.Builder
+	descriptiveCount := 0
 	flushWord := func() {
 		if word.Len() == 0 {
 			return
@@ -382,65 +382,46 @@ func concreteReason(reason string) bool {
 		word.Reset()
 	}
 	for _, char := range normalized {
-		switch {
-		case unicode.IsLetter(char):
-			letterCount++
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			descriptiveCount++
 			compact.WriteRune(char)
 			word.WriteRune(char)
-		case unicode.IsDigit(char):
-			compact.WriteRune(char)
-			word.WriteRune(char)
-		default:
-			flushWord()
+			continue
 		}
+		flushWord()
 	}
 	flushWord()
-	if letterCount < 3 || len(words) < 2 {
+	if descriptiveCount < 3 || len(words) < 2 {
 		return false
 	}
 
-	placeholderWords := map[string]struct{}{
-		"bar":         {},
-		"baz":         {},
-		"deferred":    {},
-		"flaky":       {},
-		"foo":         {},
-		"later":       {},
-		"missing":     {},
-		"na":          {},
-		"nil":         {},
-		"not":         {},
-		"none":        {},
-		"null":        {},
-		"pending":     {},
-		"placeholder": {},
-		"reason":      {},
-		"stale":       {},
-		"tbd":         {},
-		"todo":        {},
-		"unknown":     {},
-		"unspecified": {},
-		"applicable":  {},
-	}
-	compactReason := compact.String()
-	if compactReason == "notapplicable" || compactReason == "notspecified" || compactReason == "notprovided" {
-		return false
-	}
-	if len(words) > 0 {
-		_, placeholder := placeholderWords[words[0]]
-		explainedNotApplicable := len(words) > 2 && words[0] == "not" && words[1] == "applicable"
-		if placeholder && !explainedNotApplicable {
+	for _, token := range words {
+		switch token {
+		case "tbd", "todo", "pending", "unknown", "placeholder", "unspecified", "na":
 			return false
 		}
 	}
-	allPlaceholder := true
-	for _, word := range words {
-		if _, placeholder := placeholderWords[word]; !placeholder {
-			allPlaceholder = false
-			break
+	if strings.Contains(normalized, "n/a") {
+		return false
+	}
+	for index := 1; index < len(words); index++ {
+		if words[index-1] == "n" && words[index] == "a" {
+			return false
 		}
 	}
-	return !allPlaceholder
+
+	compactReason := compact.String()
+	switch compactReason {
+	case "tbd", "todo", "pending", "unknown", "placeholder", "unspecified", "na",
+		"none", "nil", "null", "later", "missing", "deferred", "flaky", "stale",
+		"reason", "status", "notapplicable", "notspecified", "notprovided":
+		return false
+	}
+	switch strings.Join(words, " ") {
+	case "no reason", "no status", "status reason", "not applicable", "not specified", "not provided":
+		return false
+	}
+	return true
 }
 
 func sortedUniqueStrings(values []string) bool {

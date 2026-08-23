@@ -20,34 +20,41 @@ func (f capabilityPhaseFixture) DescribeBindingPhases() (base.BindingPhaseDescri
 	return f.descriptor, nil
 }
 
-func TestCapabilityRegistryCompleteness115Factories114Identities(t *testing.T) {
+func TestCapabilityRegistryCompletenessFromManifest(t *testing.T) {
 	central, err := capability.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	factoryBearingEntries := 0
+	expectedFactories := make(map[string]struct{})
+	expectedIdentities := make(map[string]struct{})
 	for _, entry := range central.Plugins {
-		if len(entry.Factories) != 0 {
-			factoryBearingEntries++
+		if len(entry.Factories) == 0 {
+			continue
+		}
+		expectedIdentities[entry.Name] = struct{}{}
+		for _, factory := range entry.Factories {
+			expectedFactories[factory.Key] = struct{}{}
 		}
 	}
-	if len(central.Plugins) != 119 || factoryBearingEntries != 114 {
-		t.Fatalf(
-			"central manifest entries/factory-bearing entries = %d/%d, want 119/114",
-			len(central.Plugins),
-			factoryBearingEntries,
-		)
+	registeredFactories := make(map[string]struct{}, len(pluginRegistry))
+	for factory := range pluginRegistry {
+		registeredFactories[factory] = struct{}{}
 	}
-	if len(pluginRegistry) != 115 {
-		t.Fatalf("factory count = %d, want 115", len(pluginRegistry))
+	assertExactStringSet(t, "factory inventory", expectedFactories, registeredFactories)
+
+	registeredIdentities := make(map[string]struct{}, len(capabilityRegistry))
+	for identity := range capabilityRegistry {
+		registeredIdentities[identity] = struct{}{}
 	}
-	if len(capabilityRegistry) != 114 {
-		t.Fatalf("identity count = %d, want 114", len(capabilityRegistry))
-	}
+	assertExactStringSet(t, "capability identity inventory", expectedIdentities, registeredIdentities)
+
 	manifest := generatedCapabilityManifestEntries()
-	if len(manifest) != 114 {
-		t.Fatalf("manifest identity count = %d, want 114", len(manifest))
+	generatedIdentities := make(map[string]struct{}, len(manifest))
+	for identity := range manifest {
+		generatedIdentities[identity] = struct{}{}
 	}
+	assertExactStringSet(t, "generated manifest identity inventory", expectedIdentities, generatedIdentities)
+
 	for factory := range pluginRegistry {
 		spec, ok := CapabilitySpecForFactory(factory)
 		if !ok {
@@ -77,6 +84,26 @@ func TestCapabilityRegistryCompleteness115Factories114Identities(t *testing.T) {
 		if instance.GetName() != wantName {
 			t.Fatalf("factory %q GetName() = %q, want %q", factory, instance.GetName(), wantName)
 		}
+	}
+}
+
+func assertExactStringSet(t *testing.T, label string, expected, actual map[string]struct{}) {
+	t.Helper()
+	var missing, unexpected []string
+	for key := range expected {
+		if _, ok := actual[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	for key := range actual {
+		if _, ok := expected[key]; !ok {
+			unexpected = append(unexpected, key)
+		}
+	}
+	slices.Sort(missing)
+	slices.Sort(unexpected)
+	if len(missing) != 0 || len(unexpected) != 0 {
+		t.Fatalf("%s mismatch: missing=%v unexpected=%v", label, missing, unexpected)
 	}
 }
 

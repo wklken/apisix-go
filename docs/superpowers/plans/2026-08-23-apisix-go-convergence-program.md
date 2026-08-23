@@ -327,12 +327,26 @@ type GenerationArtifact struct {
 	Snapshot string
 }
 
+type Journal interface {
+	ApplyDesired(context.Context, DesiredBatch) (ApplyTicket, error)
+	LoadDesired(context.Context, uint64) (Snapshot, error)
+	LoadPublished(context.Context, Domain) (PublishedGeneration, error)
+	LoadAcknowledgement(context.Context, ProviderCursor) (Acknowledgement, error)
+	Stage(context.Context, ApplyTicket, PublicationSet) (PublicationToken, error)
+	Commit(context.Context, PublicationToken) (Acknowledgement, error)
+	Abort(context.Context, PublicationToken, string) error
+	Revisions(context.Context) (RevisionSet, error)
+	Recover(context.Context) (RecoveryState, error)
+	Close() error
+}
+
 type PublicationEngine interface {
 	Prepare(context.Context, ApplyTicket, Snapshot, map[Domain]PublishedGeneration) (PublicationSet, error)
 	DiscardPrepared(context.Context, PublicationSet) error
 	Activate(context.Context, PublicationToken, PublicationSet) error
 	FinalizeActivation(context.Context, PublicationToken, PublicationSet)
 	RollbackActivation(context.Context, PublicationToken, PublicationSet) error
+	ConfirmActive(context.Context, PublicationSet) error
 }
 ```
 
@@ -403,10 +417,12 @@ Expected: the child plan's task commits are present, no static-config change is 
 **Interfaces:**
 - Consumes: `config.EffectiveConfig`, provider mutations, `generation.Domain`
 - Produces: `generation.Journal`, `generation.RevisionSet`, `generation.GenerationArtifact`, and reversible `generation.PublicationEngine` transactions consumed by compiler publication and supervisor recovery
+- Etcd `ProviderCursor` authority is versioned and binds cluster ID plus canonical watched prefix; non-empty watch revisions use the final consumed event `ModRevision`, while only progress notifications and full snapshots use Header revision.
+- Standalone `ProviderCursor` uses a versioned `standalone/vN` authority and content-digest revision; bump the authority version whenever its translation contract changes.
 
 - [ ] **Step 1: Execute the generation journal child plan task-by-task**
 
-Follow `docs/superpowers/plans/2026-08-23-durable-generation-journal.md`, preserving explicit-delete and dependency-closure semantics. The coordinator must discard a prepared generation if staging fails, roll back an activated generation if journal commit fails, and may mark the old generation retiring only after commit succeeds.
+Follow `docs/superpowers/plans/2026-08-23-durable-generation-journal.md`, preserving explicit-delete, dependency-closure and full provider-state cursor semantics. The coordinator must discard a prepared generation if staging fails, roll back an activated generation if journal commit fails, and may mark the old generation retiring only after commit succeeds.
 
 - [ ] **Step 2: Run the durable-state milestone gate**
 

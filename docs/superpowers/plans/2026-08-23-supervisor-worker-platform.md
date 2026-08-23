@@ -20,7 +20,7 @@
 - Use `os/exec`; never fork without exec and never copy NGINX's CPU-count worker topology.
 - Normally exactly one worker accepts new connections. A prepared/READY worker owns no accept loop until ACTIVATE; a quiesced predecessor can RESUME during rollback.
 - The supervisor is the only provider watcher and writable journal owner. Workers never open bbolt or acknowledge provider revisions.
-- Preserve plan 03's exact `PublicationEngine` signatures and order: Prepare → Stage; Stage failure → `DiscardPrepared` with an uncanceled cleanup context; activation/commit failure → RollbackActivation then Abort; commit success → FinalizeActivation.
+- Preserve plan 03's exact `PublicationEngine` signatures and order: Prepare → Stage; Stage failure → `DiscardPrepared` with an uncanceled cleanup context; activation/commit failure → RollbackActivation then Abort; commit success → FinalizeActivation; committed replay → read-only exact-fence `ConfirmActive` before acknowledgement.
 - Preserve plan 04's `compiler.PreparedGeneration` ownership: rejected new generations close; predecessor leases remain live until finalize; hijacked connections keep their generation until natural close or bounded worker termination.
 - Linux amd64/arm64 is the first production platform. This plan establishes native macOS amd64/arm64 build-smoke evidence; plan 08 packages and publishes only those natively smoked architectures. Windows remains source-buildable experimental, has no official artifact, and returns an explicit unsupported lifecycle error rather than selecting another runtime path.
 - The container runs the supervisor as PID 1. Signals, systemd, Kubernetes, launchd, and Windows service controls translate into canonical lifecycle commands only.
@@ -368,6 +368,7 @@ func (s *Supervisor) DiscardPrepared(context.Context, generation.PublicationSet)
 func (s *Supervisor) Activate(context.Context, generation.PublicationToken, generation.PublicationSet) error
 func (s *Supervisor) RollbackActivation(context.Context, generation.PublicationToken, generation.PublicationSet) error
 func (s *Supervisor) FinalizeActivation(context.Context, generation.PublicationToken, generation.PublicationSet)
+func (s *Supervisor) ConfirmActive(context.Context, generation.PublicationSet) error
 func (s *Supervisor) Run(context.Context) error
 func (s *Supervisor) Execute(context.Context, lifecycle.Command) (lifecycle.Status, error)
 func (s *Supervisor) Status() lifecycle.Status
@@ -686,7 +687,7 @@ git commit -m "feat(worker): load immutable generations behind accept gates"
 
 **Interfaces:**
 - Consumes: exact `generation.PublicationEngine`, worker-owned `compiler.PreparedGeneration`, worker READY/fence and listener ownership.
-- Produces: supervisor implementation of Prepare/DiscardPrepared/Activate/RollbackActivation/FinalizeActivation and exact-generation secret authorization.
+- Produces: supervisor implementation of Prepare/DiscardPrepared/Activate/RollbackActivation/FinalizeActivation/ConfirmActive and exact-generation secret authorization.
 
 - [ ] **Step 1: Write failing activation/commit rollback tests**
 
@@ -706,7 +707,7 @@ func TestSupervisorPublicationEngineStageFailureDiscardsReadyCandidate(t *testin
 	fixture := newSupervisorFixture(t, activeWorker(52), readyWorker(53))
 	fixture.journal.stageErr = stageErr
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	fixture.journal.onStage = cancel
 	_, err := fixture.coordinator.Apply(ctx, desiredBatch(53))
 	if !errors.Is(err, stageErr) { t.Fatalf("Apply() error = %v, want %v", err, stageErr) }
 	fixture.AssertWorkerState(52, lifecycle.StateActive)
@@ -728,6 +729,10 @@ func TestSupervisorFinalizeOnlyEnqueuesRetirement(t *testing.T) {
 
 Also prove activation failure after old QUIESCE resumes old; stale READY is killed; repeated `DiscardPrepared` is success without touching the active worker; candidate stop failure is joined with Stage failure; commit success calls finalize and acknowledges before the retirement loop performs DRAIN; no ack precedes ACTIVE+commit+finalize; only one worker accepts at every observed transition. Secret tests authorize a request only when `DesiredRevision`, `Scope.Generation`, plugin/resource/field scope, and reference digest match the supervisor-derived candidate grant and the returned closure covers the scope; cross-generation, post-discard, unknown field/reference, duplicate request ID, closure omission, and active-predecessor borrowing all return stable redacted error codes.
 
+Add `TestSupervisorPublicationEngineConfirmActive` subtests for an exact requested-domain subset, a missing/mismatched artifact, a canceled context, an initialized zero-domain fence, and an active worker containing an additional independently active older domain. Include a deterministic lock-wait cancellation case: hold the supervisor mutex, start ConfirmActive, cancel, then unlock. Assert success only for exact requested identities, `generation.ErrActiveGenerationMismatch` for identity failures, context cancellation precedence before and immediately after the lock, and zero IPC/process/activation/retirement calls in every confirmation case.
+
+Add `TestSupervisorPublicationEngineZeroDomainNoop` for first commit, Stage failure/discard, commit failure followed by same-cursor retry, and committed replay. Assert the journal can stage/commit the synthetic empty set and finalize initializes the confirmation fence, but Supervisor launches no candidate, sends no IPC, never quiesces/replaces the active worker and never enqueues retirement. Synthetic discard removes only the exact pending record; commit failure/rollback preserves the same owner, and replay performs only the read-only confirmation.
+
 - [ ] **Step 2: Run and confirm RED**
 
 Run: `bash -lc 'source .envrc && go test ./pkg/supervisor ./pkg/generation -run "^(TestSupervisorPublicationEngine|TestCoordinator.*Activation)" -count=1'`
@@ -736,11 +741,11 @@ Expected: FAIL because process activation is not the publication owner.
 
 - [ ] **Step 3: Implement the exact transaction**
 
-`Prepare` derives the candidate secret grant, launches a worker, and transfers bootstrap/config/manifest/desired/predecessor data using metadata plus bounded artifact frames. The worker locally creates and retains its `compiler.PreparedGeneration`; the supervisor reconstructs the returned publication artifact, checks that all secret requests are covered by its closure/decisions, validates exact `PublicationSet` identity and READY fence, and retains the candidate process plus predecessor process. The grant is keyed by pending worker identity and desired revision and exists only from launch through discard, rollback, process exit, or successful activation ownership transfer.
+For an empty required-domain ticket, `Prepare` creates only a synthetic pending record and returns an empty `PublicationSet`; it does not derive a grant, launch a worker or perform IPC. For a non-empty ticket, `Prepare` derives the candidate secret grant, launches a worker, and transfers bootstrap/config/manifest/desired/predecessor data using metadata plus bounded artifact frames. The worker locally creates and retains its `compiler.PreparedGeneration`; the supervisor reconstructs the returned publication artifact, checks that all secret requests are covered by its closure/decisions, validates exact `PublicationSet` identity and READY fence, and retains the candidate process plus predecessor process. The grant is keyed by pending worker identity and desired revision and exists only from launch through discard, rollback, process exit, or successful activation ownership transfer.
 
-`DiscardPrepared` atomically removes the matching pending record, disables its secret capability, then sends STOP, waits through `TerminateGrace`, kills if necessary, and waits for process exit so the worker closes its `PreparedGeneration`. It is idempotent after successful removal and never affects active/predecessor processes. A mismatched publication identity returns `ErrPreparedWorkerNotFound`. Coordinator calls it with `context.WithoutCancel`; stop/kill/wait errors are returned so `errors.Join` retains both Stage and cleanup evidence.
+For a synthetic empty publication, `DiscardPrepared` atomically removes only the exact pending record and performs no grant, process or IPC operation. For a non-empty publication, it atomically removes the matching pending record, disables its secret capability, then sends STOP, waits through `TerminateGrace`, kills if necessary, and waits for process exit so the worker closes its `PreparedGeneration`. It is idempotent after successful removal and never affects active/predecessor processes. A mismatched publication identity returns `ErrPreparedWorkerNotFound`. Coordinator calls it with `context.WithoutCancel`; stop/kill/wait errors are returned so `errors.Join` retains both Stage and cleanup evidence.
 
-`Activate` sends QUIESCE to old and waits QUIESCED, sends ACTIVATE to new and waits ACTIVE; any error leaves the activation record for rollback. `RollbackActivation` idempotently quiesces/stops new, disables its secret capability and verifies process exit, then resumes old and verifies ACTIVE. `FinalizeActivation` locks the supervisor, validates token/set/worker identity, records the new active worker, appends `{predecessor,replacement,enqueuedAt}` to `retiring`, removes activation/pending state, signals `retireCond`, unlocks, and returns. It sends no IPC, waits on no process, closes no generation, and has no recoverable failure. Missing token/fence is a `ReasonCoreInvariant` fatal panic because journal commit already succeeded. The main loop owns all retirement I/O in Task 6. Do not add a forwarding method to `server.GenerationEngine`; Task 10 deletes that temporary predecessor implementation in the startup cutover.
+For a synthetic empty set, `Activate` only binds the journal token to the synthetic record, rollback only deletes that record, and finalize sets the initialized fence; none of them sends IPC, changes the active worker or enqueues retirement. For a non-empty set, `Activate` sends QUIESCE to old and waits QUIESCED, sends ACTIVATE to new and waits ACTIVE; any error leaves the activation record for rollback. Non-empty `RollbackActivation` idempotently quiesces/stops new, disables its secret capability and verifies process exit, then resumes old and verifies ACTIVE. Non-empty `FinalizeActivation` locks the supervisor, validates token/set/worker identity, records the new active worker and updates the exact per-domain identities named by its publication fence without deleting untouched independently active domains, appends `{predecessor,replacement,enqueuedAt}` to `retiring`, removes activation/pending state, signals `retireCond`, unlocks, and returns. It sends no IPC, waits on no process, closes no generation, and has no recoverable failure. `ConfirmActive` checks context both before and immediately after acquiring the supervisor mutex, then compares every domain requested by the replay set against the active worker/fence; additional independently active domains are permitted. Mismatch returns `generation.ErrActiveGenerationMismatch` and never launches or switches a worker. Recovery must install every verified recovered domain identity and set the separate initialized fence before provider startup, including when the recovered active set is empty. Missing token/fence during finalize is a `ReasonCoreInvariant` fatal panic because journal commit already succeeded. The main loop owns all retirement I/O in Task 6. Do not add a forwarding method to `server.GenerationEngine`; Task 10 deletes that temporary predecessor implementation in the startup cutover.
 
 - [ ] **Step 4: Run race tests and commit**
 

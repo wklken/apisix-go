@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,7 +63,13 @@ func TestJournalCommitAdvancesOnlyRequiredPublishedDomains(t *testing.T) {
 
 func TestJournalCommitPublishesBothDomainsAtomically(t *testing.T) {
 	journal := openTestJournal(t)
-	ticket := applyDesiredForPublication(t, journal, "both", generation.DomainHTTP, generation.DomainStream)
+	ticket := applyDesiredForPublication(
+		t,
+		journal,
+		"both",
+		generation.DomainHTTP,
+		generation.DomainStream,
+	)
 	set := publicationSet(t, ticket, generation.DomainHTTP, generation.DomainStream)
 	token, err := journal.Stage(context.Background(), ticket, set)
 	if err != nil {
@@ -82,7 +89,11 @@ func TestJournalCommitPublishesBothDomainsAtomically(t *testing.T) {
 			t.Fatalf("LoadPublished(%q): %v", domain, loadErr)
 		}
 		if published.Artifact != set.Domains[domain].Artifact {
-			t.Fatalf("published artifact = %+v, want %+v", published.Artifact, set.Domains[domain].Artifact)
+			t.Fatalf(
+				"published artifact = %+v, want %+v",
+				published.Artifact,
+				set.Domains[domain].Artifact,
+			)
 		}
 	}
 }
@@ -116,6 +127,841 @@ func TestJournalCommitEmptyRequiredDomainsOnlyAcknowledgesDesired(t *testing.T) 
 	}
 	if got := bucketKeyCount(t, journal.db, publishedHeadBucket); got != 0 {
 		t.Fatalf("published head count = %d, want 0", got)
+	}
+}
+
+func TestJournalAcknowledgementPersistsLoadsAndRejectsFurtherPublication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+	set := publicationSet(t, ticket, generation.DomainHTTP)
+	first, err := journal.Stage(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := journal.Stage(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
+		t.Fatalf("LoadAcknowledgement(before commit) error = %v, want ErrNotFound", err)
+	}
+	committed, err := journal.Commit(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, loaded, committed)
+	loaded.Decisions[generation.DomainHTTP][0].Code = "mutated"
+	again, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, again, committed)
+	canceled := newStepCancelContext(3)
+	if _, err := journal.LoadAcknowledgement(canceled, ticket.Cursor); !errors.Is(err, context.Canceled) {
+		t.Fatalf("LoadAcknowledgement(final cancellation) error = %v, want context canceled", err)
+	}
+	assertStepCancellation(t, canceled, 3)
+	if _, err := journal.Stage(context.Background(), ticket, set); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
+		t.Fatalf("Stage(after commit) error = %v, want ErrStaleCursor", err)
+	}
+	if _, err := journal.Commit(context.Background(), loser); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
+		t.Fatalf("Commit(loser) error = %v, want ErrStaleCursor", err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted, err := reopened.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, restarted, committed)
+}
+
+func TestJournalBackfillsMarkerlessCommittedAcknowledgement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := applyDesiredForPublication(t, journal, "legacy-committed", generation.DomainHTTP)
+	token, err := journal.Stage(
+		context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := journal.Commit(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearCommittedAcknowledgement(t, journal, ticket.Cursor)
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, loaded, committed)
+	assertCursorHasCommittedAcknowledgement(t, reopened, ticket.Cursor)
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	loaded, err = restarted.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, loaded, committed)
+}
+
+func TestJournalKeepsMarkerlessUncommittedCursorRetryable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := desiredBatch("etcd", "legacy-uncommitted", generation.DomainHTTP)
+	ticket, err := journal.ApplyDesired(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
+		t.Fatalf("LoadAcknowledgement(markerless uncommitted) error = %v, want ErrNotFound", err)
+	}
+	replayed, err := reopened.ApplyDesired(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.DesiredRevision != ticket.DesiredRevision || replayed.DesiredDigest != ticket.DesiredDigest {
+		t.Fatalf("replayed ticket = %+v, want %+v", replayed, ticket)
+	}
+}
+
+func TestCoordinatorCompletesMarkerlessZeroDomainCursorWithSyntheticRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := desiredBatch("etcd/v1/test", "legacy-zero", "")
+	ticket, err := journal.ApplyDesired(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Commit(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	clearCommittedAcknowledgement(t, journal, ticket.Cursor)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	engine := &retryPublicationEngine{t: t}
+	ack, err := generation.NewCoordinator(reopened, engine).Apply(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Revisions != (generation.RevisionSet{Desired: ticket.DesiredRevision}) ||
+		len(ack.Decisions) != 0 || engine.prepareCalls != 1 || engine.activateCalls != 1 ||
+		engine.finalizeCalls != 1 || len(engine.ticket.RequiredDomains) != 0 {
+		t.Fatalf("ack/prepare/activate/finalize/ticket = %+v/%d/%d/%d/%+v",
+			ack, engine.prepareCalls, engine.activateCalls, engine.finalizeCalls, engine.ticket)
+	}
+	assertCursorHasCommittedAcknowledgement(t, reopened, ticket.Cursor)
+}
+
+func TestCoordinatorReopensCommittedCursorBeforeDifferentlyShapedReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta := generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{Provider: "etcd", Revision: "restart"},
+		Mutations: []generation.Mutation{
+			{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: "routes", ID: "r1"},
+				Value: []byte(`{"id":"r1"}`),
+			},
+			{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: "upstreams", ID: "u1"},
+				Value: []byte(`{"id":"u1"}`),
+			},
+		},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	ticket, err := journal.ApplyDesired(context.Background(), delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := journal.Stage(
+		context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := journal.Commit(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	engine := &committedReplayEngine{}
+	fullSnapshot := generation.DesiredBatch{
+		Cursor:         delta.Cursor,
+		ReplaceManaged: true,
+		Mutations:      slices.Clone(delta.Mutations),
+		RequiredDomains: []generation.Domain{
+			generation.DomainHTTP,
+			generation.DomainStream,
+		},
+	}
+	loaded, err := generation.NewCoordinator(reopened, engine).Apply(
+		context.Background(), fullSnapshot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, loaded, committed)
+	if engine.confirmCalls != 1 || engine.prepareCalls != 0 || engine.activateCalls != 0 ||
+		engine.finalizeCalls != 0 {
+		t.Fatalf(
+			"engine confirm/prepare/activate/finalize calls = %d/%d/%d/%d, want 1/0/0/0",
+			engine.confirmCalls,
+			engine.prepareCalls,
+			engine.activateCalls,
+			engine.finalizeCalls,
+		)
+	}
+	confirmed, found := engine.confirmed.Domains[generation.DomainHTTP]
+	if engine.confirmed.DesiredRevision != ticket.DesiredRevision || !found ||
+		confirmed.Artifact.Revision != ticket.DesiredRevision ||
+		len(engine.confirmed.Domains) != 1 {
+		t.Fatalf("confirmed publication set = %+v", engine.confirmed)
+	}
+	published, err := reopened.LoadPublished(context.Background(), generation.DomainHTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed.Artifact != published.Artifact ||
+		confirmed.Snapshot.SnapshotID() != published.Snapshot.SnapshotID() ||
+		!slices.Equal(confirmed.Closure, published.Closure) ||
+		!slices.Equal(confirmed.Decisions, published.Decisions) {
+		t.Fatalf("confirmed HTTP candidate = %+v, want committed %+v", confirmed, published)
+	}
+	revisions, err := reopened.Revisions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revisions != (generation.RevisionSet{Desired: 1, HTTP: 1}) {
+		t.Fatalf("revisions = %+v, want desired/http revision 1", revisions)
+	}
+}
+
+func TestCoordinatorRetriesMarkerlessUncommittedCursorFromEquivalentFullSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta := generation.DesiredBatch{
+		Cursor: generation.ProviderCursor{Provider: "etcd/v1/test", Revision: "91"},
+		Mutations: []generation.Mutation{
+			{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: "routes", ID: "r1"},
+				Value: []byte(`{"id":"r1"}`),
+			},
+			{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: "upstreams", ID: "u1"},
+				Value: []byte(`{"id":"u1"}`),
+			},
+		},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	ticket, err := journal.ApplyDesired(context.Background(), delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Stage(
+		context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	engine := &retryPublicationEngine{t: t}
+	fullSnapshot := generation.DesiredBatch{
+		Cursor: delta.Cursor, ReplaceManaged: true,
+		Mutations:       slices.Clone(delta.Mutations),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+	}
+	ack, err := generation.NewCoordinator(reopened, engine).Apply(context.Background(), fullSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Cursor != delta.Cursor || ack.Revisions != (generation.RevisionSet{Desired: 1, HTTP: 1}) ||
+		engine.prepareCalls != 1 || engine.activateCalls != 1 || engine.finalizeCalls != 1 {
+		t.Fatalf("ack/prepare/activate/finalize = %+v/%d/%d/%d",
+			ack, engine.prepareCalls, engine.activateCalls, engine.finalizeCalls)
+	}
+	if !slices.Equal(engine.ticket.RequiredDomains, []generation.Domain{generation.DomainHTTP}) {
+		t.Fatalf("retried ticket domains = %v, want original http domain", engine.ticket.RequiredDomains)
+	}
+	assertRevisions(t, reopened, generation.RevisionSet{Desired: 1, HTTP: 1})
+	assertCursorHasCommittedAcknowledgement(t, reopened, delta.Cursor)
+}
+
+type committedReplayEngine struct {
+	prepareCalls  int
+	activateCalls int
+	finalizeCalls int
+	confirmCalls  int
+	confirmed     generation.PublicationSet
+}
+
+type retryPublicationEngine struct {
+	t             *testing.T
+	ticket        generation.ApplyTicket
+	prepareCalls  int
+	activateCalls int
+	finalizeCalls int
+}
+
+func (e *retryPublicationEngine) Prepare(
+	_ context.Context,
+	ticket generation.ApplyTicket,
+	_ generation.Snapshot,
+	_ map[generation.Domain]generation.PublishedGeneration,
+) (generation.PublicationSet, error) {
+	e.prepareCalls++
+	e.ticket = ticket
+	return publicationSet(e.t, ticket, ticket.RequiredDomains...), nil
+}
+
+func (*retryPublicationEngine) DiscardPrepared(
+	context.Context,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (e *retryPublicationEngine) Activate(
+	_ context.Context,
+	_ generation.PublicationToken,
+	_ generation.PublicationSet,
+) error {
+	e.activateCalls++
+	return nil
+}
+
+func (*retryPublicationEngine) RollbackActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (e *retryPublicationEngine) FinalizeActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) {
+	e.finalizeCalls++
+}
+
+func (*retryPublicationEngine) ConfirmActive(
+	context.Context,
+	generation.PublicationSet,
+) error {
+	return errors.New("unexpected confirm active")
+}
+
+func (e *committedReplayEngine) Prepare(
+	context.Context,
+	generation.ApplyTicket,
+	generation.Snapshot,
+	map[generation.Domain]generation.PublishedGeneration,
+) (generation.PublicationSet, error) {
+	e.prepareCalls++
+	return generation.PublicationSet{}, errors.New("unexpected prepare")
+}
+
+func (*committedReplayEngine) DiscardPrepared(
+	context.Context,
+	generation.PublicationSet,
+) error {
+	return errors.New("unexpected discard")
+}
+
+func (e *committedReplayEngine) Activate(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	e.activateCalls++
+	return errors.New("unexpected activate")
+}
+
+func (*committedReplayEngine) RollbackActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) error {
+	return errors.New("unexpected rollback")
+}
+
+func (e *committedReplayEngine) FinalizeActivation(
+	context.Context,
+	generation.PublicationToken,
+	generation.PublicationSet,
+) {
+	e.finalizeCalls++
+}
+
+func (e *committedReplayEngine) ConfirmActive(
+	_ context.Context,
+	set generation.PublicationSet,
+) error {
+	e.confirmCalls++
+	e.confirmed = set
+	return nil
+}
+
+func TestJournalAcknowledgementZeroDomainAndFailedCommit(t *testing.T) {
+	t.Run("zero domain", func(t *testing.T) {
+		journal := openTestJournal(t)
+		ticket, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
+			Cursor: generation.ProviderCursor{Provider: "etcd", Revision: "empty"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		set := generation.PublicationSet{
+			DesiredRevision: ticket.DesiredRevision,
+			Domains:         map[generation.Domain]generation.PublicationCandidate{},
+		}
+		first, err := journal.Stage(context.Background(), ticket, set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loser, err := journal.Stage(context.Background(), ticket, set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		committed, err := journal.Commit(context.Background(), first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertAcknowledgementsEqual(t, loaded, committed)
+		if _, err := journal.Stage(context.Background(), ticket, set); !errors.Is(
+			err,
+			generation.ErrStaleCursor,
+		) {
+			t.Fatalf("Stage(zero domain after commit) error = %v, want ErrStaleCursor", err)
+		}
+		if _, err := journal.Commit(context.Background(), loser); !errors.Is(
+			err,
+			generation.ErrStaleCursor,
+		) {
+			t.Fatalf("Commit(zero domain loser) error = %v, want ErrStaleCursor", err)
+		}
+	})
+
+	t.Run("failed commit", func(t *testing.T) {
+		journal := openTestJournal(t)
+		ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+		token, err := journal.Stage(
+			context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.db.Update(func(tx *bolt.Tx) error {
+			return tx.DeleteBucket(publicationDecisionBucket)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Commit(context.Background(), token); !errors.Is(
+			err,
+			generation.ErrIntegrity,
+		) {
+			t.Fatalf("Commit() error = %v, want ErrIntegrity", err)
+		}
+		if err := journal.db.Update(func(tx *bolt.Tx) error {
+			_, err := tx.CreateBucket(publicationDecisionBucket)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+			err,
+			generation.ErrNotFound,
+		) {
+			t.Fatalf("LoadAcknowledgement(after failed commit) error = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestJournalLoadAcknowledgementRejectsTampering(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(*testing.T, *Store, generation.ApplyTicket, generation.Acknowledgement)
+	}{
+		{
+			name: "marker cursor",
+			tamper: func(t *testing.T, journal *Store, ticket generation.ApplyTicket, _ generation.Acknowledgement) {
+				mutateCommittedAcknowledgement(
+					t,
+					journal,
+					ticket,
+					func(ack *generation.Acknowledgement) {
+						ack.Cursor.Revision = "tampered"
+					},
+				)
+			},
+		},
+		{
+			name: "marker revisions",
+			tamper: func(t *testing.T, journal *Store, ticket generation.ApplyTicket, _ generation.Acknowledgement) {
+				mutateCommittedAcknowledgement(
+					t,
+					journal,
+					ticket,
+					func(ack *generation.Acknowledgement) {
+						ack.Revisions.HTTP = 0
+					},
+				)
+			},
+		},
+		{
+			name: "marker domain set",
+			tamper: func(t *testing.T, journal *Store, ticket generation.ApplyTicket, _ generation.Acknowledgement) {
+				mutateCommittedAcknowledgement(
+					t,
+					journal,
+					ticket,
+					func(ack *generation.Acknowledgement) {
+						delete(ack.Decisions, generation.DomainHTTP)
+					},
+				)
+			},
+		},
+		{
+			name: "marker decisions",
+			tamper: func(t *testing.T, journal *Store, ticket generation.ApplyTicket, _ generation.Acknowledgement) {
+				mutateCommittedAcknowledgement(
+					t,
+					journal,
+					ticket,
+					func(ack *generation.Acknowledgement) {
+						ack.Decisions[generation.DomainHTTP][0].Code = "tampered"
+					},
+				)
+			},
+		},
+		{
+			name: "active keyed identity",
+			tamper: func(t *testing.T, journal *Store, ticket generation.ApplyTicket, _ generation.Acknowledgement) {
+				if err := journal.db.Update(func(tx *bolt.Tx) error {
+					bucket := tx.Bucket(providerCursorBucket)
+					key := cursorRecordKey(ticket.Cursor)
+					record, err := decodeCursorRecord(bucket.Get(key), &ticket.Cursor)
+					if err != nil {
+						return err
+					}
+					record.Committed.Decisions[generation.DomainHTTP][0].Code = "tampered"
+					encoded, err := encodeCursorRecord(record)
+					if err != nil {
+						return err
+					}
+					return bucket.Put(key, encoded)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "published head",
+			tamper: func(t *testing.T, journal *Store, _ generation.ApplyTicket, _ generation.Acknowledgement) {
+				corruptBucketValue(t, journal, publishedHeadBucket, []byte(generation.DomainHTTP))
+			},
+		},
+		{
+			name: "published decisions",
+			tamper: func(t *testing.T, journal *Store, _ generation.ApplyTicket, ack generation.Acknowledgement) {
+				corruptBucketValue(
+					t,
+					journal,
+					publicationDecisionBucket,
+					publicationDecisionKey(generation.DomainHTTP, ack.Revisions.HTTP),
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := openTestJournal(t)
+			ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+			token, err := journal.Stage(
+				context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ack, err := journal.Commit(context.Background(), token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.tamper(t, journal, ticket, ack)
+			if _, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+				err,
+				generation.ErrIntegrity,
+			) {
+				t.Fatalf("LoadAcknowledgement() error = %v, want ErrIntegrity", err)
+			}
+		})
+	}
+
+	t.Run("unknown and stale cursor", func(t *testing.T) {
+		journal := openTestJournal(t)
+		ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+		token, err := journal.Stage(
+			context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Commit(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		unknown := generation.ProviderCursor{Provider: ticket.Cursor.Provider, Revision: "unknown"}
+		if _, err := journal.LoadAcknowledgement(context.Background(), unknown); !errors.Is(
+			err,
+			generation.ErrNotFound,
+		) {
+			t.Fatalf("LoadAcknowledgement(unknown cursor) error = %v, want ErrNotFound", err)
+		}
+		_ = applyDesiredForPublication(t, journal, "2", generation.DomainHTTP)
+		if _, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor); !errors.Is(
+			err,
+			generation.ErrStaleCursor,
+		) {
+			t.Fatalf("LoadAcknowledgement(stale cursor) error = %v, want ErrStaleCursor", err)
+		}
+	})
+
+	t.Run("corrupt current active record while requested cursor is stale", func(t *testing.T) {
+		journal := openTestJournal(t)
+		oldTicket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+		oldToken, err := journal.Stage(
+			context.Background(),
+			oldTicket,
+			publicationSet(t, oldTicket, generation.DomainHTTP),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Commit(context.Background(), oldToken); err != nil {
+			t.Fatal(err)
+		}
+		currentTicket := applyDesiredForPublication(t, journal, "2", generation.DomainHTTP)
+		if err := journal.db.Update(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket(providerCursorBucket)
+			key := cursorRecordKey(currentTicket.Cursor)
+			record, err := decodeCursorRecord(bucket.Get(key), &currentTicket.Cursor)
+			if err != nil {
+				return err
+			}
+			record.Ticket.DesiredDigest[0]++
+			encoded, err := encodeCursorRecord(record)
+			if err != nil {
+				return err
+			}
+			if err := bucket.Put(key, encoded); err != nil {
+				return err
+			}
+			return bucket.Put(activeProviderRecordKey, encoded)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.LoadAcknowledgement(
+			context.Background(), oldTicket.Cursor,
+		); !errors.Is(err, generation.ErrIntegrity) {
+			t.Fatalf("LoadAcknowledgement(stale cursor with corrupt active) error = %v, want ErrIntegrity", err)
+		}
+	})
+
+	t.Run("strict non-required revision", func(t *testing.T) {
+		journal := openTestJournal(t)
+		httpTicket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+		httpToken, err := journal.Stage(
+			context.Background(), httpTicket, publicationSet(t, httpTicket, generation.DomainHTTP),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Commit(context.Background(), httpToken); err != nil {
+			t.Fatal(err)
+		}
+		streamTicket := applyDesiredForPublication(t, journal, "2", generation.DomainStream)
+		streamToken, err := journal.Stage(
+			context.Background(),
+			streamTicket,
+			publicationSet(t, streamTicket, generation.DomainStream),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journal.Commit(context.Background(), streamToken); err != nil {
+			t.Fatal(err)
+		}
+		mutateCommittedAcknowledgement(
+			t,
+			journal,
+			streamTicket,
+			func(ack *generation.Acknowledgement) {
+				ack.Revisions.HTTP = 0
+			},
+		)
+		if _, err := journal.LoadAcknowledgement(context.Background(), streamTicket.Cursor); !errors.Is(
+			err,
+			generation.ErrIntegrity,
+		) {
+			t.Fatalf("LoadAcknowledgement(revision mismatch) error = %v, want ErrIntegrity", err)
+		}
+	})
+}
+
+func mutateCommittedAcknowledgement(
+	t *testing.T,
+	journal *Store,
+	ticket generation.ApplyTicket,
+	mutate func(*generation.Acknowledgement),
+) {
+	t.Helper()
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(providerCursorBucket)
+		key := cursorRecordKey(ticket.Cursor)
+		record, err := decodeCursorRecord(bucket.Get(key), &ticket.Cursor)
+		if err != nil {
+			return err
+		}
+		mutate(record.Committed)
+		encoded, err := encodeCursorRecord(record)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put(key, encoded); err != nil {
+			return err
+		}
+		return bucket.Put(activeProviderRecordKey, encoded)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertAcknowledgementsEqual(
+	t *testing.T,
+	got generation.Acknowledgement,
+	want generation.Acknowledgement,
+) {
+	t.Helper()
+	if got.Cursor != want.Cursor || got.Revisions != want.Revisions ||
+		!slices.Equal(
+			got.Decisions[generation.DomainHTTP],
+			want.Decisions[generation.DomainHTTP],
+		) ||
+		!slices.Equal(
+			got.Decisions[generation.DomainStream],
+			want.Decisions[generation.DomainStream],
+		) ||
+		len(got.Decisions) != len(want.Decisions) {
+		t.Fatalf("acknowledgement = %+v, want %+v", got, want)
 	}
 }
 
@@ -170,7 +1016,11 @@ func TestJournalStageRejectsTicketDomainCandidateAndClosureViolations(t *testing
 			name: "extra domain",
 			want: generation.ErrIntegrity,
 			mutate: func(ticket generation.ApplyTicket, set generation.PublicationSet) (generation.ApplyTicket, generation.PublicationSet) {
-				set.Domains[generation.DomainStream] = publicationCandidateFor(t, generation.DomainStream, ticket)
+				set.Domains[generation.DomainStream] = publicationCandidateFor(
+					t,
+					generation.DomainStream,
+					ticket,
+				)
 				return ticket, set
 			},
 		},
@@ -235,7 +1085,10 @@ func TestJournalStageRejectsTicketDomainCandidateAndClosureViolations(t *testing
 			name: "extra closure key",
 			want: generation.ErrInvalidClosure,
 			mutate: mutateHTTPCandidate(func(candidate *generation.PublicationCandidate) {
-				candidate.Closure = append(candidate.Closure, generation.ResourceKey{Kind: "routes", ID: "missing"})
+				candidate.Closure = append(
+					candidate.Closure,
+					generation.ResourceKey{Kind: "routes", ID: "missing"},
+				)
 				candidate.Decisions = append(
 					candidate.Decisions,
 					generation.ResourceDecision{
@@ -304,7 +1157,11 @@ func TestJournalStageRejectsTicketDomainCandidateAndClosureViolations(t *testing
 				candidate.Closure = append(candidate.Closure, key)
 				candidate.Decisions = append(
 					candidate.Decisions,
-					generation.ResourceDecision{Key: key, Disposition: generation.DispositionPublished, Code: "wrong"},
+					generation.ResourceDecision{
+						Key:         key,
+						Disposition: generation.DispositionPublished,
+						Code:        "wrong",
+					},
 				)
 			}),
 		},
@@ -353,11 +1210,17 @@ func TestJournalStageAcceptsStructurallyClosedDeletedTombstone(t *testing.T) {
 	candidate.Closure = append(candidate.Closure, deleted)
 	candidate.Decisions = append(
 		candidate.Decisions,
-		generation.ResourceDecision{Key: deleted, Disposition: generation.DispositionDeleted, Code: "deleted"},
+		generation.ResourceDecision{
+			Key:         deleted,
+			Disposition: generation.DispositionDeleted,
+			Code:        "deleted",
+		},
 	)
 	set := generation.PublicationSet{
 		DesiredRevision: ticket.DesiredRevision,
-		Domains:         map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
 	}
 	token, err := journal.Stage(context.Background(), ticket, set)
 	if err != nil {
@@ -422,7 +1285,11 @@ func TestJournalStageCanonicalizesOrderAndDefensivelyCopies(t *testing.T) {
 func TestJournalAbortAndMissingTokensDoNotChangeHeads(t *testing.T) {
 	journal := openTestJournal(t)
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,14 +1297,24 @@ func TestJournalAbortAndMissingTokensDoNotChangeHeads(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRevisions(t, journal, generation.RevisionSet{Desired: 1})
-	if err := journal.Abort(context.Background(), token, "again"); !errors.Is(err, generation.ErrNotFound) {
+	if err := journal.Abort(context.Background(), token, "again"); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
 		t.Fatalf("second Abort() error = %v, want ErrNotFound", err)
 	}
-	if _, err := journal.Commit(context.Background(), token); !errors.Is(err, generation.ErrNotFound) {
+	if _, err := journal.Commit(context.Background(), token); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
 		t.Fatalf("Commit(aborted) error = %v, want ErrNotFound", err)
 	}
 	for _, reason := range []string{"", string([]byte{0xff}), strings.Repeat("x", 129)} {
-		fresh, stageErr := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+		fresh, stageErr := journal.Stage(
+			context.Background(),
+			ticket,
+			publicationSet(t, ticket, generation.DomainHTTP),
+		)
 		if stageErr != nil {
 			t.Fatal(stageErr)
 		}
@@ -452,7 +1329,10 @@ func TestJournalAbortAndMissingTokensDoNotChangeHeads(t *testing.T) {
 		}
 	}
 	for _, malformed := range []generation.PublicationToken{"", "short", generation.PublicationToken(strings.Repeat("z", 32))} {
-		if _, err := journal.Commit(context.Background(), malformed); !errors.Is(err, generation.ErrNotFound) {
+		if _, err := journal.Commit(context.Background(), malformed); !errors.Is(
+			err,
+			generation.ErrNotFound,
+		) {
 			t.Fatalf("Commit(%q) error = %v, want ErrNotFound", malformed, err)
 		}
 	}
@@ -465,7 +1345,11 @@ func TestJournalStageAndPublishedStateSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +1393,11 @@ func TestJournalStageSurvivesRestartAndAbortRemovesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +1410,10 @@ func TestJournalStageSurvivesRestartAndAbortRemovesIt(t *testing.T) {
 	if err := reopened.Abort(context.Background(), token, "restart"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Commit(context.Background(), token); !errors.Is(err, generation.ErrNotFound) {
+	if _, err := reopened.Commit(context.Background(), token); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
 		t.Fatalf("Commit(aborted) error = %v, want ErrNotFound", err)
 	}
 }
@@ -549,7 +1440,10 @@ func TestJournalCommitRejectsStaleStageAndCannotRegressOrOverwriteHead(t *testin
 		t.Fatal(err)
 	}
 	for _, token := range []generation.PublicationToken{oldToken, secondOldToken} {
-		if _, err := journal.Commit(context.Background(), token); !errors.Is(err, generation.ErrStaleCursor) {
+		if _, err := journal.Commit(context.Background(), token); !errors.Is(
+			err,
+			generation.ErrStaleCursor,
+		) {
 			t.Fatalf("Commit(stale) error = %v, want ErrStaleCursor", err)
 		}
 	}
@@ -561,7 +1455,13 @@ func TestJournalCommitRejectsStaleStageAndCannotRegressOrOverwriteHead(t *testin
 
 func TestJournalCommitOneDomainStaleRollsBackOtherDomain(t *testing.T) {
 	journal := openTestJournal(t)
-	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP, generation.DomainStream)
+	ticket := applyDesiredForPublication(
+		t,
+		journal,
+		"1",
+		generation.DomainHTTP,
+		generation.DomainStream,
+	)
 	set := publicationSet(t, ticket, generation.DomainHTTP, generation.DomainStream)
 	token, err := journal.Stage(context.Background(), ticket, set)
 	if err != nil {
@@ -583,7 +1483,10 @@ func TestJournalCommitOneDomainStaleRollsBackOtherDomain(t *testing.T) {
 	beforeHeads := bucketKeyCount(t, journal.db, publishedHeadBucket)
 	beforeDecisions := bucketKeyCount(t, journal.db, publicationDecisionBucket)
 
-	if _, err := journal.Commit(context.Background(), token); !errors.Is(err, generation.ErrStaleCursor) {
+	if _, err := journal.Commit(context.Background(), token); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
 		t.Fatalf("Commit() error = %v, want ErrStaleCursor", err)
 	}
 	assertRevisions(t, journal, generation.RevisionSet{Desired: 1, Stream: 1})
@@ -625,7 +1528,10 @@ func TestJournalCommitSecondTokenCannotOverwriteSameRevision(t *testing.T) {
 	if _, err := journal.Commit(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Commit(context.Background(), second); !errors.Is(err, generation.ErrStaleCursor) {
+	if _, err := journal.Commit(context.Background(), second); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
 		t.Fatalf("second Commit() error = %v, want ErrStaleCursor", err)
 	}
 	assertRevisions(t, journal, generation.RevisionSet{Desired: 1, HTTP: 1})
@@ -681,7 +1587,13 @@ func TestJournalCommitConcurrentSameRevisionHasOneWinner(t *testing.T) {
 
 func TestJournalCommitWriteFailureIsAtomicAndKeepsStage(t *testing.T) {
 	journal := openTestJournal(t)
-	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP, generation.DomainStream)
+	ticket := applyDesiredForPublication(
+		t,
+		journal,
+		"1",
+		generation.DomainHTTP,
+		generation.DomainStream,
+	)
 	token, err := journal.Stage(
 		context.Background(),
 		ticket,
@@ -697,7 +1609,10 @@ func TestJournalCommitWriteFailureIsAtomicAndKeepsStage(t *testing.T) {
 	}
 	beforeArtifacts := bucketKeyCount(t, journal.db, artifactBucket)
 	beforeHeads := bucketKeyCount(t, journal.db, publishedHeadBucket)
-	if _, err := journal.Commit(context.Background(), token); !errors.Is(err, generation.ErrIntegrity) {
+	if _, err := journal.Commit(context.Background(), token); !errors.Is(
+		err,
+		generation.ErrIntegrity,
+	) {
 		t.Fatalf("Commit() error = %v, want ErrIntegrity", err)
 	}
 	if err := journal.db.Update(func(tx *bolt.Tx) error {
@@ -724,7 +1639,11 @@ func TestJournalCommitWriteFailureIsAtomicAndKeepsStage(t *testing.T) {
 func TestJournalPublishedTamperingFailsClosed(t *testing.T) {
 	journal := openTestJournal(t)
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +1697,11 @@ func TestJournalPublishedTamperingFailsClosed(t *testing.T) {
 func TestJournalPublishedDecisionCrossDigestRejectsValidButSwappedRecord(t *testing.T) {
 	journal := openTestJournal(t)
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +1746,11 @@ func TestJournalPublishedDecisionCrossDigestRejectsValidButSwappedRecord(t *test
 func TestJournalLoadPublishedMapsPersistedClosureMismatchToIntegrity(t *testing.T) {
 	journal := openTestJournal(t)
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-	token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +1798,10 @@ func TestJournalLoadPublishedAndRevisionsRejectUnknownOrMalformedHeads(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			journal := openTestJournal(t)
-			if _, err := journal.LoadPublished(context.Background(), "udp"); !errors.Is(err, generation.ErrNotFound) {
+			if _, err := journal.LoadPublished(context.Background(), "udp"); !errors.Is(
+				err,
+				generation.ErrNotFound,
+			) {
 				t.Fatalf("LoadPublished(udp) error = %v, want ErrNotFound", err)
 			}
 			if err := journal.db.Update(func(tx *bolt.Tx) error {
@@ -879,7 +1809,10 @@ func TestJournalLoadPublishedAndRevisionsRejectUnknownOrMalformedHeads(t *testin
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := journal.Revisions(context.Background()); !errors.Is(err, generation.ErrIntegrity) {
+			if _, err := journal.Revisions(context.Background()); !errors.Is(
+				err,
+				generation.ErrIntegrity,
+			) {
 				t.Fatalf("Revisions() error = %v, want ErrIntegrity", err)
 			}
 			if test.key == generation.DomainHTTP {
@@ -902,9 +1835,18 @@ func TestJournalRevisionsRejectsSemanticallyMalformedPublishedHeads(t *testing.T
 		name   string
 		mutate func(*publishedHeadWire)
 	}{
-		{name: "revision newer than desired", mutate: func(head *publishedHeadWire) { head.Artifact.Revision++ }},
-		{name: "zero decision digest", mutate: func(head *publishedHeadWire) { head.DecisionsDigest = [32]byte{} }},
-		{name: "invalid snapshot id", mutate: func(head *publishedHeadWire) { head.Artifact.Snapshot = "sha256:bad" }},
+		{
+			name:   "revision newer than desired",
+			mutate: func(head *publishedHeadWire) { head.Artifact.Revision++ },
+		},
+		{
+			name:   "zero decision digest",
+			mutate: func(head *publishedHeadWire) { head.DecisionsDigest = [32]byte{} },
+		},
+		{
+			name:   "invalid snapshot id",
+			mutate: func(head *publishedHeadWire) { head.Artifact.Snapshot = "sha256:bad" },
+		},
 		{
 			name:   "duplicate closure",
 			mutate: func(head *publishedHeadWire) { head.Closure = append(head.Closure, head.Closure[0]) },
@@ -914,7 +1856,11 @@ func TestJournalRevisionsRejectsSemanticallyMalformedPublishedHeads(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			journal := openTestJournal(t)
 			ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
-			token, err := journal.Stage(context.Background(), ticket, publicationSet(t, ticket, generation.DomainHTTP))
+			token, err := journal.Stage(
+				context.Background(),
+				ticket,
+				publicationSet(t, ticket, generation.DomainHTTP),
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -944,7 +1890,10 @@ func TestJournalRevisionsRejectsSemanticallyMalformedPublishedHeads(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := journal.Revisions(context.Background()); !errors.Is(err, generation.ErrIntegrity) {
+			if _, err := journal.Revisions(context.Background()); !errors.Is(
+				err,
+				generation.ErrIntegrity,
+			) {
 				t.Fatalf("Revisions() error = %v, want ErrIntegrity", err)
 			}
 		})
@@ -970,7 +1919,10 @@ func TestJournalPublicationContextAndClosedStoreErrors(t *testing.T) {
 	if err := journal.Abort(ctx, token, "cancel"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Abort() error = %v, want context canceled", err)
 	}
-	if _, err := journal.LoadPublished(ctx, generation.DomainHTTP); !errors.Is(err, context.Canceled) {
+	if _, err := journal.LoadPublished(ctx, generation.DomainHTTP); !errors.Is(
+		err,
+		context.Canceled,
+	) {
 		t.Fatalf("LoadPublished() error = %v, want context canceled", err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1030,7 +1982,10 @@ func TestJournalPublicationCancellationRollsBackCompletedWrites(t *testing.T) {
 	// Abort's third check occurs after Delete, so cancellation must retain the
 	// token by rolling the transaction back.
 	abortCtx := newStepCancelContext(3)
-	if err := journal.Abort(abortCtx, token, "cancel-after-delete"); !errors.Is(err, context.Canceled) {
+	if err := journal.Abort(abortCtx, token, "cancel-after-delete"); !errors.Is(
+		err,
+		context.Canceled,
+	) {
 		t.Fatalf("Abort() error = %v, want context canceled", err)
 	}
 	assertStepCancellation(t, abortCtx, 3)
@@ -1051,7 +2006,9 @@ func TestJournalPublicationWireGoldenAndTokenCollision(t *testing.T) {
 	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
 	set := publicationSet(t, ticket, generation.DomainHTTP)
 	fixedToken := generation.PublicationToken(strings.Repeat("ab", 16))
-	encoded, err := encodeStagedPublication(stagedPublication{Token: fixedToken, Ticket: ticket, Set: set})
+	encoded, err := encodeStagedPublication(
+		stagedPublication{Token: fixedToken, Ticket: ticket, Set: set},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1075,7 +2032,9 @@ func TestJournalPublicationWireGoldenAndTokenCollision(t *testing.T) {
 	}
 
 	previous := publicationTokenReader
-	publicationTokenReader = bytes.NewReader(bytes.Repeat([]byte{0x11}, (publicationTokenAttempts+1)*16))
+	publicationTokenReader = bytes.NewReader(
+		bytes.Repeat([]byte{0x11}, (publicationTokenAttempts+1)*16),
+	)
 	t.Cleanup(func() { publicationTokenReader = previous })
 	first, err := journal.Stage(context.Background(), ticket, set)
 	if err != nil {
@@ -1115,7 +2074,10 @@ func TestJournalStagedTokenBindingRejectsSwappedPayload(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Commit(context.Background(), second); !errors.Is(err, generation.ErrIntegrity) {
+	if _, err := journal.Commit(context.Background(), second); !errors.Is(
+		err,
+		generation.ErrIntegrity,
+	) {
 		t.Fatalf("Commit(swapped token payload) error = %v, want ErrIntegrity", err)
 	}
 	if got := bucketKeyCount(t, journal.db, publicationTxnBucket); got != 2 {
@@ -1217,7 +2179,11 @@ func publicationCandidateFor(
 		)
 		decisions = append(
 			decisions,
-			generation.ResourceDecision{Key: key, Disposition: generation.DispositionPublished, Code: "test-published"},
+			generation.ResourceDecision{
+				Key:         key,
+				Disposition: generation.DispositionPublished,
+				Code:        "test-published",
+			},
 		)
 	}
 	snapshot := mustSnapshot(t, ticket.DesiredRevision, resources, nil)
@@ -1293,6 +2259,59 @@ func assertStepCancellation(t *testing.T, ctx *stepCancelContext, want int32) {
 	case <-ctx.Done():
 	default:
 		t.Fatal("context cancellation checkpoint was not reached")
+	}
+}
+
+func clearCommittedAcknowledgement(
+	t *testing.T,
+	journal *Store,
+	cursor generation.ProviderCursor,
+) {
+	t.Helper()
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(providerCursorBucket)
+		record, err := decodeCursorRecord(bucket.Get(cursorRecordKey(cursor)), &cursor)
+		if err != nil {
+			return err
+		}
+		record.Committed = nil
+		encoded, err := encodeCursorRecord(record)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put(cursorRecordKey(cursor), encoded); err != nil {
+			return err
+		}
+		return bucket.Put(activeProviderRecordKey, encoded)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertCursorHasCommittedAcknowledgement(
+	t *testing.T,
+	journal *Store,
+	cursor generation.ProviderCursor,
+) {
+	t.Helper()
+	if err := journal.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(providerCursorBucket)
+		record, err := decodeCursorRecord(bucket.Get(cursorRecordKey(cursor)), &cursor)
+		if err != nil {
+			return err
+		}
+		if record.Committed == nil {
+			return errors.New("cursor acknowledgement marker is missing")
+		}
+		if !bytes.Equal(
+			bucket.Get(cursorRecordKey(cursor)),
+			bucket.Get(activeProviderRecordKey),
+		) {
+			return errors.New("active and keyed cursor records differ")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

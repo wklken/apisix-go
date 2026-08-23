@@ -405,6 +405,41 @@ func TestJournalRecoverClearsPendingWithoutDecodingAndCancellationRollsBack(t *t
 	}
 }
 
+func TestJournalRecoverPreservesCommittedAcknowledgementWhileClearingPending(t *testing.T) {
+	journal := openTestJournal(t)
+	ticket := applyDesiredForPublication(t, journal, "1", generation.DomainHTTP)
+	set := publicationSet(t, ticket, generation.DomainHTTP)
+	committedToken, err := journal.Stage(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingToken, err := journal.Stage(context.Background(), ticket, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := journal.Commit(context.Background(), committedToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := bucketKeyCount(t, journal.db, publicationTxnBucket); got != 0 {
+		t.Fatalf("pending count = %d, want 0", got)
+	}
+	if _, err := journal.Commit(context.Background(), pendingToken); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
+		t.Fatalf("Commit(cleared pending) error = %v, want ErrNotFound", err)
+	}
+	loaded, err := journal.LoadAcknowledgement(context.Background(), ticket.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAcknowledgementsEqual(t, loaded, committed)
+}
+
 func corruptBucketValue(t *testing.T, journal *Store, bucketName, key []byte) {
 	t.Helper()
 	if err := journal.db.Update(func(tx *bolt.Tx) error {

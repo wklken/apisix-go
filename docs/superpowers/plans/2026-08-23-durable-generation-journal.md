@@ -4,7 +4,7 @@
 
 **Goal:** Replace the current Store-event persistence and in-memory last-good state with one versioned bbolt journal that durably separates desired state from independently published HTTP and stream generations and acknowledges provider revisions only after an explicit publication decision has committed and runtime ownership has finalized.
 
-**Architecture:** `pkg/generation` defines immutable snapshots, revisions, publication transactions, and the coordinator contract; `pkg/store` implements `generation.Journal` as the single writable bbolt owner and maintains decoded read views of committed published artifacts. Providers submit complete or incremental desired batches to `generation.Coordinator`, which stages a complete dependency-closed publication, reversibly activates it through the runtime engine, commits the published heads, finalizes old-owner retirement, and only then returns an acknowledgement. Existing resource buckets are imported once as desired-only state, then deleted together with the Store event/hook path so there is no dual persistence model or legacy adapter.
+**Architecture:** `pkg/generation` defines immutable snapshots, revisions, publication transactions, and the coordinator contract; `pkg/store` implements `generation.Journal` as the single writable bbolt owner and maintains decoded read views of committed published artifacts. Providers submit complete or incremental desired batches to `generation.Coordinator`, which stages a complete dependency-closed publication, reversibly activates it through the runtime engine, commits the published heads, finalizes active ownership, enqueues predecessor retirement, and then returns an acknowledgement. Existing resource buckets are imported once as desired-only state, then deleted together with the Store event/hook path so there is no dual persistence model or legacy adapter.
 
 **Tech Stack:** Go 1.26, `context`, `crypto/sha256`, `encoding/binary`, `encoding/json`, bbolt v1.5.0, existing APISIX resource decoders, etcd client v3, fsnotify.
 
@@ -228,6 +228,7 @@ type Journal interface {
 	ApplyDesired(context.Context, DesiredBatch) (ApplyTicket, error)
 	LoadDesired(context.Context, uint64) (Snapshot, error)
 	LoadPublished(context.Context, Domain) (PublishedGeneration, error)
+	LoadAcknowledgement(context.Context, ProviderCursor) (Acknowledgement, error)
 	Stage(context.Context, ApplyTicket, PublicationSet) (PublicationToken, error)
 	Commit(context.Context, PublicationToken) (Acknowledgement, error)
 	Abort(context.Context, PublicationToken, string) error
@@ -247,6 +248,7 @@ type PublicationEngine interface {
 	Activate(context.Context, PublicationToken, PublicationSet) error
 	RollbackActivation(context.Context, PublicationToken, PublicationSet) error
 	FinalizeActivation(context.Context, PublicationToken, PublicationSet)
+	ConfirmActive(context.Context, PublicationSet) error
 }
 
 type Coordinator struct {
@@ -259,7 +261,11 @@ func NewCoordinator(journal Journal, engine PublicationEngine) *Coordinator
 func (c *Coordinator) Apply(context.Context, DesiredBatch) (Acknowledgement, error)
 ```
 
-`Prepare` owns detached candidate resources immediately. If `Stage` fails before a token exists, the coordinator must call idempotent `DiscardPrepared` with `context.WithoutCancel(ctx)` and return `errors.Join(stageErr, discardErr)`; this closes only the unpublished candidate and its new leases. `Activate` may install new owners but must retain the old active owners and every old lease until the journal commit succeeds. `RollbackActivation` is idempotent: it restores the old active owners, closes the new owners and releases only new leases. `FinalizeActivation` performs only an infallible in-memory transition: it makes the new generation authoritative and transfers the predecessor into a retirement queue. It performs no IPC, drain wait, process termination, filesystem operation, or lease close that can report a recoverable failure. The supervisor main loop retires queued predecessors asynchronously; an impossible finalize invariant is a core runtime fatal condition, not a provider acknowledgement error. Plan 04's `compiler.PreparedGeneration` must implement the same prepare/discard/activate/rollback/finalize lease lifecycle.
+`Prepare` owns detached candidate resources immediately. If `Stage` fails before a token exists, the coordinator must call idempotent `DiscardPrepared` with `context.WithoutCancel(ctx)` and return `errors.Join(stageErr, discardErr)`; this closes only the unpublished candidate and its new leases. `Activate` may install new owners but must retain the old active owners and every old lease until the journal commit succeeds. `RollbackActivation` is idempotent: it restores the old active owners, closes the new owners and releases only new leases. `FinalizeActivation` performs only an infallible in-memory transition: it makes the new generation authoritative and transfers the predecessor into a retirement queue. It performs no IPC, drain wait, process termination, filesystem operation, or lease close that can report a recoverable failure. `ConfirmActive` is read-only and compares the exact required-domain artifact identities against the live owner; it never compiles, activates, retires or performs blocking I/O. The supervisor main loop retires queued predecessors asynchronously; an impossible finalize invariant is a core runtime fatal condition, not a provider acknowledgement error. Plan 04's `compiler.PreparedGeneration` must implement the same prepare/discard/activate/rollback/finalize/confirm lifecycle.
+
+An empty `ticket.RequiredDomains` uses a synthetic no-op `PublicationSet`: the lifecycle still runs through Prepare, Stage, Activate, Commit and Finalize so the cursor, desired revision, durable acknowledgement marker and initialized `activeReady` fence advance atomically, but the engine must not compile, create leases, launch or signal a worker, replace an active owner, or enqueue retirement. Discard and rollback remove only the synthetic pending/activation record. Commit failure therefore leaves the serving owner untouched, and a retry of the uncommitted same cursor repeats this no-op lifecycle. This is distinct from a committed zero-domain replay, which calls only `ConfirmActive` against the initialized empty requested fence.
+
+The cursor record also carries an optional canonical committed acknowledgement. `Commit` writes this marker, published heads, decisions and token deletion in one bbolt transaction. Before applying incoming batch bytes, `LoadAcknowledgement` uses the full provider-state cursor as the durable idempotency key, verifies the current keyed/active cursor record, its stored ticket, strict revisions and exact published decisions, and returns only committed evidence. `ConfirmActive` must then prove the current runtime fence matches the reconstructed committed `PublicationSet`. This ordering deliberately permits a committed incremental watch batch to replay after restart as an equivalent full snapshot carrying the same provider-state cursor. For an uncommitted same cursor with different canonical batch bytes, `ApplyDesired` reconstructs the incoming batch against the persisted predecessor snapshot at `ticket.DesiredRevision-1`: it reuses the original ticket only when the resultant desired snapshot digest is exact, and otherwise returns `ErrCursorConflict`. Thus watch and snapshot representations are interchangeable only when they prove the same provider state. A marker without an exact live owner is an error, not permission to acknowledge. This covers both non-empty publications and zero-domain commits, and makes an acknowledgement lost after commit/finalize safely replayable.
 
 `GenerationArtifact.Snapshot` is exactly `sha256:<lowercase hex digest>`. It is an identifier, never a filesystem path and never inline configuration. The bbolt implementation stores the canonical payload under that identifier and verifies both the identifier and `Digest` on every recovery read.
 
@@ -563,6 +569,7 @@ var (
 	ErrProviderConflict = errors.New("desired provider changed without authoritative replacement")
 	ErrNoLastGood     = errors.New("published predecessor required for last-good")
 	ErrInvalidClosure = errors.New("publication dependency closure is incomplete")
+	ErrActiveGenerationMismatch = errors.New("active runtime generation does not match committed publication")
 )
 ```
 
@@ -786,7 +793,7 @@ func (s *Store) ApplyDesired(ctx context.Context, batch generation.DesiredBatch)
 
 Provider names, cursor revisions, resource keys and domains must be non-empty valid UTF-8. Reject unknown mutation types/domains and a delete carrying non-empty value bytes. Required domains are de-duplicated into stable `http`, `stream` order. Repeated keys inside a batch are legal and remain ordered. `nil` and empty PUT values remain distinct desired bytes and receive golden digest coverage; later compiler policy decides whether either payload is valid. The schema-v1 batch digest and cursor payload must use private wire DTOs with explicit JSON tags; never marshal `generation.ProviderCursor` or `generation.ApplyTicket` directly, because unrelated changes to their exported Go fields must not alter persisted bytes. Lock both canonical payloads with readable JSON golden tests.
 
-`providerCursorBucket` stores a fixed active-provider record plus cursor records keyed by a collision-resistant SHA-256 of the canonical provider/revision pair; every record embeds and revalidates the exact cursor, ordered batch digest and complete original ticket. The active record must equal its keyed cursor record and its ticket revision/digest must equal the already-loaded current desired snapshot, so a coherent rollback of both cursor records still fails closed. Same cursor plus the same canonical batch returns the original ticket only while that ticket is the current desired head and its provider is still active, including after restart, so a failed current publication can be retried. Once the desired head advances, replaying the older cursor returns `ErrStaleCursor` without loading, preparing or publishing the historical snapshot. A cursor from a non-active provider returns `ErrProviderConflict`; even an old replacement record cannot transfer authority again. Different mutation order, type, bytes, replacement flag or normalized domains returns `ErrCursorConflict`. Cursor persistence records ingestion/deduplication only, never provider acknowledgement: Tasks 8–9 advance etcd acknowledgement state only after `Coordinator.Apply` succeeds.
+`providerCursorBucket` stores a fixed active-provider record plus cursor records keyed by a collision-resistant SHA-256 of the canonical provider/revision pair; every record embeds and revalidates the exact cursor, ordered batch digest, complete original ticket and an optional canonical committed acknowledgement. The active record must equal its keyed cursor record and its ticket revision/digest must equal the already-loaded current desired snapshot, so a coherent rollback of both cursor records still fails closed. Same cursor plus the same canonical batch returns the original ticket only while that ticket is the current desired head and its provider is still active, including after restart. When only the batch representation differs, reconstruct it from the immutable predecessor snapshot and reuse the ticket only if revision and digest equal the recorded result; mutation order/type/domain/replacement differences are therefore accepted when semantically identical and rejected with `ErrCursorConflict` when the resultant state differs. `Commit` atomically adds the committed acknowledgement to both identical cursor records; an uncommitted record remains distinguishable even for a zero-domain publication. Once the desired head advances, replaying the older cursor returns `ErrStaleCursor` without loading, preparing or publishing the historical snapshot. A cursor from a non-active provider returns `ErrProviderConflict`; even an old replacement record cannot transfer authority again. The committed marker is durable publication evidence, not provider-local progress: Tasks 8–9 still advance etcd acknowledgement state only after `Coordinator.Apply` returns it and the engine confirms the live owner.
 
 Implement the private boundary with these exact signatures; `digestDesiredBatch` canonicalizes cursor, replacement flag, mutations in original order, and normalized required domains without reading current journal state. Standalone translation is already deterministically sorted before this boundary, while etcd watch translation retains server event order:
 
@@ -1038,7 +1045,7 @@ func (s *Store) Commit(ctx context.Context, token generation.PublicationToken) (
 }
 ```
 
-`Commit` changes durable heads only. The coordinator has already reversibly activated the detached runtime owners before calling it, but the engine retains predecessor owners and leases until `FinalizeActivation` follows a successful commit. Task 9 makes `GenerationEngine.Activate` atomically install the prepared `PublishedView` together with the HTTP/stream runtime owner; this avoids an intermediate library commit that changes the active Store read path.
+`Commit` changes durable publication truth only. In the same transaction that writes heads/decisions and deletes the token, it writes the canonical acknowledgement into the active and keyed cursor record; any failure rolls all of these changes back. The coordinator has already reversibly activated the detached runtime owners before calling it, but the engine retains predecessor owners and leases until `FinalizeActivation` follows a successful commit. Task 9 makes `GenerationEngine.Activate` atomically install the prepared `PublishedView` together with the HTTP/stream runtime owner; this avoids an intermediate library commit that changes the active Store read path.
 
 Before any write, `Commit` revalidates the staged ticket against the current desired/authority records and requires every candidate revision to be strictly greater than its domain's committed head. Multiple pending tokens may coexist, but after a newer or same-revision token commits, older competitors fail without changing any artifact, head, decision or token. If either domain of a two-domain token is stale or any write fails, the whole bbolt transaction rolls back and the token remains available for retry or Abort. Success writes all artifacts, heads and decisions, deletes the token and derives the acknowledgement from the committed records in that same transaction.
 
@@ -1391,13 +1398,26 @@ git commit -m "feat(store): recover published generations across restart"
 
 **Files:**
 
+- Modify: `pkg/generation/journal.go`
 - Create: `pkg/generation/coordinator.go`
 - Test: `pkg/generation/coordinator_test.go`
+- Modify: `pkg/store/journal_schema.go`
+- Test: `pkg/store/journal_schema_test.go`
+- Modify: `pkg/store/journal_apply.go`
+- Test: `pkg/store/journal_apply_test.go`
+- Modify: `pkg/store/journal_publish.go`
+- Test: `pkg/store/journal_publish_test.go`
+- Test: `pkg/store/journal_recovery_test.go`
+- Modify: `docs/superpowers/plans/2026-08-23-apisix-go-convergence-program.md`
+- Modify: `docs/superpowers/plans/2026-08-23-durable-generation-journal.md`
+- Modify: `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md`
+- Modify: `docs/superpowers/plans/2026-08-23-supervisor-worker-platform.md`
+- Modify: `docs/superpowers/plans/2026-08-23-stream-convergence.md`
 
 **Interfaces:**
 
-- Consumes: the exact `generation.Journal` and `generation.PublicationEngine` interfaces.
-- Produces: serialized `Coordinator.Apply`; later providers advance their own cursors only from its returned `Acknowledgement`.
+- Consumes: the exact `generation.Journal` and `generation.PublicationEngine` interfaces, including durable `LoadAcknowledgement` and read-only `ConfirmActive`.
+- Produces: serialized `Coordinator.Apply`; later providers advance their own cursors only from its returned new or safely replayed `Acknowledgement`.
 
 - [ ] **Step 1: Write failing coordinator sequencing tests**
 
@@ -1411,7 +1431,7 @@ func TestCoordinatorAcknowledgesOnlyAfterCommitAndFinalize(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"apply-desired", "load-desired", "load-published:http", "prepare",
+		"load-acknowledgement", "apply-desired", "load-desired", "load-published:http", "prepare",
 		"stage", "activate", "commit", "finalize",
 	}
 	if !slices.Equal(journalAndEngineCalls(journal, engine), want) {
@@ -1435,7 +1455,7 @@ func TestCoordinatorActivationFailureAbortsAndDoesNotAcknowledge(t *testing.T) {
 		t.Fatalf("commit/abort = %d/%d, want 0/1", journal.commitCalls, journal.abortCalls)
 	}
 	want := []string{
-		"apply-desired", "load-desired", "load-published:http", "prepare",
+		"load-acknowledgement", "apply-desired", "load-desired", "load-published:http", "prepare",
 		"stage", "activate", "rollback", "abort",
 	}
 	if !slices.Equal(journalAndEngineCalls(journal, engine), want) {
@@ -1457,7 +1477,7 @@ func TestCoordinatorCommitFailureRollsBackActivationAndAborts(t *testing.T) {
 		t.Fatalf("Apply() error = %v, want %v", err, wantErr)
 	}
 	want := []string{
-		"apply-desired", "load-desired", "load-published:http", "prepare",
+		"load-acknowledgement", "apply-desired", "load-desired", "load-published:http", "prepare",
 		"stage", "activate", "commit", "rollback", "abort",
 	}
 	if !slices.Equal(journalAndEngineCalls(journal, engine), want) {
@@ -1476,7 +1496,7 @@ func TestCoordinatorStageFailureDiscardsPreparedWithUncanceledContext(t *testing
 	j.stageErr = stageErr
 	engine := &fakeEngine{calls: &j.calls, discardErr: discardErr}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	j.stageHook = cancel
 	_, err := NewCoordinator(j, engine).Apply(ctx, desiredHTTPBatch("etcd", "64"))
 	if !errors.Is(err, stageErr) || !errors.Is(err, discardErr) {
 		t.Fatalf("Apply() error = %v, want joined stage and discard errors", err)
@@ -1486,7 +1506,7 @@ func TestCoordinatorStageFailureDiscardsPreparedWithUncanceledContext(t *testing
 			engine.discardContextLive, engine.discardCalls)
 	}
 	want := []string{
-		"apply-desired", "load-desired", "load-published:http", "prepare", "stage", "discard",
+		"load-acknowledgement", "apply-desired", "load-desired", "load-published:http", "prepare", "stage", "discard",
 	}
 	if !slices.Equal(journalAndEngineCalls(j, engine), want) {
 		t.Fatalf("calls = %v, want %v", journalAndEngineCalls(j, engine), want)
@@ -1498,6 +1518,7 @@ type fakeJournal struct {
 	desired     Snapshot
 	ticket      ApplyTicket
 	staged      PublicationSet
+	stageHook   func()
 	stageErr    error
 	commitErr   error
 	commitCalls int
@@ -1538,9 +1559,17 @@ func (j *fakeJournal) LoadPublished(_ context.Context, domain Domain) (Published
 	return PublishedGeneration{}, ErrNotFound
 }
 
+func (j *fakeJournal) LoadAcknowledgement(context.Context, ProviderCursor) (Acknowledgement, error) {
+	j.calls = append(j.calls, "load-acknowledgement")
+	return Acknowledgement{}, ErrNotFound
+}
+
 func (j *fakeJournal) Stage(_ context.Context, _ ApplyTicket, set PublicationSet) (PublicationToken, error) {
 	j.calls = append(j.calls, "stage")
 	j.staged = set
+	if j.stageHook != nil {
+		j.stageHook()
+	}
 	if j.stageErr != nil {
 		return "", j.stageErr
 	}
@@ -1638,6 +1667,11 @@ func (e *fakeEngine) FinalizeActivation(context.Context, PublicationToken, Publi
 	e.finalizeCalls++
 }
 
+func (e *fakeEngine) ConfirmActive(context.Context, PublicationSet) error {
+	*e.calls = append(*e.calls, "confirm-active")
+	return nil
+}
+
 func desiredHTTPBatch(provider, revision string) DesiredBatch {
 	return DesiredBatch{
 		Cursor: ProviderCursor{Provider: provider, Revision: revision},
@@ -1653,20 +1687,56 @@ func journalAndEngineCalls(journal *fakeJournal, _ *fakeEngine) []string {
 }
 ```
 
-Also test that prepare errors do not stage or discard, a successful discard removes the candidate exactly once, concurrent calls serialize, and a retry of the same provider cursor reuses the desired ticket but retries an uncommitted publication. Add a rollback-error case which proves `errors.Join` preserves both the activation/commit error and rollback error, while `Abort` still runs. `FinalizeActivation` is asserted only after a successful journal commit; it has no recoverable-error path.
+Also test that prepare errors do not stage or discard, a successful discard removes the candidate exactly once, concurrent calls serialize, a canceled waiter stops after acquiring the coordinator lock, and a retry of the same provider cursor reuses the desired ticket and retries an uncommitted publication. Add a rollback-error case which proves `errors.Join` preserves the activation/commit, rollback and abort errors. `FinalizeActivation` is asserted only after a successful journal commit; its panic propagates as a fatal invariant and never becomes an acknowledgement.
+
+Before implementing the coordinator, add journal RED tests for the replay evidence:
+
+- `Commit` persists the acknowledgement together with heads, decisions and token deletion; a failed commit leaves the cursor uncommitted.
+- `LoadAcknowledgement` returns `ErrNotFound` before commit, survives restart, supports a committed zero-domain set, returns defensive copies, and rejects cursor/ack/head/decision/revision/domain-set tampering with `ErrIntegrity`.
+- A schema-v1 active cursor written by the pre-marker binary is lazily classified in the same bbolt write transaction: if every non-empty required domain has an exact current published head/decision at the ticket revision, derive and persist the canonical acknowledgement marker; if all are missing/older, leave it uncommitted; a partial exact set is `ErrIntegrity`. A markerless zero-domain record remains ambiguous and safely completes through the synthetic no-op lifecycle.
+- Opening a complete schema-v1 journal transactionally upgrades its metadata to schema v2 before returning a writable `Store`; markerless cursor records remain byte-valid and are classified by the preceding rule. A corrupt/partial v1 journal rolls the migration back without changing the file. A v1 reader must reject a v2 journal at metadata inspection with `ErrNewerSchema` before recovery or cursor mutation.
+- a second zero-domain token cannot overwrite an already committed cursor acknowledgement.
+- `Recover` preserves committed acknowledgement state while clearing only crash-left pending tokens.
+
+Add coordinator replay tests where commit/finalize succeeded but the caller/provider lost the returned acknowledgement. The same cursor must load the durable acknowledgement before `ApplyDesired`, reconstruct the exact required-domain `PublicationSet`, call `ConfirmActive`, and return the same acknowledgement without ApplyDesired, Prepare, Stage, Activate, Commit or Finalize. Include the real etcd restart shape: the original committed input is an incremental mutation batch whose cursor revision is its final consumed event `ModRevision`, while the restart input is a different `ReplaceManaged` full snapshot whose Header revision is exactly that same value and whose cluster/version/prefix provider scope is identical; only then do they share a provider-state cursor and replay without conflict. Also cover crash before Commit: persist and Stage the delta, reopen/Recover, then apply the equivalent full snapshot at the same cursor; `ApplyDesired` must prove the same resultant snapshot from the predecessor, reuse the original ticket/domains and complete publication. A semantically different resultant state returns `ErrCursorConflict`. Add fixtures for a pre-marker successful non-empty commit (lazy marker backfill survives another reopen), a genuinely uncommitted pre-marker record, and the ambiguous markerless zero-domain synthetic retry. A missing committed publication maps to `ErrIntegrity`, while context cancellation, deadline and non-integrity `LoadPublished` failures pass through unchanged. `ConfirmActive` mismatch/cancellation and partial required-domain committed state return errors and never fall back to same-revision publication. Add normal zero-domain first-commit, Stage-failure discard, commit-failure/retry and committed-replay cases: the normal path performs the journal lifecycle with a synthetic empty set but the fake engine records no compile/owner/retirement work; replay only confirms the initialized empty fence.
 
 - [ ] **Step 2: Run coordinator tests and confirm RED**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/generation -run "^TestCoordinator" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/store -run "^(TestCoordinator|TestJournal.*Acknowledgement|TestJournalCommit.*Acknowledgement|TestJournalCursor|TestOpenJournal|TestVersionOneReader)" -count=1'`
 
-Expected: FAIL because `Coordinator` and `PublicationEngine` do not exist.
+Expected: FAIL because `Coordinator`, `PublicationEngine`, durable acknowledgement records and replay loading do not exist.
 
 - [ ] **Step 3: Implement the coordinator with one lifecycle transaction at a time**
+
+Add the stable `generation.ErrActiveGenerationMismatch` sentinel declared in Task 2; every `PublicationEngine.ConfirmActive` implementation returns it when the requested committed artifact identities do not match the initialized live owner.
+
+First extend the private cursor wire with an optional `committed` acknowledgement encoded as a sorted domain slice, never as a JSON map. The acknowledgement cursor, strict revision set and canonical decisions must match the staged ticket and records written by the same Commit transaction. Commit updates the keyed cursor record and identical `active_provider` record before returning; a pre-existing committed marker makes another token stale, including zero-domain tokens. The optional field is omitted for old schema-v1 records, so their canonical bytes remain valid. Because the old binary could successfully commit without this field, `LoadAcknowledgement` uses a write transaction to lazily backfill only an exactly proven non-empty active commit as described above; it never guesses an empty-domain commit.
+
+Because `committed` changes the cursor-record wire that v1 binaries canonicalize, bump `currentJournalSchemaVersion` from `1` to `2` in this task. `OpenJournal` first inspects metadata and desired-head integrity read-only. For a complete v1 journal, it revalidates the same state inside one bbolt write transaction and changes only `schema_version` to `2`; any error rolls the transaction back. Existing markerless cursor payloads are not eagerly rewritten. Versions greater than `2` return `ErrNewerSchema` before any write, and `Recover` accepts only the current schema. This is a one-way upgrade: a v1 binary opening a v2 journal must return `ErrNewerSchema` before clearing pending tokens or decoding cursor records.
+
+`LoadAcknowledgement(ctx, cursor)` resolves the exact provider-state cursor before `ApplyDesired`, requires byte-identical keyed and `active_provider` records for that current authority, validates the stored ticket, loads or exactly backfills committed evidence, requires its revisions to equal `loadRevisionSetTx`, requires its decision domains to equal the stored ticket's `RequiredDomains`, and cross-checks every domain's published revision and canonical decisions through `loadPublishedTx`. An unknown current cursor or an uncommitted current cursor returns `ErrNotFound`; a cursor older than the active provider head returns `ErrStaleCursor`; any record/marker/ticket/head/decision mismatch returns `ErrIntegrity`. All returned maps and slices are defensive copies. The provider-state cursor binds source identity as well as revision; incoming bytes are skipped only for an exactly committed current cursor.
 
 ```go
 func (c *Coordinator) Apply(ctx context.Context, batch DesiredBatch) (Acknowledgement, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Acknowledgement{}, err
+	}
+	committed, err := c.journal.LoadAcknowledgement(ctx, batch.Cursor)
+	if err == nil {
+		set, loadErr := c.loadCommittedPublicationSet(ctx, committed)
+		if loadErr != nil {
+			return Acknowledgement{}, loadErr
+		}
+		if activeErr := c.engine.ConfirmActive(ctx, set); activeErr != nil {
+			return Acknowledgement{}, activeErr
+		}
+		return committed, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return Acknowledgement{}, err
+	}
 	ticket, err := c.journal.ApplyDesired(ctx, batch)
 	if err != nil {
 		return Acknowledgement{}, err
@@ -1679,6 +1749,9 @@ func (c *Coordinator) Apply(ctx context.Context, batch DesiredBatch) (Acknowledg
 	for _, domain := range ticket.RequiredDomains {
 		published, loadErr := c.journal.LoadPublished(ctx, domain)
 		if loadErr == nil {
+			if published.Artifact.Revision >= ticket.DesiredRevision {
+				return Acknowledgement{}, ErrIntegrity
+			}
 			previous[domain] = published
 		} else if !errors.Is(loadErr, ErrNotFound) {
 			return Acknowledgement{}, loadErr
@@ -1710,6 +1783,29 @@ func (c *Coordinator) Apply(ctx context.Context, batch DesiredBatch) (Acknowledg
 	return ack, nil
 }
 
+func (c *Coordinator) loadCommittedPublicationSet(
+	ctx context.Context,
+	ack Acknowledgement,
+) (PublicationSet, error) {
+	set := PublicationSet{DesiredRevision: ack.Revisions.Desired, Domains: make(map[Domain]PublicationCandidate)}
+	for _, domain := range sortedAcknowledgementDomains(ack.Decisions) {
+		published, err := c.journal.LoadPublished(ctx, domain)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return PublicationSet{}, ErrIntegrity
+			}
+			return PublicationSet{}, err
+		}
+		if published.Artifact.Revision != ack.Revisions.Desired ||
+			revisionForDomain(ack.Revisions, domain) != ack.Revisions.Desired ||
+			!slices.Equal(published.Decisions, ack.Decisions[domain]) {
+			return PublicationSet{}, ErrIntegrity
+		}
+		set.Domains[domain] = PublicationCandidate(published)
+	}
+	return set, nil
+}
+
 func stableAbortCode(phase string, err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -1722,18 +1818,24 @@ func stableAbortCode(phase string, err error) string {
 }
 ```
 
-`DiscardPrepared` is called only when `Prepare` succeeded but `Stage` did not return a token. It receives an uncanceled cleanup context, is idempotent by publication-set identity, and releases every new candidate lease; `errors.Join` preserves both persistence and cleanup failures. `RollbackActivation` is called after every activation error because it is idempotent and is the only safe way to clean up an engine that switched one domain before another failed. A commit error means the bbolt transaction did not publish any head: the coordinator restores the old active owners, closes the new owners, aborts the stage and returns no acknowledgement. `FinalizeActivation` runs only after the durable commit and cannot report a recoverable business error; an implementation invariant failure there must terminate/fail the runtime rather than return an acknowledgement from split truth. `stableAbortCode` maps errors to bounded codes and never passes `err.Error()` into the journal. Schema v1 validates this Abort code but does not persist abort audit records. A prepare error represents an unresolved transient/system failure and is not an acknowledgement. Deterministic invalid-resource handling must be represented by a valid candidate and explicit decisions, allowing unrelated resources to publish.
+`LoadAcknowledgement` is attempted by provider-state cursor before `ApplyDesired`. `ErrNotFound` means the cursor has not committed and enters the normal publication path, where `ApplyDesired` accepts a different representation only after reconstructing the exact recorded resultant snapshot from its predecessor; otherwise it returns `ErrCursorConflict`. Any other acknowledgement lookup error is fail-closed. In that normal path, a required-domain published revision equal to or newer than the ticket after markerless compatibility classification is `ErrIntegrity`, not a predecessor and not permission to prepare. A committed replay derives its exact required-domain set from the verified acknowledgement and published generations and returns the stored acknowledgement only after `ConfirmActive`; it never compares the incoming batch representation, and an active mismatch never falls back to ApplyDesired/Prepare/Stage. Startup must therefore recover and install committed owners before starting a provider. The empty required-domain set still has a durable committed marker and confirms the initialized empty runtime fence.
+
+`DiscardPrepared` is called only when `Prepare` succeeded but `Stage` did not return a token. It receives an uncanceled cleanup context, is idempotent by publication-set identity, and releases every new candidate lease; `errors.Join` preserves both persistence and cleanup failures. `RollbackActivation` is called after every activation error because it is idempotent and is the only safe way to clean up an engine that switched one domain before another failed. A commit error means the bbolt transaction did not publish any head or acknowledgement marker: the coordinator restores the old active owners, closes the new owners, aborts the stage and returns no acknowledgement. `FinalizeActivation` runs only after the durable commit and cannot report a recoverable business error; an implementation invariant failure there must terminate/fail the runtime rather than return an acknowledgement from split truth. `stableAbortCode` maps errors to bounded codes and never passes `err.Error()` into the journal. Schema v2 retains the v1 Abort-code validation behavior and does not persist abort audit records. A prepare error represents an unresolved transient/system failure and is not an acknowledgement. Deterministic invalid-resource handling must be represented by a valid candidate and explicit decisions, allowing unrelated resources to publish.
 
 - [ ] **Step 4: Run coordinator tests with race detection**
 
-Run: `bash -lc 'source .envrc && go test -race ./pkg/generation -run "^TestCoordinator" -count=1'`
+Run: `bash -lc 'source .envrc && go test -race ./pkg/generation ./pkg/store -run "^(TestCoordinator|TestJournal.*Acknowledgement|TestJournalCommit.*Acknowledgement|TestJournalCursor|TestOpenJournal|TestVersionOneReader)" -count=1'`
 
 Expected: PASS.
+
+Run: `bash -lc 'source .envrc && GOFLAGS=-mod=readonly make build && make clean && git diff --check'`
+
+Expected: PASS with no dependency-file drift or whitespace errors.
 
 - [ ] **Step 5: Commit the acknowledgement state machine**
 
 ```bash
-git add pkg/generation/coordinator.go pkg/generation/coordinator_test.go
+git add pkg/generation/journal.go pkg/generation/coordinator.go pkg/generation/coordinator_test.go pkg/store/journal_schema.go pkg/store/journal_schema_test.go pkg/store/journal_apply.go pkg/store/journal_apply_test.go pkg/store/journal_publish.go pkg/store/journal_publish_test.go pkg/store/journal_recovery_test.go docs/superpowers/plans/2026-08-23-apisix-go-convergence-program.md docs/superpowers/plans/2026-08-23-durable-generation-journal.md docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md docs/superpowers/plans/2026-08-23-supervisor-worker-platform.md docs/superpowers/plans/2026-08-23-stream-convergence.md
 git commit -m "feat(generation): coordinate durable publication acknowledgement"
 ```
 
@@ -1758,7 +1860,7 @@ git commit -m "feat(generation): coordinate durable publication acknowledgement"
 ```go
 func TestDesiredBatchFromEtcdWatchCarriesRevisionDeleteAndDomains(t *testing.T) {
 	batch, err := desiredBatchFromEtcdWatch("/apisix/", clientv3.WatchResponse{
-		Header: etcdserverpb.ResponseHeader{Revision: 71},
+		Header: etcdserverpb.ResponseHeader{ClusterId: 0xabc, Revision: 71},
 		Events: []*clientv3.Event{{
 			Type: mvccpb.DELETE,
 			Kv: &mvccpb.KeyValue{Key: []byte("/apisix/stream_routes/mqtt"), ModRevision: 71},
@@ -1767,10 +1869,30 @@ func TestDesiredBatchFromEtcdWatchCarriesRevisionDeleteAndDomains(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if batch.Cursor != (generation.ProviderCursor{Provider: "etcd", Revision: "71"}) ||
+	if batch.Cursor != (generation.ProviderCursor{
+		Provider: etcdProviderID(0xabc, "/apisix/"), Revision: "71",
+	}) ||
 		batch.Mutations[0].Type != generation.MutationDelete ||
 		!slices.Equal(batch.RequiredDomains, []generation.Domain{generation.DomainStream}) {
 		t.Fatalf("batch = %+v", batch)
+	}
+}
+
+func TestDesiredBatchFromEtcdWatchUsesLastEventRevisionNotDelayedHeader(t *testing.T) {
+	first, err := desiredBatchFromEtcdWatch("/apisix/", watchPut(0xabc, 100, 91, "routes/r1"))
+	if err != nil { t.Fatal(err) }
+	second, err := desiredBatchFromEtcdWatch("/apisix/", watchPut(0xabc, 100, 95, "routes/r2"))
+	if err != nil { t.Fatal(err) }
+	if first.Cursor.Revision != "91" || second.Cursor.Revision != "95" {
+		t.Fatalf("cursors = %q/%q, want 91/95", first.Cursor.Revision, second.Cursor.Revision)
+	}
+}
+
+func TestDesiredBatchFromEtcdBindsClusterPrefixAndTranslationVersion(t *testing.T) {
+	base := etcdProviderID(0xabc, "/apisix-a/")
+	if base == etcdProviderID(0xdef, "/apisix-a/") ||
+		base == etcdProviderID(0xabc, "/apisix-b/") {
+		t.Fatal("etcd provider authority identity collision")
 	}
 }
 
@@ -1778,7 +1900,7 @@ func TestDesiredBatchFromStandaloneUsesContentDigestCursor(t *testing.T) {
 	batch := desiredBatchFromStandalone(standaloneSnapshot{
 		"routes": {"r1": []byte(`{"id":"r1","uri":"/"}`)},
 	}, []byte("canonical-file"))
-	if !batch.ReplaceManaged || batch.Cursor.Provider != "standalone" ||
+	if !batch.ReplaceManaged || batch.Cursor.Provider != "standalone/v1" ||
 		!strings.HasPrefix(batch.Cursor.Revision, "sha256:") {
 		t.Fatalf("batch = %+v", batch)
 	}
@@ -1795,10 +1917,18 @@ Expected: FAIL because the translation functions do not exist.
 
 ```go
 func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (generation.DesiredBatch, error) {
-	batch := generation.DesiredBatch{
-		Cursor: generation.ProviderCursor{Provider: "etcd", Revision: strconv.FormatInt(response.Header.Revision, 10)},
+	if response.Header.ClusterId == 0 {
+		return generation.DesiredBatch{}, fmt.Errorf("etcd response requires cluster identity")
 	}
+	provider := etcdProviderID(response.Header.ClusterId, prefix)
+	batch := generation.DesiredBatch{}
+	lastEventRevision := int64(0)
 	for _, event := range response.Events {
+		if event == nil || event.Kv == nil || event.Kv.ModRevision <= 0 ||
+			event.Kv.ModRevision < lastEventRevision {
+			return generation.DesiredBatch{}, fmt.Errorf("invalid non-monotonic etcd watch event revision")
+		}
+		lastEventRevision = event.Kv.ModRevision
 		mutation, domains, ok, err := desiredMutationFromEtcdEvent(prefix, event)
 		if err != nil {
 			return generation.DesiredBatch{}, err
@@ -1809,12 +1939,31 @@ func desiredBatchFromEtcdWatch(prefix string, response clientv3.WatchResponse) (
 		batch.Mutations = append(batch.Mutations, mutation)
 		batch.RequiredDomains = append(batch.RequiredDomains, domains...)
 	}
+	if lastEventRevision != 0 {
+		if response.Header.Revision < lastEventRevision {
+			return generation.DesiredBatch{}, fmt.Errorf("etcd watch header precedes its events")
+		}
+		batch.Cursor = generation.ProviderCursor{Provider: provider, Revision: strconv.FormatInt(lastEventRevision, 10)}
+	} else {
+		if !response.IsProgressNotify() {
+			return generation.DesiredBatch{}, fmt.Errorf("empty etcd watch response is not progress")
+		}
+		batch.Cursor = generation.ProviderCursor{Provider: provider, Revision: strconv.FormatInt(response.Header.Revision, 10)}
+	}
 	batch.RequiredDomains = normalizeRequiredDomains(batch.RequiredDomains)
 	return batch, nil
 }
+
+func etcdProviderID(clusterID uint64, prefix string) string {
+	canonicalPrefix := canonicalEtcdPrefix(prefix)
+	prefixDigest := sha256.Sum256([]byte(canonicalPrefix))
+	return fmt.Sprintf("etcd/v1/%016x/%x", clusterID, prefixDigest)
+}
 ```
 
-Etcd snapshot translation sets `ReplaceManaged=true`; watch translation preserves event order and explicit deletes. Standalone translation sets `ReplaceManaged=true`, sorts all mutations by resource kind/ID, hashes the canonical normalized file content for the cursor and never uses an in-memory counter.
+Etcd snapshot translation sets `ReplaceManaged=true` and uses the GET response Header revision. Both snapshot and watch cursors use `etcdProviderID(Header.ClusterId, canonicalEtcdPrefix(prefix))`; its `v1` namespace binds the translation contract, exact etcd cluster identity and watched canonical namespace before the numeric revision can be considered an idempotency key. A changed cluster or prefix therefore cannot hit an old committed marker. Startup/resync must first apply the new source's full replacement snapshot to transfer authority; an incremental watch batch from a different source fails provider authority checks. A non-empty watch response uses its last event `ModRevision`, not `response.Header.Revision`, as the revision because the Header may describe a newer store position shared by multiple delayed/catch-up responses; revisions must be positive and nondecreasing in preserved event order. The etcd v3 client resumes a watch from the last event `ModRevision + 1`, so this cursor matches the consumed event boundary. Two responses with Header 100 but final event revisions 91 and 95 must produce distinct cursors and both apply, never `ErrCursorConflict` or committed replay. Client-side fragmented responses are reassembled before translation. Only `WatchResponse.IsProgressNotify()` may create an empty cursor-only batch from its Header revision; Created/empty non-progress responses are skipped by the watch loop, and canceled/compacted responses follow the existing error/recovery path. Standalone translation sets `ReplaceManaged=true`, uses provider identity `standalone/v1`, sorts all mutations by resource kind/ID, hashes the canonical normalized file content for the revision and never uses an in-memory counter. The provider version must be bumped whenever normalization, managed-resource selection or desired-domain translation semantics change, even if file bytes do not.
+
+Add integration regressions using the real Journal and Coordinator: apply delayed non-empty watch responses `{cluster:A,Header:100,last ModRevision:91}` and `{cluster:A,Header:100,last ModRevision:95}` and assert both desired revisions commit in order. At the same numeric revision, cluster B or a different canonical prefix must produce a different provider authority and must not load cluster A's acknowledgement; only a full `ReplaceManaged` snapshot may transfer authority. Separately retain the restart replay test where cluster, prefix, translation version and revision of a committed watch event and subsequent full snapshot all match; only that full provider-state cursor is eligible for cursor-first durable acknowledgement. Add named `TestDesiredBatchFromStandaloneVersionTransfer`: the same content digest under `standalone/v2` must not load a `standalone/v1` acknowledgement and must perform a full replacement authority transfer. Both namespace tests intentionally match every `^TestDesiredBatchFrom` gate below.
 
 Required domains use this exact conservative table until the immutable compiler owns dependency impact. A batch unions and sorts all domains returned by the table.
 
@@ -2152,6 +2301,8 @@ type GenerationEngine struct {
 	prepared    map[uint64]*preparedActivation
 	activations map[generation.PublicationToken]*activationState
 	retiring    []*preparedActivation
+	activeByDomain map[generation.Domain]generation.GenerationArtifact
+	activeReady bool
 }
 
 func NewGenerationEngine(server *Server) *GenerationEngine {
@@ -2160,6 +2311,7 @@ func NewGenerationEngine(server *Server) *GenerationEngine {
 		prepared: make(map[uint64]*preparedActivation),
 		activations: make(map[generation.PublicationToken]*activationState),
 		retiring: make([]*preparedActivation, 0),
+		activeByDomain: make(map[generation.Domain]generation.GenerationArtifact),
 	}
 }
 
@@ -2172,6 +2324,13 @@ func (e *GenerationEngine) Prepare(
 	set := generation.PublicationSet{
 		DesiredRevision: ticket.DesiredRevision,
 		Domains: make(map[generation.Domain]generation.PublicationCandidate),
+	}
+	if len(ticket.RequiredDomains) == 0 {
+		prepared := &preparedActivation{set: clonePublicationSet(set)}
+		e.mu.Lock()
+		e.prepared[ticket.DesiredRevision] = prepared
+		e.mu.Unlock()
+		return set, nil // synthetic no-op: no compiler, lease or owner work
 	}
 	for _, domain := range ticket.RequiredDomains {
 		candidate, err := e.prepareDomain(ctx, domain, ticket, desired, previous[domain])
@@ -2277,9 +2436,33 @@ func (e *GenerationEngine) FinalizeActivation(
 		e.mu.Unlock()
 		panic("generation invariant: committed activation token is missing or mismatched")
 	}
-	e.retiring = append(e.retiring, state.prepared)
+	if len(state.prepared.set.Domains) != 0 {
+		e.retiring = append(e.retiring, state.prepared)
+	}
+	for domain, candidate := range state.prepared.set.Domains {
+		e.activeByDomain[domain] = candidate.Artifact
+	}
+	e.activeReady = true
 	delete(e.activations, token)
 	e.mu.Unlock()
+}
+
+func (e *GenerationEngine) ConfirmActive(
+	ctx context.Context,
+	set generation.PublicationSet,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !e.activeReady || !activeDomainsMatch(e.activeByDomain, set) {
+		return generation.ErrActiveGenerationMismatch
+	}
+	return nil
 }
 
 func (e *GenerationEngine) retireNext(ctx context.Context) error {
@@ -2300,9 +2483,9 @@ func (e *GenerationEngine) retireNext(ctx context.Context) error {
 }
 ```
 
-`activation` and `deleteActivation` lock `GenerationEngine.mu`; they never call a lease while holding that mutex. Each domain lease captures both the old live owner and the detached new owner. `Activate` swaps to the new owner but retains old handler/runtime/resource leases. `Rollback` is idempotent and restores the old owner before closing the new owner and releasing every new dependency lease, including leases for a later domain that never activated. `Finalize` only transfers permanent ownership to the new generation, appends the predecessor leases to the in-memory retirement queue, deletes the activation record, and returns. The server main loop calls `retireNext` asynchronously to drain old handlers/runtimes and release predecessor dependency leases; retirement errors change runtime status and are retried or escalated, but cannot retroactively fail finalize or the already committed provider acknowledgement. A missing/mismatched token or an ownership transition that cannot be finalized is a core invariant violation and must fail the runtime, never return a provider-visible business error after durable commit.
+`activation` and `deleteActivation` lock `GenerationEngine.mu`; they never call a lease while holding that mutex. Each non-empty domain lease captures both the old live owner and the detached new owner. `Activate` swaps to the new owner but retains old handler/runtime/resource leases; a synthetic empty activation only moves its in-memory token record. `Rollback` is idempotent and restores the old owner before closing the new owner and releasing every new dependency lease, including leases for a later domain that never activated; synthetic rollback only deletes its record. `Finalize` updates the per-domain active artifact identities named by a non-empty publication while retaining independently active identities for untouched domains, appends predecessor leases only for a non-empty publication, sets `activeReady`, deletes the activation record, and returns. A zero-domain finalize never replaces or retires an owner. Recovery installation records every verified recovered domain identity and sets `activeReady`, including for an initialized empty fence. `activeDomainsMatch` requires a coherent `DesiredRevision` and exact artifact identity for every domain requested by `set`; it permits additional independently active domains at older revisions. `ConfirmActive` checks cancellation both before and immediately after acquiring the engine mutex, then performs that requested-subset comparison without compilation, owner switch, retirement or blocking I/O. A deterministic test holds the mutex, starts confirmation, cancels its context and then unlocks; confirmation must return the context error with zero side effects. The server main loop calls `retireNext` asynchronously to drain old handlers/runtimes and release predecessor dependency leases; retirement errors change runtime status and are retried or escalated, but cannot retroactively fail finalize or the already committed provider acknowledgement. A missing/mismatched token or an ownership transition that cannot be finalized is a core invariant violation and must fail the runtime, never return a provider-visible business error after durable commit.
 
-Plan 04's `compiler.PreparedGeneration` is the permanent producer of these same domain leases: its prepared owners and dependency leases remain owned by the preparation/activation record from `Prepare` through `Activate`; `DiscardPrepared` closes the un-staged prepared generation; `RollbackActivation` restores the predecessor and releases the new generation; `FinalizeActivation` transfers active ownership and enqueues the predecessor for retirement. Plan 04 may replace `preparedActivation` internals, but it must not change the `generation.PublicationEngine` signatures or release predecessor leases before journal commit.
+Plan 04's `compiler.PreparedGeneration` is the permanent producer of these same domain leases: its prepared owners and dependency leases remain owned by the preparation/activation record from `Prepare` through `Activate`; `DiscardPrepared` closes the un-staged prepared generation; `RollbackActivation` restores the predecessor and releases the new generation; `FinalizeActivation` transfers active ownership and enqueues the predecessor for retirement; `ConfirmActive` verifies its immutable publication identity. Plan 04 may replace `preparedActivation` internals, but it must not change the `generation.PublicationEngine` signatures or release predecessor leases before journal commit.
 
 Until plan 04 replaces this classifier with the immutable compiler's closure-aware implementation, use this explicit conservative first-milestone classification. An invalid first resource in these kinds receives `DispositionFailClosed`; an invalid replacement may use exact predecessor bytes with `DispositionLastGood`. Other invalid first resources receive `DispositionQuarantined` and remain absent from the candidate.
 
@@ -2363,12 +2546,16 @@ if err != nil {
 	_ = journal.Close()
 	return fmt.Errorf("recover generation journal: %w", err)
 }
-server.installRecovery(recovery)
+engine := NewGenerationEngine(server)
+if err := server.installRecovery(recovery, engine); err != nil {
+	_ = journal.Close()
+	return fmt.Errorf("install recovered generations: %w", err)
+}
 server.journal = journal
-server.coordinator = generation.NewCoordinator(journal, NewGenerationEngine(server))
+server.coordinator = generation.NewCoordinator(journal, engine)
 ```
 
-When a verified HTTP or stream publication exists, install it before connecting to the provider and allow traffic to use it. Record provider stage unhealthy until the authoritative provider completes a fresh acknowledged apply; therefore offline last-good can serve while readiness remains false/degraded. A missing or corrupt required domain stays unready and is never rebuilt from desired state during offline startup.
+When a verified HTTP or stream publication exists, install it before constructing the Coordinator or connecting to the provider, record every verified recovered domain's exact active artifact identity, set the separate initialized `activeReady` fence, and allow traffic to use it. Recovered domains may legitimately have different published revisions; none is dropped merely because it differs from another domain or the latest desired revision. `ConfirmActive` later verifies only the domains requested by the replayed `PublicationSet` and permits other independently active domains. Recovery installation is fallible and must prevent provider startup on any owner/fence mismatch. Record provider stage unhealthy until the authoritative provider completes a fresh acknowledged or safely replayed apply; therefore offline last-good can serve while readiness remains false/degraded. A missing or corrupt required domain stays unready and is never rebuilt from desired state during offline startup. Crash before Commit has no committed marker and retries the normal lifecycle; crash after Commit but before provider-local acknowledgement uses the installed recovery fence plus the durable marker to replay the acknowledgement without same-revision activation. A committed zero-domain replay is confirmed by `activeReady` even when the per-domain identity map is empty.
 
 - [ ] **Step 6: Delete the legacy event, bucket and in-memory last-good implementation**
 
@@ -2428,13 +2615,13 @@ The document must contain this bucket table and state machine using the implemen
 ```markdown
 | Bucket | Key | Value | Commit owner |
 | --- | --- | --- | --- |
-| `generation_meta` | `schema_version` | uint64 big-endian `1` | migration only |
+| `generation_meta` | `schema_version` | uint64 big-endian `2` | migration only |
 | `generation_desired_head` | `revision`, `artifact` | current desired revision and artifact ID | `ApplyDesired` |
 | `generation_desired_revisions` | uint64 big-endian revision | desired artifact ID | migration/`ApplyDesired` |
 | `generation_artifacts` | `sha256:<hex>` | integrity envelope and canonical snapshot | `ApplyDesired`/`Commit` |
 | `generation_published_heads` | `http` or `stream` | artifact, published revision, closure and decision-record digest | `Commit` |
 | `generation_publication_transactions` | random token | ticket and complete candidate set | `Stage`/`Abort`/`Commit` |
-| `generation_provider_cursors` | `active_provider` or SHA-256 cursor identity | active authority, exact cursor, ordered batch digest and desired ticket | `ApplyDesired` |
+| `generation_provider_cursors` | `active_provider` or SHA-256 cursor identity | active authority, exact cursor, ordered batch digest, desired ticket and optional canonical committed acknowledgement | `ApplyDesired`/`Commit` |
 | `generation_publication_decisions` | domain/revision | bounded per-resource decisions | `Commit` |
 
 desired durable -> prepared -> staged durable -> reversibly activated -> published durable
@@ -2442,7 +2629,10 @@ desired durable -> prepared -> staged durable -> reversibly activated -> publish
                                     | activation failure      v
                                     +----------------------> rollback -> aborted, not acknowledged
 
-published durable -> finalized (old owners retired) -> acknowledged
+published durable -> ownership finalized (predecessor retirement enqueued) -> acknowledged
+                                                                          |
+                                                                          v
+                                                        asynchronous predecessor retirement
 ```
 
 State explicitly that schema versions are forward-incompatible and unknown newer versions fail before mutation; migrations are one-way and transactional; legacy resource buckets import as desired-only then are deleted; `Snapshot` IDs are content hashes; explicit deletes cannot use last-good; published closures are atomic; HTTP and stream revisions advance independently; offline serving never marks the provider healthy. `DiscardPrepared` is the mandatory pre-stage cleanup boundary. `FinalizeActivation` is outside the recoverable business-error state machine: after the published-head transaction commits it may only complete the in-memory ownership transfer and enqueue the predecessor for asynchronous retirement. A missing token or impossible ownership state is fatal because returning a normal error would leave durable and active truth split.
@@ -2488,8 +2678,8 @@ git commit -m "docs(runtime): specify durable generation journal"
 ## Plan Self-Review
 
 - Spec coverage: schema version, migrations, integrity, desired state, independent domain revisions, ack-after-publication-and-finalize, partial activation rollback, commit-failure rollback, restart last-good, explicit delete, per-resource security last-good/fail-closed, atomic dependency closure, offline degraded startup and unknown-newer-schema failure each have a named task and red/green test.
-- Migration coverage: legacy resource buckets are imported exactly once as desired-only state and deleted transactionally; Task 9 deletes Store events, hooks and in-memory last-good rather than preserving a compatibility path.
-- Interface consistency: every task uses `generation.Domain`, `generation.RevisionSet`, `generation.GenerationArtifact`, `generation.Journal`, `generation.PublicationEngine` and `generation.Coordinator` with the exact signatures declared under Shared Interfaces, including pre-stage `DiscardPrepared`, reversible `Activate`/`RollbackActivation`, and post-commit infallible `FinalizeActivation`.
+- Migration coverage: legacy resource buckets are imported exactly once as desired-only state and deleted transactionally; Task 7 transactionally upgrades schema v1 to v2 while retaining markerless cursors for exact lazy classification and makes v1 readers reject v2 before mutation; Task 9 deletes Store events, hooks and in-memory last-good rather than preserving a compatibility path.
+- Interface consistency: every task uses `generation.Domain`, `generation.RevisionSet`, `generation.GenerationArtifact`, `generation.Journal`, `generation.PublicationEngine` and `generation.Coordinator` with the exact signatures declared under Shared Interfaces, including durable `LoadAcknowledgement`, pre-stage `DiscardPrepared`, reversible `Activate`/`RollbackActivation`, post-commit infallible `FinalizeActivation`, and read-only exact-fence `ConfirmActive` for committed replay.
 - Dependency consistency: this plan consumes plan 02's `config.JournalPath(*config.EffectiveConfig)` for the database path. It produces the journal and reversible transaction boundary consumed by plan 04's trusted compiler/`PreparedGeneration` lease owner and the later supervisor plan; plan 04 remains the final owner of security-sensitive classification.
 - Verification scope: every Go command sources `.envrc`; tests are restricted to affected packages and focused names; race, lint and build gates occur only after the production cutover.
 - Completeness scan: the plan contains no deferred implementation markers, generic error-handling requests, unspecified tests or undefined neighboring interfaces.

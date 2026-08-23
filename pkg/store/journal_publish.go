@@ -102,6 +102,13 @@ func (s *Store) Stage(
 		if err := validateStageTicketTx(tx, ticket, false); err != nil {
 			return err
 		}
+		record, err := loadCursorRecordForTicketTx(tx, ticket)
+		if err != nil {
+			return err
+		}
+		if record.Committed != nil {
+			return generation.ErrStaleCursor
+		}
 		if err := validatePublicationSet(ticket, set); err != nil {
 			return err
 		}
@@ -151,6 +158,153 @@ func (s *Store) Stage(
 	return token, nil
 }
 
+func (s *Store) LoadAcknowledgement(
+	ctx context.Context,
+	cursor generation.ProviderCursor,
+) (generation.Acknowledgement, error) {
+	if err := contextErr(ctx); err != nil {
+		return generation.Acknowledgement{}, err
+	}
+	if err := validateProviderCursor(cursor); err != nil {
+		return generation.Acknowledgement{}, generation.ErrNotFound
+	}
+	var acknowledgement generation.Acknowledgement
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
+		bucket := tx.Bucket(providerCursorBucket)
+		if bucket == nil {
+			return generation.ErrIntegrity
+		}
+		keyed := bucket.Get(cursorRecordKey(cursor))
+		if keyed == nil {
+			return generation.ErrNotFound
+		}
+		record, err := decodeCursorRecord(keyed, &cursor)
+		if err != nil {
+			return err
+		}
+		activeEncoded := bucket.Get(activeProviderRecordKey)
+		if activeEncoded == nil {
+			return generation.ErrIntegrity
+		}
+		active, err := decodeCursorRecord(activeEncoded, nil)
+		if err != nil {
+			return err
+		}
+		activeKeyed := bucket.Get(cursorRecordKey(active.Cursor))
+		if activeKeyed == nil || !bytes.Equal(activeKeyed, activeEncoded) {
+			return generation.ErrIntegrity
+		}
+		desired, err := loadDesiredSnapshotTx(tx, 0)
+		if err != nil || active.Ticket.DesiredRevision != desired.Revision() ||
+			active.Ticket.DesiredDigest != desired.Digest() {
+			return generation.ErrIntegrity
+		}
+		if active.Cursor != cursor {
+			return generation.ErrStaleCursor
+		}
+		if !bytes.Equal(keyed, activeEncoded) {
+			return generation.ErrIntegrity
+		}
+		if record.Committed == nil {
+			backfilled, found, err := backfillMarkerlessAcknowledgementTx(tx, record)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return generation.ErrNotFound
+			}
+			record.Committed = &backfilled
+		}
+		if err := validateCommittedAcknowledgement(record); err != nil {
+			return err
+		}
+		committed := cloneAcknowledgement(*record.Committed)
+		revisions, err := loadRevisionSetTx(tx)
+		if err != nil {
+			return err
+		}
+		if committed.Revisions != revisions || committed.Cursor != cursor ||
+			committed.Revisions.Desired != record.Ticket.DesiredRevision ||
+			len(committed.Decisions) != len(record.Ticket.RequiredDomains) {
+			return generation.ErrIntegrity
+		}
+		for _, domain := range record.Ticket.RequiredDomains {
+			published, err := loadPublishedTx(tx, domain)
+			if err != nil {
+				return generation.ErrIntegrity
+			}
+			decisions, found := committed.Decisions[domain]
+			if !found ||
+				published.Artifact.Revision != revisionForDomain(committed.Revisions, domain) ||
+				published.Artifact.Revision != record.Ticket.DesiredRevision ||
+				!slices.Equal(decisions, canonicalDecisions(published.Decisions)) {
+				return generation.ErrIntegrity
+			}
+		}
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
+		acknowledgement = committed
+		return nil
+	})
+	if err != nil {
+		return generation.Acknowledgement{}, err
+	}
+	return cloneAcknowledgement(acknowledgement), nil
+}
+
+func backfillMarkerlessAcknowledgementTx(
+	tx *bolt.Tx,
+	record cursorRecord,
+) (generation.Acknowledgement, bool, error) {
+	if len(record.Ticket.RequiredDomains) == 0 {
+		return generation.Acknowledgement{}, false, nil
+	}
+	revisions, err := loadRevisionSetTx(tx)
+	if err != nil {
+		return generation.Acknowledgement{}, false, err
+	}
+	if revisions.Desired != record.Ticket.DesiredRevision {
+		return generation.Acknowledgement{}, false, generation.ErrIntegrity
+	}
+	ack := generation.Acknowledgement{
+		Cursor: record.Cursor, Revisions: revisions,
+		Decisions: make(map[generation.Domain][]generation.ResourceDecision, len(record.Ticket.RequiredDomains)),
+	}
+	exact := 0
+	for _, domain := range record.Ticket.RequiredDomains {
+		published, loadErr := loadPublishedTx(tx, domain)
+		if errors.Is(loadErr, generation.ErrNotFound) {
+			continue
+		}
+		if loadErr != nil {
+			return generation.Acknowledgement{}, false, loadErr
+		}
+		if published.Artifact.Revision < record.Ticket.DesiredRevision {
+			continue
+		}
+		if published.Artifact.Revision > record.Ticket.DesiredRevision ||
+			revisionForDomain(revisions, domain) != record.Ticket.DesiredRevision {
+			return generation.Acknowledgement{}, false, generation.ErrIntegrity
+		}
+		exact++
+		ack.Decisions[domain] = canonicalDecisions(published.Decisions)
+	}
+	if exact == 0 {
+		return generation.Acknowledgement{}, false, nil
+	}
+	if exact != len(record.Ticket.RequiredDomains) {
+		return generation.Acknowledgement{}, false, generation.ErrIntegrity
+	}
+	if err := putCommittedAcknowledgementTx(tx, record.Ticket, ack); err != nil {
+		return generation.Acknowledgement{}, false, err
+	}
+	return cloneAcknowledgement(ack), true, nil
+}
+
 func (s *Store) Commit(
 	ctx context.Context,
 	token generation.PublicationToken,
@@ -172,6 +326,13 @@ func (s *Store) Commit(
 		}
 		if err := validateStageTicketTx(tx, staged.Ticket, true); err != nil {
 			return err
+		}
+		record, err := loadCursorRecordForTicketTx(tx, staged.Ticket)
+		if err != nil {
+			return err
+		}
+		if record.Committed != nil {
+			return generation.ErrStaleCursor
 		}
 		desired, err := loadDesiredSnapshotTx(tx, staged.Ticket.DesiredRevision)
 		if err != nil {
@@ -214,6 +375,12 @@ func (s *Store) Commit(
 		}
 		ack = acknowledgementFrom(staged)
 		ack.Revisions = revisions
+		if err := putCommittedAcknowledgementTx(tx, staged.Ticket, ack); err != nil {
+			return err
+		}
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {

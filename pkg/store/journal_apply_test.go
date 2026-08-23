@@ -68,7 +68,10 @@ func TestJournalApplyDesiredPersistsPutDeleteAndHistoryAcrossRestart(t *testing.
 	t.Cleanup(func() { _ = reopened.Close() })
 	assertDesiredValue(t, reopened, 1, put.Mutations[0].Key, put.Mutations[0].Value)
 	assertDesiredTombstone(t, reopened, 0, put.Mutations[0].Key, 3)
-	if _, err := reopened.LoadDesired(context.Background(), 4); !errors.Is(err, generation.ErrNotFound) {
+	if _, err := reopened.LoadDesired(context.Background(), 4); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
 		t.Fatalf("LoadDesired(4) error = %v, want ErrNotFound", err)
 	}
 }
@@ -111,8 +114,20 @@ func TestJournalReplacementTombstonesMissingAndEmptyAuthoritativeState(t *testin
 	if !domainsEqual(second.RequiredDomains, generation.DomainHTTP, generation.DomainStream) {
 		t.Fatalf("replacement domains = %v", second.RequiredDomains)
 	}
-	assertDesiredTombstone(t, journal, 2, generation.ResourceKey{Kind: "routes", ID: "old-route"}, 2)
-	assertDesiredTombstone(t, journal, 2, generation.ResourceKey{Kind: "services", ID: "old-service"}, 2)
+	assertDesiredTombstone(
+		t,
+		journal,
+		2,
+		generation.ResourceKey{Kind: "routes", ID: "old-route"},
+		2,
+	)
+	assertDesiredTombstone(
+		t,
+		journal,
+		2,
+		generation.ResourceKey{Kind: "services", ID: "old-service"},
+		2,
+	)
 	assertDesiredValue(t, journal, 2, replacementKey, []byte("new"))
 
 	third, err := journal.ApplyDesired(context.Background(), generation.DesiredBatch{
@@ -205,7 +220,8 @@ func TestJournalCursorCurrentReplayIsIdempotentAcrossRestartAndIsolated(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restartedReplay.DesiredRevision != 1 || !domainsEqual(restartedReplay.RequiredDomains, generation.DomainHTTP) {
+	if restartedReplay.DesiredRevision != 1 ||
+		!domainsEqual(restartedReplay.RequiredDomains, generation.DomainHTTP) {
 		t.Fatalf("restart replay = %+v", restartedReplay)
 	}
 	assertRevisions(t, reopened, generation.RevisionSet{Desired: 1})
@@ -232,22 +248,21 @@ func TestJournalCursorStaleReplayAndConflictMatrix(t *testing.T) {
 		batch generation.DesiredBatch
 	}{
 		{name: "value", batch: desiredBatch("etcd", "same", generation.DomainHTTP,
-			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("changed")},
-			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("two")})},
+			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("one")},
+			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("changed")})},
 		{name: "order", batch: desiredBatch("etcd", "same", generation.DomainHTTP,
 			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("two")},
 			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("one")})},
-		{name: "type", batch: desiredBatch("etcd", "same", generation.DomainHTTP,
-			generation.Mutation{Type: generation.MutationDelete, Key: key},
-			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("two")})},
-		{name: "domain", batch: desiredBatch("etcd", "same", generation.DomainStream,
+		{name: "delete", batch: desiredBatch("etcd", "same", generation.DomainHTTP,
+			generation.Mutation{Type: generation.MutationDelete, Key: key})},
+		{name: "extra resource", batch: desiredBatch("etcd", "same", generation.DomainHTTP,
 			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("one")},
-			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("two")})},
-		{name: "replace", batch: generation.DesiredBatch{
-			Cursor: generation.ProviderCursor{Provider: "etcd", Revision: "same"}, ReplaceManaged: true,
-			Mutations:       base.Mutations,
-			RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
-		}},
+			generation.Mutation{Type: generation.MutationPut, Key: key, Value: []byte("two")},
+			generation.Mutation{
+				Type:  generation.MutationPut,
+				Key:   generation.ResourceKey{Kind: "routes", ID: "extra"},
+				Value: []byte("extra"),
+			})},
 	}
 	for _, test := range conflicts {
 		t.Run(test.name, func(t *testing.T) {
@@ -273,9 +288,66 @@ func TestJournalCursorStaleReplayAndConflictMatrix(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.ApplyDesired(context.Background(), base); !errors.Is(err, generation.ErrStaleCursor) {
+	if _, err := journal.ApplyDesired(context.Background(), base); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
 		t.Fatalf("stale ApplyDesired() error = %v, want ErrStaleCursor", err)
 	}
+}
+
+func TestJournalCursorReusesTicketForEquivalentResultantState(t *testing.T) {
+	journal := openTestJournal(t)
+	oldKey := generation.ResourceKey{Kind: "routes", ID: "old"}
+	newKey := generation.ResourceKey{Kind: "routes", ID: "new"}
+	if _, err := journal.ApplyDesired(
+		context.Background(),
+		desiredBatch("etcd", "seed", generation.DomainHTTP, generation.Mutation{
+			Type: generation.MutationPut, Key: oldKey, Value: []byte(`{"id":"old"}`),
+		}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	cursor := generation.ProviderCursor{Provider: "etcd", Revision: "same-state"}
+	delta := generation.DesiredBatch{
+		Cursor: cursor,
+		Mutations: []generation.Mutation{
+			{Type: generation.MutationDelete, Key: oldKey},
+			{Type: generation.MutationPut, Key: newKey, Value: []byte(`{"id":"new"}`)},
+		},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	ticket, err := journal.ApplyDesired(context.Background(), delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullSnapshot := generation.DesiredBatch{
+		Cursor: cursor, ReplaceManaged: true,
+		Mutations: []generation.Mutation{{
+			Type: generation.MutationPut, Key: newKey, Value: []byte(`{"id":"new"}`),
+		}},
+		RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+	}
+	replayed, err := journal.ApplyDesired(context.Background(), fullSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.DesiredRevision != ticket.DesiredRevision ||
+		replayed.DesiredDigest != ticket.DesiredDigest ||
+		!domainsEqual(replayed.RequiredDomains, generation.DomainHTTP) {
+		t.Fatalf("replayed ticket = %+v, want original %+v", replayed, ticket)
+	}
+	conflict := fullSnapshot
+	conflict.Mutations = []generation.Mutation{{
+		Type: generation.MutationPut, Key: newKey, Value: []byte(`{"id":"different"}`),
+	}}
+	if _, err := journal.ApplyDesired(context.Background(), conflict); !errors.Is(
+		err,
+		generation.ErrCursorConflict,
+	) {
+		t.Fatalf("ApplyDesired(semantic conflict) error = %v, want ErrCursorConflict", err)
+	}
+	assertRevisions(t, journal, generation.RevisionSet{Desired: ticket.DesiredRevision})
 }
 
 func TestJournalCursorStaleReplayAfterRestartDoesNotAdvance(t *testing.T) {
@@ -303,7 +375,10 @@ func TestJournalCursorStaleReplayAfterRestartDoesNotAdvance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if _, err := reopened.ApplyDesired(context.Background(), old); !errors.Is(err, generation.ErrStaleCursor) {
+	if _, err := reopened.ApplyDesired(context.Background(), old); !errors.Is(
+		err,
+		generation.ErrStaleCursor,
+	) {
 		t.Fatalf("stale restart ApplyDesired() error = %v, want ErrStaleCursor", err)
 	}
 	assertRevisions(t, reopened, generation.RevisionSet{Desired: 2})
@@ -335,7 +410,10 @@ func TestJournalCursorProviderSwitchAndCollisionResistantIdentity(t *testing.T) 
 	if bytes.Equal(cursorRecordKey(first.Cursor), cursorRecordKey(second.Cursor)) {
 		t.Fatal("cursor hash key collided for ambiguous delimiter pairs")
 	}
-	if _, err := journal.ApplyDesired(context.Background(), first); !errors.Is(err, generation.ErrProviderConflict) {
+	if _, err := journal.ApplyDesired(context.Background(), first); !errors.Is(
+		err,
+		generation.ErrProviderConflict,
+	) {
 		t.Fatalf("inactive provider replay error = %v, want ErrProviderConflict", err)
 	}
 }
@@ -349,8 +427,14 @@ func TestJournalApplyDesiredValidatesEmptyDomainCursorMutationAndValues(t *testi
 	}{
 		{name: "empty provider", batch: desiredBatch("", "1", generation.DomainHTTP)},
 		{name: "empty revision", batch: desiredBatch("etcd", "", generation.DomainHTTP)},
-		{name: "invalid provider utf8", batch: desiredBatch(invalidUTF8, "1", generation.DomainHTTP)},
-		{name: "invalid revision utf8", batch: desiredBatch("etcd", invalidUTF8, generation.DomainHTTP)},
+		{
+			name:  "invalid provider utf8",
+			batch: desiredBatch(invalidUTF8, "1", generation.DomainHTTP),
+		},
+		{
+			name:  "invalid revision utf8",
+			batch: desiredBatch("etcd", invalidUTF8, generation.DomainHTTP),
+		},
 		{name: "invalid key utf8", batch: desiredBatch(
 			"etcd",
 			"1",
@@ -369,17 +453,35 @@ func TestJournalApplyDesiredValidatesEmptyDomainCursorMutationAndValues(t *testi
 				Key:  generation.ResourceKey{Kind: "routes", ID: invalidUTF8},
 			},
 		)},
-		{name: "empty key", batch: desiredBatch("etcd", "1", generation.DomainHTTP,
-			generation.Mutation{Type: generation.MutationPut, Key: generation.ResourceKey{Kind: "routes"}})},
+		{name: "empty key", batch: desiredBatch(
+			"etcd",
+			"1",
+			generation.DomainHTTP,
+			generation.Mutation{
+				Type: generation.MutationPut,
+				Key:  generation.ResourceKey{Kind: "routes"},
+			},
+		)},
 		{name: "unknown mutation", batch: desiredBatch("etcd", "1", generation.DomainHTTP,
 			generation.Mutation{Type: "change", Key: key})},
 		{name: "unknown domain", batch: desiredBatch("etcd", "1", "udp")},
-		{name: "delete value", batch: desiredBatch("etcd", "1", generation.DomainHTTP,
-			generation.Mutation{Type: generation.MutationDelete, Key: key, Value: []byte("unexpected")})},
+		{name: "delete value", batch: desiredBatch(
+			"etcd",
+			"1",
+			generation.DomainHTTP,
+			generation.Mutation{
+				Type:  generation.MutationDelete,
+				Key:   key,
+				Value: []byte("unexpected"),
+			},
+		)},
 		{name: "mutation without domain", batch: desiredBatch("etcd", "1", "",
 			generation.Mutation{Type: generation.MutationPut, Key: key})},
 		{name: "replacement missing stream", batch: generation.DesiredBatch{
-			Cursor: generation.ProviderCursor{Provider: "etcd", Revision: "1"}, ReplaceManaged: true,
+			Cursor: generation.ProviderCursor{
+				Provider: "etcd",
+				Revision: "1",
+			}, ReplaceManaged: true,
 			RequiredDomains: []generation.Domain{generation.DomainHTTP},
 		}},
 	}
@@ -542,7 +644,63 @@ func TestJournalCursorRecordWirePayloadGolden(t *testing.T) {
 	}
 }
 
-func TestJournalCursorDistinguishesNilAndEmptyPutAndDetectsMissingOrTamperedCurrentRecord(t *testing.T) {
+func TestJournalCommittedAcknowledgementWireUsesSortedDomainSlice(t *testing.T) {
+	cursor := generation.ProviderCursor{Provider: "etcd", Revision: "same"}
+	httpKey := generation.ResourceKey{Kind: "routes", ID: "r1"}
+	streamKey := generation.ResourceKey{Kind: "stream_routes", ID: "s1"}
+	committed := generation.Acknowledgement{
+		Cursor:    cursor,
+		Revisions: generation.RevisionSet{Desired: 1, HTTP: 1, Stream: 1},
+		Decisions: map[generation.Domain][]generation.ResourceDecision{
+			generation.DomainStream: {{
+				Key: streamKey, Disposition: generation.DispositionPublished, Code: "stream-published",
+			}},
+			generation.DomainHTTP: {{
+				Key: httpKey, Disposition: generation.DispositionPublished, Code: "http-published",
+			}},
+		},
+	}
+	encoded, err := encodeCursorRecord(cursorRecord{
+		Cursor: cursor,
+		Ticket: generation.ApplyTicket{
+			DesiredRevision: 1,
+			Cursor:          cursor,
+			RequiredDomains: []generation.Domain{generation.DomainHTTP, generation.DomainStream},
+		},
+		Committed: &committed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope cursorRecordEnvelope
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	httpIndex := bytes.Index(envelope.Payload, []byte(`"domain":"http"`))
+	streamIndex := bytes.Index(envelope.Payload, []byte(`"domain":"stream"`))
+	if httpIndex < 0 || streamIndex < 0 || httpIndex >= streamIndex ||
+		bytes.Contains(envelope.Payload, []byte(`"decisions":{"`)) {
+		t.Fatalf(
+			"committed acknowledgement wire is not a sorted domain slice: %s",
+			envelope.Payload,
+		)
+	}
+	decoded, err := decodeCursorRecord(encoded, &cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reencoded, err := encodeCursorRecord(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(reencoded, encoded) {
+		t.Fatalf("committed acknowledgement wire is not canonical after round trip")
+	}
+}
+
+func TestJournalCursorDistinguishesNilAndEmptyPutAndDetectsMissingOrTamperedCurrentRecord(
+	t *testing.T,
+) {
 	key := generation.ResourceKey{Kind: "routes", ID: "r1"}
 	nilBatch := desiredBatch("etcd", "same", generation.DomainHTTP,
 		generation.Mutation{Type: generation.MutationPut, Key: key, Value: nil})
@@ -552,7 +710,10 @@ func TestJournalCursorDistinguishesNilAndEmptyPutAndDetectsMissingOrTamperedCurr
 	if _, err := journal.ApplyDesired(context.Background(), nilBatch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.ApplyDesired(context.Background(), emptyBatch); !errors.Is(err, generation.ErrCursorConflict) {
+	if _, err := journal.ApplyDesired(context.Background(), emptyBatch); !errors.Is(
+		err,
+		generation.ErrCursorConflict,
+	) {
 		t.Fatalf("nil/empty replay error = %v, want ErrCursorConflict", err)
 	}
 
@@ -614,7 +775,10 @@ func TestJournalCursorDetectsMissingOrTamperedActiveAuthorityRecord(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := journal.ApplyDesired(context.Background(), batch); !errors.Is(err, generation.ErrIntegrity) {
+			if _, err := journal.ApplyDesired(context.Background(), batch); !errors.Is(
+				err,
+				generation.ErrIntegrity,
+			) {
 				t.Fatalf("authority replay error = %v, want ErrIntegrity", err)
 			}
 		})
@@ -690,7 +854,10 @@ func TestJournalApplyDesiredCanceledAndOverflowLeaveNoWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 		beforeArtifacts := bucketKeyCount(t, journal.db, artifactBucket)
-		_, err = journal.ApplyDesired(context.Background(), desiredBatch("etcd", "1", generation.DomainHTTP))
+		_, err = journal.ApplyDesired(
+			context.Background(),
+			desiredBatch("etcd", "1", generation.DomainHTTP),
+		)
 		if err == nil || !strings.Contains(err.Error(), "overflow") {
 			t.Fatalf("ApplyDesired() error = %v, want overflow", err)
 		}
@@ -766,7 +933,12 @@ func assertTombstoneRevision(
 	for _, tombstone := range snapshot.Tombstones() {
 		if tombstone.Key == key {
 			if tombstone.Revision != wantRevision {
-				t.Fatalf("tombstone %+v revision = %d, want %d", key, tombstone.Revision, wantRevision)
+				t.Fatalf(
+					"tombstone %+v revision = %d, want %d",
+					key,
+					tombstone.Revision,
+					wantRevision,
+				)
 			}
 			return
 		}

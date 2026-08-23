@@ -289,6 +289,7 @@ type PublicationEngine interface {
 	Activate(context.Context, PublicationToken, PublicationSet) error
 	RollbackActivation(context.Context, PublicationToken, PublicationSet) error
 	FinalizeActivation(context.Context, PublicationToken, PublicationSet)
+	ConfirmActive(context.Context, PublicationSet) error
 }
 
 // package compiler
@@ -465,7 +466,7 @@ On update, reuse a predecessor resource only when the desired resource is invali
 
 `Supervisor.Prepare` launches the candidate worker and stores it by canonical `PublicationSet` identity before any journal token exists. The worker owns its local `PreparedGeneration`; the supervisor accepts READY only after the returned stream revision/digest and publication identity match. If `Journal.Stage` fails, the coordinator calls `Supervisor.DiscardPrepared(context.WithoutCancel(ctx), set)`, which removes the matching pending worker, sends STOP, kills if required, waits for exit, and thereby closes the worker-owned prepared generation; cleanup errors are joined with the Stage error.
 
-Only after Stage returns does `Supervisor.Activate(token, set)` bind that journal token to the matching pending worker, quiesce the predecessor, activate the candidate behind the exact HTTP/stream revision fence, and retain both processes for rollback. `RollbackActivation` stops the candidate and resumes the predecessor. After durable commit, `FinalizeActivation` performs no IPC and no blocking cleanup: it marks the candidate active and only enqueues predecessor retirement for `Supervisor.Run`. No compiler/runtime journal write, token-before-Stage map, server facade, or `server.GenerationEngine` forwarding path is permitted.
+Only after Stage returns does `Supervisor.Activate(token, set)` bind that journal token to the matching pending worker, quiesce the predecessor, activate the candidate behind the exact HTTP/stream revision fence, and retain both processes for rollback. `RollbackActivation` stops the candidate and resumes the predecessor. After durable commit, `FinalizeActivation` performs no IPC and no blocking cleanup: it marks the candidate active, records the exact publication fence and only enqueues predecessor retirement for `Supervisor.Run`. `ConfirmActive` performs a read-only exact-fence comparison for committed acknowledgement replay and never launches, activates or retires a worker. No compiler/runtime journal write, token-before-Stage map, server facade, or `server.GenerationEngine` forwarding path is permitted.
 
 - [ ] **Step 6: Run race tests and commit**
 

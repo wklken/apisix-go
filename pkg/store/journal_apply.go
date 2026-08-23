@@ -35,6 +35,7 @@ type cursorRecord struct {
 	Cursor      generation.ProviderCursor
 	BatchDigest [32]byte
 	Ticket      generation.ApplyTicket
+	Committed   *generation.Acknowledgement
 }
 
 type providerCursorWire struct {
@@ -50,9 +51,27 @@ type applyTicketWire struct {
 }
 
 type cursorRecordWire struct {
-	Cursor      providerCursorWire `json:"cursor"`
-	BatchDigest [32]byte           `json:"batch_digest"`
-	Ticket      applyTicketWire    `json:"ticket"`
+	Cursor      providerCursorWire   `json:"cursor"`
+	BatchDigest [32]byte             `json:"batch_digest"`
+	Ticket      applyTicketWire      `json:"ticket"`
+	Committed   *acknowledgementWire `json:"committed,omitempty"`
+}
+
+type revisionSetWire struct {
+	Desired uint64 `json:"desired"`
+	HTTP    uint64 `json:"http"`
+	Stream  uint64 `json:"stream"`
+}
+
+type acknowledgementDomainWire struct {
+	Domain    generation.Domain      `json:"domain"`
+	Decisions []resourceDecisionWire `json:"decisions"`
+}
+
+type acknowledgementWire struct {
+	Cursor    providerCursorWire          `json:"cursor"`
+	Revisions revisionSetWire             `json:"revisions"`
+	Domains   []acknowledgementDomainWire `json:"domains"`
 }
 
 type cursorRecordEnvelope struct {
@@ -94,9 +113,6 @@ func (s *Store) ApplyDesired(
 			return err
 		}
 		if found {
-			if recordedDigest != batchDigest {
-				return generation.ErrCursorConflict
-			}
 			if activeProvider != batch.Cursor.Provider {
 				return generation.ErrProviderConflict
 			}
@@ -105,6 +121,15 @@ func (s *Store) ApplyDesired(
 			}
 			if replay.DesiredDigest != current.Digest() {
 				return generation.ErrIntegrity
+			}
+			if recordedDigest != batchDigest {
+				equivalent, err := batchResultMatchesTicketTx(tx, batch, replay)
+				if err != nil {
+					return err
+				}
+				if !equivalent {
+					return generation.ErrCursorConflict
+				}
 			}
 			ticket = cloneApplyTicket(replay)
 			return nil
@@ -134,6 +159,36 @@ func (s *Store) ApplyDesired(
 		return generation.ApplyTicket{}, err
 	}
 	return cloneApplyTicket(ticket), nil
+}
+
+func batchResultMatchesTicketTx(
+	tx *bolt.Tx,
+	batch generation.DesiredBatch,
+	ticket generation.ApplyTicket,
+) (bool, error) {
+	var predecessor generation.Snapshot
+	if ticket.DesiredRevision == 1 {
+		var err error
+		predecessor, err = generation.NewSnapshot(0, nil, nil)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		var err error
+		predecessor, err = loadDesiredSnapshotTx(tx, ticket.DesiredRevision-1)
+		if errors.Is(err, generation.ErrNotFound) {
+			return false, generation.ErrIntegrity
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	candidate, err := applyBatch(predecessor, batch)
+	if err != nil {
+		return false, err
+	}
+	return candidate.Revision() == ticket.DesiredRevision &&
+		candidate.Digest() == ticket.DesiredDigest, nil
 }
 
 func (s *Store) LoadDesired(ctx context.Context, revision uint64) (generation.Snapshot, error) {
@@ -423,6 +478,11 @@ func decodeCursorRecord(encoded []byte, expected *generation.ProviderCursor) (cu
 	if err != nil || !bytes.Equal(canonical, envelope.Payload) {
 		return cursorRecord{}, generation.ErrIntegrity
 	}
+	if wire.Committed != nil {
+		if err := validateAcknowledgementWire(*wire.Committed); err != nil {
+			return cursorRecord{}, err
+		}
+	}
 	record := cursorRecordFromWire(wire)
 	if err := validateProviderCursor(record.Cursor); err != nil ||
 		record.Ticket.DesiredRevision == 0 || record.Ticket.Cursor != record.Cursor {
@@ -438,6 +498,9 @@ func decodeCursorRecord(encoded []byte, expected *generation.ProviderCursor) (cu
 	}
 	if expected != nil && record.Cursor != *expected {
 		return cursorRecord{}, generation.ErrIntegrity
+	}
+	if err := validateCommittedAcknowledgement(record); err != nil {
+		return cursorRecord{}, err
 	}
 	return record, nil
 }
@@ -477,19 +540,171 @@ func applyTicketFromWire(wire applyTicketWire) generation.ApplyTicket {
 }
 
 func cursorRecordToWire(record cursorRecord) cursorRecordWire {
-	return cursorRecordWire{
+	wire := cursorRecordWire{
 		Cursor:      providerCursorToWire(record.Cursor),
 		BatchDigest: record.BatchDigest,
 		Ticket:      applyTicketToWire(record.Ticket),
 	}
+	if record.Committed != nil {
+		committed := acknowledgementToWire(*record.Committed)
+		wire.Committed = &committed
+	}
+	return wire
 }
 
 func cursorRecordFromWire(wire cursorRecordWire) cursorRecord {
-	return cursorRecord{
+	record := cursorRecord{
 		Cursor:      providerCursorFromWire(wire.Cursor),
 		BatchDigest: wire.BatchDigest,
 		Ticket:      applyTicketFromWire(wire.Ticket),
 	}
+	if wire.Committed != nil {
+		committed := acknowledgementFromWire(*wire.Committed)
+		record.Committed = &committed
+	}
+	return record
+}
+
+func acknowledgementToWire(ack generation.Acknowledgement) acknowledgementWire {
+	domains := make([]generation.Domain, 0, len(ack.Decisions))
+	for domain := range ack.Decisions {
+		domains = append(domains, domain)
+	}
+	slices.Sort(domains)
+	wireDomains := make([]acknowledgementDomainWire, 0, len(domains))
+	for _, domain := range domains {
+		wireDomains = append(wireDomains, acknowledgementDomainWire{
+			Domain: domain, Decisions: decisionsToWire(canonicalDecisions(ack.Decisions[domain])),
+		})
+	}
+	return acknowledgementWire{
+		Cursor: providerCursorToWire(ack.Cursor),
+		Revisions: revisionSetWire{
+			Desired: ack.Revisions.Desired, HTTP: ack.Revisions.HTTP, Stream: ack.Revisions.Stream,
+		},
+		Domains: wireDomains,
+	}
+}
+
+func acknowledgementFromWire(wire acknowledgementWire) generation.Acknowledgement {
+	ack := generation.Acknowledgement{
+		Cursor: providerCursorFromWire(wire.Cursor),
+		Revisions: generation.RevisionSet{
+			Desired: wire.Revisions.Desired, HTTP: wire.Revisions.HTTP, Stream: wire.Revisions.Stream,
+		},
+		Decisions: make(map[generation.Domain][]generation.ResourceDecision, len(wire.Domains)),
+	}
+	for _, domain := range wire.Domains {
+		ack.Decisions[domain.Domain] = decisionsFromWire(domain.Decisions)
+	}
+	return ack
+}
+
+func validateAcknowledgementWire(wire acknowledgementWire) error {
+	if wire.Domains == nil {
+		return generation.ErrIntegrity
+	}
+	lastDomain := generation.Domain("")
+	for _, domain := range wire.Domains {
+		if !validPublicationDomain(domain.Domain) || domain.Domain <= lastDomain {
+			return generation.ErrIntegrity
+		}
+		decisions := decisionsFromWire(domain.Decisions)
+		if !slices.Equal(decisions, canonicalDecisions(decisions)) {
+			return generation.ErrIntegrity
+		}
+		lastDomain = domain.Domain
+	}
+	return nil
+}
+
+func validateCommittedAcknowledgement(record cursorRecord) error {
+	if record.Committed == nil {
+		return nil
+	}
+	ack := *record.Committed
+	if ack.Cursor != record.Cursor || ack.Revisions.Desired != record.Ticket.DesiredRevision ||
+		ack.Revisions.HTTP > ack.Revisions.Desired || ack.Revisions.Stream > ack.Revisions.Desired {
+		return generation.ErrIntegrity
+	}
+	domains := make([]generation.Domain, 0, len(ack.Decisions))
+	for domain, decisions := range ack.Decisions {
+		if !validPublicationDomain(domain) ||
+			!slices.Equal(decisions, canonicalDecisions(decisions)) {
+			return generation.ErrIntegrity
+		}
+		seen := make(map[generation.ResourceKey]struct{}, len(decisions))
+		for _, decision := range decisions {
+			if !validResourceKey(decision.Key) || !validDisposition(decision.Disposition) ||
+				decision.Code == "" || !utf8.ValidString(decision.Code) {
+				return generation.ErrIntegrity
+			}
+			if _, exists := seen[decision.Key]; exists {
+				return generation.ErrIntegrity
+			}
+			seen[decision.Key] = struct{}{}
+		}
+		domains = append(domains, domain)
+		if revisionForDomain(ack.Revisions, domain) != record.Ticket.DesiredRevision {
+			return generation.ErrIntegrity
+		}
+	}
+	slices.Sort(domains)
+	if !slices.Equal(domains, record.Ticket.RequiredDomains) {
+		return generation.ErrIntegrity
+	}
+	return nil
+}
+
+func loadCursorRecordForTicketTx(tx *bolt.Tx, ticket generation.ApplyTicket) (cursorRecord, error) {
+	bucket := tx.Bucket(providerCursorBucket)
+	if bucket == nil {
+		return cursorRecord{}, generation.ErrIntegrity
+	}
+	keyed := bucket.Get(cursorRecordKey(ticket.Cursor))
+	active := bucket.Get(activeProviderRecordKey)
+	if keyed == nil || active == nil || !bytes.Equal(keyed, active) {
+		return cursorRecord{}, generation.ErrIntegrity
+	}
+	record, err := decodeCursorRecord(keyed, &ticket.Cursor)
+	if err != nil {
+		return cursorRecord{}, err
+	}
+	if record.Ticket.DesiredRevision != ticket.DesiredRevision ||
+		record.Ticket.DesiredDigest != ticket.DesiredDigest ||
+		record.Ticket.Cursor != ticket.Cursor ||
+		!slices.Equal(record.Ticket.RequiredDomains, ticket.RequiredDomains) {
+		return cursorRecord{}, generation.ErrIntegrity
+	}
+	return record, nil
+}
+
+func putCommittedAcknowledgementTx(
+	tx *bolt.Tx,
+	ticket generation.ApplyTicket,
+	ack generation.Acknowledgement,
+) error {
+	record, err := loadCursorRecordForTicketTx(tx, ticket)
+	if err != nil {
+		return err
+	}
+	if record.Committed != nil {
+		return generation.ErrStaleCursor
+	}
+	committed := cloneAcknowledgement(ack)
+	record.Committed = &committed
+	if err := validateCommittedAcknowledgement(record); err != nil {
+		return err
+	}
+	encoded, err := encodeCursorRecord(record)
+	if err != nil {
+		return err
+	}
+	bucket := tx.Bucket(providerCursorBucket)
+	if err := bucket.Put(cursorRecordKey(ticket.Cursor), encoded); err != nil {
+		return err
+	}
+	return bucket.Put(activeProviderRecordKey, encoded)
 }
 
 func cloneDesiredBatch(batch generation.DesiredBatch) generation.DesiredBatch {

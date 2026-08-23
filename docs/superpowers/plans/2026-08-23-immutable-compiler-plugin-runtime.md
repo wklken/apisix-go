@@ -1445,7 +1445,7 @@ git commit -m "refactor(stream): compile immutable router snapshots"
 
 **Interfaces:**
 
-- Consumes: `compiler.Compiler`, `compiler.PreparedGeneration`, `generation.PublicationEngine`, journal publication token/set and recovered `generation.PublishedGeneration` artifacts.
+- Consumes: `compiler.Compiler`, `compiler.PreparedGeneration`, `generation.PublicationEngine` including read-only `ConfirmActive`, journal publication token/set and recovered `generation.PublishedGeneration` artifacts.
 - Produces: the only production path `Coordinator → Compiler.Prepare → Journal.Stage → GenerationEngine.Activate → Journal.Commit → activation finalize`; no builder/runtime dual path.
 
 - [ ] **Step 1: Write the failing journal-commit rollback test**
@@ -1465,19 +1465,21 @@ func TestGenerationEngineRollsBackActivatedGenerationWhenJournalCommitFails(t *t
 }
 ```
 
-Add `TestGenerationEngineRollsBackPartiallyActivatedGenerationWhenActivateFails`, where HTTP is switched before stream activation fails, and assert old HTTP/stream owners are restored, the new generation is closed, and the staged token is aborted. Add activation- and commit-error cases where rollback and abort also fail; assert `errors.Is` finds all three errors. In every failure case assert `FinalizeActivation` was not called. In the successful case assert it is called exactly once with a non-cancelled cleanup context, updates `active`, deletes the activation record and enqueues the predecessor exactly once; before it returns there is no IPC, close, task wait or drain call.
+Add `TestGenerationEngineRollsBackPartiallyActivatedGenerationWhenActivateFails`, where HTTP is switched before stream activation fails, and assert old HTTP/stream owners are restored, the new generation is closed, and the staged token is aborted. Add activation- and commit-error cases where rollback and abort also fail; assert `errors.Is` finds all three errors. In every failure case assert `FinalizeActivation` was not called. In the successful case assert it is called exactly once with a non-cancelled cleanup context, updates `active`, records the exact publication identity, deletes the activation record and enqueues the predecessor exactly once; before it returns there is no IPC, close, task wait or drain call. Add committed-replay cases where `ConfirmActive` accepts only the exact HTTP/stream artifact fence installed by finalize or startup recovery, rejects a predecessor/missing/partial fence with `generation.ErrActiveGenerationMismatch`, respects context cancellation, and causes no compiler, activation or retirement work.
 
 Add `TestCoordinatorDiscardsPreparedGenerationWhenStageFails`: prepare a candidate with one running generation task and two counted leases, make `Journal.Stage` return `errStage`, and assert `DiscardPrepared` is called once with the exact set, the task stops, leases close in reverse order, no activation/commit/abort occurs, and `errors.Is` preserves both `errStage` and a forced discard error.
 
+Add zero-domain normal-publication tests for first commit, commit failure plus same-cursor retry, and committed replay. `GenerationEngine.Prepare` must return a synthetic empty set without invoking `Compiler.Prepare`; Activate/Rollback/Finalize must perform no snapshot swap, close or retirement, while successful finalize sets the initialized fence and replay calls only `ConfirmActive`.
+
 - [ ] **Step 2: Run activation tests and confirm RED**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/server -run "^(TestCoordinator.*Commit|TestGenerationEngine)" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/generation ./pkg/server -run "^(TestCoordinator|TestGenerationEngine)" -count=1'`
 
 Expected: FAIL until `GenerationEngine` implements the plan 03 reversible lifecycle and the tests prove partial-activation rollback, staged-token abort, joined cleanup errors and context-bearing finalization.
 
 - [ ] **Step 3: Implement the accepted activation transaction extension**
 
-Use the exact cross-plan signatures approved in the total plan/plan 03 documentation update. The coordinator sequence must be:
+Use the exact cross-plan signatures approved in the total plan/plan 03 documentation update. Plan 03 owns the complete coordinator state machine. Before `ApplyDesired` or any comparison of incoming batch bytes, it must call `LoadAcknowledgement(ctx, batch.Cursor)`: a committed marker reconstructs the exact required-domain publication set from the acknowledgement and verified published generations, calls read-only `ConfirmActive`, and returns the stored acknowledgement without ApplyDesired/Prepare/Stage/Activate/Commit/Finalize. This intentionally supports an incremental watch batch replayed after restart as a different full-snapshot representation with the same committed provider cursor. A missing marker enters only the following normal publication branch, where `ApplyDesired` retains exact digest conflict detection; any other marker or active-fence error fails closed and never falls back to publication. The normal branch is:
 
 ```go
 set, err := c.engine.Prepare(ctx, ticket, desired, previous)
@@ -1505,7 +1507,7 @@ c.engine.FinalizeActivation(context.WithoutCancel(ctx), token, set)
 return ack, nil
 ```
 
-`Activate` may have switched one domain before returning an error, so both activation-error and commit-error branches first call idempotent `RollbackActivation`, then abort the staged token, and preserve the primary, rollback and abort errors with `errors.Join`. `FinalizeActivation` is a non-failing, non-blocking local ownership handoff after durable commit: under the engine mutex it sets `active = activation.next`, deletes the activation record and appends a non-nil predecessor to the retiring queue, then returns. It performs no IPC, `Close`, task wait or drain. The temporary server main loop owns asynchronous queue drain; plan 05 atomically moves that queue and its drain ownership into the worker lifecycle during supervisor cutover. Any impossible finalize invariant panics and therefore terminates the worker.
+`Activate` may have switched one domain before returning an error, so both activation-error and commit-error branches first call idempotent `RollbackActivation`, then abort the staged token, and preserve the primary, rollback and abort errors with `errors.Join`. For a non-empty publication, `FinalizeActivation` is a non-failing, non-blocking local ownership handoff after durable commit: under the engine mutex it sets `active = activation.next`, deletes the activation record and appends a non-nil predecessor to the retiring queue, then returns. For the synthetic empty publication it only deletes the activation record and initializes the active fence; it never changes `active` or the retirement queue. It performs no IPC, `Close`, task wait or drain. The temporary server main loop owns asynchronous queue drain; plan 05 atomically moves that queue and its drain ownership into the worker lifecycle during supervisor cutover. Any impossible finalize invariant panics and therefore terminates the worker.
 
 - [ ] **Step 4: Retain prepared generations by immutable publication identity**
 
@@ -1519,15 +1521,15 @@ type activation struct {
 }
 ```
 
-`Prepare` stores one prepared generation keyed by revision/domain digests and returns only its defensive-copy `PublicationSet`. `Activate` removes it from pending, probes it, installs the new HTTP/stream snapshots under one engine mutex and records `activation`. It neither closes nor drains `previous`.
+For a non-empty publication, `Prepare` stores one prepared generation keyed by revision/domain digests and returns only its defensive-copy `PublicationSet`; `Activate` removes it from pending, probes it, installs the new HTTP/stream snapshots under one engine mutex and records `activation`. For an empty publication, Prepare stores only the synthetic identity and Activate only binds its token, with no compiler or owner work. Neither path closes nor drains `previous` before commit.
 
 - [ ] **Step 5: Finalize or rollback the activation**
 
-Implement `DiscardPrepared(context.Context, generation.PublicationSet) error`, `RollbackActivation(context.Context, generation.PublicationToken, generation.PublicationSet) error` and `FinalizeActivation(context.Context, generation.PublicationToken, generation.PublicationSet)` with the accepted publication lifecycle. `DiscardPrepared` locks the engine, finds and removes only the exact pending `preparedKey`, unlocks, then calls `PreparedGeneration.DiscardPrepared`; repeated exact discard is idempotent, while an unknown/mismatched set returns `ErrPreparedSetMismatch` without touching another candidate. `FinalizeActivation` only sets the new prepared generation active, deletes the matching activation and enqueues the predecessor under the same mutex; it does not initiate drain work. The temporary server main loop asynchronously consumes the retiring queue, and plan 05 replaces that owner atomically with its worker drain loop. `RollbackActivation` restores both previous snapshots under the same mutex and closes the rejected new generation. Unknown activation token/set/digest combinations are core invariant panics.
+Implement `DiscardPrepared(context.Context, generation.PublicationSet) error`, `RollbackActivation(context.Context, generation.PublicationToken, generation.PublicationSet) error`, `FinalizeActivation(context.Context, generation.PublicationToken, generation.PublicationSet)` and `ConfirmActive(context.Context, generation.PublicationSet) error` with the accepted publication lifecycle. `Prepare` special-cases an empty required-domain set before calling the compiler and stores a synthetic pending record with no prepared generation or leases. Its discard, activation and rollback only move/delete that record. `FinalizeActivation` for the synthetic record sets the initialized fence but does not replace the active generation or enqueue retirement. For non-empty sets, `DiscardPrepared` locks the engine, finds and removes only the exact pending `preparedKey`, unlocks, then calls `PreparedGeneration.DiscardPrepared`; repeated exact discard is idempotent, while an unknown/mismatched set returns `ErrPreparedSetMismatch` without touching another candidate. Non-empty `FinalizeActivation` sets the new prepared generation active, updates the defensive-copy identity for each domain named by the publication while retaining untouched independently active domain identities, deletes the matching activation and enqueues the predecessor under the same mutex; it does not initiate drain work. `ConfirmActive` checks the requested domain subset exactly against those active per-domain identities under the same mutex, permits additional independently active domains, and performs no compilation or owner mutation. Recovery installs every verified recovered domain identity regardless of its independent revision and sets a separate initialized fence, including for an empty set. The temporary server main loop asynchronously consumes the retiring queue, and plan 05 replaces that owner atomically with its worker drain loop. `RollbackActivation` restores both previous snapshots under the same mutex and closes the rejected new generation. Unknown activation token/set/digest combinations are core invariant panics.
 
 - [ ] **Step 6: Recover only committed published artifacts**
 
-At startup, compile each verified `RecoveryState.Published` domain into one prepared recovery generation before connecting to the provider. Never compile `RecoveryState.Desired` for serving. Missing/corrupt required domains remain absent and readiness stays false as defined by plan 03.
+At startup, compile each verified `RecoveryState.Published` domain into one prepared recovery generation before connecting to the provider. Install all successfully verified domain owners and their exact artifact identities even when their revisions differ; set the separate initialized active fence after the installation succeeds. Never compile `RecoveryState.Desired` for serving. Missing/corrupt required domains remain absent and readiness stays false as defined by plan 03.
 
 - [ ] **Step 7: Replace `routeHandler.Replace` with prepared snapshot activation**
 

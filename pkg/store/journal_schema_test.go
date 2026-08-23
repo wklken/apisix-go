@@ -203,6 +203,99 @@ func TestOpenJournalReopenIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestOpenJournalMigratesVersionOneTransactionally(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	withBoltUpdate(t, path, func(tx *bolt.Tx) error {
+		return tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1))
+	})
+
+	migrated, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	if currentJournalSchemaVersion != 2 {
+		t.Fatalf("current schema version = %d, want 2", currentJournalSchemaVersion)
+	}
+	assertJournalBuckets(t, migrated.db)
+}
+
+func TestOpenJournalVersionOneMigrationRollsBackOnCorruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	withBoltUpdate(t, path, func(tx *bolt.Tx) error {
+		if err := tx.Bucket(journalMetaBucket).Put(schemaVersionKey, encodeUint64(1)); err != nil {
+			return err
+		}
+		return tx.Bucket(desiredHeadBucket).Put([]byte("corrupt"), []byte("value"))
+	})
+	before := readFileDigest(t, path)
+
+	_, err = OpenJournal(path, JournalOptions{})
+	if !errors.Is(err, generation.ErrIntegrity) {
+		t.Fatalf("OpenJournal() error = %v, want ErrIntegrity", err)
+	}
+	if after := readFileDigest(t, path); after != before {
+		t.Fatal("failed version-one migration modified database")
+	}
+	assertDatabaseLockReleased(t, path)
+}
+
+func TestVersionOneReaderRejectsVersionTwoBeforeMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.db")
+	journal, err := OpenJournal(path, JournalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := applyDesiredForPublication(t, journal, "v2-committed", generation.DomainHTTP)
+	token, err := journal.Stage(
+		context.Background(),
+		ticket,
+		publicationSet(t, ticket, generation.DomainHTTP),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Commit(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := readFileDigest(t, path)
+
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.View(func(tx *bolt.Tx) error {
+		_, _, err := verifyJournalMetaCompatibleTx(tx, 1)
+		return err
+	})
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if !errors.Is(err, generation.ErrNewerSchema) {
+		t.Fatalf("version-one verification error = %v, want ErrNewerSchema", err)
+	}
+	if after := readFileDigest(t, path); after != before {
+		t.Fatal("version-one reader modified version-two database")
+	}
+}
+
 func TestDesiredRevisionIndexLoadsHistoricalSnapshots(t *testing.T) {
 	journal := openTestJournal(t)
 	first, err := generation.NewSnapshot(1, []generation.Resource{mappingResource("r1")}, nil)
@@ -257,7 +350,7 @@ func TestJournalSchemaRejectsZeroAndPartialStateWithoutMutation(t *testing.T) {
 		seed func(t *testing.T) string
 	}{
 		{name: "explicit version zero", seed: func(t *testing.T) string { return seedSchemaVersion(t, 0) }},
-		{name: "version one metadata only", seed: func(t *testing.T) string {
+		{name: "current version metadata only", seed: func(t *testing.T) string {
 			return seedSchemaVersion(t, currentJournalSchemaVersion)
 		}},
 		{name: "journal data without metadata", seed: func(t *testing.T) string {

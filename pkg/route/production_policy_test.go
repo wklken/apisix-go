@@ -194,6 +194,11 @@ func TestProductionPolicyUpstreamSecurityAxis(t *testing.T) {
 			wantFields: []string{"kafka", "tls.verify"},
 		},
 		{
+			name:      "strict Kafka without TLS is allowed",
+			selection: strictPolicySelection,
+			upstream:  resource.Upstream{Scheme: "kafka"},
+		},
+		{
 			name:      "strict Kafka TLS true verify is allowed",
 			selection: strictPolicySelection,
 			upstream:  resource.Upstream{Scheme: "kafka", TLS: &resource.UpstreamTLS{Verify: true}},

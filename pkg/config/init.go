@@ -45,7 +45,7 @@ func loadConfigFiles(defaultPath, overridePath string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AllowEmptyEnv(true)
 	v.AutomaticEnv()
-	if v.IsSet("deployment.profile") {
+	if v.IsSet("deployment.profile") || slices.Contains(v.AllKeys(), "deployment.profile") {
 		return nil, fmt.Errorf(
 			"deployment.profile was removed; use compatibility_target, security_profile, and qualification_profile",
 		)

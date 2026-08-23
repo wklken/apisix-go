@@ -133,6 +133,12 @@ func TestLoadConfigFilesRejectsRemovedDeploymentProfileBeforePublication(t *test
 			},
 		},
 		{
+			name: "null file",
+			setup: func(t *testing.T) string {
+				return writeConfigFile(t, "override.yaml", "deployment:\n  profile: null\n")
+			},
+		},
+		{
 			name: "environment",
 			setup: func(t *testing.T) string {
 				t.Setenv("APISIXGO_DEPLOYMENT_PROFILE", "http-data-plane-v1")

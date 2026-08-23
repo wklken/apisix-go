@@ -1049,6 +1049,9 @@ func TestGenerationCapabilityRejectsMismatchesBeforeDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := capabilityValue.Generation(); got != 9 {
+		t.Fatalf("Generation() = %d, want 9", got)
+	}
 	baseScope := Scope{
 		Generation: 9,
 		Attempt:    registration.AttemptID(),

@@ -1,6 +1,90 @@
 package plugin
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+)
+
+func TestLegacyInstanceKeyStringRemainsCompatible(t *testing.T) {
+	key, err := NewInstanceKey(
+		Descriptor{Factory: "request-id"},
+		ScopeRoute,
+		ResourceProvenance{Kind: ResourceRoute, ID: "r1"},
+		InstanceIdentityInput{PluginConfig: nil},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "request-id/2/route/r1/07aed809efda1763e9e7ba55d90a0699d7e3b73512d8aa511bde6de6bfae8ab8"
+	if got := key.String(); got != want {
+		t.Fatalf("legacy String() = %q, want %q", got, want)
+	}
+	if key.Attempt != (secret.AttemptID{}) {
+		t.Fatalf("legacy Attempt = %x, want zero", key.Attempt)
+	}
+}
+
+func TestAttemptInstanceKeyRejectsZeroAndSeparatesAttempts(t *testing.T) {
+	descriptor := Descriptor{Factory: "request-id"}
+	owner := ResourceProvenance{Kind: ResourceRoute, ID: "r1"}
+	identity := InstanceIdentityInput{PluginConfig: nil}
+	if _, err := NewAttemptInstanceKey(secret.AttemptID{}, descriptor, ScopeRoute, owner, identity); err == nil {
+		t.Fatal("NewAttemptInstanceKey(zero) error = nil")
+	}
+	first, err := NewAttemptInstanceKey(secret.AttemptID{1}, descriptor, ScopeRoute, owner, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewAttemptInstanceKey(secret.AttemptID{2}, descriptor, ScopeRoute, owner, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || first.String() == second.String() {
+		t.Fatalf("different attempts share identity: first=%#v second=%#v", first, second)
+	}
+	const want = "request-id/0100000000000000000000000000000000000000000000000000000000000000/2/route/r1/07aed809efda1763e9e7ba55d90a0699d7e3b73512d8aa511bde6de6bfae8ab8"
+	if got := first.String(); got != want {
+		t.Fatalf("attempt String() = %q, want %q", got, want)
+	}
+}
+
+func TestBindAttemptResolvedPluginRequiresAndPreservesAttempt(t *testing.T) {
+	p := New("request-id", base.Dependencies{})
+	if p == nil {
+		t.Fatal("request-id factory is not registered")
+	}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := ResolveDescriptorForFactory("request-id", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := ResourceProvenance{Kind: ResourceRoute, ID: "r1"}
+	identity := InstanceIdentityInput{PluginConfig: p.Config()}
+	if _, err := BindAttemptResolvedPlugin(
+		secret.AttemptID{}, descriptor, p, ScopeRoute, owner, identity,
+	); err == nil {
+		t.Fatal("BindAttemptResolvedPlugin(zero) error = nil")
+	}
+	attempt := secret.AttemptID{1}
+	binding, err := BindAttemptResolvedPlugin(attempt, descriptor, p, ScopeRoute, owner, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.InstanceKey.Attempt != attempt {
+		t.Fatalf("binding attempt = %x, want %x", binding.InstanceKey.Attempt, attempt)
+	}
+	legacy, err := BindResolvedPlugin(descriptor, p, ScopeRoute, owner, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.InstanceKey.Attempt != (secret.AttemptID{}) {
+		t.Fatalf("legacy binding attempt = %x, want zero", legacy.InstanceKey.Attempt)
+	}
+}
 
 func TestNewInstanceKeySeparatesScopeButIgnoresMapOrder(t *testing.T) {
 	descriptor := Descriptor{Factory: "limit-count", InstanceScope: InstancePerRoute}

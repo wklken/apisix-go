@@ -1,16 +1,100 @@
 package base
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 // SecretMaterializer resolves generation-owned credentials after schema
 // decoding and before PostInit.
 type SecretMaterializer interface {
 	MaterializeSecrets() error
+}
+
+// ScopedSecretAccess binds every authority dimension except the declared
+// field. Plugins can select a field, while generation, attempt, domain,
+// resource, source, and factory remain owned by the preparation boundary.
+type ScopedSecretAccess struct {
+	scope      secret.Scope
+	capability secret.GenerationCapability
+}
+
+func (access ScopedSecretAccess) Materialize(
+	ctx context.Context,
+	field string,
+	raw string,
+) (secret.Value, error) {
+	scope := access.scope
+	scope.Field = field
+	return access.capability.Materialize(ctx, scope, raw)
+}
+
+// Child derives access for one composite-owned child factory without changing
+// any other authority dimension.
+func (access ScopedSecretAccess) Child(factory string) (ScopedSecretAccess, error) {
+	if factory == "" {
+		return ScopedSecretAccess{}, secret.ErrInvalidScope
+	}
+	child := access
+	child.scope.Plugin = factory
+	return child, nil
+}
+
+type ScopedSecretMaterializer interface {
+	MaterializeScopedSecrets(context.Context, ScopedSecretAccess) error
+}
+
+// MaterializeScopedPluginSecrets runs only the attempt-bound secret phase.
+// It never falls back to the transitional process-global materializer.
+func MaterializeScopedPluginSecrets(
+	ctx context.Context,
+	baseScope secret.Scope,
+	capabilityValue secret.GenerationCapability,
+	p any,
+) error {
+	if err := validateScopedSecretAuthority(baseScope, capabilityValue); err != nil {
+		return err
+	}
+	materializer, ownsSecrets := p.(ScopedSecretMaterializer)
+	if !ownsSecrets {
+		if owner, ok := p.(configOwner); ok {
+			return secretScanError(firstUnmaterializedSecretReference(owner.Config()), false)
+		}
+		return nil
+	}
+	access := ScopedSecretAccess{scope: baseScope, capability: capabilityValue}
+	if err := materializer.MaterializeScopedSecrets(ctx, access); err != nil {
+		return redactedSecretMaterializationError{}
+	}
+	if owner, ok := p.(configOwner); ok {
+		return secretScanError(firstUnmaterializedSecretReference(owner.Config()), true)
+	}
+	return nil
+}
+
+func validateScopedSecretAuthority(
+	scope secret.Scope,
+	capabilityValue secret.GenerationCapability,
+) error {
+	if !capabilityValue.Valid() {
+		return secret.ErrInvalidCapability
+	}
+	if scope.Generation != capabilityValue.Generation() || scope.Attempt != capabilityValue.AttemptID() {
+		return secret.ErrCapabilityScopeMismatch
+	}
+	if (scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||
+		scope.Plugin == "" || scope.Resource.Kind == "" || scope.Resource.ID == "" ||
+		scope.Source != capability.SecretPluginConfig || scope.Field != "" {
+		return secret.ErrInvalidScope
+	}
+	return nil
 }
 
 // MaterializePluginSecrets runs the pre-PostInit secret phase. Plugins that

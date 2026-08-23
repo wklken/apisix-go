@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type InstanceKey struct {
 	Factory      string
+	Attempt      secret.AttemptID
 	Scope        Scope
 	Owner        ResourceProvenance
 	ConfigDigest [32]byte
@@ -29,6 +32,29 @@ func NewInstanceKey(
 	owner ResourceProvenance,
 	identity InstanceIdentityInput,
 ) (InstanceKey, error) {
+	return newInstanceKey(secret.AttemptID{}, descriptor, scope, owner, identity)
+}
+
+func NewAttemptInstanceKey(
+	attempt secret.AttemptID,
+	descriptor Descriptor,
+	scope Scope,
+	owner ResourceProvenance,
+	identity InstanceIdentityInput,
+) (InstanceKey, error) {
+	if attempt == (secret.AttemptID{}) {
+		return InstanceKey{}, fmt.Errorf("plugin instance key: attempt is required")
+	}
+	return newInstanceKey(attempt, descriptor, scope, owner, identity)
+}
+
+func newInstanceKey(
+	attempt secret.AttemptID,
+	descriptor Descriptor,
+	scope Scope,
+	owner ResourceProvenance,
+	identity InstanceIdentityInput,
+) (InstanceKey, error) {
 	if descriptor.Factory == "" {
 		return InstanceKey{}, fmt.Errorf("plugin instance key: factory is required")
 	}
@@ -42,6 +68,7 @@ func NewInstanceKey(
 	}
 	return InstanceKey{
 		Factory:      descriptor.Factory,
+		Attempt:      attempt,
 		Scope:        scope,
 		Owner:        owner,
 		ConfigDigest: sha256.Sum256(encoded),
@@ -49,6 +76,17 @@ func NewInstanceKey(
 }
 
 func (k InstanceKey) String() string {
+	if k.Attempt != (secret.AttemptID{}) {
+		return fmt.Sprintf(
+			"%s/%s/%d/%s/%s/%s",
+			k.Factory,
+			hex.EncodeToString(k.Attempt[:]),
+			k.Scope,
+			k.Owner.Kind,
+			k.Owner.ID,
+			hex.EncodeToString(k.ConfigDigest[:]),
+		)
+	}
 	return fmt.Sprintf(
 		"%s/%d/%s/%s/%s",
 		k.Factory,

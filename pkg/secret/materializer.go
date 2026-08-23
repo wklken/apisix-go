@@ -494,6 +494,10 @@ func (capability GenerationCapability) AttemptID() AttemptID {
 	return capability.attempt.AttemptID()
 }
 
+func (capability GenerationCapability) Generation() uint64 {
+	return capability.generation
+}
+
 func (capability GenerationCapability) Valid() bool {
 	return capability.generation != 0 && capability.AttemptID() != (AttemptID{})
 }

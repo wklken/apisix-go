@@ -52,7 +52,7 @@
 - `docs/architecture/adr/0003-platform-support.md`: records the owner-approved platform publication boundary from decisions 107–140.
 - `docs/design.md`, `docs/reviews/convergence-decisions.md`: retain their evidence and gain precise supersession annotations.
 - `docs/configuration.md`, `docs/production-profile.md`, `conf/config-production.yaml`: use the three profile axes and describe blocked evidence honestly.
-- `README.md`: contains only a generated capability summary between fixed markers.
+- `README.md`, `README.zh-CN.md`: contain only localized generated capability summaries between fixed markers.
 - `scripts/capability_status_gate_test.sh`: workflow shape and read-only generation contract test.
 - `.github/workflows/capability-status.yml`: required governance job replacing `plugin-status.yml` atomically.
 - `.github/CODEOWNERS`: requires project-owner review for manifest, profile, generated status, and ADR changes.
@@ -876,15 +876,16 @@ git commit -m "refactor(test): derive corpus selection from capability evidence"
 - Create: `docs/history/plugins-2026-08-23.md`
 - Replace generated content: `docs/plugins.md`
 - Modify generated block: `README.md`
+- Modify generated block: `README.zh-CN.md`
 - Modify: `t/plugin/README.md`
 
 **Interfaces:**
 - Consumes: complete `capability.Manifest`
-- Produces: deterministic `docs/plugins.md`, README summary, and `-check` drift result; historical status remains readable
+- Produces: deterministic `docs/plugins.md`, localized English/Chinese README summaries, and `-check` drift result; historical status remains readable
 
 - [ ] **Step 1: Archive the exact pre-cutover status document**
 
-Copy the current bytes of `docs/plugins.md` to `docs/history/plugins-2026-08-23.md` and prepend only this archival banner:
+Copy the frozen pre-cutover blob `7e719051:docs/plugins.md` (blob `1498111e499f2aaa8d9ffd23b696d63f8512c737`, SHA-256 `54c6ef75d33b8e88d8473941b5219846c6fc4596e2d00e1904bfec819092f825`) to `docs/history/plugins-2026-08-23.md` and prepend only this archival banner:
 
 ```markdown
 > Historical snapshot archived during the 2026-08-23 capability-manifest cutover.
@@ -892,15 +893,15 @@ Copy the current bytes of `docs/plugins.md` to `docs/history/plugins-2026-08-23.
 > Current generated status: [`docs/plugins.md`](../plugins.md).
 ```
 
-Verify the remainder matches the pre-cutover blob with `git show HEAD:docs/plugins.md` after removing the three-line banner.
+Verify the remainder matches the frozen pre-cutover blob after removing the three-line banner. The banner is exactly three lines with no extra blank separator.
 
-Run: `diff -u <(git show HEAD:docs/plugins.md) <(tail -n +4 docs/history/plugins-2026-08-23.md)`
+Run: `diff -u <(git show 7e719051:docs/plugins.md) <(tail -n +4 docs/history/plugins-2026-08-23.md)` and verify the tail SHA-256 is `54c6ef75d33b8e88d8473941b5219846c6fc4596e2d00e1904bfec819092f825`.
 
 Expected: no output.
 
 - [ ] **Step 2: Write failing Markdown golden tests**
 
-Add tests for `renderPluginsMarkdown` and `renderReadmeSummary`. The plugin document must show behavior and seven evidence columns separately, include target/version/commit, label stale/flaky/deferred evidence visibly, list every known gap verbatim, and state that generated rows are projections rather than proof.
+Add tests for `renderPluginsMarkdown` and localized `renderReadmeSummary` output. The plugin document must show behavior and seven evidence columns separately, include target/version/commit, label stale/flaky/deferred evidence visibly, list every known gap verbatim, and state that generated rows are projections rather than proof. Both README summaries must derive the same counts, qualification state, and gaps from the manifest; neither may retain hand-maintained inventory numbers.
 
 ```go
 func TestRenderPluginsMarkdownSeparatesBehaviorAndEvidence(t *testing.T) {
@@ -920,7 +921,7 @@ Sort APISIX defaults first by name, then Go extension entries by namespace/name.
 
 - [ ] **Step 4: Generate the README block with stable markers**
 
-Replace the manually maintained status paragraph in `README.md` with:
+Replace the manually maintained status paragraphs in `README.md` and `README.zh-CN.md` with localized content inside the same stable markers:
 
 ```markdown
 <!-- BEGIN GENERATED CAPABILITY SUMMARY -->
@@ -929,7 +930,7 @@ Replace the manually maintained status paragraph in `README.md` with:
 <!-- END GENERATED CAPABILITY SUMMARY -->
 ```
 
-The renderer must replace only this bounded block and fail if either marker is missing or duplicated.
+The renderer must replace only the bounded block in each file and fail if either marker is missing or duplicated. English and Chinese prose may differ, but every numeric fact and gap set must be computed from the same manifest snapshot.
 
 - [ ] **Step 5: Generate and check current artifacts**
 
@@ -941,12 +942,12 @@ Expected: PASS; a second `-write` produces no diff.
 
 Run: `bash -lc 'source .envrc && go test ./cmd/capability-gen -run "^(TestRenderPluginsMarkdown|TestRenderReadmeSummary|TestCheck)" -count=1 && git diff --check'`
 
-Expected: PASS; `docs/plugins.md` has a generated header, and `docs/history/plugins-2026-08-23.md` retains all prior table rows.
+Expected: PASS; `docs/plugins.md` has a generated header, both README marker blocks contain manifest-derived summaries, and `docs/history/plugins-2026-08-23.md` retains all prior table rows.
 
 - [ ] **Step 7: Commit generated status and archive**
 
 ```bash
-git add cmd/capability-gen docs/plugins.md docs/history/plugins-2026-08-23.md README.md t/plugin/README.md
+git add cmd/capability-gen docs/plugins.md docs/history/plugins-2026-08-23.md README.md README.zh-CN.md t/plugin/README.md
 git commit -m "docs(governance): generate capability status from manifest"
 ```
 
@@ -1245,7 +1246,7 @@ git commit -m "ci(governance): enforce capability manifest drift gate"
 - Verify: `pkg/capability/**`
 - Verify: `pkg/config/profiles.go`
 - Verify: `pkg/plugin/registry_gen.go`
-- Verify: `docs/plugins.md`, `docs/architecture/**`, `README.md`
+- Verify: `docs/plugins.md`, `docs/architecture/**`, `README.md`, `README.zh-CN.md`
 - Verify: `t/plugin/corpus_scope.yaml`, `.github/workflows/capability-status.yml`
 
 **Interfaces:**
@@ -1258,7 +1259,7 @@ Run:
 
 ```bash
 rg -n 'single source of truth|factory count =|want 115|want 114|supported plugins =|want 100|HTTPDataPlaneV1Profile|deployment\.profile' \
-  pkg t/plugin docs README.md --glob '*.go' --glob '*.md' --glob '*.yaml'
+  pkg t/plugin docs README*.md --glob '*.go' --glob '*.md' --glob '*.yaml'
 ```
 
 Expected: numeric inventory/status claims appear only in historical archives or generated output; legacy profile symbols have no production or test call site.
@@ -1287,7 +1288,7 @@ Expected: only governance-plan paths are changed; the four pre-existing untracke
 git add pkg/capability pkg/config pkg/plugin cmd/capability-gen t/plugin \
   docs/plugins.md docs/history docs/architecture docs/design.md \
   docs/reviews/convergence-decisions.md docs/configuration.md \
-  docs/production-profile.md README.md conf Makefile scripts .github
+  docs/production-profile.md README.md README.zh-CN.md conf Makefile scripts .github
 git commit -m "feat(governance): establish generated compatibility truth"
 ```
 

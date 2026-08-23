@@ -356,7 +356,7 @@ Run each exact red/green/commit cycle in `docs/superpowers/plans/2026-08-23-gove
 
 - [ ] **Step 2: Run the governance milestone gate**
 
-Run: `bash -lc 'source .envrc && go test ./pkg/capability ./pkg/config ./pkg/plugin ./t/plugin -run "^(TestCapabilityManifest|TestProfileSelection|TestSupportedPluginManifestSelection|TestUpstreamCorpusAccounting)$" -count=1'`
+Run: `bash -lc 'source .envrc && go test ./pkg/capability ./pkg/config ./pkg/plugin ./t/plugin -run "^(TestCapabilityManifest|TestProfileSelection|TestCapabilityManifestSelection|TestUpstreamCorpusAccounting)$" -count=1'`
 
 Expected: PASS, and generated documentation has no uncommitted drift.
 

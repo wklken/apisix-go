@@ -16,19 +16,19 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg, now: now}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestHandlerIsolatesGlobalQuotaByAuthenticatedConsumer(t *testing.T) {
 func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T) {
 	cfg := Config{Limit: 1, TimeWindow: 60, Policy: "redis"}
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T
 		SentinelUsername: "bob",
 		SentinelPassword: "sentinel-secret",
 	}}
-	sentinel.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	sentinel.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := sentinel.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 	}
 	for i, config := range tests {
 		plugin := &Plugin{config: config}
-		plugin.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+		plugin.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 		if err := plugin.Init(); err != nil {
 			t.Fatal(err)
 		}
@@ -191,7 +191,7 @@ func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing
 		RedisPassword: "plaintext-secret",
 	}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing
 		RedisTimeout:     37,
 	}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func TestPostInitRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) 
 		SentinelPassword: "sentinel-plaintext",
 	}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"edd1c9f0985e76a2"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -850,7 +850,7 @@ func TestPostInitAcceptsExpressionCostStrategy(t *testing.T) {
 		LimitStrategy: "expression",
 		CostExpr:      "prompt_tokens + completion_tokens",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1029,7 +1029,7 @@ func TestHandlerAppliesIndependentRulesWithRuleHeaders(t *testing.T) {
 			{Count: 5, TimeWindow: 60, Key: "$http_x_model"},
 		},
 	}, now: time.Now}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1262,7 +1262,7 @@ func TestPostInitRejectsInvalidCostExpression(t *testing.T) {
 		LimitStrategy: "expression",
 		CostExpr:      "prompt_tokens +",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1277,7 +1277,7 @@ func TestPostInitRequiresCostExpression(t *testing.T) {
 		TimeWindow:    60,
 		LimitStrategy: "expression",
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

@@ -188,6 +188,9 @@ func NewStandaloneFileWatcher(
 	events chan *store.Event,
 	encryption data_encryption.Service,
 ) *StandaloneFileWatcher {
+	if !encryption.Configured() {
+		panic(data_encryption.ErrDeclarationCatalogUnavailable)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StandaloneFileWatcher{
 		path:           path,
@@ -505,6 +508,9 @@ func readStandaloneSnapshot(
 	path, provider string,
 	encryption data_encryption.Service,
 ) (standaloneSnapshot, []standaloneResourceQuarantine, error) {
+	if !encryption.Configured() {
+		return nil, nil, data_encryption.ErrDeclarationCatalogUnavailable
+	}
 	if provider != standaloneProviderYAML && provider != standaloneProviderJSON {
 		return nil, nil, fmt.Errorf("unsupported standalone config provider %q", provider)
 	}
@@ -597,6 +603,9 @@ func normalizeStandaloneResource(
 	raw json.RawMessage,
 	encryption data_encryption.Service,
 ) (string, []byte, error) {
+	if !encryption.Configured() {
+		return "", nil, data_encryption.ErrDeclarationCatalogUnavailable
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return "", nil, err
@@ -644,7 +653,7 @@ func normalizeStandaloneResource(
 		}
 	}
 	if bucket == "plugin_metadata" {
-		if encryption.Enabled() && data_encryption.HasEncryptedPluginMetadata(id) {
+		if encryption.Enabled() && encryption.HasEncryptedPluginMetadata(id) {
 			encoded, err := json.Marshal(fields)
 			if err != nil {
 				return id, nil, fmt.Errorf("encode plugin metadata: %w", err)

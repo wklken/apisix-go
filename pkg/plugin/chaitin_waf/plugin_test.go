@@ -16,8 +16,8 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -522,7 +522,7 @@ func putChaitinMetadata(t *testing.T, nodes []any) {
 		chaitinMetadataStore, err = store.GetStore(
 			t.TempDir()+"/chaitin-waf.db",
 			chaitinMetadataEvents,
-			data_encryption.NewService(false, nil),
+			testutil.DataEncryptionService(false, nil),
 		)
 		if err != nil {
 			t.Fatalf("open store: %v", err)

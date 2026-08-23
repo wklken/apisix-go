@@ -24,6 +24,7 @@ func TestProcessEventWrapsOnlyResourceValidationFailures(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	storage := &Store{
 		db:                      db,
+		dataEncryption:          testDataEncryption(),
 		consumerKV:              map[string][]byte{},
 		consumerToKeys:          map[string][]string{},
 		consumerValues:          map[string]resource.Consumer{},
@@ -550,6 +551,7 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	storage := &Store{
 		events:         make(chan *Event),
 		db:             db,
+		dataEncryption: testDataEncryption(),
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
@@ -585,6 +587,7 @@ func TestEventHooksObserveCommittedRouteMutationsBeforeSyncReturns(t *testing.T)
 	storage := &Store{
 		events:         make(chan *Event),
 		db:             db,
+		dataEncryption: testDataEncryption(),
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
@@ -628,6 +631,7 @@ func TestFailedRouteMutationDoesNotTriggerReloadHook(t *testing.T) {
 	storage := &Store{
 		events:         make(chan *Event),
 		db:             db,
+		dataEncryption: testDataEncryption(),
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}
@@ -668,6 +672,7 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 	storage := &Store{
 		events:         events,
 		db:             db,
+		dataEncryption: testDataEncryption(),
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 	}

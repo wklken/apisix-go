@@ -48,7 +48,10 @@ func GetPluginMetadataRaw(id string) ([]byte, error) {
 }
 
 func (s *Store) decodePluginMetadata(config []byte, id string, v any) error {
-	if !s.dataEncryption.Enabled() || !data_encryption.HasEncryptedPluginMetadata(id) {
+	if !s.dataEncryption.Configured() {
+		return data_encryption.ErrDeclarationCatalogUnavailable
+	}
+	if !s.dataEncryption.Enabled() || !s.dataEncryption.HasEncryptedPluginMetadata(id) {
 		return json.Unmarshal(config, v)
 	}
 
@@ -451,7 +454,7 @@ func (s *Store) decryptPluginConfigs(configs map[string]resource.PluginConfig) {
 	}
 	resolver := s.dataEncryption.Resolver()
 	for name, config := range configs {
-		data_encryption.DecryptPluginConfigWithResolver(config, name, resolver)
+		s.dataEncryption.DecryptPluginConfigWithResolver(config, name, resolver)
 	}
 }
 

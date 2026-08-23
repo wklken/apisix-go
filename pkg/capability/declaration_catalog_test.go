@@ -37,6 +37,26 @@ func TestSecretDeclarationCatalogIsDeterministicAndDefensive(t *testing.T) {
 	if _, ok := catalog.Lookup("request-id", SecretPluginConfig, "missing"); ok {
 		t.Fatal("Lookup() unexpectedly found an undeclared field")
 	}
+	var visited []SecretDeclaration
+	catalog.ForEach("request-id", SecretPluginConfig, func(declaration SecretDeclaration) {
+		visited = append(visited, declaration)
+	})
+	if want := []SecretDeclaration{{
+		Factory: "request-id", Source: SecretPluginConfig, Field: "auth.secret",
+	}}; !reflect.DeepEqual(visited, want) {
+		t.Fatalf("ForEach() = %#v, want %#v", visited, want)
+	}
+	visited[0].Field = "mutated"
+	var unchanged SecretDeclaration
+	catalog.ForEach("request-id", SecretPluginConfig, func(declaration SecretDeclaration) {
+		unchanged = declaration
+	})
+	if unchanged.Field != "auth.secret" {
+		t.Fatalf("ForEach() exposed mutable declaration: %#v", unchanged)
+	}
+	catalog.ForEach("request-id", SecretDeclarationSource("missing"), func(SecretDeclaration) {
+		t.Fatal("ForEach() visited an undeclared source")
+	})
 
 	shuffled := testManifest()
 	shuffled.Plugins[0].SecretDeclarations = []SecretDeclaration{

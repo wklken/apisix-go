@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -28,11 +29,14 @@ func NewPublishedView(
 	published generation.PublishedGeneration,
 	options PublishedViewOptions,
 ) (*PublishedView, error) {
+	if !options.DataEncryption.Configured() {
+		return nil, errors.New("published view requires a configured data-encryption service")
+	}
 	domain := published.Artifact.Domain
 	if !validPublicationDomain(domain) || published.Artifact.Revision == 0 {
 		return nil, generation.ErrIntegrity
 	}
-	if err := validatePublicationCandidate(
+	if err := generation.ValidatePublicationCandidate(
 		domain,
 		published.Artifact.Revision,
 		generation.PublicationCandidate(published),
@@ -142,7 +146,7 @@ func (v *PublishedView) PluginMetadata(id string, target any) error {
 	if !found {
 		return ErrNotFound
 	}
-	if !v.dataEncryption.Enabled() || !data_encryption.HasEncryptedPluginMetadata(id) {
+	if !v.dataEncryption.Enabled() || !v.dataEncryption.HasEncryptedPluginMetadata(id) {
 		return json.Unmarshal(raw, target)
 	}
 	var metadata map[string]any
@@ -264,8 +268,9 @@ func (v *PublishedView) ConfigSnapshot() (*ConfigSnapshot, error) {
 }
 
 func (v *PublishedView) decryptPluginConfigs(configs map[string]resource.PluginConfig) {
+	resolver := v.dataEncryption.Resolver()
 	for name, config := range configs {
-		v.dataEncryption.DecryptPluginConfig(config, name)
+		v.dataEncryption.DecryptPluginConfigWithResolver(config, name, resolver)
 	}
 }
 

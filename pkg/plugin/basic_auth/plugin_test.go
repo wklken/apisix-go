@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 var (
@@ -31,7 +31,7 @@ func setupStore(t *testing.T) {
 		testStore, err = store.GetStore(
 			t.TempDir()+"/basic-auth.db",
 			testEvents,
-			data_encryption.NewService(false, nil),
+			testutil.DataEncryptionService(false, nil),
 		)
 		if err != nil {
 			t.Fatalf("open store: %v", err)

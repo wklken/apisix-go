@@ -7,8 +7,8 @@ import (
 )
 
 func TestServiceInstancesDoNotShareKeyrings(t *testing.T) {
-	first := NewService(true, []string{"qeddd145sfvddff3"})
-	second := NewService(false, nil)
+	first := testService(t, true, []string{"qeddd145sfvddff3"})
+	second := testService(t, false, nil)
 
 	ciphertext, err := first.EncryptForContext("secret", "test.secret")
 	if err != nil {
@@ -26,8 +26,8 @@ func TestServiceInstancesDoNotShareKeyrings(t *testing.T) {
 }
 
 func TestEnabledServiceCannotDecryptAnotherServiceCiphertext(t *testing.T) {
-	first := NewService(true, []string{"qeddd145sfvddff3"})
-	second := NewService(true, []string{"old-keyring-item"})
+	first := testService(t, true, []string{"qeddd145sfvddff3"})
+	second := testService(t, true, []string{"old-keyring-item"})
 	ciphertext, err := first.EncryptForContext("secret", "test.secret")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestEnabledServiceCannotDecryptAnotherServiceCiphertext(t *testing.T) {
 
 func TestServiceClonesConstructorKeyring(t *testing.T) {
 	keyring := []string{"qeddd145sfvddff3"}
-	service := NewService(true, keyring)
+	service := testService(t, true, keyring)
 	keyring[0] = "changed-key-item"
 
 	ciphertext, err := service.EncryptForContext("secret", "test.secret")
@@ -55,7 +55,7 @@ func TestServiceClonesConstructorKeyring(t *testing.T) {
 
 func TestServiceResolverDoesNotShareMutableKeyring(t *testing.T) {
 	keyring := []string{"qeddd145sfvddff3"}
-	service := NewService(true, keyring)
+	service := testService(t, true, keyring)
 	resolver := service.Resolver()
 	keyring[0] = "changed-key-item"
 
@@ -79,24 +79,24 @@ func TestServiceSameConfiguration(t *testing.T) {
 	}{
 		{
 			name:  "same",
-			left:  NewService(true, keyring),
-			right: NewService(true, append([]string(nil), keyring...)),
+			left:  testService(t, true, keyring),
+			right: testService(t, true, append([]string(nil), keyring...)),
 			want:  true,
 		},
 		{
 			name:  "different order",
-			left:  NewService(true, keyring),
-			right: NewService(true, []string{keyring[1], keyring[0]}),
+			left:  testService(t, true, keyring),
+			right: testService(t, true, []string{keyring[1], keyring[0]}),
 		},
 		{
 			name:  "different enabled",
-			left:  NewService(true, keyring),
-			right: NewService(false, keyring),
+			left:  testService(t, true, keyring),
+			right: testService(t, false, keyring),
 		},
 		{
 			name:  "different keyring",
-			left:  NewService(true, keyring),
-			right: NewService(true, []string{keyring[0]}),
+			left:  testService(t, true, keyring),
+			right: testService(t, true, []string{keyring[0]}),
 		},
 	}
 	for _, tt := range tests {
@@ -109,7 +109,7 @@ func TestServiceSameConfiguration(t *testing.T) {
 }
 
 func TestServiceEncryptsAndDecryptsPluginConfigs(t *testing.T) {
-	service := NewService(true, []string{"qeddd145sfvddff3"})
+	service := testService(t, true, []string{"qeddd145sfvddff3"})
 	configs := map[string]any{
 		"key-auth": map[string]any{"key": "api-secret"},
 	}
@@ -128,7 +128,7 @@ func TestServiceEncryptsAndDecryptsPluginConfigs(t *testing.T) {
 }
 
 func TestServiceEncryptsAndDecryptsPluginMetadata(t *testing.T) {
-	service := NewService(true, []string{"qeddd145sfvddff3"})
+	service := testService(t, true, []string{"qeddd145sfvddff3"})
 	metadata := map[string]any{"master_apikey": "api-secret"}
 
 	if err := service.EncryptPluginMetadata("azure-functions", metadata); err != nil {
@@ -144,7 +144,7 @@ func TestServiceEncryptsAndDecryptsPluginMetadata(t *testing.T) {
 }
 
 func TestDisabledServiceEncryptionIsNoOp(t *testing.T) {
-	service := NewService(false, nil)
+	service := testService(t, false, nil)
 	configs := map[string]any{"key-auth": map[string]any{"key": "api-secret"}}
 	metadata := map[string]any{"master_apikey": "api-secret"}
 
@@ -163,7 +163,7 @@ func TestDisabledServiceEncryptionIsNoOp(t *testing.T) {
 }
 
 func TestServiceErrorsDoNotExposeSecretValues(t *testing.T) {
-	service := NewService(true, []string{"qeddd145sfvddff3"})
+	service := testService(t, true, []string{"qeddd145sfvddff3"})
 	secret := "must-not-appear"
 	configs := map[string]any{
 		"key-auth": map[string]any{"key": encryptedValuePrefix + secret},

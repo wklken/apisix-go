@@ -5,12 +5,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 )
+
+func testPublishedViewOptions() PublishedViewOptions {
+	return PublishedViewOptions{DataEncryption: testDataEncryption()}
+}
+
+func TestNewPublishedViewRejectsUnconfiguredDataEncryptionService(t *testing.T) {
+	published := publishedViewGeneration(t, generation.DomainHTTP, []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "routes", ID: "r1"}, Value: []byte(`{"id":"r1","uri":"/"}`),
+	}})
+	if _, err := NewPublishedView(
+		published,
+		PublishedViewOptions{},
+	); err == nil ||
+		!strings.Contains(err.Error(), "configured data-encryption service") {
+		t.Fatalf("NewPublishedView() error = %v, want configured-service error", err)
+	}
+}
 
 func TestNewPublishedViewRejectsForgedPublication(t *testing.T) {
 	valid := publishedViewGeneration(t, generation.DomainHTTP, []generation.Resource{{
@@ -45,7 +62,7 @@ func TestNewPublishedViewRejectsForgedPublication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			forged := clonePublishedGeneration(valid)
 			test.mutate(&forged)
-			if _, err := NewPublishedView(forged, PublishedViewOptions{}); err == nil {
+			if _, err := NewPublishedView(forged, testPublishedViewOptions()); err == nil {
 				t.Fatal("NewPublishedView() error = nil")
 			}
 		})
@@ -57,7 +74,7 @@ func TestPublishedViewRawAndPublishedAreImmutable(t *testing.T) {
 	published := publishedViewGeneration(t, generation.DomainHTTP, []generation.Resource{{
 		Key: generation.ResourceKey{Kind: "routes", ID: "r1"}, Value: value,
 	}})
-	view, err := NewPublishedView(published, PublishedViewOptions{})
+	view, err := NewPublishedView(published, testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +160,7 @@ func TestPublishedViewTypedHTTPResourcesAndConfigSnapshot(t *testing.T) {
 	}
 	view, err := NewPublishedView(
 		publishedViewGeneration(t, generation.DomainHTTP, resources),
-		PublishedViewOptions{},
+		testPublishedViewOptions(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +238,7 @@ func TestPublishedViewConfigSnapshotDoesNotSynthesizeEmbeddedIDs(t *testing.T) {
 			Value: []byte(`{"plugins":{"request-id":{}}}`),
 		},
 		{Key: generation.ResourceKey{Kind: "ssls", ID: "stored-ssl"}, Value: []byte(`{"sni":"example.com"}`)},
-	}), PublishedViewOptions{})
+	}), testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +273,7 @@ func TestPublishedViewPreservesDurableResourceKeyOrder(t *testing.T) {
 		{Key: generation.ResourceKey{Kind: "routes", ID: "b"}, Value: []byte(`{"id":"y","uri":"/y"}`)},
 		{Key: generation.ResourceKey{Kind: "global_rules", ID: "a"}, Value: []byte(`{"id":"z","plugins":{}}`)},
 		{Key: generation.ResourceKey{Kind: "global_rules", ID: "b"}, Value: []byte(`{"id":"y","plugins":{}}`)},
-	}), PublishedViewOptions{})
+	}), testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +293,7 @@ func TestPublishedViewPreservesDurableResourceKeyOrder(t *testing.T) {
 	streamView, err := NewPublishedView(publishedViewGeneration(t, generation.DomainStream, []generation.Resource{
 		{Key: generation.ResourceKey{Kind: "stream_routes", ID: "a"}, Value: []byte(`{"id":"z","server_port":9001}`)},
 		{Key: generation.ResourceKey{Kind: "stream_routes", ID: "b"}, Value: []byte(`{"id":"y","server_port":9002}`)},
-	}), PublishedViewOptions{})
+	}), testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +322,7 @@ func TestPublishedViewStreamRoutesAreSortedAndCloned(t *testing.T) {
 			),
 		},
 	})
-	view, err := NewPublishedView(published, PublishedViewOptions{})
+	view, err := NewPublishedView(published, testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +344,7 @@ func TestPublishedViewRejectsHTTPTypedAccessFromStreamDomain(t *testing.T) {
 		{Key: generation.ResourceKey{Kind: "ssls", ID: "ssl"}, Value: []byte(`{"id":"ssl"}`)},
 		{Key: generation.ResourceKey{Kind: "protos", ID: "proto"}, Value: []byte(`{"id":"proto"}`)},
 		{Key: generation.ResourceKey{Kind: "plugin_metadata", ID: "metadata"}, Value: []byte(`{"value":1}`)},
-	}), PublishedViewOptions{})
+	}), testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +373,7 @@ func TestPublishedViewRejectsHTTPTypedAccessFromStreamDomain(t *testing.T) {
 }
 
 func TestPublishedViewExplicitEncryptionAndJournalIndependence(t *testing.T) {
-	service := data_encryption.NewService(true, []string{"qeddd145sfvddff3"})
+	service := testDataEncryptionWith(true, []string{"qeddd145sfvddff3"})
 	pluginSecret, err := service.EncryptForContext("route-secret", "key-auth.key")
 	if err != nil {
 		t.Fatal(err)
@@ -416,7 +433,7 @@ func TestPublishedViewExplicitEncryptionAndJournalIndependence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistedView, err := NewPublishedView(persisted, PublishedViewOptions{})
+	persistedView, err := NewPublishedView(persisted, testPublishedViewOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +457,7 @@ func TestPublishedViewConcurrentReads(t *testing.T) {
 				Value: []byte(`{"id":"r1","uri":"/"}`),
 			},
 		}),
-		PublishedViewOptions{},
+		testPublishedViewOptions(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -485,7 +502,7 @@ func publishedViewGeneration(
 func TestPublishedViewMissingTypedResource(t *testing.T) {
 	view, err := NewPublishedView(
 		publishedViewGeneration(t, generation.DomainHTTP, nil),
-		PublishedViewOptions{},
+		testPublishedViewOptions(),
 	)
 	if err != nil {
 		t.Fatal(err)

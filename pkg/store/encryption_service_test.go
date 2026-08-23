@@ -4,15 +4,55 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
+func testSecretDeclarationCatalog() *capability.SecretDeclarationCatalog {
+	manifest, err := capability.Load()
+	if err != nil {
+		panic(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		panic(err)
+	}
+	return catalog
+}
+
 func testDataEncryption() data_encryption.Service {
-	return data_encryption.NewService(false, nil)
+	return data_encryption.NewService(false, nil, testSecretDeclarationCatalog())
+}
+
+func testDataEncryptionWith(enabled bool, keyring []string) data_encryption.Service {
+	return data_encryption.NewService(enabled, keyring, testSecretDeclarationCatalog())
 }
 
 func testParsingStore() *Store {
 	return &Store{dataEncryption: testDataEncryption()}
+}
+
+func TestOpenRejectsUnconfiguredDataEncryptionService(t *testing.T) {
+	if _, err := Open(
+		t.TempDir()+"/unconfigured.db",
+		make(chan *Event),
+		testutil.UnconfiguredDataEncryptionService(),
+	); err == nil ||
+		!strings.Contains(err.Error(), "configured data-encryption service") {
+		t.Fatalf("Open() error = %v, want configured-service error", err)
+	}
+}
+
+func TestGetStoreRejectsUnconfiguredDataEncryptionService(t *testing.T) {
+	if _, err := GetStore(
+		t.TempDir()+"/unconfigured.db",
+		make(chan *Event),
+		testutil.UnconfiguredDataEncryptionService(),
+	); err == nil ||
+		!strings.Contains(err.Error(), "configured data-encryption service") {
+		t.Fatalf("GetStore() error = %v, want configured-service error", err)
+	}
 }
 
 func TestStoresUseOnlyTheirOwnDataEncryptionService(t *testing.T) {
@@ -21,7 +61,7 @@ func TestStoresUseOnlyTheirOwnDataEncryptionService(t *testing.T) {
 	first, err := Open(
 		t.TempDir()+"/first.db",
 		make(chan *Event),
-		data_encryption.NewService(true, []string{firstKey}),
+		testDataEncryptionWith(true, []string{firstKey}),
 	)
 	if err != nil {
 		t.Fatalf("Open(first) error = %v", err)
@@ -30,7 +70,7 @@ func TestStoresUseOnlyTheirOwnDataEncryptionService(t *testing.T) {
 	second, err := Open(
 		t.TempDir()+"/second.db",
 		make(chan *Event),
-		data_encryption.NewService(true, []string{secondKey}),
+		testDataEncryptionWith(true, []string{secondKey}),
 	)
 	if err != nil {
 		t.Fatalf("Open(second) error = %v", err)
@@ -74,14 +114,14 @@ func TestStoresUseOnlyTheirOwnDataEncryptionService(t *testing.T) {
 
 func TestGetStoreRequiresMatchingDataEncryptionService(t *testing.T) {
 	path := t.TempDir() + "/global.db"
-	service := data_encryption.NewService(true, []string{"qeddd145sfvddff3"})
+	service := testDataEncryptionWith(true, []string{"qeddd145sfvddff3"})
 	first, err := GetStore(path, make(chan *Event), service)
 	if err != nil {
 		t.Fatalf("first GetStore() error = %v", err)
 	}
 	t.Cleanup(func() { _ = first.Stop() })
 
-	second, err := GetStore(path, make(chan *Event), data_encryption.NewService(true, []string{"qeddd145sfvddff3"}))
+	second, err := GetStore(path, make(chan *Event), testDataEncryptionWith(true, []string{"qeddd145sfvddff3"}))
 	if err != nil {
 		t.Fatalf("matching GetStore() error = %v", err)
 	}
@@ -92,7 +132,7 @@ func TestGetStoreRequiresMatchingDataEncryptionService(t *testing.T) {
 	_, err = GetStore(
 		path,
 		make(chan *Event),
-		data_encryption.NewService(true, []string{"1234567890abcdef"}),
+		testDataEncryptionWith(true, []string{"1234567890abcdef"}),
 	)
 	if err == nil || !strings.Contains(
 		err.Error(),

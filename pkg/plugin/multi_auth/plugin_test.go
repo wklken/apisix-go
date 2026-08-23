@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 var (
@@ -33,7 +33,7 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/multi-auth.db", testEvents, data_encryption.NewService(false, nil))
+		s, err := store.GetStore(t.TempDir()+"/multi-auth.db", testEvents, testutil.DataEncryptionService(false, nil))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}

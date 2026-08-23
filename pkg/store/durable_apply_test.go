@@ -627,6 +627,7 @@ func TestReadOnlyStoreMutationPreservesLastGoodState(t *testing.T) {
 	storage := &Store{
 		events:                  make(chan *Event, 2),
 		db:                      readOnlyDB,
+		dataEncryption:          testDataEncryption(),
 		consumerKV:              make(map[string][]byte),
 		consumerToKeys:          make(map[string][]string),
 		consumerValues:          make(map[string]resource.Consumer),

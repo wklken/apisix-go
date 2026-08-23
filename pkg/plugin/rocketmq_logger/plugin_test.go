@@ -22,9 +22,9 @@ import (
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestRunLogPhaseOriginPreservesHTTPFraming(t *testing.T) {
@@ -156,7 +156,7 @@ func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg, sender: sender}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -254,7 +254,7 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -279,7 +279,7 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -317,7 +317,7 @@ func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
 			test.config.NameServerList = []string{"127.0.0.1:9876"}
 			test.config.Topic = "apisix-logs"
 			p := &Plugin{config: test.config, sender: &captureSender{}}
-			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -350,7 +350,7 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -373,7 +373,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

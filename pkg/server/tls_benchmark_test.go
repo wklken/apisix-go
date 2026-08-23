@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func frontendTestCertificatePEM(t testing.TB, commonName string) (string, string) {
@@ -57,7 +57,7 @@ func frontendTestCertificatePEM(t testing.TB, commonName string) (string, string
 // lookup after the change.
 func BenchmarkTLSCertificate(b *testing.B) {
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(b.TempDir()+"/tls-bench.db", events, data_encryption.Service{})
+	storage, err := store.GetStore(b.TempDir()+"/tls-bench.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		b.Fatalf("get store: %v", err)
 	}

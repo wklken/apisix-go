@@ -61,6 +61,7 @@ func TestConsumerKVDeleteRemovesAllLookupEntries(t *testing.T) {
 
 func TestPrepareConsumerSnapshotRejectsNonStringJWEKey(t *testing.T) {
 	storage := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
 		consumerValues: map[string]resource.Consumer{},

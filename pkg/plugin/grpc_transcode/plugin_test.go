@@ -18,9 +18,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/net/http2"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -1626,7 +1626,11 @@ var _ = protoregistry.NotFound
 
 func TestLoadBindingRefetchesOnProtoGenerationChange(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/grpc-generation.db", events, data_encryption.NewService(false, nil))
+	storage, err := store.GetStore(
+		t.TempDir()+"/grpc-generation.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}

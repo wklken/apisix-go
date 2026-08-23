@@ -11,15 +11,15 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestFrontendTLSHandshakeUsesPerResourceClientCA(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/resource-mtls.db", events, data_encryption.Service{})
+	storage, err := store.Open(t.TempDir()+"/resource-mtls.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -19,10 +19,10 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -197,7 +197,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -251,7 +251,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -268,7 +268,7 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -283,7 +283,7 @@ func putPluginMetadata(t *testing.T, logFormat map[string]string) {
 	t.Helper()
 
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events, data_encryption.NewService(false, nil))
+	storage, err := store.Open(t.TempDir()+"/store.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -341,7 +341,7 @@ func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
 		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
 	}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -364,7 +364,7 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 		},
 	}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

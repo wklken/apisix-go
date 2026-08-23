@@ -44,6 +44,7 @@ func TestGetValidatedPluginMetadataPreservesLastGoodAndClearsOnDeletion(t *testi
 	t.Cleanup(func() { _ = db.Close() })
 	storage := &Store{
 		db:                      db,
+		dataEncryption:          testDataEncryption(),
 		validatedPluginMetadata: newValidatedPluginMetadataCache(),
 	}
 	if err := storage.InitBuckets(); err != nil {
@@ -110,6 +111,7 @@ func TestGetValidatedPluginMetadataRejectsOutOfOrderPublication(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	storage := &Store{
 		db:                      db,
+		dataEncryption:          testDataEncryption(),
 		validatedPluginMetadata: newValidatedPluginMetadataCache(),
 	}
 	if err := storage.InitBuckets(); err != nil {

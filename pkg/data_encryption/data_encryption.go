@@ -7,8 +7,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/capability"
 )
 
 const encryptedValuePrefix = "$encrypted://"
@@ -18,124 +19,60 @@ const (
 	v2NonceSize        = 12
 )
 
-var pluginFields = map[string][]string{
-	"ai-aliyun-content-moderation": {"access_key_secret"},
-	"ai-aws-content-moderation":    {"comprehend.secret_access_key"},
-	"ai-proxy": {
-		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
-		"auth.aws.session_token",
-	},
-	"ai-proxy-multi": {
-		"instances.*.auth.header", "instances.*.auth.query", "instances.*.auth.gcp.service_account_json",
-		"instances.*.auth.aws.secret_access_key", "instances.*.auth.aws.session_token",
-	},
-	"ai-rag": {
-		"embeddings_provider.azure_openai.api_key", "vector_search_provider.azure_ai_search.api_key",
-	},
-	"ai-request-rewrite": {
-		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
-		"auth.aws.session_token",
-	},
-	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
-	"authz-keycloak":       {"client_secret"},
-	"authz-casdoor":        {"client_secret", "client_secret_fallbacks"},
-	"aws-lambda":           {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
-	"azure-functions":      {"authorization.apikey"},
-	"basic-auth":           {"password"},
-	"cas-auth":             {"cookie.secret"},
-	"dingtalk-auth":        {"app_secret", "secret"},
-	"feishu-auth":          {"app_secret", "secret", "secret_fallbacks"},
-	"hmac-auth":            {"secret"},
-	"http-logger":          {"auth_header"},
-	"jwe-decrypt":          {"key", "secret"},
-	"jwt-auth":             {"secret", "private_key"},
-	"kafka-logger":         {"brokers.*.sasl_config.password"},
-	"kafka-proxy":          {"sasl.password"},
-	"key-auth":             {"key"},
-	"ldap-auth":            {"user_dn"},
-	"openid-connect":       {"client_secret", "client_rsa_private_key", "session.secret", "session.redis.password"},
-	"openfunction":         {"authorization.service_token"},
-	"openwhisk":            {"service_token"},
-	"clickhouse-logger":    {"password"},
-	"csrf":                 {"key"},
-	"elasticsearch-logger": {"auth.password", "headers.Authorization"},
-	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-	"google-cloud-logging": {"auth_config.private_key"},
-	"lago":                 {"token"},
-	"loggly":               {"customer_token"},
-	"response-rewrite":     {"body", "body_secret"},
-	"rocketmq-logger":      {"secret_key"},
-	"saml-auth":            {"sp_private_key", "secret"},
-	"sls-logger":           {"access_key_secret"},
-	"splunk-hec-logging":   {"endpoint.token"},
-	"tencent-cloud-cls":    {"secret_key"},
-}
-
-var strictPluginFields = map[string][]string{
-	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
-	"clickhouse-logger":    {"password"},
-	"csrf":                 {"key"},
-	"elasticsearch-logger": {"auth.password"},
-	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-	"google-cloud-logging": {"auth_config.private_key"},
-	"http-logger":          {"auth_header"},
-	"kafka-logger":         {"brokers.*.sasl_config.password"},
-	"kafka-proxy":          {"sasl.password"},
-	"lago":                 {"token"},
-	"loggly":               {"customer_token"},
-	"rocketmq-logger":      {"secret_key"},
-	"response-rewrite":     {"body_secret"},
-	"sls-logger":           {"access_key_secret"},
-	"splunk-hec-logging":   {"endpoint.token"},
-	"tencent-cloud-cls":    {"secret_key"},
-}
-
-var pluginMetadataFields = map[string][]string{
-	"azure-functions":  {"master_apikey"},
-	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-}
-
-var strictPluginMetadataFields = map[string][]string{
-	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
-}
-
-func HasEncryptedPluginMetadata(name string) bool {
-	return len(pluginMetadataFields[name]) != 0
-}
-
-func EncryptPluginMetadata(name string, metadata map[string]any, keyring []string) error {
+func EncryptPluginMetadata(
+	name string,
+	metadata map[string]any,
+	keyring []string,
+	catalog *capability.SecretDeclarationCatalog,
+) error {
+	if catalog == nil {
+		return ErrDeclarationCatalogUnavailable
+	}
 	if len(keyring) == 0 {
 		return ErrKeyUnavailable
 	}
-	for _, field := range pluginMetadataFields[name] {
-		if err := encryptField(metadata, name, field, keyring); err != nil {
-			return fmt.Errorf("%s.%s: %w", name, field, err)
+	var encryptErr error
+	catalog.ForEach(name, capability.SecretPluginMetadata, func(declaration capability.SecretDeclaration) {
+		if encryptErr != nil {
+			return
 		}
+		if err := encryptField(metadata, name, declaration.Field, keyring); err != nil {
+			encryptErr = fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
+		}
+	})
+	if encryptErr != nil {
+		return encryptErr
 	}
 	return nil
 }
 
-func IsStrictPluginField(pluginName string, field string) bool {
-	return slices.Contains(strictPluginFields[pluginName], field)
-}
-
-func IsStrictPluginMetadataField(pluginName string, field string) bool {
-	return slices.Contains(strictPluginMetadataFields[pluginName], field)
-}
-
-func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
+func EncryptPluginConfigs(
+	configs map[string]any,
+	keyring []string,
+	catalog *capability.SecretDeclarationCatalog,
+) error {
+	if catalog == nil {
+		return ErrDeclarationCatalogUnavailable
+	}
 	if len(keyring) == 0 {
 		return ErrKeyUnavailable
 	}
-	for name, fields := range pluginFields {
-		config, ok := configs[name].(map[string]any)
+	for name, config := range configs {
+		pluginConfig, ok := config.(map[string]any)
 		if !ok {
 			continue
 		}
-		for _, field := range fields {
-			if err := encryptField(config, name, field, keyring); err != nil {
-				return fmt.Errorf("%s.%s: %w", name, field, err)
+		var encryptErr error
+		catalog.ForEach(name, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
+			if encryptErr != nil {
+				return
 			}
+			if err := encryptField(pluginConfig, name, declaration.Field, keyring); err != nil {
+				encryptErr = fmt.Errorf("%s.%s: %w", name, declaration.Field, err)
+			}
+		})
+		if encryptErr != nil {
+			return encryptErr
 		}
 	}
 	return nil
@@ -244,47 +181,85 @@ func encryptValue(value any, keyring []string, context string) (any, error) {
 	return value, nil
 }
 
-func DecryptPluginConfigs(configs map[string]any, keyring []string) {
+func DecryptPluginConfigs(
+	configs map[string]any,
+	keyring []string,
+	catalog *capability.SecretDeclarationCatalog,
+) {
+	if catalog == nil {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
 	if len(keyring) == 0 {
 		return
 	}
-	resolver := NewResolver(true, keyring)
+	decryptPluginConfigsWithResolver(configs, NewResolver(true, keyring), catalog)
+}
+
+func decryptPluginConfigsWithResolver(
+	configs map[string]any,
+	resolver Resolver,
+	catalog *capability.SecretDeclarationCatalog,
+) {
 	for name, config := range configs {
-		DecryptPluginConfigWithResolver(config, name, resolver)
+		pluginConfig, ok := config.(map[string]any)
+		if !ok {
+			continue
+		}
+		catalog.ForEach(name, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
+			if declaration.Strict {
+				return
+			}
+			decryptField(pluginConfig, name, declaration.Field, resolver)
+		})
 	}
 }
 
 // DecryptPluginConfigWithResolver decrypts the registered encrypted fields of
 // a single plugin configuration. Callers that iterate a resource's plugin map
 // reuse one resolver across plugins instead of copying the keyring per call.
-func DecryptPluginConfigWithResolver(config any, pluginName string, resolver Resolver) {
-	fields, ok := pluginFields[pluginName]
-	if !ok {
-		return
+func DecryptPluginConfigWithResolver(
+	config any,
+	pluginName string,
+	resolver Resolver,
+	catalog *capability.SecretDeclarationCatalog,
+) {
+	if catalog == nil {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
+	if !resolver.Configured() {
+		panic(ErrDeclarationCatalogUnavailable)
 	}
 	pluginConfig, ok := config.(map[string]any)
 	if !ok {
 		return
 	}
-	for _, field := range fields {
-		if IsStrictPluginField(pluginName, field) {
-			continue
+	catalog.ForEach(pluginName, capability.SecretPluginConfig, func(declaration capability.SecretDeclaration) {
+		if declaration.Strict {
+			return
 		}
-		decryptField(pluginConfig, pluginName, field, resolver)
-	}
+		decryptField(pluginConfig, pluginName, declaration.Field, resolver)
+	})
 }
 
-func DecryptPluginMetadata(name string, metadata map[string]any, keyring []string) {
+func DecryptPluginMetadata(
+	name string,
+	metadata map[string]any,
+	keyring []string,
+	catalog *capability.SecretDeclarationCatalog,
+) {
+	if catalog == nil {
+		panic(ErrDeclarationCatalogUnavailable)
+	}
 	if len(keyring) == 0 {
 		return
 	}
 	resolver := NewResolver(true, keyring)
-	for _, field := range pluginMetadataFields[name] {
-		if slices.Contains(strictPluginMetadataFields[name], field) {
-			continue
+	catalog.ForEach(name, capability.SecretPluginMetadata, func(declaration capability.SecretDeclaration) {
+		if declaration.Strict {
+			return
 		}
-		decryptField(metadata, name, field, resolver)
-	}
+		decryptField(metadata, name, declaration.Field, resolver)
+	})
 }
 
 func decryptField(config map[string]any, pluginName string, path string, resolver Resolver) {

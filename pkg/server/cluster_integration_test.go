@@ -10,10 +10,10 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func requestAndDrain(t *testing.T, client *http.Client, url string, wantStatus int) {
@@ -45,7 +45,7 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/cluster.db", events, data_encryption.Service{})
+	storage, err := store.Open(t.TempDir()+"/cluster.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -78,11 +78,12 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	}
 
 	server := &Server{
-		staticConfig: &config.EffectiveConfig{},
-		addr:         "127.0.0.1:9080",
-		storage:      storage,
-		routes:       newRouteHandler(http.NotFoundHandler(), nil),
-		clusters:     pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
+		staticConfig:   &config.EffectiveConfig{},
+		addr:           "127.0.0.1:9080",
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
+		routes:         newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:       pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
 	}
 	t.Cleanup(server.clusters.Close)
 	t.Cleanup(func() { server.routes.Close() })

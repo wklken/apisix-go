@@ -67,6 +67,7 @@ func TestConsumerKVAddValidatesJWEDecryptConsumerConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
 				consumerKV:     make(map[string][]byte),
 				consumerToKeys: make(map[string][]string),
 			}
@@ -116,6 +117,7 @@ func TestConsumerKVAddDoesNotPartiallyIndexMalformedJWEDecryptConsumer(t *testin
 	for _, tt := range invalidConfigs {
 		t.Run(tt.name, func(t *testing.T) {
 			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
 				consumerKV:     make(map[string][]byte),
 				consumerToKeys: make(map[string][]string),
 			}
@@ -172,7 +174,11 @@ func TestConsumerKVAddAcceptsJWEDecryptRawURLAndStandardBase64Secrets(t *testing
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			consumerStore := &Store{consumerKV: make(map[string][]byte), consumerToKeys: make(map[string][]string)}
+			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
+				consumerKV:     make(map[string][]byte),
+				consumerToKeys: make(map[string][]string),
+			}
 			value := []byte(
 				`{"username":"alice","plugins":{"jwe-decrypt":{"key":"` + tt.name + `","secret":"` + tt.secret +
 					`","is_base64_encoded":` + strconv.FormatBool(tt.base64) + `}}}`,

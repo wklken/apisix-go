@@ -13,10 +13,74 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
+
+func testStandaloneDataEncryption(
+	t *testing.T,
+	enabled bool,
+	keyring []string,
+) data_encryption.Service {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data_encryption.NewService(enabled, keyring, catalog)
+}
+
+func TestStandaloneEncryptionServiceIsRequiredAtEntryPoints(t *testing.T) {
+	assertStandaloneCatalogPanic(t, func() {
+		_ = NewStandaloneFileWatcher(
+			"",
+			standaloneProviderYAML,
+			make(chan *store.Event),
+			testutil.UnconfiguredDataEncryptionService(),
+		)
+	})
+	if _, _, err := readStandaloneSnapshot(
+		"",
+		standaloneProviderYAML,
+		testutil.UnconfiguredDataEncryptionService(),
+	); !errors.Is(
+		err,
+		data_encryption.ErrDeclarationCatalogUnavailable,
+	) {
+		t.Fatalf("readStandaloneSnapshot() error = %v, want catalog error", err)
+	}
+	if _, _, err := normalizeStandaloneResource(
+		"routes",
+		json.RawMessage(`{"id":"r1"}`),
+		testutil.UnconfiguredDataEncryptionService(),
+	); !errors.Is(
+		err,
+		data_encryption.ErrDeclarationCatalogUnavailable,
+	) {
+		t.Fatalf("normalizeStandaloneResource() error = %v, want catalog error", err)
+	}
+}
+
+func assertStandaloneCatalogPanic(t *testing.T, call func()) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != data_encryption.ErrDeclarationCatalogUnavailable {
+			t.Fatalf(
+				"panic = %v, want %v",
+				recovered,
+				data_encryption.ErrDeclarationCatalogUnavailable,
+			)
+		}
+	}()
+	call()
+}
 
 func TestStandaloneBucketsExcludeSingletonPlugins(t *testing.T) {
 	buckets := StandaloneBuckets()
@@ -95,7 +159,7 @@ func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t 
 		"uri":"/",
 		"plugins":{"key-auth":{"key":"plaintext-secret"}}
 	}`)
-	encryption := data_encryption.NewService(true, []string{key})
+	encryption := testStandaloneDataEncryption(t, true, []string{key})
 	firstID, firstValue, err := normalizeStandaloneResource("routes", raw, encryption)
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +169,13 @@ func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t 
 		t.Fatal(err)
 	}
 	if firstID != secondID || string(firstValue) == string(secondValue) {
-		t.Fatalf("encrypted normalizations = %q/%q and %q/%q, want same ID and distinct nonce bytes",
-			firstID, firstValue, secondID, secondValue)
+		t.Fatalf(
+			"encrypted normalizations = %q/%q and %q/%q, want same ID and distinct nonce bytes",
+			firstID,
+			firstValue,
+			secondID,
+			secondValue,
+		)
 	}
 	first := desiredBatchFromStandalone(standaloneSnapshot{
 		"routes": {firstID: firstValue},
@@ -143,12 +212,19 @@ func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t 
 		t.Fatalf("encrypted retry ApplyDesired() error = %v", err)
 	}
 	if firstTicket.DesiredRevision != 1 || secondTicket.DesiredRevision != 2 {
-		t.Fatalf("desired revisions = %d/%d, want 1/2", firstTicket.DesiredRevision, secondTicket.DesiredRevision)
+		t.Fatalf(
+			"desired revisions = %d/%d, want 1/2",
+			firstTicket.DesiredRevision,
+			secondTicket.DesiredRevision,
+		)
 	}
 }
 
 func TestDesiredBatchFromStandaloneVersionTransfer(t *testing.T) {
-	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"), store.JournalOptions{})
+	journal, err := store.OpenJournal(
+		filepath.Join(t.TempDir(), "journal.db"),
+		store.JournalOptions{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,9 +250,16 @@ func TestDesiredBatchFromStandaloneVersionTransfer(t *testing.T) {
 	v2 := desiredBatchFromStandalone(snapshot)
 	v2.Cursor.Provider = "standalone/v2"
 	if v2.Cursor.Revision != v1.Cursor.Revision {
-		t.Fatalf("versioned cursors changed content digest: v1=%q v2=%q", v1.Cursor.Revision, v2.Cursor.Revision)
+		t.Fatalf(
+			"versioned cursors changed content digest: v1=%q v2=%q",
+			v1.Cursor.Revision,
+			v2.Cursor.Revision,
+		)
 	}
-	if _, err := journal.LoadAcknowledgement(context.Background(), v2.Cursor); !errors.Is(err, generation.ErrNotFound) {
+	if _, err := journal.LoadAcknowledgement(context.Background(), v2.Cursor); !errors.Is(
+		err,
+		generation.ErrNotFound,
+	) {
 		t.Fatalf("LoadAcknowledgement(v2) error = %v, want ErrNotFound", err)
 	}
 	second, err := coordinator.Apply(context.Background(), v2)
@@ -191,7 +274,11 @@ func TestDesiredBatchFromStandaloneVersionTransfer(t *testing.T) {
 		t.Fatalf("v2 acknowledgement = %+v", second)
 	}
 	if engine.prepareCalls != 2 || engine.confirmCalls != 0 {
-		t.Fatalf("prepare/confirm calls = %d/%d, want 2/0", engine.prepareCalls, engine.confirmCalls)
+		t.Fatalf(
+			"prepare/confirm calls = %d/%d, want 2/0",
+			engine.prepareCalls,
+			engine.confirmCalls,
+		)
 	}
 }
 
@@ -223,7 +310,10 @@ func (e *standaloneVersionTransferEngine) Prepare(
 	}
 	set := generation.PublicationSet{
 		DesiredRevision: ticket.DesiredRevision,
-		Domains:         make(map[generation.Domain]generation.PublicationCandidate, len(ticket.RequiredDomains)),
+		Domains: make(
+			map[generation.Domain]generation.PublicationCandidate,
+			len(ticket.RequiredDomains),
+		),
 	}
 	for _, domain := range ticket.RequiredDomains {
 		set.Domains[domain] = generation.PublicationCandidate{
@@ -238,7 +328,10 @@ func (e *standaloneVersionTransferEngine) Prepare(
 	return set, nil
 }
 
-func (*standaloneVersionTransferEngine) DiscardPrepared(context.Context, generation.PublicationSet) error {
+func (*standaloneVersionTransferEngine) DiscardPrepared(
+	context.Context,
+	generation.PublicationSet,
+) error {
 	return nil
 }
 
@@ -276,7 +369,12 @@ func (e *standaloneVersionTransferEngine) ConfirmActive(
 func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -300,7 +398,12 @@ func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
 func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event, 1)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -330,7 +433,12 @@ func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
 func TestStandaloneReloadDoesNotHoldStateMutexWhileSendBlocked(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -370,13 +478,22 @@ ssls:
 #END
 `)
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events, data_encryption.NewService(false, nil))
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "store.db"),
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
@@ -384,7 +501,8 @@ ssls:
 	if result.QuarantinedResourceCount() != 1 {
 		t.Fatalf("initial quarantine count = %d, want 1", result.QuarantinedResourceCount())
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil ||
+		len(route) == 0 {
 		t.Fatalf("valid route after invalid SSL = %q, %v; want applied", route, err)
 	}
 	if ssl, err := storage.GetFromBucket("ssls", []byte("ssl-1")); err != nil || ssl != nil {
@@ -410,7 +528,8 @@ ssls:
 	if result.QuarantinedResourceCount() != 1 {
 		t.Fatalf("replay quarantine count = %d, want 1", result.QuarantinedResourceCount())
 	}
-	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil || len(route) == 0 {
+	if route, err := storage.GetFromBucket("routes", []byte("route-1")); err != nil ||
+		len(route) == 0 {
 		t.Fatalf("valid route after replay = %q, %v; want retained", route, err)
 	}
 }
@@ -420,7 +539,7 @@ func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
 		filepath.Join(t.TempDir(), "apisix.yaml"),
 		"yaml",
 		make(chan *store.Event),
-		data_encryption.NewService(false, nil),
+		testStandaloneDataEncryption(t, false, nil),
 	)
 	if err := watcher.Stop(); err != nil {
 		t.Fatalf("Stop() before Start error = %v", err)
@@ -435,13 +554,22 @@ func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
 
 func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	snapshot, _, err := readStandaloneSnapshot(path, "yaml", data_encryption.NewService(false, nil))
+	snapshot, _, err := readStandaloneSnapshot(
+		path,
+		"yaml",
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err != nil {
 		t.Fatalf("readStandaloneSnapshot() error = %v", err)
 	}
 	events := make(chan *store.Event)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	watcher.SeedCurrentSnapshot(snapshot)
 	callbackEntered := make(chan struct{})
 	releaseCallback := make(chan struct{})
@@ -506,7 +634,11 @@ func waitForStandaloneReloadBlocked(t *testing.T, watcher *StandaloneFileWatcher
 
 func newStandaloneTestStore(t *testing.T, events chan *store.Event) *store.Store {
 	t.Helper()
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events, data_encryption.NewService(false, nil))
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "store.db"),
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -528,7 +660,12 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 
 	events := make(chan *store.Event, 2)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	var attempts []StandaloneReloadResult
 	watcher.SetAcknowledgedReloadCallback(func(result StandaloneReloadResult, err error) error {
 		if err != nil {
@@ -569,7 +706,12 @@ func TestStandaloneRejectsUnknownRootSectionWithoutDeletingLastGood(t *testing.T
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -585,7 +727,8 @@ func TestStandaloneRejectsUnknownRootSectionWithoutDeletingLastGood(t *testing.T
 	if err := os.WriteFile(path, []byte(unknown), 0o600); err != nil {
 		t.Fatalf("write unknown standalone config: %v", err)
 	}
-	if err := watcher.Reload(); err == nil || !strings.Contains(err.Error(), `unknown root section "routs"`) {
+	if err := watcher.Reload(); err == nil ||
+		!strings.Contains(err.Error(), `unknown root section "routs"`) {
 		t.Fatalf("unknown root Reload() error = %v, want deterministic unknown-section error", err)
 	}
 
@@ -611,7 +754,12 @@ func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -641,8 +789,13 @@ func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t
 	if attempts != 1 {
 		t.Fatalf("publication attempts after failing snapshot = %d, want 1", attempts)
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil || len(value) == 0 {
-		t.Fatalf("route-x after failed publication = %q, %v; want durable candidate snapshot", value, err)
+	if value, err := storage.GetFromBucket("routes", []byte("route-x")); err != nil ||
+		len(value) == 0 {
+		t.Fatalf(
+			"route-x after failed publication = %q, %v; want durable candidate snapshot",
+			value,
+			err,
+		)
 	}
 
 	complete := initial
@@ -669,7 +822,12 @@ func TestStandaloneLegacyReloadCallbackCanReenterReload(t *testing.T) {
 
 	events := make(chan *store.Event, 1)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	done := make(chan error, 1)
 	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
 		_, err := watcher.ReloadSnapshot()
@@ -743,7 +901,12 @@ upstreams:
 
 			events := make(chan *store.Event, 8)
 			storage := newStandaloneTestStore(t, events)
-			watcher := NewStandaloneFileWatcher(path, tt.provider, events, data_encryption.NewService(false, nil))
+			watcher := NewStandaloneFileWatcher(
+				path,
+				tt.provider,
+				events,
+				testStandaloneDataEncryption(t, false, nil),
+			)
 			if err := watcher.Reload(); err != nil {
 				t.Fatalf("Reload() error = %v", err)
 			}
@@ -776,7 +939,7 @@ func TestStandaloneYAMLRequiresEndMarker(t *testing.T) {
 		path,
 		"yaml",
 		make(chan *store.Event, 1),
-		data_encryption.NewService(false, nil),
+		testStandaloneDataEncryption(t, false, nil),
 	)
 	if err := watcher.Reload(); err == nil {
 		t.Fatal("Reload() error = nil, want missing #END error")
@@ -798,21 +961,27 @@ func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
 
 	events := make(chan *store.Event, 2)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("Store.Sync() error = %v", err)
 	}
-	if got, err := storage.GetFromBucket("secrets", []byte("vault/test1")); err != nil || len(got) == 0 {
+	if got, err := storage.GetFromBucket("secrets", []byte("vault/test1")); err != nil ||
+		len(got) == 0 {
 		t.Fatalf("stored secret = %q, %v; want Vault secret resource", got, err)
 	}
 }
 
 func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t *testing.T) {
 	const key = "qeddd145sfvddff3"
-	encryption := data_encryption.NewService(true, []string{key})
+	encryption := testStandaloneDataEncryption(t, true, []string{key})
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	content := `routes:
   - id: route-1
@@ -866,7 +1035,11 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	} {
 		ciphertext, ok := route.Plugins["ai-rate-limiting"][field].(string)
 		if !ok {
-			t.Fatalf("%s = %T, want ciphertext string", field, route.Plugins["ai-rate-limiting"][field])
+			t.Fatalf(
+				"%s = %T, want ciphertext string",
+				field,
+				route.Plugins["ai-rate-limiting"][field],
+			)
 		}
 		decrypted, err := resolver.ResolveForContext(ciphertext, "ai-rate-limiting."+field)
 		if err != nil || decrypted != plaintext {
@@ -875,7 +1048,10 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	}
 	logglyCiphertext, ok := route.Plugins["loggly"]["customer_token"].(string)
 	if !ok {
-		t.Fatalf("loggly.customer_token = %T, want ciphertext string", route.Plugins["loggly"]["customer_token"])
+		t.Fatalf(
+			"loggly.customer_token = %T, want ciphertext string",
+			route.Plugins["loggly"]["customer_token"],
+		)
 	}
 	if decrypted, err := resolver.ResolveForContext(logglyCiphertext, "loggly.customer_token"); err != nil ||
 		decrypted != "loggly-plaintext" {
@@ -884,8 +1060,8 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 }
 
 func TestStandaloneFileWatchersKeepDataEncryptionServicesIsolated(t *testing.T) {
-	firstService := data_encryption.NewService(true, []string{"qeddd145sfvddff3"})
-	secondService := data_encryption.NewService(true, []string{"1234567890abcdef"})
+	firstService := testStandaloneDataEncryption(t, true, []string{"qeddd145sfvddff3"})
+	secondService := testStandaloneDataEncryption(t, true, []string{"1234567890abcdef"})
 	firstPath := writeStandaloneTestConfig(t, `routes:
   - id: first
     uri: /first
@@ -925,7 +1101,11 @@ func TestStandaloneFileWatchersKeepDataEncryptionServicesIsolated(t *testing.T) 
 	}
 
 	secondEvents := make(chan *store.Event, 2)
-	secondStore, err := store.Open(filepath.Join(t.TempDir(), "second.db"), secondEvents, secondService)
+	secondStore, err := store.Open(
+		filepath.Join(t.TempDir(), "second.db"),
+		secondEvents,
+		secondService,
+	)
 	if err != nil {
 		t.Fatalf("open second Store: %v", err)
 	}
@@ -977,7 +1157,7 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 		key                       = "edd1c9f0985e76a2"
 		ciphertextShapedPlaintext = "OqkDYcQx4FvgBsxFCybRzg=="
 	)
-	encryption := data_encryption.NewService(true, []string{key})
+	encryption := testStandaloneDataEncryption(t, true, []string{key})
 
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	content := `plugin_metadata:
@@ -1024,7 +1204,12 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 		"azure-functions.master_apikey",
 	); err != nil ||
 		decrypted != ciphertextShapedPlaintext {
-		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want %q", decrypted, err, ciphertextShapedPlaintext)
+		t.Fatalf(
+			"Decrypt(master_apikey) = (%q, %v), want %q",
+			decrypted,
+			err,
+			ciphertextShapedPlaintext,
+		)
 	}
 
 	var runtimeMetadata struct {
@@ -1057,7 +1242,12 @@ upstreams:
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -1091,7 +1281,8 @@ upstreams:
 			t.Fatalf("removed %s/%s = %q, want deleted", bucket, id, value)
 		}
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("route-2")); err != nil || len(value) == 0 {
+	if value, err := storage.GetFromBucket("routes", []byte("route-2")); err != nil ||
+		len(value) == 0 {
 		t.Fatalf("new route = %q, %v; want persisted route", value, err)
 	}
 }
@@ -1116,7 +1307,12 @@ plugin_metadata:
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
@@ -1125,7 +1321,10 @@ plugin_metadata:
 		[]string{"routes", "upstreams", "plugin_metadata"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("changed HTTP route buckets = %v, want %v", got, want)
 	}
-	if got, want := result.ChangedStreamBuckets, []string{"upstreams"}; !reflect.DeepEqual(got, want) {
+	if got, want := result.ChangedStreamBuckets, []string{"upstreams"}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
 		t.Fatalf("changed stream buckets = %v, want %v", got, want)
 	}
 	if err := storage.Sync(); err != nil {
@@ -1175,7 +1374,12 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if _, err := watcher.ReloadSnapshot(); err != nil {
 		t.Fatalf("initial ReloadSnapshot() error = %v", err)
 	}
@@ -1195,7 +1399,10 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 	if err != nil {
 		t.Fatalf("updated ReloadSnapshot() error = %v", err)
 	}
-	if got, want := result.ChangedHTTPRouteBuckets, []string{"plugin_metadata"}; !reflect.DeepEqual(got, want) {
+	if got, want := result.ChangedHTTPRouteBuckets, []string{"plugin_metadata"}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
 		t.Fatalf(
 			"metadata-only changed HTTP buckets = %v, want %v",
 			got,
@@ -1203,7 +1410,10 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 		)
 	}
 	if len(result.ChangedStreamBuckets) != 0 {
-		t.Fatalf("metadata-only changed stream buckets = %v, want none", result.ChangedStreamBuckets)
+		t.Fatalf(
+			"metadata-only changed stream buckets = %v, want none",
+			result.ChangedStreamBuckets,
+		)
 	}
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("updated Store.Sync() error = %v", err)
@@ -1228,15 +1438,26 @@ func TestStandaloneReloadSnapshotReportsStreamRoutesWithoutHTTPRoutes(t *testing
 
 	events := make(chan *store.Event, 2)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
 	}
 	if len(result.ChangedHTTPRouteBuckets) != 0 {
-		t.Fatalf("stream-only changed HTTP route buckets = %v, want none", result.ChangedHTTPRouteBuckets)
+		t.Fatalf(
+			"stream-only changed HTTP route buckets = %v, want none",
+			result.ChangedHTTPRouteBuckets,
+		)
 	}
-	if got, want := result.ChangedStreamBuckets, []string{"stream_routes"}; !reflect.DeepEqual(got, want) {
+	if got, want := result.ChangedStreamBuckets, []string{"stream_routes"}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
 		t.Fatalf("changed stream buckets = %v, want %v", got, want)
 	}
 }
@@ -1257,7 +1478,12 @@ plugin_configs:
 
 	events := make(chan *store.Event, 4)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
@@ -1284,7 +1510,12 @@ func TestStandaloneReloadSnapshotQuarantinesMalformedResourceAndAppliesValidSibl
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
 
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v, want malformed sibling quarantined", err)
@@ -1292,10 +1523,12 @@ func TestStandaloneReloadSnapshotQuarantinesMalformedResourceAndAppliesValidSibl
 	if result.QuarantinedResourceCount() != 2 {
 		t.Fatalf("quarantined resources = %d, want 2", result.QuarantinedResourceCount())
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
+	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil ||
+		len(value) == 0 {
 		t.Fatalf("valid sibling = %q, %v; want applied", value, err)
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("invalid-route")); err != nil || value != nil {
+	if value, err := storage.GetFromBucket("routes", []byte("invalid-route")); err != nil ||
+		value != nil {
 		t.Fatalf("invalid route = %q, %v; want absent", value, err)
 	}
 }
@@ -1311,7 +1544,12 @@ routes:
 `)
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if _, err := watcher.ReloadSnapshot(); err != nil {
 		t.Fatalf("initial ReloadSnapshot() error = %v", err)
 	}
@@ -1345,10 +1583,12 @@ routes:
 	if got := service["name"]; got != "last-good" {
 		t.Fatalf("retained service name = %#v, want last-good", got)
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("stale-route")); err != nil || value != nil {
+	if value, err := storage.GetFromBucket("routes", []byte("stale-route")); err != nil ||
+		value != nil {
 		t.Fatalf("removed sibling = %q, %v; want deleted", value, err)
 	}
-	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil || len(value) == 0 {
+	if value, err := storage.GetFromBucket("routes", []byte("valid-route")); err != nil ||
+		len(value) == 0 {
 		t.Fatalf("valid replacement sibling = %q, %v; want applied", value, err)
 	}
 
@@ -1390,7 +1630,12 @@ func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	t.Cleanup(func() { _ = watcher.Stop() })
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
@@ -1420,7 +1665,10 @@ func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
 		if attempt.err != nil {
 			t.Fatalf("StartAndReconcile reconciliation error = %v", attempt.err)
 		}
-		if got, want := attempt.result.ChangedHTTPRouteBuckets, []string{"routes"}; !reflect.DeepEqual(got, want) {
+		if got, want := attempt.result.ChangedHTTPRouteBuckets, []string{"routes"}; !reflect.DeepEqual(
+			got,
+			want,
+		) {
 			t.Fatalf("reconciled HTTP route buckets = %v, want %v", got, want)
 		}
 	case <-time.After(time.Second):
@@ -1452,7 +1700,12 @@ func TestStandaloneStartAndReconcileKeepsLastGoodOnReadFailure(t *testing.T) {
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -1506,7 +1759,12 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		events,
+		testStandaloneDataEncryption(t, false, nil),
+	)
 	t.Cleanup(func() { _ = watcher.Stop() })
 	type reloadAttempt struct {
 		result StandaloneReloadResult
@@ -1532,7 +1790,8 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 		select {
 		case attempt := <-reloadAttempts:
 			if attempt.err != nil && strings.Contains(attempt.err.Error(), "must end with #END") {
-				if len(attempt.result.ChangedHTTPRouteBuckets) != 0 || len(attempt.result.ChangedStreamBuckets) != 0 {
+				if len(attempt.result.ChangedHTTPRouteBuckets) != 0 ||
+					len(attempt.result.ChangedStreamBuckets) != 0 {
 					t.Fatalf(
 						"failed snapshot changed buckets = HTTP %v stream %v, want none",
 						attempt.result.ChangedHTTPRouteBuckets,
@@ -1605,7 +1864,8 @@ func TestStandaloneConfigFile(t *testing.T) {
 }
 
 func TestStandaloneReloadResultReportsAffectedSubsystems(t *testing.T) {
-	if (StandaloneReloadResult{}).AffectsHTTPRoutes() || (StandaloneReloadResult{}).AffectsStreams() {
+	if (StandaloneReloadResult{}).AffectsHTTPRoutes() ||
+		(StandaloneReloadResult{}).AffectsStreams() {
 		t.Fatal("empty reload result reported affected resources")
 	}
 	if !(StandaloneReloadResult{ChangedHTTPRouteBuckets: []string{"routes"}}).AffectsHTTPRoutes() {
@@ -1629,7 +1889,12 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			content:   "",
 			wantError: "unsupported standalone config provider",
 		},
-		{name: "invalid JSON", provider: "json", content: `{`, wantError: "parse standalone JSON config"},
+		{
+			name:      "invalid JSON",
+			provider:  "json",
+			content:   `{`,
+			wantError: "parse standalone JSON config",
+		},
 		{name: "null JSON root", provider: "json", content: `null`, wantError: "expected object"},
 		{
 			name:      "unknown JSON root section",
@@ -1643,16 +1908,36 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			content:   `{"routes":{}}`,
 			wantError: "decode standalone routes",
 		},
-		{name: "null JSON section", provider: "json", content: `{"routes":null}`, wantError: "expected array"},
-		{name: "invalid YAML", provider: "yaml", content: "routes: [\n#END", wantError: "parse standalone YAML config"},
-		{name: "null YAML root", provider: "yaml", content: "null\n#END", wantError: "expected object"},
+		{
+			name:      "null JSON section",
+			provider:  "json",
+			content:   `{"routes":null}`,
+			wantError: "expected array",
+		},
+		{
+			name:      "invalid YAML",
+			provider:  "yaml",
+			content:   "routes: [\n#END",
+			wantError: "parse standalone YAML config",
+		},
+		{
+			name:      "null YAML root",
+			provider:  "yaml",
+			content:   "null\n#END",
+			wantError: "expected object",
+		},
 		{
 			name:      "unknown YAML root section",
 			provider:  "yaml",
 			content:   "zeta: []\nrouts: []\n#END",
 			wantError: `unknown root section "routs"`,
 		},
-		{name: "null YAML section", provider: "yaml", content: "routes:\n#END", wantError: "expected array"},
+		{
+			name:      "null YAML section",
+			provider:  "yaml",
+			content:   "routes:\n#END",
+			wantError: "expected array",
+		},
 	}
 
 	for _, test := range tests {
@@ -1661,9 +1946,17 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
 				t.Fatalf("write standalone fixture: %v", err)
 			}
-			_, _, err := readStandaloneSnapshot(path, test.provider, data_encryption.NewService(false, nil))
+			_, _, err := readStandaloneSnapshot(
+				path,
+				test.provider,
+				testStandaloneDataEncryption(t, false, nil),
+			)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.wantError)
+				t.Fatalf(
+					"readStandaloneSnapshot() error = %v, want containing %q",
+					err,
+					test.wantError,
+				)
 			}
 		})
 	}
@@ -1671,7 +1964,7 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 	_, _, err := readStandaloneSnapshot(
 		filepath.Join(t.TempDir(), "missing.json"),
 		standaloneProviderJSON,
-		data_encryption.NewService(false, nil),
+		testStandaloneDataEncryption(t, false, nil),
 	)
 	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
 		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
@@ -1693,13 +1986,17 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			snapshot, quarantined, err := readStandaloneSnapshot(
 				path,
 				test.provider,
-				data_encryption.NewService(false, nil),
+				testStandaloneDataEncryption(t, false, nil),
 			)
 			if err != nil {
 				t.Fatalf("readStandaloneSnapshot() error = %v, want valid empty snapshot", err)
 			}
 			if len(snapshot) != 0 || len(quarantined) != 0 {
-				t.Fatalf("empty snapshot = %#v quarantined = %#v, want both empty", snapshot, quarantined)
+				t.Fatalf(
+					"empty snapshot = %#v quarantined = %#v, want both empty",
+					snapshot,
+					quarantined,
+				)
 			}
 		})
 	}
@@ -1714,7 +2011,12 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 	}{
 		{name: "malformed resource", bucket: "routes", raw: `{`, wantError: "invalid character"},
 		{name: "empty ID", bucket: "routes", raw: `{"id":""}`, wantError: "id is empty"},
-		{name: "object ID", bucket: "routes", raw: `{"id":{}}`, wantError: "id must be a string or number"},
+		{
+			name:      "object ID",
+			bucket:    "routes",
+			raw:       `{"id":{}}`,
+			wantError: "id must be a string or number",
+		},
 		{
 			name:      "invalid plugins",
 			bucket:    "routes",
@@ -1728,10 +2030,14 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 			_, _, err := normalizeStandaloneResource(
 				test.bucket,
 				json.RawMessage(test.raw),
-				data_encryption.NewService(false, nil),
+				testStandaloneDataEncryption(t, false, nil),
 			)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("normalizeStandaloneResource() error = %v, want containing %q", err, test.wantError)
+				t.Fatalf(
+					"normalizeStandaloneResource() error = %v, want containing %q",
+					err,
+					test.wantError,
+				)
 			}
 		})
 	}
@@ -1739,7 +2045,7 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 	id, encoded, err := normalizeStandaloneResource(
 		"routes",
 		json.RawMessage(`{"id":42,"uri":"/number"}`),
-		data_encryption.NewService(false, nil),
+		testStandaloneDataEncryption(t, false, nil),
 	)
 	if err != nil {
 		t.Fatalf("normalizeStandaloneResource(number ID) error = %v", err)
@@ -1751,7 +2057,7 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 	id, encoded, err = normalizeStandaloneResource(
 		"consumers",
 		json.RawMessage(`{"username":"alice","id":"ignored"}`),
-		data_encryption.NewService(false, nil),
+		testStandaloneDataEncryption(t, false, nil),
 	)
 	if err != nil {
 		t.Fatalf("normalizeStandaloneResource(consumer) error = %v", err)

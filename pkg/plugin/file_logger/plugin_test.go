@@ -20,9 +20,9 @@ import (
 	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -1114,7 +1114,11 @@ func initMetadataStore(t *testing.T) chan *store.Event {
 
 	metadataStoreOnce.Do(func() {
 		metadataStoreEvents = make(chan *store.Event, 16)
-		st, err := store.GetStore(t.TempDir()+"/store.db", metadataStoreEvents, data_encryption.NewService(false, nil))
+		st, err := store.GetStore(
+			t.TempDir()+"/store.db",
+			metadataStoreEvents,
+			testutil.DataEncryptionService(false, nil),
+		)
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}

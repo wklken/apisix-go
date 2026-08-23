@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 var (
@@ -26,7 +26,7 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/jwe-decrypt.db", testEvents, data_encryption.NewService(false, nil))
+		s, err := store.GetStore(t.TempDir()+"/jwe-decrypt.db", testEvents, testutil.DataEncryptionService(false, nil))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}

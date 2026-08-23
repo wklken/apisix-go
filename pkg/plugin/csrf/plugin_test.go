@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestCSRFPluginSourceGuardRejectsDirectComparison(t *testing.T) {
@@ -31,7 +31,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
 	p := &Plugin{config: Config{Key: "plain"}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -85,7 +85,7 @@ func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
 func TestPostInitRejectsEmptyKey(t *testing.T) {
 	for _, key := range []string{"", "   "} {
 		p := &Plugin{config: Config{Key: key}}
-		p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+		p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 		if err := p.Init(); err != nil {
 			t.Fatalf("Init() error = %v", err)
 		}
@@ -99,7 +99,7 @@ func TestPostInitResolvesEncryptedKey(t *testing.T) {
 	key := "qeddd145sfvddff3"
 
 	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, key, "secret")}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPostInitResolvesKeyFromRotatedKeyring(t *testing.T) {
 
 	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, oldKey, "rotated-secret")}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -132,7 +132,7 @@ func TestPostInitResolvesKeyFromRotatedKeyring(t *testing.T) {
 
 func TestPostInitRejectsMissingKeyring(t *testing.T) {
 	p := &Plugin{config: Config{Key: "ciphertext"}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 
 func TestConsumerSnapshotRejectsInvalidBasicAuthUpdateAndKeepsLastGood(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -42,6 +43,7 @@ func TestConsumerSnapshotRejectsInvalidBasicAuthUpdateAndKeepsLastGood(t *testin
 
 func TestConsumerSnapshotRejectsDuplicatePluginLookupKey(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -65,6 +67,7 @@ func TestConsumerSnapshotRejectsDuplicatePluginLookupKey(t *testing.T) {
 
 func TestConsumerIDCanEqualNamespacedPluginLookupKey(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 		consumerValues: make(map[string]resource.Consumer),
@@ -135,7 +138,11 @@ func TestConsumerSnapshotValidatesJWTAuthConsumerSchema(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			consumerStore := &Store{consumerKV: make(map[string][]byte), consumerToKeys: make(map[string][]string)}
+			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
+				consumerKV:     make(map[string][]byte),
+				consumerToKeys: make(map[string][]string),
+			}
 			value := []byte(`{"username":"jack","plugins":{"jwt-auth":` + test.config + `}}`)
 			err := consumerStore.consumerKVAdd([]byte("jack"), value)
 			if test.diagnostic == "" {
@@ -170,7 +177,11 @@ func TestConsumerSnapshotValidatesWolfRBACConsumerSchema(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			consumerStore := &Store{consumerKV: make(map[string][]byte), consumerToKeys: make(map[string][]string)}
+			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
+				consumerKV:     make(map[string][]byte),
+				consumerToKeys: make(map[string][]string),
+			}
 			value := []byte(`{"username":"jack","plugins":{"wolf-rbac":` + test.config + `}}`)
 			err := consumerStore.consumerKVAdd([]byte("jack"), value)
 			if test.diagnostic == "" {
@@ -188,6 +199,7 @@ func TestConsumerSnapshotValidatesWolfRBACConsumerSchema(t *testing.T) {
 
 func TestConsumerSnapshotRejectsInvalidHMACAuthUpdateAndKeepsLastGood(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -246,6 +258,7 @@ func TestConsumerSnapshotValidatesKeyAuthKey(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
 				consumerKV:     make(map[string][]byte),
 				consumerToKeys: make(map[string][]string),
 			}
@@ -280,6 +293,7 @@ func TestConsumerSnapshotValidatesLDAPAuthUserDN(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			consumerStore := &Store{
+				dataEncryption: testDataEncryption(),
 				consumerKV:     make(map[string][]byte),
 				consumerToKeys: make(map[string][]string),
 			}
@@ -301,6 +315,7 @@ func TestConsumerSnapshotValidatesLDAPAuthUserDN(t *testing.T) {
 func TestConsumerKVAddCachesRawEnvironmentCredential(t *testing.T) {
 	t.Setenv("BASIC_AUTH_PASSWORD", "late-value")
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -762,6 +777,7 @@ func newConsumerSnapshotStore(t *testing.T) *Store {
 	}
 	events := make(chan *Event, 4)
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		events:         events,
 		db:             db,
 		consumerKV:     make(map[string][]byte),
@@ -777,6 +793,7 @@ func newConsumerSnapshotStore(t *testing.T) *Store {
 
 func newInMemoryConsumerStore() *Store {
 	return &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 		consumerValues: make(map[string]resource.Consumer),

@@ -21,12 +21,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"github.com/wklken/apisix-go/pkg/testutil"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -73,7 +73,7 @@ func TestNewServerRejectsNilEffectiveConfigBeforeCreatingRuntimeFiles(t *testing
 		t.Fatalf("change working directory: %v", err)
 	}
 
-	server, err := NewServer(nil, data_encryption.Service{})
+	server, err := NewServer(nil, testutil.DataEncryptionService(false, nil))
 	if server != nil || err == nil || err.Error() != "effective config is required" {
 		t.Fatalf("NewServer(nil) = (%#v, %v)", server, err)
 	}
@@ -278,7 +278,11 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 	streamErr := errors.New("stream stop failed")
 	traceErr := errors.New("trace stop failed")
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "shutdown.db"), events, data_encryption.Service{})
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "shutdown.db"),
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -292,12 +296,13 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 	}
 	stream := &streamRuntimeCloseError{err: streamErr}
 	server := &Server{
-		server:        &http.Server{},
-		routes:        newRouteHandler(http.NotFoundHandler(), nil),
-		producer:      producer,
-		streamRuntime: stream,
-		storage:       storage,
-		otelShutdown:  func(context.Context) error { return traceErr },
+		server:         &http.Server{},
+		routes:         newRouteHandler(http.NotFoundHandler(), nil),
+		producer:       producer,
+		streamRuntime:  stream,
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
+		otelShutdown:   func(context.Context) error { return traceErr },
 	}
 
 	err = server.Shutdown(context.Background())
@@ -319,7 +324,11 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 
 func TestServerShutdownCancelsAndJoinsQueuedReloadScheduler(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "scheduler.db"), events, data_encryption.Service{})
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "scheduler.db"),
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -331,6 +340,7 @@ func TestServerShutdownCancelsAndJoinsQueuedReloadScheduler(t *testing.T) {
 		server:          &http.Server{},
 		routes:          newRouteHandler(http.NotFoundHandler(), nil),
 		storage:         storage,
+		dataEncryption:  testutil.DataEncryptionService(false, nil),
 		reloadEventChan: make(chan struct{}, 1),
 	}
 	server.startReloadScheduler(context.Background())
@@ -375,7 +385,7 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 		Apisix: config.Apisix{ProxyMode: "stream"},
 	}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "startup.db"), events, data_encryption.Service{})
+	storage, err := store.Open(filepath.Join(root, "startup.db"), events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -394,14 +404,15 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 		<-release
 	})
 	server := &Server{
-		staticConfig: effective,
-		addr:         "127.0.0.1:0",
-		addrs:        []string{"127.0.0.1:0"},
-		server:       &http.Server{},
-		routes:       newRouteHandler(http.NotFoundHandler(), nil),
-		clusters:     proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
-		events:       events,
-		storage:      storage,
+		staticConfig:   effective,
+		addr:           "127.0.0.1:0",
+		addrs:          []string{"127.0.0.1:0"},
+		server:         &http.Server{},
+		routes:         newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:       proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:         events,
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
 	}
 	startCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -437,7 +448,11 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 
 func TestStartFailureCleanupIsBoundedWithActiveHTTPRequest(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "startup-cleanup.db"), events, data_encryption.Service{})
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "startup-cleanup.db"),
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -592,12 +607,17 @@ func TestStandaloneStartupDeletesPersistedResourceRemovedFromFile(t *testing.T) 
 		RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
 	}}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "store.db"), events, data_encryption.Service{})
+	storage, err := store.Open(filepath.Join(root, "store.db"), events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	storage.Start()
-	server := &Server{staticConfig: effective, events: events, storage: storage}
+	server := &Server{
+		staticConfig:   effective,
+		events:         events,
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
+	}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 	events <- &store.Event{
 		Type:  store.EventTypePut,
@@ -645,21 +665,22 @@ func TestStartFailureStopsStandaloneProducerAndStore(t *testing.T) {
 		Apisix: config.Apisix{ProxyMode: "stream"},
 	}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "store.db"), events, data_encryption.Service{})
+	storage, err := store.Open(filepath.Join(root, "store.db"), events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	previousStore := store.ReplaceGlobalStoreForTest(storage)
 	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
 	server := &Server{
-		staticConfig: effective,
-		addr:         "127.0.0.1:0",
-		addrs:        []string{"127.0.0.1:0"},
-		server:       &http.Server{},
-		routes:       newRouteHandler(http.NotFoundHandler(), nil),
-		clusters:     proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
-		events:       events,
-		storage:      storage,
+		staticConfig:   effective,
+		addr:           "127.0.0.1:0",
+		addrs:          []string{"127.0.0.1:0"},
+		server:         &http.Server{},
+		routes:         newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:       proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:         events,
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
 	}
 
 	err = server.Start(context.Background())
@@ -1322,7 +1343,7 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 
 func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events, data_encryption.Service{})
+	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}

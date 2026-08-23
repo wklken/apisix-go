@@ -8,14 +8,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
 
 func TestParseConsumerDecryptsEncryptedAuthPluginFields(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
+	storage := &Store{dataEncryption: testDataEncryptionWith(true, []string{key})}
 
 	consumer, err := storage.ParseConsumer([]byte(`{
         "username":"alice",
@@ -71,7 +70,7 @@ func TestGetConsumerReturnsDeepCloneOnCacheHit(t *testing.T) {
 
 func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
+	storage := &Store{dataEncryption: testDataEncryptionWith(true, []string{key})}
 
 	encrypted := encryptForTest(t, key, "Bearer secret")
 	route, err := storage.ParseRoute([]byte(`{
@@ -89,7 +88,7 @@ func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
 
 func TestDecodePluginMetadataDecryptsAzureMasterAPIKey(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
+	storage := &Store{dataEncryption: testDataEncryptionWith(true, []string{key})}
 
 	var metadata struct {
 		MasterAPIKey   string `json:"master_apikey"`
@@ -108,7 +107,7 @@ func TestDecodePluginMetadataDecryptsAzureMasterAPIKey(t *testing.T) {
 }
 
 func TestDecodePluginMetadataPreservesUnregisteredLargeIntegers(t *testing.T) {
-	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"})}
+	storage := &Store{dataEncryption: testDataEncryptionWith(true, []string{"qeddd145sfvddff3"})}
 
 	var metadata struct {
 		Sequence int64 `json:"sequence"`
@@ -127,6 +126,7 @@ func TestDecodePluginMetadataPreservesUnregisteredLargeIntegers(t *testing.T) {
 
 func TestConsumerKVConcurrentReadAndUpdate(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -154,6 +154,7 @@ func TestConsumerKVConcurrentReadAndUpdate(t *testing.T) {
 
 func TestConsumerKVDoesNotIndexUnresolvedKeyAuthReference(t *testing.T) {
 	consumerStore := &Store{
+		dataEncryption: testDataEncryption(),
 		consumerKV:     make(map[string][]byte),
 		consumerToKeys: make(map[string][]string),
 	}
@@ -198,7 +199,7 @@ func seededGetterStore(t *testing.T) *Store {
 	t.Cleanup(func() { _ = db.Close() })
 	storage := &Store{
 		db:             db,
-		dataEncryption: data_encryption.NewService(false, nil),
+		dataEncryption: testDataEncryption(),
 		consumerValues: map[string]resource.Consumer{},
 	}
 	if err := storage.InitBuckets(); err != nil {

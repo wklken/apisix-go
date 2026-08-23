@@ -18,7 +18,6 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -26,6 +25,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 type panicSnapshotLogPlugin struct {
@@ -1166,7 +1166,11 @@ func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	t.Cleanup(release)
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "timeout.db"), events, data_encryption.Service{})
+	storage, err := store.Open(
+		filepath.Join(t.TempDir(), "timeout.db"),
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

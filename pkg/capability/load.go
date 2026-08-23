@@ -285,6 +285,32 @@ func (c *SecretDeclarationCatalog) Declarations() []SecretDeclaration {
 	return append([]SecretDeclaration(nil), c.declarations...)
 }
 
+// ForEach visits declarations owned by one factory and source without
+// exposing the catalog's backing slice or allocating a filtered copy.
+func (c *SecretDeclarationCatalog) ForEach(
+	factory string,
+	source SecretDeclarationSource,
+	visit func(SecretDeclaration),
+) {
+	if c == nil || visit == nil {
+		return
+	}
+	start := sort.Search(len(c.declarations), func(index int) bool {
+		declaration := c.declarations[index]
+		if declaration.Factory != factory {
+			return declaration.Factory > factory
+		}
+		return declaration.Source >= source
+	})
+	for index := start; index < len(c.declarations); index++ {
+		declaration := c.declarations[index]
+		if declaration.Factory != factory || declaration.Source != source {
+			break
+		}
+		visit(declaration)
+	}
+}
+
 func (c *SecretDeclarationCatalog) Lookup(
 	factory string,
 	source SecretDeclarationSource,

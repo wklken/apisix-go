@@ -10,13 +10,14 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -90,7 +91,7 @@ func TestHandlerDoesNotSetSASLContextWhenDisabled(t *testing.T) {
 func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
 	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: "plain"}}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -106,7 +107,7 @@ func TestPostInitResolvesEncryptedSASLPassword(t *testing.T) {
 		Username: "user",
 		Password: encryptKafkaProxyTestValue(t, key, "secret"),
 	}}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -125,7 +126,7 @@ func TestPostInitResolvesContextualV2SASLPassword(t *testing.T) {
 		t.Fatalf("EncryptForContext() error = %v", err)
 	}
 	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: ciphertext}}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

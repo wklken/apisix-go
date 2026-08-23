@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 // BenchmarkStaticConfigPath measures the per-request response rewrite path
@@ -21,7 +21,7 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 			Regex: "token", Replace: "redacted", Scope: "global",
 		}},
 	}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}

@@ -12,10 +12,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -1763,7 +1763,7 @@ func applyWatcherMutation(t *testing.T, events chan *store.Event, mutation store
 func newWatcherStore(t *testing.T) (*store.Store, chan *store.Event) {
 	t.Helper()
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/watcher.db", events, data_encryption.NewService(false, nil))
+	storage, err := store.Open(t.TempDir()+"/watcher.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open watcher store: %v", err)
 	}

@@ -13,8 +13,8 @@ import (
 
 	brotlienc "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -53,7 +53,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -157,7 +157,9 @@ func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.cfg}
-			plugin.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+			plugin.SetDependencies(base.Dependencies{
+				DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			})
 			if err := plugin.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -243,7 +245,7 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	p := &Plugin{config: Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -263,7 +265,7 @@ func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
 	p := &Plugin{config: Config{BodySecret: new("not-a-ciphertext")}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -300,7 +302,7 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			p := &Plugin{config: test.cfg}
-			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -314,7 +316,7 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
 	p := &Plugin{config: Config{Body: new("plain-body")}}
 	p.SetDependencies(base.Dependencies{
-		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -707,7 +709,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &Plugin{config: Config{Vars: tt.vars}}
-			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -720,7 +722,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 
 func TestConfigAcceptsNumericHeaderValues(t *testing.T) {
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -775,7 +777,7 @@ func TestSchemaValidatesOfficialHeaderForms(t *testing.T) {
 
 func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
 	p := &Plugin{config: Config{Body: new("not-base64"), BodyBase64: new(true)}}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -791,7 +793,7 @@ func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 			Filters: []Filter{{Regex: "old", Replace: "new"}},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -878,7 +880,7 @@ func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
 			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -901,7 +903,7 @@ func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
 			},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

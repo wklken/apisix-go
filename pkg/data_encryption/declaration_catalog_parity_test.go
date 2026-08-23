@@ -13,7 +13,97 @@ type legacyDeclarationKey struct {
 	field   string
 }
 
-func TestSecretDeclarationCatalogParityWithLegacyTables(t *testing.T) {
+var expectedPluginFields = map[string][]string{
+	"ai-aliyun-content-moderation": {"access_key_secret"},
+	"ai-aws-content-moderation":    {"comprehend.secret_access_key"},
+	"ai-proxy": {
+		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
+		"auth.aws.session_token",
+	},
+	"ai-proxy-multi": {
+		"instances.*.auth.header", "instances.*.auth.query", "instances.*.auth.gcp.service_account_json",
+		"instances.*.auth.aws.secret_access_key", "instances.*.auth.aws.session_token",
+	},
+	"ai-rag": {
+		"embeddings_provider.azure_openai.api_key", "vector_search_provider.azure_ai_search.api_key",
+	},
+	"ai-request-rewrite": {
+		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
+		"auth.aws.session_token",
+	},
+	"ai-rate-limiting": {"redis_password", "sentinel_password"},
+	"authz-keycloak":   {"client_secret"},
+	"authz-casdoor":    {"client_secret", "client_secret_fallbacks"},
+	"aws-lambda": {
+		"authorization.apikey",
+		"authorization.iam.accesskey",
+		"authorization.iam.secretkey",
+	},
+	"azure-functions": {"authorization.apikey"},
+	"basic-auth":      {"password"},
+	"cas-auth":        {"cookie.secret"},
+	"dingtalk-auth":   {"app_secret", "secret"},
+	"feishu-auth":     {"app_secret", "secret", "secret_fallbacks"},
+	"hmac-auth":       {"secret"},
+	"http-logger":     {"auth_header"},
+	"jwe-decrypt":     {"key", "secret"},
+	"jwt-auth":        {"secret", "private_key"},
+	"kafka-logger":    {"brokers.*.sasl_config.password"},
+	"kafka-proxy":     {"sasl.password"},
+	"key-auth":        {"key"},
+	"ldap-auth":       {"user_dn"},
+	"openid-connect": {
+		"client_secret",
+		"client_rsa_private_key",
+		"session.secret",
+		"session.redis.password",
+	},
+	"openfunction":         {"authorization.service_token"},
+	"openwhisk":            {"service_token"},
+	"clickhouse-logger":    {"password"},
+	"csrf":                 {"key"},
+	"elasticsearch-logger": {"auth.password", "headers.Authorization"},
+	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+	"google-cloud-logging": {"auth_config.private_key"},
+	"lago":                 {"token"},
+	"loggly":               {"customer_token"},
+	"response-rewrite":     {"body", "body_secret"},
+	"rocketmq-logger":      {"secret_key"},
+	"saml-auth":            {"sp_private_key", "secret"},
+	"sls-logger":           {"access_key_secret"},
+	"splunk-hec-logging":   {"endpoint.token"},
+	"tencent-cloud-cls":    {"secret_key"},
+}
+
+var expectedStrictPluginFields = map[string][]string{
+	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
+	"clickhouse-logger":    {"password"},
+	"csrf":                 {"key"},
+	"elasticsearch-logger": {"auth.password"},
+	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+	"google-cloud-logging": {"auth_config.private_key"},
+	"http-logger":          {"auth_header"},
+	"kafka-logger":         {"brokers.*.sasl_config.password"},
+	"kafka-proxy":          {"sasl.password"},
+	"lago":                 {"token"},
+	"loggly":               {"customer_token"},
+	"rocketmq-logger":      {"secret_key"},
+	"response-rewrite":     {"body_secret"},
+	"sls-logger":           {"access_key_secret"},
+	"splunk-hec-logging":   {"endpoint.token"},
+	"tencent-cloud-cls":    {"secret_key"},
+}
+
+var expectedPluginMetadataFields = map[string][]string{
+	"azure-functions":  {"master_apikey"},
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+}
+
+var expectedStrictPluginMetadataFields = map[string][]string{
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+}
+
+func TestSecretDeclarationCatalogParity(t *testing.T) {
 	manifest, err := capability.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -26,16 +116,16 @@ func TestSecretDeclarationCatalogParityWithLegacyTables(t *testing.T) {
 	wantConfig := make(map[legacyDeclarationKey]struct{})
 	wantOptionalConfig := make(map[legacyDeclarationKey]struct{})
 	wantStrictConfig := make(map[legacyDeclarationKey]struct{})
-	for factory, fields := range pluginFields {
+	for factory, fields := range expectedPluginFields {
 		for _, field := range fields {
 			key := legacyDeclarationKey{factory: factory, field: field}
 			wantConfig[key] = struct{}{}
-			if !slices.Contains(strictPluginFields[factory], field) {
+			if !slices.Contains(expectedStrictPluginFields[factory], field) {
 				wantOptionalConfig[key] = struct{}{}
 			}
 		}
 	}
-	for factory, fields := range strictPluginFields {
+	for factory, fields := range expectedStrictPluginFields {
 		for _, field := range fields {
 			wantStrictConfig[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
 		}
@@ -44,16 +134,16 @@ func TestSecretDeclarationCatalogParityWithLegacyTables(t *testing.T) {
 	wantMetadata := make(map[legacyDeclarationKey]struct{})
 	wantOptionalMetadata := make(map[legacyDeclarationKey]struct{})
 	wantStrictMetadata := make(map[legacyDeclarationKey]struct{})
-	for factory, fields := range pluginMetadataFields {
+	for factory, fields := range expectedPluginMetadataFields {
 		for _, field := range fields {
 			key := legacyDeclarationKey{factory: factory, field: field}
 			wantMetadata[key] = struct{}{}
-			if !slices.Contains(strictPluginMetadataFields[factory], field) {
+			if !slices.Contains(expectedStrictPluginMetadataFields[factory], field) {
 				wantOptionalMetadata[key] = struct{}{}
 			}
 		}
 	}
-	for factory, fields := range strictPluginMetadataFields {
+	for factory, fields := range expectedStrictPluginMetadataFields {
 		for _, field := range fields {
 			wantStrictMetadata[legacyDeclarationKey{factory: factory, field: field}] = struct{}{}
 		}
@@ -101,7 +191,12 @@ func TestSecretDeclarationCatalogParityWithLegacyTables(t *testing.T) {
 	}
 	for _, check := range checks {
 		if !reflect.DeepEqual(check.got, check.want) {
-			t.Errorf("%s declarations differ from legacy table: got %#v, want %#v", check.name, check.got, check.want)
+			t.Errorf(
+				"%s declarations differ from expected manifest parity: got %#v, want %#v",
+				check.name,
+				check.got,
+				check.want,
+			)
 		}
 	}
 }

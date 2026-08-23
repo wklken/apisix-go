@@ -22,10 +22,10 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 const frontendTLS12Cipher = "ECDHE-RSA-AES128-GCM-SHA256"
@@ -208,7 +208,7 @@ func TestFrontendTLSSessionTicketsControlResumption(t *testing.T) {
 
 func TestFrontendTLSHandshakeSelectsExactWildcardAndFallbackSNI(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/frontend-sni.db", events, data_encryption.Service{})
+	storage, err := store.Open(t.TempDir()+"/frontend-sni.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

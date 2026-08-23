@@ -7,6 +7,7 @@ import (
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func testEffectiveConfig() *appconfig.EffectiveConfig {
@@ -50,5 +51,5 @@ func testDataEncryptionResolver() data_encryption.Resolver {
 }
 
 func testDataEncryptionService() data_encryption.Service {
-	return data_encryption.NewService(false, nil)
+	return testutil.DataEncryptionService(false, nil)
 }

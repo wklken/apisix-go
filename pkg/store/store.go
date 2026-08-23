@@ -142,6 +142,9 @@ func Open(
 	events chan *Event,
 	encryption data_encryption.Service,
 ) (*Store, error) {
+	if !encryption.Configured() {
+		return nil, errors.New("store requires a configured data-encryption service")
+	}
 	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: storeOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("open store database %q: %w", dbPath, err)
@@ -180,6 +183,9 @@ func GetStore(
 	events chan *Event,
 	encryption data_encryption.Service,
 ) (*Store, error) {
+	if !encryption.Configured() {
+		return nil, errors.New("store requires a configured data-encryption service")
+	}
 	globalStoreMu.Lock()
 	defer globalStoreMu.Unlock()
 	if s != nil {

@@ -10,11 +10,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"github.com/wklken/apisix-go/pkg/testutil"
 )
 
 func TestResolveStreamRoutesResolvesReferencedUpstream(t *testing.T) {
@@ -362,7 +362,7 @@ func TestStartStreamProxyPropagatesRouteLoadError(t *testing.T) {
 func TestStartStreamProxyPublishesOnlyAfterCompleteRuntimeSuccess(t *testing.T) {
 	previousStore := store.ReplaceGlobalStoreForTest(nil)
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/stream-startup.db", events, data_encryption.Service{})
+	storage, err := store.GetStore(t.TempDir()+"/stream-startup.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 	})
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-ack.db", events, data_encryption.Service{})
+	storage, err := store.Open(t.TempDir()+"/stream-ack.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -518,7 +518,11 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 		_ = storage.Stop()
 	})
 	runtime := &fakeStreamRuntime{reloadErr: errors.New("stream reload failed")}
-	server := &Server{storage: storage, streamRuntime: runtime}
+	server := &Server{
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
+		streamRuntime:  runtime,
+	}
 	server.registerAcknowledgedStoreUpdateHook(context.Background())
 
 	put := func() error {
@@ -554,7 +558,7 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 
 func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-batch.db", events, data_encryption.Service{})
+	storage, err := store.Open(t.TempDir()+"/stream-batch.db", events, testutil.DataEncryptionService(false, nil))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -566,11 +570,12 @@ func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T)
 	})
 	runtime := &fakeStreamRuntime{}
 	server := &Server{
-		staticConfig:  &config.EffectiveConfig{},
-		addr:          "127.0.0.1:9080",
-		storage:       storage,
-		routes:        newRouteHandler(http.NotFoundHandler(), nil),
-		streamRuntime: runtime,
+		staticConfig:   &config.EffectiveConfig{},
+		addr:           "127.0.0.1:9080",
+		storage:        storage,
+		dataEncryption: testutil.DataEncryptionService(false, nil),
+		routes:         newRouteHandler(http.NotFoundHandler(), nil),
+		streamRuntime:  runtime,
 	}
 	server.registerAcknowledgedStoreUpdateHook(context.Background())
 	event := store.NewAcknowledgedBatch([]store.Mutation{
@@ -596,7 +601,11 @@ func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T)
 
 func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-startup-race.db", events, data_encryption.Service{})
+	storage, err := store.Open(
+		t.TempDir()+"/stream-startup-race.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -643,7 +652,11 @@ func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
 
 func TestStreamReloadFailureDoesNotCommitUnpublishedLastGood(t *testing.T) {
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(t.TempDir()+"/stream-unpublished-last-good.db", events, data_encryption.Service{})
+	storage, err := store.Open(
+		t.TempDir()+"/stream-unpublished-last-good.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -688,7 +701,11 @@ func TestStreamReloadFailureDoesNotCommitUnpublishedLastGood(t *testing.T) {
 
 func TestStreamReloadListenConflictDoesNotReplaceLastGood(t *testing.T) {
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(t.TempDir()+"/stream-conflict-last-good.db", events, data_encryption.Service{})
+	storage, err := store.Open(
+		t.TempDir()+"/stream-conflict-last-good.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -771,7 +788,11 @@ func applyAcknowledgedStreamRoute(
 
 func TestShutdownDoesNotCloseStreamRuntimeDuringAcknowledgedReload(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-shutdown-race.db", events, data_encryption.Service{})
+	storage, err := store.Open(
+		t.TempDir()+"/stream-shutdown-race.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -855,7 +876,11 @@ func TestStartStreamProxyRecordsInitialConfigApplyStage(t *testing.T) {
 		},
 	}}}
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/stream-initial-stage.db", events, data_encryption.Service{})
+	storage, err := store.GetStore(
+		t.TempDir()+"/stream-initial-stage.db",
+		events,
+		testutil.DataEncryptionService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}

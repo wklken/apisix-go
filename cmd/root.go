@@ -72,13 +72,14 @@ func newRootCommand() *cobra.Command {
 }
 
 func startWithOptions(options rootOptions) error {
-	effective, err := loadEffectiveForCommand(options.configPath, options.setValues)
+	effective, catalog, err := loadEffectiveForStartup(options.configPath, options.setValues)
 	if err != nil {
 		return fmt.Errorf("load effective config: %w", err)
 	}
 	encryption := data_encryption.NewService(
 		effective.Config.Apisix.DataEncryption.EnableEncryptFields,
 		effective.Config.Apisix.DataEncryption.Keyring,
+		catalog,
 	)
 	if err := configureLogger(&effective.Config); err != nil {
 		return fmt.Errorf("configure logger: %s", err)

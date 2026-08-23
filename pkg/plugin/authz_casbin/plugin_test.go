@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -284,7 +284,7 @@ func putCasbinMetadata(t *testing.T, modelText, policyText string) {
 		s, err := store.GetStore(
 			t.TempDir()+"/authz-casbin.db",
 			metadataStoreEvents,
-			data_encryption.NewService(false, nil),
+			testutil.DataEncryptionService(false, nil),
 		)
 		if err != nil {
 			t.Fatalf("open store: %v", err)

@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/capability"
 )
 
 func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
@@ -19,7 +21,7 @@ func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{"old-keyring-item", key})
+	DecryptPluginConfigs(configs, []string{"old-keyring-item", key}, mustTestDeclarationCatalog())
 	oidc := configs["openid-connect"].(map[string]any)
 	if got := oidc["client_secret"]; got != "client-secret" {
 		t.Fatalf("client_secret = %v, want plaintext", got)
@@ -39,7 +41,7 @@ func TestDecryptPluginConfigWithResolverLookupResults(t *testing.T) {
 			"basic-auth": map[string]any{"password": encryptForTest(t, key, "pw")},
 		}
 		for name, config := range configs {
-			DecryptPluginConfigWithResolver(config, name, resolver)
+			DecryptPluginConfigWithResolver(config, name, resolver, mustTestDeclarationCatalog())
 		}
 		if got := configs["key-auth"].(map[string]any)["key"]; got != "api-secret" {
 			t.Fatalf("key-auth.key = %v, want decrypted", got)
@@ -52,7 +54,12 @@ func TestDecryptPluginConfigWithResolverLookupResults(t *testing.T) {
 	t.Run("unknown plugin left untouched", func(t *testing.T) {
 		ciphertext := encryptForTest(t, key, "secret")
 		config := map[string]any{"token": ciphertext}
-		DecryptPluginConfigWithResolver(config, "not-a-plugin", resolver)
+		DecryptPluginConfigWithResolver(
+			config,
+			"not-a-plugin",
+			resolver,
+			mustTestDeclarationCatalog(),
+		)
 		if got := config["token"]; got != ciphertext {
 			t.Fatalf("unknown plugin token = %v, want ciphertext untouched", got)
 		}
@@ -60,16 +67,20 @@ func TestDecryptPluginConfigWithResolverLookupResults(t *testing.T) {
 
 	t.Run("non-map config skipped", func(t *testing.T) {
 		config := "plain string"
-		DecryptPluginConfigWithResolver(config, "key-auth", resolver)
+		DecryptPluginConfigWithResolver(config, "key-auth", resolver, mustTestDeclarationCatalog())
 		if config != "plain string" {
 			t.Fatalf("non-map config mutated to %v", config)
 		}
 	})
 
 	t.Run("nil and empty configs are no-ops", func(t *testing.T) {
-		DecryptPluginConfigs(nil, []string{key})
-		DecryptPluginConfigs(map[string]any{}, []string{key})
-		DecryptPluginConfigs(map[string]any{"key-auth": map[string]any{}}, nil)
+		DecryptPluginConfigs(nil, []string{key}, mustTestDeclarationCatalog())
+		DecryptPluginConfigs(map[string]any{}, []string{key}, mustTestDeclarationCatalog())
+		DecryptPluginConfigs(
+			map[string]any{"key-auth": map[string]any{}},
+			nil,
+			mustTestDeclarationCatalog(),
+		)
 	})
 }
 
@@ -82,29 +93,45 @@ func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) 
 		"sentinel_password": sentinelCiphertext,
 	}}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	if got := configs["ai-rate-limiting"].(map[string]any)["redis_password"]; got != ciphertext {
-		t.Fatalf("ai-rate-limiting.redis_password = %v, want ciphertext retained for runtime resolution", got)
+		t.Fatalf(
+			"ai-rate-limiting.redis_password = %v, want ciphertext retained for runtime resolution",
+			got,
+		)
 	}
 	if got := configs["ai-rate-limiting"].(map[string]any)["sentinel_password"]; got != sentinelCiphertext {
-		t.Fatalf("ai-rate-limiting.sentinel_password = %v, want ciphertext retained for runtime resolution", got)
+		t.Fatalf(
+			"ai-rate-limiting.sentinel_password = %v, want ciphertext retained for runtime resolution",
+			got,
+		)
 	}
-	if !IsStrictPluginField("ai-rate-limiting", "redis_password") {
+	catalog := mustTestDeclarationCatalog()
+	if declaration, ok := catalog.Lookup("ai-rate-limiting", capability.SecretPluginConfig, "redis_password"); !ok ||
+		!declaration.Strict {
 		t.Fatal("ai-rate-limiting.redis_password must be strict to remain encrypted at rest")
 	}
-	if !IsStrictPluginField("ai-rate-limiting", "sentinel_password") {
+	if declaration, ok := catalog.Lookup("ai-rate-limiting", capability.SecretPluginConfig, "sentinel_password"); !ok ||
+		!declaration.Strict {
 		t.Fatal("ai-rate-limiting.sentinel_password must be strict to remain encrypted at rest")
 	}
 }
 
-func TestStrictPluginMetadataFieldRegistry(t *testing.T) {
-	if !IsStrictPluginMetadataField("error-log-logger", "clickhouse.password") {
+func TestStrictPluginMetadataDeclarations(t *testing.T) {
+	catalog := mustTestDeclarationCatalog()
+	if declaration, ok := catalog.Lookup(
+		"error-log-logger",
+		capability.SecretPluginMetadata,
+		"clickhouse.password",
+	); !ok ||
+		!declaration.Strict {
 		t.Fatal("error-log-logger.clickhouse.password must be strict to remain encrypted at rest")
 	}
-	if IsStrictPluginMetadataField("azure-functions", "master_apikey") {
+	if declaration, ok := catalog.Lookup("azure-functions", capability.SecretPluginMetadata, "master_apikey"); !ok ||
+		declaration.Strict {
 		t.Fatal("azure-functions.master_apikey must remain optional for plaintext compatibility")
 	}
-	if IsStrictPluginMetadataField("error-log-logger", "clickhouse.user") {
+	if _, ok := catalog.Lookup("error-log-logger", capability.SecretPluginMetadata, "clickhouse.user"); ok {
 		t.Fatal("unregistered metadata path must not be strict")
 	}
 }
@@ -121,7 +148,7 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 		"loggly":     map[string]any{"customer_token": "loggly-secret"},
 	}
 
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	config := configs["ai-rate-limiting"].(map[string]any)
@@ -133,7 +160,10 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 		if !ok || ciphertext == plaintext {
 			t.Fatalf("%s = %v, want ciphertext", field, config[field])
 		}
-		decrypted, err := NewResolver(true, []string{key}).ResolveForContext(ciphertext, "ai-rate-limiting."+field)
+		decrypted, err := NewResolver(
+			true,
+			[]string{key},
+		).ResolveForContext(ciphertext, "ai-rate-limiting."+field)
 		if err != nil || decrypted != plaintext {
 			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
 		}
@@ -148,12 +178,15 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 		}
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	if got := configs["basic-auth"].(map[string]any)["password"]; got != "basic-secret" {
 		t.Fatalf("basic-auth.password = %v, want runtime plaintext", got)
 	}
 	if got := configs["loggly"].(map[string]any)["customer_token"]; got == "loggly-secret" {
-		t.Fatalf("loggly.customer_token = %v, want strict ciphertext for plugin-local resolution", got)
+		t.Fatalf(
+			"loggly.customer_token = %v, want strict ciphertext for plugin-local resolution",
+			got,
+		)
 	}
 }
 
@@ -173,7 +206,7 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 		},
 	}
 
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	header := configs["ai-proxy"].(map[string]any)["auth"].(map[string]any)["header"].(map[string]any)
@@ -184,15 +217,19 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 	if !ok ||
 		!strings.HasPrefix(rewrapped, encryptedValuePrefix+v2CiphertextPrefix) ||
 		rewrapped == encryptedValuePrefix+alreadyEncrypted {
-		t.Fatalf("legacy encrypted container leaf = %v, want explicit v2 ciphertext", header["X-Encrypted"])
+		t.Fatalf(
+			"legacy encrypted container leaf = %v, want explicit v2 ciphertext",
+			header["X-Encrypted"],
+		)
 	}
 	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
 	if fallbacks[0] == "old-secret-1" || fallbacks[1] == "old-secret-2" {
 		t.Fatalf("feishu-auth.secret_fallbacks remained plaintext: %#v", fallbacks)
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
-	if header["Authorization"] != ciphertextShapedPlaintext || header["X-Encrypted"] != "already-encrypted" {
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
+	if header["Authorization"] != ciphertextShapedPlaintext ||
+		header["X-Encrypted"] != "already-encrypted" {
 		t.Fatalf("ai-proxy runtime header = %#v, want plaintext leaves", header)
 	}
 	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
@@ -213,7 +250,7 @@ func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *t
 				},
 			}
 
-			if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+			if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 				t.Fatalf("EncryptPluginConfigs() error = %v", err)
 			}
 			headers := configs["elasticsearch-logger"].(map[string]any)["headers"].(map[string]any)
@@ -221,10 +258,13 @@ func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *t
 				t.Fatalf("elasticsearch-logger.headers.%s remained plaintext", headerName)
 			}
 			if headers["X-Cluster"] != "logs" {
-				t.Fatalf("elasticsearch-logger.headers.X-Cluster = %v, want unchanged", headers["X-Cluster"])
+				t.Fatalf(
+					"elasticsearch-logger.headers.X-Cluster = %v, want unchanged",
+					headers["X-Cluster"],
+				)
 			}
 
-			DecryptPluginConfigs(configs, []string{key})
+			DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 			if headers[headerName] != "Basic ZWxhc3RpYzoxMjM0NTY=" {
 				t.Fatalf("runtime %s = %v, want plaintext", headerName, headers[headerName])
 			}
@@ -237,12 +277,17 @@ func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
 	configs := map[string]any{
 		"ai-rate-limiting": map[string]any{"redis_password": "$encrypted://not-base64"},
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err == nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err == nil {
 		t.Fatal("EncryptPluginConfigs() accepted invalid explicit ciphertext")
 	}
 
 	metadata := map[string]any{"master_apikey": "$encrypted://not-base64"}
-	if err := EncryptPluginMetadata("azure-functions", metadata, []string{key}); err == nil {
+	if err := EncryptPluginMetadata(
+		"azure-functions",
+		metadata,
+		[]string{key},
+		mustTestDeclarationCatalog(),
+	); err == nil {
 		t.Fatal("EncryptPluginMetadata() accepted invalid explicit ciphertext")
 	}
 }
@@ -260,7 +305,7 @@ func TestEncryptPluginConfigsPreservesValidV2CiphertextWithPrefix(t *testing.T) 
 			"sasl": map[string]any{"password": value},
 		},
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	got := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"]
@@ -271,7 +316,11 @@ func TestEncryptPluginConfigsPreservesValidV2CiphertextWithPrefix(t *testing.T) 
 
 func TestEncryptPluginConfigsRejectsV2CiphertextWithWrongContext(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	ciphertext, err := EncryptForContext("kafka-secret", key, "kafka-logger.brokers.*.sasl_config.password")
+	ciphertext, err := EncryptForContext(
+		"kafka-secret",
+		key,
+		"kafka-logger.brokers.*.sasl_config.password",
+	)
 	if err != nil {
 		t.Fatalf("EncryptForContext() error = %v", err)
 	}
@@ -280,7 +329,7 @@ func TestEncryptPluginConfigsRejectsV2CiphertextWithWrongContext(t *testing.T) {
 			"sasl": map[string]any{"password": "$encrypted://" + ciphertext},
 		},
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err == nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err == nil {
 		t.Fatal("EncryptPluginConfigs() accepted v2 ciphertext with wrong context")
 	}
 }
@@ -292,7 +341,7 @@ func TestEncryptPluginConfigsWritesV2ContextualCiphertext(t *testing.T) {
 			"sasl": map[string]any{"password": "kafka-secret"},
 		},
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	ciphertext := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
@@ -304,7 +353,7 @@ func TestEncryptPluginConfigsWritesV2ContextualCiphertext(t *testing.T) {
 	if err != nil || plaintext != "kafka-secret" {
 		t.Fatalf("ResolveForContext() = (%q, %v), want kafka-secret", plaintext, err)
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() second error = %v", err)
 	}
 	if got := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"]; got != ciphertext {
@@ -320,7 +369,7 @@ func TestEncryptPluginConfigsTreatsBareV2AsPlaintext(t *testing.T) {
 		},
 	}
 
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	persisted := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)["password"].(string)
@@ -347,14 +396,17 @@ func TestEncryptPluginConfigsUsesCanonicalContextForWildcardEntries(t *testing.T
 			},
 		},
 	}
-	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+	if err := EncryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog()); err != nil {
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	brokers := configs["kafka-logger"].(map[string]any)["brokers"].([]any)
 	resolver := NewResolver(true, []string{key})
 	for i, want := range []string{"first-secret", "second-secret"} {
 		password := brokers[i].(map[string]any)["sasl_config"].(map[string]any)["password"].(string)
-		got, err := resolver.ResolveForContext(password, "kafka-logger.brokers.*.sasl_config.password")
+		got, err := resolver.ResolveForContext(
+			password,
+			"kafka-logger.brokers.*.sasl_config.password",
+		)
 		if err != nil || got != want {
 			t.Fatalf("broker[%d] ResolveForContext() = (%q, %v), want %q", i, got, err, want)
 		}
@@ -364,7 +416,9 @@ func TestEncryptPluginConfigsUsesCanonicalContextForWildcardEntries(t *testing.T
 	}
 }
 
-func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginResolution(t *testing.T) {
+func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginResolution(
+	t *testing.T,
+) {
 	key := "qeddd145sfvddff3"
 	metadata := map[string]any{
 		"clickhouse": map[string]any{
@@ -384,7 +438,12 @@ func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginRes
 		},
 	}
 
-	if err := EncryptPluginMetadata("error-log-logger", metadata, []string{key}); err != nil {
+	if err := EncryptPluginMetadata(
+		"error-log-logger",
+		metadata,
+		[]string{key},
+		mustTestDeclarationCatalog(),
+	); err != nil {
 		t.Fatalf("EncryptPluginMetadata() error = %v", err)
 	}
 	clickhouse := metadata["clickhouse"].(map[string]any)
@@ -398,11 +457,12 @@ func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginRes
 	}
 	clickhouseCiphertext := clickhouse["password"]
 	kafkaCiphertext := sasl["password"]
-	if clickhouse["user"] != "default" || broker["host"] != "127.0.0.1" || sasl["user"] != "kafka-user" {
+	if clickhouse["user"] != "default" || broker["host"] != "127.0.0.1" ||
+		sasl["user"] != "kafka-user" {
 		t.Fatalf("non-secret metadata changed: clickhouse=%#v broker=%#v", clickhouse, broker)
 	}
 
-	DecryptPluginMetadata("error-log-logger", metadata, []string{key})
+	DecryptPluginMetadata("error-log-logger", metadata, []string{key}, mustTestDeclarationCatalog())
 	if clickhouse["password"] != clickhouseCiphertext || sasl["password"] != kafkaCiphertext {
 		t.Fatalf(
 			"strict runtime passwords = %v/%v, want ciphertext retained for plugin resolution",
@@ -423,7 +483,7 @@ func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
 	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
 		t.Fatalf("feishu-auth secret_fallbacks = %#v, want plaintext values", fallbacks)
@@ -441,7 +501,7 @@ func TestDecryptPluginConfigsSupportsCasdoorClientSecretFallbacks(t *testing.T) 
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	fallbacks := configs["authz-casdoor"].(map[string]any)["client_secret_fallbacks"].([]any)
 	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
 		t.Fatalf("authz-casdoor client_secret_fallbacks = %#v, want plaintext values", fallbacks)
@@ -467,7 +527,7 @@ func TestDecryptPluginConfigsSupportsAIMapsAndInstanceArrays(t *testing.T) {
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	proxyAuth := configs["ai-proxy"].(map[string]any)["auth"].(map[string]any)
 	if proxyAuth["header"].(map[string]any)["Authorization"] != "Bearer secret" ||
 		proxyAuth["aws"].(map[string]any)["secret_access_key"] != "aws-secret" {
@@ -505,7 +565,7 @@ func TestDecryptPluginConfigsSupportsServerlessCredentials(t *testing.T) {
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	aws := configs["aws-lambda"].(map[string]any)["authorization"].(map[string]any)
 	if aws["apikey"] != "aws-api-key" ||
 		aws["iam"].(map[string]any)["accesskey"] != "aws-access-key" ||
@@ -596,7 +656,7 @@ func TestDecryptPluginConfigsPreservesStrictPluginFields(t *testing.T) {
 		},
 	}
 
-	DecryptPluginConfigs(configs, []string{key})
+	DecryptPluginConfigs(configs, []string{key}, mustTestDeclarationCatalog())
 	if got := configs["clickhouse-logger"].(map[string]any)["password"]; got != clickhousePassword {
 		t.Fatalf("clickhouse-logger.password = %v, want ciphertext preserved", got)
 	}
@@ -607,7 +667,10 @@ func TestDecryptPluginConfigsPreservesStrictPluginFields(t *testing.T) {
 		t.Fatalf("elasticsearch-logger.auth.password = %v, want ciphertext preserved", got)
 	}
 	if got := configs["google-cloud-logging"].(map[string]any)["auth_config"].(map[string]any)["private_key"]; got != googlePrivateKey {
-		t.Fatalf("google-cloud-logging.auth_config.private_key = %v, want ciphertext preserved", got)
+		t.Fatalf(
+			"google-cloud-logging.auth_config.private_key = %v, want ciphertext preserved",
+			got,
+		)
 	}
 	errorLog := configs["error-log-logger"].(map[string]any)
 	if got := errorLog["clickhouse"].(map[string]any)["password"]; got != errorLogClickhousePassword {

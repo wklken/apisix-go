@@ -3,7 +3,6 @@ package store
 import (
 	"testing"
 
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -11,7 +10,7 @@ import (
 // publication for a route carrying a few plugins.
 func BenchmarkVerifiedSmallPath(b *testing.B) {
 	key := "qeddd145sfvddff3"
-	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
+	storage := &Store{dataEncryption: testDataEncryptionWith(true, []string{key})}
 
 	configs := map[string]resource.PluginConfig{
 		"key-auth":    map[string]any{"key": "api-secret"},

@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -365,12 +366,81 @@ func supportsDomain(pluginDomains []Domain, profileDomains []string) bool {
 
 func concreteReason(reason string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(reason))
-	switch normalized {
-	case "", "n/a", "na", "not applicable", "not_applicable", "not-applicable", "none":
+	if normalized == "" {
 		return false
-	default:
-		return true
 	}
+
+	var compact strings.Builder
+	words := make([]string, 0, 4)
+	var word strings.Builder
+	letterCount := 0
+	flushWord := func() {
+		if word.Len() == 0 {
+			return
+		}
+		words = append(words, word.String())
+		word.Reset()
+	}
+	for _, char := range normalized {
+		switch {
+		case unicode.IsLetter(char):
+			letterCount++
+			compact.WriteRune(char)
+			word.WriteRune(char)
+		case unicode.IsDigit(char):
+			compact.WriteRune(char)
+			word.WriteRune(char)
+		default:
+			flushWord()
+		}
+	}
+	flushWord()
+	if letterCount < 3 || len(words) < 2 {
+		return false
+	}
+
+	placeholderWords := map[string]struct{}{
+		"bar":         {},
+		"baz":         {},
+		"deferred":    {},
+		"flaky":       {},
+		"foo":         {},
+		"later":       {},
+		"missing":     {},
+		"na":          {},
+		"nil":         {},
+		"not":         {},
+		"none":        {},
+		"null":        {},
+		"pending":     {},
+		"placeholder": {},
+		"reason":      {},
+		"stale":       {},
+		"tbd":         {},
+		"todo":        {},
+		"unknown":     {},
+		"unspecified": {},
+		"applicable":  {},
+	}
+	compactReason := compact.String()
+	if compactReason == "notapplicable" || compactReason == "notspecified" || compactReason == "notprovided" {
+		return false
+	}
+	if len(words) > 0 {
+		_, placeholder := placeholderWords[words[0]]
+		explainedNotApplicable := len(words) > 2 && words[0] == "not" && words[1] == "applicable"
+		if placeholder && !explainedNotApplicable {
+			return false
+		}
+	}
+	allPlaceholder := true
+	for _, word := range words {
+		if _, placeholder := placeholderWords[word]; !placeholder {
+			allPlaceholder = false
+			break
+		}
+	}
+	return !allPlaceholder
 }
 
 func sortedUniqueStrings(values []string) bool {

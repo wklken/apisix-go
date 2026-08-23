@@ -2531,7 +2531,7 @@ plugins:
       failure: {state: "missing", refs: [], owner: "log-rotate", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "log-rotate", reason: "recovery evidence is not classified"}
     divergence_ids: []
-    supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
+    supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
   - name: "error-log-logger"
     implementation: "error-log-logger"
     namespace: "apisix"
@@ -2666,7 +2666,7 @@ plugins:
       failure: {state: "missing", refs: [], owner: "file-logger", reason: "failure evidence is not classified"}
       recovery: {state: "missing", refs: [], owner: "file-logger", reason: "recovery evidence is not classified"}
     divergence_ids: []
-    supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"]
+    supported_platforms: ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
   - name: "loggly"
     implementation: "loggly"
     namespace: "apisix"

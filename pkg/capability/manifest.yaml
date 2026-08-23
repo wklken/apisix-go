@@ -1,0 +1,40 @@
+schema_version: 1
+target:
+  name: apisix-3.17
+  version: 3.17.0
+  source_commit: 9ef2ecab67f652d38365049613610ef649bb4ad0
+  image: apache/apisix:3.17.0
+qualification_profiles:
+  - name: http-data-plane-v1
+    domains: [http]
+    required_plugins: [request-id]
+    required_evidence: [converted_upstream, differential, failure, real_dependency, recovery, schema, unit]
+plugins:
+  - name: request-id
+    implementation: request_id
+    namespace: apisix
+    domains: [http]
+    apisix_default: true
+    factories:
+      - key: request-id
+        import_path: github.com/wklken/apisix-go/pkg/plugin/request_id
+        import_alias: request_id
+        constructor: Plugin
+    phases: [rewrite]
+    priority: 12015
+    scopes: [global_rule, route, service]
+    instance_scope: effective-config
+    behavior: full
+    behavior_summary: Adds or propagates the configured request identifier.
+    known_gaps: []
+    evidence:
+      schema: {state: verified, refs: [pkg/plugin/request_id/plugin.go], owner: request-id, reason: ""}
+      unit: {state: verified, refs: [pkg/plugin/request_id/plugin_test.go], owner: request-id, reason: ""}
+      converted_upstream: {state: stale, refs: [t/plugin/request-id.yaml], owner: request-id, reason: corpus pin differs from the compatibility oracle}
+      differential: {state: missing, refs: [], owner: request-id, reason: pinned APISIX differential evidence is not recorded}
+      real_dependency: {state: not_applicable, refs: [], owner: request-id, reason: plugin has no external dependency}
+      failure: {state: missing, refs: [], owner: request-id, reason: failure evidence is not classified}
+      recovery: {state: not_applicable, refs: [], owner: request-id, reason: plugin has no recovery lifecycle}
+    divergence_ids: []
+    supported_platforms: [linux-amd64, linux-arm64, darwin-amd64, darwin-arm64, windows-amd64]
+divergences: []

@@ -1126,6 +1126,8 @@ Create `docs/architecture/legacy-conflicts.md` with one row for each conflict:
 | `docs/design.md`, route schema section | retain only the current compatibility subset | pinned APISIX observable contract and explicit gap accounting | superseded 2026-08-23 |
 | `docs/plugins.md` before this plan | hand-edited table is the single source of truth | `pkg/capability/manifest.yaml` plus generated `docs/plugins.md` | archived in `docs/history/plugins-2026-08-23.md` |
 | `docs/reviews/convergence-decisions.md`, ARCH-03 | do not import/cover the full pinned route contract | program specification HTTP compatibility contract | historical remediation evidence; decision superseded |
+| `docs/configuration.md`, lifecycle/SIGHUP section | retired generations close WebSockets and SIGHUP only drains/exits | supervisor generation handoff target, with the current pre-convergence behavior labeled explicitly until implemented | superseded as governing design 2026-08-23 |
+| `docs/production-profile.md`, lifecycle/SIGHUP section | retirement closes hijacked connections and SIGHUP exits after drain | supervisor generation handoff target, with the current pre-convergence behavior labeled explicitly until implemented | superseded as governing design 2026-08-23 |
 ```
 
 - [ ] **Step 4: Annotate historical documents in place**
@@ -1136,7 +1138,7 @@ In `docs/design.md`, retain the old lifecycle and route-schema text under a `His
 
 - [ ] **Step 5: Rewrite current operational documents to the new axes**
 
-Update `docs/configuration.md` and `docs/production-profile.md` to show the three exact YAML keys from Task 4. Explain that `security_profile: strict` does not imply qualification, and `qualification_profile: http-data-plane-v1` derives its plugin set from verified evidence. If the initial set is empty or blocked, show the generated blocked reason; do not preserve the six-plugin claim.
+Update `docs/configuration.md` and `docs/production-profile.md` to show the three exact YAML keys from Task 4. Explain that `security_profile: strict` does not imply qualification, and `qualification_profile: http-data-plane-v1` derives its plugin set from verified evidence. If the initial set is empty or blocked, link the generated blocked reason; do not preserve a hand-maintained six-plugin or evidence table. Their lifecycle/SIGHUP sections must distinguish the current pre-convergence implementation from the governing supervisor-generation target instead of presenting either as already delivered.
 
 - [ ] **Step 6: Run documentation conflict and link checks**
 
@@ -1160,6 +1162,7 @@ git commit -m "docs(governance): supersede conflicting architecture claims"
 - Delete: `.github/workflows/plugin-status.yml`
 - Modify: `.github/workflows/unit-test.yml`
 - Modify: `scripts/release_gate_test.sh`
+- Modify: `docs/runbooks/production-release.md`
 - Modify: `Makefile`
 - Test: `scripts/capability_status_gate_test.sh`
 
@@ -1220,7 +1223,7 @@ Create `.github/workflows/capability-status.yml` matching the tested contract. E
 
 - [ ] **Step 5: Delete the replaced workflow and script**
 
-Delete `.github/workflows/plugin-status.yml` and `scripts/plugin_status_gate_test.sh` in this task. Update `.github/workflows/unit-test.yml` contract references from plugin status to capability status without adding broad tests. Update `scripts/release_gate_test.sh` in the same atomic cutover: it must require `.github/workflows/capability-status.yml`, the three new Make targets, and the capability workflow's contract-test/drift/status steps, and must not retain any path, target, job, or diagnostic that names the deleted plugin-status workflow.
+Delete `.github/workflows/plugin-status.yml` and `scripts/plugin_status_gate_test.sh` in this task. Update `.github/workflows/unit-test.yml` contract references from plugin status to capability status without adding broad tests. Update `scripts/release_gate_test.sh` in the same atomic cutover: it must require `.github/workflows/capability-status.yml`, the three new Make targets, and the capability workflow's contract-test/drift/status steps, and must not retain any path, target, job, or diagnostic that names the deleted plugin-status workflow. Update `docs/runbooks/production-release.md` to name `Capability Status Contract` and describe the manifest/ADR drift gate; do not leave an active release instruction requiring the deleted check.
 
 - [ ] **Step 6: Run the local workflow and drift gates**
 
@@ -1237,7 +1240,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit the governance workflow cutover**
 
 ```bash
-git add Makefile .github/workflows scripts
+git add Makefile .github/workflows scripts docs/runbooks/production-release.md
 git commit -m "ci(governance): enforce capability manifest drift gate"
 ```
 

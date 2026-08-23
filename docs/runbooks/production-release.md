@@ -45,8 +45,10 @@ without removing its required reviewers or wait timer. This runbook and the
 implementation do not mutate repository settings or bypass those protections.
 
 Before RC or final qualification, the release owner must verify that `master`
-remains protected, the required CI, security, and independent plugin-status
-checks are enforced, and no self-approval is permitted. The
+remains protected, the required CI, security, and independent `Capability
+Status Contract` checks are enforced, and no self-approval is permitted. The
+capability check validates manifest, generated-output, profile, corpus, and
+accepted-ADR drift. The
 `production-release` environment must retain its required reviewers and wait
 timer while allowing only the explicitly approved `v*` tag policy. These are
 repository and environment prerequisites to verify externally; this runbook
@@ -466,8 +468,9 @@ Keep the profile and ledger wording as candidate/not-ready until a post-merge
 RC has passed for its own digest and all final-release gates, clean-host
 acceptance, deployment probes, environment-specific capacity/failure evidence,
 external ingress request-log evidence, and verified rollback evidence exist for
-the final digest. The protected `master` policy, required CI/security/plugin-
-status checks, protected `production-release` reviewers/wait timer, approved
+the final digest. The protected `master` policy, required CI/security/
+`Capability Status Contract` checks, protected `production-release`
+reviewers/wait timer, approved
 `v*` tag policy, and no-self-approval rule must also remain in force. Never
 combine RC and final evidence as though independently built images had one
 identity. A successful local shell test, workflow definition, or attached

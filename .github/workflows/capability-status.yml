@@ -1,0 +1,49 @@
+name: Capability Status Contract
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+    paths:
+      - Makefile
+      - pkg/capability/**
+      - pkg/config/profiles.go
+      - pkg/plugin/registry_gen.go
+      - cmd/capability-gen/**
+      - docs/plugins.md
+      - docs/architecture/**
+      - t/plugin/*.yaml
+      - t/plugin/corpus_scope.yaml
+      - t/plugin/coverage_test.go
+      - t/plugin/corpus_test.go
+      - scripts/capability_status_gate_test.sh
+      - .github/CODEOWNERS
+      - .github/workflows/capability-status.yml
+      - .github/workflows/unit-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  capability-status:
+    name: Capability Status Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify capability status workflow contract
+        run: bash scripts/capability_status_gate_test.sh
+
+      - name: Verify generated capability and ADR drift
+        run: bash -lc 'source .envrc && make check-capability-drift'
+
+      - name: Verify capability status
+        run: bash -lc 'source .envrc && make test-capability-status'

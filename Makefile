@@ -84,16 +84,18 @@ test-integration:
 test-plugin-harness:
 	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1
 
-PLUGIN_STATUS_TEST ?= TestSupportedPluginManifestSelection
+.PHONY: generate-capabilities
+generate-capabilities:
+	go run ./cmd/capability-gen -repo-root . -write
 
-.PHONY: test-plugin-status
-test-plugin-status:
-	@set -eu; \
-		test_name='$(PLUGIN_STATUS_TEST)'; \
-		listed=$$(APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -list "^$${test_name}$$"); \
-		printf '%s\n' "$$listed" | grep -Fxq "$$test_name" || \
-			(printf 'plugin status test %s was not found\n' "$$test_name" >&2; exit 1)
-	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^$(PLUGIN_STATUS_TEST)$$' -count=1
+.PHONY: check-capability-drift
+check-capability-drift:
+	go run ./cmd/capability-gen -repo-root . -check
+
+.PHONY: test-capability-status
+test-capability-status:
+	go test ./pkg/capability ./pkg/config ./pkg/plugin -run '^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)' -count=1
+	APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)$$' -count=1
 
 PLUGIN_SMOKE_CASE ?=
 

@@ -7,7 +7,7 @@ dockerfile="$repo_root/Dockerfile"
 goreleaser="$repo_root/.goreleaser.yaml"
 workflow="$repo_root/.github/workflows/security-release-gates.yml"
 unit_workflow="$repo_root/.github/workflows/unit-test.yml"
-plugin_status_workflow="$repo_root/.github/workflows/plugin-status.yml"
+capability_status_workflow="$repo_root/.github/workflows/capability-status.yml"
 rc_workflow="$repo_root/.github/workflows/release-candidate.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
 
@@ -90,7 +90,7 @@ test -f "$rc_workflow"
 test -f "$release_workflow"
 test -f "$makefile"
 test -f "$unit_workflow"
-test -f "$plugin_status_workflow"
+test -f "$capability_status_workflow"
 test -f "$dockerfile"
 test -f "$goreleaser"
 
@@ -102,13 +102,20 @@ require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/vers
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.BuildTime=\$\(BUILD_TIME\)' "$makefile"
 require_pattern '-X[[:space:]]+[[:punct:]]?github\.com/wklken/apisix-go/pkg/version\.GoVersion=\$\(GO_VERSION\)' "$makefile"
 require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -count=1' "$makefile"
-require_fixed '.PHONY: test-plugin-status' "$makefile"
-require_fixed 'plugin status test %s was not found' "$makefile"
+require_fixed '.PHONY: generate-capabilities' "$makefile"
+require_fixed 'go run ./cmd/capability-gen -repo-root . -write' "$makefile"
+require_fixed '.PHONY: check-capability-drift' "$makefile"
+require_fixed 'go run ./cmd/capability-gen -repo-root . -check' "$makefile"
+require_fixed '.PHONY: test-capability-status' "$makefile"
+require_fixed 'go test ./pkg/capability ./pkg/config ./pkg/plugin -run '\''^(TestLoadedManifest|TestManifest|TestProfileSelection|TestCapabilityManifest|TestCapabilityRegistry)'\'' -count=1' "$makefile"
+require_fixed 'APISIX_GO_SKIP_PLUGIN_INTEGRATION=1 go test ./t/plugin -run '\''^(TestCapabilityManifestSelection|TestManifestCorpusValidates|TestUpstreamCorpusAccountingWithoutSourceCheckout|TestCorpusEvidenceMatchesCompatibilityTarget)$$'\'' -count=1' "$makefile"
 require_fixed '.PHONY: test-plugin-smoke' "$makefile"
 require_fixed 'APISIX_GO_PLUGIN_SMOKE_CASE="$(PLUGIN_SMOKE_CASE)" go test ./t/plugin -run '\''^TestPluginIntegration$$'\'' -count=1 -v' "$makefile"
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
-require_job_fixed "$plugin_status_workflow" plugin-status 'run: bash scripts/plugin_status_gate_test.sh'
+require_job_fixed "$capability_status_workflow" capability-status 'run: bash scripts/capability_status_gate_test.sh'
+require_job_fixed "$capability_status_workflow" capability-status 'run: bash -lc '\''source .envrc && make check-capability-drift'\'''
+require_job_fixed "$capability_status_workflow" capability-status 'run: bash -lc '\''source .envrc && make test-capability-status'\'''
 require_job_fixed "$unit_workflow" integration-smoke 'run: make test-plugin-smoke PLUGIN_SMOKE_CASE='\''${{ matrix.case.selector }}'\'''
 reject_job_pattern "$unit_workflow" integration-smoke 'go test[[:space:]]+\./t/plugin[[:space:]]+-run'
 require_job_fixed "$release_workflow" build-and-unit 'run: make test-plugin-harness'

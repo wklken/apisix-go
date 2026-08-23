@@ -78,36 +78,35 @@ The duplicate-live registry linearizes at reserve. Successful close releases the
 
 **Depends on:** C6.3.
 
-**Exclusive owner:** `pkg/plugin/**`.
+**Detailed execution plan:** [`2026-08-24-immutable-task6-c6.4-plugin-runtime.md`](2026-08-24-immutable-task6-c6.4-plugin-runtime.md).
 
-- Reduce the universal plugin interface to the parent-plan contract and inject explicit config, `GenerationCapability`, `MetadataView`, and generation tasks.
-- Build one generation-owned schema witness per factory to obtain `GetMetadataSchema`; validate present immutable metadata before any secret access, materialize declared metadata fields, then build the final immutable view used by route/service/consumer instances.
-- Preserve admission order: init, metadata schema, config schema, decode, pre-materialization validation, scoped secret materialization, post-init, bind.
-- Replace every `base.LoadPluginMetadata -> store.GetPluginMetadata`, direct Store metadata lookup, raw encryption resolver, and `store.MaterializeSecret` path. Extend the AST guard to prohibit production plugin imports of `pkg/data_encryption` and Store secret/metadata access.
-- Plugin-instance keys are attempt-scoped. Reusable clients remain separate resources and never retain generation capabilities or task registries.
+C6.4 is no longer treated as one `pkg/plugin/**`-exclusive serial block. It first lands catalog compatibility and additive runtime/plugin contracts, then freezes the pure C6.5 final-attempt boundary. Plugin secret, metadata, and consumer leaf packages may branch from that merged checkpoint with exclusive package ownership. Shared runtime/plugin types, compiler files, route/server callers, and legacy deletion remain single-owner integration files.
+
+The manifest adds a distinct `consumer_config` declaration source without expanding plugin-config at-rest encryption. Current `wolf-rbac` compatibility preserves both the Store schema's `wolf_url` and the plugin's `server` until a separate compatibility decision resolves the divergence.
 
 ### C6.5 — Pure refinement, factory and prepared ownership
 
-**Depends on:** C6.3 and C6.4.
+**Depends on:** C6.3 and the C6.4 additive catalog/contract checkpoint. Its pure refinement/final-attempt skeleton lands before C6.4 leaf migrations; final prepared ownership lands after those migrations.
 
 **Exclusive owner:** `pkg/compiler/**`.
 
-- Extract pure publication preparation from the current compiler constructor dependency cycle.
+- Extract pure publication preparation from the current compiler constructor dependency cycle and freeze the final-attempt hooks needed by C6.4 leaf work.
 - Refine structural candidates with catalog/schema admission before computing the final attempt ID. Invalid resource/plugin admission follows the established per-resource last-good/fail-closed disposition; the final registered set is the exact refined set.
 - Implement `PrepareGeneration`, `PrepareRecovery`, `PreparedGeneration`, deterministic cleanup, defensive accessors and concurrent idempotent discard/close.
 - Task 6 owns no HTTP cluster or stream router construction. Snapshot hooks are added only by Tasks 7 and 8 with their real input types.
 
 ### C6.6 — Integration and merge gate
 
-**Depends on:** C6.2–C6.5.
+**Depends on:** C6.2–C6.5, including all C6.4 leaf and composite migrations.
 
-Adapt `cmd/root.go`, standalone ingestion, current Builder/server/stream callers only as needed to keep the pre-Task-9 production owner buildable. Do not add a global Store or raw-keyring fallback. Run the parent Task 6 focused race commands, capability generator check, scoped lint, build, dead-code/call-site scans, and an independent merge-level review. Merge the complete Task 6 branch into local `master` only after all gates pass.
+Adapt `cmd/root.go`, standalone ingestion, and current Builder/server/stream callers only as needed to keep the pre-Task-9 production owner buildable. Pass C6.5's exact final metadata view, consumer bindings, plugin dependencies, and registration lifetime into the existing generation owner; do not reconstruct a temporary view from decoded Store state and do not add a global Store or raw-keyring fallback. Run the parent Task 6 focused race commands, capability generator check, scoped lint, build, dead-code/call-site scans, and an independent merge-level review. Merge the complete Task 6 branch into local `master` only after all gates pass.
 
 ## Parallelism and Ownership
 
 - C6.1 and C6.2 are sequential single-owner foundation work.
-- After C6.2b freezes the encryption and publication-validation signatures, secret/runtime, Store broker, and plugin leaf migration may use separate worktrees only where files are exclusive.
-- Compiler factory work starts only after the attempt and plugin contracts compile.
+- After C6.3, catalog compatibility and additive plugin/runtime contracts land serially. The compiler's pure refinement/final-attempt skeleton then freezes the hooks consumed by leaf work.
+- Plugin secret, metadata, and consumer leaf migrations may use separate worktrees only where package files are exclusive and all start from that merged checkpoint.
+- Composite migration and final compiler ownership start only after their child leaf interfaces compile on the integration branch.
 - One integration owner resolves live-caller fallout. Workers may implement and run focused tests locally but do not commit, push, merge, or modify another lane's files.
 
 ## Completion Evidence

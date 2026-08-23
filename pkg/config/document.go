@@ -396,6 +396,21 @@ func normalizeAPISIXNumber(value string) (json.Number, bool) {
 		return "", false
 	}
 
+	if strings.HasPrefix(cleaned, "0b") || strings.HasPrefix(cleaned, "0B") {
+		digits := cleaned[2:]
+		if digits == "" || !allBinaryDigits(digits) {
+			return "", false
+		}
+		integer, ok := new(big.Int).SetString(digits, 2)
+		if !ok {
+			return "", false
+		}
+		if negative {
+			integer.Neg(integer)
+		}
+		return json.Number(integer.String()), true
+	}
+
 	if strings.HasPrefix(cleaned, "0x") || strings.HasPrefix(cleaned, "0X") {
 		digits := cleaned[2:]
 		if digits == "" || !allHexDigits(digits) {
@@ -579,6 +594,15 @@ func allHexDigits(value string) bool {
 			continue
 		}
 		return false
+	}
+	return value != ""
+}
+
+func allBinaryDigits(value string) bool {
+	for index := range len(value) {
+		if value[index] != '0' && value[index] != '1' {
+			return false
+		}
 	}
 	return value != ""
 }

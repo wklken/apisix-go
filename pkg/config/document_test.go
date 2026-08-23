@@ -284,6 +284,8 @@ legacy_leading_zero: "${{LEGACY_LEADING_ZERO}}"
 leading_zero_eight: "${{LEADING_ZERO_EIGHT}}"
 yaml_octal: "${{YAML_OCTAL}}"
 yaml_binary: "${{YAML_BINARY}}"
+positive_binary: "${{POSITIVE_BINARY}}"
+negative_binary: "${{NEGATIVE_BINARY}}"
 underscored: "${{UNDERSCORED}}"
 positive_fraction: "${{POSITIVE_FRACTION}}"
 exponent: "${{EXPONENT}}"
@@ -301,6 +303,8 @@ spaced_number: "${{SPACED_NUMBER}}"
 		"LEADING_ZERO_EIGHT":  "08",
 		"YAML_OCTAL":          "0o17",
 		"YAML_BINARY":         "0b10",
+		"POSITIVE_BINARY":     "+0b10",
+		"NEGATIVE_BINARY":     "-0b10",
 		"UNDERSCORED":         "1_000",
 		"POSITIVE_FRACTION":   "+1.25",
 		"EXPONENT":            "+01.50e+03",
@@ -321,7 +325,9 @@ spaced_number: "${{SPACED_NUMBER}}"
 		"legacy_leading_zero": json.Number("77"),
 		"leading_zero_eight":  json.Number("8"),
 		"yaml_octal":          "0o17",
-		"yaml_binary":         "0b10",
+		"yaml_binary":         json.Number("2"),
+		"positive_binary":     json.Number("2"),
+		"negative_binary":     json.Number("-2"),
 		"underscored":         "1_000",
 		"positive_fraction":   json.Number("1.25"),
 		"exponent":            json.Number("1.50e+03"),

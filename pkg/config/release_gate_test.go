@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/capability"
+	"go.yaml.in/yaml/v3"
 )
 
 const validRuntimeConfig = `
@@ -317,6 +320,68 @@ func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
 	if GlobalConfig != previous {
 		t.Fatal("GlobalConfig changed before qualification validation completed")
 	}
+}
+
+func TestHTTPDataPlanePluginOrderMatchesManifestConfigAndDocumentation(t *testing.T) {
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualification, ok := manifest.Qualification(string(QualificationHTTPDataPlaneV1))
+	if !ok {
+		t.Fatal("HTTP data-plane qualification is missing")
+	}
+
+	production := readPluginListYAML(t, repositoryPath(t, "conf", "config-production.yaml"))
+	documented := readDocumentedHTTPProfilePlugins(t)
+	for source, got := range map[string][]string{
+		"conf/config-production.yaml": production,
+		"docs/production-profile.md":  documented,
+	} {
+		if !reflect.DeepEqual(got, qualification.RequiredPlugins) {
+			t.Errorf("%s plugins = %#v, want manifest order %#v", source, got, qualification.RequiredPlugins)
+		}
+	}
+}
+
+func readPluginListYAML(t *testing.T, path string) []string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var document struct {
+		Plugins []string `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return document.Plugins
+}
+
+func readDocumentedHTTPProfilePlugins(t *testing.T) []string {
+	t.Helper()
+	path := repositoryPath(t, "docs", "production-profile.md")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	const marker = "- The ordered HTTP plugin list is exactly:\n\n  ```yaml\n"
+	_, after, ok := strings.Cut(string(contents), marker)
+	if !ok {
+		t.Fatalf("%s is missing the ordered HTTP plugin YAML example", path)
+	}
+	example, _, ok := strings.Cut(after, "\n  ```")
+	if !ok {
+		t.Fatalf("%s has an unterminated ordered HTTP plugin YAML example", path)
+	}
+	var document struct {
+		Plugins []string `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal([]byte(example), &document); err != nil {
+		t.Fatalf("parse ordered HTTP plugin example in %s: %v", path, err)
+	}
+	return document.Plugins
 }
 
 func TestDefaultConfigDisablesAdmin(t *testing.T) {

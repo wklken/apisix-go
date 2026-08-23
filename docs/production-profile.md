@@ -65,12 +65,12 @@ of the following:
 
   ```yaml
   plugins:
-    - request-id
-    - cors
-    - key-auth
-    - jwt-auth
     - basic-auth
+    - cors
+    - jwt-auth
+    - key-auth
     - prometheus
+    - request-id
   ```
 
 - Process access-log settings remain unset: HTTP and stream access-log enable

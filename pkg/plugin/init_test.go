@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -38,15 +39,55 @@ func TestNewConstructsEveryRegisteredPlugin(t *testing.T) {
 
 func TestNewRejectsUnknownNames(t *testing.T) {
 	for _, name := range []string{"", "unknown-plugin", "request-context-misspelled"} {
-		if got := New(name); got != nil {
+		if got := New(name, base.Dependencies{}); got != nil {
 			t.Fatalf("New(%q) = %v, want nil", name, got)
 		}
 	}
 }
 
+func TestNewInjectsDependenciesIntoEachPluginInstance(t *testing.T) {
+	leftConfig := &config.EffectiveConfig{}
+	rightConfig := &config.EffectiveConfig{}
+
+	left := New("echo", base.Dependencies{Config: leftConfig})
+	right := New("echo", base.Dependencies{Config: rightConfig})
+	if left == nil || right == nil || left == right {
+		t.Fatalf("New(echo) = (%v, %v), want distinct plugin instances", left, right)
+	}
+	leftReceiver, ok := left.(interface {
+		StaticConfig() *config.EffectiveConfig
+	})
+	if !ok {
+		t.Fatal("New(echo) does not expose injected static configuration")
+	}
+	rightReceiver, ok := right.(interface {
+		StaticConfig() *config.EffectiveConfig
+	})
+	if !ok {
+		t.Fatal("second New(echo) does not expose injected static configuration")
+	}
+	if leftReceiver.StaticConfig() != leftConfig || rightReceiver.StaticConfig() != rightConfig {
+		t.Fatal("New(echo) shared or replaced instance-scoped dependencies")
+	}
+}
+
+func TestNewPanicsWhenRegisteredPluginCannotReceiveDependencies(t *testing.T) {
+	const name = "test-plugin-without-base"
+	pluginRegistry[name] = func() Plugin { return &pluginWithoutBase{} }
+	t.Cleanup(func() { delete(pluginRegistry, name) })
+
+	defer func() {
+		if got := recover(); got != "registered plugin does not embed base.BasePlugin" {
+			t.Fatalf("New(%q) panic = %v, want stable invariant message", name, got)
+		}
+	}()
+	New(name, base.Dependencies{})
+	t.Fatalf("New(%q) did not panic", name)
+}
+
 func TestNewReturnsRegisteredPlugin(t *testing.T) {
 	for name := range pluginRegistry {
-		if got := New(name); got == nil {
+		if got := New(name, base.Dependencies{}); got == nil {
 			t.Fatalf("New(%q) = nil, want a plugin", name)
 		}
 	}
@@ -58,7 +99,7 @@ func TestNewPreservesHistoricalFactoryAliases(t *testing.T) {
 		"opentelemetry":   "opentelemetry",
 		"request-context": "request_context",
 	} {
-		plugin := New(factory)
+		plugin := New(factory, base.Dependencies{})
 		if plugin == nil {
 			t.Fatalf("New(%q) = nil, want registered alias", factory)
 		}
@@ -128,6 +169,17 @@ func TestRequestStageRegistryFactoriesMatchConstructors(t *testing.T) {
 type chainTestPlugin struct {
 	base.BasePlugin
 }
+
+type pluginWithoutBase struct{}
+
+func (p *pluginWithoutBase) Init() error                            { return nil }
+func (p *pluginWithoutBase) PostInit() error                        { return nil }
+func (p *pluginWithoutBase) Handler(next http.Handler) http.Handler { return next }
+func (p *pluginWithoutBase) Config() any                            { return nil }
+func (p *pluginWithoutBase) GetSchema() string                      { return "" }
+func (p *pluginWithoutBase) GetMetadataSchema() string              { return "" }
+func (p *pluginWithoutBase) GetPriority() int                       { return 0 }
+func (p *pluginWithoutBase) GetName() string                        { return "test-plugin-without-base" }
 
 func (p *chainTestPlugin) Init() error     { return nil }
 func (p *chainTestPlugin) PostInit() error { return nil }

@@ -71,13 +71,6 @@ func ValidateCacheZone(name string) error {
 	return validateCacheZoneRegistry(name)
 }
 
-// ValidateConfiguredZones validates the complete static proxy-cache zone
-// registry before a route replacement starts. An empty registry preserves the
-// compatibility fallback used when no zones are declared.
-func ValidateConfiguredZones() error {
-	return validateCacheZoneRegistry("")
-}
-
 // RefreshConfiguredZones validates and atomically publishes a complete
 // proxy-cache zone snapshot. An invalid snapshot leaves the last valid
 // configuration untouched; existing plugin instances keep their current
@@ -90,13 +83,7 @@ func RefreshConfiguredZones(zones []appconfig.Zone) error {
 
 	configuredZoneRefreshMu.Lock()
 	defer configuredZoneRefreshMu.Unlock()
-
-	var next appconfig.Config
-	if appconfig.GlobalConfig != nil {
-		next = *appconfig.GlobalConfig
-	}
-	next.Apisix.ProxyCache.Zones = cloned
-	appconfig.GlobalConfig = &next
+	configuredZoneSnapshot = cloned
 	return nil
 }
 
@@ -329,7 +316,10 @@ var memoryZoneRegistry = struct {
 	zones: make(map[string]*memoryZone),
 }
 
-var configuredZoneRefreshMu sync.RWMutex
+var (
+	configuredZoneRefreshMu sync.RWMutex
+	configuredZoneSnapshot  []appconfig.Zone
+)
 
 type varyIndex struct {
 	headers    []string
@@ -538,10 +528,7 @@ func validateCacheZoneRegistry(cacheZone string) error {
 func configuredZones() []appconfig.Zone {
 	configuredZoneRefreshMu.RLock()
 	defer configuredZoneRefreshMu.RUnlock()
-	if appconfig.GlobalConfig == nil {
-		return nil
-	}
-	return append([]appconfig.Zone(nil), appconfig.GlobalConfig.Apisix.ProxyCache.Zones...)
+	return append([]appconfig.Zone(nil), configuredZoneSnapshot...)
 }
 
 func validateZoneDefinitions(zones []appconfig.Zone) (map[string]struct{}, error) {

@@ -9,11 +9,11 @@ import (
 
 func TestBuildStrictSkipsExplicitlyDisabledRoutes(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "live-route", []byte(`{"id":"live-route","uri":"/live-route"}`))
 	putRouteResource(t, "disabled-route", []byte(`{"id":"disabled-route","uri":"/disabled-route","status":0}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -35,11 +35,11 @@ func TestBuildStrictSkipsExplicitlyDisabledRoutes(t *testing.T) {
 
 func TestBuildStrictServesOmittedAndExplicitEnabledStatus(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "omitted-status", []byte(`{"id":"omitted-status","uri":"/omitted-status"}`))
 	putRouteResource(t, "enabled-status", []byte(`{"id":"enabled-status","uri":"/enabled-status","status":1}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -56,10 +56,10 @@ func TestBuildStrictServesOmittedAndExplicitEnabledStatus(t *testing.T) {
 
 func TestBuildStrictRejectsUnknownRouteStatus(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "bad-status", []byte(`{"id":"bad-status","uri":"/bad-status","status":2}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {

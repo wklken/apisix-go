@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -236,8 +236,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(p.config.Token, "lago.token")
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
+	resolved, err := p.DataEncryption().ResolveForContext(p.config.Token, "lago.token")
 	if err != nil {
 		return fmt.Errorf("lago token: %w", err)
 	}

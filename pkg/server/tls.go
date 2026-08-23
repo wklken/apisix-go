@@ -28,11 +28,11 @@ var frontendTLS13CipherNames = map[string]struct{}{
 	"TLS_AES_128_CCM_8_SHA256":     {},
 }
 
-func buildFrontendTLSConfig() (*tls.Config, error) {
+func buildFrontendTLSConfig(cfg *config.Config) (*tls.Config, error) {
 	var ssl config.Ssl
 	strict := false
-	if config.GlobalConfig != nil {
-		ssl = config.GlobalConfig.Apisix.Ssl
+	if cfg != nil {
+		ssl = cfg.Apisix.Ssl
 		strict = ssl.Enable
 	}
 	minVersion, maxVersion, err := parseFrontendTLSProtocols(ssl.SslProtocols, strict)
@@ -49,8 +49,8 @@ func buildFrontendTLSConfig() (*tls.Config, error) {
 		MaxVersion:             maxVersion,
 		CipherSuites:           cipherSuites,
 		SessionTicketsDisabled: !ssl.SslSessionTickets,
-		NextProtos:             frontendTLSNextProtos(),
-		GetCertificate:         frontendTLSCertificateSelector(),
+		NextProtos:             frontendTLSNextProtos(cfg),
+		GetCertificate:         frontendTLSCertificateSelector(ssl.FallbackSNI),
 	}
 	if trustedCertificate := strings.TrimSpace(ssl.SslTrustedCertificate); trustedCertificate != "" {
 		certificatePEM, err := os.ReadFile(trustedCertificate)
@@ -64,7 +64,7 @@ func buildFrontendTLSConfig() (*tls.Config, error) {
 		tlsConfig.ClientCAs = clientCAs
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	}
-	tlsConfig.GetConfigForClient = frontendTLSConfigSelector(tlsConfig)
+	tlsConfig.GetConfigForClient = frontendTLSConfigSelector(tlsConfig, ssl.FallbackSNI)
 	return tlsConfig, nil
 }
 
@@ -141,24 +141,24 @@ func parseFrontendTLSCipherSuites(raw string, minVersion uint16, required bool) 
 	return cipherSuites, nil
 }
 
-func frontendTLSNextProtos() []string {
+func frontendTLSNextProtos(cfg *config.Config) []string {
 	protocols := []string{"http/1.1"}
-	if frontendHTTP2Enabled() {
+	if frontendHTTP2Enabled(cfg) {
 		protocols = append([]string{"h2"}, protocols...)
 	}
 	return protocols
 }
 
-func frontendTLSCertificateSelector() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+func frontendTLSCertificateSelector(fallbackSNI string) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		serverName := frontendTLSServerName(hello)
+		serverName := frontendTLSServerName(hello, fallbackSNI)
 		return store.GetSSLCertificateForSNI(serverName)
 	}
 }
 
-func frontendTLSConfigSelector(base *tls.Config) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+func frontendTLSConfigSelector(base *tls.Config, fallbackSNI string) func(*tls.ClientHelloInfo) (*tls.Config, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		serverName := frontendTLSServerName(hello)
+		serverName := frontendTLSServerName(hello, fallbackSNI)
 		selected, err := store.GetSSLCertificateConfigForSNI(serverName)
 		if err != nil {
 			// Tests and embedders may supply static certificates directly. Keep
@@ -198,14 +198,11 @@ func enforceClientCertificateDepth(tlsConfig *tls.Config, maximumDepth int) {
 	}
 }
 
-func frontendTLSServerName(hello *tls.ClientHelloInfo) string {
+func frontendTLSServerName(hello *tls.ClientHelloInfo, fallbackSNI string) string {
 	if hello != nil {
 		if serverName := strings.TrimSpace(hello.ServerName); serverName != "" {
 			return serverName
 		}
 	}
-	if config.GlobalConfig != nil {
-		return strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
-	}
-	return ""
+	return strings.TrimSpace(fallbackSNI)
 }

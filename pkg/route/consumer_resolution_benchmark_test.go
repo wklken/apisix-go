@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkConsumerBindingsForKeyWarmHit(b *testing.B) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	key := plugin.ConsumerCacheKey{
 		ConsumerID: "benchmark-consumer",
 		RouteID:    "benchmark-route",

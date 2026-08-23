@@ -201,11 +201,14 @@ func TestBuildKafkaPubSubHandlerPassesUpstreamTLS(t *testing.T) {
 }
 
 func TestBuildReverseHandlerRejectsKafkaTLSClientCertID(t *testing.T) {
-	_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-		Scheme: "kafka",
-		TLS:    &resource.UpstreamTLS{ClientCertID: "ssl-resource"},
-		Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
-	}}, resource.Service{})
+	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{Upstream: resource.Upstream{
+			Scheme: "kafka",
+			TLS:    &resource.UpstreamTLS{ClientCertID: "ssl-resource"},
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
+		}},
+		resource.Service{},
+	)
 	if err == nil {
 		t.Fatal("buildReverseHandler() error = nil, want missing SSL resource rejection")
 	}
@@ -321,14 +324,17 @@ func testKafkaClientCertificate(t *testing.T) (string, string) {
 }
 
 func TestBuildReverseHandlerRejectsInvalidKafkaTLSClientCertificate(t *testing.T) {
-	_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-		Scheme: "kafka",
-		TLS: &resource.UpstreamTLS{
-			ClientCert: "not-a-certificate",
-			ClientKey:  "not-a-key",
-		},
-		Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
-	}}, resource.Service{})
+	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{Upstream: resource.Upstream{
+			Scheme: "kafka",
+			TLS: &resource.UpstreamTLS{
+				ClientCert: "not-a-certificate",
+				ClientKey:  "not-a-key",
+			},
+			Nodes: []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
+		}},
+		resource.Service{},
+	)
 	if err == nil {
 		t.Fatal("buildReverseHandler() error = nil, want invalid client certificate rejection")
 	}
@@ -477,10 +483,13 @@ func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
 }
 
 func TestBuildReverseHandlerRejectsKafkaNonUpgrade(t *testing.T) {
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-		Scheme: "kafka",
-		Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
-	}}, resource.Service{})
+	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{Upstream: resource.Upstream{
+			Scheme: "kafka",
+			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 9092, Weight: 1}},
+		}},
+		resource.Service{},
+	)
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v", err)
 	}

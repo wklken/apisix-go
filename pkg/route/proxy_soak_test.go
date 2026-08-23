@@ -74,7 +74,7 @@ func TestProxyRuntimeSoak(t *testing.T) {
 	nodesJSON := "[" + strings.Join(nodeSpecs, ",") + "]"
 
 	soakEvents := make(chan *store.Event, 64)
-	soakStore, err := store.Open(t.TempDir()+"/soak.db", soakEvents)
+	soakStore, err := store.Open(t.TempDir()+"/soak.db", soakEvents, testDataEncryptionService())
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestProxyRuntimeSoak(t *testing.T) {
 		t.Fatalf("Sync() error = %v", err)
 	}
 
-	builder := NewBuilder(soakStore)
+	builder := NewBuilder(soakStore, testEffectiveConfig(), testDataEncryptionResolver())
 	mux, err := builder.BuildStrict()
 	if err != nil {
 		t.Fatalf("BuildStrict() error = %v", err)

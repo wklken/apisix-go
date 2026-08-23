@@ -94,7 +94,7 @@ func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(route)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	if _, err := builder.buildHandlerStrict(route); err != nil {
 		t.Fatalf("buildHandlerStrict() error = %v", err)
@@ -242,7 +242,7 @@ func TestTrafficSplitRouteRetriesFromHigherToLowerPriorityNode(t *testing.T) {
 		},
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(route)
 	if err != nil {
@@ -315,7 +315,7 @@ func TestApplyTrafficSplitOverrideRetainsRewrittenHost(t *testing.T) {
 }
 
 func TestEmptyUpstreamRouteReturnsClassifiedError(t *testing.T) {
-	builder := &Builder{}
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	handler, err := builder.buildReverseHandler(resource.Route{}, resource.Service{})
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
@@ -335,7 +335,7 @@ func TestErrorHandlerClassifiesDirectorErrorOnce(t *testing.T) {
 	request = withDirectorError(request, directorErr)
 
 	response := httptest.NewRecorder()
-	newErrorHandler()(response, request, errors.New("http: no Host in request URL"))
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, errors.New("http: no Host in request URL"))
 
 	if response.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadGateway)
@@ -372,7 +372,7 @@ func TestErrorHandlerClassifiesWrappedErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
 			response := httptest.NewRecorder()
-			newErrorHandler()(response, request, test.err)
+			newErrorHandler(&testEffectiveConfig().Config)(response, request, test.err)
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
 			}

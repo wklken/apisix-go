@@ -27,6 +27,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -38,6 +39,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
@@ -90,6 +98,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		Database:      "default",
 		LogTable:      "apisix_logs",
 	}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -111,6 +120,7 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -128,7 +138,7 @@ func putPluginMetadata(t *testing.T, logFormat map[string]string) {
 	t.Helper()
 
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events)
+	storage, err := store.Open(t.TempDir()+"/store.db", events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -208,6 +218,7 @@ func TestMaterializeSecretsOwnsClickHouseUserEnvironmentReference(t *testing.T) 
 	if err := base.MaterializePluginSecrets(p); err != nil {
 		t.Fatalf("MaterializePluginSecrets() error = %v", err)
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if !strings.Contains(p.config.User, "$ENV://CLICK_HOUSE_USER#sha256:") ||
 		strings.Contains(p.config.User, "fixture-user") {
 		t.Fatalf("user = %q, want safe environment descriptor", p.config.User)
@@ -287,9 +298,6 @@ func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		EndpointAddrs: []string{"http://127.0.0.1:8123"},
 		User:          "default",
@@ -297,6 +305,9 @@ func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
 		Database:      "default",
 		LogTable:      "apisix_logs",
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -308,9 +319,6 @@ func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
 func TestPostInitResolvesRotatedEncryptedPassword(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		EndpointAddrs: []string{"http://127.0.0.1:8123"},
 		User:          "default",
@@ -319,6 +327,9 @@ func TestPostInitResolvesRotatedEncryptedPassword(t *testing.T) {
 		LogTable:      "apisix_logs",
 		LogFormat:     map[string]string{"request_id": "$request_id"},
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

@@ -28,7 +28,11 @@ func TestAcknowledgedConsumerValidationErrorIsNotRepeatedBySync(t *testing.T) {
 }
 
 func TestAcknowledgedMalformedDependentResourceKeepsLastGoodValue(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "dependent-resource-validation.db"), make(chan *Event, 1))
+	storage, err := Open(
+		filepath.Join(t.TempDir(), "dependent-resource-validation.db"),
+		make(chan *Event, 1),
+		testDataEncryption(),
+	)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -294,7 +298,7 @@ func TestAcknowledgedWaitContextCancellationStillCompletesStoreOwnership(t *test
 }
 
 func TestAcknowledgedBatchValidationIsAtomic(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-validation.db"), make(chan *Event, 1))
+	storage, err := Open(filepath.Join(t.TempDir(), "batch-validation.db"), make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -330,7 +334,11 @@ func TestAcknowledgedBatchValidationIsAtomic(t *testing.T) {
 }
 
 func TestAcknowledgedBatchAcceptsCustomPrefixResourceKeys(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-custom-prefix.db"), make(chan *Event, 1))
+	storage, err := Open(
+		filepath.Join(t.TempDir(), "batch-custom-prefix.db"),
+		make(chan *Event, 1),
+		testDataEncryption(),
+	)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -367,7 +375,7 @@ func TestAcknowledgedBatchAcceptsCustomPrefixResourceKeys(t *testing.T) {
 
 func TestAuthoritativeReplacementRemovesPersistedRowsAfterRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "authoritative-restart.db")
-	first, err := Open(path, make(chan *Event, 1))
+	first, err := Open(path, make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
 	}
@@ -391,7 +399,7 @@ func TestAuthoritativeReplacementRemovesPersistedRowsAfterRestart(t *testing.T) 
 		t.Fatalf("first Stop() error = %v", err)
 	}
 
-	second, err := Open(path, make(chan *Event, 1))
+	second, err := Open(path, make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)
 	}
@@ -432,7 +440,7 @@ func TestAuthoritativeReplacementRemovesPersistedRowsAfterRestart(t *testing.T) 
 }
 
 func TestAcknowledgedBatchPluginMetadataRequiresObject(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-metadata.db"), make(chan *Event, 1))
+	storage, err := Open(filepath.Join(t.TempDir(), "batch-metadata.db"), make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -458,7 +466,7 @@ func TestAcknowledgedBatchPluginMetadataRequiresObject(t *testing.T) {
 }
 
 func TestAcknowledgedBatchQuarantinePreserveAllowsUnrelatedReplacement(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-preserve.db"), make(chan *Event, 1))
+	storage, err := Open(filepath.Join(t.TempDir(), "batch-preserve.db"), make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -509,7 +517,7 @@ func TestAcknowledgedBatchQuarantinePreserveAllowsUnrelatedReplacement(t *testin
 }
 
 func TestAcknowledgedBatchPublishesEachAffectedBucketOnce(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-hooks.db"), make(chan *Event, 1))
+	storage, err := Open(filepath.Join(t.TempDir(), "batch-hooks.db"), make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -564,7 +572,7 @@ func TestAcknowledgedBatchPublishesEachAffectedBucketOnce(t *testing.T) {
 }
 
 func TestAcknowledgedBatchHookFailureDoesNotUndoDurableCommit(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "batch-hook-error.db"), make(chan *Event, 1))
+	storage, err := Open(filepath.Join(t.TempDir(), "batch-hook-error.db"), make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

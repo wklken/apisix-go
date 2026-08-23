@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -117,6 +118,9 @@ func (p *etcdConfigProducer) Stop() error {
 }
 
 type Server struct {
+	staticConfig   *config.EffectiveConfig
+	dataEncryption data_encryption.Service
+
 	addr            string
 	addrs           []string
 	server          *http.Server
@@ -162,26 +166,32 @@ type Server struct {
 
 const startupCleanupTimeout = time.Second
 
-func NewServer() (*Server, error) {
+func NewServer(effective *config.EffectiveConfig, encryption data_encryption.Service) (*Server, error) {
+	if effective == nil {
+		return nil, errors.New("effective config is required")
+	}
+	cfg := &effective.Config
 	events := make(chan *store.Event)
-	storage, err := store.GetStore("apisix-go-store.db", events)
+	storage, err := store.GetStore(config.JournalPath(effective), events, encryption)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
-	handler := newConfiguredHTTPHandler(routes, config.GlobalConfig)
-	addrs := configuredListenAddresses()
+	handler := newConfiguredHTTPHandler(routes, cfg)
+	addrs := configuredListenAddresses(cfg)
 	otelShutdown, err := otel.Init("apisix-go")
 	if err != nil {
 		_ = storage.Stop()
 		return nil, fmt.Errorf("initialize tracing: %w", err)
 	}
 	return &Server{
+		staticConfig:    effective,
+		dataEncryption:  encryption,
 		addr:            addrs[0],
 		addrs:           addrs,
-		server:          newConfiguredHTTPServer(handler),
+		server:          newConfiguredHTTPServer(handler, cfg),
 		routes:          routes,
-		clusters:        pxy.NewClusterRegistry(newClusterObserver()),
+		clusters:        pxy.NewClusterRegistry(newClusterObserver(cfg)),
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
@@ -189,8 +199,8 @@ func NewServer() (*Server, error) {
 	}, nil
 }
 
-func newClusterObserver() pxy.ClusterObserver {
-	if !prometheusEnabled(config.GlobalConfig) {
+func newClusterObserver(cfg *config.Config) pxy.ClusterObserver {
+	if !prometheusEnabled(cfg) {
 		return pxy.NopClusterObserver{}
 	}
 	return metrics.NewProxyRuntimeObserver()
@@ -210,7 +220,7 @@ func newConfiguredHTTPHandler(routes http.Handler, cfg *config.Config) http.Hand
 	if cfg != nil && cfg.Apisix.DeleteURITailSlash {
 		handler = deleteURITailSlash(handler)
 	}
-	if pluginConfigured("node-status") {
+	if pluginConfigured(cfg, "node-status") {
 		handler = node_status.Track(handler)
 	}
 	if prometheusEnabled(cfg) {
@@ -423,18 +433,18 @@ func forceServerHeader(next http.Handler, cfg *config.Config) http.Handler {
 	})
 }
 
-func configuredListenAddresses() []string {
-	if config.GlobalConfig == nil {
+func configuredListenAddresses(cfg *config.Config) []string {
+	if cfg == nil {
 		return []string{":8080"}
 	}
-	return config.GlobalConfig.Apisix.ListenAddresses()
+	return cfg.Apisix.ListenAddresses()
 }
 
-func configuredTLSListenAddresses() []string {
-	if config.GlobalConfig == nil || !config.GlobalConfig.Apisix.Ssl.Enable {
+func configuredTLSListenAddresses(cfg *config.Config) []string {
+	if cfg == nil || !cfg.Apisix.Ssl.Enable {
 		return nil
 	}
-	listeners := config.GlobalConfig.Apisix.Ssl.Listen
+	listeners := cfg.Apisix.Ssl.Listen
 	addresses := make([]string, 0, len(listeners))
 	for _, listener := range listeners {
 		if listener.Port < 1 || listener.Port > 65535 {
@@ -454,13 +464,13 @@ const (
 	defaultHTTPIdleTimeout   = 90 * time.Second
 )
 
-func newConfiguredHTTPServer(handler http.Handler) *http.Server {
+func newConfiguredHTTPServer(handler http.Handler, cfg *config.Config) *http.Server {
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
-	if frontendHTTP2Enabled() {
+	if frontendHTTP2Enabled(cfg) {
 		protocols.SetHTTP2(true)
 	}
-	if frontendPlainHTTP2Enabled() {
+	if frontendPlainHTTP2Enabled(cfg) {
 		protocols.SetUnencryptedHTTP2(true)
 	}
 	server := &http.Server{
@@ -469,19 +479,19 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		IdleTimeout:       defaultHTTPIdleTimeout,
 	}
-	if prometheusEnabled(config.GlobalConfig) {
+	if prometheusEnabled(cfg) {
 		server.ConnState = metrics.NewHTTPConnectionStateObserver()
 	}
-	if frontendHTTP2Enabled() {
+	if frontendHTTP2Enabled(cfg) {
 		if err := http2.ConfigureServer(server, nil); err != nil {
 			logger.Errorf("configure HTTP/2 server: %s", err)
 		}
 	}
-	if config.GlobalConfig == nil {
+	if cfg == nil {
 		return server
 	}
 
-	httpConfig := config.GlobalConfig.NginxConfig.HTTP
+	httpConfig := cfg.NginxConfig.HTTP
 	if httpConfig.KeepaliveTimeout > 0 {
 		server.IdleTimeout = httpConfig.KeepaliveTimeout
 	}
@@ -494,11 +504,11 @@ func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	return server
 }
 
-func pluginConfigured(name string) bool {
-	if config.GlobalConfig == nil {
+func pluginConfigured(cfg *config.Config, name string) bool {
+	if cfg == nil {
 		return false
 	}
-	return slices.Contains(config.GlobalConfig.Plugins, name)
+	return slices.Contains(cfg.Plugins, name)
 }
 
 func (s *Server) beginStart(parent context.Context) (context.Context, bool) {
@@ -638,6 +648,7 @@ func (s *Server) closeOwnedListeners() {
 // failures are returned with operation context instead of panicking; the
 // command owns the process shutdown path.
 func (s *Server) Start(ctx context.Context) (startErr error) {
+	cfg := &s.staticConfig.Config
 	runCtx, ok := s.beginStart(ctx)
 	if !ok {
 		return context.Canceled
@@ -652,16 +663,16 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if prometheusEnabled(config.GlobalConfig) {
-		if err := metrics.Init(); err != nil {
+	if prometheusEnabled(cfg) {
+		if err := metrics.Init(cfg.PluginAttr["prometheus"]); err != nil {
 			return fmt.Errorf("initialize prometheus metrics: %w", err)
 		}
 		if err := s.startPrometheusExpiration(ctx); err != nil {
 			return err
 		}
 	}
-	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(config.GlobalConfig))
-	if standaloneConfigProvider(config.GlobalConfig) == "" {
+	metrics.SetConfigApplyStreamRequired(streamProxyModeEnabled(cfg))
+	if standaloneConfigProvider(cfg) == "" {
 		s.registerAcknowledgedStoreUpdateHook(ctx)
 	}
 
@@ -674,9 +685,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
-	if standaloneConfigProvider(config.GlobalConfig) != "" {
+	if standaloneConfigProvider(cfg) != "" {
 		logger.Info("build the routes")
-		builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
+		builder := route.NewBuilderWithClusterRegistry(
+			s.storage, s.addr, s.clusters, s.staticConfig, s.dataEncryption.Resolver(),
+		)
 		if err := buildAndInstallInitialRoutes(s.routes, builder); err != nil {
 			metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageHTTPRoutes)
 			return err
@@ -697,7 +710,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		if err := s.standaloneWatcher.StartAndReconcile(); err != nil {
 			return fmt.Errorf("start standalone config watcher: %w", err)
 		}
-		provider := standaloneConfigProvider(config.GlobalConfig)
+		provider := standaloneConfigProvider(cfg)
 		logger.Infof("watch standalone config %s", config.StandaloneConfigFile(provider))
 	}
 
@@ -950,21 +963,22 @@ func waitForLifecycle(ctx context.Context, done chan struct{}) error {
 }
 
 func (s *Server) startStreamProxy(ctx context.Context) error {
-	if config.GlobalConfig == nil || !streamProxyModeEnabled(config.GlobalConfig) {
+	cfg := &s.staticConfig.Config
+	if !streamProxyModeEnabled(cfg) {
 		return nil
 	}
 	fail := func(err error) error {
 		metrics.RecordConfigApplyStageFailure(metrics.ConfigApplyStageStreams)
 		return err
 	}
-	streamConfig := config.GlobalConfig.Apisix.StreamProxy
+	streamConfig := cfg.Apisix.StreamProxy
 	if len(streamConfig.Tcp) == 0 {
 		return fail(fmt.Errorf("stream mode requires at least one TCP listener"))
 	}
 	if len(streamConfig.Udp) > 0 {
 		return fail(fmt.Errorf("UDP stream listeners are not supported"))
 	}
-	proxyProtocol := config.GlobalConfig.Apisix.ProxyProtocol
+	proxyProtocol := cfg.Apisix.ProxyProtocol
 	if proxyProtocol.EnableTCPPP {
 		return fail(fmt.Errorf("stream PROXY protocol is not supported"))
 	}
@@ -985,7 +999,7 @@ func (s *Server) startStreamProxy(ctx context.Context) error {
 		ctx,
 		streamConfig.Tcp,
 		routes,
-		config.GlobalConfig.StreamPlugins,
+		cfg.StreamPlugins,
 		logStreamResult,
 	)
 	if err != nil {
@@ -1026,16 +1040,15 @@ func (s *Server) closeStartedStreamRuntime(runtime streamRuntimeOwner) error {
 // startPrometheusExportServer starts the prometheus export server when the
 // plugin is enabled and retains it as an owned lifecycle resource.
 func (s *Server) startPrometheusExportServer() error {
-	if config.GlobalConfig == nil {
+	cfg := &s.staticConfig.Config
+	if !prometheusEnabled(cfg) {
 		return nil
 	}
-	if !prometheusEnabled(config.GlobalConfig) {
-		return nil
-	}
-	if err := metrics.Init(); err != nil {
+	attr := cfg.PluginAttr["prometheus"]
+	if err := metrics.Init(attr); err != nil {
 		return fmt.Errorf("initialize prometheus metrics: %w", err)
 	}
-	exportConfig, err := metrics.ConfiguredExportServer()
+	exportConfig, err := metrics.ConfiguredExportServer(attr)
 	if err != nil {
 		return fmt.Errorf("configure prometheus export server: %w", err)
 	}
@@ -1292,10 +1305,10 @@ func logStreamResult(result streamruntime.Result) {
 }
 
 func (s *Server) startConfigProvider(ctx context.Context) error {
-	provider := standaloneConfigProvider(config.GlobalConfig)
+	provider := standaloneConfigProvider(&s.staticConfig.Config)
 	if provider != "" {
 		path := config.StandaloneConfigFile(provider)
-		watcher := config.NewStandaloneFileWatcher(path, provider, s.events)
+		watcher := config.NewStandaloneFileWatcher(path, provider, s.events, s.dataEncryption)
 		s.lifecycleMu.Lock()
 		s.standaloneWatcher = watcher
 		s.lifecycleMu.Unlock()
@@ -1395,7 +1408,8 @@ func standaloneConfigProvider(cfg *config.Config) string {
 }
 
 func (s *Server) startEtcdWatcher(ctx context.Context) error {
-	etcdConfig := config.GlobalConfig.Deployment.Etcd
+	cfg := &s.staticConfig.Config
+	etcdConfig := cfg.Deployment.Etcd
 	prefix := etcdConfig.Prefix
 	endpoints := etcdConfig.Host
 	username := etcdConfig.User
@@ -1438,14 +1452,15 @@ func (s *Server) startEtcdWatcher(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch initial etcd config: %w", err)
 	}
-	if serverInfoReportingEnabled() {
-		nodeID := server_info.CurrentInfo().ID
+	if serverInfoReportingEnabled(cfg) {
+		nodeID := server_info.CurrentInfo(cfg.Apisix.ID).ID
+		attr := cfg.PluginAttr["server-info"]
 		_, err := etcdClient.StartServerInfoReporter(
 			ctx,
 			nodeID,
-			server_info.ReportTTL(),
+			server_info.ReportTTL(attr),
 			func() ([]byte, error) {
-				return json.Marshal(server_info.CurrentInfo())
+				return json.Marshal(server_info.CurrentInfo(cfg.Apisix.ID))
 			},
 		)
 		if err != nil {
@@ -1518,14 +1533,14 @@ func etcdTLSRequired(endpoints []string, tlsConfig config.EtcdTLS) bool {
 	return false
 }
 
-func serverInfoReportingEnabled() bool {
-	if !pluginConfigured("server-info") || config.GlobalConfig == nil {
+func serverInfoReportingEnabled(cfg *config.Config) bool {
+	if !pluginConfigured(cfg, "server-info") || cfg == nil {
 		return false
 	}
-	if strings.EqualFold(config.GlobalConfig.Deployment.Role, "data_plane") {
+	if strings.EqualFold(cfg.Deployment.Role, "data_plane") {
 		return false
 	}
-	return strings.EqualFold(config.GlobalConfig.Deployment.RoleTraditional.ConfigProvider, "etcd")
+	return strings.EqualFold(cfg.Deployment.RoleTraditional.ConfigProvider, "etcd")
 }
 
 // startHTTPListeners binds every configured HTTP and TLS listener and blocks
@@ -1537,11 +1552,12 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 	if len(addrs) == 0 {
 		addrs = []string{s.addr}
 	}
-	tlsAddrs := configuredTLSListenAddresses()
+	cfg := &s.staticConfig.Config
+	tlsAddrs := configuredTLSListenAddresses(cfg)
 	var tlsConfig *tls.Config
 	if len(tlsAddrs) > 0 {
 		var err error
-		tlsConfig, err = buildFrontendTLSConfig()
+		tlsConfig, err = buildFrontendTLSConfig(cfg)
 		if err != nil {
 			return fmt.Errorf("build frontend TLS config: %w", err)
 		}
@@ -1586,14 +1602,14 @@ func (s *Server) startHTTPListeners(ctx context.Context) error {
 	}
 }
 
-func frontendHTTP2Enabled() bool {
-	if config.GlobalConfig == nil {
+func frontendHTTP2Enabled(cfg *config.Config) bool {
+	if cfg == nil {
 		return false
 	}
-	if config.GlobalConfig.Apisix.EnableHttp2 {
+	if cfg.Apisix.EnableHttp2 {
 		return true
 	}
-	for _, listener := range config.GlobalConfig.Apisix.Ssl.Listen {
+	for _, listener := range cfg.Apisix.Ssl.Listen {
 		if listener.EnableHttp2 {
 			return true
 		}
@@ -1601,14 +1617,14 @@ func frontendHTTP2Enabled() bool {
 	return false
 }
 
-func frontendPlainHTTP2Enabled() bool {
-	if config.GlobalConfig == nil {
+func frontendPlainHTTP2Enabled(cfg *config.Config) bool {
+	if cfg == nil {
 		return false
 	}
-	if config.GlobalConfig.Apisix.EnableHttp2 {
+	if cfg.Apisix.EnableHttp2 {
 		return true
 	}
-	for _, listener := range config.GlobalConfig.Apisix.NodeListen {
+	for _, listener := range cfg.Apisix.NodeListen {
 		if listener.EnableHttp2 {
 			return true
 		}

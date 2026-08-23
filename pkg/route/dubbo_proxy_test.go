@@ -85,7 +85,7 @@ func TestServeDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
 }
 
 func TestServeDubboAndHTTPDubboUseDefaultRetryCountForRouteTerminals(t *testing.T) {
-	builder := &Builder{}
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	upstream := resource.Upstream{
 		Scheme: "dubbo",

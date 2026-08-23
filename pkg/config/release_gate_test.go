@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -34,10 +35,7 @@ deployment:
     prefix: /apisix
 `
 
-func TestLoadConfigFilesMergesNestedOverrideAndReplacesLists(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
 apisix:
@@ -53,9 +51,9 @@ deployment:
     prefix: /custom
 `)
 
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override)
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if got, want := cfg.Plugins, []string{"gzip"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("plugins = %#v, want replacement %#v", got, want)
@@ -80,34 +78,30 @@ deployment:
 	}
 }
 
-func TestLoadConfigFilesEnvironmentOverridesMergedFiles(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_PROXY_MAX_IN_FLIGHT", "77")
-
+func TestLoadEffectiveEnvironmentOverridesMergedFiles(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", "proxy:\n  max_in_flight: 60\n")
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
+		"APISIXGO_PROXY_MAX_IN_FLIGHT": "77",
+	})
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if cfg.Proxy.MaxInFlight != 77 {
 		t.Fatalf("proxy.max_in_flight = %d, want environment override 77", cfg.Proxy.MaxInFlight)
 	}
 }
 
-func TestLoadConfigFilesEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ROLE", "data_plane")
-	t.Setenv("APISIXGO_DEPLOYMENT_ROLE_DATA_PLANE_CONFIG_PROVIDER", "yaml")
-	t.Setenv("APISIXGO_APISIX_SSL_FALLBACK_SNI", "fallback.example")
-
+func TestLoadEffectiveEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", "deployment:\n  etcd:\n    host: []\n    prefix: ''\n")
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override, map[string]string{
+		"APISIXGO_DEPLOYMENT_ROLE":                            "data_plane",
+		"APISIXGO_DEPLOYMENT_ROLE_DATA_PLANE_CONFIG_PROVIDER": "yaml",
+		"APISIXGO_APISIX_SSL_FALLBACK_SNI":                    "fallback.example",
+	})
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v, want absent struct fields bound from environment", err)
+		t.Fatalf("LoadEffective() error = %v, want absent struct fields bound from environment", err)
 	}
 	if got := cfg.Deployment.RoleDataPlane.ConfigProvider; got != "yaml" {
 		t.Fatalf("role_data_plane.config_provider = %q, want yaml", got)
@@ -117,73 +111,48 @@ func TestLoadConfigFilesEnvironmentOverridesFieldsAbsentFromFiles(t *testing.T) 
 	}
 }
 
-func TestLoadConfigFilesRejectsRemovedDeploymentProfileBeforePublication(t *testing.T) {
-	previous := &Config{Debug: true}
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveRejectsRemovedDeploymentProfileAcrossLayers(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		setup func(*testing.T) string
+		name        string
+		override    string
+		environment map[string]string
 	}{
-		{
-			name: "file",
-			setup: func(t *testing.T) string {
-				return writeConfigFile(t, "override.yaml", "deployment:\n  profile: http-data-plane-v1\n")
-			},
-		},
-		{
-			name: "null file",
-			setup: func(t *testing.T) string {
-				return writeConfigFile(t, "override.yaml", "deployment:\n  profile: null\n")
-			},
-		},
-		{
-			name: "environment",
-			setup: func(t *testing.T) string {
-				t.Setenv("APISIXGO_DEPLOYMENT_PROFILE", "http-data-plane-v1")
-				return ""
-			},
-		},
+		{name: "file", override: "deployment:\n  profile: http-data-plane-v1\n"},
+		{name: "null file", override: "deployment:\n  profile: null\n"},
+		{name: "environment", environment: map[string]string{
+			"APISIXGO_DEPLOYMENT_PROFILE": "http-data-plane-v1",
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
 			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-			_, err := loadConfigFiles(base, test.setup(t))
+			override := ""
+			if test.override != "" {
+				override = writeConfigFile(t, "override.yaml", test.override)
+			}
+			_, err := loadEffectiveTestFiles(t, base, override, test.environment)
 			if err == nil {
-				t.Fatal("loadConfigFiles() error = nil, want removed deployment.profile rejection")
+				t.Fatal("LoadEffective() error = nil, want removed deployment.profile rejection")
 			}
 			for _, field := range []string{
 				"deployment.profile", "removed", "compatibility_target", "security_profile", "qualification_profile",
 			} {
 				if !strings.Contains(err.Error(), field) {
-					t.Fatalf("loadConfigFiles() error = %q, want %q", err, field)
+					t.Fatalf("LoadEffective() error = %q, want %q", err, field)
 				}
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig changed after removed deployment.profile rejection")
 			}
 		})
 	}
 }
 
-func TestLoadConfigFilesEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
-	previous := GlobalConfig
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_PLUGINS", "")
-
+func TestLoadEffectiveEmptyEnvironmentReplacementFailsClosed(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	_, err := loadConfigFiles(base, "")
+	_, err := loadEffectiveTestFiles(t, base, "", map[string]string{"APISIXGO_PLUGINS": ""})
 	if err == nil || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("loadConfigFiles() error = %v, want empty environment plugin replacement rejected", err)
+		t.Fatalf("LoadEffective() error = %v, want empty environment plugin replacement rejected", err)
 	}
 }
 
-func TestLoadConfigFilesSelectsProviderForEffectiveRole(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveSelectsProviderForEffectiveRole(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
 deployment:
@@ -194,9 +163,9 @@ deployment:
     host: []
     prefix: ""
 `)
-	cfg, err := loadConfigFiles(base, override)
+	cfg, err := loadEffectiveTestFiles(t, base, override)
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v, want standalone data-plane config without etcd", err)
+		t.Fatalf("LoadEffective() error = %v, want standalone data-plane config without etcd", err)
 	}
 	got, err := EffectiveConfigProvider(cfg)
 	if err != nil {
@@ -237,11 +206,7 @@ func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFilesRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
-	previous := &Config{Debug: true}
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveRejectsIncompleteRuntimeBeforePublication(t *testing.T) {
 	tests := []struct {
 		name     string
 		override string
@@ -274,15 +239,11 @@ func TestLoadConfigFilesRejectsIncompleteRuntimeBeforePublication(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
 			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 			override := writeConfigFile(t, "override.yaml", test.override)
-			_, err := loadConfigFiles(base, override)
+			_, err := loadEffectiveTestFiles(t, base, override)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("loadConfigFiles() error = %v, want field %q", err, test.want)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig changed before runtime validation completed")
+				t.Fatalf("LoadEffective() error = %v, want field %q", err, test.want)
 			}
 		})
 	}
@@ -344,31 +305,24 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 }
 
 func TestProductionConfigRequiresExplicitEtcdEndpoint(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "")
-	t.Setenv("APISIXGO_QUALIFICATION_PROFILE", "")
-
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadConfigFiles(defaultPath, productionPath)
+	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+		"APISIXGO_DEPLOYMENT_ETCD_HOST":  "",
+		"APISIXGO_QUALIFICATION_PROFILE": "",
+	})
 	if err == nil || !strings.Contains(err.Error(), "deployment.etcd.host") {
-		t.Fatalf("loadConfigFiles() error = %v, want missing production etcd endpoint rejection", err)
+		t.Fatalf("LoadEffective() error = %v, want missing production etcd endpoint rejection", err)
 	}
 }
 
 func TestHTTPDataPlaneProductionConfigFailsClosedUntilQualified(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-	t.Setenv("APISIXGO_DEPLOYMENT_ETCD_HOST", "https://etcd.example:2379")
-
 	defaultPath, productionPath := repositoryConfigPaths(t)
-	_, err := loadConfigFiles(defaultPath, productionPath)
+	_, err := loadEffectiveTestFiles(t, defaultPath, productionPath, map[string]string{
+		"APISIXGO_DEPLOYMENT_ETCD_HOST": "https://etcd.example:2379",
+	})
 	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") ||
 		!strings.Contains(err.Error(), "unqualified required plugins") {
-		t.Fatalf("loadConfigFiles() error = %v, want incomplete qualification evidence rejection", err)
-	}
-	if GlobalConfig != previous {
-		t.Fatal("GlobalConfig changed before qualification validation completed")
+		t.Fatalf("LoadEffective() error = %v, want incomplete qualification evidence rejection", err)
 	}
 }
 
@@ -405,13 +359,10 @@ func readPluginListYAML(t *testing.T, path string) []string {
 }
 
 func TestDefaultConfigDisablesAdmin(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
 	defaultPath := repositoryPath(t, "conf", "config-default.yaml")
-	cfg, err := loadConfigFiles(defaultPath, "")
+	cfg, err := loadEffectiveTestFiles(t, defaultPath, "")
 	if err != nil {
-		t.Fatalf("loadConfigFiles() error = %v", err)
+		t.Fatalf("LoadEffective() error = %v", err)
 	}
 	if cfg.Apisix.EnableAdmin {
 		t.Fatal("default config admin API is enabled, want startup-safe disabled default")
@@ -635,13 +586,6 @@ func TestProductionPolicyRejectsOneMutatedFieldPerRow(t *testing.T) {
 			},
 		},
 		{
-			name:  "plugin order",
-			field: "plugins",
-			mutate: func(cfg *Config) {
-				cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
-			},
-		},
-		{
 			name:  "plugin local state",
 			field: "plugins",
 			mutate: func(cfg *Config) {
@@ -774,7 +718,11 @@ func repositoryConfigPaths(t *testing.T) (string, string) {
 
 func repositoryPath(t *testing.T, parts ...string) string {
 	t.Helper()
-	root := filepath.Join("..", "..")
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve repository path")
+	}
+	root := filepath.Join(filepath.Dir(filename), "..", "..")
 	return filepath.Join(append([]string{root}, parts...)...)
 }
 
@@ -785,4 +733,34 @@ func writeConfigFile(t *testing.T, name, contents string) string {
 		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
+}
+
+func loadEffectiveTestFiles(
+	t *testing.T,
+	defaultPath string,
+	overridePath string,
+	environments ...map[string]string,
+) (*Config, error) {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := map[string]string{}
+	if len(environments) != 0 && environments[0] != nil {
+		environment = environments[0]
+	}
+	pathRoot := t.TempDir()
+	effective, err := LoadEffective(LoadRequest{
+		DefaultPath: defaultPath, OverridePath: overridePath,
+		DefaultPaths: RuntimePaths{
+			DataDir: filepath.Join(pathRoot, "data"), RuntimeDir: filepath.Join(pathRoot, "run"),
+			LogDir: filepath.Join(pathRoot, "log"), TempDir: filepath.Join(pathRoot, "tmp"),
+		},
+		Environment: environment, CLIOverrides: map[string]any{}, Manifest: manifest,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &effective.Config, nil
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -37,7 +38,7 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		s, err := store.GetStore(t.TempDir()+"/jwt-auth.db", testEvents)
+		s, err := store.GetStore(t.TempDir()+"/jwt-auth.db", testEvents, data_encryption.NewService(false, nil))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}

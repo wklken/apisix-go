@@ -13,7 +13,6 @@ import (
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -146,7 +145,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	p.loadPluginAttr()
+	if err := p.loadPluginAttr(); err != nil {
+		return err
+	}
 	p.applyDefaults()
 	if p.sampleRandom == nil {
 		p.sampleRandom = func() (float64, error) { return randomUnit(rand.Reader) }
@@ -338,14 +339,12 @@ func (p *Plugin) finishSegment(
 	return nil
 }
 
-func (p *Plugin) loadPluginAttr() {
-	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
-		return
+func (p *Plugin) loadPluginAttr() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
 	}
-	attr, ok := config.GlobalConfig.PluginAttr[name]
-	if !ok {
-		return
-	}
+	attr := effective.Config.PluginAttr[name]
 	if p.config.ServiceName == "" {
 		p.config.ServiceName, _ = attr["service_name"].(string)
 	}
@@ -358,6 +357,7 @@ func (p *Plugin) loadPluginAttr() {
 	if p.config.ReportInterval == 0 {
 		p.config.ReportInterval = intFromAttr(attr, "report_interval")
 	}
+	return nil
 }
 
 func (p *Plugin) applyDefaults() {

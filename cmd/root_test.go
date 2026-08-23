@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -82,6 +83,20 @@ func TestRootCommandConfigFlagMetadata(t *testing.T) {
 	}
 	if flag.DefValue != "conf/config-default.yaml" {
 		t.Fatalf("config default = %q, want conf/config-default.yaml", flag.DefValue)
+	}
+}
+
+func TestRootCommandDoesNotExposeObsoleteViperFlag(t *testing.T) {
+	if flag := rootCmd.PersistentFlags().Lookup("viper"); flag != nil {
+		t.Fatalf("obsolete viper flag remains registered: %#v", flag)
+	}
+}
+
+func TestEnvironmentSnapshotPreservesValuesAndSkipsMalformedEntries(t *testing.T) {
+	got := environmentSnapshot([]string{"PLAIN=value", "WITH_EQUALS=a=b=c", "EMPTY=", "MALFORMED"})
+	want := map[string]string{"PLAIN": "value", "WITH_EQUALS": "a=b=c", "EMPTY": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("environmentSnapshot() = %#v, want %#v", got, want)
 	}
 }
 

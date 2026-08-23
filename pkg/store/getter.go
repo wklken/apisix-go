@@ -34,7 +34,7 @@ func GetPluginMetadata(id string, v any) error {
 	if err != nil {
 		return err
 	}
-	return decodePluginMetadata(config, id, v)
+	return s.decodePluginMetadata(config, id, v)
 }
 
 // GetPluginMetadataRaw returns the raw plugin_metadata bytes for id, or nil
@@ -47,9 +47,8 @@ func GetPluginMetadataRaw(id string) ([]byte, error) {
 	return s.GetFromBucket("plugin_metadata", []byte(id))
 }
 
-func decodePluginMetadata(config []byte, id string, v any) error {
-	keyring, enabled := data_encryption.Keyring()
-	if !enabled || !data_encryption.HasEncryptedPluginMetadata(id) {
+func (s *Store) decodePluginMetadata(config []byte, id string, v any) error {
+	if !s.dataEncryption.Enabled() || !data_encryption.HasEncryptedPluginMetadata(id) {
 		return json.Unmarshal(config, v)
 	}
 
@@ -57,7 +56,7 @@ func decodePluginMetadata(config []byte, id string, v any) error {
 	if err := json.Unmarshal(config, &metadata); err != nil {
 		return err
 	}
-	data_encryption.DecryptPluginMetadata(id, metadata, keyring)
+	s.dataEncryption.DecryptPluginMetadata(id, metadata)
 
 	return util.Parse(metadata, v)
 }
@@ -104,7 +103,7 @@ func GetStreamRoute(id string) (resource.StreamRoute, error) {
 		return resource.StreamRoute{}, ErrNotFound
 	}
 
-	return ParseStreamRoute(config)
+	return s.ParseStreamRoute(config)
 }
 
 func GetService(id string) (resource.Service, error) {
@@ -119,7 +118,7 @@ func GetService(id string) (resource.Service, error) {
 		return resource.Service{}, ErrNotFound
 	}
 
-	return ParseService(config)
+	return s.ParseService(config)
 }
 
 func GetConsumer(id string) (resource.Consumer, error) {
@@ -140,7 +139,7 @@ func GetConsumer(id string) (resource.Consumer, error) {
 		return resource.Consumer{}, ErrNotFound
 	}
 
-	return ParseConsumer(config)
+	return s.ParseConsumer(config)
 }
 
 func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
@@ -155,7 +154,7 @@ func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
 		return resource.ConsumerGroup{}, ErrNotFound
 	}
 
-	return ParseConsumerGroup(config)
+	return s.ParseConsumerGroup(config)
 }
 
 func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
@@ -170,7 +169,7 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 		return resource.PluginConfigRule{}, ErrNotFound
 	}
 
-	return ParsePluginConfigRule(config)
+	return s.ParsePluginConfigRule(config)
 }
 
 func GetProto(id string) (resource.Proto, error) {
@@ -198,7 +197,7 @@ func ListRoutes() ([]resource.Route, error) {
 	}
 	var routes []resource.Route
 	for _, d := range data {
-		r, err := ParseRoute(d)
+		r, err := s.ParseRoute(d)
 		if err != nil {
 			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
 		}
@@ -245,7 +244,7 @@ func (s *Store) listStreamRoutes() ([]resource.StreamRoute, map[string]resource.
 	routes := make([]resource.StreamRoute, 0, len(entries))
 	candidate := make(map[string]resource.StreamRoute, len(entries))
 	for _, entry := range entries {
-		route, err := ParseStreamRoute(entry.value)
+		route, err := s.ParseStreamRoute(entry.value)
 		if err != nil {
 			if lastGood == nil {
 				return nil, nil, fmt.Errorf("parse stream route %q: %w", entry.id, err)
@@ -302,7 +301,7 @@ func ListGlobalRules() ([]resource.GlobalRule, error) {
 	}
 	var rules []resource.GlobalRule
 	for _, d := range data {
-		r, err := ParseGlobalRule(d)
+		r, err := s.ParseGlobalRule(d)
 		if err != nil {
 			return nil, fmt.Errorf("parse global rule %q: %w", globalRuleIDForDecodeError(d), err)
 		}
@@ -321,33 +320,33 @@ func globalRuleIDForDecodeError(config []byte) string {
 	return "unknown"
 }
 
-func ParseRoute(config []byte) (resource.Route, error) {
+func (s *Store) ParseRoute(config []byte) (resource.Route, error) {
 	var r resource.Route
 	err := json.Unmarshal(config, &r)
 	if err != nil {
 		return r, err
 	}
-	decryptPluginConfigs(r.Plugins)
+	s.decryptPluginConfigs(r.Plugins)
 	return r, nil
 }
 
-func ParseStreamRoute(config []byte) (resource.StreamRoute, error) {
+func (s *Store) ParseStreamRoute(config []byte) (resource.StreamRoute, error) {
 	var route resource.StreamRoute
 	if err := json.Unmarshal(config, &route); err != nil {
 		return route, err
 	}
-	decryptPluginConfigs(route.Plugins)
+	s.decryptPluginConfigs(route.Plugins)
 	return route, nil
 }
 
-func ParseService(config []byte) (resource.Service, error) {
-	var s resource.Service
-	err := json.Unmarshal(config, &s)
+func (s *Store) ParseService(config []byte) (resource.Service, error) {
+	var service resource.Service
+	err := json.Unmarshal(config, &service)
 	if err != nil {
-		return s, err
+		return service, err
 	}
-	decryptPluginConfigs(s.Plugins)
-	return s, nil
+	s.decryptPluginConfigs(service.Plugins)
+	return service, nil
 }
 
 func ParseUpstream(config []byte) (resource.Upstream, error) {
@@ -367,39 +366,39 @@ func ParseSSL(config []byte) (resource.SSL, error) {
 	return ssl, nil
 }
 
-func ParseConsumer(config []byte) (resource.Consumer, error) {
+func (s *Store) ParseConsumer(config []byte) (resource.Consumer, error) {
 	var c resource.Consumer
 	err := json.Unmarshal(config, &c)
 	if err != nil {
 		return c, err
 	}
-	decryptPluginConfigs(c.Plugins)
+	s.decryptPluginConfigs(c.Plugins)
 	c.ConfigDigest = sha256.Sum256(config)
 	return c, nil
 }
 
-func ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
+func (s *Store) ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
 	var c resource.ConsumerGroup
 	err := json.Unmarshal(config, &c)
 	if err != nil {
 		return c, err
 	}
-	decryptPluginConfigs(c.Plugins)
+	s.decryptPluginConfigs(c.Plugins)
 	c.ConfigDigest = sha256.Sum256(config)
 	return c, nil
 }
 
-func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
-	var s resource.GlobalRule
-	err := json.Unmarshal(config, &s)
+func (s *Store) ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
+	var rule resource.GlobalRule
+	err := json.Unmarshal(config, &rule)
 	if err != nil {
-		return s, err
+		return rule, err
 	}
-	decryptPluginConfigs(s.Plugins)
-	return s, nil
+	s.decryptPluginConfigs(rule.Plugins)
+	return rule, nil
 }
 
-func validateConfigResourcePut(bucket, id string, config []byte) error {
+func (s *Store) validateConfigResourcePut(bucket, id string, config []byte) error {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(config, &object); err != nil {
 		return fmt.Errorf("decode %s resource: %w", bucket, err)
@@ -409,15 +408,15 @@ func validateConfigResourcePut(bucket, id string, config []byte) error {
 	}
 	switch bucket {
 	case "routes":
-		if _, err := ParseRoute(config); err != nil {
+		if _, err := s.ParseRoute(config); err != nil {
 			return fmt.Errorf("decode route %q: %w", id, err)
 		}
 	case "global_rules":
-		if _, err := ParseGlobalRule(config); err != nil {
+		if _, err := s.ParseGlobalRule(config); err != nil {
 			return fmt.Errorf("decode global rule %q: %w", id, err)
 		}
 	case "services":
-		if _, err := ParseService(config); err != nil {
+		if _, err := s.ParseService(config); err != nil {
 			return fmt.Errorf("decode service %q: %w", id, err)
 		}
 	case "upstreams":
@@ -425,33 +424,32 @@ func validateConfigResourcePut(bucket, id string, config []byte) error {
 			return fmt.Errorf("decode upstream %q: %w", id, err)
 		}
 	case "plugin_configs":
-		if _, err := ParsePluginConfigRule(config); err != nil {
+		if _, err := s.ParsePluginConfigRule(config); err != nil {
 			return fmt.Errorf("decode plugin config %q: %w", id, err)
 		}
 	case "stream_routes":
-		if _, err := ParseStreamRoute(config); err != nil {
+		if _, err := s.ParseStreamRoute(config); err != nil {
 			return fmt.Errorf("decode stream route %q: %w", id, err)
 		}
 	}
 	return nil
 }
 
-func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
-	var s resource.PluginConfigRule
-	err := json.Unmarshal(config, &s)
+func (s *Store) ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
+	var rule resource.PluginConfigRule
+	err := json.Unmarshal(config, &rule)
 	if err != nil {
-		return s, err
+		return rule, err
 	}
-	decryptPluginConfigs(s.Plugins)
-	return s, nil
+	s.decryptPluginConfigs(rule.Plugins)
+	return rule, nil
 }
 
-func decryptPluginConfigs(configs map[string]resource.PluginConfig) {
-	keyring, enabled := data_encryption.Keyring()
-	if !enabled {
+func (s *Store) decryptPluginConfigs(configs map[string]resource.PluginConfig) {
+	if !s.dataEncryption.Enabled() {
 		return
 	}
-	resolver := data_encryption.NewResolver(true, keyring)
+	resolver := s.dataEncryption.Resolver()
 	for name, config := range configs {
 		data_encryption.DecryptPluginConfigWithResolver(config, name, resolver)
 	}
@@ -1172,7 +1170,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 	}
 
 	for _, entry := range entriesByBucket["routes"] {
-		r, err := ParseRoute(entry.value)
+		r, err := s.ParseRoute(entry.value)
 		if err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
 				Bucket: "routes",
@@ -1185,7 +1183,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 
 	previous := s.configSnapshot.Load()
 	for _, entry := range entriesByBucket["global_rules"] {
-		rule, err := ParseGlobalRule(entry.value)
+		rule, err := s.ParseGlobalRule(entry.value)
 		if err != nil {
 			lastGood, ok := lastGoodGlobalRule(previous, entry.id)
 			if !ok {
@@ -1202,7 +1200,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 	for _, entry := range entriesByBucket["plugin_metadata"] {
 		id := entry.id
 		var metadata map[string]any
-		if err := decodePluginMetadata(entry.value, id, &metadata); err != nil {
+		if err := s.decodePluginMetadata(entry.value, id, &metadata); err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
 				Bucket: "plugin_metadata",
 				ID:     id,
@@ -1220,7 +1218,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 	}
 
 	for _, entry := range entriesByBucket["services"] {
-		service, err := ParseService(entry.value)
+		service, err := s.ParseService(entry.value)
 		if err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
 				Bucket: "services",
@@ -1242,7 +1240,7 @@ func (s *Store) buildConfigSnapshot(generation uint64) (*ConfigSnapshot, error) 
 		snapshot.upstreams[entry.id] = upstream
 	}
 	for _, entry := range entriesByBucket["plugin_configs"] {
-		config, err := ParsePluginConfigRule(entry.value)
+		config, err := s.ParsePluginConfigRule(entry.value)
 		if err != nil {
 			snapshot.quarantined = append(snapshot.quarantined, ConfigQuarantine{
 				Bucket: "plugin_configs",

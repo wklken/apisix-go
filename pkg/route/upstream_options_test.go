@@ -86,6 +86,7 @@ func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
 				resource.Upstream{Scheme: test.scheme},
 				map[string]int{"http://127.0.0.1:8080": 1},
 				nil,
+				&testEffectiveConfig().Config,
 			)
 			if err != nil {
 				t.Fatalf("buildClusterConfigWithSSLResolver() error = %v", err)
@@ -100,7 +101,7 @@ func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
 func TestBuildReverseHandlerUsesClusterForDynamicGRPCSTarget(t *testing.T) {
 	registry := proxy.NewClusterRegistry(proxy.NopClusterObserver{})
 	t.Cleanup(registry.Close)
-	builder := NewBuilderWithClusterRegistry(nil, "", registry)
+	builder := NewBuilderWithClusterRegistry(nil, "", registry, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 
 	if _, err := builder.buildReverseHandler(resource.Route{
@@ -137,14 +138,14 @@ func TestBuildClusterConfigKeyIncludesUpstreamNameForObserverIdentity(t *testing
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
 		{Host: "127.0.0.1", Port: 18091, Weight: 1},
 	}}
-	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil)
+	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil, &testEffectiveConfig().Config)
 	if err != nil {
 		t.Fatalf("first buildClusterConfig() error = %v", err)
 	}
 	renamed := base
 	renamed.Name = "orders-v2"
 	second, err := buildClusterConfigWithSSLResolver(
-		resource.Route{UpstreamID: "upstream-orders"}, renamed, servers, nil,
+		resource.Route{UpstreamID: "upstream-orders"}, renamed, servers, nil, &testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("second buildClusterConfig() error = %v", err)
@@ -171,13 +172,19 @@ func TestBuildClusterConfigKeyChangesWithTimeout(t *testing.T) {
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{
 		{Host: "127.0.0.1", Port: 18091, Weight: 1},
 	}}
-	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil)
+	first, err := buildClusterConfigWithSSLResolver(resource.Route{}, base, servers, nil, &testEffectiveConfig().Config)
 	if err != nil {
 		t.Fatalf("first buildClusterConfig() error = %v", err)
 	}
 	changed := base
 	changed.Timeout = resource.Timeout{Read: 2}
-	second, err := buildClusterConfigWithSSLResolver(resource.Route{}, changed, servers, nil)
+	second, err := buildClusterConfigWithSSLResolver(
+		resource.Route{},
+		changed,
+		servers,
+		nil,
+		&testEffectiveConfig().Config,
+	)
 	if err != nil {
 		t.Fatalf("second buildClusterConfig() error = %v", err)
 	}
@@ -204,6 +211,7 @@ func TestBuildClusterConfigUsesKeyPrefixLabelWhenUnnamed(t *testing.T) {
 		}},
 		servers,
 		nil,
+		&testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("buildClusterConfig() error = %v", err)
@@ -214,9 +222,7 @@ func TestBuildClusterConfigUsesKeyPrefixLabelWhenUnnamed(t *testing.T) {
 }
 
 func TestBuildClusterConfigOmitsActiveChecksWhenDisabled(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{DisableUpstreamHealthcheck: true}}
+	staticConfig := &appconfig.Config{Apisix: appconfig.Apisix{DisableUpstreamHealthcheck: true}}
 
 	config, err := buildClusterConfigWithSSLResolver(
 		resource.Route{},
@@ -228,6 +234,7 @@ func TestBuildClusterConfigOmitsActiveChecksWhenDisabled(t *testing.T) {
 		}},
 		map[string]int{"http://127.0.0.1:18091": 1},
 		nil,
+		staticConfig,
 	)
 	if err != nil {
 		t.Fatalf("buildClusterConfig() error = %v", err)

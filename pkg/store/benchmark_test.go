@@ -11,8 +11,7 @@ import (
 // publication for a route carrying a few plugins.
 func BenchmarkVerifiedSmallPath(b *testing.B) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	b.Cleanup(func() { data_encryption.Configure(false, nil) })
+	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
 
 	configs := map[string]resource.PluginConfig{
 		"key-auth":    map[string]any{"key": "api-secret"},
@@ -23,7 +22,7 @@ func BenchmarkVerifiedSmallPath(b *testing.B) {
 	b.Run("decrypt-configs", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			decryptPluginConfigs(configs)
+			storage.decryptPluginConfigs(configs)
 		}
 	})
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseStreamRoutePreservesMatchUpstreamAndPlugins(t *testing.T) {
-	route, err := ParseStreamRoute([]byte(`{
+	route, err := testParsingStore().ParseStreamRoute([]byte(`{
 		"id":"mqtt",
 		"server_addr":"127.0.0.1",
 		"server_port":1883,
@@ -36,7 +36,7 @@ func TestParseStreamRoutePreservesMatchUpstreamAndPlugins(t *testing.T) {
 }
 
 func TestParseStreamRouteAcceptsOfficialMinimalUpstream(t *testing.T) {
-	if _, err := ParseStreamRoute([]byte(`{
+	if _, err := testParsingStore().ParseStreamRoute([]byte(`{
 		"id":"minimal",
 		"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:2883":1}}
 	}`)); err != nil {
@@ -45,7 +45,7 @@ func TestParseStreamRouteAcceptsOfficialMinimalUpstream(t *testing.T) {
 }
 
 func TestGetStreamRouteReturnsNotFound(t *testing.T) {
-	streamStore, err := GetStore(t.TempDir()+"/stream-route.db", make(chan *Event))
+	streamStore, err := GetStore(t.TempDir()+"/stream-route.db", make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("GetStore() error = %v", err)
 	}
@@ -84,7 +84,7 @@ func TestGetStreamRouteReturnsNotFound(t *testing.T) {
 
 func TestStreamRoutePutValidationRetainsLastGood(t *testing.T) {
 	events := make(chan *Event, 4)
-	storage, err := Open(t.TempDir()+"/stream-put.db", events)
+	storage, err := Open(t.TempDir()+"/stream-put.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -122,7 +122,7 @@ func TestStreamRoutePutValidationRetainsLastGood(t *testing.T) {
 
 func TestListStreamRoutesKeepsLastGoodAndDropsDeletedIDs(t *testing.T) {
 	events := make(chan *Event, 4)
-	storage, err := Open(t.TempDir()+"/stream-last-good.db", events)
+	storage, err := Open(t.TempDir()+"/stream-last-good.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestListStreamRoutesKeepsLastGoodAndDropsDeletedIDs(t *testing.T) {
 
 func TestPrepareStreamRoutesDoesNotCommitUnpublishedGeneration(t *testing.T) {
 	events := make(chan *Event, 4)
-	storage, err := Open(t.TempDir()+"/stream-uncommitted.db", events)
+	storage, err := Open(t.TempDir()+"/stream-uncommitted.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -249,7 +249,7 @@ func TestPrepareStreamRoutesDoesNotCommitUnpublishedGeneration(t *testing.T) {
 
 func TestPrepareStreamRoutesKeepsLastGoodAfterUnpublishedListenConflict(t *testing.T) {
 	events := make(chan *Event, 4)
-	storage, err := Open(t.TempDir()+"/stream-conflict.db", events)
+	storage, err := Open(t.TempDir()+"/stream-conflict.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

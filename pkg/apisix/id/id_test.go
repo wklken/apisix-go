@@ -9,15 +9,12 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 func TestGetUsesConfiguredApisixID(t *testing.T) {
-	oldConfig := config.GlobalConfig
 	oldPath := uidFilePath
 	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
 		uidFilePath = oldPath
 		generatedOnce = sync.Once{}
 		generatedID = ""
@@ -25,34 +22,28 @@ func TestGetUsesConfiguredApisixID(t *testing.T) {
 	uidFilePath = filepath.Join(t.TempDir(), "apisix.uid")
 	generatedOnce = sync.Once{}
 	generatedID = ""
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ID: "node-a"}}
-
-	if got := Get(); got != "node-a" {
+	if got := Get("node-a"); got != "node-a" {
 		t.Fatalf("Get() = %q, want configured APISIX id", got)
 	}
 
-	config.GlobalConfig.Apisix.ID = "node-b"
-	if got := Get(); got != "node-b" {
+	if got := Get("node-b"); got != "node-b" {
 		t.Fatalf("Get() after config update = %q, want node-b", got)
 	}
 }
 
 func TestGetGeneratesStableUUID(t *testing.T) {
-	oldConfig := config.GlobalConfig
 	oldPath := uidFilePath
 	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
 		uidFilePath = oldPath
 		generatedOnce = sync.Once{}
 		generatedID = ""
 	})
-	config.GlobalConfig = nil
 	uidFilePath = filepath.Join(t.TempDir(), "apisix.uid")
 	generatedOnce = sync.Once{}
 	generatedID = ""
 
-	first := Get()
-	second := Get()
+	first := Get("")
+	second := Get("")
 	if first == "" || first != second {
 		t.Fatalf("Get() generated unstable IDs: first=%q second=%q", first, second)
 	}
@@ -62,21 +53,18 @@ func TestGetGeneratesStableUUID(t *testing.T) {
 }
 
 func TestGetPersistsGeneratedID(t *testing.T) {
-	oldConfig := config.GlobalConfig
 	oldPath := uidFilePath
 	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
 		uidFilePath = oldPath
 		generatedOnce = sync.Once{}
 		generatedID = ""
 	})
 
-	config.GlobalConfig = nil
 	uidFilePath = filepath.Join(t.TempDir(), "apisix.uid")
 	generatedOnce = sync.Once{}
 	generatedID = ""
 
-	first := Get()
+	first := Get("")
 	content, err := os.ReadFile(uidFilePath)
 	if err != nil {
 		t.Fatalf("read persisted uid: %v", err)
@@ -87,22 +75,19 @@ func TestGetPersistsGeneratedID(t *testing.T) {
 
 	generatedOnce = sync.Once{}
 	generatedID = ""
-	if second := Get(); second != first {
+	if second := Get(""); second != first {
 		t.Fatalf("reloaded uid = %q, want %q", second, first)
 	}
 }
 
 func TestGetLogsPersistFailure(t *testing.T) {
-	oldConfig := config.GlobalConfig
 	oldPath := uidFilePath
 	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
 		uidFilePath = oldPath
 		generatedOnce = sync.Once{}
 		generatedID = ""
 	})
 
-	config.GlobalConfig = nil
 	uidFilePath = filepath.Join(t.TempDir(), "missing", "apisix.uid")
 	generatedOnce = sync.Once{}
 	generatedID = ""
@@ -111,7 +96,7 @@ func TestGetLogsPersistFailure(t *testing.T) {
 	stop := logger.ReplaceObserver("id-persist", func(entry logger.Entry) { observed <- entry })
 	t.Cleanup(stop)
 
-	if got := Get(); got == "" {
+	if got := Get(""); got == "" {
 		t.Fatal("Get() generated an empty id")
 	}
 	select {

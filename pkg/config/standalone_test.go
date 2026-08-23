@@ -19,7 +19,7 @@ import (
 func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestStandaloneReloadCancellationUnblocksBlockedSend(t *testing.T) {
 func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event, 1)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestStandaloneReloadCancellationUnblocksAcknowledgedWait(t *testing.T) {
 func TestStandaloneReloadDoesNotHoldStateMutexWhileSendBlocked(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
 	events := make(chan *store.Event)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -113,13 +113,13 @@ ssls:
 #END
 `)
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v, want invalid SSL quarantined", err)
@@ -159,7 +159,12 @@ ssls:
 }
 
 func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
-	watcher := NewStandaloneFileWatcher(filepath.Join(t.TempDir(), "apisix.yaml"), "yaml", make(chan *store.Event))
+	watcher := NewStandaloneFileWatcher(
+		filepath.Join(t.TempDir(), "apisix.yaml"),
+		"yaml",
+		make(chan *store.Event),
+		data_encryption.NewService(false, nil),
+	)
 	if err := watcher.Stop(); err != nil {
 		t.Fatalf("Stop() before Start error = %v", err)
 	}
@@ -173,13 +178,13 @@ func TestStandaloneStopBeforeStartAndRepeatedStop(t *testing.T) {
 
 func TestStandaloneStopWaitsForWatchExit(t *testing.T) {
 	path := writeStandaloneTestConfig(t, "routes:\n  - id: route-1\n    uri: /orders\n#END\n")
-	snapshot, _, err := readStandaloneSnapshot(path, "yaml")
+	snapshot, _, err := readStandaloneSnapshot(path, "yaml", data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("readStandaloneSnapshot() error = %v", err)
 	}
 	events := make(chan *store.Event)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	watcher.SeedCurrentSnapshot(snapshot)
 	callbackEntered := make(chan struct{})
 	releaseCallback := make(chan struct{})
@@ -244,7 +249,7 @@ func waitForStandaloneReloadBlocked(t *testing.T, watcher *StandaloneFileWatcher
 
 func newStandaloneTestStore(t *testing.T, events chan *store.Event) *store.Store {
 	t.Helper()
-	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -266,7 +271,7 @@ func TestStandaloneReloadFailureRetainsPreviousSnapshotForReplay(t *testing.T) {
 
 	events := make(chan *store.Event, 2)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	var attempts []StandaloneReloadResult
 	watcher.SetAcknowledgedReloadCallback(func(result StandaloneReloadResult, err error) error {
 		if err != nil {
@@ -307,7 +312,7 @@ func TestStandaloneRejectsUnknownRootSectionWithoutDeletingLastGood(t *testing.T
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -349,7 +354,7 @@ func TestStandaloneReloadAuthoritativeSnapshotConvergesAfterPublicationFailure(t
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -407,7 +412,7 @@ func TestStandaloneLegacyReloadCallbackCanReenterReload(t *testing.T) {
 
 	events := make(chan *store.Event, 1)
 	newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	done := make(chan error, 1)
 	watcher.SetReloadCallback(func(StandaloneReloadResult, error) {
 		_, err := watcher.ReloadSnapshot()
@@ -481,7 +486,7 @@ upstreams:
 
 			events := make(chan *store.Event, 8)
 			storage := newStandaloneTestStore(t, events)
-			watcher := NewStandaloneFileWatcher(path, tt.provider, events)
+			watcher := NewStandaloneFileWatcher(path, tt.provider, events, data_encryption.NewService(false, nil))
 			if err := watcher.Reload(); err != nil {
 				t.Fatalf("Reload() error = %v", err)
 			}
@@ -510,7 +515,12 @@ func TestStandaloneYAMLRequiresEndMarker(t *testing.T) {
 		t.Fatalf("write standalone config: %v", err)
 	}
 
-	watcher := NewStandaloneFileWatcher(path, "yaml", make(chan *store.Event, 1))
+	watcher := NewStandaloneFileWatcher(
+		path,
+		"yaml",
+		make(chan *store.Event, 1),
+		data_encryption.NewService(false, nil),
+	)
 	if err := watcher.Reload(); err == nil {
 		t.Fatal("Reload() error = nil, want missing #END error")
 	}
@@ -531,7 +541,8 @@ func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
 
 	events := make(chan *store.Event, 2)
 	storage := newStandaloneTestStore(t, events)
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	if err := watcher.Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
 	if err := storage.Sync(); err != nil {
@@ -544,8 +555,7 @@ func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
 
 func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t *testing.T) {
 	const key = "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	encryption := data_encryption.NewService(true, []string{key})
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	content := `routes:
   - id: route-1
@@ -565,8 +575,13 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	}
 
 	events := make(chan *store.Event, 2)
-	storage := newStandaloneTestStore(t, events)
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+	storage, err := store.Open(filepath.Join(t.TempDir(), "store.db"), events, encryption)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	storage.Start()
+	t.Cleanup(func() { _ = storage.Stop() })
+	if err := NewStandaloneFileWatcher(path, "yaml", events, encryption).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
 	if err := storage.Sync(); err != nil {
@@ -611,13 +626,101 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	}
 }
 
+func TestStandaloneFileWatchersKeepDataEncryptionServicesIsolated(t *testing.T) {
+	firstService := data_encryption.NewService(true, []string{"qeddd145sfvddff3"})
+	secondService := data_encryption.NewService(true, []string{"1234567890abcdef"})
+	firstPath := writeStandaloneTestConfig(t, `routes:
+  - id: first
+    uri: /first
+    plugins:
+      key-auth:
+        key: first-secret
+#END
+`)
+	secondPath := filepath.Join(t.TempDir(), "second.yaml")
+	if err := os.WriteFile(secondPath, []byte(`routes:
+  - id: second
+    uri: /second
+    plugins:
+      key-auth:
+        key: second-secret
+#END
+`), 0o600); err != nil {
+		t.Fatalf("write second standalone config: %v", err)
+	}
+
+	firstEvents := make(chan *store.Event, 2)
+	firstStore, err := store.Open(filepath.Join(t.TempDir(), "first.db"), firstEvents, firstService)
+	if err != nil {
+		t.Fatalf("open first Store: %v", err)
+	}
+	firstStore.Start()
+	t.Cleanup(func() { _ = firstStore.Stop() })
+	if err := NewStandaloneFileWatcher(firstPath, "yaml", firstEvents, firstService).Reload(); err != nil {
+		t.Fatalf("reload first watcher: %v", err)
+	}
+	if err := firstStore.Sync(); err != nil {
+		t.Fatalf("sync first Store: %v", err)
+	}
+	firstRaw, err := firstStore.GetFromBucket("routes", []byte("first"))
+	if err != nil {
+		t.Fatalf("read first route: %v", err)
+	}
+
+	secondEvents := make(chan *store.Event, 2)
+	secondStore, err := store.Open(filepath.Join(t.TempDir(), "second.db"), secondEvents, secondService)
+	if err != nil {
+		t.Fatalf("open second Store: %v", err)
+	}
+	secondStore.Start()
+	t.Cleanup(func() { _ = secondStore.Stop() })
+	if err := NewStandaloneFileWatcher(secondPath, "yaml", secondEvents, secondService).Reload(); err != nil {
+		t.Fatalf("reload second watcher: %v", err)
+	}
+	if err := secondStore.Sync(); err != nil {
+		t.Fatalf("sync second Store: %v", err)
+	}
+	secondRaw, err := secondStore.GetFromBucket("routes", []byte("second"))
+	if err != nil {
+		t.Fatalf("read second route: %v", err)
+	}
+
+	firstRoute, err := firstStore.ParseRoute(firstRaw)
+	if err != nil {
+		t.Fatalf("parse first route: %v", err)
+	}
+	secondRoute, err := secondStore.ParseRoute(secondRaw)
+	if err != nil {
+		t.Fatalf("parse second route: %v", err)
+	}
+	if got := firstRoute.Plugins["key-auth"].(map[string]any)["key"]; got != "first-secret" {
+		t.Fatalf("first watcher key = %v, want first-secret", got)
+	}
+	if got := secondRoute.Plugins["key-auth"].(map[string]any)["key"]; got != "second-secret" {
+		t.Fatalf("second watcher key = %v, want second-secret", got)
+	}
+	cross, err := firstStore.ParseRoute(secondRaw)
+	if err != nil {
+		t.Fatalf("cross parse second route: %v", err)
+	}
+	if got := cross.Plugins["key-auth"].(map[string]any)["key"]; got == "second-secret" {
+		t.Fatal("first Store decrypted the second watcher's ciphertext")
+	}
+	firstRawAfter, err := firstStore.GetFromBucket("routes", []byte("first"))
+	if err != nil {
+		t.Fatalf("re-read first route: %v", err)
+	}
+	if !reflect.DeepEqual(firstRawAfter, firstRaw) {
+		t.Fatal("second watcher changed the first Store snapshot")
+	}
+}
+
 func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *testing.T) {
 	const (
 		key                       = "edd1c9f0985e76a2"
 		ciphertextShapedPlaintext = "OqkDYcQx4FvgBsxFCybRzg=="
 	)
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	encryption := data_encryption.NewService(true, []string{key})
 
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	content := `plugin_metadata:
@@ -631,13 +734,13 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	}
 
 	events := make(chan *store.Event, 4)
-	storage, err := store.GetStore(filepath.Join(t.TempDir(), "store.db"), events)
+	storage, err := store.GetStore(filepath.Join(t.TempDir(), "store.db"), events, encryption)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	storage.Start()
 	t.Cleanup(func() { _ = storage.Stop() })
-	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+	if err := NewStandaloneFileWatcher(path, "yaml", events, encryption).Reload(); err != nil {
 		t.Fatalf("Reload() error = %v", err)
 	}
 	if err := storage.Sync(); err != nil {
@@ -697,7 +800,7 @@ upstreams:
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -756,7 +859,7 @@ plugin_metadata:
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
@@ -815,7 +918,7 @@ func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testi
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if _, err := watcher.ReloadSnapshot(); err != nil {
 		t.Fatalf("initial ReloadSnapshot() error = %v", err)
 	}
@@ -868,7 +971,8 @@ func TestStandaloneReloadSnapshotReportsStreamRoutesWithoutHTTPRoutes(t *testing
 
 	events := make(chan *store.Event, 2)
 	newStandaloneTestStore(t, events)
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
 	}
@@ -896,7 +1000,8 @@ plugin_configs:
 
 	events := make(chan *store.Event, 4)
 	newStandaloneTestStore(t, events)
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
 	}
@@ -922,7 +1027,8 @@ func TestStandaloneReloadSnapshotQuarantinesMalformedResourceAndAppliesValidSibl
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
 
-	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
+	result, err := watcher.ReloadSnapshot()
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v, want malformed sibling quarantined", err)
 	}
@@ -948,7 +1054,7 @@ routes:
 `)
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if _, err := watcher.ReloadSnapshot(); err != nil {
 		t.Fatalf("initial ReloadSnapshot() error = %v", err)
 	}
@@ -1027,7 +1133,7 @@ func TestStandaloneStartAndReconcileClosesRegistrationGap(t *testing.T) {
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	t.Cleanup(func() { _ = watcher.Stop() })
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
@@ -1089,7 +1195,7 @@ func TestStandaloneStartAndReconcileKeepsLastGoodOnReadFailure(t *testing.T) {
 
 	events := make(chan *store.Event, 4)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -1143,7 +1249,7 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 
 	events := make(chan *store.Event, 8)
 	storage := newStandaloneTestStore(t, events)
-	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events, data_encryption.NewService(false, nil))
 	t.Cleanup(func() { _ = watcher.Stop() })
 	type reloadAttempt struct {
 		result StandaloneReloadResult
@@ -1298,14 +1404,18 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
 				t.Fatalf("write standalone fixture: %v", err)
 			}
-			_, _, err := readStandaloneSnapshot(path, test.provider)
+			_, _, err := readStandaloneSnapshot(path, test.provider, data_encryption.NewService(false, nil))
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("readStandaloneSnapshot() error = %v, want containing %q", err, test.wantError)
 			}
 		})
 	}
 
-	_, _, err := readStandaloneSnapshot(filepath.Join(t.TempDir(), "missing.json"), standaloneProviderJSON)
+	_, _, err := readStandaloneSnapshot(
+		filepath.Join(t.TempDir(), "missing.json"),
+		standaloneProviderJSON,
+		data_encryption.NewService(false, nil),
+	)
 	if err == nil || !strings.Contains(err.Error(), "read standalone config") {
 		t.Fatalf("readStandaloneSnapshot(missing) error = %v", err)
 	}
@@ -1323,7 +1433,11 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
 				t.Fatalf("write empty standalone fixture: %v", err)
 			}
-			snapshot, quarantined, err := readStandaloneSnapshot(path, test.provider)
+			snapshot, quarantined, err := readStandaloneSnapshot(
+				path,
+				test.provider,
+				data_encryption.NewService(false, nil),
+			)
 			if err != nil {
 				t.Fatalf("readStandaloneSnapshot() error = %v, want valid empty snapshot", err)
 			}
@@ -1354,14 +1468,22 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := normalizeStandaloneResource(test.bucket, json.RawMessage(test.raw))
+			_, _, err := normalizeStandaloneResource(
+				test.bucket,
+				json.RawMessage(test.raw),
+				data_encryption.NewService(false, nil),
+			)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("normalizeStandaloneResource() error = %v, want containing %q", err, test.wantError)
 			}
 		})
 	}
 
-	id, encoded, err := normalizeStandaloneResource("routes", json.RawMessage(`{"id":42,"uri":"/number"}`))
+	id, encoded, err := normalizeStandaloneResource(
+		"routes",
+		json.RawMessage(`{"id":42,"uri":"/number"}`),
+		data_encryption.NewService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("normalizeStandaloneResource(number ID) error = %v", err)
 	}
@@ -1369,7 +1491,11 @@ func TestNormalizeStandaloneResourceValidatesIDsAndPlugins(t *testing.T) {
 		t.Fatalf("normalized number ID = %q, %s", id, encoded)
 	}
 
-	id, encoded, err = normalizeStandaloneResource("consumers", json.RawMessage(`{"username":"alice","id":"ignored"}`))
+	id, encoded, err = normalizeStandaloneResource(
+		"consumers",
+		json.RawMessage(`{"username":"alice","id":"ignored"}`),
+		data_encryption.NewService(false, nil),
+	)
 	if err != nil {
 		t.Fatalf("normalizeStandaloneResource(consumer) error = %v", err)
 	}

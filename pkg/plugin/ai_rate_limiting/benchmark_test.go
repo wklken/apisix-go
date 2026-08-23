@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 // BenchmarkAIRateLimit measures the per-request Redis decision path: quota
@@ -29,6 +32,7 @@ func BenchmarkAIRateLimit(b *testing.B) {
 		RedisPort:     fixture.port(),
 		LimitStrategy: "total_tokens",
 	}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}

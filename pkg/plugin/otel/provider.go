@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -56,12 +55,10 @@ func buildRootSampler(conf RootSamplerConfig) sdktrace.Sampler {
 	}
 }
 
-func loadMetadata() (metadata Metadata, configured bool) {
-	if config.GlobalConfig != nil {
-		if attr := config.GlobalConfig.PluginAttr[name]; attr != nil {
-			if err := util.Parse(attr, &metadata); err == nil {
-				configured = true
-			}
+func loadMetadata(attr map[string]any) (metadata Metadata, configured bool) {
+	if attr != nil {
+		if err := util.Parse(attr, &metadata); err == nil {
+			configured = true
 		}
 	}
 

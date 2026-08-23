@@ -20,7 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/version"
 )
@@ -125,8 +124,8 @@ type PublicEndpointConfig struct {
 // ConfiguredPublicEndpoint validates and returns the configured public-api
 // endpoint. The plugin boundary uses this accessor so endpoint routing is
 // derived from the same strict configuration contract as the exporter.
-func ConfiguredPublicEndpoint() (PublicEndpointConfig, error) {
-	cfg, err := ConfiguredExportServer()
+func ConfiguredPublicEndpoint(attr map[string]any) (PublicEndpointConfig, error) {
+	cfg, err := ConfiguredExportServer(attr)
 	if err != nil {
 		return PublicEndpointConfig{}, err
 	}
@@ -148,8 +147,8 @@ type ExportServerConfig struct {
 
 // ConfiguredExportServer validates the process-level exporter configuration
 // and returns the complete owned-server contract for the server lifecycle.
-func ConfiguredExportServer() (ExportServerConfig, error) {
-	cfg, err := configuredPrometheusEndpoint(prometheusPluginAttributes())
+func ConfiguredExportServer(attr map[string]any) (ExportServerConfig, error) {
+	cfg, err := configuredPrometheusEndpoint(attr)
 	if err != nil {
 		return ExportServerConfig{}, err
 	}
@@ -188,13 +187,6 @@ func StartExportServer(cfg ExportServerConfig) (*http.Server, net.Addr, error) {
 		}
 	}()
 	return exportServer, listener.Addr(), nil
-}
-
-func prometheusPluginAttributes() map[string]any {
-	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
-		return nil
-	}
-	return config.GlobalConfig.PluginAttr["prometheus"]
 }
 
 func configuredPrometheusEndpoint(attr map[string]any) (prometheusEndpointConfig, error) {
@@ -340,9 +332,9 @@ type HTTPRequestMetricContext struct {
 	ResponseSource apisixctx.ResponseSource
 }
 
-func Init() error {
+func Init(attr map[string]any) error {
 	initOnce.Do(func() {
-		initErr = initMetrics()
+		initErr = initMetrics(attr)
 	})
 	return initErr
 }
@@ -354,11 +346,7 @@ func StartExpiration(ctx context.Context) (func(context.Context) error, error) {
 	return metricExpiration.Start(ctx)
 }
 
-func initMetrics() error {
-	var attr map[string]any
-	if config.GlobalConfig != nil {
-		attr = config.GlobalConfig.PluginAttr["prometheus"]
-	}
+func initMetrics(attr map[string]any) error {
 	metricConfig, err := newPrometheusMetricConfig(attr)
 	if err != nil {
 		return err

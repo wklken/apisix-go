@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/server"
 
@@ -22,22 +26,11 @@ import (
 
 var cfgFile string
 
-var globalConfig *config.Config
-
 var errSIGHUPReloadUnsupported = errors.New("SIGHUP reload is unsupported")
 
 type serverLifecycle interface {
 	Start(context.Context) error
 	Shutdown(context.Context) error
-}
-
-func initConfig() error {
-	var err error
-	globalConfig, err = config.Load(cfgFile)
-	if err != nil {
-		return fmt.Errorf("load configurations from file: %w", err)
-	}
-	return nil
 }
 
 func configureLogger(cfg *config.Config) error {
@@ -49,7 +42,6 @@ func configureLogger(cfg *config.Config) error {
 
 func init() {
 	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
-	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
 }
 
 var rootCmd = &cobra.Command{
@@ -69,21 +61,65 @@ func Execute() {
 }
 
 func Start() error {
-	if err := initConfig(); err != nil {
-		return err
+	manifest, err := capability.Load()
+	if err != nil {
+		return fmt.Errorf("load capability manifest: %w", err)
 	}
-	if err := configureLogger(globalConfig); err != nil {
+	runtimePaths, err := config.DefaultRuntimePaths()
+	if err != nil {
+		return fmt.Errorf("resolve default runtime paths: %w", err)
+	}
+	defaultPath, err := filepath.Abs(config.DefaultConfigFile)
+	if err != nil {
+		return fmt.Errorf("resolve default config path: %w", err)
+	}
+	selectedPath, err := filepath.Abs(cfgFile)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	overridePath := selectedPath
+	if filepath.Clean(selectedPath) == filepath.Clean(defaultPath) {
+		overridePath = ""
+	}
+	effective, err := config.LoadEffective(config.LoadRequest{
+		DefaultPath:  defaultPath,
+		OverridePath: overridePath,
+		DefaultPaths: runtimePaths,
+		Environment:  environmentSnapshot(os.Environ()),
+		CLIOverrides: nil,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		return fmt.Errorf("load effective config: %w", err)
+	}
+	encryption := data_encryption.NewService(
+		effective.Config.Apisix.DataEncryption.EnableEncryptFields,
+		effective.Config.Apisix.DataEncryption.Keyring,
+	)
+	if err := configureLogger(&effective.Config); err != nil {
 		return fmt.Errorf("configure logger: %s", err)
 	}
 
-	logger.Infof("startup config summary: %v", config.CapabilitySummary(globalConfig))
+	logger.Infof("startup config summary: %v", config.CapabilitySummary(&effective.Config))
 
 	logger.Info("Starting server")
-	srv, err := server.NewServer()
+	srv, err := server.NewServer(effective, encryption)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
 	return runServer(srv)
+}
+
+func environmentSnapshot(entries []string) map[string]string {
+	environment := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		environment[name] = value
+	}
+	return environment
 }
 
 // runServer owns the process shutdown path: a signal triggers a graceful

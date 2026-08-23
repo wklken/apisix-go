@@ -39,7 +39,7 @@ func TestWorkflowRouteChainAllowsNonMatchingRequest(t *testing.T) {
 }
 
 func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *testing.T) {
-	if err := metrics.Init(); err != nil {
+	if err := metrics.Init(nil); err != nil {
 		t.Fatalf("metrics.Init() error = %v", err)
 	}
 	ensureRouteStore(t)
@@ -91,7 +91,7 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID:  "consumer-plugin-route",
@@ -801,7 +801,7 @@ func TestGRPCTranscodeRouteChainTranscodesUnaryRequest(t *testing.T) {
 }
 
 func TestGRPCTranscodeRouteChainRejectsMissingProto(t *testing.T) {
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	_, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
@@ -842,7 +842,7 @@ message StreamReply { string value = 1; }`
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	_, err = builder.initPluginsStrict(
 		map[string]resource.PluginConfig{"grpc-transcode": map[string]any{
@@ -1094,7 +1094,7 @@ func ensureRouteStore(t *testing.T) {
 	routeStoreOnce.Do(func() {
 		routeStoreEvents = make(chan *store.Event, 16)
 		var err error
-		routeStore, err = store.GetStore(t.TempDir()+"/route-test.db", routeStoreEvents)
+		routeStore, err = store.GetStore(t.TempDir()+"/route-test.db", routeStoreEvents, testDataEncryptionService())
 		if err != nil {
 			t.Fatalf("open route store: %v", err)
 		}
@@ -1144,7 +1144,7 @@ func buildRoutePluginChainWithFallback(
 ) http.Handler {
 	t.Helper()
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 
 	plugins, err := builder.initPluginsStrict(

@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/store"
 	bolt "go.etcd.io/bbolt"
@@ -341,9 +342,10 @@ func TestReloadPublishesValidGenerationForLegacyMalformedRowsAndKeepsReadinessBl
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	server := &Server{
-		addr:    "127.0.0.1:9080",
-		storage: storage,
-		routes:  newRouteHandler(oldHandler, nil),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		storage:      storage,
+		routes:       newRouteHandler(oldHandler, nil),
 	}
 
 	if err := server.reload(context.Background()); err != nil {
@@ -405,9 +407,10 @@ func TestReloadFailsClosedWhenGlobalRuleHasNoLastGood(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	server := &Server{
-		addr:    "127.0.0.1:9080",
-		storage: storage,
-		routes:  newRouteHandler(oldHandler, nil),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		storage:      storage,
+		routes:       newRouteHandler(oldHandler, nil),
 	}
 	if err := server.reload(context.Background()); err == nil {
 		t.Fatal("reload() error = nil, want fail-closed global-rule generation")
@@ -422,7 +425,7 @@ func TestReloadFailsClosedWhenGlobalRuleHasNoLastGood(t *testing.T) {
 func openLegacyReloadStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy-reload.db")
-	initial, err := store.Open(path, make(chan *store.Event, 1))
+	initial, err := store.Open(path, make(chan *store.Event, 1), data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open initial legacy store: %v", err)
 	}
@@ -451,7 +454,7 @@ func openLegacyReloadStore(t *testing.T, seed map[string]map[string][]byte) (*st
 		t.Fatalf("close legacy database: %v", err)
 	}
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(path, events)
+	storage, err := store.Open(path, events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("reopen legacy store: %v", err)
 	}
@@ -467,12 +470,8 @@ func openLegacyReloadStore(t *testing.T, seed map[string]map[string][]byte) (*st
 }
 
 func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{}
-
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/reload-disabled-plugin.db", events)
+	storage, err := store.Open(t.TempDir()+"/reload-disabled-plugin.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -497,9 +496,10 @@ func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
 	})
 	var oldStops atomic.Int32
 	server := &Server{
-		addr:    "127.0.0.1:9080",
-		storage: storage,
-		routes:  newRouteHandler(oldHandler, func() { oldStops.Add(1) }),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		storage:      storage,
+		routes:       newRouteHandler(oldHandler, func() { oldStops.Add(1) }),
 	}
 	t.Cleanup(server.routes.Close)
 
@@ -525,12 +525,8 @@ func TestReloadQuarantinesInvalidRouteAndPublishesGeneration(t *testing.T) {
 }
 
 func TestAcknowledgedHTTPRouteWaitsForSuccessfulPublication(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{}
-
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/acknowledged-http.db", events)
+	storage, err := store.Open(t.TempDir()+"/acknowledged-http.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -540,6 +536,7 @@ func TestAcknowledgedHTTPRouteWaitsForSuccessfulPublication(t *testing.T) {
 	t.Cleanup(func() { _ = storage.Stop() })
 
 	server := &Server{
+		staticConfig:    &config.EffectiveConfig{},
 		addr:            "127.0.0.1:9080",
 		storage:         storage,
 		routes:          newRouteHandler(http.NotFoundHandler(), nil),
@@ -600,12 +597,8 @@ func TestAcknowledgedHTTPPublicationRunsOncePerStoreGeneration(t *testing.T) {
 }
 
 func TestAcknowledgedHTTPRouteRejectsCanceledPublicationContext(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{}
-
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/acknowledged-http-canceled.db", events)
+	storage, err := store.Open(t.TempDir()+"/acknowledged-http-canceled.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -651,10 +644,6 @@ func TestAcknowledgedHTTPPublicationRejectsContextCanceledWhileWaitingForReload(
 }
 
 func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{}
-
 	oldFailures, oldReady := metrics.ConfigApplyFailures, metrics.ConfigApplyReady
 	metrics.ConfigApplyFailures = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "test_reload_config_apply_failures_total",
@@ -665,7 +654,7 @@ func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
 	t.Cleanup(func() { metrics.ConfigApplyFailures, metrics.ConfigApplyReady = oldFailures, oldReady })
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/reload-scheduler.db", events)
+	storage, err := store.Open(t.TempDir()+"/reload-scheduler.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -696,6 +685,7 @@ func TestReloadSchedulerRecordsConfigApplyReadiness(t *testing.T) {
 	putGlobalRule([]byte(`{"id":"reload-global","plugins":{"disabled-test-plugin":{}}}`))
 
 	server := &Server{
+		staticConfig:    &config.EffectiveConfig{},
 		addr:            "127.0.0.1:9080",
 		storage:         storage,
 		routes:          newRouteHandler(http.NotFoundHandler(), nil),
@@ -764,9 +754,10 @@ func TestReloadSkipsWhenContextCancelled(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	server := &Server{
-		addr:    "127.0.0.1:9080",
-		routes:  newRouteHandler(oldHandler, nil),
-		storage: &store.Store{},
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		routes:       newRouteHandler(oldHandler, nil),
+		storage:      &store.Store{},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -785,7 +776,7 @@ func TestReloadSkipsWhenContextCancelled(t *testing.T) {
 
 func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/concurrent-reload.db", events)
+	storage, err := store.Open(t.TempDir()+"/concurrent-reload.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -793,9 +784,10 @@ func TestReloadConcurrentRebuildsKeepServingTraffic(t *testing.T) {
 	t.Cleanup(func() { _ = storage.Stop() })
 
 	server := &Server{
-		addr:    "127.0.0.1:9080",
-		storage: storage,
-		routes:  newRouteHandler(nil, nil),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		storage:      storage,
+		routes:       newRouteHandler(nil, nil),
 	}
 
 	var wg sync.WaitGroup

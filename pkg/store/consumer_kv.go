@@ -138,7 +138,7 @@ type consumerSnapshot struct {
 }
 
 func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapshot, error) {
-	consumer, err := ParseConsumer(value)
+	consumer, err := s.ParseConsumer(value)
 	if err != nil {
 		return consumerSnapshot{}, err
 	}

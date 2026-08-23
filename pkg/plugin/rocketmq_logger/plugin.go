@@ -2,6 +2,7 @@ package rocketmq_logger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -213,6 +213,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if p.config.UseTLS {
 		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
 	}
@@ -228,8 +231,7 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+	resolved, err := p.DataEncryption().ResolveForContext(
 		p.config.SecretKey,
 		"rocketmq-logger.secret_key",
 	)

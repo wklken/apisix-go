@@ -35,7 +35,7 @@ func TestGetSSLReturnsNotFoundForMissingResource(t *testing.T) {
 func sslIndexTestStore(t *testing.T) (*Store, chan *Event) {
 	t.Helper()
 	events := make(chan *Event)
-	storage, err := Open(t.TempDir()+"/ssl-index.db", events)
+	storage, err := Open(t.TempDir()+"/ssl-index.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestSSLCertificateIndexRejectsInvalidCertificate(t *testing.T) {
 
 func TestSSLCertificateIndexRebuildSkipsCorruptPersistedRow(t *testing.T) {
 	path := t.TempDir() + "/ssl-corrupt-rebuild.db"
-	first, err := Open(path, make(chan *Event))
+	first, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
 	}
@@ -242,7 +242,7 @@ func TestSSLCertificateIndexRebuildSkipsCorruptPersistedRow(t *testing.T) {
 		t.Fatalf("first Store.Stop() error = %v", err)
 	}
 
-	second, err := Open(path, make(chan *Event))
+	second, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)
 	}

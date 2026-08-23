@@ -3,6 +3,7 @@ package http_logger
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -219,6 +219,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
 	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
 	if err := base.PrepareExprRegexps(
@@ -233,8 +236,7 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	if p.config.AuthHeader != nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		resolved, err := p.DataEncryption().ResolveForContext(
 			*p.config.AuthHeader,
 			"http-logger.auth_header",
 		)

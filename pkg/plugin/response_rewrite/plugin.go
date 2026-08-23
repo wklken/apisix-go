@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 
 	brotlidec "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -253,6 +253,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if p.config.BodyBase64 == nil {
 		b := false
 		p.config.BodyBase64 = &b
@@ -270,8 +273,7 @@ func (p *Plugin) PostInit() error {
 		if *p.config.BodySecret == "" {
 			return fmt.Errorf("response-rewrite body_secret must not be empty")
 		}
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		resolved, err := p.DataEncryption().ResolveForContext(
 			*p.config.BodySecret,
 			"response-rewrite.body_secret",
 		)

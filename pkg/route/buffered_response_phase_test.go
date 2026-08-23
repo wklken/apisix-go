@@ -267,7 +267,7 @@ func TestMetadataResponseFilterPriorityAndErrorResponseRemainExact(t *testing.T)
 }
 
 func TestStrictRouteMaterializationUsesBindPluginCheckedForStaticAndConsumer(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	routeContext := builder.pluginRouteContext(resource.Route{ID: "strict-binding-route"})
 	source := materializedPluginSource{
 		name:       "body-transformer",

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/wklken/apisix-go/pkg/config"
 )
 
 func TestPrometheusMetricConfigHTTPSeriesLimit(t *testing.T) {
@@ -121,11 +120,9 @@ func TestRecordHTTPRequestNormalizesStatusExtraLabels(t *testing.T) {
 func TestInitRetainsInvalidSeriesLimitErrorWithoutPublishingMetrics(t *testing.T) {
 	const childEnv = "APISIX_GO_INVALID_PROMETHEUS_INIT_CHILD"
 	if os.Getenv(childEnv) == "1" {
-		config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{
-			"prometheus": {"max_http_series": "not-an-integer"},
-		}}
-		firstErr := Init()
-		secondErr := Init()
+		attr := map[string]any{"max_http_series": "not-an-integer"}
+		firstErr := Init(attr)
+		secondErr := Init(attr)
 		if firstErr == nil || secondErr == nil || firstErr.Error() != secondErr.Error() {
 			t.Fatalf("Init() errors = %v and %v, want retained identical errors", firstErr, secondErr)
 		}

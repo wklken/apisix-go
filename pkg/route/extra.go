@@ -25,45 +25,51 @@ func registerPurgeMethod() {
 	})
 }
 
-func registerExtraRoutes(mux *chi.Mux, registries ...*public_api.Registry) {
-	_ = registerExtraRoutesStrict(mux, registries...)
+func registerExtraRoutes(mux *chi.Mux, staticConfig *config.Config, registries ...*public_api.Registry) {
+	_ = registerExtraRoutesStrict(mux, staticConfig, registries...)
 }
 
-func registerExtraRoutesStrict(mux *chi.Mux, registries ...*public_api.Registry) error {
+func registerExtraRoutesStrict(
+	mux *chi.Mux,
+	staticConfig *config.Config,
+	registries ...*public_api.Registry,
+) error {
 	registry := public_api.NewRegistry()
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]
 	}
-	if pluginEnabled("node-status") {
+	if pluginEnabled(staticConfig, "node-status") {
 		mux.Handle("/apisix/status", http.NotFoundHandler())
-		mux.Get("/apisix/status", node_status.StatusHandler)
-		registry.Register("GET", "/apisix/status", http.HandlerFunc(node_status.StatusHandler))
+		handler := node_status.StatusHandler(staticConfig.Apisix.ID)
+		mux.Get("/apisix/status", handler)
+		registry.Register("GET", "/apisix/status", handler)
 	}
-	if pluginEnabled("server-info") {
-		mux.Get("/v1/server_info", server_info.InfoHandler)
-		registry.Register("GET", "/v1/server_info", http.HandlerFunc(server_info.InfoHandler))
+	if pluginEnabled(staticConfig, "server-info") {
+		handler := server_info.InfoHandler(staticConfig.Apisix.ID)
+		mux.Get("/v1/server_info", handler)
+		registry.Register("GET", "/v1/server_info", handler)
 	}
-	if pluginEnabled("batch-requests") {
+	if pluginEnabled(staticConfig, "batch-requests") {
 		handler := batch_requests.NewHandler(mux)
-		uri := batchRequestsURI()
+		uri := batchRequestsURI(staticConfig)
 		mux.Method("POST", uri, handler)
 		registry.Register("POST", batch_requests.DefaultURI, handler)
 		if uri != batch_requests.DefaultURI {
 			registry.Register("POST", uri, handler)
 		}
 	}
-	if pluginEnabled("graphql-proxy-cache") {
+	if pluginEnabled(staticConfig, "graphql-proxy-cache") {
 		registerPurgeMethod()
 		mux.Method("PURGE", graphql_proxy_cache.PurgeURI, http.HandlerFunc(graphql_proxy_cache.PurgeHandler))
 	}
 	return nil
 }
 
-func registerPrometheusPublicEndpoint(registry *public_api.Registry) error {
-	if !pluginEnabled("prometheus") {
+func registerPrometheusPublicEndpoint(registry *public_api.Registry, staticConfig *config.Config) error {
+	if !pluginEnabled(staticConfig, "prometheus") {
 		return nil
 	}
-	endpoint, err := metrics.ConfiguredPublicEndpoint()
+	endpoint, err := metrics.ConfiguredPublicEndpoint(staticConfig.PluginAttr["prometheus"])
 	if err != nil {
 		return fmt.Errorf("configure prometheus public endpoint: %w", err)
 	}
@@ -73,18 +79,18 @@ func registerPrometheusPublicEndpoint(registry *public_api.Registry) error {
 	return nil
 }
 
-func pluginEnabled(name string) bool {
-	if config.GlobalConfig == nil {
+func pluginEnabled(staticConfig *config.Config, name string) bool {
+	if staticConfig == nil {
 		return false
 	}
-	return slices.Contains(config.GlobalConfig.Plugins, name)
+	return slices.Contains(staticConfig.Plugins, name)
 }
 
-func batchRequestsURI() string {
-	if config.GlobalConfig == nil {
+func batchRequestsURI(staticConfig *config.Config) string {
+	if staticConfig == nil {
 		return batch_requests.DefaultURI
 	}
-	attr := config.GlobalConfig.PluginAttr["batch-requests"]
+	attr := staticConfig.PluginAttr["batch-requests"]
 	if attr == nil {
 		return batch_requests.DefaultURI
 	}

@@ -56,7 +56,7 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{
@@ -102,7 +102,7 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{
@@ -137,7 +137,7 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 }
 
 func TestNewBuilderWithServerAddrNormalizesPortOnlyAddr(t *testing.T) {
-	builder := NewBuilderWithServerAddr(nil, ":8080")
+	builder := NewBuilderWithServerAddr(nil, ":8080", testEffectiveConfig(), testDataEncryptionResolver())
 
 	ctx := builder.pluginRouteContext(resource.Route{ID: "route-a"})
 	if ctx.serverAddr != "0.0.0.0:8080" {
@@ -157,7 +157,7 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initGlobalPluginsStrict(
 		[]resource.GlobalRule{
 			{

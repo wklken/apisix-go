@@ -53,6 +53,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -61,6 +62,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestResponseRewriteDescribesAndRunsPureHeaderStreamingConfig(t *testing.T) {
@@ -149,6 +157,7 @@ func TestResponseRewriteExclusionsRemainBuffered(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			plugin := &Plugin{config: test.cfg}
+			plugin.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 			if err := plugin.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -233,10 +242,14 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 
 func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
-	p := newTestPlugin(t, Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))})
+	p := &Plugin{config: Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -248,10 +261,10 @@ func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{BodySecret: new("not-a-ciphertext")}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -265,7 +278,6 @@ func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
 }
 
 func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
-	data_encryption.Configure(false, nil)
 	tests := []struct {
 		name string
 		cfg  Config
@@ -288,6 +300,7 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			p := &Plugin{config: test.cfg}
+			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -299,10 +312,16 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 }
 
 func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
-	p := newTestPlugin(t, Config{Body: new("plain-body")})
+	p := &Plugin{config: Config{Body: new("plain-body")}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -688,6 +707,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &Plugin{config: Config{Vars: tt.vars}}
+			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -700,6 +720,7 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 
 func TestConfigAcceptsNumericHeaderValues(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -754,6 +775,7 @@ func TestSchemaValidatesOfficialHeaderForms(t *testing.T) {
 
 func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
 	p := &Plugin{config: Config{Body: new("not-base64"), BodyBase64: new(true)}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -769,6 +791,7 @@ func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 			Filters: []Filter{{Regex: "old", Replace: "new"}},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -855,6 +878,7 @@ func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
 			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -877,6 +901,7 @@ func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
 			},
 		},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

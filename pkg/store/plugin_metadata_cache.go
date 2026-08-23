@@ -102,7 +102,7 @@ func (s *Store) getValidatedPluginMetadata(
 	}
 
 	var metadata map[string]any
-	desiredErr := decodePluginMetadata(raw, id, &metadata)
+	desiredErr := s.decodePluginMetadata(raw, id, &metadata)
 	if desiredErr == nil {
 		desiredErr = validate(metadata)
 	}

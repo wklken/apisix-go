@@ -12,7 +12,7 @@ import (
 )
 
 func TestStandaloneBaselineSnapshotPreservesConsumerAndNestedSecretIDs(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "standalone-baseline.db"), make(chan *Event))
+	storage, err := Open(filepath.Join(t.TempDir(), "standalone-baseline.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestStandaloneBaselineSnapshotPreservesConsumerAndNestedSecretIDs(t *testin
 }
 
 func TestSnapshotBucketsMissingBucketReturnsError(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "missing-bucket.db"), make(chan *Event))
+	storage, err := Open(filepath.Join(t.TempDir(), "missing-bucket.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestConsumerRestartRebuildsPersistedPluginLookup(t *testing.T) {
 	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
 
 	path := filepath.Join(t.TempDir(), "consumer-restart.db")
-	first, err := GetStore(path, make(chan *Event))
+	first, err := GetStore(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first GetStore() error = %v", err)
 	}
@@ -87,7 +87,7 @@ func TestConsumerRestartRebuildsPersistedPluginLookup(t *testing.T) {
 		t.Fatalf("first Store.Stop() error = %v", err)
 	}
 
-	second, err := GetStore(path, make(chan *Event))
+	second, err := GetStore(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("second GetStore() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestConsumerRestartRebuildsPersistedPluginLookup(t *testing.T) {
 
 func TestConsumerRestartPreservesIDAndPluginLookupNamespaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "consumer-namespace-restart.db")
-	first, err := Open(path, make(chan *Event))
+	first, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
 	}
@@ -123,7 +123,7 @@ func TestConsumerRestartPreservesIDAndPluginLookupNamespaces(t *testing.T) {
 		t.Fatalf("first Store.Stop() error = %v", err)
 	}
 
-	second, err := Open(path, make(chan *Event))
+	second, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)
 	}
@@ -143,7 +143,7 @@ func TestConsumerRestartPreservesIDAndPluginLookupNamespaces(t *testing.T) {
 
 func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid-consumer.db")
-	first, err := Open(path, make(chan *Event))
+	first, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 		t.Fatalf("first Store.Stop() error = %v", err)
 	}
 
-	storage, err := Open(path, make(chan *Event))
+	storage, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v, want invalid persisted consumer to be skipped", err)
 	}
@@ -169,7 +169,7 @@ func TestOpenSkipsInvalidPersistedConsumerWithContext(t *testing.T) {
 
 func TestOpenRejectsDuplicatePersistedConsumerLookupKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "duplicate-consumers.db")
-	first, err := Open(path, make(chan *Event))
+	first, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
 	}
@@ -192,7 +192,7 @@ func TestOpenRejectsDuplicatePersistedConsumerLookupKeys(t *testing.T) {
 		t.Fatalf("first Store.Stop() error = %v", err)
 	}
 
-	storage, err := Open(path, make(chan *Event))
+	storage, err := Open(path, make(chan *Event), testDataEncryption())
 	if err == nil || !strings.Contains(err.Error(), "key-auth:shared-key") ||
 		!strings.Contains(err.Error(), "alice") {
 		if storage != nil {
@@ -211,7 +211,7 @@ func TestOpenUsesFiniteDatabaseLockTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	started := time.Now()
-	storage, err := Open(path, make(chan *Event))
+	storage, err := Open(path, make(chan *Event), testDataEncryption())
 	if storage != nil {
 		_ = storage.Stop()
 		t.Fatal("Open() returned a Store while database lock was held")

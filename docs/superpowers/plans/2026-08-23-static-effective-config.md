@@ -116,8 +116,7 @@ func TestValidateQualificationPluginsReportsStableSetDifference(t *testing.T) {
 	enabled := append([]string(nil), profile.RequiredPlugins[1:]...)
 	enabled = append(enabled, "zz-extra")
 	err := ValidateQualificationPlugins(enabled, selection, manifest)
-	want := fmt.Sprintf("qualification_profile http-data-plane-v1: missing plugins [%s]; unexpected plugins [zz-extra]",
-		profile.RequiredPlugins[0])
+	want := "qualification_profile http-data-plane-v1: plugins missing count 1; unexpected count 1"
 	if err == nil || err.Error() != want {
 		t.Fatalf("ValidateQualificationPlugins() error = %v", err)
 	}
@@ -251,14 +250,14 @@ func ValidateQualificationPlugins(enabled []string, selection ProfileSelection, 
 		if !slices.Contains(want, name) { unexpected = append(unexpected, name) }
 	}
 	if len(missing) != 0 || len(unexpected) != 0 {
-		return fmt.Errorf("qualification_profile %s: missing plugins %v; unexpected plugins %v",
-			selection.Qualification, missing, unexpected)
+		return fmt.Errorf("qualification_profile %s: plugins missing count %d; unexpected count %d",
+			selection.Qualification, len(missing), len(unexpected))
 	}
 	return nil
 }
 ```
 
-Tests reuse the existing `qualifiedProfileTestManifest(t)` helper, which loads an independent embedded manifest and removes only the test copy's evidence requirements so set-difference behavior is reachable. Also assert that reordered complete input passes, missing/unexpected output is stable, and neither the enabled input nor the manifest required slice is mutated. Do not construct a second manifest representation in `pkg/config`. The new helper intentionally compares plugin membership independent of order; the existing runtime remains order-sensitive until Task 4 atomically switches consumers and updates its old order-rejection test.
+Tests reuse the existing `qualifiedProfileTestManifest(t)` helper, which loads an independent embedded manifest and removes only the test copy's evidence requirements so set-difference behavior is reachable. Also assert that reordered complete input passes, missing/unexpected counts are stable, and neither the enabled input nor the manifest required slice is mutated. Errors report counts rather than rejected plugin names because enabled names may originate in an environment or CLI overlay and are untrusted configuration values. Do not construct a second manifest representation in `pkg/config`. The new helper intentionally compares plugin membership independent of order; the existing runtime remains order-sensitive until Task 4 atomically switches consumers and updates its old order-rejection test.
 
 - [ ] **Step 4: Re-run the existing dependency-thinning contract**
 
@@ -888,9 +887,15 @@ func TestLoadEffectiveUnknownFieldsFollowSecurityProfile(t *testing.T) {
 	effective, err := LoadEffective(compat)
 	if err != nil { t.Fatal(err) }
 	if _, ok := effective.Provenance["unknown_section.token"]; !ok { t.Fatal("ignored field missing provenance") }
-	strict := loadRequestFixture(t, SecurityStrict, "unknown_section: {token: must-not-appear}\n")
-	if _, err := LoadEffective(strict); err == nil || !strings.Contains(err.Error(), "unknown_section.token") {
-		t.Fatalf("strict LoadEffective() error = %v", err)
+	const secretKey = "must-not-appear-secret-key"
+	const secretValue = "must-not-appear-secret-value"
+	strict := loadRequestFixture(t, SecurityStrict, "${{UNKNOWN_KEY}}: {token: "+secretValue+"}\n")
+	strict.Environment["UNKNOWN_KEY"] = secretKey
+	_, err = LoadEffective(strict)
+	want := "security_profile strict: unknown static configuration field"
+	if err == nil || err.Error() != want || strings.Contains(err.Error(), secretKey) ||
+		strings.Contains(err.Error(), secretValue) {
+		t.Fatalf("strict LoadEffective() error = %v, want value-free %q", err, want)
 	}
 }
 
@@ -978,7 +983,12 @@ paths. `sameConfigPath` compares already absolute, cleaned paths without cwd
 access. Empty/comment-only files are empty mapping layers; explicit YAML null
 remains an explicit replacing value.
 
-Obtain `ProfileSelection` through `cfg.Profiles()`, call `selection.Validate(req.Manifest)`, then run existing general validations. Reuse plan 01's `validateSecurityProfile`; call `ValidateQualificationPlugins` plus HTTP-scope checks from `validateQualificationProfile`. Compatibility mode returns sorted unused paths; strict mode returns a redacted error naming the first sorted unknown path. Check `deployment.profile` in the merged tree before decode so it cannot be silently ignored.
+Obtain `ProfileSelection` through `cfg.Profiles()`, call `selection.Validate(req.Manifest)`, then run existing general validations. Reuse plan 01's `validateSecurityProfile`; call `ValidateQualificationPlugins` plus HTTP-scope checks from `validateQualificationProfile`. Compatibility mode retains sorted unused paths for Task 5's opaque renderer; strict mode returns the stable value-free error `security_profile strict: unknown static configuration field`. It must not output an unknown path because that path may contain an APISIX-expanded secret key and Task 4 does not yet own Task 5's opaque correlation handles. Check `deployment.profile` in the merged tree before decode so it cannot be silently ignored.
+
+Every loader/runtime-validation error names only a canonical schema field or
+index and the violated rule. It must not interpolate the rejected value from a
+file, APISIX template, `APISIXGO_*`, or CLI overlay; profile, listener, proxy,
+timeout, provider, and plugin-list validation all follow this value-free rule.
 
 - [ ] **Step 6: Implement the complete `LoadEffective` pipeline**
 

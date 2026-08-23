@@ -9,12 +9,14 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -23,6 +25,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestHandlerStoresSASLConfigForKafkaUpstream(t *testing.T) {
@@ -79,10 +88,10 @@ func TestHandlerDoesNotSetSASLContextWhenDisabled(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: "plain"}}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -93,13 +102,11 @@ func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
 
 func TestPostInitResolvesEncryptedSASLPassword(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{SASL: &SASL{
 		Username: "user",
 		Password: encryptKafkaProxyTestValue(t, key, "secret"),
 	}}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -117,10 +124,8 @@ func TestPostInitResolvesContextualV2SASLPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncryptForContext() error = %v", err)
 	}
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{SASL: &SASL{Username: "user", Password: ciphertext}}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(true, []string{key}).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

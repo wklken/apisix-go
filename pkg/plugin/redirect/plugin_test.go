@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -15,6 +16,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -23,6 +25,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRequiresEffectiveConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
 }
 
 func TestHandlerRedirectsWithRegexURI(t *testing.T) {
@@ -251,18 +263,23 @@ func TestPostInitRejectsIncompatibleRedirectOptions(t *testing.T) {
 }
 
 func TestPostInitUsesConfiguredSSLListenPort(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		Apisix: config.Apisix{
 			Ssl: config.Ssl{
 				Enable: true,
 				Listen: []config.Listen{{Port: 9443}},
 			},
 		},
-	}
+	}}
 	httpToHTTPS := true
-	p := newTestPlugin(t, Config{HttpToHttps: &httpToHTTPS})
+	p := &Plugin{config: Config{HttpToHttps: &httpToHTTPS}}
+	p.SetDependencies(base.Dependencies{Config: effective})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	if p.config.httpsPort == nil || *p.config.httpsPort != 9443 {
 		t.Fatalf("https port = %v, want 9443 from apisix.ssl.listen", p.config.httpsPort)
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -272,9 +273,6 @@ func TestStreamProxyModeEnabledWithoutConfig(t *testing.T) {
 }
 
 func TestStartStreamProxyRejectsUnsupportedStreamConfiguration(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
 	tests := []struct {
 		name string
 		cfg  config.Config
@@ -318,8 +316,8 @@ func TestStartStreamProxyRejectsUnsupportedStreamConfiguration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = &test.cfg
-			if err := (&Server{}).startStreamProxy(context.Background()); err == nil {
+			effective := &config.EffectiveConfig{Config: test.cfg}
+			if err := (&Server{staticConfig: effective}).startStreamProxy(context.Background()); err == nil {
 				t.Fatalf("startStreamProxy() accepted %s", test.name)
 			}
 		})
@@ -327,17 +325,15 @@ func TestStartStreamProxyRejectsUnsupportedStreamConfiguration(t *testing.T) {
 }
 
 func TestStartStreamProxyIgnoresStreamConfigurationInHTTPOnlyMode(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
 		ProxyMode:     "http",
 		ProxyProtocol: config.ProxyProtocol{EnableTCPPP: true, EnableTCPPPToUpstream: true},
 		StreamProxy: config.StreamProxy{
 			Udp: []string{"127.0.0.1:0"},
 		},
-	}}
+	}}}
 
-	server := &Server{}
+	server := &Server{staticConfig: effective}
 	if err := server.startStreamProxy(context.Background()); err != nil {
 		t.Fatalf("startStreamProxy() error = %v, want HTTP-only mode to ignore stream settings", err)
 	}
@@ -347,35 +343,31 @@ func TestStartStreamProxyIgnoresStreamConfigurationInHTTPOnlyMode(t *testing.T) 
 }
 
 func TestStartStreamProxyPropagatesRouteLoadError(t *testing.T) {
-	previousConfig := config.GlobalConfig
 	previousStore := store.ReplaceGlobalStoreForTest(nil)
 	t.Cleanup(func() {
-		config.GlobalConfig = previousConfig
 		store.ReplaceGlobalStoreForTest(previousStore)
 	})
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
 		ProxyMode: "stream",
 		StreamProxy: config.StreamProxy{
 			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
 		},
-	}}
+	}}}
 
-	if err := (&Server{}).startStreamProxy(context.Background()); err == nil {
+	if err := (&Server{staticConfig: effective}).startStreamProxy(context.Background()); err == nil {
 		t.Fatal("startStreamProxy() returned nil for an unavailable route store")
 	}
 }
 
 func TestStartStreamProxyPublishesOnlyAfterCompleteRuntimeSuccess(t *testing.T) {
-	previousConfig := config.GlobalConfig
 	previousStore := store.ReplaceGlobalStoreForTest(nil)
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/stream-startup.db", events)
+	storage, err := store.GetStore(t.TempDir()+"/stream-startup.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}
 	storage.Start()
 	t.Cleanup(func() {
-		config.GlobalConfig = previousConfig
 		store.ReplaceGlobalStoreForTest(previousStore)
 		_ = storage.Stop()
 	})
@@ -387,14 +379,14 @@ func TestStartStreamProxyPublishesOnlyAfterCompleteRuntimeSuccess(t *testing.T) 
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
 		ProxyMode: "stream",
 		StreamProxy: config.StreamProxy{
 			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
 		},
-	}}
+	}}}
 
-	server := &Server{}
+	server := &Server{staticConfig: effective}
 	if err := server.startStreamProxy(context.Background()); err != nil {
 		t.Fatalf("startStreamProxy() error = %v", err)
 	}
@@ -515,7 +507,7 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 	})
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-ack.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-ack.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -562,7 +554,7 @@ func TestAcknowledgedStoreEventPropagatesStreamFailureAndRecovery(t *testing.T) 
 
 func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-batch.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-batch.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -574,6 +566,7 @@ func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T)
 	})
 	runtime := &fakeStreamRuntime{}
 	server := &Server{
+		staticConfig:  &config.EffectiveConfig{},
 		addr:          "127.0.0.1:9080",
 		storage:       storage,
 		routes:        newRouteHandler(http.NotFoundHandler(), nil),
@@ -603,7 +596,7 @@ func TestAcknowledgedStoreEventReloadsStreamOncePerBatchGeneration(t *testing.T)
 
 func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-startup-race.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-startup-race.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -650,7 +643,7 @@ func TestAcknowledgedStoreEventWaitsForInitialStreamPublication(t *testing.T) {
 
 func TestStreamReloadFailureDoesNotCommitUnpublishedLastGood(t *testing.T) {
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(t.TempDir()+"/stream-unpublished-last-good.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-unpublished-last-good.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -695,7 +688,7 @@ func TestStreamReloadFailureDoesNotCommitUnpublishedLastGood(t *testing.T) {
 
 func TestStreamReloadListenConflictDoesNotReplaceLastGood(t *testing.T) {
 	events := make(chan *store.Event, 4)
-	storage, err := store.Open(t.TempDir()+"/stream-conflict-last-good.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-conflict-last-good.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -778,7 +771,7 @@ func applyAcknowledgedStreamRoute(
 
 func TestShutdownDoesNotCloseStreamRuntimeDuringAcknowledgedReload(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/stream-shutdown-race.db", events)
+	storage, err := store.Open(t.TempDir()+"/stream-shutdown-race.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -851,20 +844,18 @@ func TestStartStreamProxyRecordsInitialConfigApplyStage(t *testing.T) {
 		metrics.ConfigApplyReady = oldReady
 		metrics.SetConfigApplyStreamRequired(false)
 	})
-	previousConfig := config.GlobalConfig
 	previousStore := store.ReplaceGlobalStoreForTest(nil)
 	t.Cleanup(func() {
-		config.GlobalConfig = previousConfig
 		store.ReplaceGlobalStoreForTest(previousStore)
 	})
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
 		ProxyMode: "stream",
 		StreamProxy: config.StreamProxy{
 			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
 		},
-	}}
+	}}}
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/stream-initial-stage.db", events)
+	storage, err := store.GetStore(t.TempDir()+"/stream-initial-stage.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}
@@ -878,7 +869,7 @@ func TestStartStreamProxyRecordsInitialConfigApplyStage(t *testing.T) {
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("seed stream route: %v", err)
 	}
-	server := &Server{}
+	server := &Server{staticConfig: effective}
 	if err := server.startStreamProxy(context.Background()); err != nil {
 		t.Fatalf("startStreamProxy() error = %v", err)
 	}
@@ -904,19 +895,17 @@ func TestStartStreamProxyRecordsInitialConfigApplyFailure(t *testing.T) {
 		metrics.ConfigApplyReady = oldReady
 		metrics.SetConfigApplyStreamRequired(false)
 	})
-	previousConfig := config.GlobalConfig
 	previousStore := store.ReplaceGlobalStoreForTest(nil)
 	t.Cleanup(func() {
-		config.GlobalConfig = previousConfig
 		store.ReplaceGlobalStoreForTest(previousStore)
 	})
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
 		ProxyMode: "stream",
 		StreamProxy: config.StreamProxy{
 			Tcp: []config.TcpListen{{Addr: "127.0.0.1:0"}},
 		},
-	}}
-	if err := (&Server{}).startStreamProxy(context.Background()); err == nil {
+	}}}
+	if err := (&Server{staticConfig: effective}).startStreamProxy(context.Background()); err == nil {
 		t.Fatal("startStreamProxy() error = nil, want route-load failure")
 	}
 	if metrics.GetReadiness().ConfigApplyReady {

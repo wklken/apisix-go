@@ -273,7 +273,7 @@ func TestCapabilityPhaseKindBijection(t *testing.T) {
 				(spec.GenerationOwner == GenerationOwnerNone) {
 				t.Fatalf("generation capability/kind disagree: %#v", spec)
 			}
-			instance := New(identity)
+			instance := New(identity, base.Dependencies{})
 			if instance == nil {
 				t.Fatalf("canonical factory %q is not registered", identity)
 			}
@@ -518,7 +518,7 @@ func TestCapabilityLogFactoriesMaterializeExactlyOneBinding(t *testing.T) {
 			continue
 		}
 		t.Run(factory, func(t *testing.T) {
-			instance := New(factory)
+			instance := New(factory, base.Dependencies{})
 			if instance == nil {
 				t.Fatalf("New(%q) returned nil", factory)
 			}

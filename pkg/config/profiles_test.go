@@ -155,9 +155,8 @@ func TestHTTPDataPlaneQualificationUsesManifestPluginContract(t *testing.T) {
 	}
 
 	cfg.Plugins[0], cfg.Plugins[1] = cfg.Plugins[1], cfg.Plugins[0]
-	err := validateRuntimeConfig(cfg, manifest)
-	if err == nil || !strings.Contains(err.Error(), "http-data-plane-v1") || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("validateRuntimeConfig() error = %v, want qualification plugin-order rejection", err)
+	if err := validateRuntimeConfig(cfg, manifest); err != nil {
+		t.Fatalf("validateRuntimeConfig() error = %v, want reordered qualification membership accepted", err)
 	}
 }
 

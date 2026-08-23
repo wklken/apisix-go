@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -43,7 +45,7 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/cluster.db", events)
+	storage, err := store.Open(t.TempDir()+"/cluster.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -76,10 +78,11 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	}
 
 	server := &Server{
-		addr:     "127.0.0.1:9080",
-		storage:  storage,
-		routes:   newRouteHandler(http.NotFoundHandler(), nil),
-		clusters: pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         "127.0.0.1:9080",
+		storage:      storage,
+		routes:       newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:     pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
 	}
 	t.Cleanup(server.clusters.Close)
 	t.Cleanup(func() { server.routes.Close() })
@@ -88,7 +91,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	t.Cleanup(gateway.Close)
 	client := gateway.Client()
 
-	firstBuilder := route.NewBuilderWithClusterRegistry(storage, server.addr, server.clusters)
+	firstBuilder := route.NewBuilderWithClusterRegistry(
+		storage, server.addr, server.clusters, server.staticConfig, server.dataEncryption.Resolver(),
+	)
 	firstHandler, err := firstBuilder.BuildStrict()
 	if err != nil {
 		t.Fatalf("first BuildStrict() error = %v", err)
@@ -104,7 +109,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 	if err := storage.Sync(); err != nil {
 		t.Fatalf("unrelated route storage sync: %v", err)
 	}
-	secondBuilder := route.NewBuilderWithClusterRegistry(storage, server.addr, server.clusters)
+	secondBuilder := route.NewBuilderWithClusterRegistry(
+		storage, server.addr, server.clusters, server.staticConfig, server.dataEncryption.Resolver(),
+	)
 	secondHandler, err := secondBuilder.BuildStrict()
 	if err != nil {
 		t.Fatalf("second BuildStrict() error = %v", err)
@@ -130,7 +137,9 @@ func TestClusterRegistryReusesTransportAcrossUnrelatedReload(t *testing.T) {
 		t.Fatalf("upstream storage sync: %v", err)
 	}
 
-	thirdBuilder := route.NewBuilderWithClusterRegistry(storage, server.addr, server.clusters)
+	thirdBuilder := route.NewBuilderWithClusterRegistry(
+		storage, server.addr, server.clusters, server.staticConfig, server.dataEncryption.Resolver(),
+	)
 	thirdHandler, err := thirdBuilder.BuildStrict()
 	if err != nil {
 		t.Fatalf("third BuildStrict() error = %v", err)

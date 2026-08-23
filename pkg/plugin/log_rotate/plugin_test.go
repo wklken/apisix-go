@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -19,6 +20,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -29,8 +31,19 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestPostInitRequiresEffectiveConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
+}
+
 func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -77,6 +90,7 @@ func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 
 func TestLogRotateUsesInheritedRequestAccess(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -267,6 +281,7 @@ func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
 	}
 
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

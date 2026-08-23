@@ -235,7 +235,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	ensureRouteStore(t)
 
 	t.Run("unsafe service jwt is rejected", func(t *testing.T) {
-		setProductionPolicySelection(t, strictPolicySelection, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-unsafe-service"
 		const routeID = "production-policy-service-route"
 		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
@@ -247,7 +247,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 			routeID, serviceID,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -261,7 +261,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	})
 
 	t.Run("safe route jwt overrides unsafe service jwt", func(t *testing.T) {
-		setProductionPolicySelection(t, strictPolicySelection, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const serviceID = "production-policy-override-service"
 		const routeID = "production-policy-override-route"
 		putHTTPAllowlistResource(t, "services", serviceID, fmt.Appendf(nil,
@@ -275,7 +275,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 			serviceID,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -284,7 +284,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	})
 
 	t.Run("unsafe global rule is rejected", func(t *testing.T) {
-		setProductionPolicySelection(t, strictPolicySelection, "jwt-auth")
+		effective := productionPolicyConfig(strictPolicySelection, "jwt-auth")
 		const ruleID = "production-policy-unsafe-global"
 		const routeID = "production-policy-global-route"
 		putHTTPAllowlistResource(t, "global_rules", ruleID, fmt.Appendf(nil,
@@ -296,7 +296,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 			routeID,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -310,7 +310,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	})
 
 	t.Run("unsafe https upstream is rejected after upstream resolution", func(t *testing.T) {
-		setProductionPolicySelection(t, strictPolicySelection)
+		effective := productionPolicyConfig(strictPolicySelection)
 		const upstreamID = "production-policy-unsafe-upstream"
 		const routeID = "production-policy-upstream-route"
 		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
@@ -321,7 +321,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 			routeID, upstreamID,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -335,7 +335,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	})
 
 	t.Run("compatibility profile retains auth and upstream defaults", func(t *testing.T) {
-		setProductionPolicySelection(t, qualificationPolicySelection, "jwt-auth")
+		effective := productionPolicyConfig(qualificationPolicySelection, "jwt-auth")
 		const upstreamID = "production-policy-compat-upstream"
 		const routeID = "production-policy-compat-route"
 		putHTTPAllowlistResource(t, "upstreams", upstreamID, fmt.Appendf(nil,
@@ -346,7 +346,7 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 			routeID, upstreamID,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -355,18 +355,15 @@ func TestProductionPolicyBuildStrictEnforcesSecurityAxis(t *testing.T) {
 	})
 }
 
-func setProductionPolicySelection(
-	t *testing.T,
+func productionPolicyConfig(
 	selection appconfig.ProfileSelection,
 	plugins ...string,
-) {
-	t.Helper()
-	previous := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{
-		CompatibilityTarget:  selection.Compatibility,
-		SecurityProfile:      selection.Security,
-		QualificationProfile: selection.Qualification,
-		Plugins:              plugins,
-	}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+) *appconfig.EffectiveConfig {
+	effective := testEffectiveConfig()
+	effective.Config.CompatibilityTarget = selection.Compatibility
+	effective.Config.SecurityProfile = selection.Security
+	effective.Config.QualificationProfile = selection.Qualification
+	effective.Config.Plugins = plugins
+	effective.Profiles = selection
+	return effective
 }

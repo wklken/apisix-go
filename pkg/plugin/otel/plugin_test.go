@@ -35,6 +35,16 @@ type otelMinimalWriter struct {
 	status int
 }
 
+func TestPostInitRequiresEffectiveConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
+}
+
 func (w *otelMinimalWriter) Header() http.Header {
 	return w.header
 }
@@ -49,6 +59,7 @@ func (w *otelMinimalWriter) WriteHeader(status int) {
 
 func TestPostInitSetsSamplerDefaults(t *testing.T) {
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -380,24 +391,18 @@ func TestRequestIDGeneratorUsesXRequestIDAsTraceID(t *testing.T) {
 }
 
 func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]any{
-			name: {
-				"trace_id_source": "x-request-id",
-				"resource": map[string]any{
-					"service.name": "gateway",
-				},
-				"collector": map[string]any{
-					"address":         "collector.example.com:4318",
-					"request_timeout": 7,
-				},
-			},
+	attr := map[string]any{
+		"trace_id_source": "x-request-id",
+		"resource": map[string]any{
+			"service.name": "gateway",
+		},
+		"collector": map[string]any{
+			"address":         "collector.example.com:4318",
+			"request_timeout": 7,
 		},
 	}
 
-	metadata, configured := loadMetadata()
+	metadata, configured := loadMetadata(attr)
 	if !configured {
 		t.Fatal("metadata configured = false, want true")
 	}
@@ -538,17 +543,16 @@ func TestSafeGetPluginMetadataReturnsStoreError(t *testing.T) {
 }
 
 func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		PluginAttr: map[string]map[string]any{
 			name: {
 				"collector": map[string]any{"address": "://invalid"},
 			},
 		},
-	}
+	}}
 
 	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: effective})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -562,8 +566,6 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 }
 
 func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
 	for _, tt := range []struct {
 		name     string
 		metadata map[string]any
@@ -587,11 +589,12 @@ func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *t
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{
+			effective := &config.EffectiveConfig{Config: config.Config{
 				PluginAttr: map[string]map[string]any{name: tt.metadata},
-			}
+			}}
 
 			p := &Plugin{}
+			p.SetDependencies(base.Dependencies{Config: effective})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}

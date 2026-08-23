@@ -15,7 +15,6 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -105,7 +104,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	p.loadPluginAttr()
+	if err := p.loadPluginAttr(); err != nil {
+		return err
+	}
 	p.applyDefaults()
 	if p.now == nil {
 		p.now = time.Now
@@ -227,14 +228,12 @@ func (p *Plugin) reopenLogFiles() error {
 	return errors.Join(errs...)
 }
 
-func (p *Plugin) loadPluginAttr() {
-	if config.GlobalConfig == nil || config.GlobalConfig.PluginAttr == nil {
-		return
+func (p *Plugin) loadPluginAttr() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
 	}
-	attr, ok := config.GlobalConfig.PluginAttr[name]
-	if !ok {
-		return
-	}
+	attr := effective.Config.PluginAttr[name]
 	if p.config.Interval == 0 {
 		p.config.Interval = intFromAttr(attr, "interval")
 	}
@@ -251,6 +250,7 @@ func (p *Plugin) loadPluginAttr() {
 	if value, ok := attr["enable_compression"].(bool); ok {
 		p.config.EnableCompression = value
 	}
+	return nil
 }
 
 func (p *Plugin) applyDefaults() {

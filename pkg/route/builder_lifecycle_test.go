@@ -107,7 +107,7 @@ func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T
 }
 
 func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	handler, err := builder.buildGlobalNotFoundHandler([]resource.GlobalRule{{
 		ID: "global-transform",
 		Plugins: map[string]resource.PluginConfig{
@@ -129,12 +129,6 @@ func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
 }
 
 func TestBuildSystemPluginConfigsDoesNotGenerateGlobalClientControl(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
-	appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
-		HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 30},
-	}}
-
 	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{})
 	if _, ok := plugins["client-control"]; ok {
 		t.Fatalf("system client-control = %#v, want server-owned global streaming limit", plugins["client-control"])
@@ -176,7 +170,7 @@ func TestBuildHandlerRejectsDynamicDiscoveryWithStaticNodes(t *testing.T) {
 				Nodes: []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
 			}
 			test.set(&upstream)
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			_, err := builder.buildHandlerStrict(resource.Route{
 				ID:       "dynamic-discovery-route",
@@ -228,7 +222,7 @@ func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	}))
 	t.Cleanup(logServer.Close)
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{
@@ -262,13 +256,15 @@ func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 }
 
 func TestBuilderRefreshKeepsConfiguredProxyCacheZoneAlive(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "route-refresh-memory", MemorySize: "1M"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	zones := []appconfig.Zone{{Name: "route-refresh-memory", MemorySize: "1M"}}
+	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
+		t.Fatalf("RefreshConfiguredZones() error = %v", err)
+	}
+	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
 
-	firstBuilder := NewBuilder(nil)
+	firstConfig := testEffectiveConfig()
+	firstConfig.Config.Apisix.ProxyCache.Zones = zones
+	firstBuilder := NewBuilder(nil, firstConfig, testDataEncryptionResolver())
 	firstPlugins := firstBuilder.initPlugins(
 		map[string]resource.PluginConfig{
 			"proxy-cache": map[string]any{
@@ -287,7 +283,9 @@ func TestBuilderRefreshKeepsConfiguredProxyCacheZoneAlive(t *testing.T) {
 		t.Fatalf("first plugin type = %T, want *proxy_cache.Plugin", firstPlugins[0])
 	}
 
-	secondBuilder := NewBuilder(nil)
+	secondConfig := testEffectiveConfig()
+	secondConfig.Config.Apisix.ProxyCache.Zones = zones
+	secondBuilder := NewBuilder(nil, secondConfig, testDataEncryptionResolver())
 	secondPlugins := secondBuilder.initPlugins(
 		map[string]resource.PluginConfig{
 			"proxy-cache": map[string]any{
@@ -356,7 +354,7 @@ func buildPriorityRouter(t *testing.T, fixtures []priorityRouteFixture) http.Han
 		)
 		putRouteResource(t, fixture.id, []byte(value))
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	return builder.Build()
 }
@@ -471,7 +469,7 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 		t.Fatalf("parse listener port: %v", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"error-log-logger": map[string]any{
@@ -523,7 +521,7 @@ func TestBuilderStartsOneGlobalErrorLogObserverFromMetadata(t *testing.T) {
 		t.Fatalf("parse listener port: %v", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	if err := builder.startGlobalErrorLogObserver(map[string]any{
 		"tcp": map[string]any{
 			"host": host,
@@ -562,7 +560,7 @@ func TestBuilderStartsOneGlobalErrorLogObserverFromMetadata(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"limit-count": map[string]any{
@@ -584,7 +582,7 @@ func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"proxy-buffering": map[string]any{
@@ -602,7 +600,7 @@ func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"proxy-control": map[string]any{
@@ -650,7 +648,7 @@ func TestInitPluginsStrictRejectsInvalidPluginMetadata(t *testing.T) {
 		t.Fatal("timed out waiting for CORS metadata")
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"cors": map[string]any{"allow_origins_by_metadata": []any{"key"}},
@@ -683,7 +681,7 @@ func TestClonePluginConfigsAllocatesForInheritedOnlyRoute(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"request-id": map[string]any{
@@ -701,7 +699,7 @@ func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"request-id": map[string]any{
@@ -722,7 +720,7 @@ func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"request-id": map[string]any{
@@ -761,7 +759,7 @@ func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesNegatedNumericMetaFilterForMissingAge(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"request-id": map[string]any{
@@ -803,7 +801,7 @@ func TestInitPluginsStrictAppliesNegatedNumericMetaFilterForMissingAge(t *testin
 }
 
 func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"request-id": map[string]any{
@@ -821,7 +819,7 @@ func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
 }
 
 func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"jwt-auth": map[string]any{
@@ -856,7 +854,7 @@ func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
 }
 
 func TestServiceKafkaLoggerInstanceIsSharedWhileRouteInstancesRemainIndependent(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	config := map[string]resource.PluginConfig{
 		"kafka-logger": map[string]any{
@@ -946,7 +944,7 @@ func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
 	}))
 	t.Cleanup(opaServer.Close)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	config := map[string]resource.PluginConfig{
 		"opa": map[string]any{
 			"host":       opaServer.URL,
@@ -996,7 +994,7 @@ func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{"not-a-plugin": map[string]any{}},
 		builder.pluginRouteContext(resource.Route{ID: "unknown-plugin"}),
@@ -1010,13 +1008,15 @@ func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
 }
 
 func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "strict-disk-only", DiskPath: t.TempDir()}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
+	zones := []appconfig.Zone{{Name: "strict-disk-only", DiskPath: t.TempDir()}}
+	if err := proxy_cache.RefreshConfiguredZones(zones); err != nil {
+		t.Fatalf("RefreshConfiguredZones() error = %v", err)
+	}
+	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
 
-	builder := NewBuilder(nil)
+	effective := testEffectiveConfig()
+	effective.Config.Apisix.ProxyCache.Zones = zones
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"proxy-cache": map[string]any{
@@ -1047,18 +1047,57 @@ func TestInitPluginsStrictRejectsProxyCacheConfigFailure(t *testing.T) {
 	builder.Stop()
 }
 
-func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{ProxyCache: appconfig.ProxyCache{
-		Zones: []appconfig.Zone{{Name: "unused-invalid-refresh", MemorySize: "zero"}},
-	}}}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
-
-	builder := NewBuilder(nil)
+func TestBuilderRejectsInvalidUnusedProxyCacheZoneDuringRefresh(t *testing.T) {
+	effective := testEffectiveConfig()
+	effective.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "unused-invalid-refresh", MemorySize: "zero"}}
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	if handler := builder.Build(); handler != nil {
 		t.Fatal("Build() returned a handler, want nil for invalid static proxy-cache zone registry")
 	}
 	builder.Stop()
+}
+
+func TestBuildersRepublishTheirOwnStaticProxyCacheZones(t *testing.T) {
+	t.Cleanup(func() { _ = proxy_cache.RefreshConfiguredZones(nil) })
+
+	firstConfig := testEffectiveConfig()
+	firstConfig.Config.Apisix.ID = "first-builder"
+	firstConfig.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "first-builder-zone", MemorySize: "1M"}}
+	first := NewBuilder(nil, firstConfig, testDataEncryptionResolver())
+	t.Cleanup(first.Stop)
+
+	secondConfig := testEffectiveConfig()
+	secondConfig.Config.Apisix.ID = "second-builder"
+	secondConfig.Config.Apisix.ProxyCache.Zones = []appconfig.Zone{{Name: "second-builder-zone", MemorySize: "1M"}}
+	second := NewBuilder(nil, secondConfig, testDataEncryptionResolver())
+	t.Cleanup(second.Stop)
+
+	if first.staticConfig.Config.Apisix.ID != "first-builder" ||
+		second.staticConfig.Config.Apisix.ID != "second-builder" {
+		t.Fatalf(
+			"builder IDs = (%q, %q), want isolated static configs",
+			first.staticConfig.Config.Apisix.ID,
+			second.staticConfig.Config.Apisix.ID,
+		)
+	}
+	if first.pluginDependencies.Config != firstConfig || second.pluginDependencies.Config != secondConfig {
+		t.Fatal("plugin dependencies do not retain their owning builder static config")
+	}
+
+	_, _ = first.BuildStrict()
+	if !proxy_cache.CacheZoneDeclared("first-builder-zone") || proxy_cache.CacheZoneDeclared("second-builder-zone") {
+		t.Fatal("first candidate build did not publish only its configured zone")
+	}
+
+	_, _ = second.BuildStrict()
+	if proxy_cache.CacheZoneDeclared("first-builder-zone") || !proxy_cache.CacheZoneDeclared("second-builder-zone") {
+		t.Fatal("second candidate build did not replace the registry with its configured zone")
+	}
+
+	_, _ = first.BuildStrict()
+	if !proxy_cache.CacheZoneDeclared("first-builder-zone") || proxy_cache.CacheZoneDeclared("second-builder-zone") {
+		t.Fatal("first builder did not retain and republish its own configured zone")
+	}
 }
 
 func TestBuilderPublishesValidRouteWhenLegacySnapshotRowIsUndecodable(t *testing.T) {
@@ -1068,7 +1107,7 @@ func TestBuilderPublishesValidRouteWhenLegacySnapshotRowIsUndecodable(t *testing
 			"strict-invalid": []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`),
 		},
 	})
-	builder := NewBuilder(storage)
+	builder := NewBuilder(storage, testEffectiveConfig(), testDataEncryptionResolver())
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -1081,7 +1120,7 @@ func TestBuildStrictReturnsRouteContext(t *testing.T) {
 	putRouteResource(t, "strict-invalid", []byte(
 		`{"id":"strict-invalid","uri":"/strict-invalid","plugins":{"not-a-plugin":{}}}`,
 	))
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
 	if err == nil || !strings.Contains(err.Error(), "strict-invalid") {
@@ -1094,7 +1133,7 @@ func TestBuildStrictReturnsRouteContext(t *testing.T) {
 
 func TestBuildWithRouteQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "quarantine-valid", []byte(
 		`{"id":"quarantine-valid","uri":"/quarantine-valid"}`,
 	))
@@ -1102,7 +1141,7 @@ func TestBuildWithRouteQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *te
 		`{"id":"quarantine-invalid","uri":"/quarantine-invalid","plugins":{"not-a-plugin":{}}}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {
@@ -1127,12 +1166,12 @@ func TestBuildWithRouteQuarantinePublishesValidRoutesAndOmitsInvalidRoutes(t *te
 
 func TestBuildWithRouteQuarantineDoesNotPartiallyPublishMultiURIRoute(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "quarantine-multi-uri", []byte(
 		`{"id":"quarantine-multi-uri","uris":["/quarantine-first","/quarantine/:id/:id"]}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {
@@ -1153,7 +1192,7 @@ func TestBuildWithRouteQuarantineDoesNotPartiallyPublishMultiURIRoute(t *testing
 
 func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "quarantine-method-invalid", []byte(
 		`{"id":"quarantine-method-invalid","uri":"/quarantine-method/:id","methods":["BOGUS"]}`,
 	))
@@ -1161,7 +1200,7 @@ func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *tes
 		`{"id":"quarantine-method-valid","uri":"/quarantine-method-valid","methods":["GET"]}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {
@@ -1180,7 +1219,7 @@ func TestBuildWithRouteQuarantineRejectsUnsupportedMethodWithoutPanicking(t *tes
 
 func TestBuildWithRouteQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	putRouteResource(t, "quarantine-method-lowercase", []byte(
 		`{"id":"quarantine-method-lowercase","uri":"/quarantine-method-lowercase","methods":["get"]}`,
 	))
@@ -1197,7 +1236,7 @@ func TestBuildWithRouteQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t 
 		`{"id":"quarantine-method-sibling","uri":"/quarantine-method-sibling","methods":["GET"]}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {
@@ -1216,7 +1255,7 @@ func TestBuildWithRouteQuarantineRejectsAPISIXInvalidMethodFormsAndDuplicates(t 
 
 func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "kafka-logger")
+	effective := httpPluginAllowlist("kafka-logger")
 	putHTTPAllowlistResource(t, "services", "quarantine-lifecycle-service", []byte(
 		`{"id":"quarantine-lifecycle-service","plugins":{"kafka-logger":{"broker_list":{"127.0.0.1":9092},"kafka_topic":"quarantine","producer_type":"sync"}}}`,
 	))
@@ -1224,7 +1263,7 @@ func TestBuildWithRouteQuarantineRollsBackRouteLifecycleResources(t *testing.T) 
 		`{"id":"quarantine-lifecycle","uri":"/quarantine-lifecycle","service_id":"quarantine-lifecycle-service","upstream":{"nodes":{"127.0.0.1:1":0}}}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {
@@ -1263,7 +1302,7 @@ func TestBuilderFailsClosedWhenLegacyGlobalRuleRowIsUndecodable(t *testing.T) {
 		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
 	}
 
-	builder := NewBuilder(storage)
+	builder := NewBuilder(storage, testEffectiveConfig(), testDataEncryptionResolver())
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {
@@ -1299,7 +1338,7 @@ func TestBuilderBuildStrictUsesPassedStoreSnapshot(t *testing.T) {
 	previous := store.ReplaceGlobalStoreForTest(globalStore)
 	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previous) })
 
-	builder := NewBuilder(passedStore)
+	builder := NewBuilder(passedStore, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -1308,9 +1347,8 @@ func TestBuilderBuildStrictUsesPassedStoreSnapshot(t *testing.T) {
 }
 
 func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
-	previousConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Plugins: []string{"traffic-split"}}
-	t.Cleanup(func() { appconfig.GlobalConfig = previousConfig })
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = []string{"traffic-split"}
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1348,7 +1386,7 @@ func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
 		t.Fatalf("global Store split upstream error = %v, want ErrNotFound", err)
 	}
 
-	builder := NewBuilder(passedStore)
+	builder := NewBuilder(passedStore, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -1369,7 +1407,7 @@ func TestBuilderTrafficSplitUsesPassedStoreSnapshot(t *testing.T) {
 func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	initial, err := store.Open(path, make(chan *store.Event, 1))
+	initial, err := store.Open(path, make(chan *store.Event, 1), testDataEncryptionService())
 	if err != nil {
 		t.Fatalf("open initial legacy store: %v", err)
 	}
@@ -1398,7 +1436,7 @@ func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *stor
 		t.Fatalf("close legacy database: %v", err)
 	}
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(path, events)
+	storage, err := store.Open(path, events, testDataEncryptionService())
 	if err != nil {
 		t.Fatalf("reopen legacy store: %v", err)
 	}
@@ -1416,7 +1454,7 @@ func openLegacyRouteStore(t *testing.T, seed map[string]map[string][]byte) *stor
 func openBuildSnapshotStore(t *testing.T, seed map[string]map[string][]byte) (*store.Store, chan *store.Event) {
 	t.Helper()
 	events := make(chan *store.Event, 16)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "builder-snapshot.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "builder-snapshot.db"), events, testDataEncryptionService())
 	if err != nil {
 		t.Fatalf("open builder snapshot store: %v", err)
 	}
@@ -1442,7 +1480,10 @@ func openBuildSnapshotStore(t *testing.T, seed map[string]map[string][]byte) (*s
 }
 
 func TestBuildReverseHandlerAllowsPluginOnlyRouteWithoutUpstreamNodes(t *testing.T) {
-	_, err := (&Builder{}).buildReverseHandler(resource.Route{}, resource.Service{})
+	_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{},
+		resource.Service{},
+	)
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v, want plugin-only route support", err)
 	}
@@ -1461,7 +1502,13 @@ func TestBuilderClusterRegistrySharesIdenticalUpstreamUntilFinalStop(t *testing.
 	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 	t.Cleanup(registry.Close)
 
-	firstBuilder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	firstBuilder := NewBuilderWithClusterRegistry(
+		routeStore,
+		"127.0.0.1:9080",
+		registry,
+		testEffectiveConfig(),
+		testDataEncryptionResolver(),
+	)
 	defer firstBuilder.Stop()
 	firstHandler, err := firstBuilder.BuildStrict()
 	if err != nil {
@@ -1474,7 +1521,13 @@ func TestBuilderClusterRegistrySharesIdenticalUpstreamUntilFinalStop(t *testing.
 		t.Fatalf("registry.Len() after first build = %d, want 1", got)
 	}
 
-	secondBuilder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	secondBuilder := NewBuilderWithClusterRegistry(
+		routeStore,
+		"127.0.0.1:9080",
+		registry,
+		testEffectiveConfig(),
+		testDataEncryptionResolver(),
+	)
 	defer secondBuilder.Stop()
 	secondHandler, err := secondBuilder.BuildStrict()
 	if err != nil {
@@ -1518,7 +1571,13 @@ func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
 	registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 	t.Cleanup(registry.Close)
 
-	builder := NewBuilderWithClusterRegistry(routeStore, "127.0.0.1:9080", registry)
+	builder := NewBuilderWithClusterRegistry(
+		routeStore,
+		"127.0.0.1:9080",
+		registry,
+		testEffectiveConfig(),
+		testDataEncryptionResolver(),
+	)
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
 	if err != nil {
@@ -1533,7 +1592,7 @@ func TestBuilderClusterRegistrySeparatesChangedUpstreamTimeout(t *testing.T) {
 }
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"basic-auth": map[string]any{"realm": "$ENV://ROUTE_REALM"},
@@ -1552,7 +1611,7 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInit(t *testing.T) {
 }
 
 func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironmentPrefix(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"basic-auth": map[string]any{"realm": "$env://ROUTE_REALM"},
@@ -1573,7 +1632,7 @@ func TestUnownedSecretReferenceRejectsRoutePluginBeforePostInitLowercaseEnvironm
 func TestClickHouseLoggerEnvironmentUserPublishesAfterSecretOwnership(t *testing.T) {
 	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"clickhouse-logger": map[string]any{
@@ -1602,7 +1661,7 @@ func TestClickHouseLoggerEnvironmentUserPublishesAfterSecretOwnership(t *testing
 
 func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "workflow")
+	effective := httpPluginAllowlist("workflow")
 	t.Setenv("ROUTE_DISABLED_WORKFLOW_SECRET", "")
 	putRouteResource(
 		t,
@@ -1612,7 +1671,7 @@ func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testi
 		),
 	)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {
@@ -1632,7 +1691,7 @@ func TestBuilderRejectsDisabledWorkflowChildBeforeSecretMaterialization(t *testi
 
 func TestBuilderRejectsInvalidWorkflowChildBeforeSecretMaterialization(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "workflow", "limit-count")
+	effective := httpPluginAllowlist("workflow", "limit-count")
 	t.Setenv("ROUTE_INVALID_WORKFLOW_SECRET", "")
 	putRouteResource(
 		t,
@@ -1642,7 +1701,7 @@ func TestBuilderRejectsInvalidWorkflowChildBeforeSecretMaterialization(t *testin
 		),
 	)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {

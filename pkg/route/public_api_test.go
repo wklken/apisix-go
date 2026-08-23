@@ -17,18 +17,13 @@ import (
 )
 
 func TestPublicAPIExposesBatchRequestsAtCustomRoute(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"batch-requests"}}
 	registry := public_api.NewRegistry()
 
 	mux := chi.NewRouter()
 	mux.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("hello " + r.URL.Query().Get("name")))
 	})
-	registerExtraRoutes(mux, registry)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}}, registry)
 
 	p := newPublicAPITestPlugin(t, map[string]any{"uri": "/apisix/batch-requests"}, registry)
 	mux.Method(http.MethodPost, "/batch", p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,15 +59,10 @@ func TestPublicAPIExposesBatchRequestsAtCustomRoute(t *testing.T) {
 }
 
 func TestPublicAPIUsesRouteURIWhenConfigURIEmpty(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() {
-		config.GlobalConfig = oldConfig
-	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
 	registry := public_api.NewRegistry()
 
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux, registry)
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"node-status"}}, registry)
 	p := newPublicAPITestPlugin(t, map[string]any{}, registry)
 	mux.Method(
 		http.MethodGet,
@@ -99,8 +89,6 @@ func TestPublicAPIUsesRouteURIWhenConfigURIEmpty(t *testing.T) {
 }
 
 func TestPublicAPIExposesConfiguredPrometheusEndpointPerGeneration(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
 	ensureRouteStore(t)
 	putRouteResource(t, "public-api-prometheus-route", []byte(
 		`{"id":"public-api-prometheus-route","uri":"/metrics","methods":["GET"],"plugins":{"public-api":{"uri":"/internal/metrics"}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
@@ -115,16 +103,15 @@ func TestPublicAPIExposesConfiguredPrometheusEndpointPerGeneration(t *testing.T)
 		{name: "dedicated exporter enabled", enableExporter: true, wantStatus: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{
-				Plugins: []string{"prometheus", "public-api"},
-				PluginAttr: map[string]map[string]any{
-					"prometheus": {
-						"enable_export_server": test.enableExporter,
-						"export_uri":           "/internal/metrics",
-					},
+			effective := testEffectiveConfig()
+			effective.Config.Plugins = []string{"prometheus", "public-api"}
+			effective.Config.PluginAttr = map[string]map[string]any{
+				"prometheus": {
+					"enable_export_server": test.enableExporter,
+					"export_uri":           "/internal/metrics",
 				},
 			}
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			mux, err := builder.BuildStrict()
 			if err != nil {
@@ -145,15 +132,12 @@ func TestPublicAPIExposesConfiguredPrometheusEndpointPerGeneration(t *testing.T)
 }
 
 func TestRoutePluginPublicAPIKeepsPrecedenceOverPrometheusURI(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{
-		Plugins: []string{"example-plugin", "prometheus", "public-api"},
-		PluginAttr: map[string]map[string]any{
-			"prometheus": {
-				"enable_export_server": false,
-				"export_uri":           "/v1/plugin/example-plugin/hello",
-			},
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = []string{"example-plugin", "prometheus", "public-api"}
+	effective.Config.PluginAttr = map[string]map[string]any{
+		"prometheus": {
+			"enable_export_server": false,
+			"export_uri":           "/v1/plugin/example-plugin/hello",
 		},
 	}
 	ensureRouteStore(t)
@@ -164,7 +148,7 @@ func TestRoutePluginPublicAPIKeepsPrecedenceOverPrometheusURI(t *testing.T) {
 		`{"id":"public-api-prometheus-collision-exposure","uri":"/example-control","methods":["GET"],"plugins":{"public-api":{"uri":"/v1/plugin/example-plugin/hello"}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	mux, err := builder.BuildStrict()
 	if err != nil {
@@ -198,9 +182,8 @@ func TestPublicAPIReturnsNotFoundForUnknownInternalURI(t *testing.T) {
 }
 
 func TestFailedBuildDoesNotPolluteEarlierPublicAPIRegistry(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{Plugins: []string{"public-api", "wolf-rbac"}}
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = []string{"public-api", "wolf-rbac"}
 	firstWolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(
 			[]byte(`{"ok":true,"data":{"token":"public-api-registry-token","userInfo":{"username":"alice"}}}`),
@@ -222,7 +205,7 @@ func TestFailedBuildDoesNotPolluteEarlierPublicAPIRegistry(t *testing.T) {
 	))
 	putRouteConsumerForPublicAPI(t)
 
-	firstBuilder := NewBuilder(nil)
+	firstBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	firstMux, err := firstBuilder.BuildStrict()
 	if err != nil {
 		t.Fatalf("first BuildStrict() error = %v", err)
@@ -237,7 +220,7 @@ func TestFailedBuildDoesNotPolluteEarlierPublicAPIRegistry(t *testing.T) {
 	putRouteResource(t, "public-api-registry-failing-route", []byte(
 		`{"id":"public-api-registry-failing-route","uri":"/bad{uri}","methods":["GET"],"priority":10,"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
 	))
-	secondBuilder := NewBuilder(nil)
+	secondBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(secondBuilder.Stop)
 	if secondMux, buildErr := secondBuilder.BuildStrict(); buildErr == nil || secondMux != nil {
 		t.Fatalf("second BuildStrict() = (%T, %v), want failed build", secondMux, buildErr)
@@ -264,9 +247,8 @@ func TestFailedBuildDoesNotPolluteEarlierPublicAPIRegistry(t *testing.T) {
 }
 
 func TestQuarantinedRouteRollsBackPublicAPIRegistryMutations(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{Plugins: []string{"example-plugin", "public-api", "wolf-rbac", "workflow"}}
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = []string{"example-plugin", "public-api", "wolf-rbac", "workflow"}
 	ensureRouteStore(t)
 	putRouteResource(t, "public-api-quarantine-invalid", []byte(
 		`{"id":"public-api-quarantine-invalid","uri":"/quarantine-invalid-public-api","methods":["GET"],"priority":1,"plugins":{"example-plugin":{"i":1},"wolf-rbac":{"server":"http://127.0.0.1:19101"},"workflow":{"rules":[{"case":[["uri","bogus","/bad"]],"actions":[["return",{"code":200}]]}]}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
@@ -278,7 +260,7 @@ func TestQuarantinedRouteRollsBackPublicAPIRegistryMutations(t *testing.T) {
 		`{"id":"public-api-quarantine-exposure","uri":"/quarantine-example-exposure","methods":["GET"],"priority":3,"plugins":{"public-api":{"uri":"/v1/plugin/example-plugin/hello"}},"upstream":{"nodes":{"127.0.0.1:1":1}}}`,
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildWithRouteQuarantine()
 	if err != nil || handler == nil {

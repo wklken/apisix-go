@@ -9,7 +9,7 @@ import (
 
 func TestUARestrictionRejectsInvalidRegexAndKeepsLastGoodHandler(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "ua-restriction")
+	effective := httpPluginAllowlist("ua-restriction")
 	const routeID = "ua-restriction-regex"
 	putRouteResource(t, routeID, []byte(`{
 		"id":"ua-restriction-regex",
@@ -17,7 +17,7 @@ func TestUARestrictionRejectsInvalidRegexAndKeepsLastGoodHandler(t *testing.T) {
 		"plugins":{"ua-restriction":{"denylist":["blocked"]}}
 	}`))
 
-	validBuilder := NewBuilder(nil)
+	validBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(validBuilder.Stop)
 	lastGood, err := validBuilder.BuildStrict()
 	if err != nil {
@@ -29,7 +29,7 @@ func TestUARestrictionRejectsInvalidRegexAndKeepsLastGoodHandler(t *testing.T) {
 		"uri":"/ua-regex",
 		"plugins":{"ua-restriction":{"denylist":["[invalid"]}}
 	}`))
-	invalidBuilder := NewBuilder(nil)
+	invalidBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(invalidBuilder.Stop)
 	handler, err := invalidBuilder.BuildStrict()
 	if err == nil || handler != nil {

@@ -156,6 +156,7 @@ func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg, sender: sender}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -165,6 +166,13 @@ func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
@@ -246,6 +254,7 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -260,9 +269,6 @@ func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{
 		config: Config{
 			NameServerList: []string{"127.0.0.1:9876"},
@@ -272,6 +278,9 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -308,6 +317,7 @@ func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
 			test.config.NameServerList = []string{"127.0.0.1:9876"}
 			test.config.Topic = "apisix-logs"
 			p := &Plugin{config: test.config, sender: &captureSender{}}
+			p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -340,6 +350,7 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -352,9 +363,6 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{
 		config: Config{
 			NameServerList: []string{"127.0.0.1:9876"},
@@ -364,6 +372,9 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		},
 		sender: &captureSender{},
 	}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

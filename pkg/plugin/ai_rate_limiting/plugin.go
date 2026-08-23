@@ -17,7 +17,6 @@ import (
 
 	"github.com/casbin/govaluate"
 	"github.com/redis/go-redis/v9"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -333,6 +332,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if len(p.config.Rules) > 0 && (len(p.config.Instances) > 0 || p.config.Limit != nil || p.config.TimeWindow != nil) {
 		return errors.New("rules cannot be configured with limit, time_window, or instances")
 	}
@@ -463,8 +465,7 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) resolveSecret(field, value string) (string, error) {
-	keyring, enabled := data_encryption.Keyring()
-	resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(value, "ai-rate-limiting."+field)
+	resolved, err := p.DataEncryption().ResolveForContext(value, "ai-rate-limiting."+field)
 	if err != nil {
 		return "", fmt.Errorf("ai-rate-limiting %s: %w", field, err)
 	}

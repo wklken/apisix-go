@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -29,9 +30,9 @@ import (
 
 const frontendTLS12Cipher = "ECDHE-RSA-AES128-GCM-SHA256"
 
-func mustFrontendTLSConfig(t testing.TB) *tls.Config {
+func mustFrontendTLSConfig(t testing.TB, cfg *config.Config) *tls.Config {
 	t.Helper()
-	tlsConfig, err := buildFrontendTLSConfig()
+	tlsConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}
@@ -39,9 +40,6 @@ func mustFrontendTLSConfig(t testing.TB) *tls.Config {
 }
 
 func TestFrontendTLSProtocolConfigStrict(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
 	tests := []struct {
 		name      string
 		protocols string
@@ -58,16 +56,16 @@ func TestFrontendTLSProtocolConfigStrict(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 				Enable:       true,
 				SslProtocols: test.protocols,
 				SslCiphers:   frontendTLS12Cipher,
 			}}}
 			if test.protocols == "TLSv1.3" {
-				config.GlobalConfig.Apisix.Ssl.SslCiphers = ""
+				cfg.Apisix.Ssl.SslCiphers = ""
 			}
 
-			got, err := buildFrontendTLSConfig()
+			got, err := buildFrontendTLSConfig(cfg)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(strings.ToLower(err.Error()), test.wantErr) {
 					t.Fatalf("buildFrontendTLSConfig() error = %v, want %q", err, test.wantErr)
@@ -85,9 +83,6 @@ func TestFrontendTLSProtocolConfigStrict(t *testing.T) {
 }
 
 func TestFrontendTLSCipherConfigStrict(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
 	tests := []struct {
 		name    string
 		ciphers string
@@ -102,12 +97,12 @@ func TestFrontendTLSCipherConfigStrict(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 				Enable:       true,
 				SslProtocols: "TLSv1.2",
 				SslCiphers:   test.ciphers,
 			}}}
-			_, err := buildFrontendTLSConfig()
+			_, err := buildFrontendTLSConfig(cfg)
 			if test.wantErr == "" {
 				if err != nil {
 					t.Fatalf("buildFrontendTLSConfig() error = %v", err)
@@ -120,9 +115,10 @@ func TestFrontendTLSCipherConfigStrict(t *testing.T) {
 		})
 	}
 
-	config.GlobalConfig.Apisix.Ssl.SslProtocols = "TLSv1.3"
-	config.GlobalConfig.Apisix.Ssl.SslCiphers = frontendTLS12Cipher
-	if _, err := buildFrontendTLSConfig(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "tls 1.2") {
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+		Enable: true, SslProtocols: "TLSv1.3", SslCiphers: frontendTLS12Cipher,
+	}}}
+	if _, err := buildFrontendTLSConfig(cfg); err == nil || !strings.Contains(strings.ToLower(err.Error()), "tls 1.2") {
 		t.Fatalf("TLS 1.3-only cipher policy error = %v, want TLS 1.2 explanation", err)
 	}
 }
@@ -133,9 +129,7 @@ func TestFrontendTLSSessionTicketsAndClientCA(t *testing.T) {
 	if err := os.WriteFile(caPath, ca.certPEM, 0o600); err != nil {
 		t.Fatalf("write client CA: %v", err)
 	}
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:                true,
 		SslProtocols:          "TLSv1.2",
 		SslCiphers:            frontendTLS12Cipher,
@@ -143,7 +137,7 @@ func TestFrontendTLSSessionTicketsAndClientCA(t *testing.T) {
 		SslTrustedCertificate: caPath,
 	}}}
 
-	tlsConfig, err := buildFrontendTLSConfig()
+	tlsConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}
@@ -174,15 +168,13 @@ func TestFrontendTLSSessionTicketsControlResumption(t *testing.T) {
 		{name: "disabled", tickets: false, wantResumed: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			previous := config.GlobalConfig
-			t.Cleanup(func() { config.GlobalConfig = previous })
-			config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 				Enable:            true,
 				SslProtocols:      "TLSv1.2",
 				SslCiphers:        frontendTLS12Cipher,
 				SslSessionTickets: test.tickets,
 			}}}
-			serverConfig, err := buildFrontendTLSConfig()
+			serverConfig, err := buildFrontendTLSConfig(cfg)
 			if err != nil {
 				t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 			}
@@ -216,7 +208,7 @@ func TestFrontendTLSSessionTicketsControlResumption(t *testing.T) {
 
 func TestFrontendTLSHandshakeSelectsExactWildcardAndFallbackSNI(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/frontend-sni.db", events)
+	storage, err := store.Open(t.TempDir()+"/frontend-sni.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -263,15 +255,13 @@ func TestFrontendTLSHandshakeSelectsExactWildcardAndFallbackSNI(t *testing.T) {
 		t.Fatalf("SSL storage sync: %v", err)
 	}
 
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		SslProtocols: "TLSv1.2",
 		SslCiphers:   frontendTLS12Cipher,
 		FallbackSNI:  "fallback.example.test",
 	}}}
-	serverConfig, err := buildFrontendTLSConfig()
+	serverConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}
@@ -320,17 +310,15 @@ func TestFrontendTLSHandshakeEnforcesConfiguredProtocols(t *testing.T) {
 		{name: "tls12 rejected by tls13", serverConfig: "TLSv1.3", clientConfig: tls.VersionTLS12},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			previous := config.GlobalConfig
-			t.Cleanup(func() { config.GlobalConfig = previous })
-			config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+			cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 				Enable:       true,
 				SslProtocols: test.serverConfig,
 				SslCiphers:   frontendTLS12Cipher,
 			}}}
 			if test.serverConfig == "TLSv1.3" {
-				config.GlobalConfig.Apisix.Ssl.SslCiphers = ""
+				cfg.Apisix.Ssl.SslCiphers = ""
 			}
-			serverConfig, err := buildFrontendTLSConfig()
+			serverConfig, err := buildFrontendTLSConfig(cfg)
 			if err != nil {
 				t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 			}
@@ -353,14 +341,12 @@ func TestFrontendTLSHandshakeEnforcesConfiguredProtocols(t *testing.T) {
 }
 
 func TestFrontendTLSHandshakeSelectsConfiguredCipher(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		SslProtocols: "TLSv1.2",
 		SslCiphers:   frontendTLS12Cipher,
 	}}}
-	serverConfig, err := buildFrontendTLSConfig()
+	serverConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}
@@ -401,15 +387,13 @@ func TestFrontendTLSHandshakeRequiresTrustedClientCertificate(t *testing.T) {
 		&ca,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	)
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:                true,
 		SslProtocols:          "TLSv1.2",
 		SslCiphers:            frontendTLS12Cipher,
 		SslTrustedCertificate: caPath,
 	}}}
-	serverConfig, err := buildFrontendTLSConfig()
+	serverConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}
@@ -538,18 +522,16 @@ func newSerialNumber(t *testing.T) *big.Int {
 }
 
 func TestFrontendTLSConfigRejectsMalformedTrustedCA(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
 	caPath := filepath.Join(t.TempDir(), "invalid-ca.pem")
 	if err := os.WriteFile(caPath, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatalf("write invalid CA: %v", err)
 	}
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:                true,
 		SslProtocols:          "TLSv1.3",
 		SslTrustedCertificate: caPath,
 	}}}
-	_, err := buildFrontendTLSConfig()
+	_, err := buildFrontendTLSConfig(cfg)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ca") {
 		t.Fatalf("buildFrontendTLSConfig() error = %v, want CA parsing context", err)
 	}
@@ -559,18 +541,17 @@ func TestFrontendTLSConfigRejectsMalformedTrustedCA(t *testing.T) {
 }
 
 func TestStartHTTPListenersBuildsTLSBeforeBinding(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		Listen:       []config.Listen{{Port: 9443}},
 		SslProtocols: "TLSv1.1",
 		SslCiphers:   frontendTLS12Cipher,
-	}}}
+	}}}}
 	server := &Server{
-		addr:   "127.0.0.1:0",
-		addrs:  []string{"127.0.0.1:0"},
-		server: &http.Server{},
+		staticConfig: effective,
+		addr:         "127.0.0.1:0",
+		addrs:        []string{"127.0.0.1:0"},
+		server:       &http.Server{},
 	}
 	err := server.startHTTPListeners(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "build frontend TLS config") {

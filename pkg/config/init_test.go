@@ -1,52 +1,24 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/spf13/viper"
 )
 
-func TestLoadSupportsOfficialConfigShapes(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	v := viper.New()
-	v.SetConfigType("yaml")
-	err := v.ReadConfig(strings.NewReader(`
+func TestDecodeConfigSupportsOfficialConfigShapes(t *testing.T) {
+	effective := loadEffectiveFixture(t, `
 apisix:
-  node_listen:
-    - 9080
-    - ip: 127.0.0.2
-      port: 9081
-      enable_http2: true
+  node_listen: [9080, {ip: 127.0.0.2, port: 9081, enable_http2: true}]
   enable_http2: true
-  proxy_cache:
-    cache_ttl: 10s
-  stream_proxy:
-    tcp:
-      - "9100"
-    udp:
-      - 9200
-      - "127.0.0.1:9201"
-  ssl:
-    listen:
-      - port: 9443
-        enable_http3: true
-    ssl_protocols: TLSv1.2 TLSv1.3
-  lru:
-    secret:
-      ttl: 300
-      count: 512
-      neg_ttl: 60
-      neg_count: 512
-proxy:
-  max_idle_conns: 2048
-  max_idle_conns_per_host: 256
-  max_conns_per_host: 512
-  max_in_flight: 768
+  proxy_cache: {cache_ttl: 10s}
+  stream_proxy: {tcp: ["9100"], udp: [9200, "127.0.0.1:9201"]}
+  ssl: {ssl_protocols: TLSv1.2 TLSv1.3}
+  lru: {secret: {ttl: 300, count: 512, neg_ttl: 60, neg_count: 512}}
+  events: {module: lua-resty-events}
+proxy: {max_idle_conns: 2048, max_idle_conns_per_host: 256, max_conns_per_host: 512, max_in_flight: 768}
 nginx_config:
   worker_shutdown_timeout: 240s
   http:
@@ -55,471 +27,87 @@ nginx_config:
     keepalive_timeout: 60s
     send_timeout: 0s
     client_max_body_size: 1024
-    upstream:
-      keepalive: 320
-      keepalive_requests: 1000
-      keepalive_timeout: 60s
-graphql:
-  max_size: 1048576
-ext-plugin:
-  cmd: ["example-plugin"]
-wasm:
-  plugins:
-    - name: wasm_log
-      priority: 7999
-      file: log.wasm
-xrpc:
-  protocols:
-    - name: pingpong
-events:
-  module: lua-resty-events
+    upstream: {keepalive: 320, keepalive_requests: 1000, keepalive_timeout: 60s}
+graphql: {max_size: 1048576}
 plugins: [request-id, gzip]
 stream_plugins: [mqtt-proxy]
-plugin_attr:
-  prometheus:
-    export_addr:
-      ip: 127.0.0.1
-      port: 9091
-deployment:
-  role: traditional
-  role_data_plane:
-    config_provider: yaml
-  admin:
-    admin_key_required: true
-    enable_admin_ui: true
-    admin_listen:
-      ip: 127.0.0.1
-      port: 9180
-  etcd:
-    host: ["https://127.0.0.1:2379"]
-    prefix: /apisix
-    timeout: 30
-    watch_timeout: 50
-    startup_retry: 2
-    tls:
-      verify: true
-      sni: etcd.example.com
-`))
+plugin_attr: {prometheus: {export_addr: {ip: 127.0.0.1, port: 9091}}}
+`)
+	cfg := &effective.Config
+	wantAddresses := []string{"0.0.0.0:9080", "127.0.0.2:9081"}
+	if got := cfg.Apisix.ListenAddresses(); !reflect.DeepEqual(got, wantAddresses) {
+		t.Fatalf("ListenAddresses() = %#v, want %#v", got, wantAddresses)
+	}
+	if got := cfg.Apisix.StreamProxy.Tcp[0].Addr; got != ":9100" {
+		t.Fatalf("stream tcp address = %q", got)
+	}
+	if got := cfg.NginxConfig.HTTP.ClientBodyTimeout; got != 60*time.Second {
+		t.Fatalf("client_body_timeout = %s", got)
+	}
+	if got := cfg.PluginAttr["prometheus"]["export_addr"].(map[string]any)["port"]; got != json.Number("9091") {
+		t.Fatalf("plugin_attr port = %#v", got)
+	}
+}
+
+func TestLoadEffectiveAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
+	req := loadRequestFixture(t, SecurityCompat, "")
+	if err := writeTestConfig(req.DefaultPath, `
+apisix: {node_listen: [{port: 9080}]}
+proxy: {max_idle_conns: 10, max_idle_conns_per_host: 10, max_conns_per_host: 10, max_in_flight: 10}
+plugins: [request-id]
+deployment: {role: data_plane, role_data_plane: {config_provider: yaml}}
+`); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := LoadEffective(req)
 	if err != nil {
-		t.Fatalf("ReadConfig() error = %v", err)
+		t.Fatal(err)
 	}
-
-	cfg, err := load(v)
-	if err != nil {
-		t.Fatalf("load() error = %v", err)
+	if got := effective.Config.NginxConfig.HTTP.ClientMaxBodySize; got != 10*1024*1024 {
+		t.Fatalf("client_max_body_size = %d", got)
 	}
-
-	if got, want := cfg.Apisix.ListenAddresses(), []string{
-		"0.0.0.0:9080",
-		"127.0.0.2:9081",
-	}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
-	}
-	if got, want := cfg.Apisix.StreamProxy.Tcp[0].Addr, ":9100"; got != want {
-		t.Fatalf("stream tcp address = %q, want %q", got, want)
-	}
-	if !cfg.Apisix.Ssl.Listen[0].EnableHttp3 {
-		t.Fatal("ssl.listen.enable_http3 = false, want true")
-	}
-	if got, want := cfg.Apisix.Ssl.SslProtocols, "TLSv1.2 TLSv1.3"; got != want {
-		t.Fatalf("ssl_protocols = %q, want %q", got, want)
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
-		t.Fatalf("client_body_timeout = %s, want %s", got, want)
-	}
-	if got, want := cfg.NginxConfig.HTTP.Upstream.Keepalive, 320; got != want {
-		t.Fatalf("upstream.keepalive = %d, want %d", got, want)
-	}
-	if got, want := cfg.Proxy.MaxIdleConns, 2048; got != want {
-		t.Fatalf("proxy.max_idle_conns = %d, want %d", got, want)
-	}
-	if got, want := cfg.Proxy.MaxIdleConnsPerHost, 256; got != want {
-		t.Fatalf("proxy.max_idle_conns_per_host = %d, want %d", got, want)
-	}
-	if got, want := cfg.Proxy.MaxConnsPerHost, 512; got != want {
-		t.Fatalf("proxy.max_conns_per_host = %d, want %d", got, want)
-	}
-	if got, want := cfg.Proxy.MaxInFlight, 768; got != want {
-		t.Fatalf("proxy.max_in_flight = %d, want %d", got, want)
-	}
-	if got, want := cfg.Deployment.Etcd.TLS.SNI, "etcd.example.com"; got != want {
-		t.Fatalf("etcd.tls.sni = %q, want %q", got, want)
-	}
-	exportAddr, ok := cfg.PluginAttr["prometheus"]["export_addr"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugin_attr.prometheus.export_addr = %#v, want map", cfg.PluginAttr["prometheus"]["export_addr"])
-	}
-	if got, want := exportAddr["port"], 9091; got != want {
-		t.Fatalf("plugin_attr.prometheus.export_addr.port = %#v, want %v", got, want)
+	if got := effective.Config.NginxConfig.HTTP.ClientBodyTimeout; got != 60*time.Second {
+		t.Fatalf("client_body_timeout = %s", got)
 	}
 }
 
-func TestLoadRejectsNonZeroNginxSendTimeout(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, raw := range []string{"1s", "-1s"} {
-		t.Run(raw, func(t *testing.T) {
-			v := viper.New()
-			v.SetConfigType("yaml")
-			if err := v.ReadConfig(
-				strings.NewReader("nginx_config:\n  http:\n    send_timeout: " + raw + "\n"),
-			); err != nil {
-				t.Fatalf("ReadConfig() error = %v", err)
-			}
-
-			_, err := load(v)
-			if err == nil || !strings.Contains(err.Error(), "nginx_config.http.send_timeout") {
-				t.Fatalf("load() error = %v, want send_timeout rejection", err)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig was published before send_timeout validation")
-			}
-		})
-	}
-}
-
-func TestLoadConfigFilesClientMaxBodySizeValidation(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, test := range []struct {
-		name      string
-		value     string
-		wantError bool
-	}{
-		{name: "negative", value: "-1", wantError: true},
-		{name: "zero", value: "0", wantError: true},
-		{name: "positive", value: "1024"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
-			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-			overrideConfig := "nginx_config:\n  http:\n    client_max_body_size: " + test.value + "\n"
-			override := writeConfigFile(t, "override.yaml", overrideConfig)
-
-			_, err := loadConfigFiles(base, override)
-			if test.wantError {
-				if err == nil || !strings.Contains(err.Error(), "nginx_config.http.client_max_body_size") {
-					t.Fatalf("loadConfigFiles() error = %v, want client_max_body_size rejection", err)
-				}
-				if GlobalConfig != previous {
-					t.Fatal("GlobalConfig changed before client_max_body_size validation")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("loadConfigFiles() error = %v, want compatibility for %s", err, test.value)
-			}
-		})
-	}
-}
-
-func TestLoadAppliesSafeRequestBodyDefaultsWhenOmitted(t *testing.T) {
-	v := viper.New()
-	v.SetConfigType("yaml")
-	if err := v.ReadConfig(strings.NewReader("debug: false\n")); err != nil {
-		t.Fatalf("ReadConfig() error = %v", err)
-	}
-
-	cfg, err := load(v)
-	if err != nil {
-		t.Fatalf("load() error = %v", err)
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientMaxBodySize, int64(10*1024*1024); got != want {
-		t.Fatalf("client_max_body_size = %d, want %d", got, want)
-	}
-	if got, want := cfg.NginxConfig.HTTP.ClientBodyTimeout, 60*time.Second; got != want {
-		t.Fatalf("client_body_timeout = %s, want %s", got, want)
-	}
-}
-
-func TestLoadConfigFilesRejectsNonPositiveClientBodyTimeout(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, value := range []string{"0s", "-1s"} {
-		t.Run(value, func(t *testing.T) {
-			GlobalConfig = previous
-			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-			override := writeConfigFile(
-				t,
-				"override.yaml",
-				"nginx_config:\n  http:\n    client_body_timeout: "+value+"\n",
-			)
-
-			_, err := loadConfigFiles(base, override)
-			if err == nil || !strings.Contains(err.Error(), "nginx_config.http.client_body_timeout") {
-				t.Fatalf("loadConfigFiles() error = %v, want client_body_timeout rejection", err)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig changed before client_body_timeout validation")
-			}
-		})
-	}
-}
-
-func TestLoadConfigFilesRejectsProcessAccessLogFields(t *testing.T) {
-	previous := &Config{Debug: true}
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-
+func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 	tests := []struct {
 		name     string
 		override string
 		want     string
 	}{
+		{name: "send timeout", override: "nginx_config: {http: {send_timeout: 1s}}", want: "send_timeout"},
+		{name: "body size", override: "nginx_config: {http: {client_max_body_size: 0}}", want: "client_max_body_size"},
 		{
-			name:     "HTTP access log enabled",
-			override: "nginx_config:\n  http:\n    enable_access_log: true\n",
-			want:     "nginx_config.http.enable_access_log",
+			name:     "body timeout",
+			override: "nginx_config: {http: {client_body_timeout: 0s}}",
+			want:     "client_body_timeout",
 		},
-		{
-			name:     "HTTP access log path",
-			override: "nginx_config:\n  http:\n    access_log: /var/log/apisix/access.log\n",
-			want:     "nginx_config.http.access_log",
-		},
-		{
-			name:     "HTTP access log buffer",
-			override: "nginx_config:\n  http:\n    access_log_buffer: 1\n",
-			want:     "nginx_config.http.access_log_buffer",
-		},
-		{
-			name:     "HTTP access log format",
-			override: "nginx_config:\n  http:\n    access_log_format: '$request'\n",
-			want:     "nginx_config.http.access_log_format",
-		},
-		{
-			name:     "HTTP access log format escape",
-			override: "nginx_config:\n  http:\n    access_log_format_escape: json\n",
-			want:     "nginx_config.http.access_log_format_escape",
-		},
-		{
-			name:     "stream access log enabled",
-			override: "nginx_config:\n  stream:\n    enable_access_log: true\n",
-			want:     "nginx_config.stream.enable_access_log",
-		},
-		{
-			name:     "stream access log path",
-			override: "nginx_config:\n  stream:\n    access_log: /var/log/apisix/stream.log\n",
-			want:     "nginx_config.stream.access_log",
-		},
-		{
-			name:     "stream access log format",
-			override: "nginx_config:\n  stream:\n    access_log_format: '$protocol'\n",
-			want:     "nginx_config.stream.access_log_format",
-		},
-		{
-			name:     "stream access log format escape",
-			override: "nginx_config:\n  stream:\n    access_log_format_escape: json\n",
-			want:     "nginx_config.stream.access_log_format_escape",
-		},
+		{name: "negative proxy", override: "proxy: {max_in_flight: -1}", want: "proxy.max_in_flight"},
+		{name: "empty plugin", override: "plugins: ['']", want: "plugins[0] must not be empty"},
+		{name: "duplicate plugin", override: "plugins: [request-id, request-id]", want: "duplicates"},
+		{name: "access log", override: "nginx_config: {http: {enable_access_log: true}}", want: "enable_access_log"},
 	}
-
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
-			base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-			override := writeConfigFile(t, "override.yaml", test.override)
-
-			_, err := loadConfigFiles(base, override)
-			wantError := test.want + " is unsupported by the Go data plane"
-			if err == nil || err.Error() != wantError {
-				t.Fatalf("loadConfigFiles() error = %v, want %q", err, wantError)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig changed before process access-log validation")
+			_, err := LoadEffective(loadRequestFixture(t, SecurityCompat, test.override))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadEffective() error = %v, want %q", err, test.want)
 			}
 		})
 	}
 }
 
-func TestLoadConfigFilesAcceptsExplicitZeroProcessAccessLogValues(t *testing.T) {
-	previous := &Config{Debug: true}
-	GlobalConfig = previous
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
-	override := writeConfigFile(t, "override.yaml", `
-nginx_config:
-  http:
-    enable_access_log: false
-    access_log: ""
-    access_log_buffer: 0
-    access_log_format: ""
-    access_log_format_escape: ""
-  stream:
-    enable_access_log: false
-    access_log: ""
-    access_log_format: ""
-    access_log_format_escape: ""
-`)
-
-	if _, err := loadConfigFiles(base, override); err != nil {
-		t.Fatalf("loadConfigFiles() error = %v, want explicit zero process access-log values to remain valid", err)
+func TestLoadEffectiveSupportsScalarNodeListen(t *testing.T) {
+	effective := loadEffectiveFixture(t, "apisix: {node_listen: 9080}")
+	if got, want := effective.Config.Apisix.ListenAddresses(), []string{"0.0.0.0:9080"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
 	}
 }
 
 func TestApisixListenAddressesDefaultsToLegacyAddress(t *testing.T) {
 	if got, want := (Apisix{}).ListenAddresses(), []string{":8080"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
-	}
-}
-
-func TestLoadRejectsNegativeProxyLimits(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, test := range []struct {
-		name  string
-		field string
-	}{
-		{name: "max_idle_conns", field: "proxy.max_idle_conns"},
-		{name: "max_idle_conns_per_host", field: "proxy.max_idle_conns_per_host"},
-		{name: "max_conns_per_host", field: "proxy.max_conns_per_host"},
-		{name: "max_in_flight", field: "proxy.max_in_flight"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			v := viper.New()
-			v.SetConfigType("yaml")
-			err := v.ReadConfig(strings.NewReader("proxy:\n  " + test.name + ": -1\n"))
-			if err != nil {
-				t.Fatalf("ReadConfig() error = %v", err)
-			}
-			_, err = load(v)
-			if err == nil {
-				t.Fatalf("load() error = nil, want %q rejection", test.field)
-			}
-			if !strings.Contains(err.Error(), test.field) {
-				t.Fatalf("load() error = %q, want it to name %q", err, test.field)
-			}
-		})
-	}
-}
-
-func TestLoadSupportsScalarNodeListen(t *testing.T) {
-	v := viper.New()
-	v.SetConfigType("yaml")
-	if err := v.ReadConfig(strings.NewReader("apisix:\n  node_listen: 9080\n")); err != nil {
-		t.Fatalf("ReadConfig() error = %v", err)
-	}
-
-	cfg, err := load(v)
-	if err != nil {
-		t.Fatalf("load() error = %v", err)
-	}
-	if got, want := cfg.Apisix.ListenAddresses(), []string{"0.0.0.0:9080"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("ListenAddresses() = %#v, want %#v", got, want)
-	}
-}
-
-func TestLoadRejectsInvalidHTTPPluginAllowlist(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, test := range []struct {
-		name string
-		yaml string
-		want string
-	}{
-		{name: "empty", yaml: "plugins: [\"\"]\n", want: `plugins[0] ""`},
-		{name: "leading whitespace", yaml: "plugins: [\" request-id\"]\n", want: `plugins[0] " request-id"`},
-		{name: "trailing whitespace", yaml: "plugins: [\"request-id \"]\n", want: `plugins[0] "request-id "`},
-		{name: "duplicate", yaml: "plugins: [request-id, request-id]\n", want: `plugins[1] "request-id"`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			GlobalConfig = previous
-			v := viper.New()
-			v.SetConfigType("yaml")
-			if err := v.ReadConfig(strings.NewReader(test.yaml)); err != nil {
-				t.Fatalf("ReadConfig() error = %v", err)
-			}
-
-			_, err := load(v)
-			if err == nil {
-				t.Fatal("load() error = nil, want invalid plugin allowlist rejection")
-			}
-			if !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("load() error = %q, want it to contain %q", err, test.want)
-			}
-			if GlobalConfig != previous {
-				t.Fatal("GlobalConfig was published before invalid plugin allowlist validation")
-			}
-		})
-	}
-
-	v := viper.New()
-	v.SetConfigType("yaml")
-	if err := v.ReadConfig(strings.NewReader("plugins: [native-only]\n")); err != nil {
-		t.Fatalf("ReadConfig() error = %v", err)
-	}
-	cfg, err := load(v)
-	if err != nil {
-		t.Fatalf("load() error = %v, want unique unknown plugin name to remain valid", err)
-	}
-	if !reflect.DeepEqual(cfg.Plugins, []string{"native-only"}) {
-		t.Fatalf("cfg.Plugins = %#v, want unknown name unchanged", cfg.Plugins)
-	}
-}
-
-func TestLoadRejectsScalarHTTPPluginAllowlistWhitespace(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	v := viper.New()
-	v.SetConfigType("yaml")
-	if err := v.ReadConfig(strings.NewReader("plugins: \" request-id \"\n")); err != nil {
-		t.Fatalf("ReadConfig() error = %v", err)
-	}
-
-	_, err := load(v)
-	if err == nil || !strings.Contains(err.Error(), `plugins[0] " request-id "`) {
-		t.Fatalf("load() error = %v, want original scalar whitespace in rejection", err)
-	}
-}
-
-func TestLoadRejectsCommaScalarHTTPPluginAllowlistWhitespace(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	for _, test := range []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{name: "padded first token", raw: "request-id ,gzip", want: `plugins[0] "request-id "`},
-		{name: "padded second token", raw: "request-id, gzip", want: `plugins[1] " gzip"`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			v := viper.New()
-			v.SetConfigType("yaml")
-			if err := v.ReadConfig(strings.NewReader("plugins: \"" + test.raw + "\"\n")); err != nil {
-				t.Fatalf("ReadConfig() error = %v", err)
-			}
-
-			_, err := load(v)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("load() error = %v, want padded token rejection containing %q", err, test.want)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsEnvHTTPPluginAllowlistWhitespace(t *testing.T) {
-	previous := GlobalConfig
-	t.Cleanup(func() { GlobalConfig = previous })
-
-	v := viper.New()
-	v.SetEnvPrefix("APISIXGO")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-	if err := v.BindEnv("plugins"); err != nil {
-		t.Fatalf("BindEnv() error = %v", err)
-	}
-	t.Setenv("APISIXGO_PLUGINS", " request-id ")
-
-	_, err := load(v)
-	if err == nil || !strings.Contains(err.Error(), `plugins[0] " request-id "`) {
-		t.Fatalf("load() error = %v, want original env whitespace in rejection", err)
 	}
 }

@@ -65,7 +65,7 @@ func TestBuildStrictRejectsDuplicateURIParametersWithoutPanic(t *testing.T) {
 	ensureRouteStore(t)
 	putRouteResource(t, "duplicate-param", []byte(`{"id":"duplicate-param","uri":"/user/:id/:id"}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	defer builder.Stop()
 	handler, err := builder.BuildStrict()
 	if err == nil {

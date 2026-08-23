@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -26,8 +27,9 @@ type EventUpdateHook func(event *Event)
 type AcknowledgedEventUpdateHook func(event *Event) error
 
 type Store struct {
-	events  chan *Event
-	runDone chan struct{}
+	events         chan *Event
+	runDone        chan struct{}
+	dataEncryption data_encryption.Service
 	// Add other fields for kv storage in memory
 	db *bolt.DB
 
@@ -134,15 +136,20 @@ const storeOpenTimeout = time.Second
 // Open constructs a store that owns its database file. It has no global side
 // effects; callers that also need the package-level getters must register
 // the store through GetStore.
-func Open(dbPath string, events chan *Event) (*Store, error) {
+func Open(
+	dbPath string,
+	events chan *Event,
+	encryption data_encryption.Service,
+) (*Store, error) {
 	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: storeOpenTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("open store database %q: %w", dbPath, err)
 	}
 	storage := &Store{
-		events:        events,
-		db:            db,
-		stopProducers: make(chan struct{}),
+		events:         events,
+		dataEncryption: encryption,
+		db:             db,
+		stopProducers:  make(chan struct{}),
 
 		consumerKV:              map[string][]byte{},
 		consumerIDs:             map[string][]byte{},
@@ -167,7 +174,11 @@ func Open(dbPath string, events chan *Event) (*Store, error) {
 // GetStore returns the process-wide store backing the package-level getters,
 // opening it on first use. It returns errors instead of the historical
 // log.Fatal singleton construction.
-func GetStore(dbPath string, events chan *Event) (*Store, error) {
+func GetStore(
+	dbPath string,
+	events chan *Event,
+	encryption data_encryption.Service,
+) (*Store, error) {
 	globalStoreMu.Lock()
 	defer globalStoreMu.Unlock()
 	if s != nil {
@@ -177,9 +188,12 @@ func GetStore(dbPath string, events chan *Event) (*Store, error) {
 		if stopped {
 			return nil, errStoreStopped
 		}
+		if !s.dataEncryption.SameConfiguration(encryption) {
+			return nil, errors.New("global store already initialized with a different data-encryption service")
+		}
 	}
 	if s == nil {
-		storage, err := Open(dbPath, events)
+		storage, err := Open(dbPath, events, encryption)
 		if err != nil {
 			return nil, err
 		}
@@ -574,7 +588,7 @@ func (s *Store) processMutations(mutations []Mutation, options BatchOptions, bat
 			case "ssls":
 				resourceErr = validateSSLCertificateEvent(mutation.Type, id, mutation.Value)
 			case "routes", "global_rules", "services", "upstreams", "plugin_configs", "stream_routes":
-				resourceErr = validateConfigResourcePut(bucket, id, mutation.Value)
+				resourceErr = s.validateConfigResourcePut(bucket, id, mutation.Value)
 			case "consumers":
 				var snapshot consumerSnapshot
 				snapshot, resourceErr = s.prepareConsumerSnapshot([]byte(id), mutation.Value)

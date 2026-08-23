@@ -26,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
@@ -688,6 +689,8 @@ func matchesWildcardRoute(pattern string, path string) bool {
 type Builder struct {
 	storage             *store.Store
 	serverAddr          string
+	staticConfig        *appconfig.EffectiveConfig
+	pluginDependencies  base.Dependencies
 	enabledPlugins      *plugin.EnabledSet
 	clusterRegistry     *pxy.ClusterRegistry
 	ownsClusterRegistry bool
@@ -736,23 +739,46 @@ type routeBuildCheckpoint struct {
 	servicePlugins    map[servicePluginKey]plugin.Plugin
 }
 
-func NewBuilder(storage *store.Store) *Builder {
-	return NewBuilderWithServerAddr(storage, "")
+func NewBuilder(
+	storage *store.Store,
+	effective *appconfig.EffectiveConfig,
+	resolver data_encryption.Resolver,
+) *Builder {
+	return NewBuilderWithServerAddr(storage, "", effective, resolver)
 }
 
-func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
-	return NewBuilderWithClusterRegistry(storage, serverAddr, pxy.NewClusterRegistry(pxy.NopClusterObserver{}))
+func NewBuilderWithServerAddr(
+	storage *store.Store,
+	serverAddr string,
+	effective *appconfig.EffectiveConfig,
+	resolver data_encryption.Resolver,
+) *Builder {
+	return NewBuilderWithClusterRegistry(
+		storage,
+		serverAddr,
+		pxy.NewClusterRegistry(pxy.NopClusterObserver{}),
+		effective,
+		resolver,
+	)
 }
 
 // NewBuilderWithClusterRegistry builds routes against a server-owned cluster
 // registry. The builder acquires cluster leases from it and releases them on
 // Stop, but never closes it; the server owns its lifecycle.
-func NewBuilderWithClusterRegistry(storage *store.Store, serverAddr string, registry *pxy.ClusterRegistry) *Builder {
+func NewBuilderWithClusterRegistry(
+	storage *store.Store,
+	serverAddr string,
+	registry *pxy.ClusterRegistry,
+	effective *appconfig.EffectiveConfig,
+	resolver data_encryption.Resolver,
+) *Builder {
 	builder := &Builder{
-		storage:         storage,
-		serverAddr:      normalizeServerAddr(serverAddr),
-		clusterRegistry: registry,
-		servicePlugins:  make(map[servicePluginKey]plugin.Plugin),
+		storage:            storage,
+		serverAddr:         normalizeServerAddr(serverAddr),
+		staticConfig:       effective,
+		pluginDependencies: base.Dependencies{Config: effective, DataEncryption: resolver},
+		clusterRegistry:    registry,
+		servicePlugins:     make(map[servicePluginKey]plugin.Plugin),
 	}
 	if registry == nil {
 		builder.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
@@ -831,21 +857,18 @@ func (b *Builder) BuildWithRouteQuarantine() (*chi.Mux, error) {
 }
 
 func (b *Builder) buildRoutes(quarantineInvalidRoutes bool) (*chi.Mux, error) {
+	if err := proxy_cache.RefreshConfiguredZones(b.staticConfig.Config.Apisix.ProxyCache.Zones); err != nil {
+		return nil, fmt.Errorf("publish proxy-cache zone registry: %w", err)
+	}
 	publicAPIRegistry := public_api.NewRegistry()
-	if err := registerPrometheusPublicEndpoint(publicAPIRegistry); err != nil {
+	if err := registerPrometheusPublicEndpoint(publicAPIRegistry, &b.staticConfig.Config); err != nil {
 		return nil, fmt.Errorf("register prometheus public endpoint: %w", err)
 	}
 
-	var configuredPlugins []string
-	if appconfig.GlobalConfig != nil {
-		configuredPlugins = appconfig.GlobalConfig.Plugins
-	}
+	configuredPlugins := b.staticConfig.Config.Plugins
 	enabledPlugins := plugin.NewEnabledSet(configuredPlugins)
 	b.enabledPlugins = &enabledPlugins
 
-	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
-		return nil, fmt.Errorf("validate proxy-cache zone registry: %w", err)
-	}
 	snapshot, err := b.configSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("get config snapshot: %w", err)
@@ -935,7 +958,7 @@ func (b *Builder) buildRoutes(quarantineInvalidRoutes bool) (*chi.Mux, error) {
 		return nil, fmt.Errorf("build global not found handler: %w", err)
 	}
 	mux.NotFound(notFoundHandler.ServeHTTP)
-	if err := registerExtraRoutesStrict(mux, publicAPIRegistry); err != nil {
+	if err := registerExtraRoutesStrict(mux, &b.staticConfig.Config, publicAPIRegistry); err != nil {
 		return nil, fmt.Errorf("register extra routes: %w", err)
 	}
 	b.configureGlobalErrorLogObserver()
@@ -1020,7 +1043,7 @@ func (b *Builder) buildGlobalNotFoundHandler(
 	}
 	routeContext := pluginRouteContext{publicAPIRegistry: registry}
 	globalRules = deduplicateGlobalRules(globalRules)
-	if err := validateSecurityGlobalRulePolicy(configuredProfileSelection(), globalRules, ""); err != nil {
+	if err := validateSecurityGlobalRulePolicy(b.staticConfig.Profiles, globalRules, ""); err != nil {
 		return nil, err
 	}
 	globalBindings, err := b.initGlobalPluginBindingsStrict(globalRules, routeContext)
@@ -1135,7 +1158,7 @@ func (b *Builder) buildHandlerWithServiceStrict(
 	service resource.Service,
 	registries ...*public_api.Registry,
 ) (http.Handler, error) {
-	selection := configuredProfileSelection()
+	selection := b.staticConfig.Profiles
 	var pluginConfigPlugins map[string]resource.PluginConfig
 	// handle plugin_config_id
 	if r.PluginConfigID != "" {
@@ -1821,6 +1844,7 @@ func (a *trafficSplitRuntimeAcquirer) Acquire(
 		resourceUpstream,
 		targets,
 		transportOption,
+		&a.builder.staticConfig.Config,
 		priorities,
 	)
 	if err != nil {
@@ -2606,8 +2630,8 @@ func (b *Builder) configureGlobalErrorLogObserver() {
 	enabled := false
 	if b.enabledPlugins != nil {
 		enabled = b.enabledPlugins.Contains(pluginName)
-	} else if appconfig.GlobalConfig != nil {
-		enabled = slices.Contains(appconfig.GlobalConfig.Plugins, pluginName)
+	} else {
+		enabled = slices.Contains(b.staticConfig.Config.Plugins, pluginName)
 	}
 	if !enabled {
 		_ = logger.ReplaceObserver(pluginName, nil)
@@ -2628,7 +2652,7 @@ func (b *Builder) configureGlobalErrorLogObserver() {
 
 func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) error {
 	const pluginName = "error-log-logger"
-	p := plugin.New(pluginName)
+	p := plugin.New(pluginName, b.pluginDependencies)
 	if p == nil {
 		return fmt.Errorf("plugin %s is not supported", pluginName)
 	}
@@ -2862,7 +2886,7 @@ func (b *Builder) initPluginBindingsStrict(
 		if !b.pluginAllowed(name, options) {
 			return nil, sourceError(fmt.Errorf("plugin %q is disabled", name))
 		}
-		p := plugin.New(name)
+		p := plugin.New(name, b.pluginDependencies)
 		if p == nil {
 			return nil, sourceError(fmt.Errorf("plugin %s is not supported", name))
 		}
@@ -3582,7 +3606,14 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 			b.clusterRegistry = pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			b.ownsClusterRegistry = true
 		}
-		clusterConfig, err := buildClusterConfigWithTransport(r, upstream, servers, transportOption, priorities)
+		clusterConfig, err := buildClusterConfigWithTransport(
+			r,
+			upstream,
+			servers,
+			transportOption,
+			&b.staticConfig.Config,
+			priorities,
+		)
 		if err != nil {
 			return nil, routeProtocolTerminals{}, err
 		}
@@ -3653,8 +3684,8 @@ func (b *Builder) buildReverseHandlerWithTerminals(
 		// }
 	}
 
-	modifyResponse := newModifyResponse()
-	errorHandler := newErrorHandler()
+	modifyResponse := newModifyResponse(&b.staticConfig.Config)
+	errorHandler := newErrorHandler(&b.staticConfig.Config)
 	proxyHandler := pxy.NewProxyHandler(transport, director, modifyResponse, errorHandler)
 	streamingProxyHandler := pxy.NewProxyHandlerWithFlushInterval(
 		transport,
@@ -4189,7 +4220,7 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 	return true
 }
 
-func newModifyResponse() pxy.ModifyResponse {
+func newModifyResponse(staticConfig *appconfig.Config) pxy.ModifyResponse {
 	return func(resp *http.Response) error {
 		// set the status into request ctx
 		// ctx := resp.Request.Context()
@@ -4205,7 +4236,7 @@ func newModifyResponse() pxy.ModifyResponse {
 		}
 		resp.Header.Del("Server")
 		resp.Header.Del("X-APISIX-Upstream-Status")
-		if showUpstreamStatusInResponseHeader() ||
+		if showUpstreamStatusInResponseHeader(staticConfig) ||
 			(status >= http.StatusInternalServerError && status <= 599) {
 			resp.Header.Set("X-APISIX-Upstream-Status", upstreamStatus)
 		}
@@ -4292,7 +4323,7 @@ func recordUpstreamLatency(req *http.Request) {
 	ctx.RegisterRequestVar(req, upstreamLatencyVar, latency)
 }
 
-func newErrorHandler() pxy.ErrorHandler {
+func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		// 1. make log fields
 		// fields := log.Fields{
@@ -4357,7 +4388,7 @@ func newErrorHandler() pxy.ErrorHandler {
 
 		w.Header().Del("X-APISIX-Upstream-Status")
 		if upstreamStatus := pxy.UpstreamStatusChain(r); !directorFailed && upstreamStatus != "" {
-			if showUpstreamStatusInResponseHeader() ||
+			if showUpstreamStatusInResponseHeader(staticConfig) ||
 				(status >= http.StatusInternalServerError && status <= 599) {
 				w.Header().Set("X-APISIX-Upstream-Status", upstreamStatus)
 			}
@@ -4374,9 +4405,8 @@ func newErrorHandler() pxy.ErrorHandler {
 	}
 }
 
-func showUpstreamStatusInResponseHeader() bool {
-	return appconfig.GlobalConfig != nil &&
-		appconfig.GlobalConfig.Apisix.ShowUpstreamStatusInResponseHeader
+func showUpstreamStatusInResponseHeader(staticConfig *appconfig.Config) bool {
+	return staticConfig != nil && staticConfig.Apisix.ShowUpstreamStatusInResponseHeader
 }
 
 func proxyFailureLogPath(r *http.Request) string {

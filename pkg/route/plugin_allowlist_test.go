@@ -77,13 +77,13 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setHTTPPluginAllowlist(t)
+			effective := httpPluginAllowlist()
 			if test.bucket != "" {
 				putHTTPAllowlistResource(t, test.bucket, test.resourceID, []byte(test.resource))
 			}
 			putRouteResource(t, routeIDFromJSON(t, test.route), []byte(test.route))
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err == nil {
@@ -101,13 +101,13 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	}
 
 	t.Run("enabled controls build", func(t *testing.T) {
-		setHTTPPluginAllowlist(t, "request-id")
+		effective := httpPluginAllowlist("request-id")
 		const id = "allowlist-enabled-route"
 		putRouteResource(t, id, []byte(
 			`{"id":"allowlist-enabled-route","uri":"/allowlist-enabled","plugins":{"request-id":{}}}`,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -116,11 +116,11 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("strict empty still builds system request context", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
+		effective := httpPluginAllowlist()
 		const id = "allowlist-empty-route"
 		putRouteResource(t, id, []byte(`{"id":"allowlist-empty-route","uri":"/allowlist-empty"}`))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -129,13 +129,13 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("user request context requires membership", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
+		effective := httpPluginAllowlist()
 		const id = "allowlist-user-request-context"
 		putRouteResource(t, id, []byte(
 			`{"id":"allowlist-user-request-context","uri":"/allowlist-user-request-context","plugins":{"request-context":{}}}`,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -147,18 +147,14 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("global body limit does not require client control membership", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
-		previous := appconfig.GlobalConfig
-		appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
-			HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 1},
-		}}
-		t.Cleanup(func() { appconfig.GlobalConfig = previous })
+		effective := httpPluginAllowlist()
+		effective.Config.NginxConfig.HTTP.ClientMaxBodySize = 1
 		const id = "allowlist-generated-client-control"
 		putRouteResource(t, id, []byte(
 			`{"id":"allowlist-generated-client-control","uri":"/allowlist-generated-client-control"}`,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -167,12 +163,12 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("metadata for an unmaterialized plugin is inert", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
+		effective := httpPluginAllowlist()
 		putHTTPAllowlistResource(t, "plugin_metadata", "cors", []byte(`{"allow_origins":123}`))
 		const id = "allowlist-inert-metadata"
 		putRouteResource(t, id, []byte(`{"id":"allowlist-inert-metadata","uri":"/allowlist-inert-metadata"}`))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err != nil || handler == nil {
@@ -181,13 +177,13 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("metadata disable does not bypass membership", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
+		effective := httpPluginAllowlist()
 		const id = "allowlist-meta-disabled"
 		putRouteResource(t, id, []byte(
 			`{"id":"allowlist-meta-disabled","uri":"/allowlist-meta-disabled","plugins":{"request-id":{"_meta":{"disable":true}}}}`,
 		))
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -199,7 +195,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("nested multi-auth checker is injected", func(t *testing.T) {
-		setHTTPPluginAllowlist(t, "multi-auth", "basic-auth")
+		effective := httpPluginAllowlist("multi-auth", "basic-auth")
 		const id = "allowlist-multi-auth"
 		putRouteResource(
 			t,
@@ -209,7 +205,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 			),
 		)
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -221,7 +217,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 	})
 
 	t.Run("nested workflow checker is injected", func(t *testing.T) {
-		setHTTPPluginAllowlist(t, "workflow")
+		effective := httpPluginAllowlist("workflow")
 		const id = "allowlist-workflow"
 		putRouteResource(
 			t,
@@ -231,7 +227,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 			),
 		)
 
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.BuildStrict()
 		if err == nil || handler != nil {
@@ -245,7 +241,7 @@ func TestHTTPPluginAllowlist(t *testing.T) {
 
 func TestDisabledMCPBridge(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	marker := t.TempDir() + "/mcp-started"
 	const id = "allowlist-disabled-mcp"
 	routeValue := fmt.Appendf(
@@ -260,7 +256,7 @@ func TestDisabledMCPBridge(t *testing.T) {
 		routeValue,
 	)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil {
@@ -277,8 +273,8 @@ func TestDisabledMCPBridge(t *testing.T) {
 
 func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 	t.Run("disabled consumer plugin fails closed", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
-		builder := buildAllowlistTestBuilder(t)
+		effective := httpPluginAllowlist()
+		builder := buildAllowlistTestBuilder(t, effective)
 		marker := t.TempDir() + "/consumer-mcp-started"
 		consumer := resource.Consumer{
 			Username: "allowlist-consumer",
@@ -308,7 +304,7 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 	})
 
 	t.Run("disabled group plugin fails closed", func(t *testing.T) {
-		setHTTPPluginAllowlist(t)
+		effective := httpPluginAllowlist()
 		const groupID = "allowlist-consumer-group"
 		putHTTPAllowlistResource(
 			t,
@@ -316,7 +312,7 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 			groupID,
 			[]byte(`{"id":"allowlist-consumer-group","plugins":{"mcp-bridge":{"command":"/bin/true"}}}`),
 		)
-		builder := buildAllowlistTestBuilder(t)
+		builder := buildAllowlistTestBuilder(t, effective)
 		consumer := resource.Consumer{Username: "allowlist-group-consumer", GroupID: groupID}
 		request := authenticatedAllowlistRequest(consumer)
 		response := httptest.NewRecorder()
@@ -336,11 +332,9 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 	})
 
 	t.Run("enabled consumer plugin runs after config mutation", func(t *testing.T) {
-		setHTTPPluginAllowlist(t, "limit-count")
-		builder := buildAllowlistTestBuilder(t)
-		if appconfig.GlobalConfig != nil {
-			appconfig.GlobalConfig.Plugins = nil
-		}
+		effective := httpPluginAllowlist("limit-count")
+		builder := buildAllowlistTestBuilder(t, effective)
+		effective.Config.Plugins = nil
 		consumer := resource.Consumer{
 			Username: "allowlist-enabled-consumer",
 			Plugins: map[string]resource.PluginConfig{
@@ -374,12 +368,10 @@ func TestHTTPPluginAllowlistConsumerPlugin(t *testing.T) {
 	})
 }
 
-func setHTTPPluginAllowlist(t *testing.T, names ...string) {
-	t.Helper()
-	previous := appconfig.GlobalConfig
-	copyNames := append([]string(nil), names...)
-	appconfig.GlobalConfig = &appconfig.Config{Plugins: copyNames}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+func httpPluginAllowlist(names ...string) *appconfig.EffectiveConfig {
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = append([]string(nil), names...)
+	return effective
 }
 
 func putHTTPAllowlistResource(t *testing.T, bucket, id string, value []byte) {
@@ -413,11 +405,11 @@ func routeIDFromJSON(t *testing.T, value string) string {
 	return route.ID
 }
 
-func buildAllowlistTestBuilder(t *testing.T) *Builder {
+func buildAllowlistTestBuilder(t *testing.T, effective *appconfig.EffectiveConfig) *Builder {
 	t.Helper()
 	const id = "allowlist-consumer-base-route"
 	putRouteResource(t, id, []byte(`{"id":"allowlist-consumer-base-route","uri":"/allowlist-consumer-base"}`))
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	if handler, err := builder.BuildStrict(); err != nil || handler == nil {
 		t.Fatalf("BuildStrict() = (%T, %v), want base handler", handler, err)

@@ -35,19 +35,16 @@ func ValidateQualificationPlugins(
 	duplicates := duplicateNames(got)
 	if len(duplicates) != 0 {
 		return fmt.Errorf(
-			"qualification_profile %s: duplicate enabled plugins %v",
-			selection.Qualification,
-			duplicates,
+			"qualification_profile %s: plugins duplicate enabled count %d",
+			selection.Qualification, len(duplicates),
 		)
 	}
 
 	missing, unexpected := membershipDifference(want, got)
 	if len(missing) != 0 || len(unexpected) != 0 {
 		return fmt.Errorf(
-			"qualification_profile %s: missing plugins %v; unexpected plugins %v",
-			selection.Qualification,
-			missing,
-			unexpected,
+			"qualification_profile %s: plugins missing count %d; unexpected count %d",
+			selection.Qualification, len(missing), len(unexpected),
 		)
 	}
 	return nil

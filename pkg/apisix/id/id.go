@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/gofrs/uuid"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 )
 
@@ -17,9 +16,9 @@ var (
 	uidFilePath   = filepath.Join("conf", "apisix.uid")
 )
 
-func Get() string {
-	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.ID != "" {
-		return config.GlobalConfig.Apisix.ID
+func Get(configuredID string) string {
+	if configuredID != "" {
+		return configuredID
 	}
 
 	generatedOnce.Do(func() {

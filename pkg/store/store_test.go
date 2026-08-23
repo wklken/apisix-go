@@ -75,7 +75,11 @@ func TestProcessEventWrapsOnlyResourceValidationFailures(t *testing.T) {
 }
 
 func TestRouteAndGlobalRulePutValidationRetainsLastGoodAndSkipsHooks(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "resource-validation.db"), make(chan *Event, 8))
+	storage, err := Open(
+		filepath.Join(t.TempDir(), "resource-validation.db"),
+		make(chan *Event, 8),
+		testDataEncryption(),
+	)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -153,7 +157,7 @@ func TestRouteAndGlobalRulePutValidationRetainsLastGoodAndSkipsHooks(t *testing.
 
 func TestOpenErrorForMissingDatabaseDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "store.db")
-	storage, err := Open(path, make(chan *Event))
+	storage, err := Open(path, make(chan *Event), testDataEncryption())
 	if err == nil {
 		t.Fatal("Open() error = nil for an unopenable database path")
 	}
@@ -168,7 +172,7 @@ func TestGetStoreReopensAfterStopWithDifferentEventChannel(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "reopen.db")
 	firstEvents := make(chan *Event)
-	first, err := GetStore(path, firstEvents)
+	first, err := GetStore(path, firstEvents, testDataEncryption())
 	if err != nil {
 		t.Fatalf("first GetStore() error = %v", err)
 	}
@@ -177,7 +181,7 @@ func TestGetStoreReopensAfterStopWithDifferentEventChannel(t *testing.T) {
 	}
 
 	secondEvents := make(chan *Event)
-	second, err := GetStore(path, secondEvents)
+	second, err := GetStore(path, secondEvents, testDataEncryption())
 	if err != nil {
 		t.Fatalf("second GetStore() error = %v", err)
 	}
@@ -197,11 +201,11 @@ func TestStopClearsOnlyMatchingGlobalStore(t *testing.T) {
 	previous := ReplaceGlobalStoreForTest(nil)
 	t.Cleanup(func() { ReplaceGlobalStoreForTest(previous) })
 
-	old, err := Open(filepath.Join(t.TempDir(), "old.db"), make(chan *Event))
+	old, err := Open(filepath.Join(t.TempDir(), "old.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open(old) error = %v", err)
 	}
-	newer, err := GetStore(filepath.Join(t.TempDir(), "new.db"), make(chan *Event))
+	newer, err := GetStore(filepath.Join(t.TempDir(), "new.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		_ = old.Stop()
 		t.Fatalf("GetStore(new) error = %v", err)
@@ -211,7 +215,7 @@ func TestStopClearsOnlyMatchingGlobalStore(t *testing.T) {
 	if err := old.Stop(); err != nil {
 		t.Fatalf("old Store.Stop() error = %v", err)
 	}
-	got, err := GetStore(filepath.Join(t.TempDir(), "unexpected.db"), make(chan *Event))
+	got, err := GetStore(filepath.Join(t.TempDir(), "unexpected.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("GetStore() after non-global Stop error = %v", err)
 	}
@@ -223,7 +227,7 @@ func TestStopClearsOnlyMatchingGlobalStore(t *testing.T) {
 func TestStopHookCanReenterGetStore(t *testing.T) {
 	previous := ReplaceGlobalStoreForTest(nil)
 	path := filepath.Join(t.TempDir(), "hook-reentrancy.db")
-	storage, err := Open(path, make(chan *Event))
+	storage, err := Open(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -246,7 +250,7 @@ func TestStopHookCanReenterGetStore(t *testing.T) {
 		}
 		stopSignal <- observedStop
 		go func() {
-			got, lookupErr := GetStore(path, make(chan *Event))
+			got, lookupErr := GetStore(path, make(chan *Event), testDataEncryption())
 			lookupResult <- struct {
 				storage *Store
 				err     error
@@ -294,7 +298,7 @@ func TestStopHookCanReenterGetStore(t *testing.T) {
 		t.Fatal("GetStore() returned the stopping Store to the reentrant hook")
 	}
 
-	reopened, err := GetStore(path, make(chan *Event))
+	reopened, err := GetStore(path, make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("GetStore() after Stop error = %v", err)
 	}
@@ -306,7 +310,7 @@ func TestStopHookCanReenterGetStore(t *testing.T) {
 }
 
 func TestSyncReturnsStoreStoppedBeforeAndDuringStop(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "sync-stop.db"), make(chan *Event))
+	storage, err := Open(filepath.Join(t.TempDir(), "sync-stop.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -327,7 +331,7 @@ func TestSyncReturnsStoreStoppedBeforeAndDuringStop(t *testing.T) {
 	}
 	assertSyncStopped("before")
 
-	active, err := Open(filepath.Join(t.TempDir(), "sync-concurrent-stop.db"), make(chan *Event))
+	active, err := Open(filepath.Join(t.TempDir(), "sync-concurrent-stop.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open(active) error = %v", err)
 	}
@@ -376,7 +380,7 @@ func TestTransactionErrorAfterDatabaseClose(t *testing.T) {
 }
 
 func TestConcurrentStopIsIdempotent(t *testing.T) {
-	storage, err := Open(t.TempDir()+"/concurrent-stop.db", make(chan *Event))
+	storage, err := Open(t.TempDir()+"/concurrent-stop.db", make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -401,7 +405,7 @@ func TestConcurrentStopIsIdempotent(t *testing.T) {
 
 func TestEventDuringStopDoesNotPanic(t *testing.T) {
 	events := make(chan *Event)
-	storage, err := Open(t.TempDir()+"/event-during-stop.db", events)
+	storage, err := Open(t.TempDir()+"/event-during-stop.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -722,7 +726,7 @@ func TestGetTypeAndIDFromKeyPreservesPrefixWithoutLeadingSlash(t *testing.T) {
 }
 
 func TestProcessEventRejectsMalformedKeysWithoutPanic(t *testing.T) {
-	storage, err := Open(filepath.Join(t.TempDir(), "malformed-key.db"), make(chan *Event))
+	storage, err := Open(filepath.Join(t.TempDir(), "malformed-key.db"), make(chan *Event), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

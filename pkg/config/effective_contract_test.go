@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -146,7 +145,7 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		invalid := validEmptySelection
 		invalid.Compatibility = "unsupported"
 		err = ValidateQualificationPlugins(nil, invalid, manifest)
-		if err == nil || err.Error() != `compatibility_target "unsupported" is unsupported` {
+		if err == nil || err.Error() != "compatibility_target is unsupported" {
 			t.Fatalf("ValidateQualificationPlugins() error = %v", err)
 		}
 	})
@@ -208,10 +207,7 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		enabled = append(enabled, "zz-extra", "aa-extra")
 		enabledBefore := append([]string(nil), enabled...)
 		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
-		want := fmt.Sprintf(
-			"qualification_profile http-data-plane-v1: missing plugins [%s %s]; unexpected plugins [aa-extra zz-extra]",
-			profile.RequiredPlugins[0], profile.RequiredPlugins[1],
-		)
+		want := "qualification_profile http-data-plane-v1: plugins missing count 2; unexpected count 2"
 		if err == nil || err.Error() != want {
 			t.Fatalf("ValidateQualificationPlugins() error = %v, want %q", err, want)
 		}
@@ -232,10 +228,7 @@ func TestValidateQualificationPlugins(t *testing.T) {
 		enabled = append(enabled, profile.RequiredPlugins[1], profile.RequiredPlugins[0])
 		enabledBefore := append([]string(nil), enabled...)
 		err := ValidateQualificationPlugins(enabled, qualifiedSelection(), manifest)
-		want := fmt.Sprintf(
-			"qualification_profile http-data-plane-v1: duplicate enabled plugins [%s %s]",
-			profile.RequiredPlugins[0], profile.RequiredPlugins[1],
-		)
+		want := "qualification_profile http-data-plane-v1: plugins duplicate enabled count 2"
 		if err == nil || err.Error() != want {
 			t.Fatalf("ValidateQualificationPlugins() error = %v, want %q", err, want)
 		}

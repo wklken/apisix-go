@@ -15,15 +15,23 @@ var (
 // Resolver decrypts APISIX data-encryption values without exposing key material.
 // The keyring is ordered from newest to oldest so rotated values remain readable.
 type Resolver struct {
-	enabled bool
-	keyring []string
+	configured bool
+	enabled    bool
+	keyring    []string
 }
 
 func NewResolver(enabled bool, keyring []string) Resolver {
 	return Resolver{
-		enabled: enabled,
-		keyring: append([]string(nil), keyring...),
+		configured: true,
+		enabled:    enabled,
+		keyring:    append([]string(nil), keyring...),
 	}
+}
+
+// Configured distinguishes an explicitly disabled resolver from a missing
+// dependency represented by the zero value. It does not expose key material.
+func (r Resolver) Configured() bool {
+	return r.configured
 }
 
 // Resolve strictly resolves a value that is expected to be encrypted when

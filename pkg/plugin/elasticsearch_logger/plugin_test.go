@@ -197,6 +197,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -204,6 +205,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
@@ -243,6 +251,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
 	}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -259,6 +268,7 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -273,7 +283,7 @@ func putPluginMetadata(t *testing.T, logFormat map[string]string) {
 	t.Helper()
 
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events)
+	storage, err := store.Open(t.TempDir()+"/store.db", events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -325,14 +335,14 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
 		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -344,9 +354,6 @@ func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
 func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		EndpointAddrs: []string{"http://127.0.0.1:9200"},
 		Field:         FieldConfig{Index: "apisix"},
@@ -356,6 +363,9 @@ func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
 			Password: encryptElasticsearchTestValue(t, oldKey, "elasticsearch-secret"),
 		},
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

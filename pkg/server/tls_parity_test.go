@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -18,7 +19,7 @@ import (
 
 func TestFrontendTLSHandshakeUsesPerResourceClientCA(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(t.TempDir()+"/resource-mtls.db", events)
+	storage, err := store.Open(t.TempDir()+"/resource-mtls.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -69,14 +70,12 @@ func TestFrontendTLSHandshakeUsesPerResourceClientCA(t *testing.T) {
 		t.Fatalf("SSL storage sync: %v", err)
 	}
 
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		SslProtocols: "TLSv1.2",
 		SslCiphers:   frontendTLS12Cipher,
 	}}}
-	serverConfig, err := buildFrontendTLSConfig()
+	serverConfig, err := buildFrontendTLSConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildFrontendTLSConfig() error = %v", err)
 	}

@@ -72,18 +72,20 @@ func Track(next http.Handler) http.Handler {
 	})
 }
 
-func StatusHandler(w http.ResponseWriter, r *http.Request) {
-	resp := Response{
-		ID: apisixid.Get(),
-		Status: map[string]string{
-			"active":   stringUint(activeRequests.Load()),
-			"accepted": stringUint(acceptedRequests.Load()),
-			"handled":  stringUint(handledRequests.Load()),
-			"total":    stringUint(totalRequests.Load()),
-		},
-	}
+func StatusHandler(configuredID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		resp := Response{
+			ID: apisixid.Get(configuredID),
+			Status: map[string]string{
+				"active":   stringUint(activeRequests.Load()),
+				"accepted": stringUint(acceptedRequests.Load()),
+				"handled":  stringUint(handledRequests.Load()),
+				"total":    stringUint(totalRequests.Load()),
+			},
+		}
 
-	_ = util.WriteJSON(w, http.StatusOK, resp)
+		_ = util.WriteJSON(w, http.StatusOK, resp)
+	}
 }
 
 func stringUint(v uint64) string {

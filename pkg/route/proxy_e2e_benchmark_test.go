@@ -39,7 +39,11 @@ func proxyLoopbackRouteStore(b *testing.B) *store.Store {
 	proxyLoopbackStoreOnce.Do(func() {
 		proxyLoopbackEvents = make(chan *store.Event, 64)
 		var err error
-		proxyLoopbackStore, err = store.GetStore(b.TempDir()+"/proxy-loopback.db", proxyLoopbackEvents)
+		proxyLoopbackStore, err = store.GetStore(
+			b.TempDir()+"/proxy-loopback.db",
+			proxyLoopbackEvents,
+			testDataEncryptionService(),
+		)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -142,7 +146,7 @@ func newProxyBenchmarkEnvironment(
 		b.Fatalf("Sync() error = %v", err)
 	}
 
-	builder := NewBuilder(storage)
+	builder := NewBuilder(storage, testEffectiveConfig(), testDataEncryptionResolver())
 	mux, err := builder.BuildStrict()
 	if err != nil {
 		b.Fatal(err)

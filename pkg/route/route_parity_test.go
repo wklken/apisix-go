@@ -19,14 +19,14 @@ import (
 
 func TestBuildUsesDynamicHTTPPluginAllowlistAndFallsBackAfterDelete(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "request-id")
+	effective := httpPluginAllowlist("request-id")
 	putDynamicHTTPPluginList(t, `[ {"name":"gzip"}, {"name":"mqtt-proxy","stream":true} ]`)
 
 	const routeID = "dynamic-http-plugin-route"
 	route := `{"id":"dynamic-http-plugin-route","uri":"/dynamic-http-plugin","plugins":{"request-id":{}}}`
 	putRouteResource(t, routeID, []byte(route))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil ||
@@ -42,7 +42,7 @@ func TestBuildUsesDynamicHTTPPluginAllowlistAndFallsBackAfterDelete(t *testing.T
 
 func TestBuildInheritsServiceHosts(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -61,7 +61,7 @@ func TestBuildInheritsServiceHosts(t *testing.T) {
 	)
 	putRouteResource(t, "service-host-route", routeBody)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil {
@@ -89,7 +89,7 @@ func TestBuildInheritsServiceHosts(t *testing.T) {
 
 func TestMaterializeRouteUsesOneServiceVersionForHostsAndHandler(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -103,7 +103,7 @@ func TestMaterializeRouteUsesOneServiceVersionForHostsAndHandler(t *testing.T) {
 	)
 	putHTTPAllowlistResource(t, "services", serviceID, serviceBody)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, hosts, err := builder.materializeRouteStrict(resource.Route{
 		ID:        "materialized-route-version",
@@ -135,6 +135,7 @@ func TestBuildMapsUpstreamNodePriorities(t *testing.T) {
 			"http://127.0.0.1:18081": 1,
 		},
 		proxy.TransportOption{},
+		&testEffectiveConfig().Config,
 		priorities,
 	)
 	if err != nil {
@@ -155,7 +156,7 @@ func TestBuildReverseHandlerSelectsHigherPriorityNode(t *testing.T) {
 	}))
 	t.Cleanup(high.Close)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	lowNode := websocketNode(t, low)
 	highNode := websocketNode(t, high)
@@ -227,7 +228,7 @@ func TestExplicitFalseRouteWebsocketOverridesService(t *testing.T) {
 	), &route); err != nil {
 		t.Fatalf("unmarshal explicit false route: %v", err)
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(route)
 	if err != nil {
@@ -244,8 +245,6 @@ func TestExplicitFalseRouteWebsocketOverridesService(t *testing.T) {
 }
 
 func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
 	for _, test := range []struct {
 		name   string
 		show   bool
@@ -257,7 +256,7 @@ func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
 		{name: "default exposes final 5xx", show: false, status: http.StatusBadGateway, want: "502"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{
+			staticConfig := &appconfig.Config{Apisix: appconfig.Apisix{
 				ShowUpstreamStatusInResponseHeader: test.show,
 			}}
 			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
@@ -268,7 +267,7 @@ func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
 				Request:    request,
 			}
 			response.Header.Set("X-APISIX-Upstream-Status", "spoofed-by-upstream")
-			if err := newModifyResponse()(response); err != nil {
+			if err := newModifyResponse(staticConfig)(response); err != nil {
 				t.Fatalf("newModifyResponse() error = %v", err)
 			}
 			if got := response.Header.Get("X-APISIX-Upstream-Status"); got != test.want {
@@ -279,10 +278,6 @@ func TestUpstreamStatusResponseHeaderFollowsConfiguration(t *testing.T) {
 }
 
 func TestUpstreamTransportFailuresExposeRetryStatusChain(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
-
 	transport := proxy.NewRetryTransport(routeRoundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	}))
@@ -295,7 +290,7 @@ func TestUpstreamTransportFailuresExposeRetryStatusChain(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	newErrorHandler()(response, request, err)
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, err)
 	if got := response.Header().Get("X-APISIX-Upstream-Status"); got != "502, 502, 502" {
 		t.Fatalf("upstream status header = %q, want retry chain", got)
 	}
@@ -305,12 +300,9 @@ func TestUpstreamTransportFailuresExposeRetryStatusChain(t *testing.T) {
 }
 
 func TestDirectorFailureDoesNotExposeSyntheticUpstreamStatus(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
-
 	for _, show := range []bool{false, true} {
 		t.Run(fmt.Sprintf("show=%t", show), func(t *testing.T) {
-			appconfig.GlobalConfig = &appconfig.Config{Apisix: appconfig.Apisix{
+			staticConfig := &appconfig.Config{Apisix: appconfig.Apisix{
 				ShowUpstreamStatusInResponseHeader: show,
 			}}
 			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
@@ -320,7 +312,7 @@ func TestDirectorFailureDoesNotExposeSyntheticUpstreamStatus(t *testing.T) {
 
 			response := httptest.NewRecorder()
 			response.Header().Set("X-APISIX-Upstream-Status", "spoofed-by-upstream")
-			newErrorHandler()(response, request, errors.New("unsupported protocol scheme"))
+			newErrorHandler(staticConfig)(response, request, errors.New("unsupported protocol scheme"))
 			if got := response.Header().Get("X-APISIX-Upstream-Status"); got != "" {
 				t.Fatalf("upstream status header = %q, want absent for local director failure", got)
 			}

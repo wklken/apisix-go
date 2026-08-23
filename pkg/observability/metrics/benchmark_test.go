@@ -5,7 +5,7 @@ import "testing"
 // BenchmarkVerifiedSmallPath measures the request-total increment that the
 // request-context plugin performs for every request.
 func BenchmarkVerifiedSmallPath(b *testing.B) {
-	if err := Init(); err != nil {
+	if err := Init(nil); err != nil {
 		b.Fatal(err)
 	}
 

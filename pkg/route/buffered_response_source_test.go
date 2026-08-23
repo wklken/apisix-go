@@ -20,7 +20,7 @@ func TestModifyResponseSetsUpstreamBeforeBoundedCapture(t *testing.T) {
 	)
 	response := &http.Response{StatusCode: http.StatusOK, Request: request}
 
-	if err := newModifyResponse()(response); err != nil {
+	if err := newModifyResponse(&testEffectiveConfig().Config)(response); err != nil {
 		t.Fatalf("newModifyResponse() error = %v", err)
 	}
 	if got := lifecycle.ResponseSource(); got != apisixctx.ResponseSourceUpstream {
@@ -39,7 +39,7 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 	)
 	response := &sourceObservingWriter{lifecycle: lifecycle, header: make(http.Header)}
 
-	newErrorHandler()(response, request, errors.New("upstream failed"))
+	newErrorHandler(&testEffectiveConfig().Config)(response, request, errors.New("upstream failed"))
 	if lifecycle.ResponseSource() != apisixctx.ResponseSourceAPISIX ||
 		response.firstSource != apisixctx.ResponseSourceAPISIX {
 		t.Fatalf(
@@ -49,12 +49,15 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 		)
 	}
 
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Scheme: "http",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{
+			Upstream: resource.Upstream{
+				Scheme: "http",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
 		},
-	}, resource.Service{})
+		resource.Service{},
+	)
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v", err)
 	}
@@ -101,7 +104,7 @@ func (w *sourceObservingWriter) Write(body []byte) (int, error) {
 }
 
 func TestGlobalNotFoundSetsEarlyStopBeforeWrite(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	handler, err := builder.buildGlobalNotFoundHandler(nil)
 	if err != nil {
 		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)

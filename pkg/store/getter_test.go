@@ -15,10 +15,9 @@ import (
 
 func TestParseConsumerDecryptsEncryptedAuthPluginFields(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
 
-	consumer, err := ParseConsumer([]byte(`{
+	consumer, err := storage.ParseConsumer([]byte(`{
         "username":"alice",
         "plugins":{"key-auth":{"key":"` + encryptForTest(t, key, "api-secret") + `"}}
     }`))
@@ -72,11 +71,10 @@ func TestGetConsumerReturnsDeepCloneOnCacheHit(t *testing.T) {
 
 func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
 
 	encrypted := encryptForTest(t, key, "Bearer secret")
-	route, err := ParseRoute([]byte(`{
+	route, err := storage.ParseRoute([]byte(`{
         "uri":"/logs",
         "plugins":{"http-logger":{"uri":"http://127.0.0.1/logs","auth_header":"` + encrypted + `"}}
     }`))
@@ -91,14 +89,13 @@ func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
 
 func TestDecodePluginMetadataDecryptsAzureMasterAPIKey(t *testing.T) {
 	key := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{key})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{key})}
 
 	var metadata struct {
 		MasterAPIKey   string `json:"master_apikey"`
 		MasterClientID string `json:"master_clientid"`
 	}
-	err := decodePluginMetadata([]byte(`{
+	err := storage.decodePluginMetadata([]byte(`{
         "master_apikey":"`+encryptForTest(t, key, "master-key")+`",
         "master_clientid":"master-client"
     }`), "azure-functions", &metadata)
@@ -111,13 +108,16 @@ func TestDecodePluginMetadataDecryptsAzureMasterAPIKey(t *testing.T) {
 }
 
 func TestDecodePluginMetadataPreservesUnregisteredLargeIntegers(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	storage := &Store{dataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"})}
 
 	var metadata struct {
 		Sequence int64 `json:"sequence"`
 	}
-	if err := decodePluginMetadata([]byte(`{"sequence":9007199254740993}`), "example-plugin", &metadata); err != nil {
+	if err := storage.decodePluginMetadata(
+		[]byte(`{"sequence":9007199254740993}`),
+		"example-plugin",
+		&metadata,
+	); err != nil {
 		t.Fatalf("decodePluginMetadata() error = %v", err)
 	}
 	if metadata.Sequence != 9007199254740993 {
@@ -196,7 +196,11 @@ func seededGetterStore(t *testing.T) *Store {
 		t.Fatalf("open getter database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	storage := &Store{db: db, consumerValues: map[string]resource.Consumer{}}
+	storage := &Store{
+		db:             db,
+		dataEncryption: data_encryption.NewService(false, nil),
+		consumerValues: map[string]resource.Consumer{},
+	}
 	if err := storage.InitBuckets(); err != nil {
 		t.Fatalf("InitBuckets() error = %v", err)
 	}

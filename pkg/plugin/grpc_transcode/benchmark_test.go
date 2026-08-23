@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -13,7 +14,7 @@ import (
 // against the real store: proto content fetch plus cached-binding validation.
 func BenchmarkVerifiedHotPath(b *testing.B) {
 	events := make(chan *store.Event, 4)
-	storage, err := store.GetStore(b.TempDir()+"/grpc-bench.db", events)
+	storage, err := store.GetStore(b.TempDir()+"/grpc-bench.db", events, data_encryption.NewService(false, nil))
 	if err != nil {
 		b.Fatalf("get store: %v", err)
 	}

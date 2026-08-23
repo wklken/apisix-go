@@ -135,7 +135,7 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 	}))
 	t.Cleanup(logSink.Close)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "phase-closure",
@@ -248,7 +248,7 @@ func TestPluginPhaseClosureServerlessLogNowCoexistsWithStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "serverless-log-streaming",
@@ -336,7 +336,7 @@ func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) 
 	}))
 	t.Cleanup(logSink.Close)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID:  "data-mask-detached-log",

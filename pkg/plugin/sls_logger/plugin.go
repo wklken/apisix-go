@@ -3,6 +3,7 @@ package sls_logger
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -194,13 +194,15 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
 	}
-	keyring, enabled := data_encryption.Keyring()
-	_, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+	_, err := p.DataEncryption().ResolveForContext(
 		p.config.AccessKeySecret,
 		"sls-logger.access_key_secret",
 	)

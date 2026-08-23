@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/proxy"
@@ -33,20 +34,20 @@ import (
 func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	const childEnv = "APISIX_GO_SERVER_PROMETHEUS_INIT_CHILD"
 	if os.Getenv(childEnv) == "1" {
-		config.GlobalConfig = &config.Config{
+		effective := &config.EffectiveConfig{Config: config.Config{
 			Plugins: []string{"prometheus"},
 			PluginAttr: map[string]map[string]any{
 				"prometheus": {"max_http_series": "not-an-integer"},
 			},
-		}
-		if err := (&Server{}).startPrometheusExportServer(); err == nil ||
+		}}
+		if err := (&Server{staticConfig: effective}).startPrometheusExportServer(); err == nil ||
 			!strings.HasPrefix(err.Error(), "initialize prometheus metrics: ") {
 			t.Fatalf("startPrometheusExportServer() error = %v, want metrics init prefix", err)
 		}
 
 		// A nil store makes the ordering contract observable: invalid metrics
 		// configuration must return before storage hooks or Start are touched.
-		server := &Server{server: &http.Server{}}
+		server := &Server{staticConfig: effective, server: &http.Server{}}
 		if err := server.Start(context.Background()); err == nil ||
 			!strings.HasPrefix(err.Error(), "initialize prometheus metrics: ") {
 			t.Fatalf("Server.Start() error = %v, want metrics init prefix", err)
@@ -58,6 +59,62 @@ func TestPrometheusInitErrorsPropagateToServerCallers(t *testing.T) {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("prometheus init propagation child failed: %v\n%s", err, output)
+	}
+}
+
+func TestNewServerRejectsNilEffectiveConfigBeforeCreatingRuntimeFiles(t *testing.T) {
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+	runtimeDir := t.TempDir()
+	if err := os.Chdir(runtimeDir); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+
+	server, err := NewServer(nil, data_encryption.Service{})
+	if server != nil || err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("NewServer(nil) = (%#v, %v)", server, err)
+	}
+	entries, readErr := os.ReadDir(runtimeDir)
+	if readErr != nil {
+		t.Fatalf("read runtime directory: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("NewServer(nil) created runtime files: %v", entries)
+	}
+}
+
+func TestServerInstancesRetainIndependentStaticConfig(t *testing.T) {
+	firstConfig := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
+		ID: "node-a", NodeListen: []config.NodeListen{{Ip: "127.0.0.1", Port: 9080}},
+	}}}
+	secondConfig := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{
+		ID: "node-b", NodeListen: []config.NodeListen{{Ip: "127.0.0.2", Port: 9081}},
+	}}}
+	first := &Server{staticConfig: firstConfig}
+	second := &Server{staticConfig: secondConfig}
+
+	if first.staticConfig.Config.Apisix.ID != "node-a" || second.staticConfig.Config.Apisix.ID != "node-b" {
+		t.Fatalf("server IDs crossed: first=%q second=%q",
+			first.staticConfig.Config.Apisix.ID, second.staticConfig.Config.Apisix.ID)
+	}
+	if got := configuredListenAddresses(
+		&first.staticConfig.Config,
+	); !reflect.DeepEqual(
+		got,
+		[]string{"127.0.0.1:9080"},
+	) {
+		t.Fatalf("first addresses = %#v", got)
+	}
+	if got := configuredListenAddresses(
+		&second.staticConfig.Config,
+	); !reflect.DeepEqual(
+		got,
+		[]string{"127.0.0.2:9081"},
+	) {
+		t.Fatalf("second addresses = %#v", got)
 	}
 }
 
@@ -221,7 +278,7 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 	streamErr := errors.New("stream stop failed")
 	traceErr := errors.New("trace stop failed")
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "shutdown.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "shutdown.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -262,7 +319,7 @@ func TestServerShutdownStopsProducerBeforeStoreAndJoinsErrors(t *testing.T) {
 
 func TestServerShutdownCancelsAndJoinsQueuedReloadScheduler(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "scheduler.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "scheduler.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -293,8 +350,6 @@ func TestServerShutdownCancelsAndJoinsQueuedReloadScheduler(t *testing.T) {
 }
 
 func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
 	previousDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
@@ -312,15 +367,15 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
 		t.Fatalf("write standalone config: %v", err)
 	}
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		Deployment: config.Deployment{
 			Role:          "data_plane",
 			RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
 		},
 		Apisix: config.Apisix{ProxyMode: "stream"},
-	}
+	}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "startup.db"), events)
+	storage, err := store.Open(filepath.Join(root, "startup.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -339,13 +394,14 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 		<-release
 	})
 	server := &Server{
-		addr:     "127.0.0.1:0",
-		addrs:    []string{"127.0.0.1:0"},
-		server:   &http.Server{},
-		routes:   newRouteHandler(http.NotFoundHandler(), nil),
-		clusters: proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
-		events:   events,
-		storage:  storage,
+		staticConfig: effective,
+		addr:         "127.0.0.1:0",
+		addrs:        []string{"127.0.0.1:0"},
+		server:       &http.Server{},
+		routes:       newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:     proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:       events,
+		storage:      storage,
 	}
 	startCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -381,7 +437,7 @@ func TestShutdownDuringStandaloneInitialReloadDoesNotLeaveStartBlocked(t *testin
 
 func TestStartFailureCleanupIsBoundedWithActiveHTTPRequest(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "startup-cleanup.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "startup-cleanup.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -514,8 +570,6 @@ func TestEtcdWatchExitIsJoinedBeforeClientClose(t *testing.T) {
 }
 
 func TestStandaloneStartupDeletesPersistedResourceRemovedFromFile(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
 	previousDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
@@ -533,17 +587,17 @@ func TestStandaloneStartupDeletesPersistedResourceRemovedFromFile(t *testing.T) 
 		t.Fatalf("write standalone config: %v", err)
 	}
 
-	config.GlobalConfig = &config.Config{Deployment: config.Deployment{
+	effective := &config.EffectiveConfig{Config: config.Config{Deployment: config.Deployment{
 		Role:          "data_plane",
 		RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
-	}}
+	}}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "store.db"), events)
+	storage, err := store.Open(filepath.Join(root, "store.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	storage.Start()
-	server := &Server{events: events, storage: storage}
+	server := &Server{staticConfig: effective, events: events, storage: storage}
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
 	events <- &store.Event{
 		Type:  store.EventTypePut,
@@ -567,8 +621,6 @@ func TestStandaloneStartupDeletesPersistedResourceRemovedFromFile(t *testing.T) 
 }
 
 func TestStartFailureStopsStandaloneProducerAndStore(t *testing.T) {
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
 	previousDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
@@ -585,28 +637,29 @@ func TestStartFailureStopsStandaloneProducerAndStore(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("routes: []\n#END\n"), 0o600); err != nil {
 		t.Fatalf("write standalone config: %v", err)
 	}
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		Deployment: config.Deployment{
 			Role:          "data_plane",
 			RoleDataPlane: config.RoleConfig{ConfigProvider: "yaml"},
 		},
 		Apisix: config.Apisix{ProxyMode: "stream"},
-	}
+	}}
 	events := make(chan *store.Event, 8)
-	storage, err := store.Open(filepath.Join(root, "store.db"), events)
+	storage, err := store.Open(filepath.Join(root, "store.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	previousStore := store.ReplaceGlobalStoreForTest(storage)
 	t.Cleanup(func() { store.ReplaceGlobalStoreForTest(previousStore) })
 	server := &Server{
-		addr:     "127.0.0.1:0",
-		addrs:    []string{"127.0.0.1:0"},
-		server:   &http.Server{},
-		routes:   newRouteHandler(http.NotFoundHandler(), nil),
-		clusters: proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
-		events:   events,
-		storage:  storage,
+		staticConfig: effective,
+		addr:         "127.0.0.1:0",
+		addrs:        []string{"127.0.0.1:0"},
+		server:       &http.Server{},
+		routes:       newRouteHandler(http.NotFoundHandler(), nil),
+		clusters:     proxy.NewClusterRegistry(proxy.NopClusterObserver{}),
+		events:       events,
+		storage:      storage,
 	}
 
 	err = server.Start(context.Background())
@@ -760,10 +813,8 @@ func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
 }
 
 func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Plugins: []string{"prometheus"}}
-	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	cfg := &config.Config{Plugins: []string{"prometheus"}}
+	server := newConfiguredHTTPServer(http.NotFoundHandler(), cfg)
 	if server.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
 	}
@@ -779,11 +830,9 @@ func TestConfiguredHTTPServerUsesSafeHeaderAndIdleDefaults(t *testing.T) {
 }
 
 func TestConfiguredHTTPServerSkipsConnectionObserverWithoutPrometheus(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Plugins: []string{"limit-req"}}
+	cfg := &config.Config{Plugins: []string{"limit-req"}}
 
-	if observer := newConfiguredHTTPServer(http.NotFoundHandler()).ConnState; observer != nil {
+	if observer := newConfiguredHTTPServer(http.NotFoundHandler(), cfg).ConnState; observer != nil {
 		t.Fatal("configured HTTP server installed a Prometheus connection observer while metrics are disabled")
 	}
 }
@@ -853,10 +902,8 @@ func TestConfiguredHTTPHandlerLimitsHealthEndpoints(t *testing.T) {
 }
 
 func TestConfiguredHTTPHandlerCountsAllRequestsOnlyWhenPrometheusEnabled(t *testing.T) {
-	previousConfig := config.GlobalConfig
 	previousRequests := metrics.Requests
 	t.Cleanup(func() {
-		config.GlobalConfig = previousConfig
 		metrics.Requests = previousRequests
 	})
 
@@ -870,7 +917,6 @@ func TestConfiguredHTTPHandlerCountsAllRequestsOnlyWhenPrometheusEnabled(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := &config.Config{Plugins: test.plugins}
-			config.GlobalConfig = cfg
 			metrics.Requests = prometheus.NewGauge(prometheus.GaugeOpts{
 				Name: "test_http_handler_requests_" + test.name,
 			})
@@ -935,9 +981,7 @@ func installHealthMetrics(t *testing.T) func() {
 }
 
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{
+	cfg := &config.Config{
 		Apisix: config.Apisix{NodeListen: []config.NodeListen{
 			{Port: 9080},
 			{Ip: "127.0.0.2", Port: 9081},
@@ -949,14 +993,14 @@ func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 		}},
 	}
 
-	if got, want := configuredListenAddresses(), []string{
+	if got, want := configuredListenAddresses(cfg), []string{
 		"0.0.0.0:9080",
 		"127.0.0.2:9081",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("configuredListenAddresses() = %#v, want %#v", got, want)
 	}
 
-	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	server := newConfiguredHTTPServer(http.NotFoundHandler(), cfg)
 	if server.IdleTimeout != 60*time.Second {
 		t.Fatalf("IdleTimeout = %s, want 1m0s", server.IdleTimeout)
 	}
@@ -972,9 +1016,7 @@ func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 }
 
 func TestConfiguredTLSListenAddresses(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable: true,
 		Listen: []config.Listen{
 			{Port: 9443},
@@ -982,30 +1024,28 @@ func TestConfiguredTLSListenAddresses(t *testing.T) {
 		},
 	}}}
 
-	if got, want := configuredTLSListenAddresses(), []string{
+	if got, want := configuredTLSListenAddresses(cfg), []string{
 		"0.0.0.0:9443",
 		"127.0.0.2:9444",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("configuredTLSListenAddresses() = %#v, want %#v", got, want)
 	}
 
-	config.GlobalConfig.Apisix.Ssl.Enable = false
-	if got := configuredTLSListenAddresses(); len(got) != 0 {
+	cfg.Apisix.Ssl.Enable = false
+	if got := configuredTLSListenAddresses(cfg); len(got) != 0 {
 		t.Fatalf("configuredTLSListenAddresses() = %#v, want no disabled listeners", got)
 	}
 }
 
 func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		Listen:       []config.Listen{{Port: 9443, EnableHttp2: true}},
 		SslProtocols: "TLSv1.2 TLSv1.3",
 		SslCiphers:   "ECDHE-RSA-AES128-GCM-SHA256",
 	}}}
 
-	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	server := newConfiguredHTTPServer(http.NotFoundHandler(), cfg)
 	if _, ok := server.TLSNextProto["h2"]; !ok {
 		t.Fatal("configured HTTP server does not install an HTTP/2 handler")
 	}
@@ -1013,25 +1053,23 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 		t.Fatal("TLS-only HTTP/2 configuration enabled plaintext h2c")
 	}
 
-	tlsConfig := mustFrontendTLSConfig(t)
+	tlsConfig := mustFrontendTLSConfig(t, cfg)
 	if !slices.Contains(tlsConfig.NextProtos, "h2") {
 		t.Fatalf("frontend TLS protocols = %v, want h2", tlsConfig.NextProtos)
 	}
 
-	config.GlobalConfig.Apisix.Ssl.Listen[0].EnableHttp2 = false
-	if protocols := mustFrontendTLSConfig(t).NextProtos; slices.Contains(protocols, "h2") {
+	cfg.Apisix.Ssl.Listen[0].EnableHttp2 = false
+	if protocols := mustFrontendTLSConfig(t, cfg).NextProtos; slices.Contains(protocols, "h2") {
 		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
 	}
 }
 
 func TestConfiguredHTTPServerEnablesH2COnlyForPlaintextListener(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{NodeListen: []config.NodeListen{{
+	cfg := &config.Config{Apisix: config.Apisix{NodeListen: []config.NodeListen{{
 		Port: 9080, EnableHttp2: true,
 	}}}}
 
-	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	server := newConfiguredHTTPServer(http.NotFoundHandler(), cfg)
 	if !server.Protocols.UnencryptedHTTP2() {
 		t.Fatal("explicit plaintext HTTP/2 listener did not enable h2c")
 	}
@@ -1284,7 +1322,7 @@ func TestApplyStandaloneSnapshotPropagatesRouteBuildFailure(t *testing.T) {
 
 func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events)
+	storage, err := store.GetStore(t.TempDir()+"/frontend-tls.db", events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}
@@ -1314,7 +1352,8 @@ func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 		t.Fatalf("SSL storage sync: %v", err)
 	}
 
-	getCertificate := mustFrontendTLSConfig(t).GetCertificate
+	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{FallbackSNI: "api.example.test"}}}
+	getCertificate := mustFrontendTLSConfig(t, cfg).GetCertificate
 	selected, err := getCertificate(&tls.ClientHelloInfo{ServerName: "api.example.test"})
 	if err != nil {
 		t.Fatalf("GetCertificate(exact) error = %v", err)
@@ -1338,13 +1377,6 @@ func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 		t.Fatal("GetCertificate(unknown) error = nil")
 	}
 
-	previousConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previousConfig })
-	config.GlobalConfig = &config.Config{
-		Apisix: config.Apisix{
-			Ssl: config.Ssl{FallbackSNI: "api.example.test"},
-		},
-	}
 	fallback, err := getCertificate(&tls.ClientHelloInfo{})
 	if err != nil {
 		t.Fatalf("GetCertificate(empty SNI with fallback) error = %v", err)
@@ -1355,25 +1387,21 @@ func TestFrontendTLSGetCertificateSelectsFromPublishedIndex(t *testing.T) {
 }
 
 func TestFrontendHTTP2DefaultsWithoutConfig(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
-	config.GlobalConfig = nil
-	if frontendHTTP2Enabled() {
+	if frontendHTTP2Enabled(nil) {
 		t.Fatal("frontendHTTP2Enabled() = true without config")
 	}
-	if frontendPlainHTTP2Enabled() {
+	if frontendPlainHTTP2Enabled(nil) {
 		t.Fatal("frontendPlainHTTP2Enabled() = true without config")
 	}
-	if got := configuredTLSListenAddresses(); got != nil {
+	if got := configuredTLSListenAddresses(nil); got != nil {
 		t.Fatalf("configuredTLSListenAddresses() = %#v, want nil without config", got)
 	}
 
-	config.GlobalConfig = &config.Config{}
-	if frontendHTTP2Enabled() {
+	cfg := &config.Config{}
+	if frontendHTTP2Enabled(cfg) {
 		t.Fatal("frontendHTTP2Enabled() = true with default config")
 	}
-	if frontendPlainHTTP2Enabled() {
+	if frontendPlainHTTP2Enabled(cfg) {
 		t.Fatal("frontendPlainHTTP2Enabled() = true with default config")
 	}
 }
@@ -1406,9 +1434,10 @@ func TestStartReturnsListenError(t *testing.T) {
 	address := occupied.Addr().String()
 
 	server := &Server{
-		addr:   address,
-		addrs:  []string{address},
-		server: newConfiguredHTTPServer(http.NotFoundHandler()),
+		staticConfig: &config.EffectiveConfig{},
+		addr:         address,
+		addrs:        []string{address},
+		server:       newConfiguredHTTPServer(http.NotFoundHandler(), nil),
 	}
 	done := make(chan error, 1)
 	go func() { done <- server.startHTTPListeners(t.Context()) }()
@@ -1511,34 +1540,28 @@ func TestListenReloadEventReturnsOnCancellation(t *testing.T) {
 }
 
 func TestConfiguredListenAddressesUsesNodeListen(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = nil
-	if got := configuredListenAddresses(); !reflect.DeepEqual(got, []string{":8080"}) {
+	if got := configuredListenAddresses(nil); !reflect.DeepEqual(got, []string{":8080"}) {
 		t.Fatalf("configuredListenAddresses() = %#v, want default :8080", got)
 	}
 
-	config.GlobalConfig = &config.Config{Apisix: config.Apisix{
+	cfg := &config.Config{Apisix: config.Apisix{
 		NodeListen: []config.NodeListen{{Ip: "127.0.0.1", Port: 9080}},
 	}}
-	if got := configuredListenAddresses(); !reflect.DeepEqual(got, []string{"127.0.0.1:9080"}) {
+	if got := configuredListenAddresses(cfg); !reflect.DeepEqual(got, []string{"127.0.0.1:9080"}) {
 		t.Fatalf("configuredListenAddresses() = %#v, want node listen address", got)
 	}
 }
 
 func TestPluginConfiguredConsultsEnabledPlugins(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = nil
-	if pluginConfigured("node-status") {
+	if pluginConfigured(nil, "node-status") {
 		t.Fatal("pluginConfigured() = true without config")
 	}
 
-	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
-	if !pluginConfigured("node-status") {
+	cfg := &config.Config{Plugins: []string{"node-status"}}
+	if !pluginConfigured(cfg, "node-status") {
 		t.Fatal("pluginConfigured() = false for an enabled plugin")
 	}
-	if pluginConfigured("prometheus") {
+	if pluginConfigured(cfg, "prometheus") {
 		t.Fatal("pluginConfigured() = true for a disabled plugin")
 	}
 }
@@ -1576,11 +1599,7 @@ func TestHandleStoreEventUpdateDispatchesByBucket(t *testing.T) {
 }
 
 func TestFrontendTLSConfigDefaultsWithoutHTTP2(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = nil
-
-	tlsConfig := mustFrontendTLSConfig(t)
+	tlsConfig := mustFrontendTLSConfig(t, nil)
 	if !reflect.DeepEqual(tlsConfig.NextProtos, []string{"http/1.1"}) {
 		t.Fatalf("NextProtos = %v, want only http/1.1", tlsConfig.NextProtos)
 	}
@@ -1616,16 +1635,14 @@ func TestNormalizeRequestPathShortCircuitsAndPreservesTrailingSlash(t *testing.T
 }
 
 func TestStartPrometheusExportServerWithDuplicatePluginNames(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{
+	effective := &config.EffectiveConfig{Config: config.Config{
 		Plugins: []string{"prometheus", "prometheus"},
 		PluginAttr: map[string]map[string]any{
 			"prometheus": {"enable_export_server": false},
 		},
-	}
+	}}
 
-	s := &Server{}
+	s := &Server{staticConfig: effective}
 	if err := s.startPrometheusExportServer(); err != nil {
 		t.Fatalf("startPrometheusExportServer() error = %v", err)
 	}
@@ -1635,11 +1652,9 @@ func TestStartPrometheusExportServerWithDuplicatePluginNames(t *testing.T) {
 }
 
 func TestStartPrometheusExportServerWithoutPrometheus(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-	config.GlobalConfig = &config.Config{Plugins: []string{"limit-req"}}
+	effective := &config.EffectiveConfig{Config: config.Config{Plugins: []string{"limit-req"}}}
 
-	s := &Server{}
+	s := &Server{staticConfig: effective}
 	if err := s.startPrometheusExportServer(); err != nil {
 		t.Fatalf("startPrometheusExportServer() error = %v", err)
 	}

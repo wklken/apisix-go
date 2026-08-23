@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 )
 
 const encryptedValuePrefix = "$encrypted://"
@@ -18,25 +17,6 @@ const (
 	v2CiphertextPrefix = "v2:"
 	v2NonceSize        = 12
 )
-
-var runtimeConfig struct {
-	sync.RWMutex
-	enabled bool
-	keyring []string
-}
-
-func Configure(enabled bool, keyring []string) {
-	runtimeConfig.Lock()
-	runtimeConfig.enabled = enabled
-	runtimeConfig.keyring = append([]string(nil), keyring...)
-	runtimeConfig.Unlock()
-}
-
-func Keyring() ([]string, bool) {
-	runtimeConfig.RLock()
-	defer runtimeConfig.RUnlock()
-	return append([]string(nil), runtimeConfig.keyring...), runtimeConfig.enabled
-}
 
 var pluginFields = map[string][]string{
 	"ai-aliyun-content-moderation": {"access_key_secret"},

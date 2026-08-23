@@ -15,6 +15,7 @@ import (
 
 	"github.com/apache/dubbo-go-hessian2"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo"
 )
 
@@ -201,15 +202,18 @@ func TestServeDubboWithRetriesDoesNotRetryAfterRequestWrite(t *testing.T) {
 }
 
 func TestPostInitLoadsDubboMultiplexLimit(t *testing.T) {
-	oldConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{
+	p := &Plugin{config: Config{ServiceName: "svc", ServiceVersion: "1.0.0"}}
+	p.SetDependencies(base.Dependencies{Config: &appconfig.EffectiveConfig{Config: appconfig.Config{
 		PluginAttr: map[string]map[string]any{
 			"dubbo-proxy": {"upstream_multiplex_count": 3},
 		},
+	}}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
 	}
-	t.Cleanup(func() { appconfig.GlobalConfig = oldConfig })
-
-	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "1.0.0"})
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	if got := p.config.MultiplexCount; got != 3 {
 		t.Fatalf("multiplex count = %d, want 3", got)
 	}

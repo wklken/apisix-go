@@ -13,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -22,6 +23,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -30,6 +32,16 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRequiresEffectiveConfig(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "effective config is required" {
+		t.Fatalf("PostInit() error = %v, want stable missing-config error", err)
+	}
 }
 
 func TestRequestVarUsesEffectiveRemoteIP(t *testing.T) {
@@ -81,6 +93,7 @@ func TestPostInitRejectsRedisPolicyWithoutHost(t *testing.T) {
 		Key:        "remote_addr",
 		Policy:     "redis",
 	}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -491,11 +504,16 @@ func TestHandlerReportsEmptyGraphQLQuery(t *testing.T) {
 }
 
 func TestHandlerEnforcesGlobalGraphQLMaxSize(t *testing.T) {
-	oldConfig := config.GlobalConfig
-	config.GlobalConfig = &config.Config{GraphQL: config.GraphQL{MaxSize: 50}}
-	t.Cleanup(func() { config.GlobalConfig = oldConfig })
-
-	p := newTestPlugin(t, Config{Count: 100, TimeWindow: 60})
+	p := &Plugin{config: Config{Count: 100, TimeWindow: 60}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{
+		Config: config.Config{GraphQL: config.GraphQL{MaxSize: 50}},
+	}})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/graphql",
@@ -708,6 +726,7 @@ func TestPostInitRejectsMismatchedGroupConfiguration(t *testing.T) {
 
 	newTestPlugin(t, Config{Count: 2, TimeWindow: 60, Group: "shared-group"})
 	p := &Plugin{config: Config{Count: 3, TimeWindow: 60, Group: "shared-group"}}
+	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

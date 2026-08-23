@@ -12,7 +12,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
@@ -179,7 +178,7 @@ func TestScopedRewritePreservesServiceAndPluginConfigProvenance(t *testing.T) {
 
 func TestScopedRewriteMaterializesRoutePluginConfigAndServiceWinners(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t, "request-id")
+	effective := httpPluginAllowlist("request-id")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -219,7 +218,7 @@ func TestScopedRewriteMaterializesRoutePluginConfigAndServiceWinners(t *testing.
 		),
 	)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil {
@@ -363,13 +362,10 @@ func TestScopedRewriteGlobalNotFoundRunsSystemAndGlobalOnly(t *testing.T) {
 }
 
 func TestGlobalNotFoundInjectsOnlyRequestContextSystemPlugin(t *testing.T) {
-	previousConfig := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{
-		Plugins:     nil,
-		NginxConfig: appconfig.NginxConfig{HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 1}},
-	}
-	t.Cleanup(func() { appconfig.GlobalConfig = previousConfig })
-	builder := NewBuilder(nil)
+	effective := testEffectiveConfig()
+	effective.Config.Plugins = nil
+	effective.Config.NginxConfig.HTTP.ClientMaxBodySize = 1
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	set := plugin.NewEnabledSet(nil)
 	builder.enabledPlugins = &set
 	handler, err := builder.buildGlobalNotFoundHandler(nil)
@@ -418,7 +414,7 @@ func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "scoped-jwt-auth-route",
@@ -482,7 +478,7 @@ func TestPlan14V2ConsumerProxyRewriteOverridesRouteBeforeEitherExecutes(t *testi
 		t.Fatalf("parse upstream port: %v", err)
 	}
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "scoped-jwt-proxy-route",
@@ -537,7 +533,7 @@ func TestServiceProvenanceUsesAuthoritativeRouteServiceID(t *testing.T) {
 		"plugins":{"proxy-rewrite":{"method":"INVALID"}}
 	}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	_, err := builder.buildHandlerStrict(resource.Route{
 		ID:        "scoped-service-route",
@@ -562,7 +558,7 @@ func TestBuildRejectsGlobalRuleWithoutEmbeddedID(t *testing.T) {
 		"upstream":{"type":"roundrobin","nodes":{"127.0.0.1:1":1}}
 	}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {

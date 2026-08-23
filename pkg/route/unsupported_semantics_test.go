@@ -13,7 +13,7 @@ import (
 
 func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 
 	tests := []struct {
 		name    string
@@ -74,7 +74,7 @@ func TestBuildStrictRejectsUnsupportedRouteSemantics(t *testing.T) {
 			)
 			putRouteResource(t, test.routeID, payload)
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err == nil || handler != nil {
@@ -120,11 +120,11 @@ func TestProgrammaticSingularFieldsUseValuePresence(t *testing.T) {
 
 func TestBuildStrictAllowsBlankFilterFunc(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	const routeID = "blank-filter-route"
 	putRouteResource(t, routeID, []byte(`{"id":"blank-filter-route","uri":"/blank-filter-route","filter_func":" \t "}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil || handler == nil {
@@ -134,7 +134,7 @@ func TestBuildStrictAllowsBlankFilterFunc(t *testing.T) {
 
 func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	const routeID = "nested-numeric-vars"
 	putRouteResource(
 		t,
@@ -142,7 +142,7 @@ func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
 		[]byte(`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`),
 	)
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err == nil || handler != nil {
@@ -155,7 +155,7 @@ func TestBuildStrictRejectsNestedNumericVars(t *testing.T) {
 
 func TestBuildStrictAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	for _, test := range []struct {
 		routeID string
 		payload string
@@ -166,7 +166,7 @@ func TestBuildStrictAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
 	} {
 		t.Run(test.routeID, func(t *testing.T) {
 			putRouteResource(t, test.routeID, []byte(test.payload))
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err != nil || handler == nil {
@@ -178,11 +178,11 @@ func TestBuildStrictAllowsEmptyVarsAndRemoteAddrs(t *testing.T) {
 
 func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 	const routeID = "vars-last-good"
 	putRouteResource(t, routeID, []byte(`{"id":"vars-last-good","uri":"/vars-last-good"}`))
 
-	validBuilder := NewBuilder(nil)
+	validBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(validBuilder.Stop)
 	lastGood, err := validBuilder.BuildStrict()
 	if err != nil || lastGood == nil {
@@ -194,7 +194,7 @@ func TestBuildStrictRejectsVarsAndKeepsLastGoodHandler(t *testing.T) {
 		routeID,
 		[]byte(`{"id":"vars-last-good","uri":"/vars-last-good","vars":[["http_user","==","ios"]]}`),
 	)
-	invalidBuilder := NewBuilder(nil)
+	invalidBuilder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(invalidBuilder.Stop)
 	handler, err := invalidBuilder.BuildStrict()
 	if err == nil || handler != nil {
@@ -225,7 +225,7 @@ func TestBuildReverseHandlerValidatesHTTPUpstreamTypes(t *testing.T) {
 		{name: "kafka owner", scheme: "kafka", type_: "chash", wantOK: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			builder := &Builder{}
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			_, err := builder.buildReverseHandler(resource.Route{Upstream: resource.Upstream{
 				Scheme: test.scheme,
@@ -245,15 +245,17 @@ func TestBuildReverseHandlerValidatesHTTPUpstreamTypes(t *testing.T) {
 }
 
 func TestUnsupportedUpstreamSchemeAcceptsKafkaAcrossProfileAxes(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
-	appconfig.GlobalConfig = &appconfig.Config{
-		CompatibilityTarget:  appconfig.CompatibilityAPISIX317,
-		SecurityProfile:      appconfig.SecurityStrict,
-		QualificationProfile: appconfig.QualificationHTTPDataPlaneV1,
+	effective := testEffectiveConfig()
+	effective.Config.CompatibilityTarget = appconfig.CompatibilityAPISIX317
+	effective.Config.SecurityProfile = appconfig.SecurityStrict
+	effective.Config.QualificationProfile = appconfig.QualificationHTTPDataPlaneV1
+	effective.Profiles = appconfig.ProfileSelection{
+		Compatibility: appconfig.CompatibilityAPISIX317,
+		Security:      appconfig.SecurityStrict,
+		Qualification: appconfig.QualificationHTTPDataPlaneV1,
 	}
 
-	builder := &Builder{}
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	_, err := builder.buildReverseHandler(resource.Route{
 		ID:       "profile-kafka-route",

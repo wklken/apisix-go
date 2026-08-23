@@ -2,11 +2,11 @@ package kafka_proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -67,9 +67,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if p.config.SASL != nil {
-		keyring, enabled := data_encryption.Keyring()
-		resolved, err := data_encryption.NewResolver(enabled, keyring).ResolveForContext(
+		resolved, err := p.DataEncryption().ResolveForContext(
 			p.config.SASL.Password,
 			"kafka-proxy.sasl.password",
 		)

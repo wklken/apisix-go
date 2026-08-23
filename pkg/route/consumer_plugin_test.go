@@ -8,7 +8,7 @@ import (
 )
 
 func TestConsumerPluginChainDoesNotShareRouteBoundPluginsAcrossRoutes(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	configs := map[string]resource.PluginConfig{
 		"limit-count": map[string]any{
 			"count":         1,

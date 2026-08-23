@@ -7,9 +7,6 @@ import (
 )
 
 func TestServerInfoReportingEnabledOnlyForEtcdBackedNonDataPlane(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-
 	tests := []struct {
 		name    string
 		config  *config.Config
@@ -59,8 +56,7 @@ func TestServerInfoReportingEnabledOnlyForEtcdBackedNonDataPlane(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = test.config
-			if got := serverInfoReportingEnabled(); got != test.enabled {
+			if got := serverInfoReportingEnabled(test.config); got != test.enabled {
 				t.Fatalf("serverInfoReportingEnabled() = %t, want %t", got, test.enabled)
 			}
 		})

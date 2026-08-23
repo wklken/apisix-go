@@ -14,7 +14,6 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -135,6 +134,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
 	p.Stop()
 	if p.config.CacheZone == "" {
 		p.config.CacheZone = "disk_cache_one"
@@ -159,8 +162,8 @@ func (p *Plugin) PostInit() error {
 		p.now = time.Now
 	}
 	p.maxSize = defaultMaxSize
-	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
-		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
+	if effective.Config.GraphQL.MaxSize > 0 {
+		p.maxSize = effective.Config.GraphQL.MaxSize
 	}
 	if p.config.CacheStrategy == "memory" && proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
 		p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)

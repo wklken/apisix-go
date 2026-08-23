@@ -75,7 +75,7 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 				t.Fatalf("json.Unmarshal() error = %v", err)
 			}
 
-			builder := &Builder{}
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			_, err := builder.buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
 			if test.wantNoErr {
@@ -113,7 +113,7 @@ func TestBuildReverseHandlerAppliesSchemeAwareDefaultNodePorts(t *testing.T) {
 				t.Fatalf("decoded port = %d, want zero for builder-owned default", upstream.Nodes[0].Port)
 			}
 
-			builder := &Builder{}
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			if _, err := builder.buildReverseHandler(
 				resource.Route{Upstream: upstream},

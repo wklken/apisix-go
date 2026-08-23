@@ -84,12 +84,15 @@ func TestBufferRequestBodyIfNeededRejectsBodyAboveReplayLimit(t *testing.T) {
 }
 
 func TestProxyHandlerRejectsOversizedBufferedRequestWith413(t *testing.T) {
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{
-		Upstream: resource.Upstream{
-			Scheme: "http",
-			Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{
+			Upstream: resource.Upstream{
+				Scheme: "http",
+				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
+			},
 		},
-	}, resource.Service{})
+		resource.Service{},
+	)
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v", err)
 	}
@@ -241,7 +244,7 @@ func TestAttachHTTPRetriesDoesNotDoubleReportUnavailableTrafficSplitTarget(t *te
 				transport,
 				func(*http.Request) {},
 				nil,
-				newErrorHandler(),
+				newErrorHandler(&testEffectiveConfig().Config),
 			)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -266,7 +269,7 @@ func TestModifyResponseRecordsUpstreamLatency(t *testing.T) {
 		Request:    req,
 	}
 
-	if err := newModifyResponse()(resp); err != nil {
+	if err := newModifyResponse(&testEffectiveConfig().Config)(resp); err != nil {
 		t.Fatalf("modify response error = %v", err)
 	}
 

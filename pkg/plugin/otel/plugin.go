@@ -170,13 +170,17 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
 	if p.config.Sampler.Name == "" {
 		p.config.Sampler.Name = "always_off"
 	}
 	if p.config.Sampler.Options.Root.Name == "" {
 		p.config.Sampler.Options.Root.Name = "always_off"
 	}
-	metadata, configured := loadMetadata()
+	metadata, configured := loadMetadata(effective.Config.PluginAttr[name])
 	p.metadata = metadata
 
 	var err error

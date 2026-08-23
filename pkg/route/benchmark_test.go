@@ -208,7 +208,7 @@ func BenchmarkRouteBuildIndexes(b *testing.B) {
 	b.Cleanup(func() { _ = logger.ConfigureLevel("info") })
 
 	events := make(chan *store.Event, 64)
-	storage, err := store.GetStore(b.TempDir()+"/route-build-index.db", events)
+	storage, err := store.GetStore(b.TempDir()+"/route-build-index.db", events, testDataEncryptionService())
 	if err != nil {
 		b.Fatalf("get store: %v", err)
 	}
@@ -272,7 +272,7 @@ func BenchmarkRouteBuildIndexes(b *testing.B) {
 	}
 
 	build := func(b *testing.B) {
-		builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+		builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 		for b.Loop() {
 			mux := builder.Build()
 			if mux == nil {

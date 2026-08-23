@@ -16,7 +16,7 @@ import (
 
 func TestConfigSnapshotRetriesAfterConcurrentRouteApply(t *testing.T) {
 	events := make(chan *Event, 1)
-	storage, err := Open(t.TempDir()+"/snapshot.db", events)
+	storage, err := Open(t.TempDir()+"/snapshot.db", events, testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -822,7 +822,7 @@ func TestConfigSnapshotQuarantinesMalformedPluginMetadata(t *testing.T) {
 
 func newConfigSnapshotTestStore(t *testing.T) *Store {
 	t.Helper()
-	storage, err := Open(t.TempDir()+"/snapshot.db", make(chan *Event, 1))
+	storage, err := Open(t.TempDir()+"/snapshot.db", make(chan *Event, 1), testDataEncryption())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

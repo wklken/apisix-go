@@ -26,7 +26,7 @@ func TestInitPluginsPassesRouteLabelsToHTTPLoggerVariable(t *testing.T) {
 	}))
 	t.Cleanup(logServer.Close)
 
-	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080", testEffectiveConfig(), testDataEncryptionResolver())
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -1165,7 +1166,7 @@ func TestServerShutdownReturnsWhenHTTPQuiescenceTimesOut(t *testing.T) {
 	t.Cleanup(release)
 
 	events := make(chan *store.Event)
-	storage, err := store.Open(filepath.Join(t.TempDir(), "timeout.db"), events)
+	storage, err := store.Open(filepath.Join(t.TempDir(), "timeout.db"), events, data_encryption.Service{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

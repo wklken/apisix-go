@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -518,7 +519,11 @@ func putChaitinMetadata(t *testing.T, nodes []any) {
 	chaitinMetadataOnce.Do(func() {
 		chaitinMetadataEvents = make(chan *store.Event, 8)
 		var err error
-		chaitinMetadataStore, err = store.GetStore(t.TempDir()+"/chaitin-waf.db", chaitinMetadataEvents)
+		chaitinMetadataStore, err = store.GetStore(
+			t.TempDir()+"/chaitin-waf.db",
+			chaitinMetadataEvents,
+			data_encryption.NewService(false, nil),
+		)
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}

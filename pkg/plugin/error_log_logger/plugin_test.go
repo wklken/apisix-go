@@ -22,6 +22,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -29,6 +30,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -40,11 +42,18 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
+}
 
+func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
 	p := &Plugin{config: Config{Clickhouse: &ClickHouseConfig{Password: "not-a-ciphertext"}}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -56,9 +65,6 @@ func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
 func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{
 		config: Config{Kafka: &KafkaConfig{
 			Brokers: []KafkaBroker{{
@@ -73,6 +79,9 @@ func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 		}},
 		kafkaSender: &fakeKafkaSender{},
 	}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

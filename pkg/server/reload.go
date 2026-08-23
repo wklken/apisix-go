@@ -138,7 +138,9 @@ func (s *Server) reload(ctx context.Context) (reloadErr error) {
 
 	logger.Info("reloading")
 
-	builder := route.NewBuilderWithClusterRegistry(s.storage, s.addr, s.clusters)
+	builder := route.NewBuilderWithClusterRegistry(
+		s.storage, s.addr, s.clusters, s.staticConfig, s.dataEncryption.Resolver(),
+	)
 	installed := false
 
 	defer func() {

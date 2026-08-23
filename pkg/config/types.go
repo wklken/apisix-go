@@ -24,11 +24,10 @@ type Config struct {
 	ExtPlugin     ExtPlugin `mapstructure:"ext-plugin"`
 	Wasm          Wasm      `mapstructure:"wasm"`
 	XRPC          XRPC      `mapstructure:"xrpc"`
-	Events        Events    `mapstructure:"events"`
 	Plugins       []string  `mapstructure:"plugins"`
 	StreamPlugins []string  `mapstructure:"stream_plugins"`
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
-	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr"`
+	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr" secret:"container"`
 	Deployment Deployment                `mapstructure:"deployment"`
 }
 
@@ -75,6 +74,7 @@ type Apisix struct {
 	DisableSyncConfigurationDuringStart bool           `mapstructure:"disable_sync_configuration_during_start"`
 	WorkerStartupTimeThreshold          int            `mapstructure:"worker_startup_time_threshold"`
 	DataEncryption                      DataEncryption `mapstructure:"data_encryption"`
+	Events                              Events         `mapstructure:"events"`
 	LRU                                 LRU            `mapstructure:"lru"`
 	Tracing                             bool           `mapstructure:"tracing"`
 	Status                              Status         `mapstructure:"status"`
@@ -152,7 +152,7 @@ type Control struct {
 
 type DataEncryption struct {
 	EnableEncryptFields bool     `mapstructure:"enable_encrypt_fields"`
-	Keyring             []string `mapstructure:"keyring"`
+	Keyring             []string `mapstructure:"keyring" secret:"true"`
 }
 
 type LRU struct {
@@ -347,7 +347,7 @@ type Admin struct {
 
 type AdminKey struct {
 	Name string `mapstructure:"name"`
-	Key  string `mapstructure:"key"`
+	Key  string `mapstructure:"key" secret:"true"`
 	Role string `mapstructure:"role"`
 }
 
@@ -376,7 +376,7 @@ type Etcd struct {
 	StartupRetry       int `mapstructure:"startup_retry"`
 
 	User     string `mapstructure:"user"`
-	Password string `mapstructure:"password"`
+	Password string `mapstructure:"password" secret:"true"`
 
 	// TODO: not support yet
 	TLS EtcdTLS `mapstructure:"tls"`

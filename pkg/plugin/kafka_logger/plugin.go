@@ -2,6 +2,7 @@ package kafka_logger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/felixge/httpsnoop"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -288,6 +288,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	p.applyDefaults()
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
@@ -394,8 +397,7 @@ func (p *Plugin) validateSharedSASLIdentity() error {
 }
 
 func (p *Plugin) resolveSecrets() error {
-	keyring, enabled := data_encryption.Keyring()
-	resolver := data_encryption.NewResolver(enabled, keyring)
+	resolver := p.DataEncryption()
 	for i := range p.config.Brokers {
 		config := p.config.Brokers[i].SASLConfig
 		if config == nil {

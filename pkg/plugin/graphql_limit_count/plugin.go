@@ -15,7 +15,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
-	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
@@ -316,6 +315,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	effective := p.StaticConfig()
+	if effective == nil {
+		return fmt.Errorf("effective config is required")
+	}
 	if len(p.config.Rules) > 0 {
 		if err := validateRules(p.config.Rules); err != nil {
 			return err
@@ -420,8 +423,8 @@ func (p *Plugin) PostInit() error {
 		p.now = time.Now
 	}
 	p.maxSize = 1048576
-	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
-		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
+	if effective.Config.GraphQL.MaxSize > 0 {
+		p.maxSize = effective.Config.GraphQL.MaxSize
 	}
 	if p.metadata == (Metadata{}) {
 		p.metadata = base.LoadPluginMetadata[Metadata]("limit-count")

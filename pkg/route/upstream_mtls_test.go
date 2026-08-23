@@ -56,13 +56,16 @@ func TestNormalizeSSLID(t *testing.T) {
 func TestBuildReverseHandlerRejectsInvalidUpstreamMTLSMaterialWithoutTargets(t *testing.T) {
 	for _, scheme := range []string{"https", "grpcs"} {
 		t.Run(scheme, func(t *testing.T) {
-			_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-				Scheme: scheme,
-				TLS: &resource.UpstreamTLS{
-					ClientCert: "not-a-certificate",
-					ClientKey:  "not-a-key",
-				},
-			}}, resource.Service{})
+			_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+				resource.Route{Upstream: resource.Upstream{
+					Scheme: scheme,
+					TLS: &resource.UpstreamTLS{
+						ClientCert: "not-a-certificate",
+						ClientKey:  "not-a-key",
+					},
+				}},
+				resource.Service{},
+			)
 			if err == nil {
 				t.Fatalf("buildReverseHandler() error = nil, want invalid %s client certificate rejection", scheme)
 			}
@@ -73,13 +76,16 @@ func TestBuildReverseHandlerRejectsInvalidUpstreamMTLSMaterialWithoutTargets(t *
 func TestBuildReverseHandlerRejectsPlaintextUpstreamClientCertificate(t *testing.T) {
 	for _, scheme := range []string{"http", "grpc"} {
 		t.Run(scheme, func(t *testing.T) {
-			_, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: resource.Upstream{
-				Scheme: scheme,
-				TLS: &resource.UpstreamTLS{
-					ClientCert: "configured",
-					ClientKey:  "configured",
-				},
-			}}, resource.Service{})
+			_, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+				resource.Route{Upstream: resource.Upstream{
+					Scheme: scheme,
+					TLS: &resource.UpstreamTLS{
+						ClientCert: "configured",
+						ClientKey:  "configured",
+					},
+				}},
+				resource.Service{},
+			)
 			if err == nil {
 				t.Fatalf("buildReverseHandler() error = nil, want plaintext %s client certificate rejection", scheme)
 			}
@@ -121,7 +127,7 @@ func testReverseHandlerUpstreamMTLSHandshake(t *testing.T, scheme string, wantHT
 	if err != nil {
 		t.Fatalf("parse upstream port: %v", err)
 	}
-	builder := &Builder{}
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildReverseHandler(resource.Route{Upstream: resource.Upstream{
 		Scheme: scheme,
@@ -170,7 +176,12 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 	base := resource.Upstream{Scheme: "https", TLS: &resource.UpstreamTLS{
 		ClientCertID: "ssl-1", Verify: true,
 	}}
-	if _, err := buildTransportOptionWithSSLResolver(resource.Route{}, base, resolver); err != nil {
+	if _, err := buildTransportOptionWithSSLResolver(
+		resource.Route{},
+		base,
+		resolver,
+		&testEffectiveConfig().Config,
+	); err != nil {
 		t.Fatalf("ID-based client certificate: %v", err)
 	}
 
@@ -221,7 +232,12 @@ func TestBuildTransportOptionWithSSLResolverSupportsIDAndRejectsControls(t *test
 					return resource.SSL{Status: 1}, nil
 				}
 			}
-			_, err := buildTransportOptionWithSSLResolver(resource.Route{}, test.upstream, resolve)
+			_, err := buildTransportOptionWithSSLResolver(
+				resource.Route{},
+				test.upstream,
+				resolve,
+				&testEffectiveConfig().Config,
+			)
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("buildTransportOptionWithSSLResolver() error = %v, want substring %q", err, test.wantErr)
 			}
@@ -244,6 +260,7 @@ func TestBuildClusterConfigWithSSLResolverChangesOnRotation(t *testing.T) {
 		base,
 		map[string]int{"https://127.0.0.1:1": 1},
 		resolver,
+		&testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("first cluster config: %v", err)
@@ -255,6 +272,7 @@ func TestBuildClusterConfigWithSSLResolverChangesOnRotation(t *testing.T) {
 		secondUpstream,
 		map[string]int{"https://127.0.0.1:1": 1},
 		resolver,
+		&testEffectiveConfig().Config,
 	)
 	if err != nil {
 		t.Fatalf("rotated cluster config: %v", err)
@@ -336,7 +354,7 @@ func TestUpstreamMTLSSameIDRotationRebuildsClusterUntilFinalLease(t *testing.T) 
 			}
 
 			events := make(chan *store.Event)
-			storage, err := store.Open(t.TempDir()+"/rotation.db", events)
+			storage, err := store.Open(t.TempDir()+"/rotation.db", events, testDataEncryptionService())
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
@@ -395,7 +413,13 @@ func TestUpstreamMTLSSameIDRotationRebuildsClusterUntilFinalLease(t *testing.T) 
 			registry := pxy.NewClusterRegistry(pxy.NopClusterObserver{})
 			t.Cleanup(registry.Close)
 			buildAndRequest := func(wantSerial int64) *Builder {
-				builder := NewBuilderWithClusterRegistry(storage, "127.0.0.1:9080", registry)
+				builder := NewBuilderWithClusterRegistry(
+					storage,
+					"127.0.0.1:9080",
+					registry,
+					testEffectiveConfig(),
+					testDataEncryptionResolver(),
+				)
 				handler, buildErr := builder.BuildStrict()
 				if buildErr != nil {
 					t.Fatalf("BuildStrict() error = %v", buildErr)

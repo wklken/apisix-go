@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,7 +20,6 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -253,6 +253,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if !p.DataEncryption().Configured() {
+		return errors.New("data-encryption resolver is required")
+	}
 	if err := p.resolveSecrets(); err != nil {
 		return err
 	}
@@ -279,8 +282,7 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) resolveSecrets() error {
-	keyring, enabled := data_encryption.Keyring()
-	resolver := data_encryption.NewResolver(enabled, keyring)
+	resolver := p.DataEncryption()
 	if p.config.Clickhouse != nil {
 		resolved, err := resolver.ResolveForContext(
 			p.config.Clickhouse.Password,

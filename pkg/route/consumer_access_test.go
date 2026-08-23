@@ -20,7 +20,7 @@ import (
 )
 
 func TestConsumerResolutionMissingGroupFailsClosed(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	resolver := builder.resolveConsumerBindings(builder.pluginRouteContext(resource.Route{ID: "missing-group-route"}))
 	request := consumerResolutionRequest(resource.Consumer{
 		Username: "missing-group-consumer",
@@ -53,7 +53,7 @@ func TestConsumerResolutionPreservesGroupAndConsumerProvenance(t *testing.T) {
 		}
 	}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	resolver := builder.resolveConsumerBindings(builder.pluginRouteContext(resource.Route{ID: "provenance-route"}))
 	request := consumerResolutionRequest(resource.Consumer{
 		Username: "provenance-consumer",
@@ -158,7 +158,7 @@ func TestAuthenticatedRouteOverwritesForgedConsumerHeader(t *testing.T) {
 				t.Fatalf("parse upstream port: %v", err)
 			}
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.buildHandlerStrict(resource.Route{
 				ID:  "route-header-" + test.name,
@@ -201,7 +201,7 @@ func TestConsumerResolutionCacheClonesBindingsAndSeparatesReloads(t *testing.T) 
 	ensureRouteStore(t)
 	putHTTPAllowlistResource(t, "consumer_groups", "cache-group", []byte(`{"plugins":{"request-id":{}}}`))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	resolver := builder.resolveConsumerBindings(builder.pluginRouteContext(resource.Route{ID: "cache-route"}))
 	consumer := resource.Consumer{Username: "cache-consumer", GroupID: "cache-group"}
 	first, err := resolver(consumerResolutionRequest(consumer))
@@ -236,7 +236,7 @@ func TestConsumerResolutionCacheClonesBindingsAndSeparatesReloads(t *testing.T) 
 }
 
 func TestConsumerResolutionColdCacheInitializesStatefulBindingOnce(t *testing.T) {
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	marker := &coordinatedJSONValue{
 		firstStarted:  make(chan struct{}),
 		secondStarted: make(chan struct{}),
@@ -358,7 +358,7 @@ func TestConsumerResolutionColdCacheSharesTransientErrorAndRetries(t *testing.T)
 			},
 		},
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	resolver := builder.resolveConsumerBindings(builder.pluginRouteContext(resource.Route{ID: "transient-cache-route"}))
 	type result struct {
 		resolution plugin.ConsumerResolution
@@ -438,7 +438,7 @@ func TestConsumerResolutionColdCachePublishesPanicAndRetries(t *testing.T) {
 			},
 		},
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	resolver := builder.resolveConsumerBindings(builder.pluginRouteContext(resource.Route{ID: "panic-cache-route"}))
 	ownerPanic := make(chan any, 1)
 	go func() {

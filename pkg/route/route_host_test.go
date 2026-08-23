@@ -10,7 +10,7 @@ import (
 
 func TestBuildStrictSingularHost(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -23,7 +23,7 @@ func TestBuildStrictSingularHost(t *testing.T) {
 		routePriorityNode(t, upstream.URL),
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil {
@@ -69,10 +69,10 @@ func TestBuildStrictRejectsHostAndHosts(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ensureRouteStore(t)
-			setHTTPPluginAllowlist(t)
+			effective := httpPluginAllowlist()
 			putRouteResource(t, test.routeID, []byte(test.payload))
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err == nil || handler != nil {
@@ -97,14 +97,14 @@ func TestBuildStrictRejectsBlankHost(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ensureRouteStore(t)
-			setHTTPPluginAllowlist(t)
+			effective := httpPluginAllowlist()
 			putRouteResource(t, test.routeID, fmt.Appendf(nil,
 				`{"id":%q,"uri":"/blank-host","host":%s}`,
 				test.routeID,
 				test.value,
 			))
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err == nil || handler != nil {
@@ -176,10 +176,10 @@ func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ensureRouteStore(t)
-			setHTTPPluginAllowlist(t)
+			effective := httpPluginAllowlist()
 			putRouteResource(t, test.routeID, []byte(test.payload))
 
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.BuildStrict()
 			if err == nil || handler != nil {
@@ -194,7 +194,7 @@ func TestBuildStrictRejectsEmptyOrInvalidHosts(t *testing.T) {
 
 func TestBuildStrictAcceptsOneLabelWildcardHost(t *testing.T) {
 	ensureRouteStore(t)
-	setHTTPPluginAllowlist(t)
+	effective := httpPluginAllowlist()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -207,7 +207,7 @@ func TestBuildStrictAcceptsOneLabelWildcardHost(t *testing.T) {
 		routePriorityNode(t, upstream.URL),
 	))
 
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.BuildStrict()
 	if err != nil {

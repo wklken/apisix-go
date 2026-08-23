@@ -15,15 +15,35 @@ import (
 	brotlidec "github.com/andybalholm/brotli"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
+
+type Dependencies struct {
+	Config         *config.EffectiveConfig
+	DataEncryption data_encryption.Resolver
+}
 
 type BasePlugin struct {
 	Name           string
 	Priority       int
 	Schema         string
 	MetadataSchema string
+	dependencies   Dependencies
+}
+
+func (p *BasePlugin) SetDependencies(deps Dependencies) {
+	p.dependencies = deps
+}
+
+func (p *BasePlugin) StaticConfig() *config.EffectiveConfig {
+	return p.dependencies.Config
+}
+
+func (p *BasePlugin) DataEncryption() data_encryption.Resolver {
+	return p.dependencies.DataEncryption
 }
 
 func (p *BasePlugin) GetName() string {

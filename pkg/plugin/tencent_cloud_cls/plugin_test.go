@@ -29,6 +29,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -39,6 +40,13 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+	p := &Plugin{}
+	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
+	}
 }
 
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
@@ -88,6 +96,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 		SecretID:  "id",
 		SecretKey: "key",
 	}}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -110,6 +119,7 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{DataEncryption: data_encryption.NewService(false, nil).Resolver()})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -125,7 +135,7 @@ func putPluginMetadata(t *testing.T, logFormat map[string]string) {
 	t.Helper()
 
 	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events)
+	storage, err := store.Open(t.TempDir()+"/store.db", events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)
 	}
@@ -208,15 +218,15 @@ func TestRunLogPhasePreservesSampleRatio(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
-	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		CLSHost:   "cls.example.com",
 		CLSTopic:  "topic-a",
 		SecretID:  "id",
 		SecretKey: "not-a-ciphertext",
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{"qeddd145sfvddff3"}).Resolver(),
+	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -229,9 +239,6 @@ func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	oldKey := "old-keyring-item"
 	newKey := "qeddd145sfvddff3"
-	data_encryption.Configure(true, []string{newKey, oldKey})
-	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-
 	p := &Plugin{config: Config{
 		CLSHost:   "cls.example.com",
 		CLSTopic:  "topic-a",
@@ -239,6 +246,9 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		SecretKey: encryptTencentCLSTestValue(t, oldKey, "cls-secret"),
 		LogFormat: map[string]string{"request_id": "$request_id"},
 	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: data_encryption.NewService(true, []string{newKey, oldKey}).Resolver(),
+	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

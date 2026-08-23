@@ -1,6 +1,7 @@
 package request_context
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -41,7 +42,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	p.nodeID = apisixid.Get()
+	staticConfig := p.StaticConfig()
+	if staticConfig == nil {
+		return fmt.Errorf("request-context: effective config is required")
+	}
+	p.nodeID = apisixid.Get(staticConfig.Config.Apisix.ID)
 	return nil
 }
 

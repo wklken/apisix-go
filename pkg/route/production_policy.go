@@ -157,13 +157,6 @@ func validateSecurityGlobalRulePolicy(
 	return nil
 }
 
-func configuredProfileSelection() appconfig.ProfileSelection {
-	if appconfig.GlobalConfig == nil {
-		return appconfig.ProfileSelection{}
-	}
-	return appconfig.GlobalConfig.Profiles()
-}
-
 func policySource(source string) string {
 	if strings.TrimSpace(source) == "" {
 		return "configuration"

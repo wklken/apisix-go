@@ -32,17 +32,17 @@ func (p ProfileSelection) Validate(manifest *capability.Manifest) error {
 		return fmt.Errorf("capability manifest must not be nil")
 	}
 	if p.Compatibility != CompatibilityTarget(manifest.Target.Name) {
-		return fmt.Errorf("compatibility_target %q is unsupported", p.Compatibility)
+		return fmt.Errorf("compatibility_target is unsupported")
 	}
 	if !slices.Contains([]SecurityProfile{SecurityCompat, SecurityStrict}, p.Security) {
-		return fmt.Errorf("security_profile %q is unsupported", p.Security)
+		return fmt.Errorf("security_profile is unsupported")
 	}
 	if p.Qualification == QualificationNone {
 		return nil
 	}
 	qualification, ok := manifest.Qualification(string(p.Qualification))
 	if !ok {
-		return fmt.Errorf("qualification_profile %q is unsupported", p.Qualification)
+		return fmt.Errorf("qualification_profile is unsupported")
 	}
 	qualified := manifest.QualifiedPlugins(string(p.Qualification))
 	if !slices.Equal(qualification.RequiredPlugins, qualified) {

@@ -120,13 +120,14 @@ func (b *Builder) buildTransportOption(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 ) (proxy.TransportOption, error) {
-	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL)
+	return buildTransportOptionWithSSLResolver(routeResource, upstream, b.getSSL, &b.staticConfig.Config)
 }
 
 func buildTransportOptionWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 	resolveSSL sslResolver,
+	staticConfig *appconfig.Config,
 ) (proxy.TransportOption, error) {
 	if upstreamHasClientCertificate(upstream) && !upstreamUsesTLS(upstream) {
 		return proxy.TransportOption{}, fmt.Errorf(
@@ -151,8 +152,8 @@ func buildTransportOptionWithSSLResolver(
 		}
 	}
 
-	if appconfig.GlobalConfig != nil {
-		proxyConfig := appconfig.GlobalConfig.Proxy
+	if staticConfig != nil {
+		proxyConfig := staticConfig.Proxy
 		optionBuilder = optionBuilder.
 			WithMaxIdleConnections(proxyConfig.MaxIdleConns).
 			WithMaxIdleConnectionsPerHost(proxyConfig.MaxIdleConnsPerHost).
@@ -170,13 +171,14 @@ func buildClusterConfigWithSSLResolver(
 	upstream resource.Upstream,
 	servers map[string]int,
 	resolveSSL sslResolver,
+	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
-	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL)
+	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL, staticConfig)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
-	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport, priorities...)
+	return buildClusterConfigWithTransport(routeResource, upstream, servers, transport, staticConfig, priorities...)
 }
 
 func buildClusterConfigWithTransport(
@@ -184,20 +186,21 @@ func buildClusterConfigWithTransport(
 	upstream resource.Upstream,
 	servers map[string]int,
 	transport proxy.TransportOption,
+	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
 	timeouts := resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout)
 
 	maxInFlight := proxy.DefaultMaxInFlight
-	if appconfig.GlobalConfig != nil {
-		proxyConfig := appconfig.GlobalConfig.Proxy
+	if staticConfig != nil {
+		proxyConfig := staticConfig.Proxy
 		if proxyConfig.MaxInFlight > 0 {
 			maxInFlight = proxyConfig.MaxInFlight
 		}
 	}
 
 	checks := upstream.Checks
-	if appconfig.GlobalConfig != nil && appconfig.GlobalConfig.Apisix.DisableUpstreamHealthcheck {
+	if staticConfig != nil && staticConfig.Apisix.DisableUpstreamHealthcheck {
 		checks = withoutActiveChecks(checks)
 	}
 

@@ -121,9 +121,17 @@ func websocketNode(t *testing.T, server *httptest.Server) resource.Node {
 }
 
 func buildWebsocketHandler(t *testing.T, route resource.Route) http.Handler {
+	return buildWebsocketHandlerWithConfig(t, route, testEffectiveConfig())
+}
+
+func buildWebsocketHandlerWithConfig(
+	t *testing.T,
+	route resource.Route,
+	effective *appconfig.EffectiveConfig,
+) http.Handler {
 	t.Helper()
 	ensureRouteStore(t)
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, effective, testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(route)
 	if err != nil {
@@ -461,9 +469,8 @@ func TestWebsocketUpgradeIgnoresDynamicConsumerResponseBinding(t *testing.T) {
 }
 
 func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
-	previous := appconfig.GlobalConfig
-	appconfig.GlobalConfig = &appconfig.Config{Proxy: appconfig.Proxy{MaxInFlight: 1}}
-	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	effective := testEffectiveConfig()
+	effective.Config.Proxy.MaxInFlight = 1
 
 	release := make(chan struct{})
 	connected := make(chan struct{})
@@ -492,14 +499,14 @@ func TestWebsocketUpgradeAdmissionRejectsSecondTunnelAcrossNodes(t *testing.T) {
 		backendOne.Close()
 		backendTwo.Close()
 	})
-	handler := buildWebsocketHandler(t, resource.Route{
+	handler := buildWebsocketHandlerWithConfig(t, resource.Route{
 		ID:              "websocket-admission-route",
 		EnableWebsocket: true,
 		Upstream: resource.Upstream{
 			Scheme: "http",
 			Nodes:  []resource.Node{websocketNode(t, backendOne), websocketNode(t, backendTwo)},
 		},
-	})
+	}, effective)
 	gateway := httptest.NewServer(handler)
 	t.Cleanup(gateway.Close)
 

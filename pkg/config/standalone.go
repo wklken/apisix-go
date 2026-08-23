@@ -72,9 +72,10 @@ type standaloneResourceQuarantine struct {
 // StandaloneFileWatcher loads the APISIX file-driven configuration and emits
 // store events for added, updated, and removed resources.
 type StandaloneFileWatcher struct {
-	path     string
-	provider string
-	events   chan *store.Event
+	path           string
+	provider       string
+	events         chan *store.Event
+	dataEncryption data_encryption.Service
 
 	reloadMu             sync.Mutex
 	mu                   sync.Mutex
@@ -114,16 +115,21 @@ func StandaloneBuckets() []string {
 	return append([]string(nil), standaloneBuckets...)
 }
 
-func NewStandaloneFileWatcher(path, provider string, events chan *store.Event) *StandaloneFileWatcher {
+func NewStandaloneFileWatcher(
+	path, provider string,
+	events chan *store.Event,
+	encryption data_encryption.Service,
+) *StandaloneFileWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StandaloneFileWatcher{
-		path:     path,
-		provider: strings.ToLower(strings.TrimSpace(provider)),
-		events:   events,
-		current:  make(standaloneSnapshot),
-		ctx:      ctx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
+		path:           path,
+		provider:       strings.ToLower(strings.TrimSpace(provider)),
+		events:         events,
+		dataEncryption: encryption,
+		current:        make(standaloneSnapshot),
+		ctx:            ctx,
+		cancel:         cancel,
+		done:           make(chan struct{}),
 	}
 }
 
@@ -151,7 +157,7 @@ func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error)
 }
 
 func (w *StandaloneFileWatcher) reloadSnapshot() (StandaloneReloadResult, standaloneSnapshot, error) {
-	next, quarantined, err := readStandaloneSnapshot(w.path, w.provider)
+	next, quarantined, err := readStandaloneSnapshot(w.path, w.provider, w.dataEncryption)
 	if err != nil {
 		return StandaloneReloadResult{}, nil, err
 	}
@@ -429,6 +435,7 @@ func standaloneProviderFromPath(path string) string {
 
 func readStandaloneSnapshot(
 	path, provider string,
+	encryption data_encryption.Service,
 ) (standaloneSnapshot, []standaloneResourceQuarantine, error) {
 	if provider != standaloneProviderYAML && provider != standaloneProviderJSON {
 		return nil, nil, fmt.Errorf("unsupported standalone config provider %q", provider)
@@ -486,7 +493,7 @@ func readStandaloneSnapshot(
 			return nil, nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
 		}
 		for _, resource := range resources {
-			id, value, err := normalizeStandaloneResource(bucket, resource)
+			id, value, err := normalizeStandaloneResource(bucket, resource, encryption)
 			if err != nil {
 				quarantined = append(quarantined, standaloneResourceQuarantine{
 					key: store.ResourceKey{Bucket: bucket, ID: id},
@@ -517,7 +524,11 @@ func validateStandaloneSections(sections map[string]json.RawMessage) error {
 	return fmt.Errorf("decode standalone resources: unknown root section %q", unknown[0])
 }
 
-func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []byte, error) {
+func normalizeStandaloneResource(
+	bucket string,
+	raw json.RawMessage,
+	encryption data_encryption.Service,
+) (string, []byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return "", nil, err
@@ -554,9 +565,8 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 		if err := json.Unmarshal(rawPlugins, &plugins); err != nil {
 			return id, nil, fmt.Errorf("decode plugins: %w", err)
 		}
-		keyring, enabled := data_encryption.Keyring()
-		if enabled {
-			if err := data_encryption.EncryptPluginConfigs(plugins, keyring); err != nil {
+		if encryption.Enabled() {
+			if err := encryption.EncryptPluginConfigs(plugins); err != nil {
 				return id, nil, fmt.Errorf("encrypt plugin fields: %w", err)
 			}
 			fields["plugins"], err = json.Marshal(plugins)
@@ -566,8 +576,7 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 		}
 	}
 	if bucket == "plugin_metadata" {
-		keyring, enabled := data_encryption.Keyring()
-		if enabled && data_encryption.HasEncryptedPluginMetadata(id) {
+		if encryption.Enabled() && data_encryption.HasEncryptedPluginMetadata(id) {
 			encoded, err := json.Marshal(fields)
 			if err != nil {
 				return id, nil, fmt.Errorf("encode plugin metadata: %w", err)
@@ -576,7 +585,7 @@ func normalizeStandaloneResource(bucket string, raw json.RawMessage) (string, []
 			if err := json.Unmarshal(encoded, &metadata); err != nil {
 				return id, nil, fmt.Errorf("decode plugin metadata: %w", err)
 			}
-			if err := data_encryption.EncryptPluginMetadata(id, metadata, keyring); err != nil {
+			if err := encryption.EncryptPluginMetadata(id, metadata); err != nil {
 				return id, nil, fmt.Errorf("encrypt plugin metadata fields: %w", err)
 			}
 			encoded, err = json.Marshal(metadata)

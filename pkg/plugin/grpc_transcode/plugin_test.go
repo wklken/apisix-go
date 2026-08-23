@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -1625,7 +1626,7 @@ var _ = protoregistry.NotFound
 
 func TestLoadBindingRefetchesOnProtoGenerationChange(t *testing.T) {
 	events := make(chan *store.Event)
-	storage, err := store.GetStore(t.TempDir()+"/grpc-generation.db", events)
+	storage, err := store.GetStore(t.TempDir()+"/grpc-generation.db", events, data_encryption.NewService(false, nil))
 	if err != nil {
 		t.Fatalf("get store: %v", err)
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -337,8 +336,6 @@ func TestPrometheusMetricConfigRejectsMalformedConfiguration(t *testing.T) {
 }
 
 func TestConfiguredPublicEndpointRejectsMalformedFields(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
 	tests := []struct {
 		name string
 		attr map[string]any
@@ -352,8 +349,7 @@ func TestConfiguredPublicEndpointRejectsMalformedFields(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{"prometheus": test.attr}}
-			if _, err := ConfiguredPublicEndpoint(); err == nil {
+			if _, err := ConfiguredPublicEndpoint(test.attr); err == nil {
 				t.Fatal("ConfiguredPublicEndpoint() error = nil")
 			}
 		})
@@ -361,12 +357,8 @@ func TestConfiguredPublicEndpointRejectsMalformedFields(t *testing.T) {
 }
 
 func TestConfiguredPublicEndpointUsesCustomURIWhenExporterDisabled(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{
-		"prometheus": {"enable_export_server": false, "export_uri": "/custom/metrics"},
-	}}
-	endpoint, err := ConfiguredPublicEndpoint()
+	attr := map[string]any{"enable_export_server": false, "export_uri": "/custom/metrics"}
+	endpoint, err := ConfiguredPublicEndpoint(attr)
 	if err != nil {
 		t.Fatalf("ConfiguredPublicEndpoint() error = %v", err)
 	}
@@ -376,20 +368,16 @@ func TestConfiguredPublicEndpointUsesCustomURIWhenExporterDisabled(t *testing.T)
 }
 
 func TestConfiguredExportServerUsesValidatedAddress(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{PluginAttr: map[string]map[string]any{
-		"prometheus": {
-			"enable_export_server": true,
-			"export_uri":           "/custom/metrics",
-			"export_addr": map[string]any{
-				"ip":   "0.0.0.0",
-				"port": 19091,
-			},
+	attr := map[string]any{
+		"enable_export_server": true,
+		"export_uri":           "/custom/metrics",
+		"export_addr": map[string]any{
+			"ip":   "0.0.0.0",
+			"port": 19091,
 		},
-	}}
+	}
 
-	cfg, err := ConfiguredExportServer()
+	cfg, err := ConfiguredExportServer(attr)
 	if err != nil {
 		t.Fatalf("ConfiguredExportServer() error = %v", err)
 	}
@@ -988,23 +976,17 @@ func TestSetBatchProcessEntriesNilAndSet(t *testing.T) {
 }
 
 func TestInitInstallsVectorsAndEnablement(t *testing.T) {
-	previous := config.GlobalConfig
-	t.Cleanup(func() { config.GlobalConfig = previous })
-	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]any{
-			"prometheus": {
-				"metric_prefix": "unit_",
-				"metrics": map[string]any{
-					httpStatusMetric: map[string]any{"expire": 1},
-				},
-			},
+	attr := map[string]any{
+		"metric_prefix": "unit_",
+		"metrics": map[string]any{
+			httpStatusMetric: map[string]any{"expire": 1},
 		},
 	}
 
-	if err := Init(); err != nil {
+	if err := Init(attr); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := Init(); err != nil {
+	if err := Init(attr); err != nil {
 		t.Fatalf("second Init() error = %v", err)
 	}
 

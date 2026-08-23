@@ -82,7 +82,7 @@ func TestNoBoundedPlanPreservesFlushHijackPushReaderFromAndAIAssembly(t *testing
 			_, _ = w.Write([]byte(`{"choices":[]}`))
 		}))
 		t.Cleanup(provider.Close)
-		builder := NewBuilder(nil)
+		builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 		t.Cleanup(builder.Stop)
 		handler, err := builder.buildHandlerStrict(resource.Route{
 			ID: "no-bounded-ai-route",
@@ -166,7 +166,7 @@ func TestAIRateLimitingSelectsBoundedOrStreamingResponsePlanPerRequest(t *testin
 		_, _ = w.Write([]byte(`{"choices":[],"usage":{"total_tokens":1}}`))
 	}))
 	t.Cleanup(provider.Close)
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	handler, err := builder.buildHandlerStrict(resource.Route{
 		ID: "dual-mode-ai-rate-route",
@@ -243,7 +243,7 @@ func TestAIContentModerationSelectsBoundedOrStreamingResponsePlanPerRequest(t *t
 		{name: "streaming", streamCheckMode: "realtime", requestBody: `{"model":"test","messages":[],"stream":true}`, wantFlush: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			handler, err := builder.buildHandlerStrict(resource.Route{
 				ID: "dual-mode-ai-moderation-" + tc.name,
@@ -302,7 +302,7 @@ func TestResponsePlanRejectsMultipleEffectiveProtocolOwners(t *testing.T) {
 			},
 		},
 	}
-	builder := NewBuilder(nil)
+	builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 	t.Cleanup(builder.Stop)
 	_, err := builder.buildHandlerStrict(route)
 	if err == nil || !strings.Contains(err.Error(), "ai-proxy") ||
@@ -324,7 +324,7 @@ func TestTerminalOwnerIgnoresDisabledBoundedTerminalPlugins(t *testing.T) {
 					name: map[string]any{"_meta": map[string]any{"disable": true}},
 				},
 			}
-			builder := NewBuilder(nil)
+			builder := NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())
 			t.Cleanup(builder.Stop)
 			if _, err := builder.buildHandlerStrict(route); err != nil {
 				t.Fatalf("disabled %s bounded route build error = %v", name, err)

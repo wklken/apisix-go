@@ -497,7 +497,7 @@ func TestScopedExecutorRejectsUnregisteredRewriteBinding(t *testing.T) {
 }
 
 func TestRequestStageRegistryConstructorNameDrift(t *testing.T) {
-	p := New("request-context")
+	p := New("request-context", base.Dependencies{})
 	if p == nil {
 		t.Fatal("New(request-context) returned nil")
 	}

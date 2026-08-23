@@ -77,7 +77,10 @@ func TestBuildReverseHandlerQuarantinesPassiveHTTPFailure(t *testing.T) {
 		},
 	}
 
-	handler, err := (&Builder{}).buildReverseHandler(resource.Route{Upstream: upstream}, resource.Service{})
+	handler, err := (NewBuilder(nil, testEffectiveConfig(), testDataEncryptionResolver())).buildReverseHandler(
+		resource.Route{Upstream: upstream},
+		resource.Service{},
+	)
 	if err != nil {
 		t.Fatalf("buildReverseHandler() error = %v", err)
 	}

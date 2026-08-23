@@ -1159,6 +1159,7 @@ git commit -m "docs(governance): supersede conflicting architecture claims"
 - Create: `.github/workflows/capability-status.yml`
 - Delete: `.github/workflows/plugin-status.yml`
 - Modify: `.github/workflows/unit-test.yml`
+- Modify: `scripts/release_gate_test.sh`
 - Modify: `Makefile`
 - Test: `scripts/capability_status_gate_test.sh`
 
@@ -1219,11 +1220,11 @@ Create `.github/workflows/capability-status.yml` matching the tested contract. E
 
 - [ ] **Step 5: Delete the replaced workflow and script**
 
-Delete `.github/workflows/plugin-status.yml` and `scripts/plugin_status_gate_test.sh` in this task. Update `.github/workflows/unit-test.yml` contract references from plugin status to capability status without adding broad tests.
+Delete `.github/workflows/plugin-status.yml` and `scripts/plugin_status_gate_test.sh` in this task. Update `.github/workflows/unit-test.yml` contract references from plugin status to capability status without adding broad tests. Update `scripts/release_gate_test.sh` in the same atomic cutover: it must require `.github/workflows/capability-status.yml`, the three new Make targets, and the capability workflow's contract-test/drift/status steps, and must not retain any path, target, job, or diagnostic that names the deleted plugin-status workflow.
 
 - [ ] **Step 6: Run the local workflow and drift gates**
 
-Run: `bash -lc 'source .envrc && bash scripts/capability_status_gate_test.sh && make check-capability-drift && make test-capability-status'`
+Run: `bash -lc 'source .envrc && bash scripts/capability_status_gate_test.sh && bash scripts/release_gate_test.sh && make check-capability-drift && make test-capability-status'`
 
 Expected: all commands PASS; no real-process `t/plugin` case starts.
 

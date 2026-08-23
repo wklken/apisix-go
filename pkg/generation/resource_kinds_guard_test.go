@@ -91,31 +91,95 @@ func isManaged(kind string) bool { return managed[kind] }`,
 			wantErrors: []string{"duplicate.go", "editable managed-kind map"},
 		},
 		{
-			name: "slice taxonomy consumed by classifier is rejected",
+			name: "top-level slice used by non-classifier in another file is rejected",
 			files: map[string]string{
-				"list.go": `package fixture
-var managedKinds = []string{"routes", "services"}`,
-				"classifier.go": `package fixture
-import "slices"
-func managed(kind string) bool { return slices.Contains(managedKinds, kind) }`,
+				"cleanup.go": `package fixture
+var managedBuckets = []string{"routes", "services"}`,
+				"consumer.go": `package fixture
+func cleanup() error { for range managedBuckets {} ; return nil }`,
 			},
-			wantErrors: []string{"list.go", "classifier list"},
+			wantErrors: []string{"cleanup.go", "top-level managed-kind composite"},
 		},
 		{
 			name: "semantic exceptions and shape parser are allowed",
 			files: map[string]string{
 				"pkg/config/standalone.go": `package config
-var standaloneBuckets = []string{"routes", "services"}`,
+var standaloneBuckets = []string{
+ "consumer_groups", "consumers", "global_rules", "plugin_configs", "plugin_metadata", "protos",
+ "routes", "secrets", "services", "ssls", "stream_routes", "upstreams",
+}`,
 				"pkg/store/store.go": `package store
 func IsHTTPRouteReloadBucket(bucket string) bool {
- switch bucket { case "routes", "services": return true; default: return false }
+ switch bucket {
+ case "routes", "services", "upstreams", "global_rules", "plugin_configs", "plugin_metadata", "ssls", "secrets", "protos", "plugins":
+  return true
+ default: return false
+ }
 }
-func IsStreamReloadBucket(bucket string) bool { return bucket == "services" }
+func IsStreamReloadBucket(bucket string) bool {
+ return bucket == "upstreams" || bucket == "stream_routes" || bucket == "services"
+}
 func parse(kind string) (string, string, bool) {
  switch kind { case "plugins": return "plugins", "plugins", true; case "secrets": return "", "", false }
  return kind, kind, true
 }`,
+				"pkg/store/getter.go": `package store
+var configSnapshotBuckets = []string{
+ "routes", "global_rules", "plugin_metadata", "services", "upstreams", "plugin_configs", "ssls", "plugins",
+}`,
 			},
+		},
+		{
+			name: "standalone exception rejects missing kind",
+			files: map[string]string{
+				"pkg/config/standalone.go": `package config
+var standaloneBuckets = []string{
+ "consumer_groups", "consumers", "global_rules", "plugin_configs", "plugin_metadata", "protos",
+ "routes", "secrets", "services", "ssls", "stream_routes",
+}`,
+			},
+			wantErrors: []string{"standaloneBuckets", "want exact 12-kind standalone subset"},
+		},
+		{
+			name: "standalone exception rejects duplicate replacement",
+			files: map[string]string{
+				"pkg/config/standalone.go": `package config
+var standaloneBuckets = []string{
+ "consumer_groups", "consumers", "global_rules", "plugin_configs", "plugin_metadata", "protos",
+ "routes", "routes", "secrets", "services", "ssls", "stream_routes",
+}`,
+			},
+			wantErrors: []string{"standaloneBuckets", "want exact 12-kind standalone subset"},
+		},
+		{
+			name: "config snapshot exception rejects missing kind",
+			files: map[string]string{
+				"pkg/store/getter.go": `package store
+var configSnapshotBuckets = []string{
+ "routes", "global_rules", "plugin_metadata", "services", "upstreams", "plugin_configs", "ssls",
+}`,
+			},
+			wantErrors: []string{"configSnapshotBuckets", "want exact legacy 8-kind config snapshot subset"},
+		},
+		{
+			name: "config snapshot exception rejects duplicate replacement",
+			files: map[string]string{
+				"pkg/store/getter.go": `package store
+var configSnapshotBuckets = []string{
+ "routes", "routes", "global_rules", "plugin_metadata", "services", "upstreams", "plugin_configs", "ssls",
+}`,
+			},
+			wantErrors: []string{"configSnapshotBuckets", "want exact legacy 8-kind config snapshot subset"},
+		},
+		{
+			name: "reload exception rejects policy drift",
+			files: map[string]string{
+				"pkg/store/store.go": `package store
+func IsHTTPRouteReloadBucket(bucket string) bool {
+ switch bucket { case "routes", "services": return true; default: return false }
+}`,
+			},
+			wantErrors: []string{"IsHTTPRouteReloadBucket", "want exact legacy reload-impact set"},
 		},
 		{
 			name: "semantic exceptions are bound to declaration identity",
@@ -280,6 +344,11 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 				if taxonomyClassifierResult(node, file.alias) {
 					classifiers = append(classifiers, managedClassifier{file: file, node: node})
 				}
+				if expected, ok := reloadPolicyException(file.path, node.Name.Name); ok &&
+					!exactStringLiteralSet(node.Body, expected) {
+					diagnostics = append(diagnostics, positionMessage(fset, file.path, node.Pos(),
+						node.Name.Name+" want exact legacy reload-impact set"))
+				}
 			case *ast.GenDecl:
 				for _, specification := range node.Specs {
 					value, ok := specification.(*ast.ValueSpec)
@@ -291,13 +360,23 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 							diagnostics = append(diagnostics, positionMessage(fset, file.path, name.Pos(),
 								"forbidden taxonomy list builtInBuckets"))
 						}
+						expected, exception := compositePolicyException(file.path, name.Name)
 						if index >= len(value.Values) {
+							if exception {
+								diagnostics = append(diagnostics, positionMessage(fset, file.path, name.Pos(),
+									name.Name+" requires a literal "+expected.label))
+							}
 							continue
 						}
 						composite, ok := value.Values[index].(*ast.CompositeLit)
-						if ok {
-							composites[name.Name] = managedComposite{file: file, name: name.Name, node: composite}
+						if !ok {
+							if exception {
+								diagnostics = append(diagnostics, positionMessage(fset, file.path, name.Pos(),
+									name.Name+" requires a literal "+expected.label))
+							}
+							continue
 						}
+						composites[name.Name] = managedComposite{file: file, name: name.Name, node: composite}
 					}
 				}
 			}
@@ -327,7 +406,14 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 
 	reportedComposites := make(map[token.Pos]struct{})
 	for _, composite := range composites {
-		if countManagedKindLiterals(composite.node, managedKinds) < 2 || allowedManagedComposite(composite) {
+		if expected, exception := compositePolicyException(composite.file.path, composite.name); exception {
+			if !exactStringLiteralSet(composite.node, expected.kinds) {
+				diagnostics = append(diagnostics, positionMessage(fset, composite.file.path, composite.node.Pos(),
+					composite.name+" want "+expected.label))
+			}
+			continue
+		}
+		if countManagedKindLiterals(composite.node, managedKinds) < 2 {
 			continue
 		}
 		if composite.name == "standaloneBuckets" {
@@ -339,12 +425,15 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 		if _, isMap := composite.node.Type.(*ast.MapType); isMap {
 			diagnostics = append(diagnostics, positionMessage(fset, composite.file.path, composite.node.Pos(),
 				"editable managed-kind map "+composite.name))
-			reportedComposites[composite.node.Pos()] = struct{}{}
+		} else {
+			diagnostics = append(diagnostics, positionMessage(fset, composite.file.path, composite.node.Pos(),
+				"top-level managed-kind composite "+composite.name))
 		}
+		reportedComposites[composite.node.Pos()] = struct{}{}
 	}
 
 	for _, classifier := range classifiers {
-		if allowedManagedClassifier(classifier) {
+		if _, allowed := reloadPolicyException(classifier.file.path, classifier.node.Name.Name); allowed {
 			continue
 		}
 		ast.Inspect(classifier.node.Body, func(node ast.Node) bool {
@@ -376,7 +465,11 @@ func auditManagedResourceSources(sources map[string]string, requiredCalls []stri
 				reportedComposites[candidate.Pos()] = struct{}{}
 			case *ast.Ident:
 				composite, found := composites[candidate.Name]
-				if !found || allowedManagedComposite(composite) ||
+				if !found {
+					break
+				}
+				_, exception := compositePolicyException(composite.file.path, composite.name)
+				if exception ||
 					countManagedKindLiterals(composite.node, managedKinds) < 2 {
 					break
 				}
@@ -423,16 +516,82 @@ func taxonomyClassifierResult(function *ast.FuncDecl, generationAlias string) bo
 	}
 }
 
-func allowedManagedComposite(composite managedComposite) bool {
-	return composite.name == "standaloneBuckets" && hasPathSuffix(composite.file.path, "pkg/config/standalone.go")
+type managedPolicySet struct {
+	label string
+	kinds []string
 }
 
-func allowedManagedClassifier(classifier managedClassifier) bool {
-	if !hasPathSuffix(classifier.file.path, "pkg/store/store.go") {
+func compositePolicyException(path, name string) (managedPolicySet, bool) {
+	if name == "standaloneBuckets" && hasPathSuffix(path, "pkg/config/standalone.go") {
+		kinds := make([]string, 0, len(managedResources)-1)
+		for _, kind := range ManagedResourceKinds() {
+			if kind != "plugins" {
+				kinds = append(kinds, kind)
+			}
+		}
+		return managedPolicySet{label: "exact 12-kind standalone subset", kinds: kinds}, true
+	}
+	if name == "configSnapshotBuckets" && hasPathSuffix(path, "pkg/store/getter.go") {
+		// Legacy config-snapshot rebuild policy. Delete this exception with the old runtime at joint cutover.
+		return managedPolicySet{
+			label: "exact legacy 8-kind config snapshot subset",
+			kinds: []string{
+				"routes", "global_rules", "plugin_metadata", "services",
+				"upstreams", "plugin_configs", "ssls", "plugins",
+			},
+		}, true
+	}
+	return managedPolicySet{}, false
+}
+
+func reloadPolicyException(path, name string) ([]string, bool) {
+	if !hasPathSuffix(path, "pkg/store/store.go") {
+		return nil, false
+	}
+	switch name {
+	case "IsHTTPRouteReloadBucket":
+		return []string{
+			"routes", "services", "upstreams", "global_rules", "plugin_configs",
+			"plugin_metadata", "ssls", "secrets", "protos", "plugins",
+		}, true
+	case "IsStreamReloadBucket":
+		return []string{"upstreams", "stream_routes", "services"}, true
+	default:
+		return nil, false
+	}
+}
+
+func exactStringLiteralSet(node ast.Node, expected []string) bool {
+	values := make([]string, 0, len(expected))
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		literal, ok := candidate.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err == nil {
+			values = append(values, value)
+		}
+		return true
+	})
+	if len(values) != len(expected) {
 		return false
 	}
-	return classifier.node.Name.Name == "IsHTTPRouteReloadBucket" ||
-		classifier.node.Name.Name == "IsStreamReloadBucket"
+	want := make(map[string]struct{}, len(expected))
+	for _, value := range expected {
+		want[value] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, ok := want[value]; !ok {
+			return false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return len(seen) == len(want)
 }
 
 func hasPathSuffix(path, suffix string) bool {

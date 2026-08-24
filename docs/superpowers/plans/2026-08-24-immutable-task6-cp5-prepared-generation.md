@@ -649,7 +649,7 @@ go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareGenerationTra
 `pkg/compiler/worker_factory_recovery_test.go`; modify existing factory tests
 only when an exact lower-boundary assertion is missing
 
-- [ ] **Step 1: Write RED tests**
+- [x] **Step 1: Write RED tests**
 
 Cover committed-only input, independent domain revisions, mismatch before
 registration, zero plugins without specs, base owner transfer, and a real
@@ -665,11 +665,11 @@ using each attempt's exact occurrence, materialize both, and assert their
 RecoveryAttemptID, differ, and occupy distinct shared-registry resources. Do
 not treat the old fixture-only `...DoNotShare` test as production evidence.
 
-- [ ] **Step 2: Implement exact recovery**
+- [x] **Step 2: Implement exact recovery**
 
 Call registration-only `prepareRecoveryAttempt`, then the same task/consumer/metadata/private-materializer helper as candidate. Accept no desired snapshot, apply ticket, recovery state, journal, disposition callback, or Store. Preserve independent artifact revisions/snapshots/closures/decisions.
 
-- [ ] **Step 3: Run GREEN and race**
+- [x] **Step 3: Run GREEN and race**
 
 ```bash
 source .envrc

@@ -88,7 +88,7 @@ func (compiler *Compiler) PreparePublication(
 		issues := compactIssues(append(slices.Clone(normalizationIssues), validation.issuesForDomain(domain)...))
 		predecessor, found := previous[domain]
 		candidate, err := buildDomainCandidateContext(
-			ctx, domain, desired, input, issues, predecessor, found, compiler.manifest,
+			ctx, domain, desired, input, issues, predecessor, found, compiler.manifest, compiler.schemas,
 		)
 		if err != nil {
 			return generation.PublicationSet{}, fmt.Errorf("compile %s publication: %w", domain, err)

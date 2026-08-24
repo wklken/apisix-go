@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -18,9 +19,10 @@ func buildDomainCandidate(
 	previous generation.PublishedGeneration,
 	hasPrevious bool,
 	manifest *capability.Manifest,
+	schemas *schemaSet,
 ) (generation.PublicationCandidate, error) {
 	return buildDomainCandidateContext(
-		context.Background(), domain, desired, input, issues, previous, hasPrevious, manifest,
+		context.Background(), domain, desired, input, issues, previous, hasPrevious, manifest, schemas,
 	)
 }
 
@@ -321,6 +323,107 @@ func TestDispositionFailsClosedWhenSelectedPredecessorBytesCannotDecode(t *testi
 	}
 }
 
+func TestDispositionPreservesValidPredecessorWhenDesiredPluginSchemaIsInvalid(t *testing.T) {
+	oldRoute := []byte(`{"id":"r1","plugins":{"request-id":{"algorithm":"uuid"}}}`)
+	previousSnapshot := mustGenerationSnapshot(t, 6, []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "routes", ID: "r1"}, Value: oldRoute,
+	}}, nil)
+	desired := mustGenerationSnapshot(t, 14, []generation.Resource{
+		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{"algorithm":"invalid"}}}`),
+	}, nil)
+
+	candidate := compileDomain(
+		t,
+		generation.DomainHTTP,
+		desired,
+		publishedForDomain(generation.DomainHTTP, previousSnapshot),
+		true,
+	)
+	assertDecision(
+		t,
+		candidate,
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		generation.DispositionLastGood,
+		"plugin-schema-invalid",
+	)
+	got, found := candidate.Snapshot.Lookup(generation.ResourceKey{Kind: "routes", ID: "r1"})
+	if !found || !bytes.Equal(got, oldRoute) {
+		t.Fatalf("last-good route = %q/%v, want exact %q", got, found, oldRoute)
+	}
+}
+
+func TestDispositionFailsClosedWhenSelectedPredecessorPluginSchemaIsInvalid(t *testing.T) {
+	previousSnapshot := mustGenerationSnapshot(t, 6, []generation.Resource{
+		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{"algorithm":"also-invalid"}}}`),
+	}, nil)
+	desired := mustGenerationSnapshot(t, 14, []generation.Resource{
+		resourceValue("routes", "r1", `{"id":"r1","plugins":{"request-id":{"algorithm":"invalid"}}}`),
+	}, nil)
+
+	candidate := compileDomain(
+		t,
+		generation.DomainHTTP,
+		desired,
+		publishedForDomain(generation.DomainHTTP, previousSnapshot),
+		true,
+	)
+	assertDecision(
+		t,
+		candidate,
+		generation.ResourceKey{Kind: "routes", ID: "r1"},
+		generation.DispositionFailClosed,
+		"effective-invalid",
+	)
+	if _, found := candidate.Snapshot.Lookup(generation.ResourceKey{Kind: "routes", ID: "r1"}); found {
+		t.Fatal("schema-invalid predecessor bytes leaked into candidate")
+	}
+}
+
+func TestEffectiveSchemaValidationDoesNotLeakHTTPOnlyPluginIssueIntoStream(t *testing.T) {
+	oldService := []byte(
+		`{"id":"shared","plugins":{"request-id":{"algorithm":"invalid"}},"upstream":{"nodes":{}}}`,
+	)
+	previousSnapshot := mustGenerationSnapshot(t, 6, []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "services", ID: "shared"}, Value: oldService,
+	}}, nil)
+	desired := mustGenerationSnapshot(t, 14, []generation.Resource{
+		resourceValue("services", "shared", `{"id":"wrong","upstream":{"nodes":{}}}`),
+	}, nil)
+	compiler := newTestCompiler(t)
+	set, err := compiler.PreparePublication(
+		context.Background(),
+		ticketForSnapshot(desired, generation.DomainHTTP, generation.DomainStream),
+		desired,
+		map[generation.Domain]generation.PublishedGeneration{
+			generation.DomainHTTP:   publishedForDomain(generation.DomainHTTP, previousSnapshot),
+			generation.DomainStream: publishedForDomain(generation.DomainStream, previousSnapshot),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(
+		t,
+		set.Domains[generation.DomainHTTP],
+		generation.ResourceKey{Kind: "services", ID: "shared"},
+		generation.DispositionFailClosed,
+		"effective-invalid",
+	)
+	assertDecision(
+		t,
+		set.Domains[generation.DomainStream],
+		generation.ResourceKey{Kind: "services", ID: "shared"},
+		generation.DispositionLastGood,
+		"id-mismatch",
+	)
+	got, found := set.Domains[generation.DomainStream].Snapshot.Lookup(
+		generation.ResourceKey{Kind: "services", ID: "shared"},
+	)
+	if !found || !bytes.Equal(got, oldService) {
+		t.Fatalf("stream last-good service = %q/%v, want exact %q", got, found, oldService)
+	}
+}
+
 func TestDependencyClosureDoesNotApplyHTTPOnlyPluginDependenciesToStream(t *testing.T) {
 	desired := mustGenerationSnapshot(t, 15, []generation.Resource{
 		resourceValue(
@@ -513,9 +616,22 @@ func compileDomain(
 	if err != nil {
 		t.Fatal(err)
 	}
-	validation := validate(input, mustManifest(t))
+	compiler := newTestCompiler(t)
+	validation, err := validateContext(context.Background(), input, compiler.manifest, compiler.schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
 	issues := append(normalizationIssues, validation.issuesForDomain(domain)...)
-	candidate, err := buildDomainCandidate(domain, desired, input, issues, previous, found, mustManifest(t))
+	candidate, err := buildDomainCandidate(
+		domain,
+		desired,
+		input,
+		issues,
+		previous,
+		found,
+		compiler.manifest,
+		compiler.schemas,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,12 +639,35 @@ func compileDomain(
 }
 
 func publishedForDomain(domain generation.Domain, snapshot generation.Snapshot) generation.PublishedGeneration {
-	return generation.PublishedGeneration{
+	published := generation.PublishedGeneration{
 		Artifact: generation.GenerationArtifact{
 			Domain: domain, Revision: snapshot.Revision(), Digest: snapshot.Digest(), Snapshot: snapshot.SnapshotID(),
 		},
 		Snapshot: snapshot,
 	}
+	for _, resource := range snapshot.Resources() {
+		published.Closure = append(published.Closure, resource.Key)
+		published.Decisions = append(published.Decisions, generation.ResourceDecision{
+			Key: resource.Key, Disposition: generation.DispositionPublished, Code: "validated",
+		})
+	}
+	for _, tombstone := range snapshot.Tombstones() {
+		published.Closure = append(published.Closure, tombstone.Key)
+		published.Decisions = append(published.Decisions, generation.ResourceDecision{
+			Key: tombstone.Key, Disposition: generation.DispositionDeleted, Code: "explicit-delete",
+		})
+	}
+	slices.SortFunc(published.Closure, compareResourceKey)
+	slices.SortFunc(published.Decisions, func(left, right generation.ResourceDecision) int {
+		return compareResourceKey(left.Key, right.Key)
+	})
+	return published
+}
+
+func clonePublishedGeneration(published generation.PublishedGeneration) generation.PublishedGeneration {
+	published.Closure = slices.Clone(published.Closure)
+	published.Decisions = slices.Clone(published.Decisions)
+	return published
 }
 
 func assertDecision(

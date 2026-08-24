@@ -31,6 +31,7 @@ func buildDomainCandidateContext(
 	previous generation.PublishedGeneration,
 	hasPrevious bool,
 	manifest *capability.Manifest,
+	schemas *schemaSet,
 ) (generation.PublicationCandidate, error) {
 	if err := ctx.Err(); err != nil {
 		return generation.PublicationCandidate{}, err
@@ -38,8 +39,10 @@ func buildDomainCandidateContext(
 	if domain != generation.DomainHTTP && domain != generation.DomainStream {
 		return generation.PublicationCandidate{}, fmt.Errorf("%w: unknown domain %q", ErrInvalidInput, domain)
 	}
-	if hasPrevious && !validPublishedPredecessor(domain, previous) {
-		return generation.PublicationCandidate{}, generation.ErrIntegrity
+	if hasPrevious {
+		if err := validatePublishedPredecessor(domain, desired.Revision(), previous); err != nil {
+			return generation.PublicationCandidate{}, err
+		}
 	}
 	issueByKey := firstIssueByKey(issues)
 	if domain == generation.DomainStream {
@@ -148,7 +151,7 @@ func buildDomainCandidateContext(
 		}
 	}
 
-	if err := enforceEffectiveClosure(ctx, domain, desired.Revision(), decisions, manifest); err != nil {
+	if err := enforceEffectiveClosure(ctx, domain, desired.Revision(), decisions, manifest, schemas); err != nil {
 		return generation.PublicationCandidate{}, err
 	}
 	candidate, err := assembleCandidate(domain, desired.Revision(), decisions)
@@ -161,12 +164,28 @@ func buildDomainCandidateContext(
 	return candidate, nil
 }
 
-func validPublishedPredecessor(domain generation.Domain, previous generation.PublishedGeneration) bool {
-	return previous.Artifact.Domain == domain &&
-		previous.Artifact.Revision != 0 &&
-		previous.Artifact.Revision == previous.Snapshot.Revision() &&
-		previous.Artifact.Digest == previous.Snapshot.Digest() &&
-		previous.Artifact.Snapshot == previous.Snapshot.SnapshotID()
+func validatePublishedPredecessor(
+	domain generation.Domain,
+	desiredRevision uint64,
+	previous generation.PublishedGeneration,
+) error {
+	if previous.Artifact.Revision == 0 || previous.Artifact.Revision >= desiredRevision {
+		return fmt.Errorf(
+			"%w: %s predecessor revision %d must be older than desired revision %d",
+			generation.ErrIntegrity,
+			domain,
+			previous.Artifact.Revision,
+			desiredRevision,
+		)
+	}
+	if err := generation.ValidatePublishedGeneration(
+		domain,
+		previous.Artifact.Revision,
+		previous,
+	); err != nil {
+		return fmt.Errorf("%w: validate %s predecessor: %w", generation.ErrIntegrity, domain, err)
+	}
+	return nil
 }
 
 func resourceUsesClientSSL(resource normalizedResource) bool {
@@ -216,6 +235,7 @@ func enforceEffectiveClosure(
 	revision uint64,
 	decisions map[generation.ResourceKey]candidateDecision,
 	manifest *capability.Manifest,
+	schemas *schemaSet,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -235,7 +255,7 @@ func enforceEffectiveClosure(
 	if err != nil {
 		return err
 	}
-	validation, err := validateContext(ctx, input, manifest, nil)
+	validation, err := validateContext(ctx, input, manifest, schemas)
 	if err != nil {
 		return err
 	}

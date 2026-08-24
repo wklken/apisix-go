@@ -281,6 +281,113 @@ func TestCompilerRejectsCrossDomainOrCorruptPredecessor(t *testing.T) {
 	}
 }
 
+func TestCompilerRejectsSameFutureAndStructurallyInvalidPredecessors(t *testing.T) {
+	desired := mustGenerationSnapshot(t, 18, []generation.Resource{
+		resourceValue("routes", "r", `{"id":"r"}`),
+	}, nil)
+	validPrevious := publishedForDomain(
+		generation.DomainHTTP,
+		mustGenerationSnapshot(t, 17, []generation.Resource{
+			resourceValue("routes", "r", `{"id":"r"}`),
+		}, nil),
+	)
+
+	tests := []struct {
+		name        string
+		previous    generation.PublishedGeneration
+		wantClosure bool
+	}{
+		{
+			name: "same revision",
+			previous: publishedForDomain(
+				generation.DomainHTTP,
+				mustGenerationSnapshot(t, 18, []generation.Resource{
+					resourceValue("routes", "r", `{"id":"r"}`),
+				}, nil),
+			),
+		},
+		{
+			name: "future revision",
+			previous: publishedForDomain(
+				generation.DomainHTTP,
+				mustGenerationSnapshot(t, 19, []generation.Resource{
+					resourceValue("routes", "r", `{"id":"r"}`),
+				}, nil),
+			),
+		},
+		{
+			name: "forged artifact digest",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Artifact.Digest[0]++
+				return previous
+			}(),
+		},
+		{
+			name: "forged artifact snapshot",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Artifact.Snapshot = "sha256:forged"
+				return previous
+			}(),
+		},
+		{
+			name: "missing closure",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Closure = nil
+				return previous
+			}(),
+			wantClosure: true,
+		},
+		{
+			name: "duplicate closure",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Closure = append(previous.Closure, previous.Closure[0])
+				return previous
+			}(),
+			wantClosure: true,
+		},
+		{
+			name: "missing decision",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Decisions = nil
+				return previous
+			}(),
+			wantClosure: true,
+		},
+		{
+			name: "invalid disposition",
+			previous: func() generation.PublishedGeneration {
+				previous := clonePublishedGeneration(validPrevious)
+				previous.Decisions[0].Disposition = generation.ResourceDisposition("invalid")
+				return previous
+			}(),
+			wantClosure: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newTestCompiler(t).PreparePublication(
+				context.Background(),
+				ticketForSnapshot(desired, generation.DomainHTTP),
+				desired,
+				map[generation.Domain]generation.PublishedGeneration{
+					generation.DomainHTTP: test.previous,
+				},
+			)
+			if !errors.Is(err, generation.ErrIntegrity) {
+				t.Fatalf("predecessor error = %v, want ErrIntegrity", err)
+			}
+			if test.wantClosure && !errors.Is(err, generation.ErrInvalidClosure) {
+				t.Fatalf("predecessor error = %v, want ErrInvalidClosure", err)
+			}
+		})
+	}
+}
+
 func TestCompilerPublicationIsAcceptedByRealJournalStage(t *testing.T) {
 	journal, err := store.OpenJournal(filepath.Join(t.TempDir(), "journal.db"), store.JournalOptions{})
 	if err != nil {

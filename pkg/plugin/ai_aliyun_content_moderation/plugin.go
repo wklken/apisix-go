@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -27,18 +26,26 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_common"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config          Config
-	client          *http.Client
-	now             func() time.Time
-	nonce           func() string
-	failMode        ai_common.SafetyFailMode
-	accessKeyID     *store.ResolvedSecret
-	accessKeySecret *store.ResolvedSecret
+	config                Config
+	client                *http.Client
+	now                   func() time.Time
+	nonce                 func() string
+	failMode              ai_common.SafetyFailMode
+	accessKeyID           *store.ResolvedSecret
+	accessKeySecret       *store.ResolvedSecret
+	scopedAccessKeyID     secret.Value
+	scopedAccessKeySecret secret.Value
+	scopedCredentialsSet  bool
+	secretMu              sync.RWMutex
+	stopOnce              sync.Once
+	stopped               bool
+	stopStarted           func()
 
 	streamNow func() time.Time
 }
@@ -258,10 +265,8 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.accessKeyID == nil || p.accessKeySecret == nil {
-		if err := p.MaterializeSecrets(); err != nil {
-			return errors.New("ai-aliyun-content-moderation credentials are unavailable")
-		}
+	if !p.credentialsReady() {
+		return errAliyunCredentialsUnavailable
 	}
 	mode, err := ai_common.ParseSafetyFailMode(p.config.FailMode)
 	if err != nil {
@@ -337,31 +342,6 @@ func (p *Plugin) PostInit() error {
 		Transport: p.transport(),
 	}
 	return nil
-}
-
-func (p *Plugin) MaterializeSecrets() error {
-	if p.accessKeyID != nil && p.accessKeySecret != nil {
-		return nil
-	}
-	accessKeyID, err := store.MaterializeSecret(p.config.AccessKeyID)
-	if err != nil {
-		return err
-	}
-	accessKeySecret, err := store.MaterializeSecret(p.config.AccessKeySecret)
-	if err != nil {
-		accessKeyID.Destroy()
-		return err
-	}
-	p.accessKeyID = accessKeyID
-	p.accessKeySecret = accessKeySecret
-	p.config.AccessKeyID = accessKeyID.Descriptor()
-	p.config.AccessKeySecret = accessKeySecret.Descriptor()
-	return nil
-}
-
-func (p *Plugin) Stop() {
-	p.accessKeyID.Destroy()
-	p.accessKeySecret.Destroy()
 }
 
 // RunRequestPhase performs request-side moderation and publishes the parsed
@@ -1243,45 +1223,19 @@ func (p *Plugin) checkSingleContent(
 	content string,
 	serviceName string,
 ) (bool, string, string, error) {
-	paramsBody, err := p.buildFormBody(sessionID, content, serviceName)
-	if err != nil {
-		return false, "", "", &moderationError{Class: ai_common.SafetyBackendUnavailable, Err: err}
-	}
-
-	req, err := http.NewRequestWithContext(
-		r.Context(),
-		http.MethodPost,
-		p.config.Endpoint,
-		strings.NewReader(paramsBody),
+	statusCode, rawBody, err := p.sendModerationRequest(
+		r.Context(), sessionID, content, serviceName,
 	)
-	if err != nil {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendUnavailable,
-			Err:   errors.New("failed to create Aliyun moderation request"),
-		}
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := p.client.Do(req)
 	if err != nil {
 		return false, "", "", &moderationError{
 			Class: ai_common.SafetyBackendUnavailable,
 			Err:   errors.New("aliyun moderation transport unavailable"),
 		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
 		return false, "", "", &moderationError{
 			Class: ai_common.SafetyBackendUnavailable,
-			Err:   errors.New("failed to read Aliyun moderation response"),
-		}
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return false, "", "", &moderationError{
-			Class: ai_common.SafetyBackendUnavailable,
-			Err:   fmt.Errorf("aliyun moderation service returned status %d", resp.StatusCode),
+			Err:   fmt.Errorf("aliyun moderation service returned status %d", statusCode),
 		}
 	}
 
@@ -1306,42 +1260,6 @@ func (p *Plugin) checkSingleContent(
 		return true, response.Data.Advice[0].Answer, response.Data.RiskLevel, nil
 	}
 	return true, "", response.Data.RiskLevel, nil
-}
-
-func (p *Plugin) buildFormBody(sessionID string, content string, serviceName string) (string, error) {
-	accessKeyID := p.accessKeyID.Bytes()
-	accessKeySecret := p.accessKeySecret.Bytes()
-	defer clear(accessKeyID)
-	defer clear(accessKeySecret)
-	if len(accessKeyID) == 0 || len(accessKeySecret) == 0 {
-		return "", errors.New("aliyun moderation credentials are unavailable")
-	}
-	serviceParameters, err := json.Marshal(serviceParameters{SessionID: sessionID, Content: content})
-	if err != nil {
-		return "", fmt.Errorf("failed to encode service parameters: %w", err)
-	}
-
-	params := map[string]string{
-		"AccessKeyId":       string(accessKeyID),
-		"Action":            "TextModerationPlus",
-		"Format":            "JSON",
-		"RegionId":          p.config.RegionID,
-		"Service":           serviceName,
-		"ServiceParameters": string(serviceParameters),
-		"SignatureMethod":   "HMAC-SHA1",
-		"SignatureNonce":    p.nonce(),
-		"SignatureVersion":  "1.0",
-		"Timestamp":         p.now().UTC().Format("2006-01-02T15:04:05Z"),
-		"Version":           "2022-03-02",
-	}
-	params["Signature"] = aliyunSignature(params, string(accessKeySecret)+"&")
-
-	keys := sortedKeys(params)
-	values := make(url.Values, len(params))
-	for _, key := range keys {
-		values.Set(key, params[key])
-	}
-	return values.Encode(), nil
 }
 
 func aliyunSignature(params map[string]string, secret string) string {

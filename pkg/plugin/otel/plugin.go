@@ -31,8 +31,9 @@ import (
 
 const (
 	// version  = "0.1"
-	priority = 12009
-	name     = "opentelemetry"
+	priority  = 12009
+	name      = "opentelemetry"
+	aliasName = "otel"
 )
 
 const schema = `
@@ -99,6 +100,68 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "type": "object",
+  "properties": {
+    "trace_id_source": {
+      "type": "string",
+      "enum": ["x-request-id", "random"]
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["boolean", "number", "string"]
+      }
+    },
+    "collector": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "request_timeout": {
+          "type": "integer"
+        },
+        "request_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["boolean", "number", "string"]
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "batch_span_processor": {
+      "type": "object",
+      "properties": {
+        "drop_on_queue_full": {
+          "type": "boolean"
+        },
+        "max_queue_size": {
+          "type": "integer"
+        },
+        "batch_timeout": {
+          "type": "number"
+        },
+        "inactive_timeout": {
+          "type": "number"
+        },
+        "max_export_batch_size": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "set_ngx_var": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}
+`
+
 type Plugin struct {
 	base.BasePlugin
 	config Config
@@ -107,6 +170,7 @@ type Plugin struct {
 	tracerProvider *sdktrace.TracerProvider
 	route          resource.Route
 	service        resource.Service
+	stopOnce       sync.Once
 }
 
 type Metadata struct {
@@ -165,6 +229,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
@@ -180,10 +245,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.Sampler.Options.Root.Name == "" {
 		p.config.Sampler.Options.Root.Name = "always_off"
 	}
-	metadata, configured := loadMetadata(effective.Config.PluginAttr[name])
+	metadata, configured, err := loadMetadata(p.MetadataView(), effective.Config.PluginAttr)
+	if err != nil {
+		return err
+	}
 	p.metadata = metadata
 
-	var err error
 	p.tracerProvider, err = newTracerProvider(p.config.Sampler, metadata, configured)
 	if err != nil {
 		if errors.Is(err, errUnsupportedMetadata) {
@@ -267,12 +334,14 @@ func (p *Plugin) SetResourceContext(route resource.Route, service resource.Servi
 }
 
 func (p *Plugin) Stop() {
-	if p.tracerProvider == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = p.tracerProvider.Shutdown(ctx)
+	p.stopOnce.Do(func() {
+		if p.tracerProvider == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = p.tracerProvider.Shutdown(ctx)
+	})
 }
 
 func (p *Plugin) serverName() string {

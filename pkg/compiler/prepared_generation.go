@@ -29,11 +29,14 @@ type PreparedGeneration struct {
 	materializer secret.Materializer
 	cleanup      *cleanupStack
 	detach       func()
+	bindingOps   effectiveBindingOps
 
-	materializeMu sync.Mutex
-	terminal      bool
-	closeOnce     sync.Once
-	closeErr      error
+	materializeMu    sync.Mutex
+	bindingOpsMu     sync.Mutex
+	closeStartedOnce sync.Once
+	terminal         bool
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 // PublicationSet returns a defensive copy of this generation's publication
@@ -106,6 +109,14 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	cleanupCtx := context.WithoutCancel(ctx)
+	prepared.bindingOpsMu.Lock()
+	closeStarted := prepared.bindingOps.closeStarted
+	prepared.bindingOpsMu.Unlock()
+	prepared.closeStartedOnce.Do(func() {
+		if closeStarted != nil {
+			closeStarted()
+		}
+	})
 
 	prepared.materializeMu.Lock()
 	prepared.terminal = true
@@ -130,6 +141,9 @@ func (prepared *PreparedGeneration) Close(ctx context.Context) error {
 		prepared.registry = nil
 		prepared.materializer = nil
 		prepared.cleanup = nil
+		prepared.bindingOpsMu.Lock()
+		prepared.bindingOps = effectiveBindingOps{}
+		prepared.bindingOpsMu.Unlock()
 		detach := prepared.detach
 		prepared.detach = nil
 		prepared.materializeMu.Unlock()
@@ -145,13 +159,22 @@ type consumerLookupView struct {
 }
 
 func (view consumerLookupView) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
+	if view.bindings == nil {
+		return resource.Consumer{}, false
+	}
 	return view.bindings.ConsumerByPluginKey(plugin, key)
 }
 
 func (view consumerLookupView) ConsumerByID(id string) (resource.Consumer, bool) {
+	if view.bindings == nil {
+		return resource.Consumer{}, false
+	}
 	return view.bindings.ConsumerByID(id)
 }
 
 func (view consumerLookupView) ConsumerGroupByID(id string) (resource.ConsumerGroup, bool) {
+	if view.bindings == nil {
+		return resource.ConsumerGroup{}, false
+	}
 	return view.bindings.ConsumerGroupByID(id)
 }

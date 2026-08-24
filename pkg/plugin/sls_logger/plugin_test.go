@@ -34,6 +34,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -351,9 +352,17 @@ func pluginStructContainsString(value reflect.Value, target string) bool {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -366,6 +375,22 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
@@ -1109,6 +1134,69 @@ func TestMetadataSchemaRejectsNonObjectLogFormat(t *testing.T) {
 	config := map[string]any{"log_format": "bad plugin metadata"}
 	if err := util.Validate(config, p.GetMetadataSchema()); err == nil {
 		t.Fatal("metadata schema accepted a non-object log_format")
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{
+		Host:            "127.0.0.1",
+		Port:            10009,
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+	}
+	first := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{"generation": "n"},
+	})
+	second := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{"generation": "n-plus-one"},
+	})
+	routeConfig := config
+	routeConfig.LogFormat = map[string]string{"generation": "route"}
+	route := newTestPluginWithMetadata(t, routeConfig, map[string]any{
+		"log_format": map[string]any{"generation": "metadata"},
+	})
+
+	if first.LogFormat["generation"] != "n" {
+		t.Fatalf("generation N format = %#v", first.LogFormat)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" {
+		t.Fatalf("generation N+1 format = %#v", second.LogFormat)
+	}
+	if route.LogFormat["generation"] != "route" {
+		t.Fatalf("route format = %#v, want route precedence", route.LogFormat)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeSLSProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{
+		Host:            "127.0.0.1",
+		Port:            10009,
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"log_format": map[string]any{"generation": 1},
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.BatchProcessor != nil {
+		t.Fatalf("decode failure acquired processor: %v", p.BatchProcessor)
 	}
 }
 

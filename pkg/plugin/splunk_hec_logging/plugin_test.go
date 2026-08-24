@@ -26,6 +26,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -654,9 +655,17 @@ func TestLogCapturePolicyIncludesExtraBodyFields(t *testing.T) {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -669,6 +678,22 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
@@ -782,6 +807,82 @@ func TestMetadataSchemaAcceptsAdditiveLogFormat(t *testing.T) {
 	}
 	if err := util.Validate(map[string]any{"log_format": "wrong-type"}, p.GetMetadataSchema()); err == nil {
 		t.Fatal("metadata schema accepted string log_format")
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	endpoint := Endpoint{
+		URI:   "http://127.0.0.1:8088/services/collector/event",
+		Token: "token",
+	}
+	first := newTestPluginWithMetadata(t, Config{Endpoint: endpoint}, map[string]any{
+		"log_format_extra":    map[string]any{"generation": "n-extra"},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, Config{Endpoint: endpoint}, map[string]any{
+		"log_format":          map[string]any{"generation": "n-plus-one"},
+		"log_format_extra":    map[string]any{"generation": "must-be-suppressed"},
+		"max_pending_entries": 12,
+	})
+	route := newTestPluginWithMetadata(t, Config{
+		Endpoint:  endpoint,
+		LogFormat: map[string]string{"generation": "route"},
+	}, map[string]any{
+		"log_format_extra": map[string]any{"generation": "must-be-suppressed"},
+	})
+
+	if first.LogFormat != nil || first.logFormatExtra["generation"] != "n-extra" ||
+		first.config.MaxPendingEntries != 11 {
+		t.Fatalf(
+			"generation N metadata = format=%#v extra=%#v pending=%d",
+			first.LogFormat,
+			first.logFormatExtra,
+			first.config.MaxPendingEntries,
+		)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" || second.logFormatExtra != nil ||
+		second.config.MaxPendingEntries != 12 {
+		t.Fatalf(
+			"generation N+1 metadata = format=%#v extra=%#v pending=%d",
+			second.LogFormat,
+			second.logFormatExtra,
+			second.config.MaxPendingEntries,
+		)
+	}
+	if route.LogFormat["generation"] != "route" || route.logFormatExtra != nil {
+		t.Fatalf("route format did not suppress extras: format=%#v extra=%#v", route.LogFormat, route.logFormatExtra)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{Endpoint: Endpoint{
+		URI:   "http://127.0.0.1:8088/services/collector/event",
+		Token: "token",
+	}}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"max_pending_entries": "invalid",
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil {
+		t.Fatalf(
+			"decode failure acquired resources: client=%v release=%v processor=%v",
+			p.client,
+			p.clientRelease != nil,
+			p.BatchProcessor,
+		)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -582,9 +583,17 @@ func TestSendBatchCancelsLogglyHTTPBulkWithContext(t *testing.T) {
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, nil)
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -597,6 +606,22 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return runtime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
@@ -1216,6 +1241,105 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch and max pending fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsEndpointAndLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"host":       "logs.example.com",
+		"port":       -1,
+		"protocol":   "custom",
+		"timeout":    0,
+		"log_format": map[string]any{"generation": "$route_id"},
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"host": 1},
+		{"port": "514"},
+		{"protocol": 1},
+		{"timeout": "5000"},
+		{"log_format": "$route_id"},
+		{"log_format": map[string]any{"generation": 1}},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataEndpointAndFormat(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{CustomerToken: "token-n"}, map[string]any{
+		"host":       "logs-n.example",
+		"port":       1514,
+		"protocol":   "http",
+		"timeout":    1100,
+		"log_format": map[string]any{"generation": "n"},
+	})
+	second := newTestPluginWithMetadata(t, Config{CustomerToken: "token-n-plus-one"}, map[string]any{
+		"host":       "logs-n-plus-one.example",
+		"port":       2514,
+		"protocol":   "https",
+		"timeout":    2100,
+		"log_format": map[string]any{"generation": "n-plus-one"},
+	})
+	route := newTestPluginWithMetadata(t, Config{
+		CustomerToken: "token-route",
+		Host:          "logs-route.example",
+		Port:          3514,
+		Protocol:      "syslog",
+		Timeout:       3100,
+		LogFormat:     map[string]string{"generation": "route"},
+	}, map[string]any{
+		"host":       "logs-metadata.example",
+		"port":       4514,
+		"protocol":   "https",
+		"timeout":    4100,
+		"log_format": map[string]any{"generation": "metadata"},
+	})
+
+	if first.config.Host != "logs-n.example" || first.config.Port != 1514 ||
+		first.config.Protocol != "http" || first.config.Timeout != 1100 ||
+		first.LogFormat["generation"] != "n" {
+		t.Fatalf("generation N metadata = %#v/%#v", first.config, first.LogFormat)
+	}
+	if second.config.Host != "logs-n-plus-one.example" || second.config.Port != 2514 ||
+		second.config.Protocol != "https" || second.config.Timeout != 2100 ||
+		second.LogFormat["generation"] != "n-plus-one" {
+		t.Fatalf("generation N+1 metadata = %#v/%#v", second.config, second.LogFormat)
+	}
+	if route.config.Host != "logs-route.example" || route.config.Port != 3514 ||
+		route.config.Protocol != "syslog" || route.config.Timeout != 3100 ||
+		route.LogFormat["generation"] != "route" {
+		t.Fatalf("route precedence = %#v/%#v", route.config, route.LogFormat)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{CustomerToken: "token"}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"timeout": "invalid",
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.httpClient != nil || p.BatchProcessor != nil {
+		t.Fatalf("decode failure acquired resources: client=%v processor=%v", p.httpClient, p.BatchProcessor)
 	}
 }
 

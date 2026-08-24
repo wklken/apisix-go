@@ -170,6 +170,32 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer"
+    },
+    "protocol": {
+      "type": "string"
+    },
+    "timeout": {
+      "type": "integer"
+    },
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	Host      string            `json:"host,omitempty"`
 	Port      int               `json:"port,omitempty"`
@@ -224,6 +250,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.InitLogger(p.Send)
 
@@ -323,6 +350,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("loggly metadata decode failed: %w", err)
+	}
 
 	if p.config.Severity == "" {
 		p.config.Severity = "INFO"
@@ -331,7 +362,6 @@ func (p *Plugin) PostInit() error {
 	if len(p.config.Tags) == 0 {
 		p.config.Tags = []string{"apisix"}
 	}
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if p.config.Host == "" {
 		p.config.Host = metadata.Host
 	}

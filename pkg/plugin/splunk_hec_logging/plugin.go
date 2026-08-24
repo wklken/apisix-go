@@ -290,6 +290,10 @@ func (p *Plugin) PostInit() error {
 	if p.ready {
 		return nil
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("splunk-hec-logging metadata decode failed: %w", err)
+	}
 
 	if p.config.Endpoint.Timeout == 0 {
 		p.config.Endpoint.Timeout = 10
@@ -334,7 +338,6 @@ func (p *Plugin) PostInit() error {
 	}
 	sharedClient := value.(*resty.Client)
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	switch {
 	case p.config.LogFormat != nil:
 		p.LogFormat = p.config.LogFormat

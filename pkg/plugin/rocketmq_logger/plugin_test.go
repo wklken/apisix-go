@@ -30,6 +30,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	apisixruntime "github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -778,9 +779,22 @@ func (s *captureSender) waitForMessages(t *testing.T, count int) []rocketmqMessa
 
 func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	t.Helper()
+	return newTestPluginWithMetadata(t, cfg, sender, nil)
+}
+
+func newTestPluginWithMetadata(
+	t *testing.T,
+	cfg Config,
+	sender rocketmqSender,
+	metadata map[string]any,
+) *Plugin {
+	t.Helper()
 
 	p := &Plugin{config: cfg, sender: sender}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       mustMetadataView(t, metadata),
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -794,6 +808,22 @@ func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) apisixruntime.MetadataView {
+	t.Helper()
+	if len(metadata) == 0 {
+		return apisixruntime.MetadataView{}
+	}
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	view, err := apisixruntime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
@@ -1097,6 +1127,92 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "rocketmq-logger" {
 		t.Fatalf("plugin = %v, want rocketmq-logger", payload["plugin"])
+	}
+}
+
+func TestMetadataSchemaAcceptsLogFormatAndPendingLimit(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":          map[string]any{"generation": "$route_id"},
+		"max_pending_entries": 1,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"log_format": "$route_id"},
+		{"log_format": map[string]any{"generation": 1}},
+		{"max_pending_entries": 0},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{}, &captureSender{}, map[string]any{
+		"log_format":          map[string]any{"generation": "n"},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, Config{}, &captureSender{}, map[string]any{
+		"log_format":          map[string]any{"generation": "n-plus-one"},
+		"max_pending_entries": 12,
+	})
+	route := newTestPluginWithMetadata(t, Config{
+		LogFormat: map[string]string{"generation": "route"},
+	}, &captureSender{}, map[string]any{
+		"log_format":          map[string]any{"generation": "metadata"},
+		"max_pending_entries": 13,
+	})
+
+	if first.LogFormat["generation"] != "n" || first.config.MaxPendingEntries != 11 {
+		t.Fatalf("generation N metadata = %#v/%d", first.LogFormat, first.config.MaxPendingEntries)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 {
+		t.Fatalf("generation N+1 metadata = %#v/%d", second.LogFormat, second.config.MaxPendingEntries)
+	}
+	if route.LogFormat["generation"] != "route" || route.config.MaxPendingEntries != 13 {
+		t.Fatalf("route precedence = %#v/%d", route.LogFormat, route.config.MaxPendingEntries)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeRocketMQSenderAndProcessorAcquisition(t *testing.T) {
+	var factoryCalls int
+	p := &Plugin{config: Config{
+		NameServerList: []string{"127.0.0.1:9876"},
+		Topic:          "apisix-logs",
+	}}
+	p.senderFactory = func(*Config) (rocketmqSender, error) {
+		factoryCalls++
+		return &captureSender{}, nil
+	}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string]any{
+			"max_pending_entries": "invalid",
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if factoryCalls != 0 || p.sender != nil || p.BatchProcessor != nil {
+		t.Fatalf(
+			"decode failure acquired resources: factory_calls=%d sender=%v processor=%v",
+			factoryCalls,
+			p.sender,
+			p.BatchProcessor,
+		)
 	}
 }
 

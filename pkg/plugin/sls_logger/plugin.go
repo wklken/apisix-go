@@ -286,6 +286,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("sls-logger metadata decode failed: %w", err)
+	}
 
 	if p.config.SSLVerify == nil {
 		verify := true
@@ -320,7 +324,7 @@ func (p *Plugin) PostInit() error {
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = base.LoadPluginMetadata[pluginMetadata](name).LogFormat
+		p.LogFormat = metadata.LogFormat
 	}
 	p.SetLogCapturePolicy(
 		p.config.IncludeReqBody, p.config.IncludeRespBody,

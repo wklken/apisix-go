@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -12,15 +13,21 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -33,6 +40,21 @@ type Plugin struct {
 	sample func() float64
 
 	clientRelease func()
+
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+	ready       bool
+	stopMu      sync.Mutex
+	stopDone    chan struct{}
+
+	secretKey       secret.Value
+	secretKeySet    bool
+	legacySecretKey *store.ResolvedSecret
+	secretsPrepared bool
+
+	// testLifecycleHook is a package-local synchronization seam for lifecycle
+	// tests; it is nil in production.
+	testLifecycleHook func(string)
 }
 
 const (
@@ -43,6 +65,8 @@ const (
 	clsAPIPath         = "/structuredlog"
 	authExpireSeconds  = 60
 	defaultHTTPTimeout = 10 * time.Second
+
+	lifecycleSigningCallbackReturned = "signing-callback-returned"
 
 	maxSingleValueSize   = 1 * 1024 * 1024
 	maxLogGroupValueSize = 5 * 1024 * 1024
@@ -196,23 +220,111 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if isSecretReference(p.config.SecretID) {
+		return clsSecretKeyUnavailable()
+	}
+
+	value, err := access.Materialize(ctx, "secret_key", p.config.SecretKey)
+	if err != nil || value.Use(validateCLSSecretKey) != nil {
+		return clsSecretKeyUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return clsSecretKeyUnavailable()
+	}
+	p.secretKey = value
+	p.secretKeySet = true
+	p.config.SecretKey = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if isSecretReference(p.config.SecretID) {
+		return clsSecretKeyUnavailable()
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
 		return errors.New("data-encryption resolver is required")
+	}
+	resolved, err := resolver.ResolveForContext(p.config.SecretKey, name+".secret_key")
+	if err != nil {
+		return clsSecretKeyUnavailable()
+	}
+	owner, err := store.MaterializeSecret(resolved)
+	if err != nil {
+		return clsSecretKeyUnavailable()
+	}
+	plaintext := owner.Bytes()
+	defer clear(plaintext)
+	if err := validateCLSSecretKey(string(plaintext)); err != nil {
+		owner.Destroy()
+		return clsSecretKeyUnavailable()
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		owner.Destroy()
+		return clsSecretKeyUnavailable()
+	}
+	p.legacySecretKey = owner
+	p.config.SecretKey = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateCLSSecretKey(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func isSecretReference(value string) bool {
+	return strings.HasPrefix(value, "$secret://") ||
+		(len(value) >= len("$ENV://") && strings.EqualFold(value[:len("$ENV://")], "$ENV://"))
+}
+
+func clsSecretKeyUnavailable() error {
+	return fmt.Errorf("%s secret_key: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
 	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
 	}
-	resolved, err := p.DataEncryption().ResolveForContext(
-		p.config.SecretKey,
-		"tencent-cloud-cls.secret_key",
-	)
-	if err != nil {
-		return fmt.Errorf("tencent-cloud-cls secret_key: %w", err)
-	}
-	p.config.SecretKey = resolved
 
 	p.applyDefaults()
 
@@ -224,10 +336,6 @@ func (p *Plugin) PostInit() error {
 	p.LogFormat = logFormat
 
 	configUID := shared.NewConfigUID()
-	configUID.Add(p.config.Scheme)
-	configUID.Add(p.config.CLSHost)
-	configUID.Add(p.config.CLSTopic)
-	configUID.Add(p.config.SecretID)
 	configUID.Add(p.sslVerify())
 	configUID.Add(p.config.Timeout)
 
@@ -242,8 +350,7 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
-	p.client = value.(*resty.Client)
-	p.clientRelease = release
+	sharedClient := value.(*resty.Client)
 
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -254,7 +361,7 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.BatchProcessor = base.NewBatchProcessor("tencent-cloud-cls", base.BatchDefaults{
+	processor := base.NewBatchProcessor("tencent-cloud-cls", base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -262,18 +369,59 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendPendingBatch)
+	if p.stopped.Load() {
+		processor.Stop()
+		release()
+		return secret.ErrCredentialUnavailable
+	}
+	p.client = sharedClient
+	p.clientRelease = release
+	p.BatchProcessor = processor
+	p.ready = true
 
 	return nil
 }
 
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	p.stopMu.Lock()
+	if p.stopDone != nil {
+		done := p.stopDone
+		p.stopMu.Unlock()
+		<-done
+		return
+	}
+	done := make(chan struct{})
+	p.stopDone = done
+	p.stopped.Store(true)
+	p.stopMu.Unlock()
+	defer close(done)
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		if p.clientRelease != nil {
 			p.clientRelease()
 			p.clientRelease = nil
 		}
-	})
+		p.client = nil
+		p.BatchProcessor = nil
+		p.ready = false
+		if p.legacySecretKey != nil {
+			p.legacySecretKey.Destroy()
+			p.legacySecretKey = nil
+		}
+		p.secretKey = secret.Value{}
+		p.secretKeySet = false
+		p.secretsPrepared = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -281,16 +429,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		return p.bodyAwareHandler(next)
 	}
 
-	if p.config.SampleRatio >= 1 {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		if p.sampleValue() >= p.config.SampleRatio {
+		if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
 			return
 		}
-		_ = p.Fire(apisixlog.GetFields(r, p.LogFormat))
+		_ = p.enqueueLogIfRunning(apisixlog.GetFields(r, p.LogFormat))
 	})
 }
 
@@ -298,7 +442,29 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
 		return nil
 	}
-	return p.BaseLoggerPlugin.RunLogPhase(snapshot)
+	fields := base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
+	if p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
+			base.NestedLogMap(fields, "request")["body"] = body
+		}
+	}
+	if p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
+			base.NestedLogMap(fields, "response")["body"] = body
+		}
+	}
+	return p.enqueueLogIfRunning(fields)
+}
+
+func (p *Plugin) enqueueLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready || p.BatchProcessor == nil {
+		return base.ErrLogQueueUnavailable
+	}
+	return p.EnqueueLog(fields)
 }
 
 func (p *Plugin) sampleValue() float64 {
@@ -343,7 +509,7 @@ func (p *Plugin) bodyAwareHandler(next http.Handler) http.Handler {
 		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
 		}
-		_ = p.Fire(logFields)
+		_ = p.enqueueLogIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -354,33 +520,129 @@ func (p *Plugin) Send(log map[string]any) {
 	}
 }
 
-func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
-	_ = batchMaxSize
+func (p *Plugin) SendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, false)
+}
 
+func (p *Plugin) sendPendingBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+	allowRetired bool,
+) (int, error) {
+	_ = batchMaxSize
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if (!allowRetired && p.stopped.Load()) || !p.ready || p.client == nil {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	payload := p.buildBatchPayload(entries)
+	defer clear(payload)
 	if len(payload) == 0 {
 		return 0, nil
 	}
 
-	resp, err := p.client.R().
-		SetContext(ctx).
-		SetHeader("Host", p.config.CLSHost).
-		SetHeader("Content-Type", "application/x-protobuf").
-		SetHeader("Authorization", p.authorization()).
-		SetBody(payload).
-		Post(p.endpointURL())
+	endpoint := p.endpointURL()
+	err := p.useSigningConfigLocked(func(config *Config) error {
+		request := p.client.R().
+			SetContext(ctx).
+			SetHeader("Host", p.config.CLSHost).
+			SetHeader("Content-Type", "application/x-protobuf").
+			SetBody(payload)
+		var resp *resty.Response
+		defer func() {
+			request.Header.Del("Authorization")
+			request.Body = nil
+			if request.RawRequest != nil {
+				request.RawRequest.Header.Del("Authorization")
+				request.RawRequest.Body = http.NoBody
+				request.RawRequest.GetBody = nil
+			}
+			if resp != nil {
+				if body := resp.Body(); len(body) > 0 {
+					clear(body)
+					resp.SetBody(nil)
+				}
+				if resp.RawResponse != nil {
+					resp.RawResponse.Header.Del("Authorization")
+					resp.RawResponse.Request = nil
+					resp.RawResponse.Body = http.NoBody
+				}
+				resp.Request = nil
+				resp.RawResponse = nil
+			}
+		}()
+
+		request.SetHeader("Authorization", authorization(config, p.now()))
+		var err error
+		resp, err = request.Post(endpoint)
+		if err != nil {
+			return fmt.Errorf(
+				"failed to send log to Tencent Cloud CLS endpoint %s: %w",
+				endpoint, err,
+			)
+		}
+		if resp.StatusCode() >= 300 {
+			return fmt.Errorf(
+				"tencent Cloud CLS endpoint returned status code [%d] uri [%s], body [%s]",
+				resp.StatusCode(),
+				endpoint,
+				resp.String(),
+			)
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to send log to Tencent Cloud CLS endpoint %s: %w", p.endpointURL(), err)
-	}
-	if resp.StatusCode() >= 300 {
-		return 0, fmt.Errorf(
-			"tencent Cloud CLS endpoint returned status code [%d] uri [%s], body [%s]",
-			resp.StatusCode(),
-			p.endpointURL(),
-			resp.String(),
-		)
+		if errors.Is(err, secret.ErrCredentialUnavailable) {
+			return 0, fmt.Errorf(
+				"failed to send log to Tencent Cloud CLS endpoint %s: %w",
+				endpoint, err,
+			)
+		}
+		return 0, err
 	}
 	return 0, nil
+}
+
+func (p *Plugin) useSigningConfigLocked(use func(*Config) error) error {
+	if use == nil || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	privateConfig := Config{SecretID: p.config.SecretID}
+	defer func() { privateConfig = Config{} }()
+	usePrivateConfig := func() error {
+		err := use(&privateConfig)
+		if hook := p.testLifecycleHook; hook != nil {
+			hook(lifecycleSigningCallbackReturned)
+		}
+		return err
+	}
+	if p.secretKeySet {
+		return p.secretKey.Use(func(value string) error {
+			privateConfig.SecretKey = value
+			defer func() { privateConfig.SecretKey = "" }()
+			return usePrivateConfig()
+		})
+	}
+	if p.legacySecretKey != nil {
+		plaintext := p.legacySecretKey.Bytes()
+		defer clear(plaintext)
+		privateConfig.SecretKey = string(plaintext)
+		return usePrivateConfig()
+	}
+	return secret.ErrCredentialUnavailable
 }
 
 func (p *Plugin) applyDefaults() {
@@ -430,16 +692,23 @@ func (p *Plugin) endpointURL() string {
 	return fmt.Sprintf("%s://%s%s?%s", p.config.Scheme, p.config.CLSHost, clsAPIPath, values.Encode())
 }
 
-func (p *Plugin) authorization() string {
-	now := p.now()
+func authorization(config *Config, now time.Time) string {
 	signTime := fmt.Sprintf("%d;%d", now.Unix(), now.Unix()+authExpireSeconds)
 	httpRequestInfo := fmt.Sprintf("%s\n%s\n%s\n%s\n", "post", clsAPIPath, "", "")
 	stringToSign := fmt.Sprintf("%s\n%s\n%s\n", "sha1", signTime, sha1Hex([]byte(httpRequestInfo)))
-	signKey := hmacSHA1Hex([]byte(p.config.SecretKey), []byte(signTime))
-	signature := hmacSHA1Hex([]byte(signKey), []byte(stringToSign))
+	secretKey := []byte(config.SecretKey)
+	defer clear(secretKey)
+	signKeyDigest := hmacSHA1(secretKey, []byte(signTime))
+	defer clear(signKeyDigest)
+	signKey := make([]byte, hex.EncodedLen(len(signKeyDigest)))
+	hex.Encode(signKey, signKeyDigest)
+	defer clear(signKey)
+	signatureDigest := hmacSHA1(signKey, []byte(stringToSign))
+	defer clear(signatureDigest)
+	signature := hex.EncodeToString(signatureDigest)
 
 	return "q-sign-algorithm=sha1" +
-		"&q-ak=" + p.config.SecretID +
+		"&q-ak=" + config.SecretID +
 		"&q-sign-time=" + signTime +
 		"&q-key-time=" + signTime +
 		"&q-header-list=" +
@@ -566,8 +835,8 @@ func sha1Hex(value []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func hmacSHA1Hex(key []byte, value []byte) string {
+func hmacSHA1(key []byte, value []byte) []byte {
 	mac := hmac.New(sha1.New, key)
 	mac.Write(value)
-	return hex.EncodeToString(mac.Sum(nil))
+	return mac.Sum(nil)
 }

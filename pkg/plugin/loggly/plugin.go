@@ -3,6 +3,7 @@ package loggly
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -12,20 +13,32 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
 	base.BaseLoggerPlugin
-	config Config
+	config      Config
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+
+	token           secret.Value
+	tokenSet        bool
+	legacyToken     *store.ResolvedSecret
+	secretsPrepared bool
+	ready           bool
 
 	// dialFunc is the syslog socket factory; retained so tests can count
 	// dials. The socket is reused across messages and closed on Stop.
@@ -217,23 +230,99 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	value, err := access.Materialize(ctx, "customer_token", p.config.CustomerToken)
+	if err != nil || value.Use(validateLogglyToken) != nil {
+		return logglyTokenUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return logglyTokenUnavailable()
+	}
+	p.token = value
+	p.tokenSet = true
+	p.config.CustomerToken = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
 		return errors.New("data-encryption resolver is required")
+	}
+	resolved, err := resolver.ResolveForContext(p.config.CustomerToken, name+".customer_token")
+	if err != nil {
+		return logglyTokenUnavailable()
+	}
+	owner, err := store.MaterializeSecret(resolved)
+	if err != nil {
+		return logglyTokenUnavailable()
+	}
+	plaintext := owner.Bytes()
+	defer clear(plaintext)
+	if err := validateLogglyToken(string(plaintext)); err != nil {
+		owner.Destroy()
+		return logglyTokenUnavailable()
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		owner.Destroy()
+		return logglyTokenUnavailable()
+	}
+	p.legacyToken = owner
+	p.config.CustomerToken = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateLogglyToken(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func logglyTokenUnavailable() error {
+	return fmt.Errorf("%s customer_token: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
 	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
 		return err
 	}
-	resolved, err := p.DataEncryption().ResolveForContext(
-		p.config.CustomerToken,
-		"loggly.customer_token",
-	)
-	if err != nil {
-		return fmt.Errorf("loggly customer_token: %w", err)
-	}
-	p.config.CustomerToken = resolved
 
 	if p.config.Severity == "" {
 		p.config.Severity = "INFO"
@@ -301,14 +390,14 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	p.httpClient = &http.Client{
+	httpClient := &http.Client{
 		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: !*p.config.SSLVerify},
 		},
 	}
 
-	p.BatchProcessor = base.NewBatchProcessor("loggly", base.BatchDefaults{
+	processor := base.NewBatchProcessor("loggly", base.BatchDefaults{
 		PluginID:           name,
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
@@ -316,7 +405,15 @@ func (p *Plugin) PostInit() error {
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if p.stopped.Load() {
+		processor.Stop()
+		httpClient.CloseIdleConnections()
+		return secret.ErrCredentialUnavailable
+	}
+	p.httpClient = httpClient
+	p.BatchProcessor = processor
+	p.ready = true
 
 	return nil
 }
@@ -371,7 +468,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		logFields[logglyHostField] = request.Host
 		logFields[logglyStatusField] = metrics.Code
 
-		_ = p.Fire(logFields)
+		_ = p.enqueueLogglyIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -398,6 +495,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	}
 	fields[logglyHostField] = base.HostWithoutPort(snapshot.Request.Host)
 	fields[logglyStatusField] = snapshot.Outcome.Status
+	return p.enqueueLogglyIfRunning(fields)
+}
+
+func (p *Plugin) enqueueLogglyIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
+	}
 	return p.EnqueueLog(fields)
 }
 
@@ -434,18 +543,51 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, false)
+}
+
+func (p *Plugin) sendBatchFromProcessor(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+	allowRetiredDrain bool,
+) (int, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if (!allowRetiredDrain && p.stopped.Load()) || !p.secretsPrepared || !p.ready {
+		return 0, secret.ErrCredentialUnavailable
+	}
 	if p.config.Protocol == "http" || p.config.Protocol == "https" {
-		return 0, p.sendHTTPBulk(ctx, entries, batchMaxSize)
-	}
-
-	for i, entry := range entries {
-		message := p.buildMessage(entry)
-		if err := p.sendUDPMessage(ctx, message); err != nil {
-			return i + 1, err
+		payload, err := p.encodeHTTPBulk(entries, batchMaxSize)
+		if err != nil {
+			return 0, err
 		}
+		defer clear(payload)
+		return 0, p.useTokenLocked(allowRetiredDrain, func(token string) error {
+			return p.sendHTTPBulk(ctx, payload, token)
+		})
 	}
 
-	return 0, nil
+	firstFailed := 0
+	err := p.useTokenLocked(allowRetiredDrain, func(token string) error {
+		for i, entry := range entries {
+			message := p.buildMessage(entry, token)
+			if err := p.sendUDPMessage(ctx, message); err != nil {
+				firstFailed = i + 1
+				return err
+			}
+		}
+		return nil
+	})
+	return firstFailed, err
 }
 
 func (p *Plugin) sendUDPMessage(ctx context.Context, message string) error {
@@ -470,7 +612,9 @@ func (p *Plugin) sendUDPMessage(ctx context.Context, message string) error {
 	}
 	_ = conn.SetWriteDeadline(deadline)
 	stopWatcher := watchConnectionCancellation(ctx, conn)
-	_, writeErr := conn.Write([]byte(message))
+	payload := []byte(message)
+	_, writeErr := conn.Write(payload)
+	clear(payload)
 	stopWatcher()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		p.resetConnLocked(conn)
@@ -504,7 +648,15 @@ func (p *Plugin) resetConnLocked(conn net.Conn) {
 // Stop drains the batch processor, then closes the retained syslog socket
 // and any idle HTTP connections.
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
 		p.connMu.Lock()
 		if p.conn != nil {
 			_ = p.conn.Close()
@@ -515,7 +667,22 @@ func (p *Plugin) Stop() {
 		if p.httpClient != nil {
 			p.httpClient.CloseIdleConnections()
 		}
-	})
+		p.httpClient = nil
+		p.BatchProcessor = nil
+		if p.legacyToken != nil {
+			p.legacyToken.Destroy()
+			p.legacyToken = nil
+		}
+		p.token = secret.Value{}
+		p.tokenSet = false
+		p.secretsPrepared = false
+		p.ready = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
 }
 
 func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
@@ -534,24 +701,30 @@ func watchConnectionCancellation(ctx context.Context, conn net.Conn) func() {
 	}
 }
 
-func (p *Plugin) sendHTTPBulk(ctx context.Context, entries []map[string]any, batchMaxSize int) error {
-	payload, err := p.encodeHTTPBulk(entries, batchMaxSize)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.bulkEndpoint(), bytes.NewReader(payload))
+func (p *Plugin) sendHTTPBulk(ctx context.Context, payload []byte, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.bulkEndpoint(token), bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to build Loggly bulk request: %w", err)
 	}
+	defer func() {
+		req.Body = http.NoBody
+		req.GetBody = nil
+		req.URL = nil
+	}()
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LOGGLY-TAG", strings.Join(p.config.Tags, ","))
 
 	resp, err := p.httpClient.Do(req)
+	if resp != nil {
+		defer func() {
+			_ = resp.Body.Close()
+			resp.Body = http.NoBody
+			resp.Request = nil
+		}()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to send loggly bulk message: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
 	}
@@ -578,15 +751,15 @@ func (p *Plugin) encodeHTTPBulk(entries []map[string]any, batchMaxSize int) ([]b
 	return []byte(strings.Join(lines, "\n")), nil
 }
 
-func (p *Plugin) bulkEndpoint() string {
+func (p *Plugin) bulkEndpoint(token string) string {
 	host := strings.TrimRight(p.config.Host, "/")
 	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
 		host = p.config.Protocol + "://" + host
 	}
-	return host + "/bulk/" + p.config.CustomerToken + "/tag/bulk"
+	return host + "/bulk/" + token + "/tag/bulk"
 }
 
-func (p *Plugin) buildMessage(log map[string]any) string {
+func (p *Plugin) buildMessage(log map[string]any, token string) string {
 	payload, err := json.Marshal(logglyPayload(log))
 	if err != nil {
 		payload = []byte(`{}`)
@@ -607,7 +780,7 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 		"apisix",
 		fmt.Sprint(os.Getpid()),
 		"-",
-		p.structuredData(),
+		p.structuredData(token),
 		string(payload),
 	}, " ")
 }
@@ -650,13 +823,31 @@ func severityCode(severity string) int {
 	return severityValues["INFO"]
 }
 
-func (p *Plugin) structuredData() string {
+func (p *Plugin) structuredData(token string) string {
 	tags := make([]string, 0, len(p.config.Tags))
 	for _, tag := range p.config.Tags {
 		tags = append(tags, fmt.Sprintf(`tag="%s"`, tag))
 	}
 	if len(tags) == 0 {
-		return fmt.Sprintf("[%s@41058]", p.config.CustomerToken)
+		return fmt.Sprintf("[%s@41058]", token)
 	}
-	return fmt.Sprintf("[%s@41058 %s]", p.config.CustomerToken, strings.Join(tags, " "))
+	return fmt.Sprintf("[%s@41058 %s]", token, strings.Join(tags, " "))
+}
+
+func (p *Plugin) useTokenLocked(allowRetiredDrain bool, use func(string) error) error {
+	if use == nil || (!allowRetiredDrain && p.stopped.Load()) || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.tokenSet {
+		return p.token.Use(use)
+	}
+	if p.legacyToken == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	plaintext := p.legacyToken.Bytes()
+	if len(plaintext) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(plaintext)
+	return use(string(plaintext))
 }

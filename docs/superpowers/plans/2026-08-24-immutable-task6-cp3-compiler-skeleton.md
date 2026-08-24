@@ -129,6 +129,29 @@ func SchemaWitnessForFactory(factory string) (SchemaWitness, error)
 
 **Checkpoint commit:** `refactor(compiler): validate refined publication sets`
 
+### Buildable prerequisites discovered during CP3.1/CP3.2
+
+CP3.3 starts with two independent, merge-before-compiler checkpoints. The
+original plan assumed both seams already existed; current source proves they do
+not.
+
+1. `refactor(consumer): expose credential schema witnesses`
+   - `pkg/consumer` remains the sole owner of consumer schemas and resolved JWE
+     validation.
+   - Expose copied schema strings for raw admission without exposing validators,
+     secret paths, or mutable registry state.
+   - Add a structural JWE raw schema while preserving its existing resolved
+     length/base64 validator and diagnostics.
+2. `refactor(capability): centralize declared field traversal`
+   - Add one deterministic declaration-path walker under `pkg/capability`.
+   - Migrate data-encryption field traversal to it and delete the duplicate
+     encrypt/decrypt walkers before compiler consumes the seam.
+   - Add a pure raw-envelope classifier; it recognizes envelopes but does not
+     resolve references or validate ciphertext.
+
+These checkpoints may be implemented in parallel because their files do not
+overlap. Compiler work branches only from their merged SHA.
+
 **Exclusive files:**
 
 - Create: `pkg/compiler/schema.go`
@@ -149,7 +172,7 @@ type schemaSource interface {
 
 type schemaSet struct {
     /* compiled config and metadata validators */
-    consumers *consumer.Registry
+    /* compiled copied consumer schema witnesses */
 }
 ```
 
@@ -163,7 +186,7 @@ The public package need not expose mutable compiled schema maps.
 - [ ] Treat `plugins/plugins` as singleton/name/domain enablement, not plugin config.
 - [ ] Missing/invalid witnesses are bootstrap defects; resource value mismatch emits redacted `plugin-schema-invalid`, `plugin-metadata-schema-invalid`, or `consumer-schema-invalid` issues.
 - [ ] At an exact manifest-declared field, a recognized `$secret://`, case-insensitive `$ENV://`, or supported encrypted envelope may satisfy raw admission even when the original value constraint would reject it. Non-declared fields never receive this relaxation.
-- [ ] Implement relaxation by a single schema-aware traversal/helper shared by config, metadata, and consumer admission. Container declarations use the catalog's container semantics; do not invent terminal wildcards.
+- [ ] Use the merged `pkg/capability` declared-field walker for config, metadata, and consumer admission. Container declarations use that exact behavior; do not copy traversal or invent terminal wildcards.
 - [ ] After materialization, CP5/leaf preparation validates against the original schema; raw admission never certifies the resolved value.
 - [ ] Schema errors must not retain validator text that can echo a reference, ciphertext, or plaintext.
 

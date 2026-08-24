@@ -281,7 +281,7 @@ The factory-level `ResourceRegistry` outlives individual leases. `WorkerCompiler
 
 **Produces:** exact `ConsumerPreparer` signature; no `PluginPreparer`; a registration-only `registeredAttempt` containing the exact attempt, defensive publication set, and registration owner.
 
-- [ ] **Step 1: Write RED compile and ownership tests**
+- [x] **Step 1: Write RED compile and ownership tests**
 
 Add compile assertions that call consumers without metadata and assert no `PluginPreparer`/`PreparedPlugins` declaration remains. Update recording hooks to trace only registration and consumer calls. Add tests proving `registeredAttempt.Close` closes only the registration.
 
@@ -297,7 +297,7 @@ func TestConsumerPreparerHasNoMetadataDependency(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run focused RED**
+- [x] **Step 2: Run focused RED**
 
 ```bash
 source .envrc
@@ -307,7 +307,7 @@ go test ./pkg/compiler -run 'TestConsumerPreparerHasNoMetadataDependency|TestReg
 
 Expected: compile failure while the old method and ownership shape remain.
 
-- [ ] **Step 3: Refactor the hook and attempt owner**
+- [x] **Step 3: Refactor the hook and attempt owner**
 
 Change `ConsumerPreparer` and the A1 implementation to the two-argument form. Delete `PluginPreparer` and `PreparedPlugins`. Reduce the stable attempt types to:
 
@@ -328,7 +328,7 @@ type registeredAttempt struct {
 
 Candidate still performs pure preparation, final occurrence enumeration, final-set validation, exact registration, registration identity checking, generation capability creation, and `PreparationAttempt` construction in that order. Recovery still validates committed publications, constructs candidates only from verified values, registers them with `RegisterRecovery`, and never calls candidate disposition. Store `clonePublicationSetForPreparation(set)` before return and clone candidate maps before placing them in both owners.
 
-- [ ] **Step 4: Preserve all failure semantics**
+- [x] **Step 4: Preserve all failure semantics**
 
 - close a nonnil registration returned with error and join the errors;
 - reject typed-nil registration;
@@ -336,7 +336,7 @@ Candidate still performs pure preparation, final occurrence enumeration, final-s
 - close registration if generation capability or attempt construction fails;
 - make concurrent `registeredAttempt.Close` execute once and replay its first result.
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 ```bash
 source .envrc
@@ -353,11 +353,11 @@ Expected: PASS with exact registration identity and no plugin preparation during
 
 **Files:** create `pkg/compiler/cleanup.go`, `pkg/compiler/cleanup_test.go`
 
-- [ ] **Step 1: Write RED tests**
+- [x] **Step 1: Write RED tests**
 
 Add `TestCleanupStackQuiescesThenReleasesInReverseOrder`, `TestCleanupStackConcurrentCloseRunsEachStepOnce`, `TestCleanupStackReplaysJoinedErrors`, and `TestCleanupStackRejectsLateOwnership`. Own registration, tasks, consumers, plugin-1, plugin-2 and expect `tasks, plugin-2, plugin-1, consumers, registration`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 source .envrc
@@ -365,11 +365,11 @@ export GOFLAGS=-mod=readonly
 go test ./pkg/compiler -run '^TestCleanupStack' -count=1
 ```
 
-- [ ] **Step 3: Implement minimally**
+- [x] **Step 3: Implement minimally**
 
 Validate inputs under lock, append immediately, seal before execution, normalize nil context, run both phases despite errors, join errors, and cache the first result. Do not add removal, reordering, retry, or public introspection APIs.
 
-- [ ] **Step 4: Run GREEN and race**
+- [x] **Step 4: Run GREEN and race**
 
 ```bash
 source .envrc
@@ -384,7 +384,7 @@ go test -race ./pkg/compiler -run '^TestCleanupStack' -count=1
 
 **Files:** create `pkg/compiler/prepared_generation.go`, `pkg/compiler/prepared_generation_test.go`; modify `pkg/compiler/types.go`
 
-- [ ] **Step 1: Write RED defensive and mismatch tests**
+- [x] **Step 1: Write RED defensive and mismatch tests**
 
 Add:
 
@@ -401,11 +401,11 @@ func TestPreparedGenerationPublicAPIExposesNoRuntimeHandles(t *testing.T)
 
 Mutate returned snapshot bytes, closure, decisions, and map, then read again. Change every publication identity field one at a time for mismatch coverage.
 
-- [ ] **Step 2: Add the public API AST guard**
+- [x] **Step 2: Add the public API AST guard**
 
 Parse `prepared_generation.go`. Reject exported fields/methods using registration, generation capability, materializer, task/resource registry, lease, closeable consumer bindings, plugin instance/binding/factory instance, Store, or encryption resolver. Reject `PreparedBindingView`, `BindingView`, `PluginBinding`, `Bindings`, `Plugins`, `Leases`, `Resources`, and `Tasks`. Allow only `PublicationSet`, `MetadataView`, `ConsumerLookup`, `DiscardPrepared`, and `Close`.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 source .envrc
@@ -413,11 +413,11 @@ export GOFLAGS=-mod=readonly
 go test ./pkg/compiler -run '^TestPreparedGeneration' -count=1
 ```
 
-- [ ] **Step 4: Implement private state and defensive access**
+- [x] **Step 4: Implement private state and defensive access**
 
 Keep publication, attempt, metadata, consumers, safe lookup, tasks, effective config, manifest, shared registry, cleanup ledger, materialization gate/state, and detach callback private. Accessors return defensive/inert values after close. `DiscardPrepared` compares the complete publication identity; mismatch preserves ownership, exact match delegates to `Close`. Close marks materialization terminal, runs cleanup, clears private references, and detaches once.
 
-- [ ] **Step 5: Run GREEN and race**
+- [x] **Step 5: Run GREEN and race**
 
 ```bash
 source .envrc

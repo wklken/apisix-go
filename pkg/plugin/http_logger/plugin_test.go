@@ -28,6 +28,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -778,10 +779,17 @@ func TestSendBatchCancelsRestyRequestWithContext(t *testing.T) {
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	return newTestPluginWithMetadata(t, cfg, runtime.MetadataView{})
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.MetadataView) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       metadata,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -793,6 +801,75 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 	t.Cleanup(p.Stop)
 	return p
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	nSource := []byte(`{"log_format":{"generation":"n","nested":{"level":"n"}},"max_pending_entries":31}`)
+	nView := mustMetadataView(t, map[string][]byte{name: nSource})
+	clear(nSource)
+	n := newTestPluginWithMetadata(t, Config{URI: "http://127.0.0.1/n"}, nView)
+
+	n1Source := []byte(`{"log_format":{"generation":"n1","nested":{"level":"n1"}},"max_pending_entries":32}`)
+	n1View := mustMetadataView(t, map[string][]byte{name: n1Source})
+	clear(n1Source)
+	n1 := newTestPluginWithMetadata(t, Config{URI: "http://127.0.0.1/n1"}, n1View)
+
+	if got := n.logFormat["generation"]; got != "n" || n.config.MaxPendingEntries != 31 {
+		t.Fatalf("N metadata = format %#v pending %d, want n/31", got, n.config.MaxPendingEntries)
+	}
+	if got := n1.logFormat["generation"]; got != "n1" || n1.config.MaxPendingEntries != 32 {
+		t.Fatalf("N+1 metadata = format %#v pending %d, want n1/32", got, n1.config.MaxPendingEntries)
+	}
+
+	route := map[string]any{"route": "$route_id"}
+	routePlugin := newTestPluginWithMetadata(t, Config{
+		URI: "http://127.0.0.1/route", LogFormat: route,
+	}, n1View)
+	if got := routePlugin.logFormat["route"]; got != "$route_id" || len(routePlugin.logFormat) != 1 {
+		t.Fatalf("route format = %#v, want route precedence", routePlugin.logFormat)
+	}
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs"}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string][]byte{
+			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "http-logger metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if strings.Contains(err.Error(), "sensitive-invalid-metadata") {
+		t.Fatalf("PostInit() leaked metadata: %v", err)
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil || p.config.Timeout != 0 {
+		t.Fatalf(
+			"PostInit() published side effects after invalid metadata: client=%v release=%t batch=%v timeout=%d",
+			p.client,
+			p.clientRelease != nil,
+			p.BatchProcessor,
+			p.config.Timeout,
+		)
+	}
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {

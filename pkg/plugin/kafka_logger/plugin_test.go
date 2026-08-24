@@ -27,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -716,10 +717,19 @@ func (s *captureSender) waitForMessages(t *testing.T, count int) []kafkaMessage 
 }
 
 func newTestPlugin(t *testing.T, cfg Config, sender kafkaSender) *Plugin {
+	return newTestPluginWithMetadata(t, cfg, sender, runtime.MetadataView{})
+}
+
+func newTestPluginWithMetadata(
+	t *testing.T, cfg Config, sender kafkaSender, metadata runtime.MetadataView,
+) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg, sender: sender}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       metadata,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -735,6 +745,82 @@ func newTestPlugin(t *testing.T, cfg Config, sender kafkaSender) *Plugin {
 	return p
 }
 
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	nSource := []byte(`{"log_format":{"generation":"n"},"max_pending_entries":41}`)
+	nView := mustMetadataView(t, map[string][]byte{name: nSource})
+	clear(nSource)
+	n := newTestPluginWithMetadata(t, Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092}, KafkaTopic: "n",
+	}, &captureSender{}, nView)
+
+	n1Source := []byte(`{"log_format":{"generation":"n1"},"max_pending_entries":42}`)
+	n1View := mustMetadataView(t, map[string][]byte{name: n1Source})
+	clear(n1Source)
+	n1 := newTestPluginWithMetadata(t, Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092}, KafkaTopic: "n1",
+	}, &captureSender{}, n1View)
+
+	if got := n.LogFormat["generation"]; got != "n" || n.config.MaxPendingEntries != 41 {
+		t.Fatalf("N metadata = format %q pending %d, want n/41", got, n.config.MaxPendingEntries)
+	}
+	if got := n1.LogFormat["generation"]; got != "n1" || n1.config.MaxPendingEntries != 42 {
+		t.Fatalf("N+1 metadata = format %q pending %d, want n1/42", got, n1.config.MaxPendingEntries)
+	}
+
+	routePlugin := newTestPluginWithMetadata(t, Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092},
+		KafkaTopic: "route",
+		LogFormat:  map[string]string{"route": "$route_id"},
+	}, &captureSender{}, n1View)
+	if got := routePlugin.LogFormat["route"]; got != "$route_id" || len(routePlugin.LogFormat) != 1 {
+		t.Fatalf("route format = %#v, want route precedence", routePlugin.LogFormat)
+	}
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092},
+		KafkaTopic: "invalid-metadata",
+	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string][]byte{
+			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.MaterializeSecrets(); err != nil {
+		t.Fatalf("MaterializeSecrets() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "kafka-logger metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if strings.Contains(err.Error(), "sensitive-invalid-metadata") {
+		t.Fatalf("PostInit() leaked metadata: %v", err)
+	}
+	if p.sender != nil || p.BatchProcessor != nil || p.config.ProducerType != "" {
+		t.Fatalf(
+			"PostInit() published side effects after invalid metadata: sender=%v batch=%v producer_type=%q",
+			p.sender,
+			p.BatchProcessor,
+			p.config.ProducerType,
+		)
+	}
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
 func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{config: Config{Brokers: []Broker{{
 		Host: "127.0.0.1", Port: 9092,
@@ -742,6 +828,27 @@ func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 	}}}}
 	if err := p.MaterializeSecrets(); err == nil || err.Error() != "data-encryption resolver is required" {
 		t.Fatalf("MaterializeSecrets() error = %v, want missing resolver error", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsObjectLogFormatAndPendingLimit(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":          map[string]any{"route": "$route_id"},
+		"max_pending_entries": 1,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"log_format": "wrong-type"},
+		{"max_pending_entries": 0},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
 	}
 }
 

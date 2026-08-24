@@ -29,8 +29,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -1142,12 +1142,12 @@ func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
 func TestEffectiveLogFormatRouteWins(t *testing.T) {
 	route := map[string]string{"route": "$request_id"}
 	metadata := map[string]string{"metadata": "$route_id"}
-	putPluginMetadata(t, metadata)
+	view := metadataViewForElasticsearchLogFormat(t, metadata, 0)
 
 	p := newRawTestPlugin(t, Config{
 		Field:     FieldConfig{Index: "apisix"},
 		LogFormat: route,
-	})
+	}, view)
 	if len(p.LogFormat) != 1 || p.LogFormat["route"] != route["route"] {
 		t.Fatalf("effective format = %#v, want route format over metadata %#v", p.LogFormat, metadata)
 	}
@@ -1159,9 +1159,9 @@ func TestEffectiveLogFormatRouteWins(t *testing.T) {
 
 func TestEffectiveLogFormatUsesMetadataFallback(t *testing.T) {
 	metadata := map[string]string{"route": "$route_id"}
-	putPluginMetadata(t, metadata)
+	view := metadataViewForElasticsearchLogFormat(t, metadata, 0)
 
-	p := newRawTestPlugin(t, Config{Field: FieldConfig{Index: "apisix"}})
+	p := newRawTestPlugin(t, Config{Field: FieldConfig{Index: "apisix"}}, view)
 	if len(p.LogFormat) != 1 || p.LogFormat["route"] != metadata["route"] {
 		t.Fatalf("effective format = %#v, want metadata format %#v", p.LogFormat, metadata)
 	}
@@ -1189,11 +1189,60 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	}
 }
 
-func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	nSource := []byte(`{"log_format":{"generation":"n"},"max_pending_entries":11}`)
+	nView := mustMetadataView(t, map[string][]byte{name: nSource})
+	clear(nSource)
+	n := newRawTestPlugin(t, Config{Field: FieldConfig{Index: "apisix"}}, nView)
+
+	n1Source := []byte(`{"log_format":{"generation":"n1"},"max_pending_entries":12}`)
+	n1View := mustMetadataView(t, map[string][]byte{name: n1Source})
+	clear(n1Source)
+	n1 := newRawTestPlugin(t, Config{Field: FieldConfig{Index: "apisix"}}, n1View)
+
+	if got := n.LogFormat["generation"]; got != "n" || n.config.MaxPendingEntries != 11 {
+		t.Fatalf("N metadata = format %q pending %d, want n/11", got, n.config.MaxPendingEntries)
+	}
+	if got := n1.LogFormat["generation"]; got != "n1" || n1.config.MaxPendingEntries != 12 {
+		t.Fatalf("N+1 metadata = format %q pending %d, want n1/12", got, n1.config.MaxPendingEntries)
+	}
+}
+
+func TestPostInitRejectsInvalidMetadataBeforeSideEffects(t *testing.T) {
+	p := &Plugin{config: Config{
+		Field:     FieldConfig{Index: "apisix"},
+		LogFormat: map[string]string{"route": "$route_id"},
+	}}
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata: mustMetadataView(t, map[string][]byte{
+			name: []byte(`{"log_format":"sensitive-invalid-metadata"}`),
+		}),
+	})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "elasticsearch-logger metadata decode failed") {
+		t.Fatalf("PostInit() error = %v, want redacted metadata decode failure", err)
+	}
+	if strings.Contains(err.Error(), "sensitive-invalid-metadata") {
+		t.Fatalf("PostInit() leaked metadata: %v", err)
+	}
+	if p.BatchProcessor != nil || len(p.clients) != 0 {
+		t.Fatalf("PostInit() side effects = batch=%v clients=%d, want none", p.BatchProcessor, len(p.clients))
+	}
+}
+
+func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
+	p.SetDependencies(base.Dependencies{
+		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Metadata:       metadata,
+	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1204,42 +1253,28 @@ func newRawTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func putPluginMetadata(t *testing.T, logFormat map[string]string) {
+func metadataViewForElasticsearchLogFormat(
+	t *testing.T, logFormat map[string]string, maxPendingEntries int,
+) runtime.MetadataView {
 	t.Helper()
-
-	events := make(chan *store.Event, 1)
-	storage, err := store.Open(t.TempDir()+"/store.db", events, testutil.DataEncryptionService(false, nil))
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
+	metadata := map[string]any{"log_format": logFormat}
+	if maxPendingEntries > 0 {
+		metadata["max_pending_entries"] = maxPendingEntries
 	}
-	previous := store.ReplaceGlobalStoreForTest(storage)
-	storage.Start()
-	t.Cleanup(func() {
-		store.ReplaceGlobalStoreForTest(previous)
-		if err := storage.Stop(); err != nil {
-			t.Errorf("Store.Stop() error = %v", err)
-		}
-	})
-
-	value, err := json.Marshal(map[string]any{"log_format": logFormat})
+	value, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	events <- &store.Event{
-		Type:  store.EventTypePut,
-		Key:   []byte("/apisix/plugin_metadata/" + name),
-		Value: value,
+	return mustMetadataView(t, map[string][]byte{name: value})
+}
+
+func mustMetadataView(t *testing.T, documents map[string][]byte) runtime.MetadataView {
+	t.Helper()
+	view, err := runtime.NewMetadataView(documents)
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
 	}
-	if err := storage.Sync(); err != nil {
-		t.Fatalf("Store.Sync() error = %v", err)
-	}
-	var metadata pluginMetadata
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		t.Fatalf("GetPluginMetadata() error = %v", err)
-	}
-	if len(metadata.LogFormat) != len(logFormat) {
-		t.Fatalf("stored log format = %#v, want %#v", metadata.LogFormat, logFormat)
-	}
+	return view
 }
 
 func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
@@ -1914,6 +1949,27 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaAcceptsObjectLogFormatAndPendingLimit(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":          map[string]any{"route": "$route_id"},
+		"max_pending_entries": 1,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"log_format": "wrong-type"},
+		{"max_pending_entries": 0},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
 	}
 }
 

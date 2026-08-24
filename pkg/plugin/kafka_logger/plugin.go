@@ -234,6 +234,21 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}`
+
 type Broker struct {
 	Host       string      `json:"host"`
 	Port       int         `json:"port"`
@@ -293,6 +308,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.InitLogger(p.Send)
 
@@ -428,6 +444,10 @@ func (p *Plugin) PostInit() error {
 	if p.stopped.Load() || !p.secretsPrepared {
 		return secret.ErrCredentialUnavailable
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 	p.applyDefaults()
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
@@ -444,7 +464,6 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {

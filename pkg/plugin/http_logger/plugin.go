@@ -328,6 +328,10 @@ func (p *Plugin) PostInit() error {
 	if p.stopped.Load() || !p.secretsPrepared {
 		return secret.ErrCredentialUnavailable
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
 	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
 	if err := base.PrepareExprRegexps(
@@ -393,7 +397,6 @@ func (p *Plugin) PostInit() error {
 	}
 	sharedClient := value.(*resty.Client)
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.logFormat = metadata.LogFormat
 	} else {

@@ -544,6 +544,10 @@ func (p *Plugin) PostInit() error {
 	if p.stopped.Load() || !p.secretsPrepared {
 		return secret.ErrCredentialUnavailable
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 
 	if p.config.Resource.Type == "" {
 		p.config.Resource.Type = "global"
@@ -607,7 +611,6 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {

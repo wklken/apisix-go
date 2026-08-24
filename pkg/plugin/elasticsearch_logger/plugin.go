@@ -169,6 +169,21 @@ const schema = `
 	]
 }`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}`
+
 const elasticsearchIndexField = "__elasticsearch_logger_index"
 
 // NOTE: not support
@@ -265,6 +280,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.InitLogger(p.Send)
 
@@ -448,6 +464,10 @@ func (p *Plugin) PostInit() error {
 	if !prepared {
 		return secret.ErrCredentialUnavailable
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("%s metadata decode failed: %w", name, err)
+	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
@@ -482,7 +502,6 @@ func (p *Plugin) PostInit() error {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	logFormat, err := base.RequireStringLogFormat(name, p.config.LogFormat, metadata.LogFormat)
 	if err != nil {
 		return err

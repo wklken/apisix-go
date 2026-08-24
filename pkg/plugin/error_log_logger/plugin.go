@@ -3,8 +3,8 @@ package error_log_logger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,10 +20,12 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
 )
 
 type Plugin struct {
@@ -35,6 +37,12 @@ type Plugin struct {
 	BatchProcessor *logger_batch.Processor
 	observerStop   func()
 	stopOnce       sync.Once
+
+	clickhousePassword       *secret.Value
+	clickhousePasswordLegacy *string
+	kafkaPasswords           []indexedSecret
+	kafkaPasswordsLegacy     []indexedLegacySecret
+	secretsMaterialized      bool
 
 	dialTCP func(ctx context.Context, network, address string, timeout time.Duration, tlsConfig *tls.Config, useTLS bool) (net.Conn, error)
 }
@@ -229,6 +237,16 @@ type kafkaGoSender struct {
 	writer *kafka.Writer
 }
 
+type indexedSecret struct {
+	index int
+	value secret.Value
+}
+
+type indexedLegacySecret struct {
+	index int
+	value string
+}
+
 var levelPattern = regexp.MustCompile(`\[(stderr|emerg|alert|crit|err|error|warn|notice|info|debug)\]`)
 
 var levelOrder = map[string]int{
@@ -253,12 +271,6 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
-		return errors.New("data-encryption resolver is required")
-	}
-	if err := p.resolveSecrets(); err != nil {
-		return err
-	}
 	p.applyDefaults()
 	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
 	if p.config.Kafka != nil && p.kafkaSender == nil {
@@ -281,18 +293,41 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) resolveSecrets() error {
+// MaterializeSecrets is the transitional Builder path. It is deliberately
+// separate from MaterializeScopedSecrets so a legacy process-global resolver
+// cannot become the scoped attempt's authority by accident.
+func (p *Plugin) MaterializeSecrets() error {
+	if p.secretsMaterialized {
+		return nil
+	}
 	resolver := p.DataEncryption()
+	if !resolver.Configured() {
+		return fmt.Errorf("%s: %w", name, secret.ErrCredentialUnavailable)
+	}
+
+	var clickhousePassword *string
+	var clickhouseDescriptor string
 	if p.config.Clickhouse != nil {
 		resolved, err := resolver.ResolveForContext(
 			p.config.Clickhouse.Password,
 			"error-log-logger.clickhouse.password",
 		)
 		if err != nil {
-			return fmt.Errorf("error-log-logger clickhouse.password: %w", err)
+			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
 		}
-		p.config.Clickhouse.Password = resolved
+		descriptor, err := descriptorForLegacySecret(resolved)
+		if err != nil {
+			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		clickhousePassword = &resolved
+		clickhouseDescriptor = descriptor.String()
 	}
+
+	legacyKafkaPasswords := make([]indexedLegacySecret, 0)
+	kafkaDescriptors := make([]struct {
+		index      int
+		descriptor string
+	}, 0)
 	if p.config.Kafka != nil {
 		for i := range p.config.Kafka.Brokers {
 			config := p.config.Kafka.Brokers[i].SASLConfig
@@ -304,12 +339,104 @@ func (p *Plugin) resolveSecrets() error {
 				"error-log-logger.kafka.brokers.*.sasl_config.password",
 			)
 			if err != nil {
-				return fmt.Errorf("error-log-logger kafka.brokers[%d].sasl_config.password: %w", i, err)
+				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
 			}
-			config.Password = resolved
+			descriptor, err := descriptorForLegacySecret(resolved)
+			if err != nil {
+				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
+			}
+			legacyKafkaPasswords = append(legacyKafkaPasswords, indexedLegacySecret{index: i, value: resolved})
+			kafkaDescriptors = append(kafkaDescriptors, struct {
+				index      int
+				descriptor string
+			}{index: i, descriptor: descriptor.String()})
 		}
 	}
+
+	if p.config.Clickhouse != nil {
+		p.config.Clickhouse.Password = clickhouseDescriptor
+	}
+	if p.config.Kafka != nil {
+		for _, item := range kafkaDescriptors {
+			p.config.Kafka.Brokers[item.index].SASLConfig.Password = item.descriptor
+		}
+	}
+	p.clickhousePasswordLegacy = clickhousePassword
+	p.kafkaPasswordsLegacy = legacyKafkaPasswords
+	p.secretsMaterialized = true
 	return nil
+}
+
+// MaterializeScopedSecrets admits only plugin-config declarations. Metadata
+// declarations intentionally remain owned by the later M2 lifecycle work.
+func (p *Plugin) MaterializeScopedSecrets(ctx context.Context, access base.ScopedSecretAccess) error {
+	if p.secretsMaterialized {
+		return nil
+	}
+
+	var clickhousePassword *secret.Value
+	var clickhouseDescriptor string
+	if p.config.Clickhouse != nil {
+		value, err := access.Materialize(ctx, "clickhouse.password", p.config.Clickhouse.Password)
+		if err != nil {
+			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+		if err != nil {
+			return fmt.Errorf("%s clickhouse.password: %w", name, secret.ErrCredentialUnavailable)
+		}
+		clickhousePassword = &value
+		clickhouseDescriptor = descriptor.String()
+	}
+
+	kafkaPasswords := make([]indexedSecret, 0)
+	kafkaDescriptors := make([]struct {
+		index      int
+		descriptor string
+	}, 0)
+	if p.config.Kafka != nil {
+		for i := range p.config.Kafka.Brokers {
+			config := p.config.Kafka.Brokers[i].SASLConfig
+			if config == nil {
+				continue
+			}
+			value, err := access.Materialize(
+				ctx,
+				"kafka.brokers.*.sasl_config.password",
+				config.Password,
+			)
+			if err != nil {
+				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
+			}
+			descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+			if err != nil {
+				return fmt.Errorf("%s kafka.brokers.*.sasl_config.password: %w", name, secret.ErrCredentialUnavailable)
+			}
+			kafkaPasswords = append(kafkaPasswords, indexedSecret{index: i, value: value})
+			kafkaDescriptors = append(kafkaDescriptors, struct {
+				index      int
+				descriptor string
+			}{index: i, descriptor: descriptor.String()})
+		}
+	}
+
+	if p.config.Clickhouse != nil {
+		p.config.Clickhouse.Password = clickhouseDescriptor
+	}
+	if p.config.Kafka != nil {
+		for _, item := range kafkaDescriptors {
+			p.config.Kafka.Brokers[item.index].SASLConfig.Password = item.descriptor
+		}
+	}
+	p.clickhousePassword = clickhousePassword
+	p.kafkaPasswords = kafkaPasswords
+	p.secretsMaterialized = true
+	return nil
+}
+
+func descriptorForLegacySecret(value string) (secret.Descriptor, error) {
+	digest := sha256.Sum256([]byte(value))
+	return secret.NewDescriptor(capability.SecretPluginConfig, digest)
 }
 
 func (p *Plugin) Config() any {
@@ -344,10 +471,16 @@ func (p *Plugin) Stop() {
 		}
 		cleanup := func() {
 			if p.kafkaSender != nil {
-				if err := p.kafkaSender.Close(); err != nil {
+				sender := p.kafkaSender
+				if err := sender.Close(); err != nil {
 					logger.Errorf("failed to close error-log-logger kafka writer: %s", err)
 				}
+				p.kafkaSender = nil
 			}
+			p.clickhousePassword = nil
+			p.clickhousePasswordLegacy = nil
+			p.kafkaPasswords = nil
+			p.kafkaPasswordsLegacy = nil
 		}
 		if p.BatchProcessor != nil {
 			p.BatchProcessor.StopWithCleanup(cleanup)
@@ -621,6 +754,18 @@ func (p *Plugin) skywalkingServiceInstanceName() string {
 }
 
 func (p *Plugin) sendToClickHouse(ctx context.Context, lines []string) error {
+	if p.clickhousePassword != nil {
+		return p.clickhousePassword.Use(func(password string) error {
+			return p.sendToClickHouseWithPassword(ctx, lines, password)
+		})
+	}
+	if p.clickhousePasswordLegacy != nil {
+		return p.sendToClickHouseWithPassword(ctx, lines, *p.clickhousePasswordLegacy)
+	}
+	return secret.ErrCredentialUnavailable
+}
+
+func (p *Plugin) sendToClickHouseWithPassword(ctx context.Context, lines []string, password string) error {
 	entries := make([]string, 0, len(lines))
 	for _, line := range lines {
 		body, err := json.Marshal(map[string]string{"data": line})
@@ -642,7 +787,7 @@ func (p *Plugin) sendToClickHouse(ctx context.Context, lines []string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-ClickHouse-User", p.config.Clickhouse.User)
-	req.Header.Set("X-ClickHouse-Key", p.config.Clickhouse.Password)
+	req.Header.Set("X-ClickHouse-Key", password)
 	req.Header.Set("X-ClickHouse-Database", p.config.Clickhouse.Database)
 	return p.do(req)
 }
@@ -677,15 +822,92 @@ func (p *Plugin) do(req *http.Request) error {
 }
 
 func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
-	mechanism, err := p.saslMechanism()
+	config := cloneKafkaConfig(p.config.Kafka)
+	if config == nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
+	p.installLegacyKafkaPasswords(config)
+	var writer *kafka.Writer
+	err := p.withScopedKafkaPasswords(config, 0, func() error {
+		var err error
+		writer, err = p.newKafkaWriterForConfig(config)
+		return err
+	})
+	return writer, err
+}
+
+func (p *Plugin) installLegacyKafkaPasswords(config *KafkaConfig) {
+	for _, item := range p.kafkaPasswordsLegacy {
+		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
+			config.Brokers[item.index].SASLConfig.Password = item.value
+		}
+	}
+}
+
+func (p *Plugin) withScopedKafkaPasswords(
+	config *KafkaConfig,
+	index int,
+	use func() error,
+) error {
+	if index == len(p.kafkaPasswords) {
+		if err := validateKafkaPasswordCoverage(config, p.kafkaPasswordsLegacy, p.kafkaPasswords); err != nil {
+			return err
+		}
+		return use()
+	}
+	item := p.kafkaPasswords[index]
+	if item.index < 0 || item.index >= len(config.Brokers) || config.Brokers[item.index].SASLConfig == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	brokerIndex := item.index
+	return item.value.Use(func(password string) error {
+		config.Brokers[brokerIndex].SASLConfig.Password = password
+		return p.withScopedKafkaPasswords(config, index+1, use)
+	})
+}
+
+func validateKafkaPasswordCoverage(
+	config *KafkaConfig,
+	legacy []indexedLegacySecret,
+	scoped []indexedSecret,
+) error {
+	installed := make(map[int]struct{}, len(legacy)+len(scoped))
+	for _, item := range legacy {
+		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
+			installed[item.index] = struct{}{}
+		}
+	}
+	for _, item := range scoped {
+		if item.index >= 0 && item.index < len(config.Brokers) && config.Brokers[item.index].SASLConfig != nil {
+			installed[item.index] = struct{}{}
+		}
+	}
+	for _, item := range scoped {
+		if item.index < 0 || item.index >= len(config.Brokers) || config.Brokers[item.index].SASLConfig == nil {
+			return secret.ErrCredentialUnavailable
+		}
+	}
+	for index, broker := range config.Brokers {
+		if broker.SASLConfig == nil {
+			continue
+		}
+		if _, ok := installed[index]; !ok {
+			return secret.ErrCredentialUnavailable
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) newKafkaWriterForConfig(config *KafkaConfig) (*kafka.Writer, error) {
+	mechanism, err := saslMechanismFor(config)
 	if err != nil {
 		return nil, err
 	}
 
 	writer := &kafka.Writer{
-		Addr:         kafka.TCP(p.kafkaBrokerAddresses()...),
-		RequiredAcks: kafka.RequiredAcks(p.config.Kafka.RequiredAcks),
-		Async:        p.config.Kafka.ProducerType == "async",
+		Addr:         kafka.TCP(kafkaBrokerAddresses(config)...),
+		RequiredAcks: kafka.RequiredAcks(config.RequiredAcks),
+		Async:        config.ProducerType == "async",
 		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,
 		ReadTimeout:  time.Duration(p.config.Timeout) * time.Second,
 	}
@@ -699,8 +921,11 @@ func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
 	return writer, nil
 }
 
-func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
-	for _, broker := range p.config.Kafka.Brokers {
+func saslMechanismFor(config *KafkaConfig) (sasl.Mechanism, error) {
+	if config == nil {
+		return nil, nil
+	}
+	for _, broker := range config.Brokers {
 		if broker.SASLConfig == nil {
 			continue
 		}
@@ -724,13 +949,32 @@ func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
 	return nil, nil
 }
 
-func (p *Plugin) kafkaBrokerAddresses() []string {
-	addresses := make([]string, 0, len(p.config.Kafka.Brokers))
-	for _, broker := range p.config.Kafka.Brokers {
+func kafkaBrokerAddresses(config *KafkaConfig) []string {
+	if config == nil {
+		return nil
+	}
+	addresses := make([]string, 0, len(config.Brokers))
+	for _, broker := range config.Brokers {
 		addresses = append(addresses, net.JoinHostPort(broker.Host, strconv.Itoa(broker.Port)))
 	}
 	sort.Strings(addresses)
 	return addresses
+}
+
+func cloneKafkaConfig(config *KafkaConfig) *KafkaConfig {
+	if config == nil {
+		return nil
+	}
+	clone := *config
+	clone.Brokers = append([]KafkaBroker(nil), config.Brokers...)
+	for index, broker := range clone.Brokers {
+		if broker.SASLConfig == nil {
+			continue
+		}
+		saslConfig := *broker.SASLConfig
+		clone.Brokers[index].SASLConfig = &saslConfig
+	}
+	return &clone
 }
 
 func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {

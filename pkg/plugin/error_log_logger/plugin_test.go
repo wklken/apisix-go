@@ -20,8 +20,12 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/wklken/apisix-go/pkg/capability"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -34,6 +38,9 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
@@ -42,14 +49,14 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
-func TestPostInitRejectsMissingDataEncryptionResolver(t *testing.T) {
+func TestMaterializeSecretsRejectsMissingDataEncryptionResolver(t *testing.T) {
 	p := &Plugin{}
-	if err := p.PostInit(); err == nil || err.Error() != "data-encryption resolver is required" {
+	if err := base.MaterializePluginSecrets(p); err == nil || !strings.Contains(err.Error(), "credential unavailable") {
 		t.Fatalf("PostInit() error = %v, want missing resolver error", err)
 	}
 }
 
-func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
+func TestMaterializeSecretsRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
 	p := &Plugin{config: Config{Clickhouse: &ClickHouseConfig{Password: "not-a-ciphertext"}}}
 	p.SetDependencies(base.Dependencies{
 		DataEncryption: testutil.DataEncryptionService(true, []string{"qeddd145sfvddff3"}).Resolver(),
@@ -57,7 +64,7 @@ func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err == nil {
+	if err := base.MaterializePluginSecrets(p); err == nil {
 		t.Fatal("PostInit() error = nil, want strict encrypted ClickHouse password rejection")
 	}
 }
@@ -85,13 +92,391 @@ func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	if err := base.MaterializePluginSecrets(p); err != nil {
+		t.Fatalf("MaterializePluginSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	t.Cleanup(func() { p.Stop() })
-	if got := p.config.Kafka.Brokers[0].SASLConfig.Password; got != "kafka-secret" {
-		t.Fatalf("kafka password = %q, want resolved plaintext", got)
+	if got := p.config.Kafka.Brokers[0].SASLConfig.Password; !strings.Contains(got, "#sha256:") {
+		t.Fatalf("kafka password = %q, want descriptor", got)
 	}
+	if err := p.kafkaPasswordsLegacy[0].value; err != "kafka-secret" {
+		t.Fatalf("private kafka password = %q, want resolved plaintext", err)
+	}
+}
+
+func TestMaterializeScopedSecretsOwnsErrorLoggerPluginConfig(t *testing.T) {
+	rawConfig := map[string]any{
+		"clickhouse": map[string]any{
+			"endpoint_addr": "http://clickhouse.invalid",
+			"user":          "default",
+			"password":      "$ENV://CLICKHOUSE_PASSWORD",
+			"database":      "logs",
+			"logtable":      "error_logs",
+		},
+		"kafka": map[string]any{
+			"brokers": []any{
+				map[string]any{
+					"host": "broker-a",
+					"port": 9092,
+					"sasl_config": map[string]any{
+						"user":     "user-a",
+						"password": "$secret://KAFKA_PASSWORD_A",
+					},
+				},
+				map[string]any{
+					"host": "broker-b",
+					"port": 9093,
+					"sasl_config": map[string]any{
+						"user":     "user-b",
+						"password": "$ENV://KAFKA_PASSWORD_B",
+					},
+				},
+			},
+			"kafka_topic": "apisix-error-logs",
+		},
+	}
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(rawConfig, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	fixture := newScopedPluginSecretFixture(t, map[string]string{
+		"$ENV://CLICKHOUSE_PASSWORD": "clickhouse-secret",
+		"$secret://KAFKA_PASSWORD_A": "kafka-secret-a",
+		"$ENV://KAFKA_PASSWORD_B":    "kafka-secret-b",
+	})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+
+	if got := p.config.Clickhouse.Password; got == "$ENV://CLICKHOUSE_PASSWORD" {
+		t.Fatalf("clickhouse password = %q, want descriptor", got)
+	}
+	for index, broker := range p.config.Kafka.Brokers {
+		if strings.HasPrefix(broker.SASLConfig.Password, "$") {
+			t.Fatalf("broker %d password = %q, want descriptor", index, broker.SASLConfig.Password)
+		}
+	}
+	if len(fixture.broker.scopes) != 3 {
+		t.Fatalf("materialization scopes = %#v, want three plugin-config fields", fixture.broker.scopes)
+	}
+	wantFields := []string{
+		"clickhouse.password",
+		"kafka.brokers.*.sasl_config.password",
+		"kafka.brokers.*.sasl_config.password",
+	}
+	for index, scope := range fixture.broker.scopes {
+		if scope.Source != capability.SecretPluginConfig || scope.Plugin != name ||
+			scope.Resource != fixture.scope.Resource || scope.Domain != generation.DomainHTTP ||
+			scope.Field != wantFields[index] {
+			t.Fatalf("materialization scope = %#v, want plugin-config route scope", scope)
+		}
+	}
+	if p.observerStop != nil {
+		t.Fatal("scoped plugin-config materialization started the observer")
+	}
+	p.Stop()
+	if p.clickhousePassword != nil || len(p.kafkaPasswords) != 0 {
+		t.Fatal("Stop() retained scoped private plugin-config values")
+	}
+}
+
+func TestScopedClickHouseDeliveryUsesPrivateValue(t *testing.T) {
+	var gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-ClickHouse-Key")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := &Plugin{config: Config{
+		Clickhouse: &ClickHouseConfig{
+			EndpointAddr: server.URL,
+			User:         "default",
+			Password:     "$ENV://CLICKHOUSE_PASSWORD",
+			Database:     "logs",
+			LogTable:     "error_logs",
+		},
+		Level: "INFO",
+	}, client: &http.Client{}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	fixture := newScopedPluginSecretFixture(t, map[string]string{
+		"$ENV://CLICKHOUSE_PASSWORD": "clickhouse-secret",
+	})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.SendLogs(context.Background(), []string{`2026/07/06 [error] boom`}); err != nil {
+		t.Fatalf("SendLogs() error = %v", err)
+	}
+	if gotKey != "clickhouse-secret" {
+		t.Fatalf("ClickHouse key = %q, want private materialized value", gotKey)
+	}
+	if p.config.Clickhouse.Password == "clickhouse-secret" ||
+		!strings.Contains(p.config.Clickhouse.Password, "#sha256:") {
+		t.Fatalf("public ClickHouse password = %q, want descriptor only", p.config.Clickhouse.Password)
+	}
+}
+
+func TestScopedKafkaWriterUsesPrivateValues(t *testing.T) {
+	p := &Plugin{config: Config{Kafka: &KafkaConfig{
+		Brokers: []KafkaBroker{{
+			Host: "broker-a",
+			Port: 9092,
+			SASLConfig: &SASLConfig{
+				User:     "user-a",
+				Password: "$secret://KAFKA_PASSWORD_A",
+			},
+		}},
+		KafkaTopic: "apisix-error-logs",
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	fixture := newScopedPluginSecretFixture(t, map[string]string{
+		"$secret://KAFKA_PASSWORD_A": "kafka-secret-a",
+	})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	p.applyDefaults()
+	writer, err := p.newKafkaWriter()
+	if err != nil {
+		t.Fatalf("newKafkaWriter() error = %v", err)
+	}
+	transport, ok := writer.Transport.(*kafka.Transport)
+	if !ok || transport.SASL == nil {
+		t.Fatal("writer does not have a SASL transport")
+	}
+	mechanism, ok := transport.SASL.(plain.Mechanism)
+	if !ok {
+		t.Fatalf("SASL mechanism type = %T, want plain.Mechanism", transport.SASL)
+	}
+	if mechanism.Password != "kafka-secret-a" {
+		t.Fatalf("writer SASL password = %q, want private materialized value", mechanism.Password)
+	}
+	if p.config.Kafka.Brokers[0].SASLConfig.Password == "kafka-secret-a" {
+		t.Fatal("public Kafka broker config retained plaintext password")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() error = %v", err)
+	}
+}
+
+func TestStopDropsScopedKafkaWriterAndPrivateSecrets(t *testing.T) {
+	p := &Plugin{config: Config{
+		Clickhouse: &ClickHouseConfig{
+			EndpointAddr: "http://clickhouse.invalid",
+			Password:     "$ENV://CLICKHOUSE_PASSWORD",
+		},
+		Kafka: &KafkaConfig{
+			Brokers: []KafkaBroker{{
+				Host: "broker-a",
+				Port: 9092,
+				SASLConfig: &SASLConfig{
+					User:     "user-a",
+					Password: "$secret://KAFKA_PASSWORD_A",
+				},
+			}},
+			KafkaTopic: "apisix-error-logs",
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	fixture := newScopedPluginSecretFixture(t, map[string]string{
+		"$ENV://CLICKHOUSE_PASSWORD": "clickhouse-secret",
+		"$secret://KAFKA_PASSWORD_A": "kafka-secret-a",
+	})
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	); err != nil {
+		t.Fatalf("MaterializeScopedPluginSecrets() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.kafkaSender == nil {
+		t.Fatal("PostInit() did not create a Kafka sender")
+	}
+
+	p.Stop()
+	if p.kafkaSender != nil {
+		t.Fatal("Stop() retained Kafka sender and its credential-bearing writer")
+	}
+	if p.clickhousePassword != nil || p.clickhousePasswordLegacy != nil ||
+		len(p.kafkaPasswords) != 0 || len(p.kafkaPasswordsLegacy) != 0 {
+		t.Fatal("Stop() retained private plugin-config secrets")
+	}
+
+	// Stop remains idempotent after the sender reference is dropped.
+	p.Stop()
+}
+
+func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
+	clickhouseReference := "$ENV://CLICKHOUSE_PASSWORD"
+	kafkaReference := "$secret://MISSING_KAFKA_PASSWORD"
+	p := &Plugin{config: Config{
+		Clickhouse: &ClickHouseConfig{Password: clickhouseReference},
+		Kafka: &KafkaConfig{Brokers: []KafkaBroker{{
+			SASLConfig: &SASLConfig{Password: kafkaReference},
+		}}},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	fixture := newScopedPluginSecretFixture(t, map[string]string{
+		clickhouseReference: "clickhouse-secret",
+	})
+	err := base.MaterializeScopedPluginSecrets(
+		context.Background(), fixture.scope, fixture.capability, p,
+	)
+	if err == nil {
+		t.Fatal("MaterializeScopedPluginSecrets() error = nil, want resolver failure")
+	}
+	if strings.Contains(err.Error(), clickhouseReference) || strings.Contains(err.Error(), kafkaReference) {
+		t.Fatalf("materialization error leaked a credential reference: %v", err)
+	}
+	if p.config.Clickhouse.Password != clickhouseReference ||
+		p.config.Kafka.Brokers[0].SASLConfig.Password != kafkaReference {
+		t.Fatalf("failed materialization mutated public config: %#v", p.config)
+	}
+	if p.clickhousePassword != nil || len(p.kafkaPasswords) != 0 || p.secretsMaterialized {
+		t.Fatal("failed materialization retained partial private state")
+	}
+}
+
+type scopedPluginSecretFixture struct {
+	broker     *errorLoggerScopedBroker
+	scope      secret.Scope
+	capability secret.GenerationCapability
+}
+
+func newScopedPluginSecretFixture(t *testing.T, resolved map[string]string) scopedPluginSecretFixture {
+	t.Helper()
+	manifest, err := capability.Load()
+	if err != nil {
+		t.Fatalf("capability.Load() error = %v", err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog(manifest)
+	if err != nil {
+		t.Fatalf("NewSecretDeclarationCatalog() error = %v", err)
+	}
+	broker := &errorLoggerScopedBroker{resolved: resolved}
+	materializer := secret.NewScopedMaterializer(broker, catalog)
+	snapshot, err := generation.NewSnapshot(42, []generation.Resource{{
+		Key:   generation.ResourceKey{Kind: "routes", ID: "error-log-test"},
+		Value: []byte(`{"id":"error-log-test","plugins":{"error-log-logger":{}}}`),
+	}}, nil)
+	if err != nil {
+		t.Fatalf("generation.NewSnapshot() error = %v", err)
+	}
+	ticket := generation.ApplyTicket{
+		DesiredRevision: 42,
+		DesiredDigest:   snapshot.Digest(),
+		RequiredDomains: []generation.Domain{generation.DomainHTTP},
+	}
+	candidate := generation.PublicationCandidate{
+		Artifact: generation.GenerationArtifact{
+			Domain:   generation.DomainHTTP,
+			Revision: snapshot.Revision(),
+			Digest:   snapshot.Digest(),
+			Snapshot: snapshot.SnapshotID(),
+		},
+		Snapshot: snapshot,
+		Closure: []generation.ResourceKey{{
+			Kind: "routes", ID: "error-log-test",
+		}},
+		Decisions: []generation.ResourceDecision{{
+			Key:         generation.ResourceKey{Kind: "routes", ID: "error-log-test"},
+			Disposition: generation.DispositionPublished,
+			Code:        "test-published",
+		}},
+	}
+	registration, err := materializer.RegisterCandidate(context.Background(), ticket, generation.PublicationSet{
+		DesiredRevision: 42,
+		Domains: map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: candidate,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterCandidate() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := registration.Close(context.Background()); err != nil {
+			t.Errorf("close scoped registration: %v", err)
+		}
+	})
+	capabilityValue, err := secret.NewGenerationCapability(registration, 42)
+	if err != nil {
+		t.Fatalf("NewGenerationCapability() error = %v", err)
+	}
+	return scopedPluginSecretFixture{
+		broker: broker,
+		scope: secret.Scope{
+			Generation: 42,
+			Attempt:    capabilityValue.AttemptID(),
+			Domain:     generation.DomainHTTP,
+			Plugin:     name,
+			Resource:   generation.ResourceKey{Kind: "routes", ID: "error-log-test"},
+			Source:     capability.SecretPluginConfig,
+		},
+		capability: capabilityValue,
+	}
+}
+
+type errorLoggerScopedBroker struct {
+	resolved map[string]string
+	scopes   []secret.Scope
+}
+
+func (*errorLoggerScopedBroker) AuthorizeCandidate(
+	context.Context,
+	secret.AttemptID,
+	generation.ApplyTicket,
+	generation.PublicationSet,
+) error {
+	return nil
+}
+
+func (*errorLoggerScopedBroker) AuthorizeRecovery(
+	context.Context,
+	secret.AttemptID,
+	generation.RevisionSet,
+	map[generation.Domain]generation.PublishedGeneration,
+) error {
+	return nil
+}
+
+func (broker *errorLoggerScopedBroker) ResolveScoped(
+	_ context.Context,
+	scope secret.Scope,
+	raw string,
+) (string, error) {
+	broker.scopes = append(broker.scopes, scope)
+	resolved, ok := broker.resolved[raw]
+	if !ok {
+		return "", fmt.Errorf("missing test credential")
+	}
+	return resolved, nil
+}
+
+func (*errorLoggerScopedBroker) RevokeAttempt(context.Context, secret.AttemptID) error {
+	return nil
 }
 
 func TestSendToTCPReturnsWithinWriteDeadline(t *testing.T) {
@@ -401,12 +786,12 @@ func TestKafkaSASLMechanismDefaultsToPlain(t *testing.T) {
 		},
 	}}
 
-	mechanism, err := p.saslMechanism()
+	mechanism, err := saslMechanismFor(p.config.Kafka)
 	if err != nil {
-		t.Fatalf("saslMechanism() error = %v", err)
+		t.Fatalf("saslMechanismFor() error = %v", err)
 	}
 	if mechanism == nil {
-		t.Fatal("saslMechanism() returned nil")
+		t.Fatal("saslMechanismFor() returned nil")
 	}
 	if got := mechanism.Name(); got != "PLAIN" {
 		t.Fatalf("SASL mechanism = %q, want PLAIN", got)
@@ -428,6 +813,7 @@ func TestNewKafkaWriterUsesBrokerSASLConfig(t *testing.T) {
 			KafkaTopic: "apisix-error-logs",
 		},
 	}}
+	p.kafkaPasswordsLegacy = []indexedLegacySecret{{index: 0, value: "pass"}}
 	p.applyDefaults()
 
 	writer, err := p.newKafkaWriter()

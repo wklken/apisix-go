@@ -1,16 +1,27 @@
 package azure_functions
 
 import (
+	"context"
+	"crypto/sha256"
 	"net/http"
+	"sync"
 
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
 	config   Config
 	metadata Metadata
+
+	routeSecretsMu    sync.RWMutex
+	routeAPIKey       secret.Value
+	routeAPIKeySet    bool
+	legacyRouteAPIKey *store.ResolvedSecret
 }
 
 const (
@@ -110,10 +121,88 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// MaterializeScopedSecrets resolves the route API key for one immutable
+// generation attempt. The public config is replaced with a descriptor only
+// after both resolution and descriptor construction succeed.
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
+		return nil
+	}
+	installed := p.routeAPIKeySet || p.legacyRouteAPIKey != nil
+	raw := p.config.Authorization.APIKey
+	if installed {
+		return nil
+	}
+
+	value, err := access.Materialize(ctx, "authorization.apikey", raw)
+	if err != nil {
+		return err
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return err
+	}
+
+	if p.routeAPIKeySet || p.legacyRouteAPIKey != nil {
+		return nil
+	}
+	p.routeAPIKey = value
+	p.routeAPIKeySet = true
+	p.config.Authorization.APIKey = descriptor.String()
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// New generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	if p.config.Authorization == nil || p.config.Authorization.APIKey == "" {
+		return nil
+	}
+	installed := p.routeAPIKeySet || p.legacyRouteAPIKey != nil
+	raw := p.config.Authorization.APIKey
+	if installed {
+		return nil
+	}
+
+	resolved, err := store.MaterializeSecret(raw)
+	if err != nil {
+		return err
+	}
+	bytes := resolved.Bytes()
+	digest := sha256.Sum256(bytes)
+	clear(bytes)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		resolved.Destroy()
+		return err
+	}
+
+	if p.routeAPIKeySet || p.legacyRouteAPIKey != nil {
+		resolved.Destroy()
+		return nil
+	}
+	p.legacyRouteAPIKey = resolved
+	p.config.Authorization.APIKey = descriptor.String()
+	return nil
+}
+
 func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
-	if r.Header.Get("X-Functions-Key") != "" || r.Header.Get("X-Functions-Clientid") != "" {
+	if _, ok := r.Header["X-Functions-Key"]; ok {
 		return
 	}
+	if _, ok := r.Header["X-Functions-Clientid"]; ok {
+		return
+	}
+
+	p.routeSecretsMu.RLock()
+	defer p.routeSecretsMu.RUnlock()
 	if p.config.Authorization == nil {
 		if p.metadata.MasterAPIKey != "" {
 			r.Header.Set("X-Functions-Key", p.metadata.MasterAPIKey)
@@ -124,12 +213,36 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 		return
 	}
 
-	if p.config.Authorization.APIKey != "" {
-		r.Header.Set("X-Functions-Key", p.config.Authorization.APIKey)
+	if p.routeAPIKeySet {
+		_ = p.routeAPIKey.Use(func(value string) error {
+			if value != "" {
+				r.Header.Set("X-Functions-Key", value)
+			}
+			return nil
+		})
+	} else if p.legacyRouteAPIKey != nil {
+		value := p.legacyRouteAPIKey.Bytes()
+		if len(value) != 0 {
+			r.Header.Set("X-Functions-Key", string(value))
+		}
+		clear(value)
 	}
 	if p.config.Authorization.ClientID != "" {
 		r.Header.Set("X-Functions-Clientid", p.config.Authorization.ClientID)
 	}
+}
+
+func (p *Plugin) Stop() {
+	p.Plugin.Stop()
+
+	p.routeSecretsMu.Lock()
+	defer p.routeSecretsMu.Unlock()
+	if p.legacyRouteAPIKey != nil {
+		p.legacyRouteAPIKey.Destroy()
+		p.legacyRouteAPIKey = nil
+	}
+	p.routeAPIKey = secret.Value{}
+	p.routeAPIKeySet = false
 }
 
 func (p *Plugin) loadMetadata() {

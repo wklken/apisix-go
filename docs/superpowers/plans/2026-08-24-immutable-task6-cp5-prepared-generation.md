@@ -174,21 +174,38 @@ const (
 )
 
 type effectiveBindingSource struct {
-	kind     effectiveBindingSourceKind
-	resource generation.ResourceKey
-	source   capability.SecretDeclarationSource
+	kind       effectiveBindingSourceKind
+	resource   generation.ResourceKey
+	source     capability.SecretDeclarationSource
+	occurrence FactoryOccurrence
+}
+
+type effectiveBindingContextKind uint8
+
+const (
+	effectiveBindingContextNone effectiveBindingContextKind = iota
+	effectiveBindingContextHTTP
+	effectiveBindingContextStream
+)
+
+type effectiveBindingResourceContext struct {
+	kind        effectiveBindingContextKind
+	route       resource.Route
+	service     resource.Service
+	streamRoute resource.StreamRoute
 }
 
 type effectiveBindingSpec struct {
-	domain         generation.Domain
-	executionOwner generation.ResourceKey
-	source         effectiveBindingSource
-	factory        string
-	config         resource.PluginConfig
-	scope          plugin.Scope
-	provenance     plugin.ResourceProvenance
-	filterIdentity any
-	errorIdentity  any
+	domain          generation.Domain
+	executionOwner  generation.ResourceKey
+	source          effectiveBindingSource
+	factory         string
+	config          resource.PluginConfig
+	scope           plugin.Scope
+	provenance      plugin.ResourceProvenance
+	resourceContext effectiveBindingResourceContext
+	filterIdentity  any
+	errorIdentity   any
 }
 
 func (p *PreparedGeneration) materializeEffectiveBindings(
@@ -204,6 +221,16 @@ The source kinds are intentionally distinct:
 - `effectiveBindingPluginConfig` must resolve an exact attempt-owned `FactoryOccurrence` with matching domain, source resource, `SecretPluginConfig`, and factory before scoped secret preparation.
 - `effectiveBindingPreparedConsumer` must be derived from the generation's defensive A1 consumer/group data. Its secrets were already materialized by A1; CP5 must not resolve them again.
 - `effectiveBindingSystem` is allowed only for compiler-derived system factories that the accepted manifest proves have no secret declaration. It cannot be used to bypass an ordinary occurrence.
+
+`effectiveBindingSource.occurrence` is mandatory only for plugin-config sources;
+the private attempt authority prevents a foreign/relabelled occurrence from
+being accepted merely because its visible fields match. Resource context is a
+caller-supplied, defensively owned discriminated value: HTTP context is valid
+only for the HTTP domain, stream context only for the stream domain, and none
+only for bindings that require no route/service/stream context. It participates
+in canonical instance identity without pointer or function identity. Task 4
+calls only the existing HTTP `SetResourceContext(resource.Route,
+resource.Service)` capability; it must not invent a stream setter or callback.
 
 The primitive validates nonzero attempt identity, valid domain and execution owner, exact factory identity, allowed scope, provenance/source agreement, defensive config ownership, source authority, descriptor compatibility, and resource-key identity before constructing anything. It rejects duplicate effective specs within one call and never infers missing route/global/consumer/stream semantics.
 
@@ -536,7 +563,12 @@ go test -race ./pkg/compiler -run 'TestEffectiveBindingMaterializer|TestPrepareG
 
 - [ ] **Step 1: Write RED transaction tests**
 
-Add tests for frozen order, base owner transfer, zero plugins without specs, registration/consumer/metadata failure cleanup, and catalog digest mismatch. The successful trace is:
+Add tests for frozen order, base owner transfer, zero plugins without specs,
+registration/consumer/metadata failure cleanup, and catalog digest mismatch.
+Exercise the real production construction path and assert its returned
+`base.ConsumerLookup` cannot expose `Close` or `*runtime.ConsumerBindings`, then
+becomes inert after generation close; do not rely only on the Task 4 fixture.
+The successful trace is:
 
 ```text
 prepare-final-publication-set

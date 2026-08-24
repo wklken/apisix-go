@@ -206,8 +206,8 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 		return base.RequestPhaseResult{}, false
 	}
 
-	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
-	if err != nil {
+	consumer, ok := p.consumerByID(p.config.AnonymousConsumer)
+	if !ok {
 		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
 		if !ctx.RecordAuthProbeDiagnostic(r, message) {
 			logger.Error(message)
@@ -244,8 +244,8 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 		return resource.Consumer{}, http.StatusUnauthorized, errors.New("algorithm missing")
 	}
 
-	consumer, err := store.GetConsumerByPluginKey(name, params.KeyID)
-	if err != nil {
+	consumer, ok := p.consumerByPluginKey(params.KeyID)
+	if !ok {
 		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
 	}
 	if !p.algorithmAllowed(params.Algorithm) {
@@ -281,6 +281,32 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 	}
 
 	return consumer, 0, nil
+}
+
+func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
+	if lookup := p.ConsumerLookup(); lookup != nil {
+		return lookup.ConsumerByPluginKey(name, key)
+	}
+
+	return legacyHMACConsumerByPluginKey(key)
+}
+
+func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
+	if lookup := p.ConsumerLookup(); lookup != nil {
+		return lookup.ConsumerByID(id)
+	}
+
+	return legacyHMACConsumerByID(id)
+}
+
+func legacyHMACConsumerByPluginKey(key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(name, key)
+	return consumer, err == nil
+}
+
+func legacyHMACConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
 }
 
 func (p *Plugin) algorithmAllowed(algorithm string) bool {

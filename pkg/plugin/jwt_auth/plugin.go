@@ -172,8 +172,8 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 		return base.RequestPhaseResult{}, false
 	}
 
-	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
-	if err != nil {
+	consumer, ok := p.consumerByID(p.config.AnonymousConsumer)
+	if !ok {
 		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
 		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
@@ -199,8 +199,8 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		return resource.Consumer{}, token, "missing user key in JWT token"
 	}
 
-	consumer, err := store.GetConsumerByPluginKey(name, userKey)
-	if err != nil {
+	consumer, ok := p.consumerByPluginKey(userKey)
+	if !ok {
 		return resource.Consumer{}, token, "Invalid user key in JWT token"
 	}
 
@@ -235,6 +235,30 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		Signing:   token.Signing,
 		Signature: token.Signature,
 	}, ""
+}
+
+func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
+	if lookup := p.ConsumerLookup(); lookup != nil {
+		return lookup.ConsumerByPluginKey(name, key)
+	}
+	return legacyJWTConsumerByPluginKey(key)
+}
+
+func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
+	if lookup := p.ConsumerLookup(); lookup != nil {
+		return lookup.ConsumerByID(id)
+	}
+	return legacyJWTConsumerByID(id)
+}
+
+func legacyJWTConsumerByPluginKey(key string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumerByPluginKey(name, key)
+	return consumer, err == nil
+}
+
+func legacyJWTConsumerByID(id string) (resource.Consumer, bool) {
+	consumer, err := store.GetConsumer(id)
+	return consumer, err == nil
 }
 
 // verifyToken parses and verifies a raw JWT against a consumer configuration.

@@ -270,15 +270,15 @@ After all five leaves pass focused/race tests, update the import-aware guard so 
 - Consumes: S1 `limit_count`, A1 immutable consumers, applicable S3 child preparation, `ScopedSecretAccess.Child`, attempt-bound instance key.
 - Produces: composite children retaining outer resource provenance and exact attempt ownership.
 
-- [ ] **Step 1: Write RED ownership and partial-failure tests**
+- [x] **Step 1: Write RED ownership and partial-failure tests**
 
 Prove sibling factories cannot collide, child scopes preserve outer resource/attempt, and failure in child three stops children two and one exactly once in reverse order.
 
-- [ ] **Step 2: Migrate workflow and multi-auth**
+- [x] **Step 2: Migrate workflow and multi-auth**
 
 Move child construction/materialization out of `PostInit`, pass the same immutable dependencies and consumer lookup, and remove direct legacy `base.MaterializePluginSecrets` only after both composites use scoped child access. X1 produces the shared child primitive; Task 7/8 later supplies the effective outer scope, provenance, and HTTP/stream context before invoking it.
 
-- [ ] **Step 3: Run focused gates**
+- [x] **Step 3: Run focused gates**
 
 ```bash
 source .envrc
@@ -291,7 +291,11 @@ make build
 git diff --check
 ```
 
-**Acceptance:** X1 has no Store/global fallback; child keys include factory, outer provenance, config digest, and attempt identity.
+**Acceptance:** X1 checkpoint
+`b31d2a6d59c3e4f39b375b4def5706d0867a36d2` retains the named legacy-only
+Store seam for pre-Task-9 Builder compatibility; scoped paths have no Store or
+global fallback. Child keys include factory, outer provenance, config digest,
+and attempt identity.
 
 ### Task 8: Complete CP5 `PreparedGeneration` Ownership
 
@@ -353,7 +357,9 @@ Expected: recovery never reads desired state or computes disposition; raw source
 - Delete only proven-dead compatibility accessors under `pkg/store/**`, `pkg/plugin/base/**`, and shared wrappers
 
 **Interfaces:**
-- Consumes: accepted CP5 base bundle contract and all completed leaf migrations.
+- Consumes: accepted CP5 base bundle contract, all completed leaf migrations,
+  and the two deferred Task 7 HTTP / Task 8 stream effective-materializer call
+  paths.
 - Produces: no-forged-ticket guard, exact live-caller/deletion ledger, buildable legacy production owner, and removal only of zero-production-caller leaves.
 
 - [ ] **Step 1: Prove the activation gap and forbid a second path**
@@ -368,6 +374,9 @@ cross-domain retirement latch, feature flag, or test-only production proxy.
 - [ ] **Step 2: Build the live caller and residual-risk ledger**
 
 Classify Builder/`ConfigSnapshot`, global consumer lookup, TLS, mutable stream/MQTT construction, registration retirement, and Store resolver ownership. Assign HTTP/TLS removal to Task 7 plus Task 9, stream removal to Task 8 plus Task 9, and provider/activation/rollback/acknowledgement/final deletion to the joint Task 9 cutover.
+Record both deferred effective-materializer call paths without adding a
+prepared production adapter in C6.6. Raw occurrences remain source authority,
+not a temporary binding inventory.
 
 - [ ] **Step 3: Delete only zero-caller paths**
 

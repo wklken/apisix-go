@@ -1460,7 +1460,9 @@ git commit -m "refactor(plugin): own scoped materialization and instances"
 
 **Interfaces:**
 
-- Consumes: normalized dependency-closed HTTP resources, pre-materialized bindings, normalized upstream closure and `RuntimeDependencies.Resources`.
+- Consumes: normalized dependency-closed HTTP resources, exact admitted source
+  occurrences paired with post-precedence effective outer plugin specs,
+  normalized upstream closure and `RuntimeDependencies.Resources`.
 - Produces: `route.CompileHTTP(context.Context, CompileInput) (*Snapshot, error)` and immutable `compiler.HTTPSnapshot`.
 
 - [ ] **Step 1: Write a failing immutable input/equivalence test**
@@ -1511,6 +1513,14 @@ func (s *Snapshot) Handler() http.Handler { return s.handler }
 ```
 
 The constructor deep-clones maps/slices and rejects a nil public API registry or runtime dependency.
+
+Task 7 computes each final route/service/plugin-config/global/404/consumer
+winner only after precedence, merge, and HTTP resource-context resolution. It
+pairs that effective factory, cloned winning config, scope, provenance, and
+HTTP context with the exact admitted source occurrence, then invokes CP5's
+package-private effective-binding materializer. Raw inventory occurrences and
+precedence losers never become bindings, and Task 7 does not construct an outer
+plugin or inject `CompositeChildren` directly.
 
 - [ ] **Step 4: Move router matching without semantic edits**
 
@@ -1581,7 +1591,9 @@ git commit -m "refactor(route): compile immutable HTTP snapshots"
 
 **Interfaces:**
 
-- Consumes: normalized dependency-closed stream routes, services/upstreams and enabled stream plugin descriptors.
+- Consumes: normalized dependency-closed stream routes, services/upstreams,
+  enabled stream plugin descriptors, and exact admitted source occurrences
+  paired with post-merge effective stream plugin specs.
 - Produces: immutable `stream.Router`, `compiler.StreamSnapshot`; no listener is opened during compilation.
 
 - [ ] **Step 1: Write the failing immutable stream test**
@@ -1620,6 +1632,12 @@ func CompileRouter(routes []resource.StreamRoute, enabled []string, onResult fun
 ```
 
 Before the joint cutover, `CompileRouter` constructs a detached router whose owned inputs cannot change; the still-live legacy runtime may retain `Router.mu` and `Router.Reload`. During the joint cutover, remove both and make `Serve` read immutable entries without locks. The legacy runtime must never receive a compiler-produced detached router before that cutover.
+
+Task 8 computes the final enabled stream binding only after stream merge and
+stream context resolution. It pairs each winner with its exact admitted source
+occurrence and calls the same CP5 package-private effective-binding
+materializer. It must not reuse HTTP route/service context, enumerate raw
+occurrences into bindings, or construct/inject composite children itself.
 
 - [ ] **Step 4: Separate listener runtime from the compiled snapshot**
 

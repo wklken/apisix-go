@@ -588,7 +588,7 @@ func (p *Plugin) Stop()
 The existing `MaterializeSecrets() error` remains a separately implemented
 legacy Builder seam until Task 9; the scoped method never calls it.
 
-- [ ] **Step 1: Write RED scoped workflow tests**
+- [x] **Step 1: Write RED scoped workflow tests**
 
 Use the real manifest/catalog, `secret.NewScopedMaterializer`, an authorized
 HTTP route source containing `workflow`, and a real X1-I child preparer
@@ -617,7 +617,7 @@ later child; assert zero resolver calls and no installed children. For N/N+1,
 use the same route key with different attempt IDs/resolved limit keys; retiring
 N must not change N+1.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 go test ./pkg/plugin/workflow -run 'Scoped|Attempt|Child|Cleanup|Consumer' -count=1
@@ -626,7 +626,7 @@ go test ./pkg/plugin/workflow -run 'Scoped|Attempt|Child|Cleanup|Consumer' -coun
 Expected: failure because workflow lacks scoped materialization, still creates
 legacy children directly, and still uses Store for group lookup.
 
-- [ ] **Step 3: Split validation from acquisition**
+- [x] **Step 3: Split validation from acquisition**
 
 Keep action-array parsing unchanged. Extend `ValidatePreMaterialization` to
 validate all actions before constructing one child:
@@ -645,7 +645,7 @@ for unsupported actions, disabled children, invalid return codes, invalid
 limit-count config, and unsupported group. Validation never resolves a secret
 or starts a child.
 
-- [ ] **Step 4: Implement atomic scoped preparation**
+- [x] **Step 4: Implement atomic scoped preparation**
 
 Use this stable position:
 
@@ -657,8 +657,8 @@ func workflowChildPosition(rule, action int) string {
 
 `MaterializeScopedSecrets` must:
 
-1. call `stopChildren` to retire previous package-local state;
-2. validate all actions;
+1. preserve the current generation while a replacement is staged;
+2. validate all actions from an immutable raw-source clone;
 3. require `p.CompositeChildPreparer()` for every limit child;
 4. call `Prepare` in canonical rule/action order with factory, config, and
    stable position;
@@ -666,18 +666,22 @@ func workflowChildPosition(rule, action int) string {
 6. assert the returned instance is the expected concrete child type;
 7. stage a descriptor-safe clone of materialized child config without mutating
    the action map;
-8. apply existing route/service context;
-9. publish all staged config replacements, `children`, action pointers, and
-   owners only after complete success;
-10. on failure close in-progress/prior owners in reverse and leave every
-    action runtime pointer nil.
+8. apply the captured route/service context;
+9. under the commit lock, recheck canonical cancellation, preparation token,
+   and resource epoch before publishing config, children, action pointers, and
+   owners;
+10. retire the predecessor only after complete success; on failure, close only
+    staged owners in reverse and preserve the current generation.
 
 The shared preparer already runs child `PostInit`; outer `PostInit` never calls
 it again. Outer `PostInit` compiles expressions and validates only outer
-behavior. `stopChildren` detaches/clears state before reverse closing so
-repeated or concurrent `Stop` cannot double-stop a child.
+behavior. Stop/rematerialization detach or swap the current generation without
+waiting for active request/context-update leases; the final lease release
+performs reverse close outside the state lock exactly once. A context update
+never mutates a child while an active handler reads it, and waiting handlers
+retry after an exclusive update instead of bypassing workflow policy.
 
-- [ ] **Step 5: Move group lookup to the immutable view**
+- [x] **Step 5: Move group lookup to the immutable view**
 
 Make `withConsumerActionOverride` a method and use
 `p.ConsumerLookup().ConsumerGroupByID`. A non-nil lookup hit or miss is
@@ -688,7 +692,7 @@ nil. Add an explicit C6.6 deletion comment naming that function.
 Preserve override union order: group plugins, consumer plugins, action name.
 Return the original request when override is disabled or no consumer exists.
 
-- [ ] **Step 6: Keep legacy preparation isolated**
+- [x] **Step 6: Keep legacy preparation isolated**
 
 Retain `MaterializeSecrets` for the current Builder. It may call only a helper
 whose name begins `legacy`, construct the current concrete children, and call
@@ -696,7 +700,7 @@ whose name begins `legacy`, construct the current concrete children, and call
 descriptor-safe config synchronization, and reverse cleanup with the scoped
 path. The scoped method contains no call edge to the legacy helper.
 
-- [ ] **Step 7: Run workflow gates**
+- [x] **Step 7: Run workflow gates**
 
 ```bash
 go test ./pkg/plugin/workflow -count=1
@@ -709,7 +713,7 @@ git diff --check
 Expected: all existing behavior tests and new scoped tests PASS. Legacy Store
 fixtures prove only the temporary nil-lookup branch, not scoped correctness.
 
-- [ ] **Step 8: Return owned diff without committing**
+- [x] **Step 8: Return owned diff without committing**
 
 ```bash
 git diff -- pkg/plugin/workflow
@@ -746,7 +750,7 @@ func (p *Plugin) MaterializeSecrets() error // transitional legacy only
 func (p *Plugin) Stop()
 ```
 
-- [ ] **Step 1: Write RED multi-auth tests**
+- [x] **Step 1: Write RED multi-auth tests**
 
 Use an authorized route source occurrence, real registration, a real X1-I
 child preparer constructed with explicit effective route scope/provenance, and
@@ -776,7 +780,7 @@ ldap-auth, jwe-decrypt, wolf-rbac
 For S3-0 compiler-discard route fields, assert no forged child scope is
 created. Consumer credentials remain A1-owned through the injected lookup.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 go test ./pkg/plugin/multi_auth -run 'Scoped|Attempt|Child|Cleanup|Consumer' -count=1
@@ -785,7 +789,7 @@ go test ./pkg/plugin/multi_auth -run 'Scoped|Attempt|Child|Cleanup|Consumer' -co
 Expected: failure because construction remains in `PostInit`, there is no
 scoped owner/Stop, and tests still use global Store setup.
 
-- [ ] **Step 3: Enumerate deterministically and validate all first**
+- [x] **Step 3: Enumerate deterministically and validate all first**
 
 Preserve outer `auth_plugins` array order. Sort keys lexicographically inside a
 multi-factory object, replacing Go map iteration nondeterminism without dropping
@@ -810,24 +814,27 @@ at least two effective children
 It does not parse into a retained child, resolve, start a client/task, or look
 up a consumer. Preserve safe unsupported/disabled diagnostics.
 
-- [ ] **Step 4: Acquire children outside `PostInit`**
+- [x] **Step 4: Acquire children outside `PostInit`**
 
-`MaterializeScopedSecrets` clears prior state, validates all specs, requires the
-injected preparer, and prepares in canonical order. Append each owner
-immediately, type assert `Instance()` to `authPlugin`, and stage
-`configuredAuth` plus descriptor-safe child config maps locally. Publish all
-nested config replacements, `p.auths`, and owners only after all succeed. This
+`MaterializeScopedSecrets` preserves the current generation, validates all
+specs from an immutable deep raw-source clone, requires the injected preparer,
+and prepares a replacement in canonical order. Append each owner immediately,
+type assert `Instance()` to `authPlugin`, and stage `configuredAuth` plus
+descriptor-safe child config maps locally. Under the commit lock, check
+canonical context cancellation/deadline before the preparation epoch, then
+publish all nested config replacements, ordered children, and owners. This
 atomic rewrite is required so the outer scoped boundary's unresolved-reference
 scan sees descriptors rather than original child references.
 
-On failure, close the failing returned child and prior owners in reverse; leave
-`p.auths` empty. `Stop` atomically detaches slices before reverse close and is
-idempotent under concurrent calls. The shared preparer already runs child
+On failure, cancellation, or stale epoch, close staged owners in reverse and
+preserve the current generation. `Stop` atomically retires the current
+generation; active request leases defer reverse close exactly once without
+blocking Stop. The shared preparer already runs child
 `PostInit`; outer `PostInit` checks only that a fully prepared list exists with
 at least two children. It never constructs, parses, materializes, or initializes
 a child.
 
-- [ ] **Step 5: Preserve auth behavior with immutable lookups**
+- [x] **Step 5: Preserve auth behavior with immutable lookups**
 
 Keep request phase, body isolation/replay, diagnostic bounds, winner selection,
 authentication-state publication, and final 401 unchanged. New scoped tests
@@ -839,7 +846,7 @@ miss follows A1 failure/anonymous behavior and cannot call Store. N/N+1 uses
 the same credential key mapped to different consumers; each composite
 authenticates only its own generation before and after retiring the other.
 
-- [ ] **Step 6: Add separate legacy Builder preparation**
+- [x] **Step 6: Add separate legacy Builder preparation**
 
 Add `MaterializeSecrets` using deterministic specs/raw validation and a private
 `legacyPrepareAuthChild`; only that helper calls
@@ -850,7 +857,7 @@ Update legacy test helpers to call `base.MaterializePluginSecrets(p)` before
 `p.PostInit()`, matching current Builder order. `PostInit` invokes neither
 materializer; missing preparation fails closed.
 
-- [ ] **Step 7: Run multi-auth gates**
+- [x] **Step 7: Run multi-auth gates**
 
 ```bash
 go test ./pkg/plugin/multi_auth -count=1
@@ -863,7 +870,7 @@ git diff --check
 Expected: current fallback/body/authentication behavior and new ownership tests
 PASS. Legacy Store tests are compatibility evidence only.
 
-- [ ] **Step 8: Return owned diff without committing**
+- [x] **Step 8: Return owned diff without committing**
 
 ```bash
 git diff -- pkg/plugin/multi_auth
@@ -888,7 +895,7 @@ Return diff and exact results; do not commit.
   compiler-private effective-plugin materializer; no production injection,
   master merge, push, or PR.
 
-- [ ] **Step 1: Apply and review one diff at a time**
+- [x] **Step 1: Apply and review one diff at a time**
 
 After applying X1-W, run its full/focused gates. Then apply X1-A and run its
 gates. Inspect:
@@ -902,7 +909,7 @@ git status --short
 Reject changes to Store, compiler, runtime consumer construction, metadata
 owners, manifest declarations, route/server activation, or unrelated plugins.
 
-- [ ] **Step 2: Run AST/import-aware legacy-edge gates**
+- [x] **Step 2: Run AST/import-aware legacy-edge gates**
 
 Add or extend a Go AST test that inspects method bodies, not comments. Assert:
 
@@ -926,7 +933,7 @@ rg -n 'MaterializePluginSecrets|MaterializeSecrets|store\.|GetConsumerGroup|GetC
 Expected: each result is a test, explicitly named legacy helper, or Task 9
 deletion marker. No scoped or `PostInit` edge remains.
 
-- [ ] **Step 2A: Freeze the effective-materializer handoff without injecting from raw occurrences**
+- [x] **Step 2A: Freeze the effective-materializer handoff without injecting from raw occurrences**
 
 X1 owns the shared `NewCompositeChildPreparer` constructor and tests it with
 explicit effective outer scope/provenance. X1 does **not** add a concrete
@@ -1007,7 +1014,7 @@ Task 9:
   deleting the legacy production seams.
 ```
 
-- [ ] **Step 3: Run cross-package lifecycle gates**
+- [x] **Step 3: Run cross-package lifecycle gates**
 
 ```bash
 go test ./pkg/plugin/base ./pkg/plugin \
@@ -1021,7 +1028,7 @@ go test -race ./pkg/plugin/base ./pkg/plugin \
 Expected: PASS. Evidence includes third-child failure, reverse order, repeated
 Stop, canceled preparation with uncanceled cleanup, and N/N+1 overlap.
 
-- [ ] **Step 4: Run lint, build, and diff gates**
+- [x] **Step 4: Run lint, build, and diff gates**
 
 ```bash
 golangci-lint run ./pkg/plugin/base/... ./pkg/plugin/... \
@@ -1034,7 +1041,7 @@ Expected: PASS. If broad plugin lint reports an unrelated known failure, rerun
 with `--new-from-rev="$X1_BASE"` and report both exact results; never describe
 the broad lint as passing when it did not.
 
-- [ ] **Step 5: Review compatibility evidence explicitly**
+- [x] **Step 5: Review compatibility evidence explicitly**
 
 Confirm executable coverage remains for:
 
@@ -1052,7 +1059,7 @@ downstream request propagation.
 Add a focused regression only where evidence is absent. Do not expand workflow
 expression or limit-count group scope.
 
-- [ ] **Step 6: Integration-owner final review and commit**
+- [x] **Step 6: Integration-owner final review and commit**
 
 Resolve every high/medium finding and rerun invalidated gates. Only the
 integration owner runs:
@@ -1070,6 +1077,10 @@ Update/stage the parent CP5 and Immutable Task 7/8 plans with the mandatory
 contract changes in Step 2A in a separate plan-status commit; do not sweep
 unrelated concurrent plan files into the code commit. Record the new exact X1
 SHA for CP5. Do not merge to `master`, push, or open a PR.
+
+Accepted X1 checkpoint: `b31d2a6d59c3e4f39b375b4def5706d0867a36d2`,
+integrated from exact shared-seam parent
+`e74588f2cb987490f16f47c883eb7512ce9cf216`.
 
 ---
 

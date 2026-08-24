@@ -6,6 +6,10 @@
 
 **Architecture:** `WorkerCompilerFactory` wraps the existing pure `Compiler` and attempt-registration boundary. It creates one generation-local task registry, prepares consumers before metadata, installs a compiler-private effective-binding materializer bound to the exact attempt and cleanup owner, and returns a defensive `PreparedGeneration`. CP5 does **not** decide effective HTTP or stream bindings and does **not** publish a binding lookup API. Immutable Task 7 and Task 8 compute route/service/plugin-config/global/404/consumer/stream effective binding specs and pass those exact specs to the CP5 private materializer, which constructs and leases the instances under the already prepared generation.
 
+**Accepted X1 input:** consume composite-child ownership from exact checkpoint
+`b31d2a6d59c3e4f39b375b4def5706d0867a36d2`; do not reconstruct its contract
+from the earlier shared-seam parent or either leaf worktree commit.
+
 **Tech Stack:** Go 1.26, `pkg/compiler`, `generation.PublicationSet`, `secret.Materializer`, `secret.AttemptRegistration`, `runtime.TaskRegistry`, `runtime.ResourceRegistry`, `runtime.ConsumerBindings`, `runtime.MetadataView`, `plugin.FactoryInstance`, `plugin.BindAttemptResolvedPlugin`, focused unit/race tests, golangci-lint, and build smoke verification.
 
 **Spec:** `docs/superpowers/plans/2026-08-23-immutable-compiler-plugin-runtime.md` Task 6, amended by `docs/superpowers/plans/2026-08-24-immutable-task6-execution-brief.md` C6.5, `docs/superpowers/plans/2026-08-24-immutable-task6-c6.4-plugin-runtime.md` Task 10, `docs/superpowers/plans/2026-08-24-immutable-task6-total-plan.md` Task 8, and the accepted current-code audit recorded in this plan.

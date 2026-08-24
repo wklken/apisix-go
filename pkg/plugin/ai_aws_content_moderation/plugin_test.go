@@ -343,7 +343,7 @@ func TestHandlerRejectsMissingAIInstanceInErrorMode(t *testing.T) {
 	}
 }
 
-func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredentials(t *testing.T) {
+func TestMaterializeSecretsUsesPluginConfigDescriptorsAndSignsResolvedCredentials(t *testing.T) {
 	t.Setenv("AWS_CONTENT_MODERATION_ACCESS_KEY", "environment-access")
 	t.Setenv("AWS_CONTENT_MODERATION_SECRET_KEY", "environment-secret")
 	t.Setenv("AWS_CONTENT_MODERATION_SESSION_TOKEN", "environment-session-token")
@@ -367,14 +367,14 @@ func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredential
 	}})
 	p.now = func() time.Time { return time.Unix(1, 0) }
 
-	if !strings.HasPrefix(p.config.Comprehend.AccessKeyID, "$ENV://AWS_CONTENT_MODERATION_ACCESS_KEY#sha256:") {
-		t.Fatalf("access key id descriptor = %q, want environment descriptor", p.config.Comprehend.AccessKeyID)
+	if want := wantPluginConfigDescriptor("environment-access"); p.config.Comprehend.AccessKeyID != want {
+		t.Fatalf("access key id descriptor = %q, want %q", p.config.Comprehend.AccessKeyID, want)
 	}
-	if !strings.HasPrefix(p.config.Comprehend.SecretAccessKey, "$ENV://AWS_CONTENT_MODERATION_SECRET_KEY#sha256:") {
-		t.Fatalf("secret access key descriptor = %q, want environment descriptor", p.config.Comprehend.SecretAccessKey)
+	if want := wantPluginConfigDescriptor("environment-secret"); p.config.Comprehend.SecretAccessKey != want {
+		t.Fatalf("secret access key descriptor = %q, want %q", p.config.Comprehend.SecretAccessKey, want)
 	}
-	if !strings.HasPrefix(p.config.Comprehend.SessionToken, "$ENV://AWS_CONTENT_MODERATION_SESSION_TOKEN#sha256:") {
-		t.Fatalf("session token descriptor = %q, want environment descriptor", p.config.Comprehend.SessionToken)
+	if want := wantPluginConfigDescriptor("environment-session-token"); p.config.Comprehend.SessionToken != want {
+		t.Fatalf("session token descriptor = %q, want %q", p.config.Comprehend.SessionToken, want)
 	}
 	assertResolvedSecretClone(t, "access key id", p.accessKeyID, "environment-access")
 	assertResolvedSecretClone(t, "secret access key", p.secretAccessKey, "environment-secret")
@@ -393,12 +393,22 @@ func TestMaterializeSecretsKeepsEnvironmentDescriptorsAndSignsResolvedCredential
 		t.Fatalf("response code = %d, want 204", rr.Code)
 	}
 
-	p.Stop()
-	for name, secret := range map[string]*store.ResolvedSecret{
+	ownedSecrets := map[string]*store.ResolvedSecret{
 		"access key id":     p.accessKeyID,
 		"secret access key": p.secretAccessKey,
 		"session token":     p.sessionToken,
-	} {
+	}
+	p.Stop()
+	if p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil || p.legacySet {
+		t.Fatalf(
+			"legacy credential state after Stop() = (%#v, %#v, %#v, set=%v), want cleared",
+			p.accessKeyID,
+			p.secretAccessKey,
+			p.sessionToken,
+			p.legacySet,
+		)
+	}
+	for name, secret := range ownedSecrets {
 		if got := secret.Bytes(); got != nil {
 			t.Fatalf("%s bytes after Stop() = %q, want nil", name, got)
 		}
@@ -418,8 +428,13 @@ func TestMaterializeSecretsCleansUpRequiredCredentialsWhenSessionTokenFails(t *t
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := p.MaterializeSecrets(); err == nil {
+	err := p.MaterializeSecrets()
+	if err == nil {
 		t.Fatal("MaterializeSecrets() error = nil, want session token materialization failure")
+	}
+	if strings.Contains(err.Error(), "AWS_CONTENT_MODERATION_MISSING_SESSION_TOKEN") ||
+		strings.Contains(err.Error(), "$ENV://") {
+		t.Fatalf("MaterializeSecrets() error = %v, leaked credential reference", err)
 	}
 	if p.accessKeyID != nil || p.secretAccessKey != nil || p.sessionToken != nil {
 		t.Fatalf(

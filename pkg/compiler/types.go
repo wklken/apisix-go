@@ -10,6 +10,8 @@ import (
 
 var ErrInvalidInput = errors.New("invalid compiler input")
 
+var ErrPreparedSetMismatch = errors.New("prepared publication set mismatch")
+
 type Compiler struct {
 	manifest *capability.Manifest
 	schemas  *schemaSet

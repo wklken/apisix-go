@@ -93,13 +93,53 @@ The manifest adds a distinct `consumer_config` declaration source without expand
 - Extract pure publication preparation from the current compiler constructor dependency cycle and freeze the final-attempt hooks needed by C6.4 leaf work.
 - Refine structural candidates with catalog/schema admission before computing the final attempt ID. Invalid resource/plugin admission follows the established per-resource last-good/fail-closed disposition; the final registered set is the exact refined set.
 - Implement `PrepareGeneration`, `PrepareRecovery`, `PreparedGeneration`, deterministic cleanup, defensive accessors and concurrent idempotent discard/close.
+- Define one compiler-private effective-binding materializer. C6.5 validates exact
+  attempt/source authority and owns every lease it acquires, but it does not
+  select HTTP/stream winners or expose a public plugin-binding view. Tasks 7
+  and 8 compute the complete effective specs before invoking this primitive.
 - Task 6 owns no HTTP cluster or stream router construction. Snapshot hooks are added only by Tasks 7 and 8 with their real input types.
 
 ### C6.6 — Integration and merge gate
 
 **Depends on:** C6.2–C6.5, including all C6.4 leaf and composite migrations.
 
-Adapt `cmd/root.go`, standalone ingestion, and current Builder/server/stream callers only as needed to keep the pre-Task-9 production owner buildable. Pass C6.5's exact final metadata view, consumer bindings, plugin dependencies, and registration lifetime into the existing generation owner; do not reconstruct a temporary view from decoded Store state and do not add a global Store or raw-keyring fallback. Run the parent Task 6 focused race commands, capability generator check, scoped lint, build, dead-code/call-site scans, and an independent merge-level review. Merge the complete Task 6 branch into local `master` only after all gates pass.
+Keep `cmd/root.go`, standalone ingestion, and the current Builder/server/stream
+production owner buildable without manufacturing an `ApplyTicket`, adding a
+second selectable path, or exposing the compiler-private materializer. Build an
+AST/`rg` caller ledger and delete only leaf compatibility APIs whose production
+callers were actually removed by C6.4; retain Builder/Store snapshot and mutable
+stream construction with explicit Task 7/8/9 deletion owners. Run the parent
+Task 6 focused race commands, capability generator check, scoped lint, build,
+dead-code/call-site scans, and an independent merge-level review. Merge the
+complete Task 6 branch into local `master` only after all gates pass.
+
+## Authoritative Task 7/8 Effective-Binding Input Amendment
+
+This section supersedes the original immutable-runtime plan's provisional Task
+7 phrase “consume pre-materialized bindings” and Task 8's descriptor-only
+stream input. CP5 cannot determine effective runtime bindings from raw source
+occurrences without duplicating the compilation owned by those tasks.
+
+- Immutable Task 7 first computes route-over-plugin-config-over-service
+  precedence, global/404/system and consumer compositions, route/service
+  context, and plugin `_meta`. It pairs each effective winner with its exact
+  admitted source occurrence, then calls CP5's compiler-private
+  `materializeEffectiveBindings`. The returned internal bindings feed
+  `route.CompileHTTP`; route code never constructs plugins or receives secret
+  capability/lifecycle authority.
+- Immutable Task 8 first computes stream service/route merge, protocol owner,
+  effective config/scope/provenance, and stream context. It pairs the winner
+  with its admitted source occurrence, calls the same private materializer,
+  and feeds only the resulting internal binding into detached router
+  compilation.
+- The private materializer creates/injects X1's per-effective-binding child
+  preparer before constructing an outer composite. It calls
+  `StartObservingWithTasks` after `PostInit` for plugins that implement that M2
+  lifecycle seam, before descriptor binding/lease transfer. Failures use the
+  prepared-generation cleanup ledger.
+- Neither Task exposes a public binding view, treats raw occurrences as runtime
+  inventory, constructs a second activation path, or deletes the old production
+  owner before the joint Task 9 cutover.
 
 ## Parallelism and Ownership
 
@@ -114,7 +154,7 @@ Adapt `cmd/root.go`, standalone ingestion, and current Builder/server/stream cal
 - Exact catalog parity and deterministic digest.
 - Candidate/recovery overlap, cross-attempt rejection, cross-domain same-key rejection, revoke/close race and redaction.
 - Metadata absent/schema-invalid/valid-materialized ordering with no Store access.
-- Third-plugin failure stops tasks and releases the first two leases exactly once in reverse order.
+- Given three Task 7/8-style effective specs, the private materializer's third-plugin failure stops tasks and releases the first two leases exactly once in reverse order.
 - Recovery rejects revision/domain/candidate mismatches without desired-state access or disposition.
 - Concurrent exact discard closes once; mismatched publication leaves the candidate open.
 - No production plugin imports `pkg/data_encryption` or calls Store secret/metadata globals.

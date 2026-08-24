@@ -1,10 +1,13 @@
 # Immutable Task 6 Lane A1 Consumer Bindings Implementation Plan
 
-> **Execution rule:** implement this plan from `40c04a26` on the Task 6
-> integration branch. Shared compiler work lands first. Auth leaf worktrees then
-> branch from that merged checkpoint and return commits to
-> `codex/apisix-go-immutable-task6`, never directly to `master`. Push and PR
-> publication remain outside current authority.
+> **Execution rule:** `40c04a26` is the architecture prerequisite,
+> `e5b6a73e` provides the shared descriptor contract, and `9ebcd2b5` is the
+> accepted A1.1 compiler checkpoint. Auth leaf worktrees start only from an
+> integration descendant that also contains the accepted S3-0 compatibility
+> adapter; they never branch directly from one of those older commits or from
+> `master`. Workers return diffs and verification evidence only. The integration
+> owner reviews and commits accepted diffs. Push and PR publication remain
+> outside current authority.
 
 **Goal:** construct immutable, attempt-local consumer bindings from the exact
 final HTTP publication after registration, materialize only manifest-declared
@@ -15,15 +18,21 @@ from request-time global Store lookup on the new compiler path.
 resolved validation, deterministic lookup indexing, and binding lifetime.
 Plugins receive only `base.ConsumerLookup`. During the additive window, current
 Builder compatibility is an explicit legacy branch; a non-nil lookup never
-falls through to Store, and C6.6 deletes the legacy branch after injecting the
-prepared lookup into the sole production activation path.
+falls through to Store. C6.6 records that nil-lookup branch as a live legacy
+caller; Task 7 compiles immutable consumer bindings and the joint Task 9
+cutover deletes the branch after replacing the sole production path.
 
-**Baseline:** `40c04a26` (`feat(compiler): register refined generation attempts`).
+**Architecture baseline:** `40c04a26` (`feat(compiler): register refined
+generation attempts`). **Completed A1.1 checkpoint:** `9ebcd2b5`
+(`feat(compiler): prepare immutable consumer bindings`).
 
 **Dependencies:** CP1 catalog declarations, CP2 `runtime.ConsumerBindings` and
 `base.ConsumerLookup`, CP3.4 final-attempt authority. The shared CP2.1
-`SecretDescriptor` correction required by S1/S2 must merge before all leaf
-implementation work, although A1 does not create a private replacement.
+`secret.Descriptor` correction required by the secret lanes is present at
+`e5b6a73e`. A1 auth package work additionally waits for S3-0 because six auth
+factories have compatibility-only `plugin_config` declarations whose raw
+values are not represented by the route plugin Config structs. S3-0 owns that
+raw-before-decode boundary; A1 continues to own the auth package directories.
 
 ## Frozen ownership and compatibility matrix
 
@@ -45,8 +54,10 @@ to consume `server`; the compatibility divergence remains documented.
 
 ```text
 40c04a26 exact registered attempt
-  -> A1.1 compiler consumer preparer
-      -> A1.2 auth leaf groups (parallel, exclusive packages)
+  -> e5b6a73e descriptor contract
+      -> 9ebcd2b5 A1.1 compiler consumer preparer
+      -> S3-0 compatibility-only plugin_config adapter
+          -> A1.2 auth leaf groups (parallel, exclusive packages)
           -> A1.3 merged guards and overlap verification
               -> X1 workflow/multi-auth composites
               -> CP5 PreparedGeneration ownership
@@ -163,13 +174,17 @@ golangci-lint run ./pkg/compiler/...
 git diff --check
 ```
 
-**Checkpoint commit:** `feat(compiler): prepare immutable consumer bindings`
+**Completed checkpoint:** `9ebcd2b5 feat(compiler): prepare immutable consumer bindings`
 
 ## A1.2 — Migrate auth leaf packages
 
 Every worker owns only its listed package directories and tests. Workers do not
 modify `pkg/compiler`, `pkg/runtime`, `pkg/plugin/base`, `pkg/plugin/init.go`,
 route/server files, Store, shared test helpers, or another leaf package.
+Workers do not commit; the integration owner commits only after reviewing the
+returned diff and fresh verification evidence. No A1 auth package worker starts
+until S3-0 has merged, and S3 must not assign those same six auth packages to a
+concurrent leaf worker.
 
 Recommended parallel groups after A1.1 merges:
 
@@ -186,7 +201,7 @@ For every plugin:
 3. treat a non-nil lookup as authoritative: misses fail/anonymous-fallback
    without consulting Store;
 4. preserve a separately named legacy Store helper only when lookup is nil so
-   the current Builder remains behavior-compatible until C6.6;
+   the current Builder remains behavior-compatible until the joint Task 9 cutover;
 5. never pass Store or a closeable `*runtime.ConsumerBindings` into the plugin;
 6. preserve authentication-state publication, credential hiding, diagnostics,
    status/body/header behavior, and constant-time comparisons;
@@ -212,7 +227,7 @@ go test ./pkg/plugin/basic_auth ./pkg/plugin/key_auth -count=1
 go test -race ./pkg/plugin/basic_auth ./pkg/plugin/key_auth -count=1
 ```
 
-**Checkpoint commit:** `refactor(auth): use immutable basic and key consumers`
+**Integration-owner checkpoint:** `refactor(auth): use immutable basic and key consumers`
 
 ### Group B details
 
@@ -231,7 +246,7 @@ go test ./pkg/plugin/jwt_auth ./pkg/plugin/hmac_auth -count=1
 go test -race ./pkg/plugin/jwt_auth ./pkg/plugin/hmac_auth -count=1
 ```
 
-**Checkpoint commit:** `refactor(auth): use immutable jwt and hmac consumers`
+**Integration-owner checkpoint:** `refactor(auth): use immutable jwt and hmac consumers`
 
 ### Group C details
 
@@ -250,14 +265,15 @@ go test ./pkg/plugin/ldap_auth ./pkg/plugin/jwe_decrypt ./pkg/plugin/wolf_rbac -
 go test -race ./pkg/plugin/ldap_auth ./pkg/plugin/jwe_decrypt ./pkg/plugin/wolf_rbac -count=1
 ```
 
-**Checkpoint commit:** `refactor(auth): use immutable ldap jwe and wolf consumers`
+**Integration-owner checkpoint:** `refactor(auth): use immutable ldap jwe and wolf consumers`
 
 ## A1.3 — Merge and verify the consumer lane
 
-Cherry-pick leaf commits onto the integration branch one at a time in the fixed
-group order A, B, C. After each pick, inspect the diff and run that group's
-focused tests. Resolve shared behavior conflicts on the integration branch; do
-not let a worker modify another group's package.
+After reviewing each worktree, the integration owner creates one leaf commit
+and integrates those commits in the fixed group order A, B, C. After each
+integration, inspect the exact owned-path diff and run that group's focused
+tests. Resolve shared behavior conflicts on the integration branch; do not let
+a worker modify another group's package.
 
 Add or extend integration guards proving:
 
@@ -293,13 +309,14 @@ make build
 git diff --check
 ```
 
-## C6.6 deletion handoff
+## Task 7/9 deletion handoff
 
-C6.6 must inject the exact prepared `base.ConsumerLookup` into every current
-Builder/server/stream plugin instance before deleting the seven named legacy
-Store helpers and imports. Deletion is accepted only after import-aware scans
-show zero production auth lookup calls to Store and failed candidate rollback
-keeps the active generation's binding alive until handler retirement.
+C6.6 records the seven named legacy Store helpers and their old-Builder callers;
+it does not inject a prepared lookup into production. Task 7 compiles every
+effective auth instance with the exact `base.ConsumerLookup`, and the joint
+Task 9 cutover deletes the helpers/imports only after import-aware scans show
+zero production auth lookup calls to Store. Task 9 also owns rollback and
+retirement evidence for the installed generation.
 
 ## Acceptance ledger
 
@@ -311,7 +328,7 @@ keeps the active generation's binding alive until handler retirement.
 | Identity | deterministic resolved `(factory,key)` with duplicate rejection |
 | Isolation | N/N+1 bindings and close lifetimes do not overlap incorrectly |
 | Plugins | seven auth packages use immutable lookup whenever it is present |
-| Compatibility | only explicit nil-lookup legacy branches remain until C6.6 |
+| Compatibility | only explicit nil-lookup legacy branches remain until Task 9 replaces the production Builder |
 | Redaction | no raw references, lookup keys, credentials or plaintext in errors |
 | Gates | focused tests, race, lint, build and diff checks pass |
 

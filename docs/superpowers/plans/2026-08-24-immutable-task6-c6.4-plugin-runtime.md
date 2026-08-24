@@ -1,10 +1,15 @@
 # Immutable Task 6 C6.4-C6.6 Plugin Runtime Execution Plan
 
-> **Execution rule:** implement this plan checkpoint by checkpoint. Every child worktree starts from the named merged checkpoint on `codex/apisix-go-immutable-task6`; child commits return to that integration branch, never directly to `master`. Push and PR publication are outside the current authority.
+> **Execution rule:** implement this plan checkpoint by checkpoint. Every child
+> worktree starts from the named merged checkpoint on
+> `codex/apisix-go-immutable-task6`, never directly from `master`. Workers
+> return diffs and verification evidence only; the integration owner reviews
+> and commits accepted work. Push and PR publication are outside the current
+> authority.
 
-**Goal:** remove production plugin dependence on package-global Store secret/metadata/consumer lookups, bind every sensitive value and plugin instance to one final publication attempt, and hand the current pre-Task-9 Builder an exact immutable dependency bundle without creating a second activation path.
+**Goal:** migrate plugin secret, metadata, and consumer owners to exact final-attempt contracts, establish one closeable prepared-generation base plus a compiler-private effective-binding materializer, and leave the current pre-Task-9 production owner buildable without creating a second activation path.
 
-**Architecture:** C6.4 is split into pure/additive contracts and leaf migrations. C6.5 owns final publication refinement, attempt registration, metadata/consumer materialization, plugin preparation, and reverse-order cleanup. C6.6 is the only current-production integration owner. It passes the exact final views and registrations into the existing Builder/server lifetime; it does not reconstruct them from Store.
+**Architecture:** C6.4 is split into pure/additive contracts and leaf migrations. C6.5 owns final publication refinement, attempt registration, metadata/consumer materialization, the private effective-spec materialization primitive, and reverse-order cleanup. Task 7/8 later computes the real HTTP/stream binding specs. C6.6 audits the live compatibility boundary and removes only zero-production-caller leaves; the joint Task 9 remains the sole production activation/deletion owner.
 
 **Baseline:** `720df206` (`feat(store): isolate secret attempt views`).
 
@@ -22,19 +27,21 @@
    -> register final candidate/recovery AttemptID
    -> build GenerationCapability
    -> materialize metadata and consumer credentials
-   -> prepare plugins/resources/tasks
-   -> expose PreparedGeneration
+   -> create task/resource ownership authority
+   -> expose base PreparedGeneration
+   -> Task 7/8 supplies complete effective binding specs
+   -> materialize plugins and attach leases through the private gate
    ```
 
 2. No new path may fall back to package-global Store, `data_encryption.Resolver`, an environment lookup outside `GenerationCapability`, or a raw keyring. A factory with manifest `plugin_config` declarations must implement the scoped interface before the new compiler prepares it; strict ciphertext must not bypass this check merely because the unresolved-reference scanner cannot see it.
-3. Intermediate commits compile. Shared API changes are additive until the compiler and current production caller use the new path; legacy methods are deleted atomically at the C6.6 boundary.
+3. Intermediate commits compile. Shared API changes are additive while leaf lanes migrate; C6.6 deletes a legacy method only after AST and call-site scans prove that Task 6 removed every production caller.
 4. A descriptor or error may retain a source class and digest, never a raw reference, environment variable name, Vault path, ciphertext, or plaintext.
 5. `secret.Value` contains Go strings that cannot be reliably zeroed. Code must drop references and close attempt-owned resolver state; it must not claim that Go strings were wiped.
 6. Plugin instances, metadata views, consumer bindings, tasks, and leases share one attempt lifetime. Reusable generation-neutral clients use separate digest-keyed leases and retain none of those objects.
 7. Same resource bytes in two attempts still produce different plugin instance keys.
-8. The final registration is closed only after the installed handler generation retires. Prepare failure closes acquired objects once in reverse order.
-9. Task 6 does not invent Task 7 HTTP snapshots, Task 8 stream snapshots, or Task 9 activation. C6.6 adapts the current Builder/server owner only.
-10. Full Store plaintext deletion is a completion condition only if C6.6 can inject and retain the final C6.5 bundle without a dual activation path. Otherwise the remaining decoded snapshot is explicitly deferred to Task 9 and Task 6 is not described as eliminating all process plaintext.
+8. `PreparedGeneration` privately retains the registration and closes it through one reverse-order path. Binding that lifetime to installed HTTP/stream retirement is a Task 9 activation obligation, not a Task 6 completion claim.
+9. Task 6 does not invent Task 7 HTTP snapshots, Task 8 stream snapshots, or Task 9 activation. C6.6 adds no prepared Builder/MQTT adapter or second production path.
+10. Remaining decoded Store snapshots and legacy stream materialization are explicit Task 7/8/9 seams. Task 6 is not described as eliminating all process plaintext or completing production cutover.
 
 ## Source-of-truth amendments
 
@@ -77,6 +84,20 @@ Compatibility declarations cover every currently resolved string in the supporte
 | `jwe-decrypt` | `key`, `secret` when the value is a string |
 | `wolf-rbac` | `appid`, `header_prefix`, `server`, `wolf_url` |
 
+### Full plugin-config support inventory amendment
+
+The manifest contains 41 unique factories with `plugin_config` declarations.
+S1 owns 8 and S2 owns 15. S3 owns 12 real package materializers plus a serial
+compiler compatibility adapter for 6 auth factories whose declared route
+fields are discarded by their Config decoders (`basic-auth`, `key-auth`,
+`jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`). No no-op scoped interface
+may be used to bypass this boundary.
+
+S3-0 must also add the actually consumed `secret_fallbacks` container
+declaration for `dingtalk-auth` and `saml-auth`, matching the already-declared
+`feishu-auth` behavior, then rerun catalog parity. The final support guard
+enumerates all 41 factories; a lane-local partial list is not Task 6 acceptance.
+
 `wolf-rbac` is intentionally dual-declared during convergence: Store validates and currently resolves the historical `wolf_url`, but the plugin consumes `server`. This is a recorded compatibility divergence, not a naming decision hidden inside the migration.
 
 ## Worktree and merge topology
@@ -88,13 +109,14 @@ T6 integration @ 720df206
   -> CP3 C6.5 pure factory skeleton and final-attempt boundary
       -> lane S1 Store-materializer plugins
       -> lane S2 raw-resolver plugins
+      -> lane S3 remaining plugin-config declarations
       -> lane M1 ordinary metadata consumers
       -> lane A1 auth consumer bindings
   -> CP4 merge leaf lanes
       -> lane X1 composites: workflow + multi-auth
       -> lane M2 special metadata: batch/error-log/dynamic readers
   -> CP5 C6.5 prepared ownership integration
-  -> CP6 C6.6 current-production integration and legacy deletion
+  -> CP6 C6.6 compatibility audit and zero-caller deletion
   -> Task 6 review/gates
   -> local master only after acceptance
 ```
@@ -161,7 +183,7 @@ Shared-file ownership is serial:
 - [ ] Add a constrained `ScopedSecretAccess.Child(factory)` used only by composites. It preserves generation/attempt/domain/resource/source and changes only the catalog-validated child factory.
 - [ ] Add `Generation()` to `GenerationCapability` so the wrapper can validate the complete base scope before dispatch.
 - [ ] Add `Attempt` to `plugin.InstanceKey` through additive `NewAttemptInstanceKey`; reject zero attempts and include it in equality/string identity. Add `BindAttemptResolvedPlugin` for the new compiler path.
-- [ ] Keep legacy `SecretMaterializer`, `MaterializePluginSecrets`, `NewInstanceKey`, and `BindResolvedPlugin` callable only for existing production while leaf work proceeds. Mark them transitional; new compiler code must use only the attempt-scoped variants. Delete/rename the legacy variants atomically in C6.6 after all callers migrate.
+- [ ] Keep legacy `SecretMaterializer`, `MaterializePluginSecrets`, `NewInstanceKey`, and `BindResolvedPlugin` callable only for existing production while leaf work proceeds. Mark them transitional; new compiler code must use only the attempt-scoped variants. C6.6 deletes only zero-caller variants; Task 9 deletes the remainder after Task 7/8 replacement compilation is active.
 - [ ] Define a redacted `SecretDescriptor` containing source class plus digest only. It must not accept/store raw input.
 - [ ] Add tests for cross-attempt key separation, capability/scope mismatch rejection before resolver access, redacted failures, and immutable consumer lookup copies.
 - [ ] Run focused plugin/base/runtime/secret tests plus `make build`.
@@ -188,6 +210,9 @@ Shared-file ownership is serial:
 
 ## Task 4: Lane S1 — Replace Store secret materializers
 
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-s1-store-materializers.md`](2026-08-24-immutable-task6-lane-s1-store-materializers.md).
+
 **Exclusive packages:**
 
 - `ai_aliyun_content_moderation`
@@ -211,6 +236,9 @@ Shared-file ownership is serial:
 
 ## Task 5: Lane S2 — Replace raw encryption resolvers
 
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-s2-raw-resolvers.md`](2026-08-24-immutable-task6-lane-s2-raw-resolvers.md).
+
 **Exclusive packages:**
 
 - `ai_rate_limiting`, `csrf`, `kafka_proxy`, `response_rewrite`
@@ -225,18 +253,49 @@ Shared-file ownership is serial:
 - [ ] Remove every production import of `pkg/data_encryption` from these packages.
 - [ ] Run affected package tests and focused race tests for async logger paths.
 
+## Task 5b: Lane S3 — Cover every remaining plugin-config declaration
+
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-s3-remaining-plugin-secrets.md`](2026-08-24-immutable-task6-lane-s3-remaining-plugin-secrets.md).
+
+- [ ] Land S3-0 serially: add the two fallback declarations, preserve catalog
+  parity, and materialize/drop the six compatibility-only auth fields at the
+  raw-before-plugin-decode boundary.
+- [ ] Migrate the 12 real owners in file-exclusive worktrees:
+  `ai_proxy`, `ai_proxy_multi`, `ai_request_rewrite`, `aws_lambda`,
+  `azure_functions`, `openfunction`, `openwhisk`, `authz_casdoor`, `cas_auth`,
+  `dingtalk_auth`, `feishu_auth`, and `saml_auth`.
+- [ ] If a shared AI/function package needs an additive seam, land that seam
+  serially before leaf worktrees branch.
+- [ ] Prove the final 41-factory support inventory and exact declaration-field
+  materialization; reject no-op scoped implementations.
+- [ ] Merge S3 `azure_functions` before its M1 metadata worktree. S3-0 must
+  merge before A1 auth package worktrees.
+
 ## Task 6: Lane M1 — Migrate ordinary metadata consumers
+
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-m1-metadata.md`](2026-08-24-immutable-task6-lane-m1-metadata.md).
+
+**Execution-order amendment:** Task 9's M2-C0 compiler checkpoint executes and
+merges before any M1 group is accepted. The section numbers classify ownership;
+they are not permission to run M1 before its metadata-view producer.
 
 **Scope discovery gate:** freeze the live list with an AST/import-aware inventory before edits; expected count at baseline is 27 production consumers.
 
 - [ ] Replace `base.LoadPluginMetadata`, direct `store.GetPluginMetadata*`, and raw Store metadata access with `runtime.MetadataView.Decode`.
 - [ ] Decode once during generation/plugin preparation; request handlers read instance-owned immutable values.
 - [ ] Preserve aliases explicitly, including `graphql-limit-count` reading the `limit-count` metadata document.
-- [ ] Preserve precedence explicitly, including OpenTelemetry `plugin_metadata > plugin_attr > defaults`.
+- [ ] Preserve ordinary package aliases and precedence explicitly. Do not move
+  OpenTelemetry into M1; M2 alone preserves its
+  `plugin_metadata > plugin_attr > defaults` contract.
 - [ ] Validate raw schema before any metadata secret materialization; materialize declared metadata fields only after final attempt registration.
 - [ ] Run focused package tests proving generation N remains unchanged after N+1 is prepared.
 
 ## Task 7: Lane A1 — Build immutable consumer bindings
+
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-a1-consumers.md`](2026-08-24-immutable-task6-lane-a1-consumers.md).
 
 **Primary packages:** compiler/runtime construction plus auth plugin leaf packages. Shared compiler files remain with the compiler owner; auth workers modify only plugin packages/tests.
 
@@ -252,6 +311,9 @@ Shared-file ownership is serial:
 
 **Depends on:** Tasks 4 and 7 merged.
 
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-x1-composites.md`](2026-08-24-immutable-task6-lane-x1-composites.md).
+
 **Exclusive packages:** `pkg/plugin/workflow/**`, `pkg/plugin/multi_auth/**`.
 
 - [ ] `workflow` constructs `limit-count` children through `ScopedSecretAccess.Child`, preserving the outer resource owner and attempt.
@@ -264,6 +326,18 @@ Shared-file ownership is serial:
 
 **Depends on:** Task 6 ordinary view contract and CP3 final-attempt boundary.
 
+**Execution-order amendment:** M2-C0 is the producer of Task 6's ordinary view
+contract, so that serial subtask runs first. The five package leaves remain in
+this later special-owner checkpoint after their individual dependencies merge.
+
+The generic M2-C0 compiler metadata preparer is an early prerequisite, not a
+late package leaf: it may land after CP3/A1.1 and must land before M1's
+`azure_functions` metadata checkpoint. The five special package owners remain
+subject to their lane-specific S1/S2/S3 dependencies.
+
+**Child plan:**
+[`2026-08-24-immutable-task6-lane-m2-special-metadata.md`](2026-08-24-immutable-task6-lane-m2-special-metadata.md).
+
 - [ ] `chaitin_waf`: remove request-time polling/cache and bind effective config once per generation.
 - [ ] `authz_casbin`: construct the metadata enforcer once; request handling never reads Store.
 - [ ] `batch_requests`: replace Store last-good/cache with limits decoded from the final view. C6.5 owns last-good/fail-closed selection.
@@ -275,7 +349,10 @@ Shared-file ownership is serial:
 
 **Files:** `pkg/compiler/**`, common runtime types/tests.
 
-- [ ] Implement candidate and recovery construction in this order:
+**Child plan:**
+[`2026-08-24-immutable-task6-cp5-prepared-generation.md`](2026-08-24-immutable-task6-cp5-prepared-generation.md).
+
+- [ ] Implement candidate and recovery base construction in this order:
 
   ```text
   final set
@@ -283,42 +360,58 @@ Shared-file ownership is serial:
   -> task registry
   -> consumer bindings
   -> final metadata view
-  -> plugin/resource leases
   -> PreparedGeneration
   ```
 
-- [ ] Define one cleanup stack. Any failure closes the last acquired object first. `Discard`/`Close` is concurrent and idempotent.
-- [ ] `PreparedGeneration` exposes defensive identity/view/accessor data only; it never exposes raw resolver/broker/Store handles.
-- [ ] A third-plugin failure test proves the first two plugins, leases, tasks, bindings, materialized values, and registration close once in reverse order.
+- [ ] Define one compiler-private effective-binding materializer. It accepts
+  only complete specs computed later by Task 7/8; raw final-attempt occurrences
+  provide source authority and are not treated as runtime binding inventory.
+- [ ] Attach every later plugin/resource lease to the same cleanup stack
+  immediately. Materialization and `Discard`/`Close` serialize; cleanup remains
+  concurrent, idempotent, and reverse ordered.
+- [ ] `PreparedGeneration` exposes only defensive publication, metadata, and
+  consumer views plus discard/close; it never exposes bindings, instances,
+  leases, resolver/broker/Store handles, or the private materializer.
+- [ ] A supplied three-effective-spec failure test proves the first two
+  plugins, leases, tasks, bindings, materialized values, and registration close
+  once in reverse order without implementing HTTP/stream selection.
 - [ ] A recovery test proves no desired-state access and no disposition call.
 - [ ] Run focused compiler/runtime/plugin race tests and build.
 
 **Checkpoint commit:** `feat(compiler): own prepared plugin generations`
 
-## Task 11: CP6 — Integrate the current production owner
+## Task 11: CP6 — Audit the current production compatibility boundary
 
-**Single integration owner files:** `pkg/route/**`, `pkg/server/**`, `pkg/stream/router.go`, required `cmd/**`, and only the Store accessors proven dead by call-site scans.
+**Child plan:**
+[`2026-08-24-immutable-task6-cp6-production-cutover.md`](2026-08-24-immutable-task6-cp6-production-cutover.md).
 
-- [ ] Pass the exact C6.5 final metadata view, consumer bindings, scoped plugin dependencies, tasks, and registration lifetime into the existing Builder/server generation.
-- [ ] Do not build a temporary view from `Store.ConfigSnapshot` and do not decrypt metadata twice.
-- [ ] Tie registration retirement to the installed handler generation, not merely Builder return.
-- [ ] Preserve current reload rollback: failed candidate does not replace the active handler; cleanup completes before error return.
-- [ ] Keep one production activation path. If exact ownership would require adding Task 9 activation, stop the deletion at the documented compatibility seam and defer that seam explicitly.
+**Single integration owner files:** required caller guards and only the Store/plugin
+compatibility accessors proven dead by call-site scans. Route/server/stream/cmd
+files are read-only unless keeping the accepted lanes buildable requires a
+specific repair.
+
+- [ ] Prove current production has no legal provider-to-`ApplyTicket`-to-
+  `PrepareGeneration` path. Do not synthesize a ticket, expose the private
+  materializer, or add a prepared Builder/MQTT/retirement adapter.
+- [ ] Keep the one existing Store/Builder/Router production path buildable.
+  Record decoded snapshot/plaintext, global consumer lookup, mutable stream,
+  and registration-retirement seams with exact Task 7/8/9 deletion owners.
 - [ ] Delete legacy plugin/global paths only after AST and `rg` scans prove zero production call sites:
 
   ```text
   BasePlugin.DataEncryption
   store.MaterializeSecret / ResolveSecretReference from plugins
   store.GetPluginMetadata / GetPluginMetadataRaw / GetValidatedPluginMetadata from plugins
-  request-time Store consumer credential resolution from auth plugins
+  request-time Store consumer credential resolution from migrated auth plugins
   transitional parameterless MaterializePluginSecrets
   ```
 
-- [ ] Migrate the MQTT stream owner in `pkg/stream/router.go` before deleting the legacy wrapper. HTTP Builder-only call-site scans are insufficient.
+- [ ] Do not delete Builder plugin construction, `Store.ConfigSnapshot`, MQTT
+  legacy materialization, mutable stream reload, or handler/registration
+  retirement merely because detached compiler code exists; those require
+  Task 7, Task 8, and the joint Task 9 production cutover.
 
-- [ ] If no caller needs decoded Store plugin metadata, remove the decoded cache/snapshot accessors and prove Store/journal retain raw publication bytes only. If a pre-Task-9 owner still needs them, record the exact caller and Task 9 deletion step.
-
-**Checkpoint commit:** `feat(runtime): install prepared plugin generations`
+**Checkpoint commit:** `chore(runtime): gate immutable task6 integration`
 
 ## Task 12: Boundary guards and acceptance
 
@@ -352,7 +445,7 @@ Task 6 is acceptable only when all applicable rows have evidence:
 | Consumers | immutable prepared bindings; no request-time Store credential resolution |
 | Plugins | attempt-scoped instance keys; composite children retain outer ownership |
 | Cleanup | partial failure and concurrent discard close once in reverse order |
-| Production | one current activation path; registration lasts through handler retirement |
+| Production | no forged ticket or second path; current legacy owner remains explicit and buildable |
 | Residual | any Store plaintext/legacy seam named with exact caller and Task 9 deletion owner |
 | Gates | focused race, generator drift, lint, build, diff, independent review |
 

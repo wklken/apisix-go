@@ -8,6 +8,15 @@
 
 **Architecture:** CP3 has four serial checkpoints: consumer schema ownership, plugin schema witnesses, pure raw admission/refinement, and final-attempt orchestration. CP3 freezes hook contracts but does not implement metadata/consumer/plugin leaf materialization, current Builder integration, or final `PreparedGeneration` activation.
 
+**Later CP5 audit amendment:** CP3.4's accepted final-attempt and occurrence
+authority remains the prerequisite, but its provisional hook shapes are not the
+final CP5 API. The CP5 child plan removes the unused metadata argument from
+`ConsumerPreparer`, deletes `PluginPreparer`/`PreparedPlugins`, and replaces
+raw-occurrence plugin preparation with a compiler-private materializer that
+accepts complete effective specs from Task 7/8. The historical CP3.4 RED/GREEN
+steps below describe the additive checkpoint that landed, not the interface to
+recreate during CP5.
+
 ## Corrected evidence boundaries
 
 1. Regular plugin `GetSchema()` describes route/service/global/plugin-config use. It does not describe consumer credentials.

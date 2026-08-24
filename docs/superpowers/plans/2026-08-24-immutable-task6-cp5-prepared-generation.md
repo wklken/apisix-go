@@ -620,6 +620,12 @@ conditional detach (`live[id] == prepared`); and transfer the same cleanup
 ledger without creating a second owner. Every failure runs that ledger with
 `context.WithoutCancel(ctx)`.
 
+The live set must never overwrite an existing identical attempt ID. Detect a
+collision under `liveMu`, keep the original generation tracked, unlock, and run
+the new candidate through the same redacted failure cleanup. Same-ticket
+concurrent preparation therefore transfers at most one owner; after that owner
+detaches, an exact retry may transfer normally.
+
 Task 5 returns only a stable preparation-failed cause plus exact reconstructed
 `context.Canceled`/`context.DeadlineExceeded` sentinels. Arbitrary materializer,
 consumer, metadata, and registration-close errors must not remain reachable via

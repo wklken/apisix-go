@@ -251,6 +251,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("loki-logger metadata decode failed: %w", err)
+	}
 	if p.config.EndpointURI == "" {
 		p.config.EndpointURI = "/loki/api/v1/push"
 	}
@@ -311,7 +315,6 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {

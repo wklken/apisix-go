@@ -12,6 +12,8 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -27,6 +29,99 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestMetadataSchemaAcceptsLogFormatAndPendingLimit(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":          map[string]any{"generation": "$route_id"},
+		"max_pending_entries": 1,
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, metadata := range []map[string]any{
+		{"log_format": "$route_id"},
+		{"max_pending_entries": 0},
+	} {
+		if err := util.Validate(metadata, p.GetMetadataSchema()); err == nil {
+			t.Fatalf("invalid metadata accepted: %#v", metadata)
+		}
+	}
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	first := newTestPluginWithMetadata(t, Config{
+		EndpointAddr: "http://127.0.0.1:12800",
+	}, map[string]any{
+		"log_format":          map[string]any{"generation": "n"},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, Config{
+		EndpointAddr: "http://127.0.0.1:12801",
+	}, map[string]any{
+		"log_format":          map[string]any{"generation": "n-plus-one"},
+		"max_pending_entries": 12,
+	})
+
+	if first.LogFormat["generation"] != "n" || first.config.MaxPendingEntries != 11 {
+		t.Fatalf("generation N metadata = %#v/%d", first.LogFormat, first.config.MaxPendingEntries)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 {
+		t.Fatalf("generation N+1 metadata = %#v/%d", second.LogFormat, second.config.MaxPendingEntries)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeSkyWalkingClientAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{EndpointAddr: "http://127.0.0.1:12800"}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"max_pending_entries": "invalid",
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.client != nil || p.clientRelease != nil || p.BatchProcessor != nil {
+		t.Fatalf(
+			"decode failure acquired SkyWalking resources: client=%v release=%v processor=%v",
+			p.client,
+			p.clientRelease != nil,
+			p.BatchProcessor,
+		)
+	}
 }
 
 func TestPostInitSetsSkyWalkingDefaults(t *testing.T) {

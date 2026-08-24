@@ -264,6 +264,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("syslog metadata decode failed: %w", err)
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}
@@ -299,7 +303,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	p.logFormat, p.logFormatExtra = selectLogFormats(p.config, metadata)
 	p.customLogFormat = p.config.logFormatSet || len(p.config.LogFormat) > 0 ||
 		len(metadata.LogFormat) > 0

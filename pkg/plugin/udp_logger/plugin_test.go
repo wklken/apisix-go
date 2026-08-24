@@ -16,6 +16,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -102,6 +103,70 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{Host: "127.0.0.1", Port: 9000}
+	first := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format":          map[string]any{"generation": "n"},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format":          map[string]any{"generation": "n-plus-one"},
+		"max_pending_entries": 12,
+	})
+
+	if first.LogFormat["generation"] != "n" || first.config.MaxPendingEntries != 11 {
+		t.Fatalf("generation N metadata = %#v/%d", first.LogFormat, first.config.MaxPendingEntries)
+	}
+	if second.LogFormat["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 {
+		t.Fatalf("generation N+1 metadata = %#v/%d", second.LogFormat, second.config.MaxPendingEntries)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeUDPProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 9000}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"max_pending_entries": "invalid",
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.BatchProcessor != nil || p.conn != nil {
+		t.Fatalf("decode failure acquired UDP resources: processor=%v conn=%v", p.BatchProcessor, p.conn)
+	}
 }
 
 func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {

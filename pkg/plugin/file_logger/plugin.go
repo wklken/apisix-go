@@ -170,7 +170,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("file-logger metadata decode failed: %w", err)
+	}
 	if p.config.Path == "" {
 		p.config.Path = metadata.Path
 	}

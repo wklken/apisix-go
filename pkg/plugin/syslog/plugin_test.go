@@ -24,6 +24,7 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -84,6 +85,121 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 		t.Fatalf("PostInit() error = %v", err)
 	}
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
+}
+
+func TestPreparedGenerationsRetainMetadataFormat(t *testing.T) {
+	config := Config{Host: "127.0.0.1", Port: 514}
+	first := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{
+			"nested": map[string]any{"generation": "n"},
+		},
+		"max_pending_entries": 11,
+	})
+	second := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format": map[string]any{
+			"nested": map[string]any{"generation": "n-plus-one"},
+		},
+		"max_pending_entries": 12,
+	})
+	firstNested, firstNestedOK := first.SnapshotLogFormat["nested"].(map[string]any)
+	secondNested, secondNestedOK := second.SnapshotLogFormat["nested"].(map[string]any)
+	if !firstNestedOK || !secondNestedOK {
+		t.Fatalf("custom snapshot metadata = %#v/%#v", first.SnapshotLogFormat, second.SnapshotLogFormat)
+	}
+	if firstNested["generation"] != "n" || first.config.MaxPendingEntries != 11 || !first.customLogFormat {
+		t.Fatalf(
+			"generation N custom metadata = %#v/%d/%v",
+			firstNested,
+			first.config.MaxPendingEntries,
+			first.customLogFormat,
+		)
+	}
+	if secondNested["generation"] != "n-plus-one" || second.config.MaxPendingEntries != 12 ||
+		!second.customLogFormat {
+		t.Fatalf(
+			"generation N+1 custom metadata = %#v/%d/%v",
+			secondNested,
+			second.config.MaxPendingEntries,
+			second.customLogFormat,
+		)
+	}
+
+	firstExtra := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format_extra": map[string]any{
+			"nested": map[string]any{"generation": "n-extra"},
+		},
+		"max_pending_entries": 11,
+	})
+	secondExtra := newTestPluginWithMetadata(t, config, map[string]any{
+		"log_format_extra": map[string]any{
+			"nested": map[string]any{"generation": "n-plus-one-extra"},
+		},
+		"max_pending_entries": 12,
+	})
+	firstExtraNested, firstExtraNestedOK := firstExtra.SnapshotLogFormatExtra["nested"].(map[string]any)
+	secondExtraNested, secondExtraNestedOK := secondExtra.SnapshotLogFormatExtra["nested"].(map[string]any)
+	if !firstExtraNestedOK || !secondExtraNestedOK {
+		t.Fatalf(
+			"extra snapshot metadata = %#v/%#v",
+			firstExtra.SnapshotLogFormatExtra,
+			secondExtra.SnapshotLogFormatExtra,
+		)
+	}
+	if firstExtraNested["generation"] != "n-extra" || firstExtra.customLogFormat {
+		t.Fatalf("generation N extra metadata = %#v/%v", firstExtraNested, firstExtra.customLogFormat)
+	}
+	if secondExtraNested["generation"] != "n-plus-one-extra" || secondExtra.customLogFormat {
+		t.Fatalf("generation N+1 extra metadata = %#v/%v", secondExtraNested, secondExtra.customLogFormat)
+	}
+}
+
+func TestMetadataDecodeFailsBeforeSyslogTransportAndProcessorAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{Host: "127.0.0.1", Port: 514}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"max_pending_entries": "invalid",
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.transport != nil || p.BatchProcessor != nil {
+		t.Fatalf(
+			"decode failure acquired syslog resources: transport=%v processor=%v",
+			p.transport,
+			p.BatchProcessor,
+		)
+	}
 }
 
 func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {

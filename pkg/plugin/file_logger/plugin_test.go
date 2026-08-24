@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,14 +20,8 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/testutil"
+	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
-)
-
-var (
-	metadataStoreOnce   sync.Once
-	metadataStoreEvents chan *store.Event
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -43,6 +36,33 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 	t.Cleanup(p.Stop)
 	return p
+}
+
+func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any) *Plugin {
+	t.Helper()
+	p := &Plugin{config: cfg}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, metadata)})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+	return p
+}
+
+func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataView {
+	t.Helper()
+	document, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	view, err := runtime.NewMetadataView(map[string][]byte{name: document})
+	if err != nil {
+		t.Fatalf("NewMetadataView() error = %v", err)
+	}
+	return view
 }
 
 func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
@@ -1000,15 +1020,10 @@ func TestSchemaAcceptsPathFromMetadata(t *testing.T) {
 
 func TestPostInitUsesMetadataPath(t *testing.T) {
 	path := t.TempDir() + "/metadata-access.log"
-	putPluginMetadata(t, map[string]any{
+	p := newTestPluginWithMetadata(t, Config{}, map[string]any{
 		"path":       path,
 		"log_format": map[string]any{"path": "$uri"},
 	})
-	t.Cleanup(func() {
-		deletePluginMetadata(t)
-	})
-
-	p := newTestPlugin(t, Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/metadata", nil)
 	req = apisixctx.WithRequestVars(req)
@@ -1025,9 +1040,58 @@ func TestPostInitUsesMetadataPath(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsMissingPath(t *testing.T) {
-	deletePluginMetadata(t)
+func TestPreparedGenerationsRetainMetadataPathAndFormat(t *testing.T) {
+	directory := t.TempDir()
+	firstPath := filepath.Join(directory, "generation-n.log")
+	secondPath := filepath.Join(directory, "generation-n-plus-one.log")
+	first := newTestPluginWithMetadata(t, Config{}, map[string]any{
+		"path": firstPath,
+		"log_format": map[string]any{
+			"generation": "n",
+		},
+	})
+	second := newTestPluginWithMetadata(t, Config{}, map[string]any{
+		"path": secondPath,
+		"log_format": map[string]any{
+			"generation": "n-plus-one",
+		},
+	})
 
+	if first.config.Path != firstPath || first.logFormat["generation"] != "n" {
+		t.Fatalf("generation N metadata = %q/%#v", first.config.Path, first.logFormat)
+	}
+	if second.config.Path != secondPath || second.logFormat["generation"] != "n-plus-one" {
+		t.Fatalf("generation N+1 metadata = %q/%#v", second.config.Path, second.logFormat)
+	}
+	first.Stop()
+	second.Stop()
+}
+
+func TestMetadataDecodeFailsBeforeFileWriterAcquisition(t *testing.T) {
+	p := &Plugin{config: Config{Path: filepath.Join(t.TempDir(), "decode-failure.log")}}
+	p.SetDependencies(base.Dependencies{Metadata: mustMetadataView(t, map[string]any{
+		"path": 42,
+	})})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	defer p.Stop()
+	if err == nil {
+		t.Fatal("PostInit() error = nil for invalid metadata")
+	}
+	if p.lease != nil || p.writer != nil || p.logger != nil || p.processor != nil {
+		t.Fatalf(
+			"decode failure acquired file resources: lease=%v writer=%v logger=%v processor=%v",
+			p.lease,
+			p.writer,
+			p.logger,
+			p.processor,
+		)
+	}
+}
+
+func TestPostInitRejectsMissingPath(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1061,68 +1125,4 @@ func serveFileLoggerRequest(t *testing.T, p *Plugin, path string) {
 		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(rr, req)
-}
-
-func putPluginMetadata(t *testing.T, value map[string]any) {
-	t.Helper()
-
-	events := initMetadataStore(t)
-
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	events <- &store.Event{
-		Type:  store.EventTypePut,
-		Key:   []byte("/apisix/plugin_metadata/file-logger"),
-		Value: data,
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var metadata pluginMetadata
-		if err := store.GetPluginMetadata(name, &metadata); err == nil && metadata.Path == value["path"] {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for file-logger plugin metadata")
-}
-
-func deletePluginMetadata(t *testing.T) {
-	t.Helper()
-
-	events := initMetadataStore(t)
-	events <- &store.Event{
-		Type: store.EventTypeDelete,
-		Key:  []byte("/apisix/plugin_metadata/file-logger"),
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var metadata pluginMetadata
-		if err := store.GetPluginMetadata(name, &metadata); err != nil || metadata.Path == "" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out deleting file-logger plugin metadata")
-}
-
-func initMetadataStore(t *testing.T) chan *store.Event {
-	t.Helper()
-
-	metadataStoreOnce.Do(func() {
-		metadataStoreEvents = make(chan *store.Event, 16)
-		st, err := store.GetStore(
-			t.TempDir()+"/store.db",
-			metadataStoreEvents,
-			testutil.DataEncryptionService(false, nil),
-		)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		st.Start()
-	})
-	return metadataStoreEvents
 }

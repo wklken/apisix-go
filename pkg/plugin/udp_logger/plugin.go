@@ -193,6 +193,10 @@ func (p *Plugin) PostInit() error {
 	); err != nil {
 		return err
 	}
+	var metadata pluginMetadata
+	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
+		return fmt.Errorf("udp-logger metadata decode failed: %w", err)
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
 	}
@@ -215,7 +219,6 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {

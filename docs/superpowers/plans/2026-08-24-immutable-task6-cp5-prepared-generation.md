@@ -566,15 +566,21 @@ go test -race ./pkg/compiler -run 'TestEffectiveBindingMaterializer|TestPrepareG
 - [ ] **Step 1: Write RED transaction tests**
 
 Add tests for frozen order, base owner transfer, zero plugins without specs,
-registration/consumer/metadata failure cleanup, and catalog digest mismatch.
+registration/consumer/metadata failure cleanup, catalog digest mismatch,
+caller-context cancellation after successful transfer, defensive effective-config
+ownership/profile validation, partial consumer ownership, and secret-bearing
+primary/cleanup error redaction.
 Exercise the real production construction path and assert its returned
 `base.ConsumerLookup` cannot expose `Close` or `*runtime.ConsumerBindings`, then
 becomes inert after generation close; do not rely only on the Task 4 fixture.
-The successful trace is:
+The successful observable trace is below. The recording materializer owns the
+first event because `attemptFactory.prepareCandidateAttempt` atomically compiles
+and registers the exact final set; Task 5 must not fabricate two production
+events around that private transaction.
 
 ```text
-prepare-final-publication-set
-register-attempt-and-capability
+register-final-publication-set
+attempt-and-capability-ready
 create-task-registry
 prepare-consumers
 prepare-metadata
@@ -592,9 +598,33 @@ go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareGeneration' -count
 
 - [ ] **Step 3: Implement factory and transaction**
 
-The factory privately owns compiler, effective config, attempt factory, metadata/consumer preparers, shared resource registry, close gate, live set, and cached close result. The public constructor validates inputs, compiler/manifest/catalog digest, creates A1/M2 preparers and registry, and accepts no Store/resolver/broker/keyring or hook override.
+The factory privately owns compiler, an exact defensive effective-config clone,
+attempt factory, metadata/consumer preparers, shared resource registry, default
+binding operations, close gate, and a separately locked live set keyed by exact
+attempt identity. The public constructor validates inputs,
+compiler/manifest/catalog digest, `effective.Config.Profiles() ==
+effective.Profiles`, and `effective.Profiles.Validate(validatedManifest)` before
+creating A1/M2 preparers and registry. It accepts no
+Store/resolver/broker/keyring or public hook override. Caller mutation of nested
+maps/slices/provenance after construction must not change the owned config.
 
-Hold `gate.RLock` through live insertion. Immediately own registered attempt, task quiescer, and consumer close in sequence; prepare metadata; bind private materializer state without construction; build defensive generation; insert/live-detach; disarm local cleanup. Every failure runs the same ledger with `context.WithoutCancel(ctx)`.
+Hold `gate.RLock` through live insertion. Immediately own the registered
+attempt, then create the task registry with `context.WithoutCancel(ctx)` so only
+generation shutdown cancels successful long-lived tasks; continue checking the
+original operation context at every failure window. Own task quiescence next.
+After `PrepareConsumers` returns, first own any non-nil partial bindings and
+only then handle its error; nil bindings plus nil error is failure. Prepare
+metadata; bind private materializer state without construction; build the
+defensive generation; insert it in the separately locked live set; install a
+conditional detach (`live[id] == prepared`); and transfer the same cleanup
+ledger without creating a second owner. Every failure runs that ledger with
+`context.WithoutCancel(ctx)`.
+
+Task 5 returns only a stable preparation-failed cause plus exact reconstructed
+`context.Canceled`/`context.DeadlineExceeded` sentinels. Arbitrary materializer,
+consumer, metadata, and registration-close errors must not remain reachable via
+`Error`, formatting, `Unwrap`, or `As`. Registration cleanup transferred to a
+successful generation must already apply the same redaction boundary.
 
 - [ ] **Step 4: Prove transfer and run GREEN/race**
 
@@ -602,7 +632,7 @@ Hold `gate.RLock` through live insertion. Immediately own registered attempt, ta
 source .envrc
 export GOFLAGS=-mod=readonly
 go test ./pkg/compiler -run '^TestWorkerCompilerFactoryPrepareGeneration' -count=1
-go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners|TestWorkerCompilerFactoryPrepareGenerationConstructsNoPluginsWithoutSpecs' -count=1
+go test -race ./pkg/compiler -run 'TestWorkerCompilerFactoryPrepareGenerationTransfersBaseOwners|TestWorkerCompilerFactoryPrepareGenerationConstructsNoPluginsWithoutSpecs|TestWorkerCompilerFactoryPrepareGenerationCallerCancellationDoesNotStopTasks|TestWorkerCompilerFactoryPrepareGenerationConcurrentOwners' -count=1
 ```
 
 ---
@@ -641,6 +671,10 @@ Cover reject-after-close, close all live generations before registry, blocked pr
 - [ ] **Step 2: Implement close linearization**
 
 Factory close marks closed under `gate.Lock`, snapshots live generations, closes them in deterministic private identity order without holding factory locks, then closes shared registry, joins and caches errors. New preparation returns `ErrWorkerCompilerFactoryClosed` without side effects.
+
+Apply the same bounded error-redaction contract to successful-generation and
+factory-close cleanup results: no plugin/resource/registration provider error
+may remain reachable through formatting or the unwrap tree.
 
 Generation close and materialization use one private serialized gate. Materialization owns the final acquired lease before releasing the gate; close seals cleanup only after admitted materialization exits. On materialization failure, mark terminal, unlock, then run close to avoid deadlock.
 

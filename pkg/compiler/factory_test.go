@@ -418,11 +418,13 @@ func TestRegisteredAttemptCloseIsConcurrentAndIdempotent(t *testing.T) {
 }
 
 func TestAttemptFactoryRejectsUnownedPluginTargetBeforeRegistration(t *testing.T) {
-	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactory(t)
+	factory, materializer, pluginPreparer, trace := newRecordingAttemptFactoryWithCompiler(
+		t, newUnsupportedPluginTargetTestCompiler(t),
+	)
 	desired := mustGenerationSnapshot(t, 46, []generation.Resource{
 		resourceValue(
 			"routes", "r1",
-			`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
+			`{"id":"r1","plugins":{"echo":{"body":"$ENV://BODY"}}}`,
 		),
 	}, nil)
 	prepared, err := factory.prepareCandidateAttempt(
@@ -453,7 +455,7 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 				desired := mustGenerationSnapshot(t, 461, []generation.Resource{
 					resourceValue(
 						"routes", "r1",
-						`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
+						`{"id":"r1","plugins":{"echo":{"body":"$ENV://BODY"}}}`,
 					),
 				}, nil)
 				_, err := factory.prepareCandidateAttempt(
@@ -472,7 +474,7 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 				snapshot := mustGenerationSnapshot(t, 462, []generation.Resource{
 					resourceValue(
 						"routes", "r1",
-						`{"id":"r1","plugins":{"response-rewrite":{"body":"$ENV://BODY"}}}`,
+						`{"id":"r1","plugins":{"echo":{"body":"$ENV://BODY"}}}`,
 					),
 				}, nil)
 				_, err := factory.prepareRecoveryAttempt(
@@ -495,7 +497,9 @@ func TestAttemptFactoryRejectsUnownedPluginTargetBeforeScopedRegistration(t *tes
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			broker := &countingScopedBroker{}
-			factory, materializer, pluginPreparer, trace := newScopedAttemptFactory(t, broker)
+			factory, materializer, pluginPreparer, trace := newScopedAttemptFactoryWithCompiler(
+				t, newUnsupportedPluginTargetTestCompiler(t), broker,
+			)
 			if err := test.prepare(factory); !errors.Is(err, errAttemptPreparationFailed) {
 				t.Fatalf("unowned plugin-target error = %v, want preparation failure", err)
 			}
@@ -594,7 +598,14 @@ func newRecordingAttemptFactory(
 	t *testing.T,
 ) (*attemptFactory, *recordingAttemptMaterializer, *recordingPluginPreparer, *[]string) {
 	t.Helper()
-	compiler := newTestCompiler(t)
+	return newRecordingAttemptFactoryWithCompiler(t, newTestCompiler(t))
+}
+
+func newRecordingAttemptFactoryWithCompiler(
+	t *testing.T,
+	compiler *Compiler,
+) (*attemptFactory, *recordingAttemptMaterializer, *recordingPluginPreparer, *[]string) {
+	t.Helper()
 	trace := &[]string{}
 	materializer := &recordingAttemptMaterializer{digest: compiler.schemas.catalog.Digest(), trace: trace}
 	bindings, err := runtime.NewConsumerBindings(nil, nil, nil)
@@ -623,7 +634,15 @@ func newScopedAttemptFactory(
 	broker *countingScopedBroker,
 ) (*attemptFactory, *countingMaterializer, *recordingPluginPreparer, *[]string) {
 	t.Helper()
-	compiler := newTestCompiler(t)
+	return newScopedAttemptFactoryWithCompiler(t, newTestCompiler(t), broker)
+}
+
+func newScopedAttemptFactoryWithCompiler(
+	t *testing.T,
+	compiler *Compiler,
+	broker *countingScopedBroker,
+) (*attemptFactory, *countingMaterializer, *recordingPluginPreparer, *[]string) {
+	t.Helper()
 	trace := &[]string{}
 	materializer := &countingMaterializer{
 		delegate: secret.NewScopedMaterializer(broker, compiler.schemas.catalog),

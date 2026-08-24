@@ -108,7 +108,7 @@ func TestFinalFactoryOccurrencesIgnorePluginMetadataTombstones(t *testing.T) {
 }
 
 func TestValidateScopedSecretSupportDoesNotAcceptPhantomNoOps(t *testing.T) {
-	compiler := newTestCompiler(t)
+	compiler := newUnsupportedPluginTargetTestCompiler(t)
 	undeclared := factoryOccurrenceSpec{
 		domain: generation.DomainHTTP, resource: generation.ResourceKey{Kind: "routes", ID: "r1"},
 		source: capability.SecretPluginConfig, factory: "request-id",
@@ -127,9 +127,9 @@ func TestValidateScopedSecretSupportDoesNotAcceptPhantomNoOps(t *testing.T) {
 	}
 
 	realDeclaration := undeclared
-	realDeclaration.factory = "response-rewrite"
+	realDeclaration.factory = "echo"
 	err := validateScopedSecretSupport([]factoryOccurrenceSpec{realDeclaration}, compiler.schemas.catalog)
-	if !errors.Is(err, ErrInvalidInput) || strings.Contains(err.Error(), "response-rewrite") {
+	if !errors.Is(err, ErrInvalidInput) || strings.Contains(err.Error(), "echo") {
 		t.Fatalf("unowned plugin-target factory error = %v, want redacted ErrInvalidInput", err)
 	}
 
@@ -140,4 +140,33 @@ func TestValidateScopedSecretSupportDoesNotAcceptPhantomNoOps(t *testing.T) {
 	); err != nil {
 		t.Fatalf("consumer occurrence incorrectly required plugin scoped support: %v", err)
 	}
+}
+
+func newUnsupportedPluginTargetTestCompiler(t *testing.T) *Compiler {
+	t.Helper()
+	manifest := mustManifest(t)
+	found := false
+	for index := range manifest.Plugins {
+		pluginCapability := &manifest.Plugins[index]
+		for _, factory := range pluginCapability.Factories {
+			if factory.Key != "echo" {
+				continue
+			}
+			pluginCapability.SecretDeclarations = append(
+				pluginCapability.SecretDeclarations,
+				capability.SecretDeclaration{
+					Factory: "echo", Source: capability.SecretPluginConfig, Field: "body", Strict: false,
+				},
+			)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("echo capability is unavailable for unsupported-owner fixture")
+	}
+	compiler, err := New(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compiler
 }

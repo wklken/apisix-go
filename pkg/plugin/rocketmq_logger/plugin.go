@@ -2,6 +2,7 @@ package rocketmq_logger
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -10,20 +11,34 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/felixge/httpsnoop"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BaseLoggerPlugin
-	config Config
-	sender rocketmqSender
+	config        Config
+	sender        rocketmqSender
+	senderFactory func(*Config) (rocketmqSender, error)
+
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+
+	secretKey       secret.Value
+	secretKeySet    bool
+	legacySecretKey *store.ResolvedSecret
+	secretsPrepared bool
+	ready           bool
 }
 
 const (
@@ -179,19 +194,49 @@ type pluginMetadata struct {
 }
 
 func (p *Plugin) Stop() {
-	p.StopWithCleanup(func() {
-		if sender, ok := p.sender.(interface{ Shutdown() error }); ok {
-			done := make(chan struct{})
-			go func() {
-				_ = sender.Shutdown()
-				close(done)
-			}()
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-			}
+	if p.stopped.Swap(true) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	processor := p.BatchProcessor
+	p.lifecycleMu.Unlock()
+	cleanup := func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		shutdownRocketMQSender(p.sender)
+		p.sender = nil
+		p.senderFactory = nil
+		p.BatchProcessor = nil
+		if p.legacySecretKey != nil {
+			p.legacySecretKey.Destroy()
+			p.legacySecretKey = nil
 		}
-	})
+		p.secretKey = secret.Value{}
+		p.secretKeySet = false
+		p.secretsPrepared = false
+		p.ready = false
+	}
+	if processor != nil {
+		processor.StopWithCleanup(cleanup)
+	} else {
+		cleanup()
+	}
+}
+
+func shutdownRocketMQSender(value rocketmqSender) {
+	sender, ok := value.(interface{ Shutdown() error })
+	if !ok {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = sender.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+	}
 }
 
 func (s *rocketmqClientSender) Shutdown() error {
@@ -212,12 +257,117 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func (p *Plugin) PostInit() error {
-	if !p.DataEncryption().Configured() {
+func (p *Plugin) MaterializeScopedSecrets(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
+		return err
+	}
+	if p.config.SecretKey == "" {
+		p.secretsPrepared = true
+		return nil
+	}
+	value, err := access.Materialize(ctx, "secret_key", p.config.SecretKey)
+	if err != nil || value.Use(validateRocketMQSecretKey) != nil {
+		return rocketMQSecretKeyUnavailable()
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return rocketMQSecretKeyUnavailable()
+	}
+	p.secretKey = value
+	p.secretKeySet = true
+	p.config.SecretKey = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+// MaterializeSecrets is the transitional process-local compatibility path.
+// Immutable generation preparation uses MaterializeScopedSecrets instead.
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
+		return err
+	}
+	resolver := p.DataEncryption()
+	if !resolver.Configured() {
 		return errors.New("data-encryption resolver is required")
 	}
-	if p.config.UseTLS {
-		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
+	if p.config.SecretKey == "" {
+		p.secretsPrepared = true
+		return nil
+	}
+	resolved, err := resolver.ResolveForContext(p.config.SecretKey, name+".secret_key")
+	if err != nil {
+		return rocketMQSecretKeyUnavailable()
+	}
+	owner, err := store.MaterializeSecret(resolved)
+	if err != nil {
+		return rocketMQSecretKeyUnavailable()
+	}
+	plaintext := owner.Bytes()
+	defer clear(plaintext)
+	if validateRocketMQSecretKey(string(plaintext)) != nil {
+		owner.Destroy()
+		return rocketMQSecretKeyUnavailable()
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		owner.Destroy()
+		return rocketMQSecretKeyUnavailable()
+	}
+	p.legacySecretKey = owner
+	p.config.SecretKey = descriptor.String()
+	p.secretsPrepared = true
+	return nil
+}
+
+func validateRocketMQTLS(useTLS bool) error {
+	if useTLS {
+		return fmt.Errorf("%s use_tls is not supported by rocketmq-client-go/v2", name)
+	}
+	return nil
+}
+
+func validateRocketMQSecretKey(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+func rocketMQSecretKeyUnavailable() error {
+	return fmt.Errorf("%s secret_key: %w", name, secret.ErrCredentialUnavailable)
+}
+
+func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.ready {
+		return nil
+	}
+	if err := validateRocketMQTLS(p.config.UseTLS); err != nil {
+		return err
 	}
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
@@ -230,15 +380,6 @@ func (p *Plugin) PostInit() error {
 	if err := validateBodyExpressions("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
 		return err
 	}
-
-	resolved, err := p.DataEncryption().ResolveForContext(
-		p.config.SecretKey,
-		"rocketmq-logger.secret_key",
-	)
-	if err != nil {
-		return fmt.Errorf("rocketmq-logger secret_key: %w", err)
-	}
-	p.config.SecretKey = resolved
 
 	p.applyDefaults()
 
@@ -257,15 +398,25 @@ func (p *Plugin) PostInit() error {
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	)
 
-	if p.sender == nil {
-		sender, err := p.newSender()
-		if err != nil {
+	sender := p.sender
+	createdSender := false
+	if sender == nil {
+		if err := p.withPrivateConfigLocked(func(config *Config) error {
+			factory := p.senderFactory
+			if factory == nil {
+				factory = p.newSender
+			}
+			var err error
+			sender, err = factory(config)
+			return err
+		}); err != nil {
 			return err
 		}
-		p.sender = sender
+		p.senderFactory = nil
+		createdSender = true
 	}
 
-	p.BatchProcessor = base.NewBatchProcessor("rocketmq logger", base.BatchDefaults{
+	processor := base.NewBatchProcessor("rocketmq logger", base.BatchDefaults{
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
@@ -273,8 +424,47 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
 		PluginID:           name,
-	}, p.RouteID, p.ServerAddr, p.SendBatch)
+	}, p.RouteID, p.ServerAddr, p.sendBatchFromProcessor)
+	if p.stopped.Load() {
+		processor.Stop()
+		if createdSender {
+			shutdownRocketMQSender(sender)
+		}
+		return secret.ErrCredentialUnavailable
+	}
+	p.sender = sender
+	p.BatchProcessor = processor
+	p.ready = true
 	return nil
+}
+
+func (p *Plugin) withPrivateConfigLocked(use func(*Config) error) error {
+	if use == nil || p.stopped.Load() || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	config := Config{
+		NameServerList: append([]string(nil), p.config.NameServerList...),
+		Timeout:        p.config.Timeout,
+		AccessKey:      p.config.AccessKey,
+	}
+	defer func() { config = Config{} }()
+	if p.secretKeySet {
+		return p.secretKey.Use(func(secretKey string) error {
+			config.SecretKey = secretKey
+			defer func() { config.SecretKey = "" }()
+			return use(&config)
+		})
+	}
+	if p.legacySecretKey != nil {
+		plaintext := p.legacySecretKey.Bytes()
+		defer clear(plaintext)
+		if len(plaintext) == 0 {
+			return secret.ErrCredentialUnavailable
+		}
+		config.SecretKey = string(plaintext)
+		defer func() { config.SecretKey = "" }()
+	}
+	return use(&config)
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -296,7 +486,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		if p.config.MetaFormat == "origin" {
-			_ = p.Fire(map[string]any{
+			_ = p.enqueueRocketMQLogIfRunning(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
 			})
 			return
@@ -319,7 +509,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			)
 		}
 
-		_ = p.Fire(logFields)
+		_ = p.enqueueRocketMQLogIfRunning(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -330,7 +520,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 			body = base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes)
 		}
-		return p.EnqueueLog(map[string]any{originLogKey: rocketSnapshotOrigin(snapshot, body)})
+		return p.enqueueRocketMQLogIfRunning(map[string]any{originLogKey: rocketSnapshotOrigin(snapshot, body)})
 	}
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
@@ -347,6 +537,18 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
+	}
+	return p.enqueueRocketMQLogIfRunning(fields)
+}
+
+func (p *Plugin) enqueueRocketMQLogIfRunning(fields map[string]any) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.stopped.Load() || !p.ready {
+		return base.ErrLogQueueUnavailable
+	}
+	if p.BatchProcessor == nil {
+		return p.Fire(fields)
 	}
 	return p.EnqueueLog(fields)
 }
@@ -462,9 +664,31 @@ func (p *Plugin) Send(log map[string]any) {
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, false)
+}
+
+func (p *Plugin) sendBatchFromProcessor(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+) (int, error) {
+	return p.sendBatch(ctx, entries, batchMaxSize, true)
+}
+
+func (p *Plugin) sendBatch(
+	ctx context.Context,
+	entries []map[string]any,
+	batchMaxSize int,
+	allowRetired bool,
+) (int, error) {
 	message, err := encodeRocketMQBatch(entries, batchMaxSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal rocketmq log message: %w", err)
+	}
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.sender == nil || (p.stopped.Load() && !allowRetired) {
+		return 0, secret.ErrCredentialUnavailable
 	}
 
 	if ctx == nil {

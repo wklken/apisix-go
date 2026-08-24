@@ -3,6 +3,7 @@ package saml_auth
 import (
 	"bytes"
 	"compress/flate"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -19,25 +20,41 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/beevik/etree"
 	"github.com/crewjam/saml"
 	dsig "github.com/russellhaering/goxmldsig"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/secret"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config      Config
+	lifecycleMu sync.RWMutex
 
-	// spKeyPair and spIDPMetadata are the config-derived immutable parts of
-	// the service provider, parsed once in PostInit instead of per request.
+	spPrivateKey        secret.Value
+	legacySPPrivateKey  *store.ResolvedSecret
+	sessionSecret       secret.Value
+	sessionSecretSet    bool
+	sessionFallbacks    []secret.Value
+	legacySessionSecret *store.ResolvedSecret
+	legacyFallbacks     []*store.ResolvedSecret
+	secretsPrepared     bool
+	retired             bool
+
+	// spKeyPair is staged during secret materialization. PostInit consumes it
+	// without reading the public private-key descriptor as PEM.
 	spKeyPair     *samlKeyPair
 	spIDPMetadata *saml.EntityDescriptor
 }
@@ -100,16 +117,12 @@ const schema = `
       "enum": ["HTTP-Redirect", "HTTP-POST"]
     },
     "secret": {
-      "type": "string",
-      "minLength": 8,
-      "maxLength": 32
+      "type": "string"
     },
     "secret_fallbacks": {
       "type": "array",
       "items": {
-        "type": "string",
-        "minLength": 8,
-        "maxLength": 32
+        "type": "string"
       }
     }
   },
@@ -174,15 +187,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired || !p.secretsPrepared || p.spKeyPair == nil {
+		return secret.ErrCredentialUnavailable
+	}
 	if p.config.AuthProtocolBindingMethod == "" {
 		p.config.AuthProtocolBindingMethod = "HTTP-Redirect"
 	}
-
-	cert, key, err := parseKeyPair(p.config.SPCert, p.config.SPPrivateKey)
-	if err != nil {
-		return fmt.Errorf("parse SP key pair: %w", err)
-	}
-	p.spKeyPair = &samlKeyPair{cert: cert, key: key}
 	p.spIDPMetadata = &saml.EntityDescriptor{
 		EntityID: p.config.idpEntityID(),
 		IDPSSODescriptors: []saml.IDPSSODescriptor{
@@ -219,6 +231,240 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) MaterializeScopedSecrets(ctx context.Context, access base.ScopedSecretAccess) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	privateKey, privateDescriptor, keyPair, err := p.materializeScopedPrivateKey(
+		ctx, access, p.config.SPPrivateKey,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, err := materializeScopedSAMLSessionSecret(
+		ctx, access, "secret", p.config.Secret,
+	)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]secret.Value, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, fallbackErr := materializeScopedSAMLSessionSecret(
+			ctx, access, "secret_fallbacks", raw,
+		)
+		if fallbackErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.spPrivateKey = privateKey
+	p.sessionSecret = sessionSecret
+	p.sessionSecretSet = true
+	p.sessionFallbacks = fallbacks
+	p.spKeyPair = keyPair
+	p.config.SPPrivateKey = privateDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	return nil
+}
+
+func (p *Plugin) materializeScopedPrivateKey(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	raw string,
+) (secret.Value, string, *samlKeyPair, error) {
+	value, err := access.Materialize(ctx, "sp_private_key", raw)
+	if err != nil {
+		return secret.Value{}, "", nil, secret.ErrCredentialUnavailable
+	}
+	var keyPair *samlKeyPair
+	if err := value.Use(func(plaintext string) error {
+		cert, key, parseErr := parseKeyPair(p.config.SPCert, plaintext)
+		if parseErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		keyPair = &samlKeyPair{cert: cert, key: key}
+		return nil
+	}); err != nil {
+		return secret.Value{}, "", nil, secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", nil, secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), keyPair, nil
+}
+
+func materializeScopedSAMLSessionSecret(
+	ctx context.Context,
+	access base.ScopedSecretAccess,
+	field string,
+	raw string,
+) (secret.Value, string, error) {
+	value, err := access.Materialize(ctx, field, raw)
+	if err != nil || value.Use(validateSAMLSessionSecret) != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
+	if err != nil {
+		return secret.Value{}, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+func (p *Plugin) MaterializeSecrets() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.secretsPrepared {
+		return nil
+	}
+
+	privateKey, privateDescriptor, keyPair, err := p.materializeLegacyPrivateKey(p.config.SPPrivateKey)
+	if err != nil {
+		return secret.ErrCredentialUnavailable
+	}
+	sessionSecret, sessionDescriptor, err := p.materializeLegacySecret(
+		p.config.Secret, "secret", validateSAMLSessionSecret,
+	)
+	if err != nil {
+		privateKey.Destroy()
+		return secret.ErrCredentialUnavailable
+	}
+	fallbacks := make([]*store.ResolvedSecret, len(p.config.SecretFallbacks))
+	fallbackDescriptors := make([]string, len(p.config.SecretFallbacks))
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		privateKey.Destroy()
+		sessionSecret.Destroy()
+		for _, fallback := range fallbacks {
+			fallback.Destroy()
+		}
+	}()
+	for i, raw := range p.config.SecretFallbacks {
+		fallback, descriptor, fallbackErr := p.materializeLegacySecret(
+			raw, "secret_fallbacks", validateSAMLSessionSecret,
+		)
+		if fallbackErr != nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = fallback
+		fallbackDescriptors[i] = descriptor
+	}
+
+	p.legacySPPrivateKey = privateKey
+	p.legacySessionSecret = sessionSecret
+	p.legacyFallbacks = fallbacks
+	p.spKeyPair = keyPair
+	p.config.SPPrivateKey = privateDescriptor
+	p.config.Secret = sessionDescriptor
+	p.config.SecretFallbacks = fallbackDescriptors
+	p.secretsPrepared = true
+	installed = true
+	return nil
+}
+
+func (p *Plugin) materializeLegacyPrivateKey(raw string) (*store.ResolvedSecret, string, *samlKeyPair, error) {
+	value, descriptor, err := p.materializeLegacySecret(raw, "sp_private_key", func(plaintext string) error {
+		_, _, parseErr := parseKeyPair(p.config.SPCert, plaintext)
+		return parseErr
+	})
+	if err != nil {
+		return nil, "", nil, secret.ErrCredentialUnavailable
+	}
+	plaintext := value.Bytes()
+	defer clear(plaintext)
+	cert, key, err := parseKeyPair(p.config.SPCert, string(plaintext))
+	if err != nil {
+		value.Destroy()
+		return nil, "", nil, secret.ErrCredentialUnavailable
+	}
+	return value, descriptor, &samlKeyPair{cert: cert, key: key}, nil
+}
+
+func (p *Plugin) materializeLegacySecret(
+	raw string,
+	field string,
+	validate func(string) error,
+) (*store.ResolvedSecret, string, error) {
+	if resolver := p.DataEncryption(); resolver.Configured() {
+		raw = resolver.ResolveOptionalForContext(raw, name+"."+field)
+	}
+	value, err := store.MaterializeSecret(raw)
+	if err != nil {
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	plaintext := value.Bytes()
+	defer clear(plaintext)
+	if err := validate(string(plaintext)); err != nil {
+		value.Destroy()
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	digest := sha256.Sum256(plaintext)
+	descriptor, err := secret.NewDescriptor(capability.SecretPluginConfig, digest)
+	if err != nil {
+		value.Destroy()
+		return nil, "", secret.ErrCredentialUnavailable
+	}
+	return value, descriptor.String(), nil
+}
+
+func validateSAMLSessionSecret(plaintext string) error {
+	length := utf8.RuneCountInString(plaintext)
+	if length < 8 || length > 32 {
+		return secret.ErrCredentialUnavailable
+	}
+	return nil
+}
+
+// Stop retires this immutable generation after all active handlers finish.
+func (p *Plugin) Stop() {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.retired {
+		return
+	}
+	p.retired = true
+	p.spIDPMetadata = nil
+	p.spKeyPair = nil
+	if p.legacySPPrivateKey != nil {
+		p.legacySPPrivateKey.Destroy()
+		p.legacySPPrivateKey = nil
+	}
+	if p.legacySessionSecret != nil {
+		p.legacySessionSecret.Destroy()
+		p.legacySessionSecret = nil
+	}
+	for i, fallback := range p.legacyFallbacks {
+		fallback.Destroy()
+		p.legacyFallbacks[i] = nil
+	}
+	p.legacyFallbacks = nil
+	p.spPrivateKey = secret.Value{}
+	p.sessionSecret = secret.Value{}
+	p.sessionSecretSet = false
+	for i := range p.sessionFallbacks {
+		p.sessionFallbacks[i] = secret.Value{}
+	}
+	p.sessionFallbacks = nil
+	p.secretsPrepared = false
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -232,6 +478,12 @@ func (c Config) idpEntityID() string {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		if p.retired || !p.secretsPrepared || p.spKeyPair == nil || p.spIDPMetadata == nil {
+			http.Error(w, util.BuildMessageResponse("credential unavailable"), http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path == base.CallbackPath(p.config.LogoutCallbackURI) {
 			apisixctx.RegisterSensitiveQueryName(r, "SAMLRequest")
 			apisixctx.RegisterSensitiveQueryName(r, "SAMLResponse")
@@ -270,7 +522,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) startAuthentication(w http.ResponseWriter, r *http.Request) {
-	sp, err := p.serviceProvider(r)
+	sp, err := p.serviceProviderLocked(r)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
 		return
@@ -331,7 +583,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sp, err := p.serviceProvider(r)
+	sp, err := p.serviceProviderLocked(r)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
 		return
@@ -374,7 +626,7 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.deleteCookie(w, sessionCookieName(p.sessionFingerprint()))
-	sp, err := p.serviceProvider(r)
+	sp, err := p.serviceProviderLocked(r)
 	if err != nil || user.NameID == "" {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
@@ -407,7 +659,7 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) handleLogoutRequest(w http.ResponseWriter, r *http.Request) {
-	sp, err := p.serviceProvider(r)
+	sp, err := p.serviceProviderLocked(r)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
 		return
@@ -452,7 +704,7 @@ func (p *Plugin) handleLogoutResponse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, util.BuildMessageResponse("invalid saml logout state"), http.StatusUnauthorized)
 		return
 	}
-	sp, err := p.serviceProvider(r)
+	sp, err := p.serviceProviderLocked(r)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
 		return
@@ -551,6 +803,15 @@ func (p *Plugin) validateLogoutResponse(
 }
 
 func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	if p.retired || !p.secretsPrepared || p.spKeyPair == nil || p.spIDPMetadata == nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
+	return p.serviceProviderLocked(r)
+}
+
+func (p *Plugin) serviceProviderLocked(r *http.Request) (*saml.ServiceProvider, error) {
 	acsURL, err := absoluteURL(r, p.config.LoginCallbackURI)
 	if err != nil {
 		return nil, err
@@ -605,9 +866,17 @@ func (p *Plugin) requestCookie(stateID string, state requestState) (*http.Cookie
 	if err != nil {
 		return nil, err
 	}
+	defer clear(payload)
+	var signed string
+	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
+		signed = base.SignRawSessionValue(payload, current)
+		return nil
+	}); err != nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
 	return &http.Cookie{
 		Name:     requestCookieName(p.sessionFingerprint(), stateID),
-		Value:    base.SignRawSessionValue(payload, p.config.Secret),
+		Value:    signed,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
@@ -624,12 +893,16 @@ func (p *Plugin) requestState(r *http.Request, stateID string) (requestState, bo
 	if err != nil || cookie.Value == "" {
 		return requestState{}, false
 	}
-	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
-	if !ok {
-		return requestState{}, false
-	}
 	var state requestState
-	if err := json.Unmarshal(payload, &state); err != nil {
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		payload, ok := base.VerifyRawSessionValue(cookie.Value, current, fallbacks)
+		if !ok {
+			return secret.ErrCredentialUnavailable
+		}
+		defer clear(payload)
+		return json.Unmarshal(payload, &state)
+	})
+	if err != nil {
 		return requestState{}, false
 	}
 	if state.ExpiresAt <= time.Now().Unix() || state.RequestID == "" {
@@ -643,9 +916,17 @@ func (p *Plugin) logoutCookie(stateID string, state logoutState) (*http.Cookie, 
 	if err != nil {
 		return nil, err
 	}
+	defer clear(payload)
+	var signed string
+	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
+		signed = base.SignRawSessionValue(payload, current)
+		return nil
+	}); err != nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
 	return &http.Cookie{
 		Name:     logoutCookieName(p.sessionFingerprint(), stateID),
-		Value:    base.SignRawSessionValue(payload, p.config.Secret),
+		Value:    signed,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
@@ -662,12 +943,16 @@ func (p *Plugin) logoutState(r *http.Request, stateID string) (logoutState, bool
 	if err != nil || cookie.Value == "" {
 		return logoutState{}, false
 	}
-	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
-	if !ok {
-		return logoutState{}, false
-	}
 	var state logoutState
-	if err := json.Unmarshal(payload, &state); err != nil {
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		payload, ok := base.VerifyRawSessionValue(cookie.Value, current, fallbacks)
+		if !ok {
+			return secret.ErrCredentialUnavailable
+		}
+		defer clear(payload)
+		return json.Unmarshal(payload, &state)
+	})
+	if err != nil {
 		return logoutState{}, false
 	}
 	if state.ExpiresAt <= time.Now().Unix() || state.RequestID == "" {
@@ -681,12 +966,16 @@ func (p *Plugin) sessionUser(r *http.Request) (externalUser, bool) {
 	if err != nil || cookie.Value == "" {
 		return externalUser{}, false
 	}
-	payload, ok := base.VerifyRawSessionValue(cookie.Value, p.config.Secret, p.config.SecretFallbacks)
-	if !ok {
-		return externalUser{}, false
-	}
 	var session sessionPayload
-	if err := json.Unmarshal(payload, &session); err != nil {
+	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
+		payload, ok := base.VerifyRawSessionValue(cookie.Value, current, fallbacks)
+		if !ok {
+			return secret.ErrCredentialUnavailable
+		}
+		defer clear(payload)
+		return json.Unmarshal(payload, &session)
+	})
+	if err != nil {
 		return externalUser{}, false
 	}
 	if session.ExpiresAt <= time.Now().Unix() || session.User.NameID == "" {
@@ -703,15 +992,87 @@ func (p *Plugin) sessionCookie(user externalUser) (*http.Cookie, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(payload)
+	var signed string
+	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
+		signed = base.SignRawSessionValue(payload, current)
+		return nil
+	}); err != nil {
+		return nil, secret.ErrCredentialUnavailable
+	}
 	return &http.Cookie{
 		Name:     sessionCookieName(p.sessionFingerprint()),
-		Value:    base.SignRawSessionValue(payload, p.config.Secret),
+		Value:    signed,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   p.forceSecureCookies(),
 		SameSite: p.sameSiteMode(),
 		MaxAge:   int(sessionLifetime.Seconds()),
 	}, nil
+}
+
+func (p *Plugin) useSessionSecretsLocked(use func(string, []string) error) error {
+	if use == nil || p.retired || !p.secretsPrepared {
+		return secret.ErrCredentialUnavailable
+	}
+	if p.sessionSecretSet {
+		return p.sessionSecret.Use(func(current string) error {
+			fallbacks := make([]string, len(p.sessionFallbacks))
+			defer clearSAMLStrings(fallbacks)
+			return useScopedSAMLFallbacks(p.sessionFallbacks, fallbacks, 0, func() error {
+				return use(current, fallbacks)
+			})
+		})
+	}
+	if p.legacySessionSecret == nil {
+		return secret.ErrCredentialUnavailable
+	}
+	current := p.legacySessionSecret.Bytes()
+	if len(current) == 0 {
+		return secret.ErrCredentialUnavailable
+	}
+	defer clear(current)
+	fallbackBytes := make([][]byte, len(p.legacyFallbacks))
+	fallbacks := make([]string, len(p.legacyFallbacks))
+	defer func() {
+		for i := range fallbackBytes {
+			clear(fallbackBytes[i])
+		}
+		clearSAMLStrings(fallbacks)
+	}()
+	for i, owner := range p.legacyFallbacks {
+		if owner == nil {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbackBytes[i] = owner.Bytes()
+		if len(fallbackBytes[i]) == 0 {
+			return secret.ErrCredentialUnavailable
+		}
+		fallbacks[i] = string(fallbackBytes[i])
+	}
+	return use(string(current), fallbacks)
+}
+
+func useScopedSAMLFallbacks(
+	values []secret.Value,
+	plaintext []string,
+	index int,
+	use func() error,
+) error {
+	if index == len(values) {
+		return use()
+	}
+	return values[index].Use(func(value string) error {
+		plaintext[index] = value
+		defer func() { plaintext[index] = "" }()
+		return useScopedSAMLFallbacks(values, plaintext, index+1, use)
+	})
+}
+
+func clearSAMLStrings(values []string) {
+	for i := range values {
+		values[i] = ""
+	}
 }
 
 func (p *Plugin) deleteCookie(w http.ResponseWriter, name string) {

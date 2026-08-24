@@ -15,8 +15,8 @@ import (
 )
 
 // BenchmarkStaticConfigPath measures the per-request SAML authentication
-// redirect path with valid static configuration. The SP key pair and IDP
-// metadata must be compiled once at PostInit, never rebuilt per request.
+// redirect path with valid static configuration. The SP key pair is staged
+// during materialization and the IDP metadata at PostInit, never per request.
 func BenchmarkStaticConfigPath(b *testing.B) {
 	certPEM, keyPEM := benchmarkCertificate(b)
 	cfg := Config{
@@ -36,11 +36,15 @@ func BenchmarkStaticConfigPath(b *testing.B) {
 	if err := p.Init(); err != nil {
 		b.Fatalf("Init() error = %v", err)
 	}
+	if err := p.MaterializeSecrets(); err != nil {
+		b.Fatalf("MaterializeSecrets() error = %v", err)
+	}
 	if err := p.PostInit(); err != nil {
 		b.Fatalf("PostInit() error = %v", err)
 	}
+	b.Cleanup(p.Stop)
 	if p.spKeyPair == nil || p.spIDPMetadata == nil {
-		b.Fatal("static SAML state was not compiled at PostInit")
+		b.Fatal("static SAML state was not prepared before requests")
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)

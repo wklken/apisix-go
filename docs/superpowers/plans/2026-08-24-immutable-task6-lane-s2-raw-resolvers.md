@@ -644,15 +644,21 @@ bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && go test \
 
 ```bash
 bash -lc 'source .envrc && export GOFLAGS=-mod=readonly && \
-  ! rg -n "DataEncryption\\(\\)|ResolveForContext|pkg/data_encryption" \
-    pkg/plugin/{ai_rate_limiting,csrf,kafka_proxy,response_rewrite,elasticsearch_logger,error_log_logger,google_cloud_logging,http_logger,kafka_logger,lago,loggly,rocketmq_logger,sls_logger,splunk_hec_logging,tencent_cloud_cls} \
-    -g "*.go" -g "!*_test.go" && \
   go test ./pkg/plugin -run "(ScopedSecret|SecretMaterializationGuard|FactoryInstance)" -count=1 && \
-  go run ./cmd/capability-gen -check && \
+  go run ./cmd/capability-gen -repo-root . -check && \
   git diff --check'
 ```
 
-Expected: no production raw resolver calls/imports in the fifteen S2 packages; all factories with manifest plugin-config declarations report scoped support; generated registry/manifest artifacts are unchanged.
+Expected: every S2 `MaterializeScopedSecrets` method is mechanically proven not
+to call Store, `DataEncryption`, a legacy materializer, or a raw resolver; all
+factories with manifest plugin-config declarations report scoped support; and
+generated registry/manifest artifacts are unchanged. The current Builder still
+calls `MaterializePluginSecrets`, so each package's separate
+`MaterializeSecrets` compatibility method and its file-level
+`pkg/data_encryption` import remain allowed until the C6.6 live-caller ledger
+assigns their deletion to the joint Task 9 cutover. A package-wide zero-match
+scan here would contradict the leaf tasks' required legacy backend and the
+pre-Task-9 production-owner boundary.
 
 - [ ] **Step 9: Run lint and build smoke**
 

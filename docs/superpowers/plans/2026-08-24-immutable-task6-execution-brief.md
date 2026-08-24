@@ -157,5 +157,9 @@ occurrences without duplicating the compilation owned by those tasks.
 - Given three Task 7/8-style effective specs, the private materializer's third-plugin failure stops tasks and releases the first two leases exactly once in reverse order.
 - Recovery rejects revision/domain/candidate mismatches without desired-state access or disposition.
 - Concurrent exact discard closes once; mismatched publication leaves the candidate open.
-- No production plugin imports `pkg/data_encryption` or calls Store secret/metadata globals.
+- No scoped plugin path imports or calls Store/`pkg/data_encryption` secret or
+  metadata globals. Legacy `MaterializeSecrets` methods and file-level
+  `pkg/data_encryption` imports required by the still-live Builder are retained
+  only when the C6.6 caller ledger assigns their deletion to the joint Task 9
+  cutover.
 - Focused race gates, `cmd/capability-gen -check`, scoped lint, `make build`, `git diff --check`, and independent review pass.
